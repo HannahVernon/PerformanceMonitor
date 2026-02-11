@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: |
+          dotnet restore Dashboard/Dashboard.csproj
+          dotnet restore Lite/PerformanceMonitorLite.csproj
+          dotnet restore Installer/PerformanceMonitorInstaller.csproj
+          dotnet restore InstallerGui/InstallerGui.csproj
+
+      - name: Build Dashboard
+        run: dotnet build Dashboard/Dashboard.csproj -c Release --no-restore
+
+      - name: Build Lite Edition
+        run: dotnet build Lite/PerformanceMonitorLite.csproj -c Release --no-restore
+
+      - name: Build CLI Installer
+        run: dotnet build Installer/PerformanceMonitorInstaller.csproj -c Release --no-restore
+
+      - name: Build GUI Installer
+        run: dotnet build InstallerGui/InstallerGui.csproj -c Release --no-restore
