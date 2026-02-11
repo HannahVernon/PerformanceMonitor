@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor Lite.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media.Imaging;
+using Hardcodet.Wpf.TaskbarNotification;
+
+namespace PerformanceMonitorLite.Services;
+
+/// <summary>
+/// Manages the system tray icon and minimize-to-tray behavior.
+/// </summary>
+public class SystemTrayService : IDisposable
+{
+    private TaskbarIcon? _trayIcon;
+    private readonly Window _mainWindow;
+    private readonly CollectionBackgroundService? _backgroundService;
+    private bool _disposed;
+    private MenuItem? _pauseResumeItem;
+
+    public SystemTrayService(Window mainWindow, CollectionBackgroundService? backgroundService = null)
+    {
+        _mainWindow = mainWindow;
+        _backgroundService = backgroundService;
+    }
+
+    /// <summary>
+    /// Initializes the system tray icon with context menu.
+    /// </summary>
+    public void Initialize()
+    {
+        _trayIcon?.Dispose();
+
+        _trayIcon = new TaskbarIcon
+        {
+            ToolTipText = "Performance Monitor Lite"
+        };
+
+        /* Load dark theme for context menu styling */
+        var darkTheme = new ResourceDictionary
+        {
+            Source = new Uri("pack://application:,,,/Themes/DarkTheme.xaml", UriKind.Absolute)
+        };
+
+        /* Load icon */
+        try
+        {
+            var iconUri = new Uri("pack://application:,,,/EDD.ico", UriKind.Absolute);
+            _trayIcon.IconSource = new BitmapImage(iconUri);
+        }
+        catch
+        {
+            /* Icon loading failed - tray icon will be blank but functional */
+        }
+
+        /* Build context menu with dark theme */
+        var contextMenu = new ContextMenu();
+        contextMenu.Resources.MergedDictionaries.Add(darkTheme);
+
+        var showItem = new MenuItem { Header = "Show Window" };
+        showItem.Click += (s, e) => ShowMainWindow();
+        contextMenu.Items.Add(showItem);
+
+        contextMenu.Items.Add(new Separator());
+
+        _pauseResumeItem = new MenuItem { Header = "Pause Collection" };
+        _pauseResumeItem.Click += (s, e) => ToggleCollection();
+        contextMenu.Items.Add(_pauseResumeItem);
+
+        contextMenu.Items.Add(new Separator());
+
+        var exitItem = new MenuItem { Header = "Exit" };
+        exitItem.Click += (s, e) => ExitApplication();
+        contextMenu.Items.Add(exitItem);
+
+        _trayIcon.ContextMenu = contextMenu;
+
+        /* Double-click to show window */
+        _trayIcon.TrayMouseDoubleClick += (s, e) => ShowMainWindow();
+
+        /* Handle minimize to tray */
+        _mainWindow.StateChanged += MainWindow_StateChanged;
+    }
+
+    private void MainWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (_mainWindow.WindowState == WindowState.Minimized)
+        {
+            _mainWindow.Hide();
+        }
+    }
+
+    private void ShowMainWindow()
+    {
+        _mainWindow.Show();
+        _mainWindow.ShowInTaskbar = true;
+        _mainWindow.WindowState = WindowState.Normal;
+        _mainWindow.Activate();
+    }
+
+    private void ToggleCollection()
+    {
+        if (_backgroundService == null) return;
+
+        _backgroundService.IsPaused = !_backgroundService.IsPaused;
+
+        if (_pauseResumeItem != null)
+        {
+            _pauseResumeItem.Header = _backgroundService.IsPaused ? "Resume Collection" : "Pause Collection";
+        }
+
+        if (_trayIcon != null)
+        {
+            _trayIcon.ToolTipText = _backgroundService.IsPaused
+                ? "Performance Monitor Lite (Paused)"
+                : "Performance Monitor Lite";
+        }
+    }
+
+    private void ExitApplication()
+    {
+        Application.Current.Shutdown();
+    }
+
+    /// <summary>
+    /// Shows a balloon notification from the system tray icon.
+    /// </summary>
+    public void ShowNotification(string title, string message, BalloonIcon icon)
+    {
+        _trayIcon?.ShowBalloonTip(title, message, icon);
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+
+        if (disposing && _trayIcon != null)
+        {
+            _mainWindow.StateChanged -= MainWindow_StateChanged;
+            _trayIcon.Visibility = Visibility.Collapsed;
+            _trayIcon.Dispose();
+            _trayIcon = null;
+        }
+
+        _disposed = true;
+    }
+}

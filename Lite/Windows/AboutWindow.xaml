@@ -1,0 +1,64 @@
+<Window x:Class="PerformanceMonitorLite.Windows.AboutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="About Performance Monitor Lite" Height="380" Width="450"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="{DynamicResource BackgroundBrush}">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="SQL Server Performance Monitor Lite"
+                   FontSize="18" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}"
+                   Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="1" x:Name="VersionText" Text="Version 1.0.0"
+                   Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,16"/>
+
+        <TextBlock Grid.Row="2" TextWrapping="Wrap" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,8">
+            A lightweight SQL Server performance monitoring tool. No database installation required on monitored servers.
+        </TextBlock>
+
+        <StackPanel Grid.Row="3" Margin="0,0,0,8">
+            <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12">
+                © 2026 Erik Darling, Darling Data LLC
+            </TextBlock>
+            <TextBlock Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="12">
+                Licensed under the MIT License
+            </TextBlock>
+        </StackPanel>
+
+        <!-- Links -->
+        <StackPanel Grid.Row="4">
+            <TextBlock FontSize="12" Margin="0,0,0,5">
+                <Hyperlink x:Name="GitHubLink" Click="GitHubLink_Click">
+                    GitHub Repository
+                </Hyperlink>
+            </TextBlock>
+            <TextBlock FontSize="12" Margin="0,0,0,5">
+                <Hyperlink x:Name="ReportIssueLink" Click="ReportIssueLink_Click">
+                    Report an Issue
+                </Hyperlink>
+            </TextBlock>
+            <TextBlock FontSize="12" Margin="0,0,0,5">
+                <Hyperlink x:Name="CheckUpdatesLink" Click="CheckUpdatesLink_Click">
+                    Check for Updates
+                </Hyperlink>
+            </TextBlock>
+            <TextBlock FontSize="12">
+                <Hyperlink x:Name="DarlingDataLink" Click="DarlingDataLink_Click">
+                    www.erikdarling.com
+                </Hyperlink>
+            </TextBlock>
+        </StackPanel>
+
+        <Button Grid.Row="5" Content="Close" Click="CloseButton_Click"
+                HorizontalAlignment="Right" Padding="16,4"/>
+    </Grid>
+</Window>

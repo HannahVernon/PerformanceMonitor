@@ -1,0 +1,703 @@
+<UserControl x:Class="PerformanceMonitorLite.Controls.ServerTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ScottPlot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Themes/DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Context Menu for DataGrid Copy -->
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click"/>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click"/>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click"/>
+                <MenuItem Header="Copy Repro Script" Click="CopyReproScript_Click"/>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click"/>
+            </ContextMenu>
+
+            <Style x:Key="GridRowStyle" TargetType="DataGridRow">
+                <Setter Property="ContextMenu" Value="{StaticResource DataGridContextMenu}"/>
+            </Style>
+
+            <!-- Row style for blocking grid - highlight long-duration blocks -->
+            <Style x:Key="BlockingRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource GridRowStyle}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsLongBlock}" Value="True">
+                        <Setter Property="Background" Value="#33FF6B6B"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- Row style for wait stats - highlight high-wait types -->
+            <Style x:Key="WaitStatsRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource GridRowStyle}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsHighWait}" Value="True">
+                        <Setter Property="Background" Value="#33FFA500"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid Background="{StaticResource BackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header Bar -->
+        <Border Grid.Row="0" Background="{StaticResource BackgroundDarkBrush}" Padding="12,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="ServerNameText" Text="Server Name" FontSize="16" FontWeight="SemiBold"
+                               Foreground="{StaticResource ForegroundBrush}" Margin="0,0,16,0"/>
+                    <TextBlock x:Name="ConnectionStatusText" Text="Collecting..." FontSize="12"
+                               Foreground="{StaticResource ForegroundDimBrush}" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <ComboBox x:Name="TimeRangeCombo" SelectedIndex="1" Width="120" Margin="0,0,8,0"
+                              SelectionChanged="TimeRangeCombo_SelectionChanged">
+                        <ComboBoxItem Content="Last 1 hour"/>
+                        <ComboBoxItem Content="Last 4 hours"/>
+                        <ComboBoxItem Content="Last 12 hours"/>
+                        <ComboBoxItem Content="Last 24 hours"/>
+                        <ComboBoxItem Content="Last 7 days"/>
+                        <ComboBoxItem Content="Custom Range"/>
+                    </ComboBox>
+                    <DatePicker x:Name="FromDatePicker" Width="120" Margin="4,0,0,0" Visibility="Collapsed"
+                                SelectedDateChanged="CustomDateRange_Changed" CalendarOpened="DatePicker_CalendarOpened"/>
+                    <ComboBox x:Name="FromHourCombo" Width="70" Margin="2,0,0,0" Visibility="Collapsed"
+                              SelectionChanged="CustomTimeCombo_Changed" ToolTip="Hour"/>
+                    <ComboBox x:Name="FromMinuteCombo" Width="52" Margin="2,0,0,0" Visibility="Collapsed"
+                              SelectionChanged="CustomTimeCombo_Changed" ToolTip="Minute"/>
+                    <TextBlock x:Name="ToLabel" Text="to" VerticalAlignment="Center" Margin="6,0" Visibility="Collapsed"
+                               Foreground="{StaticResource ForegroundBrush}"/>
+                    <DatePicker x:Name="ToDatePicker" Width="120" Margin="0,0,0,0" Visibility="Collapsed"
+                                SelectedDateChanged="CustomDateRange_Changed" CalendarOpened="DatePicker_CalendarOpened"/>
+                    <ComboBox x:Name="ToHourCombo" Width="70" Margin="2,0,0,0" Visibility="Collapsed"
+                              SelectionChanged="CustomTimeCombo_Changed" ToolTip="Hour"/>
+                    <ComboBox x:Name="ToMinuteCombo" Width="52" Margin="2,0,4,0" Visibility="Collapsed"
+                              SelectionChanged="CustomTimeCombo_Changed" ToolTip="Minute"/>
+                    <Button Content="Apply to All" Click="ApplyTimeRangeToAll_Click" Padding="8,4" Margin="0,0,8,0"
+                            ToolTip="Apply this time range to all open server tabs"/>
+                    <Button x:Name="RefreshDataButton" Content="Refresh" Click="RefreshDataButton_Click" Padding="12,4"/>
+                    <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="8,2"/>
+                    <CheckBox x:Name="AutoRefreshCheckBox" Content="Auto-refresh" VerticalAlignment="Center" Margin="0,0,4,0"
+                              IsChecked="True" Checked="AutoRefreshCheckBox_Changed" Unchecked="AutoRefreshCheckBox_Changed"/>
+                    <ComboBox x:Name="AutoRefreshIntervalCombo" SelectedIndex="1" Width="70" Margin="0,0,0,0"
+                              SelectionChanged="AutoRefreshInterval_Changed">
+                        <ComboBoxItem Content="30s"/>
+                        <ComboBoxItem Content="1m"/>
+                        <ComboBoxItem Content="5m"/>
+                    </ComboBox>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main Tab Control -->
+        <TabControl Grid.Row="1" x:Name="MainTabControl" Background="{StaticResource BackgroundBrush}"
+                    BorderThickness="0" Padding="0">
+
+            <!-- Wait Stats Tab -->
+            <TabItem Header="Wait Stats">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Background="{StaticResource BackgroundDarkBrush}" CornerRadius="4" Padding="8" Margin="0,0,4,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="Select Wait Types" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4">
+                                <Button Content="Select All" Click="WaitTypeSelectAll_Click" Padding="6,2" Margin="0,0,4,0" FontSize="11"/>
+                                <Button Content="Clear All" Click="WaitTypeClearAll_Click" Padding="6,2" FontSize="11"/>
+                            </StackPanel>
+                            <TextBox Grid.Row="2" x:Name="WaitTypeSearchBox" TextChanged="WaitTypeSearch_TextChanged"
+                                     Margin="0,0,0,4" Padding="4,2"/>
+                            <ListBox Grid.Row="3" x:Name="WaitTypesList" Background="Transparent" BorderThickness="0">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                  Checked="WaitType_CheckChanged" Unchecked="WaitType_CheckChanged"
+                                                  Foreground="{StaticResource ForegroundBrush}" FontSize="11">
+                                            <TextBlock Text="{Binding DisplayName}"/>
+                                        </CheckBox>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+
+                    <ScottPlot:WpfPlot Grid.Column="1" x:Name="WaitStatsChart"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Query Performance Tab -->
+            <TabItem Header="Queries">
+                <Grid Margin="8">
+                    <TabControl Background="Transparent" BorderThickness="0">
+                        <TabItem Header="Performance Trends">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Row="0" Grid.Column="0" Margin="0,0,4,4">
+                                    <ScottPlot:WpfPlot x:Name="QueryDurationTrendChart"/>
+                                </Border>
+                                <Border Grid.Row="0" Grid.Column="1" Margin="4,0,0,4">
+                                    <ScottPlot:WpfPlot x:Name="ProcDurationTrendChart"/>
+                                </Border>
+                                <Border Grid.Row="1" Grid.Column="0" Margin="0,4,4,0">
+                                    <ScottPlot:WpfPlot x:Name="QueryStoreDurationTrendChart"/>
+                                </Border>
+                                <Border Grid.Row="1" Grid.Column="1" Margin="4,4,0,0">
+                                    <ScottPlot:WpfPlot x:Name="ExecutionCountTrendChart"/>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+                        <TabItem Header="Active Queries">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="Currently Running Queries" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <DataGrid Grid.Row="1" x:Name="QuerySnapshotsGrid"
+                                          AutoGenerateColumns="False" IsReadOnly="True"
+                                          RowStyle="{StaticResource GridRowStyle}"
+                                          HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                          CanUserSortColumns="True">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="SPID" Binding="{Binding SessionId}" Width="55"/>
+                                        <DataGridTextColumn Header="Collected" Binding="{Binding CollectionTimeLocal}" Width="140"/>
+                                        <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                        <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="80"/>
+                                        <DataGridTextColumn Header="Elapsed" Binding="{Binding ElapsedTimeFormatted}" Width="120"/>
+                                        <DataGridTextColumn Header="CPU (ms)" Binding="{Binding CpuTimeMs, StringFormat=N0}" Width="80"/>
+                                        <DataGridTextColumn Header="Logical Reads" Binding="{Binding LogicalReads, StringFormat=N0}" Width="95"/>
+                                        <DataGridTextColumn Header="Reads" Binding="{Binding Reads, StringFormat=N0}" Width="70"/>
+                                        <DataGridTextColumn Header="Writes" Binding="{Binding Writes, StringFormat=N0}" Width="70"/>
+                                        <DataGridTextColumn Header="Wait Type" Binding="{Binding WaitType}" Width="120"/>
+                                        <DataGridTextColumn Header="Wait (ms)" Binding="{Binding WaitTimeMs, StringFormat=N0}" Width="80"/>
+                                        <DataGridTextColumn Header="Wait Resource" Binding="{Binding WaitResource}" Width="140"/>
+                                        <DataGridTextColumn Header="Blocking" Binding="{Binding BlockingSessionId}" Width="70"/>
+                                        <DataGridTextColumn Header="DOP" Binding="{Binding Dop}" Width="45"/>
+                                        <DataGridTextColumn Header="Workers" Binding="{Binding ParallelWorkerCount}" Width="60"/>
+                                        <DataGridTextColumn Header="Memory (GB)" Binding="{Binding GrantedQueryMemoryGb, StringFormat=F2}" Width="90"/>
+                                        <DataGridTextColumn Header="Isolation" Binding="{Binding TransactionIsolationLevel}" Width="140"/>
+                                        <DataGridTemplateColumn Header="Query Text" Width="500">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding QueryText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                               ToolTip="{Binding QueryText}"/>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Header="Query Plan" Width="Auto" MinWidth="160">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                        <Button Content="Estimated" Click="DownloadSnapshotPlan_Click"
+                                                                IsEnabled="{Binding HasQueryPlan}"
+                                                                VerticalAlignment="Center"
+                                                                Padding="6,4" Margin="0,0,4,0"/>
+                                                        <Button Content="Actual" Click="DownloadSnapshotLivePlan_Click"
+                                                                IsEnabled="{Binding HasLiveQueryPlan}"
+                                                                VerticalAlignment="Center"
+                                                                Padding="6,4"/>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Grid>
+                        </TabItem>
+                        <TabItem Header="Top Queries by Duration">
+                            <DataGrid x:Name="QueryStatsGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      CanUserSortColumns="True"
+                                      MouseDoubleClick="QueryStatsGrid_MouseDoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Executions" Binding="{Binding TotalExecutions, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" Width="110"/>
+                                    <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuMs, StringFormat=N2}" Width="100"/>
+                                    <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalElapsedMs, StringFormat=N1}" Width="130"/>
+                                    <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgElapsedMs, StringFormat=N2}" Width="120"/>
+                                    <DataGridTextColumn Header="Total Reads" Binding="{Binding TotalLogicalReads, StringFormat=N0}" Width="100"/>
+                                    <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgReads, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Total Writes" Binding="{Binding TotalLogicalWrites, StringFormat=N0}" Width="100"/>
+                                    <DataGridTextColumn Header="Physical Reads" Binding="{Binding TotalPhysicalReads, StringFormat=N0}" Width="110"/>
+                                    <DataGridTextColumn Header="Total Rows" Binding="{Binding TotalRows, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Total Spills" Binding="{Binding TotalSpills, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Min CPU (ms)" Binding="{Binding MinCpuMs, StringFormat=N2}" Width="100"/>
+                                    <DataGridTextColumn Header="Max CPU (ms)" Binding="{Binding MaxCpuMs, StringFormat=N2}" Width="100"/>
+                                    <DataGridTextColumn Header="Min Duration (ms)" Binding="{Binding MinElapsedMs, StringFormat=N2}" Width="120"/>
+                                    <DataGridTextColumn Header="Max Duration (ms)" Binding="{Binding MaxElapsedMs, StringFormat=N2}" Width="120"/>
+                                    <DataGridTextColumn Header="Min DOP" Binding="{Binding MinDop}" Width="70"/>
+                                    <DataGridTextColumn Header="Max DOP" Binding="{Binding MaxDop}" Width="70"/>
+                                    <DataGridTextColumn Header="Query Hash" Binding="{Binding QueryHash}" Width="140"/>
+                                    <DataGridTextColumn Header="Plan Hash" Binding="{Binding QueryPlanHash}" Width="140"/>
+                                    <DataGridTemplateColumn Header="Query Text" Width="500">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding QueryText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding QueryText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Query Plan" Width="Auto" MinWidth="90">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Download" Click="DownloadQueryStatsPlan_Click"
+                                                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                        Padding="8,4"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Top Procedures by Duration">
+                            <DataGrid x:Name="ProcedureStatsGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      CanUserSortColumns="True"
+                                      MouseDoubleClick="ProcedureStatsGrid_MouseDoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Procedure" Binding="{Binding FullName}" Width="250"/>
+                                    <DataGridTextColumn Header="Type" Binding="{Binding ObjectType}" Width="80"/>
+                                    <DataGridTextColumn Header="Executions" Binding="{Binding TotalExecutions, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" Width="110"/>
+                                    <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuMs, StringFormat=N2}" Width="100"/>
+                                    <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalElapsedMs, StringFormat=N1}" Width="130"/>
+                                    <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgElapsedMs, StringFormat=N2}" Width="120"/>
+                                    <DataGridTextColumn Header="Total Reads" Binding="{Binding TotalLogicalReads, StringFormat=N0}" Width="100"/>
+                                    <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgReads, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Total Writes" Binding="{Binding TotalLogicalWrites, StringFormat=N0}" Width="100"/>
+                                    <DataGridTextColumn Header="Physical Reads" Binding="{Binding TotalPhysicalReads, StringFormat=N0}" Width="110"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Query Store by Duration">
+                            <DataGrid x:Name="QueryStoreGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      CanUserSortColumns="True"
+                                      MouseDoubleClick="QueryStoreGrid_MouseDoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Query ID" Binding="{Binding QueryId}" Width="80"/>
+                                    <DataGridTextColumn Header="Plan ID" Binding="{Binding PlanId}" Width="70"/>
+                                    <DataGridTextColumn Header="Executions" Binding="{Binding TotalExecutions, StringFormat=N0}" Width="90"/>
+                                    <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalDurationMs, StringFormat=N1}" Width="130"/>
+                                    <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgDurationMs, StringFormat=N2}" Width="120"/>
+                                    <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" Width="110"/>
+                                    <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuTimeMs, StringFormat=N2}" Width="100"/>
+                                    <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgLogicalReads, StringFormat=N1}" Width="90"/>
+                                    <DataGridTextColumn Header="Avg Writes" Binding="{Binding AvgLogicalWrites, StringFormat=N1}" Width="90"/>
+                                    <DataGridTextColumn Header="Avg Physical Reads" Binding="{Binding AvgPhysicalReads, StringFormat=N1}" Width="120"/>
+                                    <DataGridTextColumn Header="Avg Rows" Binding="{Binding AvgRowcount, StringFormat=N1}" Width="90"/>
+                                    <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
+                                    <DataGridTextColumn Header="Query Hash" Binding="{Binding QueryHash}" Width="140"/>
+                                    <DataGridTemplateColumn Header="Query Text" Width="500">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding QueryText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding QueryText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </TabItem>
+
+            <!-- CPU Tab -->
+            <TabItem Header="CPU">
+                <Grid Margin="8">
+                    <ScottPlot:WpfPlot x:Name="CpuChart"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Memory Tab -->
+            <TabItem Header="Memory">
+                <TabControl Background="Transparent" BorderThickness="0">
+                    <!-- Memory Overview Sub-Tab -->
+                    <TabItem Header="Overview">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Memory Summary Panel -->
+                            <Border Grid.Row="0" Background="{StaticResource BackgroundDarkBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,8">
+                                <WrapPanel>
+                                    <StackPanel Margin="0,0,24,0">
+                                        <TextBlock Text="Physical Memory" Foreground="{StaticResource ForegroundDimBrush}" FontSize="11"/>
+                                        <TextBlock x:Name="PhysicalMemoryText" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,24,0">
+                                        <TextBlock Text="SQL Server Memory" Foreground="{StaticResource ForegroundDimBrush}" FontSize="11"/>
+                                        <TextBlock x:Name="TotalServerMemoryText" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,24,0">
+                                        <TextBlock Text="Target Memory" Foreground="{StaticResource ForegroundDimBrush}" FontSize="11"/>
+                                        <TextBlock x:Name="TargetServerMemoryText" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,24,0">
+                                        <TextBlock Text="Buffer Pool" Foreground="{StaticResource ForegroundDimBrush}" FontSize="11"/>
+                                        <TextBlock x:Name="BufferPoolText" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,24,0">
+                                        <TextBlock Text="Plan Cache" Foreground="{StaticResource ForegroundDimBrush}" FontSize="11"/>
+                                        <TextBlock x:Name="PlanCacheText" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,24,0">
+                                        <TextBlock Text="System Memory State" Foreground="{StaticResource ForegroundDimBrush}" FontSize="11"/>
+                                        <TextBlock x:Name="MemoryStateText" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                </WrapPanel>
+                            </Border>
+
+                            <!-- Memory Trend Chart -->
+                            <ScottPlot:WpfPlot Grid.Row="1" x:Name="MemoryChart"/>
+                        </Grid>
+                    </TabItem>
+
+                </TabControl>
+            </TabItem>
+
+            <!-- File I/O Tab -->
+            <TabItem Header="File I/O">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Margin="0,0,0,4">
+                        <ScottPlot:WpfPlot x:Name="FileIoReadChart"/>
+                    </Border>
+
+                    <Border Grid.Row="1" Margin="0,4,0,0">
+                        <ScottPlot:WpfPlot x:Name="FileIoWriteChart"/>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- TempDB Tab -->
+            <TabItem Header="TempDB">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Margin="0,0,0,4">
+                        <ScottPlot:WpfPlot x:Name="TempDbChart"/>
+                    </Border>
+
+                    <Border Grid.Row="1" Margin="0,4,0,0">
+                        <ScottPlot:WpfPlot x:Name="TempDbFileIoChart"/>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- Blocking Tab -->
+            <TabItem Header="Blocking">
+                <Grid Margin="8">
+                    <TabControl Background="Transparent" BorderThickness="0">
+                        <TabItem Header="Trends">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Border Grid.Row="0" Margin="0,0,0,4">
+                                    <ScottPlot:WpfPlot x:Name="BlockingTrendChart"/>
+                                </Border>
+                                <Border Grid.Row="1" Margin="0,4,0,0">
+                                    <ScottPlot:WpfPlot x:Name="DeadlockTrendChart"/>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+                        <TabItem Header="Blocked Process Reports">
+                            <DataGrid x:Name="BlockedProcessReportGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource BlockingRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Event Time" Binding="{Binding EventTimeLocal}" Width="130"/>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Blocked SPID" Binding="{Binding BlockedSpid}" Width="70"/>
+                                    <DataGridTextColumn Header="Blocking SPID" Binding="{Binding BlockingSpid}" Width="70"/>
+                                    <DataGridTextColumn Header="Wait Time" Binding="{Binding WaitTimeFormatted}" Width="80"/>
+                                    <DataGridTextColumn Header="Wait Resource" Binding="{Binding WaitResource}" Width="200"/>
+                                    <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="80"/>
+                                    <DataGridTextColumn Header="Blocked Status" Binding="{Binding BlockedStatus}" Width="80"/>
+                                    <DataGridTextColumn Header="Blocking Status" Binding="{Binding BlockingStatus}" Width="80"/>
+                                    <DataGridTextColumn Header="Blocked Isolation" Binding="{Binding BlockedIsolationLevel}" Width="120"/>
+                                    <DataGridTextColumn Header="Blocking Isolation" Binding="{Binding BlockingIsolationLevel}" Width="120"/>
+                                    <DataGridTextColumn Header="Blocked Tran" Binding="{Binding BlockedTransactionName}" Width="120"/>
+                                    <DataGridTextColumn Header="Blocked Priority" Binding="{Binding BlockedPriority}" Width="55"/>
+                                    <DataGridTextColumn Header="Blocked Tran Count" Binding="{Binding BlockedTransactionCount}" Width="55"/>
+                                    <DataGridTextColumn Header="Blocked Log Used" Binding="{Binding BlockedLogUsed}" Width="70"/>
+                                    <DataGridTextColumn Header="Blocked Login" Binding="{Binding BlockedLoginName}" Width="100"/>
+                                    <DataGridTextColumn Header="Blocked Host" Binding="{Binding BlockedHostName}" Width="100"/>
+                                    <DataGridTextColumn Header="Blocked App" Binding="{Binding BlockedClientApp}" Width="140"/>
+                                    <DataGridTemplateColumn Header="Blocked SQL" Width="300">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding BlockedSqlText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding BlockedSqlText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Blocking Login" Binding="{Binding BlockingLoginName}" Width="100"/>
+                                    <DataGridTextColumn Header="Blocking Host" Binding="{Binding BlockingHostName}" Width="100"/>
+                                    <DataGridTextColumn Header="Blocking App" Binding="{Binding BlockingClientApp}" Width="140"/>
+                                    <DataGridTemplateColumn Header="Blocking SQL" Width="300">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding BlockingSqlText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding BlockingSqlText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="XML" Width="60">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Save" Padding="6,2" Click="DownloadBlockedProcessXml_Click"
+                                                        IsEnabled="{Binding HasReportXml}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Deadlocks">
+                            <DataGrid x:Name="DeadlockGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Time" Binding="{Binding DeadlockTimeLocal}" Width="130"/>
+                                    <DataGridTextColumn Header="Type" Binding="{Binding DeadlockType}" Width="100"/>
+                                    <DataGridTextColumn Header="Victim" Binding="{Binding VictimDisplay}" Width="55"/>
+                                    <DataGridTextColumn Header="SPID" Binding="{Binding Spid}" Width="55"/>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Object(s)" Binding="{Binding ObjectNames}" Width="150"/>
+                                    <DataGridTextColumn Header="Procedure" Binding="{Binding ProcName}" Width="150"/>
+                                    <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="80"/>
+                                    <DataGridTextColumn Header="Owner Mode" Binding="{Binding OwnerMode}" Width="80"/>
+                                    <DataGridTextColumn Header="Waiter Mode" Binding="{Binding WaiterMode}" Width="80"/>
+                                    <DataGridTextColumn Header="Wait Resource" Binding="{Binding WaitResource}" Width="200"/>
+                                    <DataGridTextColumn Header="Wait (ms)" Binding="{Binding WaitTimeFormatted}" Width="80"/>
+                                    <DataGridTextColumn Header="Isolation" Binding="{Binding IsolationLevel}" Width="120"/>
+                                    <DataGridTextColumn Header="Tran Name" Binding="{Binding TransactionName}" Width="120"/>
+                                    <DataGridTextColumn Header="Tran Count" Binding="{Binding TransactionCount}" Width="55"/>
+                                    <DataGridTextColumn Header="Priority" Binding="{Binding Priority}" Width="55"/>
+                                    <DataGridTextColumn Header="Login" Binding="{Binding LoginName}" Width="100"/>
+                                    <DataGridTextColumn Header="Host" Binding="{Binding HostName}" Width="100"/>
+                                    <DataGridTextColumn Header="App" Binding="{Binding ClientApp}" Width="140"/>
+                                    <DataGridTemplateColumn Header="SQL Text" Width="300">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding SqlText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding SqlText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="XML" Width="60">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Save" Padding="6,2" Click="DownloadDeadlockXml_Click"
+                                                        IsEnabled="{Binding HasDeadlockXml}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </TabItem>
+
+            <!-- Perfmon Tab -->
+            <TabItem Header="Perfmon">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Background="{StaticResource BackgroundDarkBrush}" CornerRadius="4" Padding="8" Margin="0,0,4,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="Select Counters" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4">
+                                <Button Content="Select All" Click="PerfmonSelectAll_Click" Padding="6,2" Margin="0,0,4,0" FontSize="11"/>
+                                <Button Content="Clear All" Click="PerfmonClearAll_Click" Padding="6,2" FontSize="11"/>
+                            </StackPanel>
+                            <TextBox Grid.Row="2" x:Name="PerfmonSearchBox" TextChanged="PerfmonSearch_TextChanged"
+                                     Margin="0,0,0,4" Padding="4,2"/>
+                            <ListBox Grid.Row="3" x:Name="PerfmonCountersList" Background="Transparent" BorderThickness="0">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                  Checked="PerfmonCounter_CheckChanged" Unchecked="PerfmonCounter_CheckChanged"
+                                                  Foreground="{StaticResource ForegroundBrush}" FontSize="11">
+                                            <TextBlock Text="{Binding DisplayName}"/>
+                                        </CheckBox>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+
+                    <ScottPlot:WpfPlot Grid.Column="1" x:Name="PerfmonChart"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Running Jobs Tab -->
+            <TabItem Header="Running Jobs">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="Currently Running SQL Agent Jobs" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <DataGrid Grid.Row="1" x:Name="RunningJobsGrid"
+                              AutoGenerateColumns="False" IsReadOnly="True"
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                              CanUserSortColumns="True">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow" BasedOn="{StaticResource GridRowStyle}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRunningLong}" Value="True">
+                                        <Setter Property="Background" Value="#33FF6B6B"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Job Name" Binding="{Binding JobName}" Width="250"/>
+                            <DataGridTextColumn Header="Start Time" Binding="{Binding StartTimeLocal}" Width="150"/>
+                            <DataGridTextColumn Header="Current Duration" Binding="{Binding CurrentDurationFormatted}" Width="120"/>
+                            <DataGridTextColumn Header="Avg Duration" Binding="{Binding AvgDurationFormatted}" Width="110"/>
+                            <DataGridTextColumn Header="P95 Duration" Binding="{Binding P95DurationFormatted}" Width="110"/>
+                            <DataGridTextColumn Header="% of Average" Binding="{Binding PercentOfAverageFormatted}" Width="100"/>
+                            <DataGridTextColumn Header="Running Long" Binding="{Binding RunningLongDisplay}" Width="90"/>
+                            <DataGridTextColumn Header="Successful Runs (30d)" Binding="{Binding SuccessfulRunCount}" Width="140"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- Configuration Tab -->
+            <TabItem Header="Configuration">
+                <Grid Margin="8">
+                    <TabControl Background="Transparent" BorderThickness="0">
+                        <TabItem Header="Server Configuration">
+                            <DataGrid x:Name="ServerConfigGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Setting" Binding="{Binding ConfigurationName}" Width="300"/>
+                                    <DataGridTextColumn Header="Configured Value" Binding="{Binding ValueConfigured}" Width="130"/>
+                                    <DataGridTextColumn Header="Value In Use" Binding="{Binding ValueInUse}" Width="130"/>
+                                    <DataGridTextColumn Header="Dynamic" Binding="{Binding DynamicDisplay}" Width="80"/>
+                                    <DataGridTextColumn Header="Advanced" Binding="{Binding AdvancedDisplay}" Width="80"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Database Configuration">
+                            <DataGrid x:Name="DatabaseConfigGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="200"/>
+                                    <DataGridTextColumn Header="Compat Level" Binding="{Binding CompatibilityLevel}" Width="100"/>
+                                    <DataGridTextColumn Header="Recovery Model" Binding="{Binding RecoveryModel}" Width="120"/>
+                                    <DataGridTextColumn Header="Auto Close" Binding="{Binding AutoCloseDisplay}" Width="85"/>
+                                    <DataGridTextColumn Header="Auto Shrink" Binding="{Binding AutoShrinkDisplay}" Width="90"/>
+                                    <DataGridTextColumn Header="Query Store" Binding="{Binding QueryStoreDisplay}" Width="95"/>
+                                    <DataGridTextColumn Header="Page Verify" Binding="{Binding PageVerifyOption}" Width="110"/>
+                                    <DataGridTextColumn Header="Target Recovery (s)" Binding="{Binding TargetRecoveryTimeSeconds}" Width="135"/>
+                                    <DataGridTextColumn Header="Delayed Durability" Binding="{Binding DelayedDurability}" Width="130"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Scoped Configuration">
+                            <DataGrid x:Name="DatabaseScopedConfigGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="200"/>
+                                    <DataGridTextColumn Header="Setting" Binding="{Binding ConfigurationName}" Width="300"/>
+                                    <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="200"/>
+                                    <DataGridTextColumn Header="Value for Secondary" Binding="{Binding ValueForSecondary}" Width="200"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Trace Flags">
+                            <DataGrid x:Name="TraceFlagsGrid"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      RowStyle="{StaticResource GridRowStyle}"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Trace Flag" Binding="{Binding TraceFlag}" Width="120"/>
+                                    <DataGridTextColumn Header="Status" Binding="{Binding StatusDisplay}" Width="100"/>
+                                    <DataGridTextColumn Header="Global" Binding="{Binding GlobalDisplay}" Width="80"/>
+                                    <DataGridTextColumn Header="Session" Binding="{Binding SessionDisplay}" Width="80"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </TabItem>
+
+        </TabControl>
+    </Grid>
+</UserControl>

@@ -1,0 +1,124 @@
+<Window x:Class="PerformanceMonitorDashboard.AddServerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add SQL Server"
+        Height="550" Width="500"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource BackgroundBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
+    <Window.Resources>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource BackgroundLightBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        </Style>
+        <Style TargetType="PasswordBox">
+            <Setter Property="Background" Value="{DynamicResource BackgroundLightBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <TextBlock Grid.Row="0" Text="Add SQL Server Connection" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"
+                   Foreground="{DynamicResource ForegroundBrush}"/>
+
+        <!-- Form Fields -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <!-- Display Name -->
+                <TextBlock Text="Display Name:" FontWeight="Bold" Margin="0,0,0,5"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBox x:Name="DisplayNameTextBox" Height="25" Margin="0,0,0,15"
+                         ToolTip="Friendly name to display in the server list"/>
+
+                <!-- Server Name/Address -->
+                <TextBlock Text="Server Name/Address:" FontWeight="Bold" Margin="0,0,0,5"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBox x:Name="ServerNameTextBox" Height="25" Margin="0,0,0,15"
+                         ToolTip="e.g., localhost, server.domain.com, 192.168.1.100, server\instance"/>
+
+                <!-- Authentication Type -->
+                <TextBlock Text="Authentication:" FontWeight="Bold" Margin="0,0,0,5"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
+                    <RadioButton x:Name="WindowsAuthRadio" Content="Windows Authentication"
+                                 GroupName="Auth" IsChecked="True"
+                                 Foreground="{DynamicResource ForegroundBrush}"
+                                 Checked="AuthType_Changed" Margin="0,0,20,0"/>
+                    <RadioButton x:Name="SqlAuthRadio" Content="SQL Server Authentication"
+                                 GroupName="Auth"
+                                 Foreground="{DynamicResource ForegroundBrush}"
+                                 Checked="AuthType_Changed"/>
+                </StackPanel>
+
+                <!-- SQL Authentication Fields (initially disabled) -->
+                <Border x:Name="SqlAuthPanel" IsEnabled="False">
+                    <StackPanel>
+                        <TextBlock Text="Username:" FontWeight="Bold" Margin="0,0,0,5"
+                                   Foreground="{DynamicResource ForegroundBrush}"/>
+                        <TextBox x:Name="UsernameTextBox" Height="25" Margin="0,0,0,15"/>
+
+                        <TextBlock Text="Password:" FontWeight="Bold" Margin="0,0,0,5"
+                                   Foreground="{DynamicResource ForegroundBrush}"/>
+                        <PasswordBox x:Name="PasswordBox" Height="25" Margin="0,0,0,15"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Description -->
+                <TextBlock Text="Description (optional):" FontWeight="Bold" Margin="0,0,0,5"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBox x:Name="DescriptionTextBox" Height="60" TextWrapping="Wrap"
+                         AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15"/>
+
+                <!-- Is Favorite -->
+                <CheckBox x:Name="IsFavoriteCheckBox" Content="Mark as favorite (appears at top of list)" Margin="0,0,0,15"
+                          Foreground="{DynamicResource ForegroundBrush}"/>
+
+                <!-- Connection Security Settings -->
+                <TextBlock Text="Connection Security:" FontWeight="Bold" Margin="0,0,0,5"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Padding="10" Margin="0,0,0,15"
+                        Background="{DynamicResource BackgroundLightBrush}">
+                    <StackPanel>
+                        <!-- Encryption Mode -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="Encryption:" Width="140" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource ForegroundBrush}"/>
+                            <ComboBox x:Name="EncryptModeComboBox" Width="150"
+                                      SelectedIndex="1"
+                                      ToolTip="Optional: Encrypt if server supports it&#x0a;Mandatory: Always encrypt (fails if not supported)&#x0a;Strict: Full validation required">
+                                <ComboBoxItem Content="Optional"/>
+                                <ComboBoxItem Content="Mandatory"/>
+                                <ComboBoxItem Content="Strict"/>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <!-- Trust Server Certificate -->
+                        <CheckBox x:Name="TrustServerCertificateCheckBox"
+                                  Content="Trust Server Certificate (skip certificate validation)"
+                                  IsChecked="False"
+                                  Foreground="{DynamicResource ForegroundBrush}"
+                                  ToolTip="When checked, accepts any server certificate without validation.&#x0a;Uncheck for stricter security (requires valid certificate)."/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <Button Content="Test Connection" Width="120" Height="30" Margin="0,0,10,0" Click="TestConnection_Click"/>
+            <Button Content="Save" Width="80" Height="30" Margin="0,0,10,0" Click="Save_Click" IsDefault="True"/>
+            <Button Content="Cancel" Width="80" Height="30" Click="Cancel_Click" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

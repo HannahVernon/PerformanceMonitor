@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>PerformanceMonitorInstallerGui</AssemblyName>
+    <RootNamespace>PerformanceMonitorInstallerGui</RootNamespace>
+    <Product>SQL Server Performance Monitor Installer</Product>
+    <Version>1.0.0</Version>
+    <Company>Darling Data, LLC</Company>
+    <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
+    <ApplicationIcon>EDD.ico</ApplicationIcon>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <NoWarn>CA1849;CA2007;CA1508;CA1031;CA1001;CA1822;CA1305;CA2100;CA1002;CA1845;CA1861;CA2234;CA1062;CA1823</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="EDD.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

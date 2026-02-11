@@ -1,0 +1,215 @@
+<Window x:Class="PerformanceMonitorLite.Windows.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings"
+        Height="700" Width="750"
+        MinHeight="500" MinWidth="600"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterOwner"
+        Icon="/EDD.ico"
+        Background="{DynamicResource BackgroundBrush}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Themes/DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="Settings" FontSize="18" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}"/>
+            <TextBlock Text="Configure data collection schedules and application settings"
+                       FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Collection Control -->
+        <Border Grid.Row="1" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="Data Collection" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBlock x:Name="CollectionStatusText" Text="Status: Active" FontSize="12"
+                               Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0"/>
+                </StackPanel>
+                <Button Grid.Column="1" x:Name="PauseResumeButton" Content="Pause Collection"
+                        Click="PauseResumeButton_Click" VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- MCP Server Settings -->
+        <Border Grid.Row="2" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="MCP Server (LLM Tool Access)" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBlock Text="Allows LLM clients (Claude Code, etc.) to query monitoring data via the Model Context Protocol."
+                           FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <CheckBox x:Name="McpEnabledCheckBox" Content="Enable MCP server" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBlock Text="Port:" VerticalAlignment="Center" Margin="20,0,6,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="McpPortTextBox" Width="70" Text="5151" VerticalAlignment="Center"/>
+                </StackPanel>
+                <TextBlock x:Name="McpStatusText" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,6,0,0"/>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <Button x:Name="CopyMcpCommandButton" Content="Copy Setup Command" Click="CopyMcpCommandButton_Click"/>
+                    <TextBlock Text="Works with Claude Code. Other LLMs may apply, but why would you?"
+                               FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Dashboard Defaults -->
+        <Border Grid.Row="3" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="Dashboard Defaults" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="Default time range:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,0"/>
+                    <ComboBox x:Name="DefaultTimeRangeCombo" Width="140" VerticalAlignment="Center">
+                        <ComboBoxItem Content="Last 1 hour"/>
+                        <ComboBoxItem Content="Last 4 hours"/>
+                        <ComboBoxItem Content="Last 12 hours"/>
+                        <ComboBoxItem Content="Last 24 hours"/>
+                        <ComboBoxItem Content="Last 7 days"/>
+                    </ComboBox>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Notifications -->
+        <Border Grid.Row="4" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="Notifications" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                <CheckBox x:Name="AlertsEnabledCheckBox" Content="Enable notifications" Margin="0,8,0,0"
+                          Foreground="{DynamicResource ForegroundBrush}" Checked="AlertsEnabledCheckBox_Changed" Unchecked="AlertsEnabledCheckBox_Changed"/>
+                <CheckBox x:Name="NotifyConnectionCheckBox" Content="Connection lost / restored" Margin="20,6,0,0"
+                          Foreground="{DynamicResource ForegroundBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <CheckBox x:Name="AlertCpuCheckBox" Content="CPU above" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertCpuThresholdBox" Width="45" Text="80" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="%" VerticalAlignment="Center" Margin="2,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <CheckBox x:Name="AlertBlockingCheckBox" Content="Blocking sessions &#x2265;" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertBlockingThresholdBox" Width="45" Text="1" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <CheckBox x:Name="AlertDeadlockCheckBox" Content="Deadlocks &#x2265;" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertDeadlockThresholdBox" Width="45" Text="1" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Email Alerts (Optional) -->
+        <Border Grid.Row="5" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="Email Alerts (Optional)" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBlock Text="Send email notifications alongside system tray alerts. Requires an SMTP server."
+                           FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <CheckBox x:Name="SmtpEnabledCheckBox" Content="Enable email alerts" Margin="0,8,0,0"
+                          Foreground="{DynamicResource ForegroundBrush}" Checked="SmtpEnabledCheckBox_Changed" Unchecked="SmtpEnabledCheckBox_Changed"/>
+                <Grid Margin="20,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="100"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="SMTP Server:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="SmtpServerBox" Margin="0,0,0,4"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Port:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBox x:Name="SmtpPortBox" Width="70" Text="587"/>
+                        <CheckBox x:Name="SmtpSslCheckBox" Content="Use SSL/TLS" VerticalAlignment="Center" Margin="16,0,0,0"
+                                  Foreground="{DynamicResource ForegroundBrush}" IsChecked="True"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Username:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="SmtpUsernameBox" Margin="0,0,0,4"/>
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Password:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <PasswordBox Grid.Row="3" Grid.Column="1" x:Name="SmtpPasswordBox" Margin="0,0,0,4"/>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="From Address:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="SmtpFromBox" Margin="0,0,0,4"/>
+
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="Recipients:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <TextBox Grid.Row="5" Grid.Column="1" x:Name="SmtpRecipientsBox" Margin="0,0,0,4"
+                             ToolTip="Comma-separated email addresses"/>
+
+                    <Button Grid.Row="6" Grid.Column="1" x:Name="TestEmailButton" Content="Send Test Email"
+                            Click="TestEmailButton_Click" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Collector Schedule Grid -->
+        <Grid Grid.Row="6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="Collector Schedules" FontSize="14" FontWeight="SemiBold"
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,8"/>
+
+            <DataGrid Grid.Row="1" x:Name="ScheduleGrid"
+                      AutoGenerateColumns="False" IsReadOnly="False"
+                      CanUserAddRows="False" CanUserDeleteRows="False"
+                      SelectionMode="Single"
+                      Background="Transparent" BorderThickness="0"
+                      HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                <DataGrid.Columns>
+                    <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="65"/>
+                    <DataGridTextColumn Header="Collector" Binding="{Binding Name}" Width="160" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Frequency (min)" Binding="{Binding FrequencyMinutes, UpdateSourceTrigger=LostFocus}" Width="110"/>
+                    <DataGridTextColumn Header="Retention (days)" Binding="{Binding RetentionDays, UpdateSourceTrigger=LostFocus}" Width="110"/>
+                    <DataGridTextColumn Header="Schedule" Binding="{Binding FrequencyDisplay}" Width="140" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Last Run" Binding="{Binding LastRunTime, StringFormat=HH:mm:ss}" Width="90" IsReadOnly="True"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Save" Click="SaveButton_Click" Style="{StaticResource AccentButton}" Margin="0,0,8,0"/>
+            <Button Content="Close" Click="CloseButton_Click"/>
+        </StackPanel>
+    </Grid>
+    </ScrollViewer>
+</Window>

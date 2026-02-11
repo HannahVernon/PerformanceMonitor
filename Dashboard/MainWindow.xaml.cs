@@ -1,0 +1,1175 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Threading;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
+using PerformanceMonitorDashboard.Mcp;
+using PerformanceMonitorDashboard.Models;
+using PerformanceMonitorDashboard.Controls;
+using PerformanceMonitorDashboard.Helpers;
+using PerformanceMonitorDashboard.Services;
+
+namespace PerformanceMonitorDashboard
+{
+    public partial class MainWindow : Window
+    {
+        private readonly ServerManager _serverManager;
+        private readonly Dictionary<string, TabItem> _openTabs;
+        private readonly UserPreferencesService _preferencesService;
+        private readonly ObservableCollection<ServerListItem> _serverListItems;
+        private readonly DispatcherTimer _displayRefreshTimer;
+        private readonly DispatcherTimer _connectionStatusTimer;
+        private NotificationService? _notificationService;
+        private readonly AlertStateService _alertStateService;
+        private readonly Dictionary<string, bool> _previousConnectionStates;
+        private readonly Dictionary<string, Border> _tabBadges;
+        private readonly Dictionary<string, ServerHealthStatus> _latestHealthStatus;
+        private bool _sidebarCollapsed = false;
+        private bool _isReallyClosing = false;
+        private TabItem? _nocTab;
+        private LandingPage? _landingPage;
+        private McpHostService? _mcpHostService;
+        private CancellationTokenSource? _mcpCts;
+
+        // Independent alert engine - runs regardless of which tab is active
+        private readonly DispatcherTimer _alertCheckTimer;
+        private readonly EmailAlertService _emailAlertService;
+        private readonly CredentialService _credentialService;
+        private readonly ConcurrentDictionary<string, DateTime> _lastBlockingAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastDeadlockAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastHighCpuAlert = new();
+        private static readonly TimeSpan AlertCooldown = TimeSpan.FromMinutes(5);
+        private readonly ConcurrentDictionary<string, bool> _activeBlockingAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeDeadlockAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeHighCpuAlert = new();
+        private readonly ConcurrentDictionary<string, long> _previousDeadlockCounts = new();
+
+        private const double ExpandedWidth = 250;
+        private const double CollapsedWidth = 52;
+        private const string NocTabId = "__NOC_OVERVIEW__";
+
+        public MainWindow()
+        {
+            InitializeComponent();
+
+            _serverManager = new ServerManager();
+            _openTabs = new Dictionary<string, TabItem>();
+            _preferencesService = new UserPreferencesService();
+            _alertStateService = new AlertStateService();
+            _serverListItems = new ObservableCollection<ServerListItem>();
+            _previousConnectionStates = new Dictionary<string, bool>();
+            _tabBadges = new Dictionary<string, Border>();
+            _latestHealthStatus = new Dictionary<string, ServerHealthStatus>();
+
+            ServerListView.ItemsSource = _serverListItems;
+
+            _credentialService = new CredentialService();
+            _emailAlertService = new EmailAlertService(_preferencesService);
+
+            _alertCheckTimer = new DispatcherTimer();
+            _alertCheckTimer.Tick += AlertCheckTimer_Tick;
+
+            _displayRefreshTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(30)
+            };
+            _displayRefreshTimer.Tick += DisplayRefreshTimer_Tick;
+
+            _connectionStatusTimer = new DispatcherTimer();
+            _connectionStatusTimer.Tick += ConnectionStatusTimer_Tick;
+
+            Loaded += MainWindow_Loaded;
+            StateChanged += MainWindow_StateChanged;
+            Closing += MainWindow_Closing;
+            ServerTabControl.SelectionChanged += ServerTabControl_SelectionChanged;
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+
+            // Hook into window messages to handle single-instance activation
+            var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+            source?.AddHook(WndProc);
+        }
+
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == NativeMethods.WM_SHOWMONITOR)
+            {
+                // Another instance tried to start - bring this window to front
+                Show();
+                WindowState = WindowState.Normal;
+                Activate();
+                Topmost = true;  // Temporarily set topmost to ensure visibility
+                Topmost = false;
+                handled = true;
+            }
+            return IntPtr.Zero;
+        }
+
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            LoadServerList();
+            InitializeNotificationService();
+            OpenNocTab();
+            LoadSidebarState();
+            ConfigureConnectionStatusTimer();
+            ConfigureAlertCheckTimer();
+            StartMcpServerIfEnabled();
+
+            _displayRefreshTimer.Start();
+
+            await CheckAllConnectionsAsync();
+        }
+
+        private void StartMcpServerIfEnabled()
+        {
+            var prefs = _preferencesService.GetPreferences();
+            if (!prefs.McpEnabled)
+            {
+                return;
+            }
+
+            try
+            {
+                _mcpHostService = new McpHostService(_serverManager, _credentialService, prefs.McpPort);
+                _mcpCts = new CancellationTokenSource();
+                _ = _mcpHostService.StartAsync(_mcpCts.Token);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[MCP] Failed to start MCP server: {ex.Message}", ex);
+            }
+        }
+
+        private void InitializeNotificationService()
+        {
+            _notificationService = new NotificationService(this);
+            _notificationService.Initialize();
+        }
+
+        private void MainWindow_StateChanged(object? sender, EventArgs e)
+        {
+            if (WindowState == WindowState.Minimized)
+            {
+                var prefs = _preferencesService.GetPreferences();
+                if (prefs.MinimizeToTray)
+                {
+                    Hide();
+                }
+            }
+        }
+
+        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            var prefs = _preferencesService.GetPreferences();
+
+            // If minimize to tray is enabled and we're not really closing, minimize instead
+            if (prefs.MinimizeToTray && !_isReallyClosing)
+            {
+                e.Cancel = true;
+                WindowState = WindowState.Minimized;
+                Hide();
+                return;
+            }
+
+            // Clean up MCP server
+            if (_mcpHostService != null)
+            {
+                try
+                {
+                    _mcpCts?.Cancel();
+                    _mcpHostService.StopAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[MCP] Error stopping MCP server: {ex.Message}", ex);
+                }
+            }
+
+            // Clean up notification service
+            _notificationService?.Dispose();
+        }
+
+        public void ExitApplication()
+        {
+            _isReallyClosing = true;
+            Close();
+        }
+
+        private void DisplayRefreshTimer_Tick(object? sender, EventArgs e)
+        {
+            foreach (var item in _serverListItems)
+            {
+                item.RefreshTimestampDisplay();
+            }
+        }
+
+        private async void ConnectionStatusTimer_Tick(object? sender, EventArgs e)
+        {
+            await CheckAllConnectionsAsync();
+        }
+
+        private void ConfigureConnectionStatusTimer()
+        {
+            var prefs = _preferencesService.GetPreferences();
+
+            if (prefs.NotificationsEnabled)
+            {
+                var intervalSeconds = (prefs.AutoRefreshEnabled && prefs.AutoRefreshIntervalSeconds > 0)
+                    ? prefs.AutoRefreshIntervalSeconds
+                    : 60;
+                _connectionStatusTimer.Interval = TimeSpan.FromSeconds(intervalSeconds);
+                _connectionStatusTimer.Start();
+            }
+            else
+            {
+                _connectionStatusTimer.Stop();
+            }
+        }
+
+        private void LoadSidebarState()
+        {
+            var prefs = _preferencesService.GetPreferences();
+            _sidebarCollapsed = prefs.SidebarCollapsed;
+            ApplySidebarState();
+        }
+
+        private void SaveSidebarState()
+        {
+            var prefs = _preferencesService.GetPreferences();
+            prefs.SidebarCollapsed = _sidebarCollapsed;
+            _preferencesService.SavePreferences(prefs);
+        }
+
+        private void SidebarToggle_Click(object sender, RoutedEventArgs e)
+        {
+            _sidebarCollapsed = !_sidebarCollapsed;
+            ApplySidebarState();
+            SaveSidebarState();
+        }
+
+        private void ApplySidebarState()
+        {
+            if (_sidebarCollapsed)
+            {
+                SidebarColumn.Width = new GridLength(CollapsedWidth);
+                SidebarHeaderText.Visibility = Visibility.Collapsed;
+                ServerListView.Visibility = Visibility.Collapsed;
+                SidebarFooter.Visibility = Visibility.Collapsed;
+                SidebarToggleIcon.Text = "»";
+                SidebarToggleButton.ToolTip = "Expand sidebar";
+                SidebarToggleButton.Margin = new Thickness(0);
+                SidebarToggleButton.HorizontalAlignment = HorizontalAlignment.Center;
+            }
+            else
+            {
+                SidebarColumn.Width = new GridLength(ExpandedWidth);
+                SidebarHeaderText.Visibility = Visibility.Visible;
+                ServerListView.Visibility = Visibility.Visible;
+                SidebarFooter.Visibility = Visibility.Visible;
+                SidebarToggleIcon.Text = "«";
+                SidebarToggleButton.ToolTip = "Collapse sidebar";
+                SidebarToggleButton.Margin = new Thickness(8, 0, 0, 0);
+                SidebarToggleButton.HorizontalAlignment = HorizontalAlignment.Right;
+            }
+        }
+
+        private void LoadServerList()
+        {
+            var servers = _serverManager.GetAllServers();
+
+            _serverListItems.Clear();
+            foreach (var server in servers)
+            {
+                var status = _serverManager.GetConnectionStatus(server.Id);
+                _serverListItems.Add(new ServerListItem(server, status));
+            }
+
+            // Also refresh the landing page if it exists
+            if (_landingPage != null)
+            {
+                _ = _landingPage.ReloadServersAsync();
+            }
+        }
+
+        private async System.Threading.Tasks.Task CheckAllConnectionsAsync()
+        {
+            var prefs = _preferencesService.GetPreferences();
+
+            var tasks = _serverListItems.Select(async item =>
+            {
+                var newStatus = await _serverManager.CheckConnectionAsync(item.Id);
+
+                Dispatcher.Invoke(() =>
+                {
+                    // Check for status change before updating
+                    bool wasOnline = _previousConnectionStates.TryGetValue(item.Id, out var prev) && prev;
+                    bool isOnline = newStatus.IsOnline == true;
+
+                    // Update the UI
+                    item.RefreshStatus(newStatus);
+
+                    // Send notifications on status changes (skip first check)
+                    if (_previousConnectionStates.ContainsKey(item.Id))
+                    {
+                        if (wasOnline && !isOnline && prefs.NotifyOnConnectionLost)
+                        {
+                            _notificationService?.ShowServerOfflineNotification(
+                                item.DisplayName,
+                                newStatus.ErrorMessage);
+                        }
+                        else if (!wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
+                        {
+                            _notificationService?.ShowConnectionRestoredNotification(item.DisplayName);
+                        }
+                    }
+
+                    // Track current state for next check
+                    _previousConnectionStates[item.Id] = isOnline;
+                });
+            });
+            await System.Threading.Tasks.Task.WhenAll(tasks);
+        }
+
+        private async void RefreshAllStatus_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshAllButton.IsEnabled = false;
+            RefreshAllButton.Content = "Checking...";
+
+            try
+            {
+                await CheckAllConnectionsAsync();
+            }
+            finally
+            {
+                RefreshAllButton.IsEnabled = true;
+                RefreshAllButton.Content = "↻ Refresh All Status";
+            }
+        }
+
+        private async void CheckConnection_Click(object sender, RoutedEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                var newStatus = await _serverManager.CheckConnectionAsync(item.Id);
+                item.RefreshStatus(newStatus);
+            }
+        }
+
+        private void ServerListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                OpenServerTab(item.Server);
+            }
+        }
+
+        private void OpenServerTab_Click(object sender, RoutedEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                OpenServerTab(item.Server);
+            }
+        }
+
+        private void OpenServerTab(ServerConnection server)
+        {
+            if (_openTabs.TryGetValue(server.Id, out var existingTab))
+            {
+                ServerTabControl.SelectedItem = existingTab;
+                return;
+            }
+
+            /* Set server UTC offset for chart axis bounds */
+            var connStatus = _serverManager.GetConnectionStatus(server.Id);
+            var utcOffset = connStatus.UtcOffsetMinutes ?? (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes;
+            Helpers.ServerTimeHelper.UtcOffsetMinutes = utcOffset;
+
+            var serverTab = new ServerTab(server, utcOffset);
+
+            var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            var headerText = new TextBlock
+            {
+                Text = server.DisplayName,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var closeButton = new Button
+            {
+                Style = (Style)FindResource("TabCloseButton"),
+                Tag = server.Id
+            };
+            closeButton.Click += CloseTab_Click;
+
+            var badge = new Border
+            {
+                Style = (Style)FindResource("AlertBadge"),
+                Visibility = Visibility.Collapsed,
+                Child = new TextBlock
+                {
+                    Text = "!",
+                    FontWeight = FontWeights.Bold,
+                    Foreground = Brushes.White
+                }
+            };
+
+            headerPanel.Children.Add(headerText);
+            headerPanel.Children.Add(badge);
+            headerPanel.Children.Add(closeButton);
+
+            // Create context menu for alert suppression
+            var contextMenu = new ContextMenu();
+            var acknowledgeItem = new MenuItem
+            {
+                Header = "Acknowledge Alerts",
+                Tag = server.Id,
+                Icon = new TextBlock { Text = "✓", FontWeight = FontWeights.Bold }
+            };
+            acknowledgeItem.Click += AcknowledgeServerAlerts_Click;
+            var silenceItem = new MenuItem
+            {
+                Header = "Silence All Alerts",
+                Tag = server.Id,
+                Icon = new TextBlock { Text = "🔇" }
+            };
+            silenceItem.Click += SilenceServer_Click;
+            var unsilenceItem = new MenuItem
+            {
+                Header = "Unsilence",
+                Tag = server.Id,
+                Icon = new TextBlock { Text = "🔔" }
+            };
+            unsilenceItem.Click += UnsilenceServer_Click;
+
+            contextMenu.Items.Add(acknowledgeItem);
+            contextMenu.Items.Add(silenceItem);
+            contextMenu.Items.Add(new Separator());
+            contextMenu.Items.Add(unsilenceItem);
+
+            // Capture badge reference for closure
+            var localBadge = badge;
+
+            // Update menu items based on silenced state and alert presence when opened
+            contextMenu.Opened += (s, args) =>
+            {
+                var isSilenced = _alertStateService.IsAnySilencingActive(server.Id);
+                var hasAlert = localBadge.Visibility == Visibility.Visible;
+
+                // Acknowledge only enabled if there's a visible alert
+                acknowledgeItem.IsEnabled = hasAlert;
+                silenceItem.IsEnabled = !isSilenced;
+                unsilenceItem.IsEnabled = isSilenced;
+            };
+
+            // Add transparent background to ensure hit-testing works
+            headerPanel.Background = Brushes.Transparent;
+
+            _tabBadges[server.Id] = badge;
+
+            var tabItem = new TabItem
+            {
+                Header = headerPanel,
+                Content = serverTab,
+                Tag = server.Id,
+                ContextMenu = contextMenu  // Attach to TabItem for reliable right-click
+            };
+
+            ServerTabControl.Items.Add(tabItem);
+            _openTabs[server.Id] = tabItem;
+            ServerTabControl.SelectedItem = tabItem;
+
+            _serverManager.UpdateLastConnected(server.Id);
+        }
+
+        private void OpenNocTab()
+        {
+            // If NOC tab already exists, just select it
+            if (_nocTab != null && ServerTabControl.Items.Contains(_nocTab))
+            {
+                ServerTabControl.SelectedItem = _nocTab;
+                return;
+            }
+
+            // Create the landing page
+            _landingPage = new LandingPage();
+            _landingPage.ServerCardClicked += LandingPage_ServerCardClicked;
+
+            // Create tab header with close button
+            var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            var headerText = new TextBlock
+            {
+                Text = "Overview",
+                VerticalAlignment = VerticalAlignment.Center,
+                FontWeight = FontWeights.SemiBold
+            };
+            var closeButton = new Button
+            {
+                Style = (Style)FindResource("TabCloseButton"),
+                Tag = NocTabId
+            };
+            closeButton.Click += CloseTab_Click;
+            headerPanel.Children.Add(headerText);
+            headerPanel.Children.Add(closeButton);
+
+            _nocTab = new TabItem
+            {
+                Header = headerPanel,
+                Content = _landingPage,
+                Tag = NocTabId
+            };
+
+            // Insert at the beginning
+            ServerTabControl.Items.Insert(0, _nocTab);
+            ServerTabControl.SelectedItem = _nocTab;
+        }
+
+        private void NocOverview_Click(object sender, RoutedEventArgs e)
+        {
+            OpenNocTab();
+        }
+
+        private void CloseTab_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button button && button.Tag is string tabId)
+            {
+                if (tabId == NocTabId)
+                {
+                    // Close the NOC tab
+                    if (_nocTab != null)
+                    {
+                        ServerTabControl.Items.Remove(_nocTab);
+                        _nocTab = null;
+                        _landingPage = null;
+                    }
+                }
+                else if (_openTabs.TryGetValue(tabId, out var tabToClose))
+                {
+                    _openTabs.Remove(tabId);
+                    _tabBadges.Remove(tabId);
+                    ServerTabControl.Items.Remove(tabToClose);
+                }
+            }
+        }
+
+        private void ServerTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            /* Restore the selected tab's UTC offset so charts use the correct server timezone */
+            if (ServerTabControl.SelectedItem is TabItem { Content: ServerTab serverTab })
+            {
+                Helpers.ServerTimeHelper.UtcOffsetMinutes = serverTab.UtcOffsetMinutes;
+            }
+        }
+
+        private void LandingPage_ServerCardClicked(object? sender, ServerConnection server)
+        {
+            OpenServerTab(server);
+        }
+
+        private void AddServer_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new AddServerDialog();
+            if (dialog.ShowDialog() == true)
+            {
+                var server = dialog.ServerConnection;
+                var username = dialog.Username;
+                var password = dialog.Password;
+
+                try
+                {
+                    _serverManager.AddServer(server, username, password);
+                    LoadServerList();
+
+                    MessageBox.Show(
+                        $"Server '{server.DisplayName}' added successfully!\n\n" +
+                        (server.UseWindowsAuth ? "Using Windows Authentication" : "Credentials saved securely to Windows Credential Manager"),
+                        "Server Added",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information
+                    );
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        $"Failed to add server:\n\n{ex.Message}",
+                        "Error Adding Server",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error
+                    );
+                }
+            }
+        }
+
+        private void EditServer_Click(object sender, RoutedEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                var server = item.Server;
+                var dialog = new AddServerDialog(server);
+                if (dialog.ShowDialog() == true)
+                {
+                    var updatedServer = dialog.ServerConnection;
+                    var username = dialog.Username;
+                    var password = dialog.Password;
+
+                    try
+                    {
+                        _serverManager.UpdateServer(updatedServer, username, password);
+                        LoadServerList();
+
+                        if (_openTabs.TryGetValue(server.Id, out var tabItem))
+                        {
+                            if (tabItem.Header is StackPanel headerPanel &&
+                                headerPanel.Children[0] is TextBlock headerText)
+                            {
+                                headerText.Text = updatedServer.DisplayName;
+                            }
+                        }
+
+                        MessageBox.Show(
+                            $"Server '{updatedServer.DisplayName}' updated successfully!\n\n" +
+                            (updatedServer.UseWindowsAuth ? "Using Windows Authentication" : "Credentials updated securely in Windows Credential Manager"),
+                            "Server Updated",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(
+                            $"Failed to update server:\n\n{ex.Message}",
+                            "Error Updating Server",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error
+                        );
+                    }
+                }
+            }
+        }
+
+        private void RemoveServer_Click(object sender, RoutedEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                var server = item.Server;
+                var result = MessageBox.Show(
+                    $"Are you sure you want to remove server '{server.DisplayName}'?\n\nThis action cannot be undone.",
+                    "Confirm Remove Server",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning
+                );
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    if (_openTabs.TryGetValue(server.Id, out var tabItem))
+                    {
+                        _openTabs.Remove(server.Id);
+                        ServerTabControl.Items.Remove(tabItem);
+                    }
+
+                    // Clean up alert state and cached health for this server
+                    _alertStateService.RemoveServerState(server.Id);
+                    _latestHealthStatus.Remove(server.Id);
+
+                    _serverManager.DeleteServer(server.Id);
+                    LoadServerList();
+
+                    MessageBox.Show(
+                        $"Server '{server.DisplayName}' removed successfully!",
+                        "Server Removed",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information
+                    );
+                }
+            }
+        }
+
+        private void ServerContextMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                ToggleFavoriteMenuItem.Header = item.IsFavorite ? "Remove from Favorites" : "Set as Favorite";
+            }
+        }
+
+        private void ToggleFavorite_Click(object sender, RoutedEventArgs e)
+        {
+            if (ServerListView.SelectedItem is ServerListItem item)
+            {
+                var server = item.Server;
+                server.IsFavorite = !server.IsFavorite;
+                _serverManager.UpdateServer(server, null, null);
+                LoadServerList();
+            }
+        }
+
+        private void ManageServers_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new ManageServersWindow(_serverManager);
+            dialog.Owner = this;
+
+            if (dialog.ShowDialog() == true && dialog.ServersModified)
+            {
+                LoadServerList();
+            }
+        }
+
+        private void Settings_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new SettingsWindow();
+            dialog.Owner = this;
+            if (dialog.ShowDialog() == true)
+            {
+                ConfigureConnectionStatusTimer();
+                ConfigureAlertCheckTimer();
+                _landingPage?.RefreshAutoRefreshSettings();
+
+                foreach (TabItem tab in ServerTabControl.Items)
+                {
+                    if (tab.Content is ServerTab serverTab)
+                    {
+                        serverTab.RefreshAutoRefreshSettings();
+                    }
+                }
+            }
+        }
+
+        private void Help_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new AboutWindow();
+            dialog.Owner = this;
+            dialog.ShowDialog();
+        }
+
+        /// <summary>
+        /// Exposes the AlertStateService for coordination with LandingPage.
+        /// </summary>
+        public AlertStateService AlertStateService => _alertStateService;
+
+        /// <summary>
+        /// Updates a server tab badge visibility based on health status.
+        /// </summary>
+        public void UpdateTabBadge(string serverId, ServerHealthStatus? status)
+        {
+            // Cache latest health status for acknowledge baseline snapshots
+            if (status != null)
+                _latestHealthStatus[serverId] = status;
+            else
+                _latestHealthStatus.Remove(serverId);
+
+            if (_tabBadges.TryGetValue(serverId, out var badge))
+            {
+                var shouldShow = _alertStateService.ShouldShowBadge(serverId, "Overview", status);
+                badge.Visibility = shouldShow ? Visibility.Visible : Visibility.Collapsed;
+
+                // Use critical style for severe conditions
+                if (shouldShow && status != null)
+                {
+                    var hasCritical = status.LongestBlockedSeconds >= 60
+                                   || status.DeadlocksSinceLastCheck > 0
+                                   || (status.TotalCpuPercent.HasValue && status.TotalCpuPercent.Value >= 95);
+
+                    badge.Style = (Style)FindResource(hasCritical ? "AlertBadgeCritical" : "AlertBadge");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Updates all server tab badges with current health data from LandingPage.
+        /// </summary>
+        public void UpdateAllTabBadges(Dictionary<string, ServerHealthStatus> healthData)
+        {
+            foreach (var kvp in _tabBadges)
+            {
+                healthData.TryGetValue(kvp.Key, out var status);
+                UpdateTabBadge(kvp.Key, status);
+            }
+        }
+
+        #region Independent Alert Engine
+
+        private void ConfigureAlertCheckTimer()
+        {
+            var prefs = _preferencesService.GetPreferences();
+
+            if (prefs.NotificationsEnabled)
+            {
+                // Use auto-refresh interval if configured, otherwise default to 60 seconds
+                var intervalSeconds = (prefs.AutoRefreshEnabled && prefs.AutoRefreshIntervalSeconds > 0)
+                    ? prefs.AutoRefreshIntervalSeconds
+                    : 60;
+                _alertCheckTimer.Interval = TimeSpan.FromSeconds(intervalSeconds);
+                _alertCheckTimer.Start();
+            }
+            else
+            {
+                _alertCheckTimer.Stop();
+            }
+        }
+
+        private async void AlertCheckTimer_Tick(object? sender, EventArgs e)
+        {
+            await CheckAllServerAlertsAsync();
+        }
+
+        /// <summary>
+        /// Checks all servers for alert conditions using lightweight queries.
+        /// Runs independently of the LandingPage UI refresh.
+        /// </summary>
+        private async Task CheckAllServerAlertsAsync()
+        {
+            if (_notificationService == null) return;
+
+            var prefs = _preferencesService.GetPreferences();
+            if (!prefs.NotificationsEnabled) return;
+
+            var servers = _serverManager.GetAllServers();
+            var tasks = servers.Select(async server =>
+            {
+                try
+                {
+                    var connectionString = server.GetConnectionString(_credentialService);
+                    var databaseService = new DatabaseService(connectionString);
+                    var connStatus = _serverManager.GetConnectionStatus(server.Id);
+                    var health = await databaseService.GetAlertHealthAsync(connStatus.SqlEngineEdition);
+
+                    if (health.IsOnline)
+                    {
+                        await EvaluateAlertConditionsAsync(server.Id, server.DisplayName, health, databaseService);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Alert check failed for {server.DisplayName}: {ex.Message}");
+                }
+            });
+
+            await Task.WhenAll(tasks);
+        }
+
+        /// <summary>
+        /// Evaluates alert conditions for a single server and fires notifications/emails.
+        /// Uses cooldown tracking to prevent notification spam.
+        /// </summary>
+        private async Task EvaluateAlertConditionsAsync(
+            string serverId, string serverName, AlertHealthResult health, DatabaseService databaseService)
+        {
+            var prefs = _preferencesService.GetPreferences();
+
+            if (_alertStateService.IsAnySilencingActive(serverId))
+            {
+                return;
+            }
+
+            var now = ServerTimeHelper.ServerNow;
+
+            /* Blocking alerts */
+            bool blockingExceeded = prefs.NotifyOnBlocking
+                && health.LongestBlockedSeconds >= prefs.BlockingThresholdSeconds;
+
+            if (blockingExceeded)
+            {
+                _activeBlockingAlert[serverId] = true;
+                if (!_lastBlockingAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= AlertCooldown)
+                {
+                    _notificationService?.ShowBlockingNotification(
+                        serverName,
+                        (int)health.TotalBlocked,
+                        (int)health.LongestBlockedSeconds);
+                    _lastBlockingAlert[serverId] = now;
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Blocking Detected",
+                        $"{(int)health.TotalBlocked} session(s), longest {(int)health.LongestBlockedSeconds}s",
+                        $"{prefs.BlockingThresholdSeconds}s", true, "tray");
+
+                    var blockingContext = await BuildBlockingContextAsync(databaseService);
+
+                    await _emailAlertService.TrySendAlertEmailAsync(
+                        "Blocking Detected",
+                        serverName,
+                        $"{(int)health.TotalBlocked} session(s), longest {(int)health.LongestBlockedSeconds}s",
+                        $"{prefs.BlockingThresholdSeconds}s",
+                        serverId,
+                        blockingContext);
+                }
+            }
+            else if (_activeBlockingAlert.TryRemove(serverId, out var wasBlocking) && wasBlocking)
+            {
+                _notificationService?.ShowNotification("Blocking Cleared",
+                    $"{serverName}: No active blocking");
+                _emailAlertService.RecordAlert(serverId, serverName, "Blocking Cleared",
+                    "0", $"{prefs.BlockingThresholdSeconds}s", true, "tray");
+            }
+
+            /* Deadlock alerts — independent delta tracking */
+            long deadlockDelta = 0;
+            if (_previousDeadlockCounts.TryGetValue(serverId, out var prevCount))
+            {
+                deadlockDelta = health.DeadlockCount - prevCount;
+                if (deadlockDelta < 0) deadlockDelta = 0; // handle counter reset
+            }
+            _previousDeadlockCounts[serverId] = health.DeadlockCount;
+
+            bool deadlocksExceeded = prefs.NotifyOnDeadlock
+                && deadlockDelta >= prefs.DeadlockThreshold;
+
+            if (deadlocksExceeded)
+            {
+                _activeDeadlockAlert[serverId] = true;
+                if (!_lastDeadlockAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= AlertCooldown)
+                {
+                    _notificationService?.ShowDeadlockNotification(
+                        serverName,
+                        (int)deadlockDelta);
+                    _lastDeadlockAlert[serverId] = now;
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Detected",
+                        deadlockDelta.ToString(),
+                        prefs.DeadlockThreshold.ToString(), true, "tray");
+
+                    var deadlockContext = await BuildDeadlockContextAsync(databaseService);
+
+                    await _emailAlertService.TrySendAlertEmailAsync(
+                        "Deadlocks Detected",
+                        serverName,
+                        deadlockDelta.ToString(),
+                        prefs.DeadlockThreshold.ToString(),
+                        serverId,
+                        deadlockContext);
+                }
+            }
+            else if (_activeDeadlockAlert.TryRemove(serverId, out var wasDeadlock) && wasDeadlock)
+            {
+                _notificationService?.ShowNotification("Deadlocks Cleared",
+                    $"{serverName}: No deadlocks since last check");
+                _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
+                    "0", prefs.DeadlockThreshold.ToString(), true, "tray");
+            }
+
+            /* High CPU alerts */
+            bool cpuExceeded = prefs.NotifyOnHighCpu
+                && health.TotalCpuPercent.HasValue
+                && health.TotalCpuPercent.Value >= prefs.CpuThresholdPercent;
+
+            if (cpuExceeded)
+            {
+                var totalCpu = health.TotalCpuPercent!.Value;
+                _activeHighCpuAlert[serverId] = true;
+                if (!_lastHighCpuAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= AlertCooldown)
+                {
+                    _notificationService?.ShowHighCpuNotification(
+                        serverName,
+                        totalCpu);
+                    _lastHighCpuAlert[serverId] = now;
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "High CPU",
+                        $"{totalCpu:F0}%",
+                        $"{prefs.CpuThresholdPercent}%", true, "tray");
+
+                    await _emailAlertService.TrySendAlertEmailAsync(
+                        "High CPU",
+                        serverName,
+                        $"{totalCpu:F0}%",
+                        $"{prefs.CpuThresholdPercent}%",
+                        serverId);
+                }
+            }
+            else if (_activeHighCpuAlert.TryRemove(serverId, out var wasCpu) && wasCpu)
+            {
+                var cpuText = health.TotalCpuPercent.HasValue ? $"{health.TotalCpuPercent.Value:F0}%" : "N/A";
+                _notificationService?.ShowNotification("CPU Resolved",
+                    $"{serverName}: CPU back to {cpuText}");
+                _emailAlertService.RecordAlert(serverId, serverName, "CPU Resolved",
+                    cpuText, $"{prefs.CpuThresholdPercent}%", true, "tray");
+            }
+        }
+
+        private static string Truncate(string text, int maxLength = 300)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            text = text.Trim();
+            return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
+        }
+
+        private static async Task<AlertContext?> BuildBlockingContextAsync(DatabaseService databaseService)
+        {
+            try
+            {
+                var events = await databaseService.GetBlockingEventsAsync(hoursBack: 1);
+                if (events == null || events.Count == 0) return null;
+
+                var context = new AlertContext();
+                var firstXml = (string?)null;
+
+                foreach (var e in events.GetRange(0, Math.Min(3, events.Count)))
+                {
+                    var item = new AlertDetailItem
+                    {
+                        Heading = $"Session #{e.Spid}",
+                        Fields = new()
+                    };
+
+                    if (!string.IsNullOrEmpty(e.DatabaseName))
+                        item.Fields.Add(("Database", e.DatabaseName));
+                    if (!string.IsNullOrEmpty(e.QueryText))
+                        item.Fields.Add(("Query", Truncate(e.QueryText)));
+                    if (e.WaitTimeMs.HasValue)
+                        item.Fields.Add(("Wait Time", $"{e.WaitTimeMs:N0} ms"));
+                    if (!string.IsNullOrEmpty(e.LockMode))
+                        item.Fields.Add(("Lock Mode", e.LockMode));
+                    if (!string.IsNullOrEmpty(e.ClientApp))
+                        item.Fields.Add(("Client App", e.ClientApp));
+
+                    context.Details.Add(item);
+                    firstXml ??= e.BlockedProcessReportXml;
+                }
+
+                if (!string.IsNullOrEmpty(firstXml))
+                {
+                    context.AttachmentXml = firstXml;
+                    context.AttachmentFileName = "blocked_process_report.xml";
+                }
+
+                return context;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to fetch blocking detail for email: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static async Task<AlertContext?> BuildDeadlockContextAsync(DatabaseService databaseService)
+        {
+            try
+            {
+                var deadlocks = await databaseService.GetDeadlocksAsync(hoursBack: 1);
+                if (deadlocks == null || deadlocks.Count == 0) return null;
+
+                var context = new AlertContext();
+                var firstGraph = (string?)null;
+
+                // Group participants by deadlock event so victim + survivor are shown together
+                var deadlockEvents = deadlocks
+                    .GroupBy(d => d.EventDate)
+                    .Take(3);
+
+                foreach (var deadlockEvent in deadlockEvents)
+                {
+                    foreach (var d in deadlockEvent)
+                    {
+                        var role = string.Equals(d.DeadlockGroup, "victim", StringComparison.OrdinalIgnoreCase)
+                            ? "victim" : "survivor";
+                        var heading = $"Deadlock — Session #{d.Spid} ({role})";
+
+                        var item = new AlertDetailItem
+                        {
+                            Heading = heading,
+                            Fields = new()
+                        };
+
+                        if (!string.IsNullOrEmpty(d.DatabaseName))
+                            item.Fields.Add(("Database", d.DatabaseName));
+                        if (!string.IsNullOrEmpty(d.Query))
+                            item.Fields.Add(("Query", Truncate(d.Query)));
+                        if (!string.IsNullOrEmpty(d.WaitResource))
+                            item.Fields.Add(("Wait Resource", d.WaitResource));
+                        if (!string.IsNullOrEmpty(d.LockMode))
+                            item.Fields.Add(("Lock Mode", d.LockMode));
+                        if (!string.IsNullOrEmpty(d.ClientApp))
+                            item.Fields.Add(("Client App", d.ClientApp));
+
+                        context.Details.Add(item);
+                        firstGraph ??= d.DeadlockGraph;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(firstGraph))
+                {
+                    context.AttachmentXml = firstGraph;
+                    context.AttachmentFileName = "deadlock_graph.xml";
+                }
+
+                return context;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to fetch deadlock detail for email: {ex.Message}");
+                return null;
+            }
+        }
+
+        #endregion
+
+        #region Alert Suppression Context Menu Handlers
+
+        private void AcknowledgeServerAlerts_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
+            {
+                // Look up cached health status for baseline snapshot
+                _latestHealthStatus.TryGetValue(serverId, out var status);
+                _alertStateService.AcknowledgeAllAlerts(serverId, status);
+
+                // Hide badge immediately
+                if (_tabBadges.TryGetValue(serverId, out var badge))
+                {
+                    badge.Visibility = Visibility.Collapsed;
+                }
+
+                // Also update sub-tab badges in the ServerTab if it's open
+                if (_openTabs.TryGetValue(serverId, out var tabItem) && tabItem.Content is ServerTab serverTab)
+                {
+                    serverTab.UpdateBadges(null, _alertStateService);
+                }
+            }
+        }
+
+        private void SilenceServer_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
+            {
+                _alertStateService.SilenceServer(serverId);
+
+                // Hide badge immediately
+                if (_tabBadges.TryGetValue(serverId, out var badge))
+                {
+                    badge.Visibility = Visibility.Collapsed;
+                }
+
+                // Also update sub-tab badges in the ServerTab if it's open
+                if (_openTabs.TryGetValue(serverId, out var tabItem) && tabItem.Content is ServerTab serverTab)
+                {
+                    serverTab.UpdateBadges(null, _alertStateService);
+                }
+            }
+        }
+
+        private void UnsilenceServer_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
+            {
+                _alertStateService.UnsilenceServer(serverId);
+                _alertStateService.UnsilenceServerTab(serverId);
+            }
+        }
+
+        #endregion
+    }
+}

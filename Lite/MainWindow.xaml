@@ -1,0 +1,253 @@
+<Window x:Class="PerformanceMonitorLite.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Performance Monitor Lite"
+        Height="700" Width="1200"
+        WindowStartupLocation="CenterScreen"
+        WindowState="Maximized"
+        Icon="EDD.ico"
+        Background="{DynamicResource BackgroundBrush}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition x:Name="SidebarColumn" Width="280" MinWidth="40"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Left Sidebar - Server List -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource BackgroundDarkBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,0,1,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Sidebar Header -->
+                <Border Grid.Row="0" Background="{DynamicResource BackgroundLightBrush}" Padding="12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock x:Name="SidebarTitle" Text="SQL Servers" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock x:Name="SidebarSubtitle" Text="Double-click to connect" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,0,0"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="«" Click="ToggleSidebar_Click"
+                                ToolTip="Toggle sidebar" VerticalAlignment="Top"
+                                Width="24" Height="24" Padding="0" FontSize="14"/>
+                    </Grid>
+                </Border>
+
+                <!-- Server List -->
+                <ListView Grid.Row="1" x:Name="ServerListView"
+                          SelectionMode="Single"
+                          MouseDoubleClick="ServerListView_MouseDoubleClick"
+                          Margin="8"
+                          Background="Transparent"
+                          BorderThickness="0">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Padding="8,6"
+                                    Margin="2"
+                                    Background="{DynamicResource BackgroundLightBrush}">
+                                <Border.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Connect" Click="ServerContextMenu_Connect_Click"/>
+                                        <MenuItem Header="Disconnect" Click="ServerContextMenu_Disconnect_Click"/>
+                                        <Separator/>
+                                        <MenuItem Header="Toggle Favorite" Click="ServerContextMenu_ToggleFavorite_Click"/>
+                                        <Separator/>
+                                        <MenuItem Header="Edit..." Click="ServerContextMenu_Edit_Click"/>
+                                        <MenuItem Header="Remove" Click="ServerContextMenu_Remove_Click"/>
+                                    </ContextMenu>
+                                </Border.ContextMenu>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Status Indicator -->
+                                    <Ellipse Grid.Column="0" Grid.RowSpan="2"
+                                             Width="10" Height="10"
+                                             Margin="0,0,8,0"
+                                             VerticalAlignment="Center">
+                                        <Ellipse.Style>
+                                            <Style TargetType="Ellipse">
+                                                <Setter Property="Fill" Value="{DynamicResource ForegroundMutedBrush}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsEnabled}" Value="True">
+                                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsEnabled}" Value="False">
+                                                        <Setter Property="Fill" Value="{DynamicResource ErrorBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Ellipse.Style>
+                                    </Ellipse>
+
+                                    <!-- Server Name -->
+                                    <TextBlock Grid.Column="1" Grid.Row="0"
+                                               Text="{Binding DisplayName}"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ForegroundBrush}"/>
+
+                                    <!-- Server Details -->
+                                    <TextBlock Grid.Column="1" Grid.Row="1"
+                                               Text="{Binding ServerName}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+
+                                    <!-- Favorite Star -->
+                                    <TextBlock Grid.Column="2" Grid.RowSpan="2"
+                                               Text="★" FontSize="16"
+                                               VerticalAlignment="Center"
+                                               Foreground="#FFD700"
+                                               Margin="4,0,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsFavorite}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <!-- Sidebar Footer -->
+                <Border Grid.Row="2" Padding="12" Background="{DynamicResource BackgroundLightBrush}">
+                    <StackPanel>
+                        <Button x:Name="AddServerButton" Content="+ Add Server" Click="AddServerButton_Click"/>
+                        <Button x:Name="ManageServersButton" Content="Manage Servers" Click="ManageServersButton_Click" Margin="0,8,0,0"/>
+                        <Button x:Name="SettingsButton" Content="Settings" Click="SettingsButton_Click" Margin="0,8,0,0"/>
+                        <Button Content="About" Click="AboutButton_Click" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- Main Content Area -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Header row removed — space reclaimed for content -->
+
+            <!-- Content Area - Empty State or Server Tabs -->
+            <Grid Grid.Row="1">
+                <!-- Empty State -->
+                <Border x:Name="EmptyStatePanel" Visibility="Visible">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="No Servers Connected" FontSize="24" FontWeight="Light" Foreground="{DynamicResource ForegroundMutedBrush}" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Add your first server to start collecting performance data" FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,8,0,24" HorizontalAlignment="Center"/>
+                        <Button Content="+ Add Your First Server" Click="AddServerButton_Click" Padding="24,12" FontSize="14"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Server Tab Control (hidden until servers are connected) -->
+                <TabControl x:Name="ServerTabControl" Visibility="Collapsed" Background="Transparent" BorderThickness="0">
+                    <TabItem Header="Overview" x:Name="OverviewTab">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="8">
+                            <ItemsControl x:Name="OverviewItemsControl">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource BackgroundLightBrush}"
+                                                BorderBrush="{Binding CardBorderBrush}"
+                                                BorderThickness="2" CornerRadius="6"
+                                                Padding="16" Margin="6"
+                                                Width="260" MinHeight="160"
+                                                Cursor="Hand"
+                                                MouseLeftButtonDown="OverviewCard_MouseLeftButtonDown">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,12"/>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="CPU:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CpuDisplay}" Foreground="{Binding CpuBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Memory:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding MemoryDisplay}" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Blocking:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding BlockingDisplay}" Foreground="{Binding BlockingBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Deadlocks:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding DeadlockDisplay}" Foreground="{Binding DeadlockBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Last Collect:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding LastCollectionDisplay}" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                </Grid>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+
+            <!-- Status Bar -->
+            <Border Grid.Row="2" Background="{DynamicResource BackgroundLightBrush}" Padding="12,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" x:Name="StatusText" Text="Ready" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" x:Name="CollectorHealthText" Text="" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="16,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="2" x:Name="DatabaseSizeText" Text="Database: --" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="16,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="3" x:Name="CollectionStatusText" Text="Collection: Stopped" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="16,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="4" x:Name="ServerCountText" Text="Servers: 0" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

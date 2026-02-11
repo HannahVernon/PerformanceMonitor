@@ -1,0 +1,200 @@
+/*
+ * SQL Server Performance Monitor Dashboard
+ *
+ * Method profiler for tracking slow application code
+ */
+
+using System;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace PerformanceMonitorDashboard.Helpers
+{
+    /// <summary>
+    /// Profiles method execution time and logs slow methods.
+    /// </summary>
+    public static class MethodProfiler
+    {
+        private static readonly string LogDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PerformanceMonitor",
+            "Logs"
+        );
+
+        private static readonly object _lock = new object();
+        private static volatile bool _isEnabled = true;
+        private static double _thresholdMs = 500; // Default 500ms (accessed within lock when set)
+
+        static MethodProfiler()
+        {
+            try
+            {
+                if (!Directory.Exists(LogDirectory))
+                {
+                    Directory.CreateDirectory(LogDirectory);
+                }
+            }
+            catch
+            {
+                // If we can't create log directory, logging will fail silently
+            }
+        }
+
+        /// <summary>
+        /// Gets the current profiler log file path.
+        /// </summary>
+        public static string GetCurrentLogFile()
+        {
+            return Path.Combine(LogDirectory, $"MethodProfile_{DateTime.Now:yyyyMMdd}.log");
+        }
+
+        /// <summary>
+        /// Gets the log directory path.
+        /// </summary>
+        public static string GetLogDirectory()
+        {
+            return LogDirectory;
+        }
+
+        /// <summary>
+        /// Sets whether profiling is enabled.
+        /// </summary>
+        public static void SetEnabled(bool enabled)
+        {
+            _isEnabled = enabled;
+        }
+
+        /// <summary>
+        /// Gets whether profiling is enabled.
+        /// </summary>
+        public static bool IsEnabled => _isEnabled;
+
+        /// <summary>
+        /// Sets the threshold in milliseconds for logging slow methods.
+        /// </summary>
+        public static void SetThresholdMs(double thresholdMs)
+        {
+            _thresholdMs = thresholdMs;
+        }
+
+        /// <summary>
+        /// Gets the current threshold in milliseconds.
+        /// </summary>
+        public static double ThresholdMs => _thresholdMs;
+
+        /// <summary>
+        /// Starts timing a method. Use with 'using' statement.
+        /// </summary>
+        /// <param name="context">Optional context (e.g., tab name)</param>
+        /// <param name="memberName">Auto-populated with calling method name</param>
+        /// <param name="filePath">Auto-populated with source file</param>
+        /// <param name="lineNumber">Auto-populated with line number</param>
+        public static MethodTimingContext StartTiming(
+            string? context = null,
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string filePath = "",
+            [CallerLineNumber] int lineNumber = 0)
+        {
+            return new MethodTimingContext(context, memberName, filePath, lineNumber);
+        }
+
+        /// <summary>
+        /// Logs a slow method execution.
+        /// </summary>
+        internal static void LogSlowMethod(
+            DateTime startTime,
+            DateTime endTime,
+            double elapsedMs,
+            string? context,
+            string memberName,
+            string filePath,
+            int lineNumber)
+        {
+            if (!_isEnabled)
+                return;
+
+            if (elapsedMs < _thresholdMs)
+                return;
+
+            try
+            {
+                lock (_lock)
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine("--------------------------------------------------------------------------------");
+                    sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SLOW METHOD: {0:F0}ms - {1}", elapsedMs, memberName));
+                    sb.AppendLine("--------------------------------------------------------------------------------");
+                    sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Start Time:   {0:yyyy-MM-dd HH:mm:ss.fff}", startTime));
+                    sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "End Time:     {0:yyyy-MM-dd HH:mm:ss.fff}", endTime));
+                    sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Elapsed:      {0:F0}ms", elapsedMs));
+
+                    if (!string.IsNullOrEmpty(context))
+                        sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Context:      {0}", context));
+
+                    // Extract just the filename from the full path
+                    var fileName = Path.GetFileName(filePath);
+                    sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Location:     {0}:{1}", fileName, lineNumber));
+                    sb.AppendLine();
+
+                    File.AppendAllText(GetCurrentLogFile(), sb.ToString());
+                }
+            }
+            catch
+            {
+                // Logging failed, nothing we can do
+            }
+        }
+    }
+
+    /// <summary>
+    /// Disposable context for timing method execution.
+    /// </summary>
+    public class MethodTimingContext : IDisposable
+    {
+        private readonly DateTime _startTime;
+        private readonly Stopwatch _stopwatch;
+        private readonly string? _context;
+        private readonly string _memberName;
+        private readonly string _filePath;
+        private readonly int _lineNumber;
+        private bool _disposed;
+
+        internal MethodTimingContext(string? context, string memberName, string filePath, int lineNumber)
+        {
+            _startTime = DateTime.Now;
+            _stopwatch = Stopwatch.StartNew();
+            _context = context;
+            _memberName = memberName;
+            _filePath = filePath;
+            _lineNumber = lineNumber;
+        }
+
+        /// <summary>
+        /// Gets the elapsed time so far in milliseconds.
+        /// </summary>
+        public double ElapsedMs => _stopwatch.Elapsed.TotalMilliseconds;
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            _stopwatch.Stop();
+
+            MethodProfiler.LogSlowMethod(
+                _startTime,
+                DateTime.Now,
+                _stopwatch.Elapsed.TotalMilliseconds,
+                _context,
+                _memberName,
+                _filePath,
+                _lineNumber);
+
+            GC.SuppressFinalize(this);
+        }
+    }
+}

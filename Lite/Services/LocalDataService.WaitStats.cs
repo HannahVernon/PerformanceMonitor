@@ -1,0 +1,184 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor Lite.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using DuckDB.NET.Data;
+
+namespace PerformanceMonitorLite.Services;
+
+public partial class LocalDataService
+{
+    /// <summary>
+    /// Gets aggregated wait stats for a server over a time period, sorted by delta wait time.
+    /// </summary>
+    public async Task<List<WaitStatsRow>> GetWaitStatsAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+
+        var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+
+        command.CommandText = @"
+SELECT
+    wait_type,
+    SUM(delta_waiting_tasks) AS total_waiting_tasks,
+    SUM(delta_wait_time_ms) AS total_wait_time_ms,
+    SUM(delta_signal_wait_time_ms) AS total_signal_wait_time_ms,
+    COUNT(*) AS sample_count
+FROM wait_stats
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3
+GROUP BY wait_type
+ORDER BY SUM(delta_wait_time_ms) DESC
+LIMIT 50";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = startTime });
+        command.Parameters.Add(new DuckDBParameter { Value = endTime });
+
+        var items = new List<WaitStatsRow>();
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new WaitStatsRow
+            {
+                WaitType = reader.GetString(0),
+                TotalWaitingTasks = reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                TotalWaitTimeMs = reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                TotalSignalWaitTimeMs = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
+                SampleCount = reader.IsDBNull(4) ? 0 : reader.GetInt64(4)
+            });
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// Gets the distinct wait types that have been collected for a server.
+    /// </summary>
+    public async Task<List<string>> GetDistinctWaitTypesAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+
+        var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+
+        command.CommandText = @"
+SELECT
+    wait_type,
+    SUM(delta_wait_time_ms) AS total_delta
+FROM wait_stats
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3
+GROUP BY wait_type
+ORDER BY SUM(delta_wait_time_ms) DESC";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = startTime });
+        command.Parameters.Add(new DuckDBParameter { Value = endTime });
+
+        var items = new List<string>();
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(reader.GetString(0));
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// Gets wait stats trend data for charting.
+    /// </summary>
+    public async Task<List<WaitStatsTrendPoint>> GetWaitStatsTrendAsync(int serverId, string waitType, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+
+        var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+
+        command.CommandText = @"
+WITH raw AS
+(
+    SELECT
+        collection_time,
+        delta_wait_time_ms,
+        delta_signal_wait_time_ms,
+        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+    FROM wait_stats
+    WHERE server_id = $1
+    AND   wait_type = $2
+    AND   collection_time >= $3
+    AND   collection_time <= $4
+)
+SELECT
+    collection_time,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second
+FROM raw
+ORDER BY collection_time";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = waitType });
+        command.Parameters.Add(new DuckDBParameter { Value = startTime });
+        command.Parameters.Add(new DuckDBParameter { Value = endTime });
+
+        var items = new List<WaitStatsTrendPoint>();
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new WaitStatsTrendPoint
+            {
+                CollectionTime = reader.GetDateTime(0),
+                WaitTimeMsPerSecond = reader.IsDBNull(1) ? 0 : reader.GetDouble(1),
+                SignalWaitTimeMsPerSecond = reader.IsDBNull(2) ? 0 : reader.GetDouble(2)
+            });
+        }
+
+        return items;
+    }
+}
+
+public class WaitStatsRow
+{
+    public string WaitType { get; set; } = "";
+    public long TotalWaitingTasks { get; set; }
+    public long TotalWaitTimeMs { get; set; }
+    public long TotalSignalWaitTimeMs { get; set; }
+    public long ResourceWaitTimeMs => TotalWaitTimeMs - TotalSignalWaitTimeMs;
+    public long SampleCount { get; set; }
+    public string TotalWaitTimeFormatted => FormatMs(TotalWaitTimeMs);
+    public string SignalWaitTimeFormatted => FormatMs(TotalSignalWaitTimeMs);
+    public string ResourceWaitTimeFormatted => FormatMs(ResourceWaitTimeMs);
+    public double SignalWaitPercent => TotalWaitTimeMs > 0 ? (double)TotalSignalWaitTimeMs / TotalWaitTimeMs * 100 : 0;
+    public bool IsHighWait => TotalWaitTimeMs > 60000;
+
+    private static string FormatMs(long ms)
+    {
+        if (ms < 1000) return $"{ms} ms";
+        if (ms < 60000) return $"{ms / 1000.0:F1} sec";
+        if (ms < 3600000) return $"{ms / 60000.0:F1} min";
+        return $"{ms / 3600000.0:F1} hr";
+    }
+}
+
+public class SelectableItem
+{
+    public string DisplayName { get; set; } = "";
+    public bool IsSelected { get; set; }
+}
+
+public class WaitStatsTrendPoint
+{
+    public DateTime CollectionTime { get; set; }
+    public double WaitTimeMsPerSecond { get; set; }
+    public double SignalWaitTimeMsPerSecond { get; set; }
+}
