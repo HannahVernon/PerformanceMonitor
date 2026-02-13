@@ -233,9 +233,9 @@
                                                 <Border Background="#80000000" CornerRadius="6"
                                                         Visibility="{Binding IsOffline, Converter={StaticResource BoolToVisibility}}">
                                                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                        <TextBlock Text="&#x2717;" FontSize="28" Foreground="#EF4444"
+                                                        <TextBlock Text="&#x2717;" FontSize="28" Foreground="#E57373"
                                                                    HorizontalAlignment="Center"/>
-                                                        <TextBlock Text="Offline" FontSize="13" Foreground="#EF4444"
+                                                        <TextBlock Text="Offline" FontSize="13" Foreground="#E57373"
                                                                    FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
                                                     </StackPanel>
                                                 </Border>

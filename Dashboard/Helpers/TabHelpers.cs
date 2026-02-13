@@ -29,6 +29,27 @@ namespace PerformanceMonitorDashboard.Helpers
     public static class TabHelpers
     {
         /// <summary>
+        /// Material Design 300-level color palette for chart data series.
+        /// Soft pastels optimized for dark backgrounds, ordered to map 1:1
+        /// with common ScottPlot stock colors (Blue→[0], Green→[1], etc.).
+        /// </summary>
+        public static readonly ScottPlot.Color[] ChartColors = new[]
+        {
+            ScottPlot.Color.FromHex("#4FC3F7"), // [0]  Light Blue 300
+            ScottPlot.Color.FromHex("#81C784"), // [1]  Green 300
+            ScottPlot.Color.FromHex("#FFB74D"), // [2]  Orange 300
+            ScottPlot.Color.FromHex("#E57373"), // [3]  Red 300
+            ScottPlot.Color.FromHex("#BA68C8"), // [4]  Purple 300
+            ScottPlot.Color.FromHex("#4DD0E1"), // [5]  Cyan 300
+            ScottPlot.Color.FromHex("#FFF176"), // [6]  Yellow 300
+            ScottPlot.Color.FromHex("#F06292"), // [7]  Pink 300
+            ScottPlot.Color.FromHex("#AED581"), // [8]  Light Green 300
+            ScottPlot.Color.FromHex("#90A4AE"), // [9]  Blue Grey 300
+            ScottPlot.Color.FromHex("#A1887F"), // [10] Brown 300
+            ScottPlot.Color.FromHex("#7986CB"), // [11] Indigo 300
+        };
+
+        /// <summary>
         /// Applies the Darling Data dark theme to a ScottPlot chart.
         /// </summary>
         public static void ApplyDarkModeToChart(WpfPlot chart)

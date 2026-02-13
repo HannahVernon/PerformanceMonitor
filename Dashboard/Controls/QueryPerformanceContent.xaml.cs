@@ -243,9 +243,9 @@ namespace PerformanceMonitorDashboard.Controls
                 QueryStoreNoDataMessage.Visibility = queryStore.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
                 // Populate charts from time-series data
-                LoadDurationChart(QueryPerfTrendsQueryChart, await queryDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", ScottPlot.Colors.Blue);
-                LoadDurationChart(QueryPerfTrendsProcChart, await procDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", ScottPlot.Colors.Green);
-                LoadDurationChart(QueryPerfTrendsQsChart, await qsDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", ScottPlot.Colors.Purple);
+                LoadDurationChart(QueryPerfTrendsQueryChart, await queryDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[0]);
+                LoadDurationChart(QueryPerfTrendsProcChart, await procDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[1]);
+                LoadDurationChart(QueryPerfTrendsQsChart, await qsDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[4]);
                 LoadExecChart(await execTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate);
             }
             catch (Exception ex)
@@ -972,7 +972,7 @@ namespace PerformanceMonitorDashboard.Controls
             var scatter = QueryPerfTrendsExecChart.Plot.Add.Scatter(xs, ys);
             scatter.LineWidth = 2;
             scatter.MarkerSize = 5;
-            scatter.Color = ScottPlot.Colors.Blue;
+            scatter.Color = TabHelpers.ChartColors[0];
             scatter.LegendText = "Executions/sec";
 
             if (xs.Length == 0)

@@ -48,9 +48,9 @@ public partial class ServerTab : UserControl
 
     private static readonly string[] SeriesColors = new[]
     {
-        "#2eaef1", "#F44336", "#4CAF50", "#FFC107", "#9C27B0",
-        "#FF9800", "#00BCD4", "#E91E63", "#8BC34A", "#3F51B5",
-        "#CDDC39", "#795548"
+        "#4FC3F7", "#E57373", "#81C784", "#FFD54F", "#BA68C8",
+        "#FFB74D", "#4DD0E1", "#F06292", "#AED581", "#7986CB",
+        "#FFF176", "#A1887F"
     };
 
     public int UtcOffsetMinutes { get; }
@@ -550,11 +550,11 @@ public partial class ServerTab : UserControl
 
         var sqlPlot = CpuChart.Plot.Add.Scatter(times, sqlCpu);
         sqlPlot.LegendText = "SQL Server";
-        sqlPlot.Color = ScottPlot.Color.FromHex("#2eaef1");
+        sqlPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
 
         var otherPlot = CpuChart.Plot.Add.Scatter(times, otherCpu);
         otherPlot.LegendText = "Other";
-        otherPlot.Color = ScottPlot.Color.FromHex("#F44336");
+        otherPlot.Color = ScottPlot.Color.FromHex("#E57373");
 
         CpuChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(CpuChart);
@@ -579,7 +579,7 @@ public partial class ServerTab : UserControl
 
         var totalPlot = MemoryChart.Plot.Add.Scatter(times, totalMem);
         totalPlot.LegendText = "Total Server Memory";
-        totalPlot.Color = ScottPlot.Color.FromHex("#2eaef1");
+        totalPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
 
         var targetPlot = MemoryChart.Plot.Add.Scatter(times, targetMem);
         targetPlot.LegendText = "Target Memory";
@@ -588,7 +588,7 @@ public partial class ServerTab : UserControl
 
         var bpPlot = MemoryChart.Plot.Add.Scatter(times, bufferPool);
         bpPlot.LegendText = "Buffer Pool";
-        bpPlot.Color = ScottPlot.Color.FromHex("#4CAF50");
+        bpPlot.Color = ScottPlot.Color.FromHex("#81C784");
 
         /* Memory grants trend line — show zero line when no grant data */
         double[] grantTimes, grantMb;
@@ -605,7 +605,7 @@ public partial class ServerTab : UserControl
 
         var grantPlot = MemoryChart.Plot.Add.Scatter(grantTimes, grantMb);
         grantPlot.LegendText = "Memory Grants";
-        grantPlot.Color = ScottPlot.Color.FromHex("#FF9800");
+        grantPlot.Color = ScottPlot.Color.FromHex("#FFB74D");
 
         MemoryChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(MemoryChart);
@@ -632,15 +632,15 @@ public partial class ServerTab : UserControl
 
         var userPlot = TempDbChart.Plot.Add.Scatter(times, userObj);
         userPlot.LegendText = "User Objects";
-        userPlot.Color = ScottPlot.Color.FromHex("#2eaef1");
+        userPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
 
         var internalPlot = TempDbChart.Plot.Add.Scatter(times, internalObj);
         internalPlot.LegendText = "Internal Objects";
-        internalPlot.Color = ScottPlot.Color.FromHex("#FFC107");
+        internalPlot.Color = ScottPlot.Color.FromHex("#FFD54F");
 
         var vsPlot = TempDbChart.Plot.Add.Scatter(times, versionStore);
         vsPlot.LegendText = "Version Store";
-        vsPlot.Color = ScottPlot.Color.FromHex("#4CAF50");
+        vsPlot.Color = ScottPlot.Color.FromHex("#81C784");
 
         TempDbChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(TempDbChart);
@@ -814,7 +814,7 @@ public partial class ServerTab : UserControl
 
         var plot = BlockingTrendChart.Plot.Add.Scatter(expandedTimes.ToArray(), expandedCounts.ToArray());
         plot.LegendText = "Blocking Incidents";
-        plot.Color = ScottPlot.Color.FromHex("#F44336");
+        plot.Color = ScottPlot.Color.FromHex("#E57373");
         plot.MarkerSize = 0; /* No markers, just lines */
 
         BlockingTrendChart.Plot.Axes.DateTimeTicksBottom();
@@ -884,7 +884,7 @@ public partial class ServerTab : UserControl
 
         var plot = DeadlockTrendChart.Plot.Add.Scatter(expandedTimes.ToArray(), expandedCounts.ToArray());
         plot.LegendText = "Deadlocks";
-        plot.Color = ScottPlot.Color.FromHex("#FF9800");
+        plot.Color = ScottPlot.Color.FromHex("#FFB74D");
         plot.MarkerSize = 0; /* No markers, just lines */
 
         DeadlockTrendChart.Plot.Axes.DateTimeTicksBottom();
@@ -910,7 +910,7 @@ public partial class ServerTab : UserControl
 
         var plot = QueryDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Query Duration";
-        plot.Color = ScottPlot.Color.FromHex("#2eaef1");
+        plot.Color = ScottPlot.Color.FromHex("#4FC3F7");
 
         QueryDurationTrendChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(QueryDurationTrendChart);
@@ -932,7 +932,7 @@ public partial class ServerTab : UserControl
 
         var plot = ProcDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Procedure Duration";
-        plot.Color = ScottPlot.Color.FromHex("#4CAF50");
+        plot.Color = ScottPlot.Color.FromHex("#81C784");
 
         ProcDurationTrendChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(ProcDurationTrendChart);
@@ -954,7 +954,7 @@ public partial class ServerTab : UserControl
 
         var plot = QueryStoreDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Query Store Duration";
-        plot.Color = ScottPlot.Color.FromHex("#FF9800");
+        plot.Color = ScottPlot.Color.FromHex("#FFB74D");
 
         QueryStoreDurationTrendChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(QueryStoreDurationTrendChart);
@@ -976,7 +976,7 @@ public partial class ServerTab : UserControl
 
         var plot = ExecutionCountTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Executions";
-        plot.Color = ScottPlot.Color.FromHex("#9C27B0");
+        plot.Color = ScottPlot.Color.FromHex("#BA68C8");
 
         ExecutionCountTrendChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(ExecutionCountTrendChart);

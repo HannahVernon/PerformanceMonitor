@@ -27,10 +27,10 @@
     <Color x:Key="BorderColor">#2a2d35</Color>
     <Color x:Key="BorderLightColor">#33363e</Color>
 
-    <!-- Status Colors -->
-    <Color x:Key="SuccessColor">#4CAF50</Color>
-    <Color x:Key="WarningColor">#FFC107</Color>
-    <Color x:Key="ErrorColor">#F44336</Color>
+    <!-- Status Colors (Material Design 300 — softer against dark backgrounds) -->
+    <Color x:Key="SuccessColor">#81C784</Color>
+    <Color x:Key="WarningColor">#FFD54F</Color>
+    <Color x:Key="ErrorColor">#E57373</Color>
     <Color x:Key="InfoColor">#2eaef1</Color>
 
     <!-- Brushes -->
@@ -540,6 +540,8 @@
         <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}"/>
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
         <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="ClipToBounds" Value="True"/>
+        <Setter Property="Padding" Value="0"/>
         <Setter Property="RowBackground" Value="{StaticResource BackgroundDarkBrush}"/>
         <Setter Property="AlternatingRowBackground" Value="{StaticResource AlternatingRowBrush}"/>
         <Setter Property="GridLinesVisibility" Value="Horizontal"/>
@@ -571,7 +573,7 @@
 
     <Style TargetType="DataGridCell">
         <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="Padding" Value="6,4"/>
+        <Setter Property="Padding" Value="8,6"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="DataGridCell">
