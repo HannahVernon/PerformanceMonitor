@@ -1955,7 +1955,7 @@ namespace PerformanceMonitorDashboard.Controls
                 item.IsSelected = false;
             }
             _isUpdatingWaitTypeSelection = false;
-            UpdateWaitTypeCount();
+            RefreshWaitTypeListOrder();
             await UpdateWaitStatsDetailChartAsync();
         }
 
