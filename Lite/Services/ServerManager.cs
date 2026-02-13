@@ -473,6 +473,10 @@ public class ServerManager
             try { File.Copy(_configFilePath, _configFilePath + ".bak", overwrite: true); }
             catch { /* best effort */ }
 
+            // MIGRATION: Backward compatibility for existing servers.json files
+            // Old configs only had UseWindowsAuth, new code uses AuthenticationType
+            MigrateServerAuthentication(_servers);
+
             // Initialize status tracking for all loaded servers
             foreach (var server in _servers)
             {
@@ -494,6 +498,10 @@ public class ServerManager
                     string bakJson = File.ReadAllText(bakPath);
                     var bakConfig = JsonSerializer.Deserialize<ServersConfig>(bakJson);
                     _servers = bakConfig?.Servers ?? new List<ServerConnection>();
+                    
+                    // MIGRATION: Backward compatibility
+                    MigrateServerAuthentication(_servers);
+                    
                     foreach (var server in _servers)
                     {
                         _connectionStatuses[server.Id] = new ServerConnectionStatus { ServerId = server.Id };
@@ -526,6 +534,35 @@ public class ServerManager
             {
                 _logger?.LogError(ex, "Failed to save servers.json");
                 throw;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Migrates server authentication configuration for backward compatibility.
+    /// Old configs only had UseWindowsAuth, new code uses AuthenticationType.
+    /// If AuthenticationType is default "Windows" but UseWindowsAuth is false, set to "SqlServer".
+    /// </summary>
+    private void MigrateServerAuthentication(List<ServerConnection> servers)
+    {
+        foreach (var server in servers)
+        {
+            // If AuthenticationType is "Windows" (default) but UseWindowsAuth is false,
+            // this is a SQL Server auth server from an old config
+            if (server.AuthenticationType == "Windows" && !server.UseWindowsAuth)
+            {
+                server.AuthenticationType = "SqlServer";
+                _logger?.LogInformation("Migrated server '{DisplayName}' authentication type from legacy UseWindowsAuth=false to AuthenticationType=SqlServer", 
+                    server.DisplayName);
+            }
+            // Ensure UseWindowsAuth stays in sync with AuthenticationType for consistency
+            else if (server.AuthenticationType == "SqlServer" || server.AuthenticationType == "EntraMFA")
+            {
+                server.UseWindowsAuth = false;
+            }
+            else if (server.AuthenticationType == "Windows")
+            {
+                server.UseWindowsAuth = true;
             }
         }
     }
