@@ -16,6 +16,7 @@ using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using PerformanceMonitorLite.Database;
+using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 
 
@@ -468,7 +469,7 @@ public partial class RemoteCollectorService
                     catch (Exception ex) when (isMfaServer)
                     {
                         // Detect MFA cancellation and mark immediately so other waiting connections abort
-                        if (IsMfaCancelledException(ex))
+                        if (MfaAuthenticationHelper.IsMfaCancelledException(ex))
                         {
                             var serverStatus = _serverManager.GetConnectionStatus(server.Id);
                             serverStatus.UserCancelledMfa = true;
@@ -492,21 +493,6 @@ public partial class RemoteCollectorService
                 s_mfaAuthLock.Release();
             }
         }
-    }
-
-    /// <summary>
-    /// Checks if an exception indicates that the user cancelled MFA authentication.
-    /// </summary>
-    private static bool IsMfaCancelledException(Exception ex)
-    {
-        var message = ex.Message?.ToLowerInvariant() ?? string.Empty;
-        
-        // Only treat explicit user cancellation messages as cancellation
-        // Do NOT treat authentication errors (wrong password, account selection, etc.) as cancellation
-        return message.Contains("user canceled") ||
-               message.Contains("user cancelled") ||
-               message.Contains("authentication was cancelled") ||
-               message.Contains("authentication was canceled");
     }
 
     /// <summary>

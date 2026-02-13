@@ -9,6 +9,7 @@
 using System;
 using System.Windows;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 
@@ -201,7 +202,7 @@ public partial class AddServerDialog : Window
             StatusText.Text = $"Failed: {ex.Message}";
             
             // Mark MFA as cancelled if user cancelled the authentication popup
-            if (AddedServer != null && EntraMfaAuthRadio.IsChecked == true && IsMfaCancelledException(ex))
+            if (AddedServer != null && EntraMfaAuthRadio.IsChecked == true && MfaAuthenticationHelper.IsMfaCancelledException(ex))
             {
                 var status = _serverManager.GetConnectionStatus(AddedServer.Id);
                 status.UserCancelledMfa = true;
@@ -312,20 +313,5 @@ public partial class AddServerDialog : Window
     {
         DialogResult = false;
         Close();
-    }
-
-    /// <summary>
-    /// Checks if an exception indicates that the user cancelled MFA authentication.
-    /// </summary>
-    private static bool IsMfaCancelledException(Exception ex)
-    {
-        var message = ex.Message?.ToLowerInvariant() ?? string.Empty;
-        
-        // Only treat explicit user cancellation messages as cancellation
-        // Do NOT treat authentication errors (wrong password, account selection, etc.) as cancellation
-        return message.Contains("user canceled") ||
-               message.Contains("user cancelled") ||
-               message.Contains("authentication was cancelled") ||
-               message.Contains("authentication was canceled");
     }
 }
