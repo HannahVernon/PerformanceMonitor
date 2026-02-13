@@ -1897,19 +1897,10 @@ namespace PerformanceMonitorDashboard.Controls
         {
             if (_waitTypeItems == null) return;
             _isUpdatingWaitTypeSelection = true;
-            // Only select first 12 (color limit)
-            int count = 0;
+            var topWaits = TabHelpers.GetDefaultWaitTypes(_waitTypeItems.Select(x => x.WaitType).ToList());
             foreach (var item in _waitTypeItems)
             {
-                if (count < 12)
-                {
-                    item.IsSelected = true;
-                    count++;
-                }
-                else
-                {
-                    item.IsSelected = false;
-                }
+                item.IsSelected = topWaits.Contains(item.WaitType);
             }
             _isUpdatingWaitTypeSelection = false;
             RefreshWaitTypeListOrder();
@@ -1961,21 +1952,13 @@ namespace PerformanceMonitorDashboard.Controls
                     })
                     .ToList();
 
-                // If nothing was previously selected, default select some common wait types
+                // If nothing was previously selected, apply poison waits + usual suspects + top 10
                 if (!waitTypes.Any(w => w.IsSelected))
                 {
-                    var defaultWaitTypes = new[] { "CXPACKET", "SOS_SCHEDULER_YIELD", "PAGEIOLATCH_SH", "LCK_M_X", "ASYNC_NETWORK_IO", "WRITELOG" };
-                    foreach (var item in waitTypes.Where(w => defaultWaitTypes.Contains(w.WaitType)))
+                    var topWaits = TabHelpers.GetDefaultWaitTypes(waitTypes.Select(w => w.WaitType).ToList());
+                    foreach (var item in waitTypes.Where(w => topWaits.Contains(w.WaitType)))
                     {
                         item.IsSelected = true;
-                    }
-                    // If none of the defaults exist, select the top 5
-                    if (!waitTypes.Any(w => w.IsSelected) && waitTypes.Count > 0)
-                    {
-                        foreach (var item in waitTypes.Take(5))
-                        {
-                            item.IsSelected = true;
-                        }
                     }
                 }
 
