@@ -35,7 +35,7 @@ public partial class AddServerDialog : Window
         InitializeComponent();
         _serverManager = serverManager;
         _isDialogOpen = true;
-        Closing += (s, e) => _isDialogOpen = false;
+        Closed += (s, e) => _isDialogOpen = false;
     }
 
     /// <summary>
