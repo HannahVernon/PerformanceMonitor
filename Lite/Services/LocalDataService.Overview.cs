@@ -140,19 +140,19 @@ public class ServerSummaryItem
 
     /* Connection status */
     public string StatusDisplay => IsOnline switch { true => "Online", false => "Offline", _ => "Unknown" };
-    public SolidColorBrush StatusBrush => MakeBrush(IsOnline switch { true => "#4CAF50", false => "#EF4444", _ => "#888888" });
+    public SolidColorBrush StatusBrush => MakeBrush(IsOnline switch { true => "#81C784", false => "#E57373", _ => "#888888" });
     public bool IsOffline => IsOnline == false;
 
     /* Color coding */
-    public SolidColorBrush CpuBrush => MakeBrush(CpuPercent >= 80 ? "#F44336" : CpuPercent >= 50 ? "#FF9800" : "#4CAF50");
-    public SolidColorBrush BlockingBrush => MakeBrush(BlockingCount > 0 ? "#FF9800" : "#4CAF50");
-    public SolidColorBrush DeadlockBrush => MakeBrush(DeadlockCount > 0 ? "#F44336" : "#4CAF50");
+    public SolidColorBrush CpuBrush => MakeBrush(CpuPercent >= 80 ? "#E57373" : CpuPercent >= 50 ? "#FFB74D" : "#81C784");
+    public SolidColorBrush BlockingBrush => MakeBrush(BlockingCount > 0 ? "#FFB74D" : "#81C784");
+    public SolidColorBrush DeadlockBrush => MakeBrush(DeadlockCount > 0 ? "#E57373" : "#81C784");
     public SolidColorBrush CardBorderBrush => MakeBrush(
-        IsOnline == false ? "#EF4444" :
-        DeadlockCount > 0 ? "#F44336" :
-        BlockingCount > 0 ? "#FF9800" :
-        CpuPercent >= 80 ? "#FF9800" :
-        "#555555");
+        IsOnline == false ? "#E57373" :
+        DeadlockCount > 0 ? "#E57373" :
+        BlockingCount > 0 ? "#FFB74D" :
+        CpuPercent >= 80 ? "#FFB74D" :
+        "#2a2d35");
 
     private static SolidColorBrush MakeBrush(string hex)
     {

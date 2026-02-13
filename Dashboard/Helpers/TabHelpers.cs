@@ -29,23 +29,44 @@ namespace PerformanceMonitorDashboard.Helpers
     public static class TabHelpers
     {
         /// <summary>
+        /// Material Design 300-level color palette for chart data series.
+        /// Soft pastels optimized for dark backgrounds, ordered to map 1:1
+        /// with common ScottPlot stock colors (Blue→[0], Green→[1], etc.).
+        /// </summary>
+        public static readonly ScottPlot.Color[] ChartColors = new[]
+        {
+            ScottPlot.Color.FromHex("#4FC3F7"), // [0]  Light Blue 300
+            ScottPlot.Color.FromHex("#81C784"), // [1]  Green 300
+            ScottPlot.Color.FromHex("#FFB74D"), // [2]  Orange 300
+            ScottPlot.Color.FromHex("#E57373"), // [3]  Red 300
+            ScottPlot.Color.FromHex("#BA68C8"), // [4]  Purple 300
+            ScottPlot.Color.FromHex("#4DD0E1"), // [5]  Cyan 300
+            ScottPlot.Color.FromHex("#FFF176"), // [6]  Yellow 300
+            ScottPlot.Color.FromHex("#F06292"), // [7]  Pink 300
+            ScottPlot.Color.FromHex("#AED581"), // [8]  Light Green 300
+            ScottPlot.Color.FromHex("#90A4AE"), // [9]  Blue Grey 300
+            ScottPlot.Color.FromHex("#A1887F"), // [10] Brown 300
+            ScottPlot.Color.FromHex("#7986CB"), // [11] Indigo 300
+        };
+
+        /// <summary>
         /// Applies the Darling Data dark theme to a ScottPlot chart.
         /// </summary>
         public static void ApplyDarkModeToChart(WpfPlot chart)
         {
-            // Dark theme colors matching Darling Data brand
-            var darkBackground = ScottPlot.Color.FromHex("#333333");
-            var darkerBackground = ScottPlot.Color.FromHex("#252525");
-            var textColor = ScottPlot.Color.FromHex("#E0E0E0");
-            var gridColor = ScottPlot.Color.FromHex("#444444");
+            // Grafana-inspired dark theme colors
+            var darkBackground = ScottPlot.Color.FromHex("#22252b");
+            var darkerBackground = ScottPlot.Color.FromHex("#111217");
+            var textColor = ScottPlot.Color.FromHex("#9DA5B4");
+            var gridColor = ScottPlot.Colors.White.WithAlpha(20);
 
             chart.Plot.FigureBackground.Color = darkBackground;
             chart.Plot.DataBackground.Color = darkerBackground;
             chart.Plot.Axes.Color(textColor);
             chart.Plot.Grid.MajorLineColor = gridColor;
             chart.Plot.Legend.BackgroundColor = darkBackground;
-            chart.Plot.Legend.FontColor = textColor;
-            chart.Plot.Legend.OutlineColor = gridColor;
+            chart.Plot.Legend.FontColor = ScottPlot.Color.FromHex("#E4E6EB");
+            chart.Plot.Legend.OutlineColor = ScottPlot.Color.FromHex("#2a2d35");
             chart.Plot.Legend.Alignment = ScottPlot.Alignment.LowerCenter;
             chart.Plot.Legend.Orientation = ScottPlot.Orientation.Horizontal;
             chart.Plot.Axes.Margins(bottom: 0); // No bottom margin - SetChartYLimitsWithLegendPadding handles Y-axis
@@ -63,7 +84,7 @@ namespace PerformanceMonitorDashboard.Helpers
         /// </summary>
         public static void ReapplyAxisColors(WpfPlot chart)
         {
-            var textColor = ScottPlot.Color.FromHex("#E0E0E0");
+            var textColor = ScottPlot.Color.FromHex("#9DA5B4");
             chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
             chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
             chart.Plot.Axes.Bottom.Label.ForeColor = textColor;
@@ -124,15 +145,15 @@ namespace PerformanceMonitorDashboard.Helpers
         /// </summary>
         public static void ApplyDarkThemeToCalendar(System.Windows.Controls.Calendar calendar)
         {
-            var darkBg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#252525"));
-            var lightBg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#404040"));
-            var whiteFg = new SolidColorBrush(Colors.White);
-            var mutedFg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#858585"));
+            var darkBg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#111217"));
+            var lightBg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22252b"));
+            var whiteFg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E4E6EB"));
+            var mutedFg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6B7280"));
             var accentBg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2eaef1"));
 
             calendar.Background = darkBg;
             calendar.Foreground = whiteFg;
-            calendar.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#555555"));
+            calendar.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2a2d35"));
 
             // Apply to all child controls recursively
             ApplyDarkThemeRecursively(calendar, darkBg, lightBg, whiteFg, mutedFg);
