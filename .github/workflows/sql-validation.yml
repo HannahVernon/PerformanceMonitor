@@ -1,0 +1,80 @@
+name: SQL Validation
+
+on:
+  push:
+    branches: [dev]
+    paths: ['install/**']
+  pull_request:
+    branches: [dev]
+    paths: ['install/**']
+
+jobs:
+  validate-sql:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '2017'
+            image: mcr.microsoft.com/mssql/server:2017-latest
+            health_cmd: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'CI_Test#2026!' -Q 'SELECT 1' -b
+          - version: '2019'
+            image: mcr.microsoft.com/mssql/server:2019-latest
+            health_cmd: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'CI_Test#2026!' -Q 'SELECT 1' -b
+          - version: '2022'
+            image: mcr.microsoft.com/mssql/server:2022-latest
+            health_cmd: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'CI_Test#2026!' -C -No -Q 'SELECT 1' -b
+          - version: '2025'
+            image: mcr.microsoft.com/mssql/server:2025-latest
+            health_cmd: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'CI_Test#2026!' -C -No -Q 'SELECT 1' -b
+
+    name: SQL Server ${{ matrix.version }}
+
+    services:
+      sqlserver:
+        image: ${{ matrix.image }}
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: CI_Test#2026!
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "${{ matrix.health_cmd }}"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sqlcmd
+        run: |
+          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
+          source /etc/os-release
+          echo "deb [arch=amd64] https://packages.microsoft.com/ubuntu/${VERSION_ID}/prod ${VERSION_CODENAME} main" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
+
+      - name: Run install scripts
+        env:
+          SA_PASSWORD: CI_Test#2026!
+        run: |
+          for script in $(ls install/[0-9]*.sql | sort); do
+            filename=$(basename "$script")
+
+            # Skip scripts that require SQL Agent or are test/troubleshooting
+            case "$filename" in
+              45_*) echo "Skipping $filename (requires SQL Agent)"; continue;;
+              97_*|98_*|99_*) echo "Skipping $filename (test/troubleshooting)"; continue;;
+            esac
+
+            echo "Running $filename..."
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -b -i "$script"
+            echo "  OK"
+          done
+
+      - name: Validate installation
+        env:
+          SA_PASSWORD: CI_Test#2026!
+        run: |
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -b -i .github/sql/ci_validate_installation.sql
