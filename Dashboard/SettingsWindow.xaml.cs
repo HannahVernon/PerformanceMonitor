@@ -114,6 +114,14 @@ namespace PerformanceMonitorDashboard
             DeadlockThresholdTextBox.Text = prefs.DeadlockThreshold.ToString(CultureInfo.InvariantCulture);
             NotifyOnHighCpuCheckBox.IsChecked = prefs.NotifyOnHighCpu;
             CpuThresholdTextBox.Text = prefs.CpuThresholdPercent.ToString(CultureInfo.InvariantCulture);
+            NotifyOnPoisonWaitsCheckBox.IsChecked = prefs.NotifyOnPoisonWaits;
+            PoisonWaitThresholdTextBox.Text = prefs.PoisonWaitThresholdMs.ToString(CultureInfo.InvariantCulture);
+            NotifyOnLongRunningQueriesCheckBox.IsChecked = prefs.NotifyOnLongRunningQueries;
+            LongRunningQueryThresholdTextBox.Text = prefs.LongRunningQueryThresholdMinutes.ToString(CultureInfo.InvariantCulture);
+            NotifyOnTempDbSpaceCheckBox.IsChecked = prefs.NotifyOnTempDbSpace;
+            TempDbSpaceThresholdTextBox.Text = prefs.TempDbSpaceThresholdPercent.ToString(CultureInfo.InvariantCulture);
+            NotifyOnLongRunningJobsCheckBox.IsChecked = prefs.NotifyOnLongRunningJobs;
+            LongRunningJobMultiplierTextBox.Text = prefs.LongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
 
             UpdateNotificationCheckboxStates();
 
@@ -212,6 +220,30 @@ namespace PerformanceMonitorDashboard
             UpdateAlertNotificationStates();
         }
 
+        private void NotifyOnPoisonWaitsCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
+        private void NotifyOnLongRunningQueriesCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
+        private void NotifyOnTempDbSpaceCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
+        private void NotifyOnLongRunningJobsCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
         private void UpdateAlertNotificationStates()
         {
             bool notificationsEnabled = NotificationsEnabledCheckBox.IsChecked == true;
@@ -221,6 +253,14 @@ namespace PerformanceMonitorDashboard
             DeadlockThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnDeadlockCheckBox.IsChecked == true;
             NotifyOnHighCpuCheckBox.IsEnabled = notificationsEnabled;
             CpuThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnHighCpuCheckBox.IsChecked == true;
+            NotifyOnPoisonWaitsCheckBox.IsEnabled = notificationsEnabled;
+            PoisonWaitThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnPoisonWaitsCheckBox.IsChecked == true;
+            NotifyOnLongRunningQueriesCheckBox.IsEnabled = notificationsEnabled;
+            LongRunningQueryThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningQueriesCheckBox.IsChecked == true;
+            NotifyOnTempDbSpaceCheckBox.IsEnabled = notificationsEnabled;
+            TempDbSpaceThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnTempDbSpaceCheckBox.IsChecked == true;
+            NotifyOnLongRunningJobsCheckBox.IsEnabled = notificationsEnabled;
+            LongRunningJobMultiplierTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningJobsCheckBox.IsChecked == true;
         }
 
         private void UpdateNotificationCheckboxStates()
@@ -409,6 +449,26 @@ namespace PerformanceMonitorDashboard
             if (int.TryParse(CpuThresholdTextBox.Text, out int cpuThreshold) && cpuThreshold > 0 && cpuThreshold <= 100)
             {
                 prefs.CpuThresholdPercent = cpuThreshold;
+            }
+            prefs.NotifyOnPoisonWaits = NotifyOnPoisonWaitsCheckBox.IsChecked == true;
+            if (int.TryParse(PoisonWaitThresholdTextBox.Text, out int poisonWaitThreshold) && poisonWaitThreshold > 0)
+            {
+                prefs.PoisonWaitThresholdMs = poisonWaitThreshold;
+            }
+            prefs.NotifyOnLongRunningQueries = NotifyOnLongRunningQueriesCheckBox.IsChecked == true;
+            if (int.TryParse(LongRunningQueryThresholdTextBox.Text, out int lrqThreshold) && lrqThreshold > 0)
+            {
+                prefs.LongRunningQueryThresholdMinutes = lrqThreshold;
+            }
+            prefs.NotifyOnTempDbSpace = NotifyOnTempDbSpaceCheckBox.IsChecked == true;
+            if (int.TryParse(TempDbSpaceThresholdTextBox.Text, out int tempDbThreshold) && tempDbThreshold > 0 && tempDbThreshold <= 100)
+            {
+                prefs.TempDbSpaceThresholdPercent = tempDbThreshold;
+            }
+            prefs.NotifyOnLongRunningJobs = NotifyOnLongRunningJobsCheckBox.IsChecked == true;
+            if (int.TryParse(LongRunningJobMultiplierTextBox.Text, out int jobMultiplier) && jobMultiplier > 0)
+            {
+                prefs.LongRunningJobMultiplier = jobMultiplier;
             }
 
             // Save SMTP email settings

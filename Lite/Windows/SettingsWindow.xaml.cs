@@ -230,6 +230,14 @@ public partial class SettingsWindow : Window
         AlertBlockingThresholdBox.Text = App.AlertBlockingThreshold.ToString();
         AlertDeadlockCheckBox.IsChecked = App.AlertDeadlockEnabled;
         AlertDeadlockThresholdBox.Text = App.AlertDeadlockThreshold.ToString();
+        AlertPoisonWaitCheckBox.IsChecked = App.AlertPoisonWaitEnabled;
+        AlertPoisonWaitThresholdBox.Text = App.AlertPoisonWaitThresholdMs.ToString();
+        AlertLongRunningQueryCheckBox.IsChecked = App.AlertLongRunningQueryEnabled;
+        AlertLongRunningQueryThresholdBox.Text = App.AlertLongRunningQueryThresholdMinutes.ToString();
+        AlertTempDbSpaceCheckBox.IsChecked = App.AlertTempDbSpaceEnabled;
+        AlertTempDbSpaceThresholdBox.Text = App.AlertTempDbSpaceThresholdPercent.ToString();
+        AlertLongRunningJobCheckBox.IsChecked = App.AlertLongRunningJobEnabled;
+        AlertLongRunningJobMultiplierBox.Text = App.AlertLongRunningJobMultiplier.ToString();
         UpdateAlertControlStates();
     }
 
@@ -247,6 +255,18 @@ public partial class SettingsWindow : Window
         App.AlertDeadlockEnabled = AlertDeadlockCheckBox.IsChecked == true;
         if (int.TryParse(AlertDeadlockThresholdBox.Text, out var deadlock) && deadlock > 0)
             App.AlertDeadlockThreshold = deadlock;
+        App.AlertPoisonWaitEnabled = AlertPoisonWaitCheckBox.IsChecked == true;
+        if (int.TryParse(AlertPoisonWaitThresholdBox.Text, out var poisonWait) && poisonWait > 0)
+            App.AlertPoisonWaitThresholdMs = poisonWait;
+        App.AlertLongRunningQueryEnabled = AlertLongRunningQueryCheckBox.IsChecked == true;
+        if (int.TryParse(AlertLongRunningQueryThresholdBox.Text, out var lrq) && lrq > 0)
+            App.AlertLongRunningQueryThresholdMinutes = lrq;
+        App.AlertTempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true;
+        if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb > 0 && tempDb <= 100)
+            App.AlertTempDbSpaceThresholdPercent = tempDb;
+        App.AlertLongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true;
+        if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult >= 2 && jobMult <= 20)
+            App.AlertLongRunningJobMultiplier = jobMult;
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
         try
@@ -271,6 +291,14 @@ public partial class SettingsWindow : Window
             root["alert_blocking_threshold"] = App.AlertBlockingThreshold;
             root["alert_deadlock_enabled"] = App.AlertDeadlockEnabled;
             root["alert_deadlock_threshold"] = App.AlertDeadlockThreshold;
+            root["alert_poison_wait_enabled"] = App.AlertPoisonWaitEnabled;
+            root["alert_poison_wait_threshold_ms"] = App.AlertPoisonWaitThresholdMs;
+            root["alert_long_running_query_enabled"] = App.AlertLongRunningQueryEnabled;
+            root["alert_long_running_query_threshold_minutes"] = App.AlertLongRunningQueryThresholdMinutes;
+            root["alert_tempdb_space_enabled"] = App.AlertTempDbSpaceEnabled;
+            root["alert_tempdb_space_threshold_percent"] = App.AlertTempDbSpaceThresholdPercent;
+            root["alert_long_running_job_enabled"] = App.AlertLongRunningJobEnabled;
+            root["alert_long_running_job_multiplier"] = App.AlertLongRunningJobMultiplier;
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             File.WriteAllText(settingsPath, root.ToJsonString(options));
@@ -296,6 +324,14 @@ public partial class SettingsWindow : Window
         AlertBlockingThresholdBox.IsEnabled = enabled;
         AlertDeadlockCheckBox.IsEnabled = enabled;
         AlertDeadlockThresholdBox.IsEnabled = enabled;
+        AlertPoisonWaitCheckBox.IsEnabled = enabled;
+        AlertPoisonWaitThresholdBox.IsEnabled = enabled;
+        AlertLongRunningQueryCheckBox.IsEnabled = enabled;
+        AlertLongRunningQueryThresholdBox.IsEnabled = enabled;
+        AlertTempDbSpaceCheckBox.IsEnabled = enabled;
+        AlertTempDbSpaceThresholdBox.IsEnabled = enabled;
+        AlertLongRunningJobCheckBox.IsEnabled = enabled;
+        AlertLongRunningJobMultiplierBox.IsEnabled = enabled;
     }
 
     private void LoadSmtpSettings()
