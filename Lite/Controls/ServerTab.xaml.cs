@@ -39,6 +39,9 @@ public partial class ServerTab : UserControl
     private List<SelectableItem> _perfmonCounterItems = new();
     private Helpers.ChartHoverHelper? _waitStatsHover;
     private Helpers.ChartHoverHelper? _perfmonHover;
+    private Helpers.ChartHoverHelper? _cpuHover;
+    private Helpers.ChartHoverHelper? _memoryHover;
+    private Helpers.ChartHoverHelper? _tempDbHover;
     private Helpers.ChartHoverHelper? _tempDbFileIoHover;
     private Helpers.ChartHoverHelper? _fileIoReadHover;
     private Helpers.ChartHoverHelper? _fileIoWriteHover;
@@ -129,6 +132,9 @@ public partial class ServerTab : UserControl
         /* Chart hover tooltips */
         _waitStatsHover = new Helpers.ChartHoverHelper(WaitStatsChart, "ms/sec");
         _perfmonHover = new Helpers.ChartHoverHelper(PerfmonChart, "");
+        _cpuHover = new Helpers.ChartHoverHelper(CpuChart, "%");
+        _memoryHover = new Helpers.ChartHoverHelper(MemoryChart, "GB");
+        _tempDbHover = new Helpers.ChartHoverHelper(TempDbChart, "MB");
         _tempDbFileIoHover = new Helpers.ChartHoverHelper(TempDbFileIoChart, "ms");
         _fileIoReadHover = new Helpers.ChartHoverHelper(FileIoReadChart, "ms");
         _fileIoWriteHover = new Helpers.ChartHoverHelper(FileIoWriteChart, "ms");
@@ -589,6 +595,7 @@ public partial class ServerTab : UserControl
     private void UpdateCpuChart(List<CpuUtilizationRow> data)
     {
         ClearChart(CpuChart);
+        _cpuHover?.Clear();
         ApplyDarkTheme(CpuChart);
 
         if (data.Count == 0) { CpuChart.Refresh(); return; }
@@ -600,10 +607,12 @@ public partial class ServerTab : UserControl
         var sqlPlot = CpuChart.Plot.Add.Scatter(times, sqlCpu);
         sqlPlot.LegendText = "SQL Server";
         sqlPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        _cpuHover?.Add(sqlPlot, "SQL Server");
 
         var otherPlot = CpuChart.Plot.Add.Scatter(times, otherCpu);
         otherPlot.LegendText = "Other";
         otherPlot.Color = ScottPlot.Color.FromHex("#E57373");
+        _cpuHover?.Add(otherPlot, "Other");
 
         CpuChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(CpuChart);
@@ -617,6 +626,7 @@ public partial class ServerTab : UserControl
     private void UpdateMemoryChart(List<MemoryTrendPoint> data, List<MemoryTrendPoint> grantData)
     {
         ClearChart(MemoryChart);
+        _memoryHover?.Clear();
         ApplyDarkTheme(MemoryChart);
 
         if (data.Count == 0) { MemoryChart.Refresh(); return; }
@@ -629,15 +639,18 @@ public partial class ServerTab : UserControl
         var totalPlot = MemoryChart.Plot.Add.Scatter(times, totalMem);
         totalPlot.LegendText = "Total Server Memory";
         totalPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        _memoryHover?.Add(totalPlot, "Total Server Memory");
 
         var targetPlot = MemoryChart.Plot.Add.Scatter(times, targetMem);
         targetPlot.LegendText = "Target Memory";
         targetPlot.Color = ScottPlot.Colors.Gray;
         targetPlot.LineStyle.Pattern = LinePattern.Dashed;
+        _memoryHover?.Add(targetPlot, "Target Memory");
 
         var bpPlot = MemoryChart.Plot.Add.Scatter(times, bufferPool);
         bpPlot.LegendText = "Buffer Pool";
         bpPlot.Color = ScottPlot.Color.FromHex("#81C784");
+        _memoryHover?.Add(bpPlot, "Buffer Pool");
 
         /* Memory grants trend line — show zero line when no grant data */
         double[] grantTimes, grantMb;
@@ -655,6 +668,7 @@ public partial class ServerTab : UserControl
         var grantPlot = MemoryChart.Plot.Add.Scatter(grantTimes, grantMb);
         grantPlot.LegendText = "Memory Grants";
         grantPlot.Color = ScottPlot.Color.FromHex("#FFB74D");
+        _memoryHover?.Add(grantPlot, "Memory Grants");
 
         MemoryChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(MemoryChart);
@@ -670,6 +684,7 @@ public partial class ServerTab : UserControl
     private void UpdateTempDbChart(List<TempDbRow> data)
     {
         ClearChart(TempDbChart);
+        _tempDbHover?.Clear();
         ApplyDarkTheme(TempDbChart);
 
         if (data.Count == 0) { TempDbChart.Refresh(); return; }
@@ -682,14 +697,17 @@ public partial class ServerTab : UserControl
         var userPlot = TempDbChart.Plot.Add.Scatter(times, userObj);
         userPlot.LegendText = "User Objects";
         userPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        _tempDbHover?.Add(userPlot, "User Objects");
 
         var internalPlot = TempDbChart.Plot.Add.Scatter(times, internalObj);
         internalPlot.LegendText = "Internal Objects";
         internalPlot.Color = ScottPlot.Color.FromHex("#FFD54F");
+        _tempDbHover?.Add(internalPlot, "Internal Objects");
 
         var vsPlot = TempDbChart.Plot.Add.Scatter(times, versionStore);
         vsPlot.LegendText = "Version Store";
         vsPlot.Color = ScottPlot.Color.FromHex("#81C784");
+        _tempDbHover?.Add(vsPlot, "Version Store");
 
         TempDbChart.Plot.Axes.DateTimeTicksBottom();
         ReapplyAxisColors(TempDbChart);
