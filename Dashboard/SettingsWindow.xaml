@@ -143,6 +143,58 @@
                                          TextAlignment="Center"/>
                                 <TextBlock Text="%" VerticalAlignment="Center"/>
                             </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnPoisonWaitsCheckBox"
+                                          Content="Poison waits (THREADPOOL, etc.) avg wait &#x2265;"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnPoisonWaitsCheckBox_Changed"
+                                          Unchecked="NotifyOnPoisonWaitsCheckBox_Changed"/>
+                                <TextBox x:Name="PoisonWaitThresholdTextBox"
+                                         Width="50"
+                                         Margin="8,0,8,0"
+                                         VerticalAlignment="Center"
+                                         TextAlignment="Center"/>
+                                <TextBlock Text="ms" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnLongRunningQueriesCheckBox"
+                                          Content="Long-running queries over"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnLongRunningQueriesCheckBox_Changed"
+                                          Unchecked="NotifyOnLongRunningQueriesCheckBox_Changed"/>
+                                <TextBox x:Name="LongRunningQueryThresholdTextBox"
+                                         Width="50"
+                                         Margin="8,0,8,0"
+                                         VerticalAlignment="Center"
+                                         TextAlignment="Center"/>
+                                <TextBlock Text="minutes" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnTempDbSpaceCheckBox"
+                                          Content="TempDB space usage over"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnTempDbSpaceCheckBox_Changed"
+                                          Unchecked="NotifyOnTempDbSpaceCheckBox_Changed"/>
+                                <TextBox x:Name="TempDbSpaceThresholdTextBox"
+                                         Width="50"
+                                         Margin="8,0,8,0"
+                                         VerticalAlignment="Center"
+                                         TextAlignment="Center"/>
+                                <TextBlock Text="%" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnLongRunningJobsCheckBox"
+                                          Content="Agent jobs running over"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnLongRunningJobsCheckBox_Changed"
+                                          Unchecked="NotifyOnLongRunningJobsCheckBox_Changed"/>
+                                <TextBox x:Name="LongRunningJobMultiplierTextBox"
+                                         Width="50"
+                                         Margin="8,0,8,0"
+                                         VerticalAlignment="Center"
+                                         TextAlignment="Center"/>
+                                <TextBlock Text="x historical average" VerticalAlignment="Center"/>
+                            </StackPanel>
                         </StackPanel>
                     </StackPanel>
                 </ScrollViewer>

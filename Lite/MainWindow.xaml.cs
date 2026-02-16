@@ -38,6 +38,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, DateTime> _lastCpuAlert = new();
     private readonly Dictionary<string, DateTime> _lastBlockingAlert = new();
     private readonly Dictionary<string, DateTime> _lastDeadlockAlert = new();
+    private readonly Dictionary<string, DateTime> _lastPoisonWaitAlert = new();
+    private readonly Dictionary<string, DateTime> _lastLongRunningQueryAlert = new();
+    private readonly Dictionary<string, DateTime> _lastTempDbSpaceAlert = new();
+    private readonly Dictionary<string, DateTime> _lastLongRunningJobAlert = new();
     private static readonly TimeSpan AlertCooldown = TimeSpan.FromMinutes(5);
     private readonly DispatcherTimer _statusTimer;
     private LocalDataService? _dataService;
@@ -49,6 +53,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _activeCpuAlert = new();
     private readonly Dictionary<string, bool> _activeBlockingAlert = new();
     private readonly Dictionary<string, bool> _activeDeadlockAlert = new();
+    private readonly Dictionary<string, bool> _activePoisonWaitAlert = new();
+    private readonly Dictionary<string, bool> _activeLongRunningQueryAlert = new();
+    private readonly Dictionary<string, bool> _activeTempDbSpaceAlert = new();
+    private readonly Dictionary<string, bool> _activeLongRunningJobAlert = new();
 
     public MainWindow()
     {
@@ -62,7 +70,16 @@ public partial class MainWindow : Window
 
         // Status bar update timer
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-        _statusTimer.Tick += async (s, e) => { UpdateStatusBar(); await RefreshOverviewAsync(); CheckConnectionsAndNotify(); };
+        _statusTimer.Tick += async (s, e) =>
+        {
+            UpdateStatusBar();
+            await RefreshOverviewAsync();
+            CheckConnectionsAndNotify();
+
+            /* Auto-refresh alert history if the tab is active */
+            if (ServerTabControl.SelectedItem == AlertsTab)
+                AlertsHistoryContent.RefreshAlerts();
+        };
 
         // Initialize database and UI
         Loaded += MainWindow_Loaded;
@@ -100,6 +117,9 @@ public partial class MainWindow : Window
 
             // Initialize data service for overview
             _dataService = new LocalDataService(_databaseInitializer);
+
+            // Initialize alerts history tab
+            AlertsHistoryContent.Initialize(_dataService);
 
             // Start MCP server if enabled
             var mcpSettings = McpSettings.Load(App.ConfigDirectory);
@@ -215,6 +235,12 @@ public partial class MainWindow : Window
         if (ServerTabControl.SelectedItem is TabItem { Content: ServerTab serverTab })
         {
             ServerTimeHelper.UtcOffsetMinutes = serverTab.UtcOffsetMinutes;
+        }
+
+        /* Refresh alerts tab when selected */
+        if (ServerTabControl.SelectedItem == AlertsTab)
+        {
+            AlertsHistoryContent.RefreshAlerts();
         }
 
         UpdateCollectorHealth();
@@ -1011,6 +1037,194 @@ public partial class MainWindow : Window
                 $"{summary.DisplayName}: No deadlocks in the last hour",
                 Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
         }
+
+        /* Poison wait alerts */
+        if (App.AlertPoisonWaitEnabled && _dataService != null)
+        {
+            try
+            {
+                var poisonWaits = await _dataService.GetLatestPoisonWaitAvgsAsync(summary.ServerId);
+                var triggered = poisonWaits.FindAll(w => w.AvgMsPerWait >= App.AlertPoisonWaitThresholdMs);
+
+                if (triggered.Count > 0)
+                {
+                    _activePoisonWaitAlert[key] = true;
+                    if (!suppressPopups && (!_lastPoisonWaitAlert.TryGetValue(key, out var lastPoisonWait) || now - lastPoisonWait >= AlertCooldown))
+                    {
+                        var worst = triggered[0];
+                        var allWaitNames = string.Join(", ", triggered.ConvertAll(w => $"{w.WaitType} ({w.AvgMsPerWait:F0}ms)"));
+                        _trayService.ShowNotification(
+                            "Poison Wait",
+                            $"{summary.DisplayName}: {worst.WaitType} avg {worst.AvgMsPerWait:F0}ms/wait",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Error);
+                        _lastPoisonWaitAlert[key] = now;
+
+                        var poisonContext = BuildPoisonWaitContext(triggered);
+
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Poison Wait",
+                            summary.DisplayName,
+                            allWaitNames,
+                            $"{App.AlertPoisonWaitThresholdMs}ms avg",
+                            summary.ServerId,
+                            poisonContext);
+                    }
+                }
+                else if (_activePoisonWaitAlert.TryGetValue(key, out var wasPoisonWait) && wasPoisonWait)
+                {
+                    _activePoisonWaitAlert[key] = false;
+                    _trayService.ShowNotification(
+                        "Poison Waits Cleared",
+                        $"{summary.DisplayName}: Poison wait avg below threshold",
+                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Alerts", $"Failed to check poison waits for {summary.DisplayName}: {ex.Message}");
+            }
+        }
+
+        /* Long-running query alerts */
+        if (App.AlertLongRunningQueryEnabled && _dataService != null)
+        {
+            try
+            {
+                var longRunning = await _dataService.GetLongRunningQueriesAsync(summary.ServerId, App.AlertLongRunningQueryThresholdMinutes);
+
+                if (longRunning.Count > 0)
+                {
+                    _activeLongRunningQueryAlert[key] = true;
+                    if (!suppressPopups && (!_lastLongRunningQueryAlert.TryGetValue(key, out var lastLrq) || now - lastLrq >= AlertCooldown))
+                    {
+                        var worst = longRunning[0];
+                        var elapsedMinutes = worst.ElapsedSeconds / 60;
+                        var preview = TruncateText(worst.QueryText, 80);
+                        var previewSuffix = string.IsNullOrEmpty(preview) ? "" : $" — {preview}";
+                        _trayService.ShowNotification(
+                            "Long-Running Query",
+                            $"{summary.DisplayName}: Session #{worst.SessionId} running {elapsedMinutes}m{previewSuffix}",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning);
+                        _lastLongRunningQueryAlert[key] = now;
+
+                        var lrqContext = BuildLongRunningQueryContext(longRunning);
+
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Long-Running Query",
+                            summary.DisplayName,
+                            $"{longRunning.Count} query(s), longest {elapsedMinutes}m",
+                            $"{App.AlertLongRunningQueryThresholdMinutes}m",
+                            summary.ServerId,
+                            lrqContext);
+                    }
+                }
+                else if (_activeLongRunningQueryAlert.TryGetValue(key, out var wasLongRunning) && wasLongRunning)
+                {
+                    _activeLongRunningQueryAlert[key] = false;
+                    _trayService.ShowNotification(
+                        "Long-Running Queries Cleared",
+                        $"{summary.DisplayName}: No queries over threshold",
+                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Alerts", $"Failed to check long-running queries for {summary.DisplayName}: {ex.Message}");
+            }
+        }
+
+        /* TempDB space alerts */
+        if (App.AlertTempDbSpaceEnabled && _dataService != null)
+        {
+            try
+            {
+                var tempDb = await _dataService.GetLatestTempDbSpaceAsync(summary.ServerId);
+
+                if (tempDb != null && tempDb.UsedPercent >= App.AlertTempDbSpaceThresholdPercent)
+                {
+                    _activeTempDbSpaceAlert[key] = true;
+                    if (!suppressPopups && (!_lastTempDbSpaceAlert.TryGetValue(key, out var lastTempDb) || now - lastTempDb >= AlertCooldown))
+                    {
+                        _trayService.ShowNotification(
+                            "TempDB Space",
+                            $"{summary.DisplayName}: TempDB {tempDb.UsedPercent:F0}% used",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning);
+                        _lastTempDbSpaceAlert[key] = now;
+
+                        var tempDbContext = BuildTempDbSpaceContext(tempDb);
+
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "TempDB Space",
+                            summary.DisplayName,
+                            $"{tempDb.UsedPercent:F0}% used ({tempDb.TotalReservedMb:F0} MB)",
+                            $"{App.AlertTempDbSpaceThresholdPercent}%",
+                            summary.ServerId,
+                            tempDbContext);
+                    }
+                }
+                else if (_activeTempDbSpaceAlert.TryGetValue(key, out var wasTempDb) && wasTempDb)
+                {
+                    _activeTempDbSpaceAlert[key] = false;
+                    var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
+                    _trayService.ShowNotification(
+                        "TempDB Space Resolved",
+                        $"{summary.DisplayName}: TempDB usage back to {pct}",
+                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Alerts", $"Failed to check TempDB space for {summary.DisplayName}: {ex.Message}");
+            }
+        }
+
+        /* Anomalous Agent job alerts */
+        if (App.AlertLongRunningJobEnabled && _dataService != null)
+        {
+            try
+            {
+                var anomalousJobs = await _dataService.GetAnomalousJobsAsync(summary.ServerId, App.AlertLongRunningJobMultiplier);
+
+                if (anomalousJobs.Count > 0)
+                {
+                    _activeLongRunningJobAlert[key] = true;
+                    var worst = anomalousJobs[0];
+                    var jobKey = $"{key}:{worst.JobId}:{worst.StartTime:O}";
+
+                    if (!suppressPopups && (!_lastLongRunningJobAlert.TryGetValue(jobKey, out var lastJob) || now - lastJob >= AlertCooldown))
+                    {
+                        var currentMinutes = worst.CurrentDurationSeconds / 60;
+                        _trayService.ShowNotification(
+                            "Long-Running Job",
+                            $"{summary.DisplayName}: {worst.JobName} at {worst.PercentOfAverage:F0}% of avg ({currentMinutes}m)",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning);
+                        _lastLongRunningJobAlert[jobKey] = now;
+
+                        var jobContext = BuildAnomalousJobContext(anomalousJobs);
+
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Long-Running Job",
+                            summary.DisplayName,
+                            $"{anomalousJobs.Count} job(s) exceeding {App.AlertLongRunningJobMultiplier}x average",
+                            $"{App.AlertLongRunningJobMultiplier}x historical avg",
+                            summary.ServerId,
+                            jobContext);
+                    }
+                }
+                else if (_activeLongRunningJobAlert.TryGetValue(key, out var wasJob) && wasJob)
+                {
+                    _activeLongRunningJobAlert[key] = false;
+                    _trayService.ShowNotification(
+                        "Long-Running Jobs Cleared",
+                        $"{summary.DisplayName}: No jobs exceeding threshold",
+                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Alerts", $"Failed to check anomalous jobs for {summary.DisplayName}: {ex.Message}");
+            }
+        }
     }
 
         private static string TruncateText(string text, int maxLength = 300)
@@ -1113,5 +1327,107 @@ public partial class MainWindow : Window
                 AppLogger.Error("EmailAlert", $"Failed to fetch deadlock detail for email: {ex.Message}");
                 return null;
             }
+        }
+
+        private static AlertContext? BuildPoisonWaitContext(List<PoisonWaitDelta> triggeredWaits)
+        {
+            if (triggeredWaits.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var w in triggeredWaits)
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = w.WaitType,
+                    Fields = new()
+                    {
+                        ("Avg ms/wait", $"{w.AvgMsPerWait:F1}"),
+                        ("Delta wait ms", $"{w.DeltaMs:N0}"),
+                        ("Delta tasks", $"{w.DeltaTasks:N0}")
+                    }
+                });
+            }
+            return context;
+        }
+
+        private static AlertContext? BuildLongRunningQueryContext(List<LongRunningQueryInfo> queries)
+        {
+            if (queries.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var q in queries.GetRange(0, Math.Min(3, queries.Count)))
+            {
+                var item = new AlertDetailItem
+                {
+                    Heading = $"Session #{q.SessionId} — {q.ElapsedSeconds / 60}m {q.ElapsedSeconds % 60}s",
+                    Fields = new()
+                };
+
+                if (!string.IsNullOrEmpty(q.DatabaseName))
+                    item.Fields.Add(("Database", q.DatabaseName));
+                if (!string.IsNullOrEmpty(q.QueryText))
+                    item.Fields.Add(("Query", TruncateText(q.QueryText)));
+                item.Fields.Add(("CPU Time", $"{q.CpuTimeMs:N0} ms"));
+                item.Fields.Add(("Reads", $"{q.Reads:N0}"));
+                item.Fields.Add(("Writes", $"{q.Writes:N0}"));
+                if (!string.IsNullOrEmpty(q.WaitType))
+                    item.Fields.Add(("Wait Type", q.WaitType));
+                if (q.BlockingSessionId.HasValue && q.BlockingSessionId.Value > 0)
+                    item.Fields.Add(("Blocked By", $"Session #{q.BlockingSessionId.Value}"));
+
+                context.Details.Add(item);
+            }
+            return context;
+        }
+
+        private static AlertContext? BuildTempDbSpaceContext(TempDbSpaceInfo tempDb)
+        {
+            var context = new AlertContext();
+            context.Details.Add(new AlertDetailItem
+            {
+                Heading = $"TempDB — {tempDb.UsedPercent:F0}% Used",
+                Fields = new()
+                {
+                    ("Total Reserved", $"{tempDb.TotalReservedMb:F0} MB"),
+                    ("Unallocated", $"{tempDb.UnallocatedMb:F0} MB"),
+                    ("User Objects", $"{tempDb.UserObjectReservedMb:F0} MB"),
+                    ("Internal Objects", $"{tempDb.InternalObjectReservedMb:F0} MB"),
+                    ("Version Store", $"{tempDb.VersionStoreReservedMb:F0} MB"),
+                    ("Top Consumer", tempDb.TopConsumerSessionId > 0
+                        ? $"Session #{tempDb.TopConsumerSessionId} ({tempDb.TopConsumerMb:F0} MB)"
+                        : "None")
+                }
+            });
+            return context;
+        }
+
+        private static AlertContext? BuildAnomalousJobContext(List<AnomalousJobInfo> jobs)
+        {
+            if (jobs.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var j in jobs.GetRange(0, Math.Min(3, jobs.Count)))
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = j.JobName,
+                    Fields = new()
+                    {
+                        ("Current Duration", FormatDuration(j.CurrentDurationSeconds)),
+                        ("Avg Duration", FormatDuration(j.AvgDurationSeconds)),
+                        ("P95 Duration", FormatDuration(j.P95DurationSeconds)),
+                        ("% of Average", j.PercentOfAverage.HasValue ? $"{j.PercentOfAverage:F0}%" : "N/A"),
+                        ("Started", j.StartTime.ToString("yyyy-MM-dd HH:mm:ss"))
+                    }
+                });
+            }
+            return context;
+        }
+
+        private static string FormatDuration(long seconds)
+        {
+            if (seconds < 60) return $"{seconds}s";
+            if (seconds < 3600) return $"{seconds / 60}m {seconds % 60}s";
+            return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
         }
     }
