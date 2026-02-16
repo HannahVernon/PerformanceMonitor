@@ -99,9 +99,30 @@ namespace PerformanceMonitorDashboard
         // Legend panel references for edge-based legends (ScottPlot issue #4717 workaround)
         private Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
 
+        // Chart hover tooltips
+        private Helpers.ChartHoverHelper? _resourceOverviewCpuHover;
+        private Helpers.ChartHoverHelper? _resourceOverviewMemoryHover;
+        private Helpers.ChartHoverHelper? _resourceOverviewIoHover;
+        private Helpers.ChartHoverHelper? _resourceOverviewWaitHover;
+        private Helpers.ChartHoverHelper? _lockWaitStatsHover;
+        private Helpers.ChartHoverHelper? _blockingEventsHover;
+        private Helpers.ChartHoverHelper? _blockingDurationHover;
+        private Helpers.ChartHoverHelper? _deadlocksHover;
+        private Helpers.ChartHoverHelper? _deadlockWaitTimeHover;
+
         public ServerTab(ServerConnection serverConnection, int utcOffsetMinutes = 0)
         {
             InitializeComponent();
+
+            _resourceOverviewCpuHover = new Helpers.ChartHoverHelper(ResourceOverviewCpuChart, "%");
+            _resourceOverviewMemoryHover = new Helpers.ChartHoverHelper(ResourceOverviewMemoryChart, "MB");
+            _resourceOverviewIoHover = new Helpers.ChartHoverHelper(ResourceOverviewIoChart, "ms");
+            _resourceOverviewWaitHover = new Helpers.ChartHoverHelper(ResourceOverviewWaitChart, "ms/sec");
+            _lockWaitStatsHover = new Helpers.ChartHoverHelper(LockWaitStatsChart, "ms/sec");
+            _blockingEventsHover = new Helpers.ChartHoverHelper(BlockingStatsBlockingEventsChart, "events");
+            _blockingDurationHover = new Helpers.ChartHoverHelper(BlockingStatsDurationChart, "ms");
+            _deadlocksHover = new Helpers.ChartHoverHelper(BlockingStatsDeadlocksChart, "events");
+            _deadlockWaitTimeHover = new Helpers.ChartHoverHelper(BlockingStatsDeadlockWaitTimeChart, "ms");
 
             _serverConnection = serverConnection;
             UtcOffsetMinutes = utcOffsetMinutes;
@@ -1642,6 +1663,7 @@ namespace PerformanceMonitorDashboard
             // Get all unique time points for consistent X-axis across all charts
             // Blocking Events Delta Chart
             BlockingStatsBlockingEventsChart.Plot.Clear();
+            _blockingEventsHover?.Clear();
             ApplyDarkModeToChart(BlockingStatsBlockingEventsChart);
             var (blockingXs, blockingYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
@@ -1652,6 +1674,7 @@ namespace PerformanceMonitorDashboard
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
                 scatter.Color = TabHelpers.ChartColors[0];
+                _blockingEventsHover?.Add(scatter, "Blocking Events");
             }
             else
             {
@@ -1670,6 +1693,7 @@ namespace PerformanceMonitorDashboard
 
             // Blocking Duration Delta Chart
             BlockingStatsDurationChart.Plot.Clear();
+            _blockingDurationHover?.Clear();
             ApplyDarkModeToChart(BlockingStatsDurationChart);
             var (durationXs, durationYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
@@ -1680,6 +1704,7 @@ namespace PerformanceMonitorDashboard
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
                 scatter.Color = TabHelpers.ChartColors[2];
+                _blockingDurationHover?.Add(scatter, "Blocking Duration");
             }
             else
             {
@@ -1698,6 +1723,7 @@ namespace PerformanceMonitorDashboard
 
             // Deadlock Count Delta Chart
             BlockingStatsDeadlocksChart.Plot.Clear();
+            _deadlocksHover?.Clear();
             ApplyDarkModeToChart(BlockingStatsDeadlocksChart);
             var (deadlockXs, deadlockYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
@@ -1708,6 +1734,7 @@ namespace PerformanceMonitorDashboard
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
                 scatter.Color = TabHelpers.ChartColors[3];
+                _deadlocksHover?.Add(scatter, "Deadlocks");
             }
             else
             {
@@ -1726,6 +1753,7 @@ namespace PerformanceMonitorDashboard
 
             // Deadlock Wait Time Chart
             BlockingStatsDeadlockWaitTimeChart.Plot.Clear();
+            _deadlockWaitTimeHover?.Clear();
             ApplyDarkModeToChart(BlockingStatsDeadlockWaitTimeChart);
             var (deadlockWaitXs, deadlockWaitYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
@@ -1736,6 +1764,7 @@ namespace PerformanceMonitorDashboard
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
                 scatter.Color = TabHelpers.ChartColors[4];
+                _deadlockWaitTimeHover?.Add(scatter, "Deadlock Wait Time");
             }
             else
             {
@@ -1767,6 +1796,7 @@ namespace PerformanceMonitorDashboard
                 _legendPanels[LockWaitStatsChart] = null;
             }
             LockWaitStatsChart.Plot.Clear();
+            _lockWaitStatsHover?.Clear();
             ApplyDarkModeToChart(LockWaitStatsChart);
 
             // Get all unique time points across all wait types for gap filling
@@ -1789,7 +1819,9 @@ namespace PerformanceMonitorDashboard
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
-                    scatter.LegendText = waitType.Replace("LCK_M_", "").Replace("LCK_", "");
+                    var lockLabel = waitType.Replace("LCK_M_", "").Replace("LCK_", "");
+                    scatter.LegendText = lockLabel;
+                    _lockWaitStatsHover?.Add(scatter, lockLabel);
                     colorIndex++;
                 }
             }
@@ -2201,6 +2233,7 @@ namespace PerformanceMonitorDashboard
                 _legendPanels[ResourceOverviewCpuChart] = null;
             }
             ResourceOverviewCpuChart.Plot.Clear();
+            _resourceOverviewCpuHover?.Clear();
             ApplyDarkModeToChart(ResourceOverviewCpuChart);
 
             var dataList = cpuData?.OrderBy(d => d.SampleTime).ToList() ?? new List<CpuDataPoint>();
@@ -2217,6 +2250,7 @@ namespace PerformanceMonitorDashboard
                 scatter.MarkerSize = 5;
                 scatter.Color = TabHelpers.ChartColors[0];
                 scatter.LegendText = "SQL CPU %";
+                _resourceOverviewCpuHover?.Add(scatter, "SQL CPU %");
 
                 _legendPanels[ResourceOverviewCpuChart] = ResourceOverviewCpuChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
                 ResourceOverviewCpuChart.Plot.Legend.FontSize = 12;
@@ -2252,6 +2286,7 @@ namespace PerformanceMonitorDashboard
                 _legendPanels[ResourceOverviewMemoryChart] = null;
             }
             ResourceOverviewMemoryChart.Plot.Clear();
+            _resourceOverviewMemoryHover?.Clear();
             ApplyDarkModeToChart(ResourceOverviewMemoryChart);
 
             var dataList = memoryData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<MemoryDataPoint>();
@@ -2272,12 +2307,14 @@ namespace PerformanceMonitorDashboard
                 bufferScatter.MarkerSize = 5;
                 bufferScatter.Color = TabHelpers.ChartColors[4];
                 bufferScatter.LegendText = "Buffer Pool";
+                _resourceOverviewMemoryHover?.Add(bufferScatter, "Buffer Pool");
 
                 var grantsScatter = ResourceOverviewMemoryChart.Plot.Add.Scatter(grantsXs, grantsYs);
                 grantsScatter.LineWidth = 2;
                 grantsScatter.MarkerSize = 5;
                 grantsScatter.Color = TabHelpers.ChartColors[2];
                 grantsScatter.LegendText = "Memory Grants";
+                _resourceOverviewMemoryHover?.Add(grantsScatter, "Memory Grants");
 
                 _legendPanels[ResourceOverviewMemoryChart] = ResourceOverviewMemoryChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
                 ResourceOverviewMemoryChart.Plot.Legend.FontSize = 12;
@@ -2313,6 +2350,7 @@ namespace PerformanceMonitorDashboard
                 _legendPanels[ResourceOverviewIoChart] = null;
             }
             ResourceOverviewIoChart.Plot.Clear();
+            _resourceOverviewIoHover?.Clear();
             ApplyDarkModeToChart(ResourceOverviewIoChart);
 
             var dataList = ioData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<FileIoDataPoint>();
@@ -2348,12 +2386,14 @@ namespace PerformanceMonitorDashboard
                 readScatter.MarkerSize = 5;
                 readScatter.Color = TabHelpers.ChartColors[1];
                 readScatter.LegendText = "Read ms";
+                _resourceOverviewIoHover?.Add(readScatter, "Read ms");
 
                 var writeScatter = ResourceOverviewIoChart.Plot.Add.Scatter(writeXs, writeYs);
                 writeScatter.LineWidth = 2;
                 writeScatter.MarkerSize = 5;
                 writeScatter.Color = TabHelpers.ChartColors[2];
                 writeScatter.LegendText = "Write ms";
+                _resourceOverviewIoHover?.Add(writeScatter, "Write ms");
 
                 _legendPanels[ResourceOverviewIoChart] = ResourceOverviewIoChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
                 ResourceOverviewIoChart.Plot.Legend.FontSize = 12;
@@ -2390,6 +2430,7 @@ namespace PerformanceMonitorDashboard
                 _legendPanels[ResourceOverviewWaitChart] = null;
             }
             ResourceOverviewWaitChart.Plot.Clear();
+            _resourceOverviewWaitHover?.Clear();
             ApplyDarkModeToChart(ResourceOverviewWaitChart);
 
             var dataList = waitData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<WaitStatsDataPoint>();
@@ -2422,7 +2463,9 @@ namespace PerformanceMonitorDashboard
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
-                    scatter.LegendText = waitType.Length > 15 ? waitType.Substring(0, 15) + "..." : waitType;
+                    var waitLabel = waitType.Length > 15 ? waitType.Substring(0, 15) + "..." : waitType;
+                    scatter.LegendText = waitLabel;
+                    _resourceOverviewWaitHover?.Add(scatter, waitLabel);
                     colorIndex++;
                 }
 
