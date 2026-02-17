@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -1341,16 +1342,16 @@ END";
 
                     using (var insertCmd = new SqlCommand(insertSql, connection))
                     {
-                        insertCmd.Parameters.AddWithValue("@installer_version", assemblyVersion);
-                        insertCmd.Parameters.AddWithValue("@installer_info_version", (object?)infoVersion ?? DBNull.Value);
-                        insertCmd.Parameters.AddWithValue("@sql_server_version", sqlVersion);
-                        insertCmd.Parameters.AddWithValue("@sql_server_edition", sqlEdition);
-                        insertCmd.Parameters.AddWithValue("@installation_type", installationType);
-                        insertCmd.Parameters.AddWithValue("@previous_version", (object?)previousVersion ?? DBNull.Value);
-                        insertCmd.Parameters.AddWithValue("@installation_status", status);
-                        insertCmd.Parameters.AddWithValue("@files_executed", filesExecuted);
-                        insertCmd.Parameters.AddWithValue("@files_failed", filesFailed);
-                        insertCmd.Parameters.AddWithValue("@installation_duration_ms", durationMs);
+                        insertCmd.Parameters.Add(new SqlParameter("@installer_version", SqlDbType.NVarChar, 50) { Value = assemblyVersion });
+                        insertCmd.Parameters.Add(new SqlParameter("@installer_info_version", SqlDbType.NVarChar, 100) { Value = (object?)infoVersion ?? DBNull.Value });
+                        insertCmd.Parameters.Add(new SqlParameter("@sql_server_version", SqlDbType.NVarChar, 500) { Value = sqlVersion });
+                        insertCmd.Parameters.Add(new SqlParameter("@sql_server_edition", SqlDbType.NVarChar, 128) { Value = sqlEdition });
+                        insertCmd.Parameters.Add(new SqlParameter("@installation_type", SqlDbType.VarChar, 20) { Value = installationType });
+                        insertCmd.Parameters.Add(new SqlParameter("@previous_version", SqlDbType.NVarChar, 50) { Value = (object?)previousVersion ?? DBNull.Value });
+                        insertCmd.Parameters.Add(new SqlParameter("@installation_status", SqlDbType.VarChar, 20) { Value = status });
+                        insertCmd.Parameters.Add(new SqlParameter("@files_executed", SqlDbType.Int) { Value = filesExecuted });
+                        insertCmd.Parameters.Add(new SqlParameter("@files_failed", SqlDbType.Int) { Value = filesFailed });
+                        insertCmd.Parameters.Add(new SqlParameter("@installation_duration_ms", SqlDbType.BigInt) { Value = durationMs });
 
                         await insertCmd.ExecuteNonQueryAsync().ConfigureAwait(false);
                     }

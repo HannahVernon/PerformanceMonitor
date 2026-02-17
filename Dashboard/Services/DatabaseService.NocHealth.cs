@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitorDashboard.Helpers;
@@ -631,7 +632,7 @@ namespace PerformanceMonitorDashboard.Services
             {
                 using var cmd = new SqlCommand(query, connection);
                 cmd.CommandTimeout = 10;
-                cmd.Parameters.AddWithValue("@thresholdMs", (long)thresholdMinutes * 60 * 1000);
+                cmd.Parameters.Add(new SqlParameter("@thresholdMs", SqlDbType.BigInt) { Value = (long)thresholdMinutes * 60 * 1000 });
                 using var reader = await cmd.ExecuteReaderAsync();
 
                 while (await reader.ReadAsync())
@@ -685,7 +686,7 @@ namespace PerformanceMonitorDashboard.Services
             {
                 using var cmd = new SqlCommand(query, connection);
                 cmd.CommandTimeout = 10;
-                cmd.Parameters.AddWithValue("@thresholdPercent", thresholdPercent);
+                cmd.Parameters.Add(new SqlParameter("@thresholdPercent", SqlDbType.Int) { Value = thresholdPercent });
                 using var reader = await cmd.ExecuteReaderAsync();
 
                 while (await reader.ReadAsync())

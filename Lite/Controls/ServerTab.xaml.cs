@@ -536,8 +536,8 @@ public partial class ServerTab : UserControl
             DateTime? latestEventTime = null;
             if (blockingCount > 0 || deadlockCount > 0)
             {
-                var latestBlocking = blockedProcessTask.Result.Max(r => (DateTime?)r.CollectionTime);
-                var latestDeadlock = deadlockTask.Result.Max(r => (DateTime?)r.CollectionTime);
+                var latestBlocking = blockedProcessTask.Result.Max(r => (DateTime?)r.EventTime);
+                var latestDeadlock = deadlockTask.Result.Max(r => (DateTime?)r.DeadlockTime);
                 latestEventTime = latestBlocking > latestDeadlock ? latestBlocking : latestDeadlock;
             }
             AlertCountsChanged?.Invoke(blockingCount, deadlockCount, latestEventTime);
