@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Data;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -80,7 +81,7 @@ LEFT JOIN sys.dm_xe_sessions AS dxs
 WHERE ses.name = @session_name;", connection))
         {
             cmd.CommandTimeout = CommandTimeoutSeconds;
-            cmd.Parameters.AddWithValue("@session_name", DeadlockXeSessionName);
+            cmd.Parameters.Add(new SqlParameter("@session_name", SqlDbType.NVarChar, 128) { Value = DeadlockXeSessionName });
             var result = await cmd.ExecuteScalarAsync(cancellationToken);
 
             if (result != null)
@@ -179,7 +180,7 @@ SELECT
     END;", connection))
         {
             cmd.CommandTimeout = CommandTimeoutSeconds;
-            cmd.Parameters.AddWithValue("@session_name", DeadlockXeSessionName);
+            cmd.Parameters.Add(new SqlParameter("@session_name", SqlDbType.NVarChar, 128) { Value = DeadlockXeSessionName });
             var result = await cmd.ExecuteScalarAsync(cancellationToken);
 
             if (result is int hasCorrectEvent)
@@ -380,8 +381,7 @@ OPTION(RECOMPILE);";
         command.CommandTimeout = CommandTimeoutSeconds;
 
         /* Use the most recent timestamp from DuckDB as the cutoff, or fall back to 10-minute window */
-        command.Parameters.AddWithValue("@cutoff_time",
-            lastCollectedTime ?? DateTime.UtcNow.AddMinutes(-10));
+        command.Parameters.Add(new SqlParameter("@cutoff_time", SqlDbType.DateTime2) { Value = lastCollectedTime ?? DateTime.UtcNow.AddMinutes(-10) });
 
         try
         {
