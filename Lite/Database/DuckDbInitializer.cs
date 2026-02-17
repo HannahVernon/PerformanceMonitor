@@ -19,7 +19,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    private const int CurrentSchemaVersion = 10;
+    internal const int CurrentSchemaVersion = 10;
 
     public DuckDbInitializer(string databasePath, ILogger<DuckDbInitializer>? logger = null)
     {
