@@ -314,6 +314,17 @@ public partial class SettingsWindow : Window
         UpdateAlertControlStates();
     }
 
+    private void RestoreAlertDefaultsButton_Click(object sender, RoutedEventArgs e)
+    {
+        AlertCpuThresholdBox.Text = "80";
+        AlertBlockingThresholdBox.Text = "1";
+        AlertDeadlockThresholdBox.Text = "1";
+        AlertPoisonWaitThresholdBox.Text = "500";
+        AlertLongRunningQueryThresholdBox.Text = "30";
+        AlertTempDbSpaceThresholdBox.Text = "80";
+        AlertLongRunningJobMultiplierBox.Text = "3";
+    }
+
     private void UpdateAlertControlStates()
     {
         bool enabled = AlertsEnabledCheckBox.IsChecked == true;
