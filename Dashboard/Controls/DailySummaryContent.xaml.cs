@@ -79,8 +79,12 @@ namespace PerformanceMonitorDashboard.Controls
 
             try
             {
-                DailySummaryLoading.IsLoading = true;
-                DailySummaryNoDataMessage.Visibility = Visibility.Collapsed;
+                // Only show loading overlay on initial load (no existing data)
+                if (DailySummaryDataGrid.ItemsSource == null)
+                {
+                    DailySummaryLoading.IsLoading = true;
+                    DailySummaryNoDataMessage.Visibility = Visibility.Collapsed;
+                }
 
                 var data = await _databaseService.GetDailySummaryAsync(_dailySummaryDate);
 

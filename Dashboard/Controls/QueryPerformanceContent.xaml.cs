@@ -217,8 +217,12 @@ namespace PerformanceMonitorDashboard.Controls
 
                 if (_databaseService == null) return;
 
-                QueryStatsLoading.IsLoading = true;
-                QueryStatsNoDataMessage.Visibility = Visibility.Collapsed;
+                // Only show loading overlay on initial load (no existing data)
+                if (QueryStatsDataGrid.ItemsSource == null)
+                {
+                    QueryStatsLoading.IsLoading = true;
+                    QueryStatsNoDataMessage.Visibility = Visibility.Collapsed;
+                }
 
                 // Fetch grid data (summary views aggregated per query/procedure)
                 var queryStatsTask = _databaseService.GetQueryStatsAsync(_queryStatsHoursBack, _queryStatsFromDate, _queryStatsToDate);
@@ -374,8 +378,12 @@ namespace PerformanceMonitorDashboard.Controls
 
             try
             {
-                ActiveQueriesLoading.IsLoading = true;
-                ActiveQueriesNoDataMessage.Visibility = Visibility.Collapsed;
+                // Only show loading overlay on initial load (no existing data)
+                if (ActiveQueriesDataGrid.ItemsSource == null)
+                {
+                    ActiveQueriesLoading.IsLoading = true;
+                    ActiveQueriesNoDataMessage.Visibility = Visibility.Collapsed;
+                }
                 SetStatus("Loading active queries...");
 
                 var data = await _databaseService.GetQuerySnapshotsAsync(_activeQueriesHoursBack, _activeQueriesFromDate, _activeQueriesToDate);

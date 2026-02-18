@@ -383,8 +383,12 @@ namespace PerformanceMonitorDashboard.Controls
 
             try
             {
-                MemoryGrantsLoading.IsLoading = true;
-                MemoryGrantsNoDataMessage.Visibility = Visibility.Collapsed;
+                // Only show loading overlay on initial load (no existing chart data)
+                if (!MemoryGrantsChart.Plot.GetPlottables().Any())
+                {
+                    MemoryGrantsLoading.IsLoading = true;
+                    MemoryGrantsNoDataMessage.Visibility = Visibility.Collapsed;
+                }
 
                 var data = await _databaseService.GetMemoryGrantStatsAsync(_memoryGrantsHoursBack, _memoryGrantsFromDate, _memoryGrantsToDate);
                 var dataList = data.ToList();
@@ -492,8 +496,12 @@ namespace PerformanceMonitorDashboard.Controls
 
             try
             {
-                MemoryClerksLoading.IsLoading = true;
-                MemoryClerksNoDataMessage.Visibility = Visibility.Collapsed;
+                // Only show loading overlay on initial load (no existing chart data)
+                if (!MemoryClerksChart.Plot.GetPlottables().Any())
+                {
+                    MemoryClerksLoading.IsLoading = true;
+                    MemoryClerksNoDataMessage.Visibility = Visibility.Collapsed;
+                }
 
                 var data = await _databaseService.GetMemoryClerksTopNAsync(5, _memoryClerksHoursBack, _memoryClerksFromDate, _memoryClerksToDate);
                 var dataList = data.ToList();
