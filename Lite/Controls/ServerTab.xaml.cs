@@ -45,6 +45,10 @@ public partial class ServerTab : UserControl
     private Helpers.ChartHoverHelper? _tempDbFileIoHover;
     private Helpers.ChartHoverHelper? _fileIoReadHover;
     private Helpers.ChartHoverHelper? _fileIoWriteHover;
+    private Helpers.ChartHoverHelper? _collectorDurationHover;
+    private Helpers.ChartHoverHelper? _queryDurationTrendHover;
+    private Helpers.ChartHoverHelper? _procDurationTrendHover;
+    private Helpers.ChartHoverHelper? _queryStoreDurationTrendHover;
 
     /* Column filtering */
     private Popup? _filterPopup;
@@ -138,6 +142,10 @@ public partial class ServerTab : UserControl
         _tempDbFileIoHover = new Helpers.ChartHoverHelper(TempDbFileIoChart, "ms");
         _fileIoReadHover = new Helpers.ChartHoverHelper(FileIoReadChart, "ms");
         _fileIoWriteHover = new Helpers.ChartHoverHelper(FileIoWriteChart, "ms");
+        _collectorDurationHover = new Helpers.ChartHoverHelper(CollectorDurationChart, "ms");
+        _queryDurationTrendHover = new Helpers.ChartHoverHelper(QueryDurationTrendChart, "ms/sec");
+        _procDurationTrendHover = new Helpers.ChartHoverHelper(ProcDurationTrendChart, "ms/sec");
+        _queryStoreDurationTrendHover = new Helpers.ChartHoverHelper(QueryStoreDurationTrendChart, "ms/sec");
 
         /* Initial load is triggered by MainWindow.ConnectToServer calling RefreshData()
            after collectors finish - no Loaded handler needed */
