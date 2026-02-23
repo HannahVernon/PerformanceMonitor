@@ -27,6 +27,21 @@ public partial class PlanViewerControl : UserControl
     private const double MaxZoom = 3.0;
     private string _label = "";
 
+    // Node selection
+    private Border? _selectedNodeBorder;
+    private Brush? _selectedNodeOriginalBorder;
+    private Thickness _selectedNodeOriginalThickness;
+
+    // Brushes
+    private static readonly SolidColorBrush SelectionBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));
+    private static readonly SolidColorBrush TooltipBgBrush = new(Color.FromRgb(0x1A, 0x1D, 0x23));
+    private static readonly SolidColorBrush TooltipBorderBrush = new(Color.FromRgb(0x3A, 0x3D, 0x45));
+    private static readonly SolidColorBrush TooltipFgBrush = new(Color.FromRgb(0xE4, 0xE6, 0xEB));
+    private static readonly SolidColorBrush MutedBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly SolidColorBrush EdgeBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly SolidColorBrush SectionHeaderBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));
+    private static readonly SolidColorBrush PropSeparatorBrush = new(Color.FromRgb(0x2A, 0x2D, 0x35));
+
     public PlanViewerControl()
     {
         InitializeComponent();
@@ -85,18 +100,21 @@ public partial class PlanViewerControl : UserControl
         PlanCanvas.Children.Clear();
         _currentPlan = null;
         _currentStatement = null;
+        _selectedNodeBorder = null;
         EmptyState.Visibility = Visibility.Visible;
         PlanScrollViewer.Visibility = Visibility.Collapsed;
         MissingIndexBanner.Visibility = Visibility.Collapsed;
         WarningsBanner.Visibility = Visibility.Collapsed;
         StatementSelector.Visibility = Visibility.Collapsed;
         CostText.Text = "";
+        ClosePropertiesPanel();
     }
 
     private void RenderStatement(PlanStatement statement)
     {
         _currentStatement = statement;
         PlanCanvas.Children.Clear();
+        _selectedNodeBorder = null;
 
         if (statement.RootNode == null) return;
 
@@ -119,6 +137,8 @@ public partial class PlanViewerControl : UserControl
         // Update cost text
         CostText.Text = $"Statement Cost: {statement.StatementSubTreeCost:F4}";
     }
+
+    #region Node Rendering
 
     private void RenderNodes(PlanNode node)
     {
@@ -150,8 +170,15 @@ public partial class PlanViewerControl : UserControl
             Padding = new Thickness(6, 4, 6, 4),
             ToolTip = BuildNodeTooltip(node),
             Cursor = Cursors.Hand,
-            SnapsToDevicePixels = true
+            SnapsToDevicePixels = true,
+            Tag = node
         };
+
+        // Click to select + show properties
+        border.MouseLeftButtonUp += Node_Click;
+
+        // Right-click context menu
+        border.ContextMenu = BuildNodeContextMenu(node);
 
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
 
@@ -199,14 +226,10 @@ public partial class PlanViewerControl : UserControl
 
         stack.Children.Add(iconRow);
 
-        // Operator name
-        var opName = node.PhysicalOp;
-        if (opName.Length > 22)
-            opName = opName[..20] + "...";
-
+        // Operator name — use full name, let TextTrimming handle overflow
         stack.Children.Add(new TextBlock
         {
-            Text = opName,
+            Text = node.PhysicalOp,
             FontSize = 10,
             FontWeight = FontWeights.SemiBold,
             Foreground = (Brush)FindResource("ForegroundBrush"),
@@ -230,26 +253,29 @@ public partial class PlanViewerControl : UserControl
             HorizontalAlignment = HorizontalAlignment.Center
         });
 
-        // Object name (if present, small text)
+        // Object name — show full object name, use ellipsis for overflow
         if (!string.IsNullOrEmpty(node.ObjectName))
         {
-            var objName = node.ObjectName;
-            if (objName.Length > 24) objName = objName[..22] + "...";
             stack.Children.Add(new TextBlock
             {
-                Text = objName,
+                Text = node.FullObjectName ?? node.ObjectName,
                 FontSize = 9,
                 Foreground = (Brush)FindResource("ForegroundMutedBrush"),
                 TextAlignment = TextAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = PlanLayoutEngine.NodeWidth - 16,
-                HorizontalAlignment = HorizontalAlignment.Center
+                HorizontalAlignment = HorizontalAlignment.Center,
+                ToolTip = node.FullObjectName ?? node.ObjectName
             });
         }
 
         border.Child = stack;
         return border;
     }
+
+    #endregion
+
+    #region Edge Rendering
 
     private void RenderEdges(PlanNode node)
     {
@@ -293,7 +319,7 @@ public partial class PlanViewerControl : UserControl
         return new WpfPath
         {
             Data = geometry,
-            Stroke = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
+            Stroke = EdgeBrush,
             StrokeThickness = thickness,
             StrokeLineJoin = PenLineJoin.Round,
             ToolTip = rowText,
@@ -301,13 +327,460 @@ public partial class PlanViewerControl : UserControl
         };
     }
 
+    #endregion
+
+    #region Node Selection & Properties Panel
+
+    private void Node_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is Border border && border.Tag is PlanNode node)
+        {
+            SelectNode(border, node);
+            e.Handled = true;
+        }
+    }
+
+    private void SelectNode(Border border, PlanNode node)
+    {
+        // Deselect previous
+        if (_selectedNodeBorder != null)
+        {
+            _selectedNodeBorder.BorderBrush = _selectedNodeOriginalBorder;
+            _selectedNodeBorder.BorderThickness = _selectedNodeOriginalThickness;
+        }
+
+        // Select new
+        _selectedNodeOriginalBorder = border.BorderBrush;
+        _selectedNodeOriginalThickness = border.BorderThickness;
+        _selectedNodeBorder = border;
+        border.BorderBrush = SelectionBrush;
+        border.BorderThickness = new Thickness(2);
+
+        ShowPropertiesPanel(node);
+    }
+
+    private ContextMenu BuildNodeContextMenu(PlanNode node)
+    {
+        var menu = new ContextMenu();
+
+        var propsItem = new MenuItem { Header = "Properties" };
+        propsItem.Click += (_, _) =>
+        {
+            // Find the border for this node by checking Tags
+            foreach (var child in PlanCanvas.Children)
+            {
+                if (child is Border b && b.Tag == node)
+                {
+                    SelectNode(b, node);
+                    break;
+                }
+            }
+        };
+        menu.Items.Add(propsItem);
+
+        menu.Items.Add(new Separator());
+
+        var copyOpItem = new MenuItem { Header = "Copy Operator Name" };
+        copyOpItem.Click += (_, _) => Clipboard.SetDataObject(node.PhysicalOp, false);
+        menu.Items.Add(copyOpItem);
+
+        if (!string.IsNullOrEmpty(node.FullObjectName))
+        {
+            var copyObjItem = new MenuItem { Header = "Copy Object Name" };
+            copyObjItem.Click += (_, _) => Clipboard.SetDataObject(node.FullObjectName, false);
+            menu.Items.Add(copyObjItem);
+        }
+
+        if (!string.IsNullOrEmpty(node.Predicate))
+        {
+            var copyPredItem = new MenuItem { Header = "Copy Predicate" };
+            copyPredItem.Click += (_, _) => Clipboard.SetDataObject(node.Predicate, false);
+            menu.Items.Add(copyPredItem);
+        }
+
+        if (!string.IsNullOrEmpty(node.SeekPredicates))
+        {
+            var copySeekItem = new MenuItem { Header = "Copy Seek Predicate" };
+            copySeekItem.Click += (_, _) => Clipboard.SetDataObject(node.SeekPredicates, false);
+            menu.Items.Add(copySeekItem);
+        }
+
+        return menu;
+    }
+
+    private void ShowPropertiesPanel(PlanNode node)
+    {
+        PropertiesContent.Children.Clear();
+
+        // Header
+        var headerText = node.PhysicalOp;
+        if (node.LogicalOp != node.PhysicalOp && !string.IsNullOrEmpty(node.LogicalOp))
+            headerText += $" ({node.LogicalOp})";
+        PropertiesHeader.Text = headerText;
+        PropertiesSubHeader.Text = $"Node ID: {node.NodeId}";
+
+        // === General Section ===
+        AddPropertySection("General");
+        AddPropertyRow("Physical Operation", node.PhysicalOp);
+        AddPropertyRow("Logical Operation", node.LogicalOp);
+        AddPropertyRow("Node ID", $"{node.NodeId}");
+        if (!string.IsNullOrEmpty(node.ExecutionMode))
+            AddPropertyRow("Execution Mode", node.ExecutionMode);
+        if (!string.IsNullOrEmpty(node.ActualExecutionMode) && node.ActualExecutionMode != node.ExecutionMode)
+            AddPropertyRow("Actual Exec Mode", node.ActualExecutionMode);
+        AddPropertyRow("Parallel", node.Parallel ? "True" : "False");
+        if (node.EstimatedDOP > 0)
+            AddPropertyRow("Estimated DOP", $"{node.EstimatedDOP}");
+
+        // Scan/seek-related properties — always show for operators that have object references
+        if (!string.IsNullOrEmpty(node.FullObjectName))
+        {
+            AddPropertyRow("Ordered", node.Ordered ? "True" : "False");
+            if (!string.IsNullOrEmpty(node.ScanDirection))
+                AddPropertyRow("Scan Direction", node.ScanDirection);
+            AddPropertyRow("Forced Index", node.ForcedIndex ? "True" : "False");
+            AddPropertyRow("ForceScan", node.ForceScan ? "True" : "False");
+            AddPropertyRow("ForceSeek", node.ForceSeek ? "True" : "False");
+            AddPropertyRow("NoExpandHint", node.NoExpandHint ? "True" : "False");
+        }
+
+        if (!string.IsNullOrEmpty(node.StorageType))
+            AddPropertyRow("Storage", node.StorageType);
+        if (node.IsAdaptive)
+            AddPropertyRow("Adaptive", "True");
+
+        // === Object Section ===
+        if (!string.IsNullOrEmpty(node.FullObjectName))
+        {
+            AddPropertySection("Object");
+            AddPropertyRow("Full Name", node.FullObjectName, isCode: true);
+            if (!string.IsNullOrEmpty(node.DatabaseName))
+                AddPropertyRow("Database", node.DatabaseName);
+            if (!string.IsNullOrEmpty(node.IndexName))
+                AddPropertyRow("Index", node.IndexName);
+        }
+
+        // === Operator Details Section ===
+        var hasOperatorDetails = !string.IsNullOrEmpty(node.OrderBy)
+            || !string.IsNullOrEmpty(node.TopExpression)
+            || !string.IsNullOrEmpty(node.GroupBy)
+            || !string.IsNullOrEmpty(node.PartitionColumns)
+            || !string.IsNullOrEmpty(node.SegmentColumn)
+            || !string.IsNullOrEmpty(node.DefinedValues)
+            || !string.IsNullOrEmpty(node.OuterReferences)
+            || !string.IsNullOrEmpty(node.InnerSideJoinColumns)
+            || !string.IsNullOrEmpty(node.OuterSideJoinColumns)
+            || node.ManyToMany;
+
+        if (hasOperatorDetails)
+        {
+            AddPropertySection("Operator Details");
+            if (!string.IsNullOrEmpty(node.OrderBy))
+                AddPropertyRow("Order By", node.OrderBy, isCode: true);
+            if (!string.IsNullOrEmpty(node.TopExpression))
+                AddPropertyRow("Top", node.IsPercent ? $"{node.TopExpression} PERCENT" : node.TopExpression);
+            if (!string.IsNullOrEmpty(node.GroupBy))
+                AddPropertyRow("Group By", node.GroupBy, isCode: true);
+            if (!string.IsNullOrEmpty(node.PartitionColumns))
+                AddPropertyRow("Partition Columns", node.PartitionColumns, isCode: true);
+            if (!string.IsNullOrEmpty(node.SegmentColumn))
+                AddPropertyRow("Segment Column", node.SegmentColumn, isCode: true);
+            if (!string.IsNullOrEmpty(node.DefinedValues))
+                AddPropertyRow("Defined Values", node.DefinedValues, isCode: true);
+            if (!string.IsNullOrEmpty(node.OuterReferences))
+                AddPropertyRow("Outer References", node.OuterReferences, isCode: true);
+            if (!string.IsNullOrEmpty(node.InnerSideJoinColumns))
+                AddPropertyRow("Inner Join Cols", node.InnerSideJoinColumns, isCode: true);
+            if (!string.IsNullOrEmpty(node.OuterSideJoinColumns))
+                AddPropertyRow("Outer Join Cols", node.OuterSideJoinColumns, isCode: true);
+            if (node.ManyToMany)
+                AddPropertyRow("Many to Many", "True");
+        }
+
+        // === Adaptive Join Section ===
+        if (node.IsAdaptive)
+        {
+            AddPropertySection("Adaptive Join");
+            if (!string.IsNullOrEmpty(node.EstimatedJoinType))
+                AddPropertyRow("Est. Join Type", node.EstimatedJoinType);
+            if (!string.IsNullOrEmpty(node.ActualJoinType))
+                AddPropertyRow("Actual Join Type", node.ActualJoinType);
+            if (node.AdaptiveThresholdRows > 0)
+                AddPropertyRow("Threshold Rows", $"{node.AdaptiveThresholdRows:N1}");
+        }
+
+        // === Estimated Costs Section ===
+        AddPropertySection("Estimated Costs");
+        AddPropertyRow("Operator Cost", $"{node.EstimatedOperatorCost:F6} ({node.CostPercent}%)");
+        AddPropertyRow("Subtree Cost", $"{node.EstimatedTotalSubtreeCost:F6}");
+        AddPropertyRow("I/O Cost", $"{node.EstimateIO:F6}");
+        AddPropertyRow("CPU Cost", $"{node.EstimateCPU:F6}");
+
+        // === Estimated Rows Section ===
+        AddPropertySection("Estimated Rows");
+        AddPropertyRow("Est. Executions", $"{1 + node.EstimateRebinds:N0}");
+        AddPropertyRow("Est. Rows Per Exec", $"{node.EstimateRows:N1}");
+        if (node.EstimatedRowsRead > 0)
+            AddPropertyRow("Est. Rows to Read", $"{node.EstimatedRowsRead:N1}");
+        if (node.TableCardinality > 0)
+            AddPropertyRow("Table Cardinality", $"{node.TableCardinality:N0}");
+        AddPropertyRow("Avg Row Size", $"{node.EstimatedRowSize} B");
+        AddPropertyRow("Est. Rebinds", $"{node.EstimateRebinds:N1}");
+        AddPropertyRow("Est. Rewinds", $"{node.EstimateRewinds:N1}");
+
+        // === Actual Stats Section (if actual plan) ===
+        if (node.HasActualStats)
+        {
+            AddPropertySection("Actual Statistics");
+            AddPropertyRow("Actual Rows", $"{node.ActualRows:N0}");
+            if (node.ActualRowsRead > 0)
+                AddPropertyRow("Actual Rows Read", $"{node.ActualRowsRead:N0}");
+            AddPropertyRow("Actual Executions", $"{node.ActualExecutions:N0}");
+            if (node.ActualRebinds > 0)
+                AddPropertyRow("Actual Rebinds", $"{node.ActualRebinds:N0}");
+            if (node.ActualRewinds > 0)
+                AddPropertyRow("Actual Rewinds", $"{node.ActualRewinds:N0}");
+
+            // Timing
+            if (node.ActualElapsedMs > 0 || node.ActualCPUMs > 0)
+            {
+                AddPropertySection("Actual Timing");
+                if (node.ActualElapsedMs > 0)
+                    AddPropertyRow("Elapsed Time", $"{node.ActualElapsedMs:N0} ms");
+                if (node.ActualCPUMs > 0)
+                    AddPropertyRow("CPU Time", $"{node.ActualCPUMs:N0} ms");
+            }
+
+            // I/O
+            var hasIo = node.ActualLogicalReads > 0 || node.ActualPhysicalReads > 0
+                || node.ActualScans > 0 || node.ActualReadAheads > 0;
+            if (hasIo)
+            {
+                AddPropertySection("Actual I/O");
+                AddPropertyRow("Logical Reads", $"{node.ActualLogicalReads:N0}");
+                if (node.ActualPhysicalReads > 0)
+                    AddPropertyRow("Physical Reads", $"{node.ActualPhysicalReads:N0}");
+                if (node.ActualScans > 0)
+                    AddPropertyRow("Scans", $"{node.ActualScans:N0}");
+                if (node.ActualReadAheads > 0)
+                    AddPropertyRow("Read-Ahead Reads", $"{node.ActualReadAheads:N0}");
+            }
+
+            // LOB I/O
+            var hasLobIo = node.ActualLobLogicalReads > 0 || node.ActualLobPhysicalReads > 0
+                || node.ActualLobReadAheads > 0;
+            if (hasLobIo)
+            {
+                AddPropertySection("Actual LOB I/O");
+                if (node.ActualLobLogicalReads > 0)
+                    AddPropertyRow("LOB Logical Reads", $"{node.ActualLobLogicalReads:N0}");
+                if (node.ActualLobPhysicalReads > 0)
+                    AddPropertyRow("LOB Physical Reads", $"{node.ActualLobPhysicalReads:N0}");
+                if (node.ActualLobReadAheads > 0)
+                    AddPropertyRow("LOB Read-Aheads", $"{node.ActualLobReadAheads:N0}");
+            }
+        }
+
+        // === Predicates Section ===
+        var hasPredicates = !string.IsNullOrEmpty(node.SeekPredicates) || !string.IsNullOrEmpty(node.Predicate)
+            || !string.IsNullOrEmpty(node.HashKeysProbe) || !string.IsNullOrEmpty(node.HashKeysBuild)
+            || !string.IsNullOrEmpty(node.BuildResidual) || !string.IsNullOrEmpty(node.ProbeResidual)
+            || !string.IsNullOrEmpty(node.SetPredicate);
+        if (hasPredicates)
+        {
+            AddPropertySection("Predicates");
+            if (!string.IsNullOrEmpty(node.SeekPredicates))
+                AddPropertyRow("Seek Predicate", node.SeekPredicates, isCode: true);
+            if (!string.IsNullOrEmpty(node.Predicate))
+                AddPropertyRow("Predicate", node.Predicate, isCode: true);
+            if (!string.IsNullOrEmpty(node.HashKeysBuild))
+                AddPropertyRow("Hash Keys (Build)", node.HashKeysBuild, isCode: true);
+            if (!string.IsNullOrEmpty(node.HashKeysProbe))
+                AddPropertyRow("Hash Keys (Probe)", node.HashKeysProbe, isCode: true);
+            if (!string.IsNullOrEmpty(node.BuildResidual))
+                AddPropertyRow("Build Residual", node.BuildResidual, isCode: true);
+            if (!string.IsNullOrEmpty(node.ProbeResidual))
+                AddPropertyRow("Probe Residual", node.ProbeResidual, isCode: true);
+            if (!string.IsNullOrEmpty(node.SetPredicate))
+                AddPropertyRow("Set Predicate", node.SetPredicate, isCode: true);
+        }
+
+        // === Output Columns ===
+        if (!string.IsNullOrEmpty(node.OutputColumns))
+        {
+            AddPropertySection("Output");
+            AddPropertyRow("Columns", node.OutputColumns, isCode: true);
+        }
+
+        // === Memory ===
+        if (node.MemoryGrantKB > 0 || node.DesiredMemoryKB > 0 || node.MaxUsedMemoryKB > 0)
+        {
+            AddPropertySection("Memory");
+            if (node.MemoryGrantKB > 0) AddPropertyRow("Granted", $"{node.MemoryGrantKB:N0} KB");
+            if (node.DesiredMemoryKB > 0) AddPropertyRow("Desired", $"{node.DesiredMemoryKB:N0} KB");
+            if (node.MaxUsedMemoryKB > 0) AddPropertyRow("Max Used", $"{node.MaxUsedMemoryKB:N0} KB");
+        }
+
+        // === Statement Memory Grant (from MemoryGrantInfo) — root node only ===
+        if (node.Parent == null && _currentStatement?.MemoryGrant != null)
+        {
+            var mg = _currentStatement.MemoryGrant;
+            AddPropertySection("Statement Memory Grant");
+            if (mg.RequestedMemoryKB > 0) AddPropertyRow("Requested", $"{mg.RequestedMemoryKB:N0} KB");
+            if (mg.GrantedMemoryKB > 0) AddPropertyRow("Granted", $"{mg.GrantedMemoryKB:N0} KB");
+            if (mg.MaxUsedMemoryKB > 0) AddPropertyRow("Max Used", $"{mg.MaxUsedMemoryKB:N0} KB");
+            if (mg.DesiredMemoryKB > 0) AddPropertyRow("Desired", $"{mg.DesiredMemoryKB:N0} KB");
+            if (mg.SerialRequiredMemoryKB > 0) AddPropertyRow("Serial Required", $"{mg.SerialRequiredMemoryKB:N0} KB");
+            if (mg.SerialDesiredMemoryKB > 0) AddPropertyRow("Serial Desired", $"{mg.SerialDesiredMemoryKB:N0} KB");
+        }
+
+        // === Statement Info — root node only ===
+        if (node.Parent == null && _currentStatement != null)
+        {
+            var s = _currentStatement;
+            var hasStmtInfo = s.CardinalityEstimationModelVersion > 0 || s.CompileTimeMs > 0
+                || s.CachedPlanSizeKB > 0 || !string.IsNullOrEmpty(s.QueryHash)
+                || s.DegreeOfParallelism > 0 || !string.IsNullOrEmpty(s.NonParallelPlanReason);
+            if (hasStmtInfo)
+            {
+                AddPropertySection("Statement Info");
+                if (s.CardinalityEstimationModelVersion > 0)
+                    AddPropertyRow("CE Model Version", $"{s.CardinalityEstimationModelVersion}");
+                if (s.DegreeOfParallelism > 0)
+                    AddPropertyRow("DOP", $"{s.DegreeOfParallelism}");
+                if (!string.IsNullOrEmpty(s.NonParallelPlanReason))
+                    AddPropertyRow("Non-Parallel Reason", s.NonParallelPlanReason);
+                if (s.CompileTimeMs > 0)
+                    AddPropertyRow("Compile Time", $"{s.CompileTimeMs:N0} ms");
+                if (s.CompileCPUMs > 0)
+                    AddPropertyRow("Compile CPU", $"{s.CompileCPUMs:N0} ms");
+                if (s.CompileMemoryKB > 0)
+                    AddPropertyRow("Compile Memory", $"{s.CompileMemoryKB:N0} KB");
+                if (s.CachedPlanSizeKB > 0)
+                    AddPropertyRow("Cached Plan Size", $"{s.CachedPlanSizeKB:N0} KB");
+                if (!string.IsNullOrEmpty(s.QueryHash))
+                    AddPropertyRow("Query Hash", s.QueryHash, isCode: true);
+                if (!string.IsNullOrEmpty(s.QueryPlanHash))
+                    AddPropertyRow("Plan Hash", s.QueryPlanHash, isCode: true);
+                if (s.RetrievedFromCache)
+                    AddPropertyRow("From Cache", "True");
+            }
+        }
+
+        // === Warnings ===
+        if (node.HasWarnings)
+        {
+            AddPropertySection("Warnings");
+            foreach (var w in node.Warnings)
+            {
+                var warnColor = w.Severity == PlanWarningSeverity.Critical ? "#E57373"
+                    : w.Severity == PlanWarningSeverity.Warning ? "#FFB347" : "#6BB5FF";
+                var warnPanel = new StackPanel { Margin = new Thickness(10, 2, 10, 2) };
+                warnPanel.Children.Add(new TextBlock
+                {
+                    Text = $"\u26A0 {w.WarningType}",
+                    FontWeight = FontWeights.SemiBold,
+                    FontSize = 11,
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(warnColor))
+                });
+                warnPanel.Children.Add(new TextBlock
+                {
+                    Text = w.Message,
+                    FontSize = 11,
+                    Foreground = TooltipFgBrush,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(16, 0, 0, 0)
+                });
+                PropertiesContent.Children.Add(warnPanel);
+            }
+        }
+
+        // Show the panel
+        PropertiesColumn.Width = new GridLength(320);
+        PropertiesSplitter.Visibility = Visibility.Visible;
+        PropertiesPanel.Visibility = Visibility.Visible;
+    }
+
+    private void AddPropertySection(string title)
+    {
+        PropertiesContent.Children.Add(new Border
+        {
+            Padding = new Thickness(10, 6, 10, 4),
+            Margin = new Thickness(0, 2, 0, 0),
+            Background = new SolidColorBrush(Color.FromArgb(0x18, 0x4F, 0xA3, 0xFF)),
+            BorderBrush = PropSeparatorBrush,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = new TextBlock
+            {
+                Text = title,
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 11,
+                Foreground = SectionHeaderBrush
+            }
+        });
+    }
+
+    private void AddPropertyRow(string label, string value, bool isCode = false)
+    {
+        var grid = new Grid { Margin = new Thickness(10, 3, 10, 3) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var labelBlock = new TextBlock
+        {
+            Text = label,
+            FontSize = 11,
+            Foreground = MutedBrush,
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        Grid.SetColumn(labelBlock, 0);
+        grid.Children.Add(labelBlock);
+
+        var valueBlock = new TextBlock
+        {
+            Text = value,
+            FontSize = 11,
+            Foreground = TooltipFgBrush,
+            TextWrapping = TextWrapping.Wrap
+        };
+        if (isCode) valueBlock.FontFamily = new FontFamily("Consolas");
+        Grid.SetColumn(valueBlock, 1);
+        grid.Children.Add(valueBlock);
+
+        PropertiesContent.Children.Add(grid);
+    }
+
+    private void CloseProperties_Click(object sender, RoutedEventArgs e)
+    {
+        ClosePropertiesPanel();
+    }
+
+    private void ClosePropertiesPanel()
+    {
+        PropertiesPanel.Visibility = Visibility.Collapsed;
+        PropertiesSplitter.Visibility = Visibility.Collapsed;
+        PropertiesColumn.Width = new GridLength(0);
+
+        // Deselect node
+        if (_selectedNodeBorder != null)
+        {
+            _selectedNodeBorder.BorderBrush = _selectedNodeOriginalBorder;
+            _selectedNodeBorder.BorderThickness = _selectedNodeOriginalThickness;
+            _selectedNodeBorder = null;
+        }
+    }
+
+    #endregion
+
+    #region Tooltips
+
     private ToolTip BuildNodeTooltip(PlanNode node)
     {
         var tip = new ToolTip
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1D, 0x23)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3D, 0x45)),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE4, 0xE6, 0xEB)),
+            Background = TooltipBgBrush,
+            BorderBrush = TooltipBorderBrush,
+            Foreground = TooltipFgBrush,
             Padding = new Thickness(12),
             MaxWidth = 500
         };
@@ -327,10 +800,12 @@ public partial class PlanViewerControl : UserControl
         });
 
         // Cost
+        AddTooltipSection(stack, "Costs");
         AddTooltipRow(stack, "Cost", $"{node.CostPercent}% of statement ({node.EstimatedOperatorCost:F6})");
         AddTooltipRow(stack, "Subtree Cost", $"{node.EstimatedTotalSubtreeCost:F6}");
 
         // Rows
+        AddTooltipSection(stack, "Rows");
         AddTooltipRow(stack, "Estimated Rows", $"{node.EstimateRows:N1}");
         if (node.HasActualStats)
         {
@@ -341,49 +816,102 @@ public partial class PlanViewerControl : UserControl
         }
 
         // I/O and CPU estimates
-        if (node.EstimateIO > 0) AddTooltipRow(stack, "Estimated I/O", $"{node.EstimateIO:F6}");
-        if (node.EstimateCPU > 0) AddTooltipRow(stack, "Estimated CPU", $"{node.EstimateCPU:F6}");
-        if (node.EstimatedRowSize > 0) AddTooltipRow(stack, "Avg Row Size", $"{node.EstimatedRowSize} B");
+        if (node.EstimateIO > 0 || node.EstimateCPU > 0 || node.EstimatedRowSize > 0)
+        {
+            AddTooltipSection(stack, "Estimates");
+            if (node.EstimateIO > 0) AddTooltipRow(stack, "I/O Cost", $"{node.EstimateIO:F6}");
+            if (node.EstimateCPU > 0) AddTooltipRow(stack, "CPU Cost", $"{node.EstimateCPU:F6}");
+            if (node.EstimatedRowSize > 0) AddTooltipRow(stack, "Avg Row Size", $"{node.EstimatedRowSize} B");
+        }
 
-        // Actual I/O (if available)
+        // Actual I/O
         if (node.HasActualStats && (node.ActualLogicalReads > 0 || node.ActualPhysicalReads > 0))
         {
+            AddTooltipSection(stack, "Actual I/O");
             AddTooltipRow(stack, "Logical Reads", $"{node.ActualLogicalReads:N0}");
             if (node.ActualPhysicalReads > 0)
                 AddTooltipRow(stack, "Physical Reads", $"{node.ActualPhysicalReads:N0}");
+            if (node.ActualScans > 0)
+                AddTooltipRow(stack, "Scans", $"{node.ActualScans:N0}");
+            if (node.ActualReadAheads > 0)
+                AddTooltipRow(stack, "Read-Aheads", $"{node.ActualReadAheads:N0}");
         }
 
         // Actual timing
-        if (node.HasActualStats && node.ActualElapsedMs > 0)
+        if (node.HasActualStats && (node.ActualElapsedMs > 0 || node.ActualCPUMs > 0))
         {
-            AddTooltipRow(stack, "Elapsed Time", $"{node.ActualElapsedMs:N0} ms");
+            AddTooltipSection(stack, "Timing");
+            if (node.ActualElapsedMs > 0)
+                AddTooltipRow(stack, "Elapsed Time", $"{node.ActualElapsedMs:N0} ms");
             if (node.ActualCPUMs > 0)
                 AddTooltipRow(stack, "CPU Time", $"{node.ActualCPUMs:N0} ms");
         }
 
         // Parallelism
-        if (node.Parallel)
-            AddTooltipRow(stack, "Parallel", "Yes");
-        if (!string.IsNullOrEmpty(node.ExecutionMode))
-            AddTooltipRow(stack, "Execution Mode", node.ExecutionMode);
-        if (!string.IsNullOrEmpty(node.PartitioningType))
-            AddTooltipRow(stack, "Partitioning", node.PartitioningType);
+        if (node.Parallel || !string.IsNullOrEmpty(node.ExecutionMode) || !string.IsNullOrEmpty(node.PartitioningType))
+        {
+            AddTooltipSection(stack, "Parallelism");
+            if (node.Parallel) AddTooltipRow(stack, "Parallel", "Yes");
+            if (!string.IsNullOrEmpty(node.ExecutionMode))
+                AddTooltipRow(stack, "Execution Mode", node.ExecutionMode);
+            if (!string.IsNullOrEmpty(node.ActualExecutionMode) && node.ActualExecutionMode != node.ExecutionMode)
+                AddTooltipRow(stack, "Actual Exec Mode", node.ActualExecutionMode);
+            if (!string.IsNullOrEmpty(node.PartitioningType))
+                AddTooltipRow(stack, "Partitioning", node.PartitioningType);
+        }
 
-        // Object
-        if (!string.IsNullOrEmpty(node.ObjectName))
-            AddTooltipRow(stack, "Object", node.ObjectName);
-        if (node.Ordered)
-            AddTooltipRow(stack, "Ordered", "True");
+        // Object — show full qualified name
+        if (!string.IsNullOrEmpty(node.FullObjectName))
+        {
+            AddTooltipSection(stack, "Object");
+            AddTooltipRow(stack, "Name", node.FullObjectName, isCode: true);
+            if (node.Ordered) AddTooltipRow(stack, "Ordered", "True");
+            if (!string.IsNullOrEmpty(node.ScanDirection))
+                AddTooltipRow(stack, "Scan Direction", node.ScanDirection);
+        }
+        else if (!string.IsNullOrEmpty(node.ObjectName))
+        {
+            AddTooltipSection(stack, "Object");
+            AddTooltipRow(stack, "Name", node.ObjectName, isCode: true);
+            if (node.Ordered) AddTooltipRow(stack, "Ordered", "True");
+            if (!string.IsNullOrEmpty(node.ScanDirection))
+                AddTooltipRow(stack, "Scan Direction", node.ScanDirection);
+        }
+
+        // Operator details (key items only in tooltip)
+        var hasTooltipDetails = !string.IsNullOrEmpty(node.OrderBy)
+            || !string.IsNullOrEmpty(node.TopExpression)
+            || !string.IsNullOrEmpty(node.GroupBy)
+            || !string.IsNullOrEmpty(node.OuterReferences);
+        if (hasTooltipDetails)
+        {
+            AddTooltipSection(stack, "Details");
+            if (!string.IsNullOrEmpty(node.OrderBy))
+                AddTooltipRow(stack, "Order By", node.OrderBy, isCode: true);
+            if (!string.IsNullOrEmpty(node.TopExpression))
+                AddTooltipRow(stack, "Top", node.IsPercent ? $"{node.TopExpression} PERCENT" : node.TopExpression);
+            if (!string.IsNullOrEmpty(node.GroupBy))
+                AddTooltipRow(stack, "Group By", node.GroupBy, isCode: true);
+            if (!string.IsNullOrEmpty(node.OuterReferences))
+                AddTooltipRow(stack, "Outer References", node.OuterReferences, isCode: true);
+        }
 
         // Predicates
-        if (!string.IsNullOrEmpty(node.SeekPredicates))
-            AddTooltipRow(stack, "Seek Predicate", node.SeekPredicates, isCode: true);
-        if (!string.IsNullOrEmpty(node.Predicate))
-            AddTooltipRow(stack, "Predicate", node.Predicate, isCode: true);
+        if (!string.IsNullOrEmpty(node.SeekPredicates) || !string.IsNullOrEmpty(node.Predicate))
+        {
+            AddTooltipSection(stack, "Predicates");
+            if (!string.IsNullOrEmpty(node.SeekPredicates))
+                AddTooltipRow(stack, "Seek", node.SeekPredicates, isCode: true);
+            if (!string.IsNullOrEmpty(node.Predicate))
+                AddTooltipRow(stack, "Residual", node.Predicate, isCode: true);
+        }
 
         // Output columns
         if (!string.IsNullOrEmpty(node.OutputColumns))
-            AddTooltipRow(stack, "Output", node.OutputColumns, isCode: true);
+        {
+            AddTooltipSection(stack, "Output");
+            AddTooltipRow(stack, "Columns", node.OutputColumns, isCode: true);
+        }
 
         // Warnings
         if (node.HasWarnings)
@@ -404,17 +932,30 @@ public partial class PlanViewerControl : UserControl
             }
         }
 
-        // Node ID
+        // Footer hint
         stack.Children.Add(new TextBlock
         {
-            Text = $"Node ID: {node.NodeId}",
+            Text = "Click to view full properties",
             FontSize = 10,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
+            FontStyle = FontStyles.Italic,
+            Foreground = MutedBrush,
             Margin = new Thickness(0, 8, 0, 0)
         });
 
         tip.Content = stack;
         return tip;
+    }
+
+    private static void AddTooltipSection(StackPanel parent, string title)
+    {
+        parent.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = SectionHeaderBrush,
+            Margin = new Thickness(0, 6, 0, 2)
+        });
     }
 
     private static void AddTooltipRow(StackPanel parent, string label, string value, bool isCode = false)
@@ -423,7 +964,7 @@ public partial class PlanViewerControl : UserControl
         row.Children.Add(new TextBlock
         {
             Text = $"{label}: ",
-            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
+            Foreground = MutedBrush,
             FontSize = 11,
             MinWidth = 120
         });
@@ -438,6 +979,10 @@ public partial class PlanViewerControl : UserControl
         row.Children.Add(valueBlock);
         parent.Children.Add(row);
     }
+
+    #endregion
+
+    #region Banners
 
     private void ShowMissingIndexes(List<MissingIndex> indexes)
     {
@@ -480,7 +1025,10 @@ public partial class PlanViewerControl : UserControl
             CollectWarnings(child, warnings);
     }
 
-    // Zoom handlers
+    #endregion
+
+    #region Zoom
+
     private void ZoomIn_Click(object sender, RoutedEventArgs e) => SetZoom(_zoomLevel + ZoomStep);
     private void ZoomOut_Click(object sender, RoutedEventArgs e) => SetZoom(_zoomLevel - ZoomStep);
 
@@ -493,7 +1041,7 @@ public partial class PlanViewerControl : UserControl
         if (viewWidth <= 0 || viewHeight <= 0) return;
 
         var fitZoom = Math.Min(viewWidth / PlanCanvas.Width, viewHeight / PlanCanvas.Height);
-        SetZoom(Math.Min(fitZoom, 1.0)); // Don't zoom beyond 100% for fit
+        SetZoom(Math.Min(fitZoom, 1.0));
     }
 
     private void SetZoom(double level)
@@ -512,6 +1060,10 @@ public partial class PlanViewerControl : UserControl
             SetZoom(_zoomLevel + (e.Delta > 0 ? ZoomStep : -ZoomStep));
         }
     }
+
+    #endregion
+
+    #region Save & Statement Selection
 
     private void SavePlan_Click(object sender, RoutedEventArgs e)
     {
@@ -543,4 +1095,6 @@ public partial class PlanViewerControl : UserControl
                 RenderStatement(allStatements[index]);
         }
     }
+
+    #endregion
 }

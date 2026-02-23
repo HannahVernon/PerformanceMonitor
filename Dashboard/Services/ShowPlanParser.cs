@@ -96,6 +96,18 @@ public static class ShowPlanParser
             };
         }
 
+        // Statement-level metadata from QueryPlan attributes
+        stmt.CachedPlanSizeKB = ParseLong(queryPlanEl.Attribute("CachedPlanSize")?.Value);
+        stmt.DegreeOfParallelism = (int)ParseDouble(queryPlanEl.Attribute("DegreeOfParallelism")?.Value);
+        stmt.NonParallelPlanReason = queryPlanEl.Attribute("NonParallelPlanReason")?.Value;
+        stmt.RetrievedFromCache = queryPlanEl.Attribute("RetrievedFromCache")?.Value is "true" or "1";
+        stmt.CompileTimeMs = ParseLong(queryPlanEl.Attribute("CompileTime")?.Value);
+        stmt.CompileMemoryKB = ParseLong(queryPlanEl.Attribute("CompileMemory")?.Value);
+        stmt.CompileCPUMs = ParseLong(queryPlanEl.Attribute("CompileCPU")?.Value);
+        stmt.CardinalityEstimationModelVersion = (int)ParseDouble(queryPlanEl.Attribute("CardinalityEstimationModelVersion")?.Value);
+        stmt.QueryHash = stmtEl.Attribute("QueryHash")?.Value;
+        stmt.QueryPlanHash = stmtEl.Attribute("QueryPlanHash")?.Value;
+
         // Missing indexes
         stmt.MissingIndexes = ParseMissingIndexes(queryPlanEl);
 
@@ -156,26 +168,62 @@ public static class ShowPlanParser
         var physicalOpEl = GetOperatorElement(relOpEl);
         if (physicalOpEl != null)
         {
-            // Object reference (table/index name)
-            var objEl = physicalOpEl.Descendants(Ns + "Object").FirstOrDefault();
+            // Object reference (table/index name) — scoped to stop at child RelOps
+            var objEl = ScopedDescendants(physicalOpEl, Ns + "Object").FirstOrDefault();
             if (objEl != null)
             {
-                var schema = objEl.Attribute("Schema")?.Value;
-                var table = objEl.Attribute("Table")?.Value;
-                var index = objEl.Attribute("Index")?.Value;
-                var parts = new List<string>();
-                if (!string.IsNullOrEmpty(schema)) parts.Add(schema);
-                if (!string.IsNullOrEmpty(table)) parts.Add(table);
-                if (!string.IsNullOrEmpty(index)) parts.Add(index);
-                node.ObjectName = string.Join(".", parts).Replace("[", "").Replace("]", "");
+                var db = objEl.Attribute("Database")?.Value?.Replace("[", "").Replace("]", "");
+                var schema = objEl.Attribute("Schema")?.Value?.Replace("[", "").Replace("]", "");
+                var table = objEl.Attribute("Table")?.Value?.Replace("[", "").Replace("]", "");
+                var index = objEl.Attribute("Index")?.Value?.Replace("[", "").Replace("]", "");
+
+                node.DatabaseName = db;
+                node.IndexName = index;
+
+                // Short name for node display: Schema.Table
+                var shortParts = new List<string>();
+                if (!string.IsNullOrEmpty(schema)) shortParts.Add(schema);
+                if (!string.IsNullOrEmpty(table)) shortParts.Add(table);
+                node.ObjectName = shortParts.Count > 0 ? string.Join(".", shortParts) : null;
+
+                // Full qualified name: Database.Schema.Table (Index)
+                var fullParts = new List<string>();
+                if (!string.IsNullOrEmpty(db)) fullParts.Add(db);
+                if (!string.IsNullOrEmpty(schema)) fullParts.Add(schema);
+                if (!string.IsNullOrEmpty(table)) fullParts.Add(table);
+                var fullName = string.Join(".", fullParts);
+                if (!string.IsNullOrEmpty(index))
+                    fullName += $".{index}";
+                node.FullObjectName = !string.IsNullOrEmpty(fullName) ? fullName : null;
+
+                // Storage type (Heap, Clustered, etc.)
+                node.StorageType = objEl.Attribute("Storage")?.Value;
+            }
+
+            // Hash keys for hash match operators
+            var hashKeysProbeEl = physicalOpEl.Element(Ns + "HashKeysProbe");
+            if (hashKeysProbeEl != null)
+            {
+                var cols = hashKeysProbeEl.Elements(Ns + "ColumnReference")
+                    .Select(c => FormatColumnRef(c))
+                    .Where(s => !string.IsNullOrEmpty(s));
+                node.HashKeysProbe = string.Join(", ", cols);
+            }
+            var hashKeysBuildEl = physicalOpEl.Element(Ns + "HashKeysBuild");
+            if (hashKeysBuildEl != null)
+            {
+                var cols = hashKeysBuildEl.Elements(Ns + "ColumnReference")
+                    .Select(c => FormatColumnRef(c))
+                    .Where(s => !string.IsNullOrEmpty(s));
+                node.HashKeysBuild = string.Join(", ", cols);
             }
 
             // Ordered attribute
             node.Ordered = physicalOpEl.Attribute("Ordered")?.Value == "true" || physicalOpEl.Attribute("Ordered")?.Value == "1";
 
-            // Seek predicates
-            var seekPreds = physicalOpEl.Descendants(Ns + "SeekPredicateNew")
-                .Concat(physicalOpEl.Descendants(Ns + "SeekPredicate"));
+            // Seek predicates — scoped to stop at child RelOps
+            var seekPreds = ScopedDescendants(physicalOpEl, Ns + "SeekPredicateNew")
+                .Concat(ScopedDescendants(physicalOpEl, Ns + "SeekPredicate"));
             var seekParts = new List<string>();
             foreach (var sp in seekPreds)
             {
@@ -200,6 +248,125 @@ public static class ShowPlanParser
 
             // Partitioning type (for parallelism operators)
             node.PartitioningType = physicalOpEl.Attribute("PartitioningType")?.Value;
+
+            // Build/Probe residuals (Hash Match)
+            var buildResEl = physicalOpEl.Element(Ns + "BuildResidual");
+            if (buildResEl != null)
+            {
+                var so = buildResEl.Descendants(Ns + "ScalarOperator").FirstOrDefault();
+                node.BuildResidual = so?.Attribute("ScalarString")?.Value;
+            }
+            var probeResEl = physicalOpEl.Element(Ns + "ProbeResidual");
+            if (probeResEl != null)
+            {
+                var so = probeResEl.Descendants(Ns + "ScalarOperator").FirstOrDefault();
+                node.ProbeResidual = so?.Attribute("ScalarString")?.Value;
+            }
+
+            // OrderBy columns (Sort operator)
+            var orderByEl = physicalOpEl.Element(Ns + "OrderBy");
+            if (orderByEl != null)
+            {
+                var obParts = orderByEl.Elements(Ns + "OrderByColumn")
+                    .Select(obc =>
+                    {
+                        var ascending = obc.Attribute("Ascending")?.Value != "false";
+                        var colRef = obc.Element(Ns + "ColumnReference");
+                        var name = colRef != null ? FormatColumnRef(colRef) : "";
+                        return string.IsNullOrEmpty(name) ? "" : $"{name} {(ascending ? "ASC" : "DESC")}";
+                    })
+                    .Where(s => !string.IsNullOrEmpty(s));
+                var obStr = string.Join(", ", obParts);
+                if (!string.IsNullOrEmpty(obStr))
+                    node.OrderBy = obStr;
+            }
+
+            // OuterReferences (Nested Loops)
+            var outerRefsEl = physicalOpEl.Element(Ns + "OuterReferences");
+            if (outerRefsEl != null)
+            {
+                var refs = outerRefsEl.Elements(Ns + "ColumnReference")
+                    .Select(c => FormatColumnRef(c))
+                    .Where(s => !string.IsNullOrEmpty(s));
+                var refsStr = string.Join(", ", refs);
+                if (!string.IsNullOrEmpty(refsStr))
+                    node.OuterReferences = refsStr;
+            }
+
+            // Inner/Outer side join columns (Merge Join)
+            node.InnerSideJoinColumns = ParseColumnList(physicalOpEl, "InnerSideJoinColumns");
+            node.OuterSideJoinColumns = ParseColumnList(physicalOpEl, "OuterSideJoinColumns");
+
+            // GroupBy columns (Hash/Stream Aggregate)
+            node.GroupBy = ParseColumnList(physicalOpEl, "GroupBy");
+
+            // Partition columns (Parallelism)
+            node.PartitionColumns = ParseColumnList(physicalOpEl, "PartitionColumns");
+
+            // Segment column
+            var segColEl = physicalOpEl.Element(Ns + "SegmentColumn")?.Element(Ns + "ColumnReference");
+            if (segColEl != null)
+                node.SegmentColumn = FormatColumnRef(segColEl);
+
+            // Defined values (Compute Scalar)
+            var definedValsEl = physicalOpEl.Element(Ns + "DefinedValues");
+            if (definedValsEl != null)
+            {
+                var dvParts = new List<string>();
+                foreach (var dvEl in definedValsEl.Elements(Ns + "DefinedValue"))
+                {
+                    var colRef = dvEl.Element(Ns + "ColumnReference");
+                    var scalarOp = dvEl.Element(Ns + "ScalarOperator");
+                    var colName = colRef != null ? FormatColumnRef(colRef) : "";
+                    var expr = scalarOp?.Attribute("ScalarString")?.Value ?? "";
+                    if (!string.IsNullOrEmpty(colName) && !string.IsNullOrEmpty(expr))
+                        dvParts.Add($"{colName} = {expr}");
+                    else if (!string.IsNullOrEmpty(expr))
+                        dvParts.Add(expr);
+                    else if (!string.IsNullOrEmpty(colName))
+                        dvParts.Add(colName);
+                }
+                if (dvParts.Count > 0)
+                    node.DefinedValues = string.Join("; ", dvParts);
+            }
+
+            // Scan direction
+            node.ScanDirection = physicalOpEl.Attribute("ScanDirection")?.Value;
+
+            // Forced index / scan / seek hints
+            node.ForcedIndex = physicalOpEl.Attribute("ForcedIndex")?.Value is "true" or "1";
+            node.ForceScan = physicalOpEl.Attribute("ForceScan")?.Value is "true" or "1";
+            node.ForceSeek = physicalOpEl.Attribute("ForceSeek")?.Value is "true" or "1";
+            node.NoExpandHint = physicalOpEl.Attribute("NoExpandHint")?.Value is "true" or "1";
+
+            // Table cardinality and rows to be read (these are on <RelOp>, not the physical op element)
+            node.TableCardinality = ParseDouble(relOpEl.Attribute("TableCardinality")?.Value);
+            node.EstimatedRowsRead = ParseDouble(relOpEl.Attribute("EstimatedRowsRead")?.Value);
+            if (node.EstimatedRowsRead == 0)
+                node.EstimatedRowsRead = ParseDouble(relOpEl.Attribute("EstimateRowsWithoutRowGoal")?.Value);
+
+            // TOP operator properties
+            var topExprEl = physicalOpEl.Element(Ns + "TopExpression")?.Descendants(Ns + "ScalarOperator").FirstOrDefault();
+            if (topExprEl != null)
+                node.TopExpression = topExprEl.Attribute("ScalarString")?.Value;
+            node.IsPercent = physicalOpEl.Attribute("IsPercent")?.Value is "true" or "1";
+
+            // SET predicate (UPDATE operator)
+            var setPredicateEl = physicalOpEl.Element(Ns + "SetPredicate");
+            if (setPredicateEl != null)
+            {
+                var so = setPredicateEl.Descendants(Ns + "ScalarOperator").FirstOrDefault();
+                node.SetPredicate = so?.Attribute("ScalarString")?.Value;
+            }
+
+            // Hash Match: ManyToMany
+            node.ManyToMany = physicalOpEl.Attribute("ManyToMany")?.Value is "true" or "1";
+
+            // Adaptive join properties
+            node.IsAdaptive = physicalOpEl.Attribute("IsAdaptive")?.Value is "true" or "1";
+            node.AdaptiveThresholdRows = ParseDouble(physicalOpEl.Attribute("AdaptiveThresholdRows")?.Value);
+            node.EstimatedJoinType = physicalOpEl.Attribute("EstimatedJoinType")?.Value;
+            node.ActualJoinType = physicalOpEl.Attribute("ActualJoinType")?.Value;
         }
 
         // Output columns
@@ -231,6 +398,9 @@ public static class ShowPlanParser
             long totalRebinds = 0, totalRewinds = 0;
             long maxElapsed = 0, totalCpu = 0;
             long totalLogicalReads = 0, totalPhysicalReads = 0;
+            long totalScans = 0, totalReadAheads = 0;
+            long totalLobLogicalReads = 0, totalLobPhysicalReads = 0, totalLobReadAheads = 0;
+            string? actualExecMode = null;
 
             foreach (var thread in runtimeEl.Elements(Ns + "RunTimeCountersPerThread"))
             {
@@ -242,6 +412,13 @@ public static class ShowPlanParser
                 totalCpu += ParseLong(thread.Attribute("ActualCPUms")?.Value);
                 totalLogicalReads += ParseLong(thread.Attribute("ActualLogicalReads")?.Value);
                 totalPhysicalReads += ParseLong(thread.Attribute("ActualPhysicalReads")?.Value);
+                totalScans += ParseLong(thread.Attribute("ActualScans")?.Value);
+                totalReadAheads += ParseLong(thread.Attribute("ActualReadAheads")?.Value);
+                totalLobLogicalReads += ParseLong(thread.Attribute("ActualLobLogicalReads")?.Value);
+                totalLobPhysicalReads += ParseLong(thread.Attribute("ActualLobPhysicalReads")?.Value);
+                totalLobReadAheads += ParseLong(thread.Attribute("ActualLobReadAheads")?.Value);
+
+                actualExecMode ??= thread.Attribute("ActualExecutionMode")?.Value;
 
                 var elapsed = ParseLong(thread.Attribute("ActualElapsedms")?.Value);
                 if (elapsed > maxElapsed) maxElapsed = elapsed;
@@ -256,17 +433,15 @@ public static class ShowPlanParser
             node.ActualCPUMs = totalCpu;
             node.ActualLogicalReads = totalLogicalReads;
             node.ActualPhysicalReads = totalPhysicalReads;
-        }
-
-        // Memory fractions
-        var memFractions = relOpEl.Element(Ns + "MemoryFractions");
-        if (memFractions != null)
-        {
-            // Memory grant data from statement level is propagated later
+            node.ActualScans = totalScans;
+            node.ActualReadAheads = totalReadAheads;
+            node.ActualLobLogicalReads = totalLobLogicalReads;
+            node.ActualLobPhysicalReads = totalLobPhysicalReads;
+            node.ActualLobReadAheads = totalLobReadAheads;
+            node.ActualExecutionMode = actualExecMode;
         }
 
         // Recurse into child RelOps
-        // Children can be in various operator-specific elements
         foreach (var childRelOp in FindChildRelOps(relOpEl))
         {
             var childNode = ParseRelOp(childRelOp);
@@ -478,6 +653,40 @@ public static class ShowPlanParser
 
         foreach (var child in node.Children)
             ComputeNodeCosts(child, totalStatementCost);
+    }
+
+    /// <summary>
+    /// Like Descendants() but stops at RelOp boundaries to prevent
+    /// picking up properties from child operators.
+    /// </summary>
+    private static IEnumerable<XElement> ScopedDescendants(XElement element, XName name)
+    {
+        foreach (var child in element.Elements())
+        {
+            if (child.Name == Ns + "RelOp") continue;
+            if (child.Name == name) yield return child;
+            foreach (var desc in ScopedDescendants(child, name))
+                yield return desc;
+        }
+    }
+
+    private static string? ParseColumnList(XElement parent, string elementName)
+    {
+        var el = parent.Element(Ns + elementName);
+        if (el == null) return null;
+        var cols = el.Elements(Ns + "ColumnReference")
+            .Select(c => FormatColumnRef(c))
+            .Where(s => !string.IsNullOrEmpty(s));
+        var result = string.Join(", ", cols);
+        return string.IsNullOrEmpty(result) ? null : result;
+    }
+
+    private static string FormatColumnRef(XElement colRef)
+    {
+        var col = colRef.Attribute("Column")?.Value ?? "";
+        var tbl = colRef.Attribute("Table")?.Value ?? "";
+        var result = string.IsNullOrEmpty(tbl) ? col : $"{tbl}.{col}";
+        return result.Replace("[", "").Replace("]", "");
     }
 
     private static double ParseDouble(string? value)

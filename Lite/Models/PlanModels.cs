@@ -29,6 +29,18 @@ public class PlanStatement
     public PlanNode? RootNode { get; set; }
     public List<MissingIndex> MissingIndexes { get; set; } = new();
     public MemoryGrantInfo? MemoryGrant { get; set; }
+
+    // Statement-level metadata
+    public int CardinalityEstimationModelVersion { get; set; }
+    public long CompileTimeMs { get; set; }
+    public long CompileMemoryKB { get; set; }
+    public long CompileCPUMs { get; set; }
+    public string? NonParallelPlanReason { get; set; }
+    public string? QueryHash { get; set; }
+    public string? QueryPlanHash { get; set; }
+    public long CachedPlanSizeKB { get; set; }
+    public int DegreeOfParallelism { get; set; }
+    public bool RetrievedFromCache { get; set; }
 }
 
 public class PlanNode
@@ -70,13 +82,54 @@ public class PlanNode
     public int CostPercent { get; set; }
     public bool IsExpensive => CostPercent >= 25;
 
-    // Detail properties (for tooltip)
+    // Detail properties (for tooltip/properties panel)
+    public string? DatabaseName { get; set; }
     public string? ObjectName { get; set; }
+    public string? FullObjectName { get; set; }
+    public string? IndexName { get; set; }
     public string? SeekPredicates { get; set; }
     public string? Predicate { get; set; }
+    public string? HashKeysProbe { get; set; }
+    public string? HashKeysBuild { get; set; }
+    public string? BuildResidual { get; set; }
+    public string? ProbeResidual { get; set; }
     public string? OutputColumns { get; set; }
     public bool Ordered { get; set; }
     public string? PartitioningType { get; set; }
+    public string? StorageType { get; set; }
+
+    // Operator-specific properties
+    public string? OrderBy { get; set; }
+    public string? OuterReferences { get; set; }
+    public string? InnerSideJoinColumns { get; set; }
+    public string? OuterSideJoinColumns { get; set; }
+    public string? GroupBy { get; set; }
+    public string? PartitionColumns { get; set; }
+    public string? DefinedValues { get; set; }
+    public string? ScanDirection { get; set; }
+    public bool ForcedIndex { get; set; }
+    public bool ForceScan { get; set; }
+    public bool ForceSeek { get; set; }
+    public bool NoExpandHint { get; set; }
+    public double TableCardinality { get; set; }
+    public double EstimatedRowsRead { get; set; }
+    public string? TopExpression { get; set; }
+    public bool IsPercent { get; set; }
+    public bool ManyToMany { get; set; }
+    public string? SetPredicate { get; set; }
+    public string? SegmentColumn { get; set; }
+    public string? ActualExecutionMode { get; set; }
+    public bool IsAdaptive { get; set; }
+    public double AdaptiveThresholdRows { get; set; }
+    public string? EstimatedJoinType { get; set; }
+    public string? ActualJoinType { get; set; }
+
+    // Extended actual I/O stats
+    public long ActualScans { get; set; }
+    public long ActualReadAheads { get; set; }
+    public long ActualLobLogicalReads { get; set; }
+    public long ActualLobPhysicalReads { get; set; }
+    public long ActualLobReadAheads { get; set; }
 
     // Memory
     public long? MemoryGrantKB { get; set; }
