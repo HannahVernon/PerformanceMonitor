@@ -309,6 +309,9 @@ public class PlanNode
     public List<string> OperatorIndexedViews { get; set; } = new();
     public List<NamedParameterInfo> NamedParameters { get; set; } = new();
 
+    // Eager spool index suggestion
+    public string? SuggestedIndex { get; set; }
+
     // Remote operator metadata
     public string? RemoteDestination { get; set; }
     public string? RemoteSource { get; set; }

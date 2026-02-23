@@ -124,6 +124,14 @@ namespace PerformanceMonitorDashboard
                 OpenPlanTab(planXml, label, queryText);
                 PlanViewerTabItem.IsSelected = true;
             };
+            PerformanceTab.ActualPlanStarted += (label) =>
+            {
+                ShowPlanLoading(label);
+            };
+            PerformanceTab.ActualPlanFinished += () =>
+            {
+                HidePlanLoading();
+            };
             SystemEventsContent.Initialize(_databaseService);
             ResourceMetricsContent.Initialize(_databaseService);
 
@@ -132,8 +140,32 @@ namespace PerformanceMonitorDashboard
             CriticalIssuesTab.SetTimeRange(prefs.DefaultHoursBack);
         }
 
+        private void ShowPlanLoading(string label)
+        {
+            PlanLoadingLabel.Text = $"Executing: {label}";
+            PlanEmptyState.Visibility = Visibility.Collapsed;
+            PlanTabControl.Visibility = Visibility.Collapsed;
+            PlanLoadingState.Visibility = Visibility.Visible;
+            PlanViewerTabItem.IsSelected = true;
+        }
+
+        private void HidePlanLoading()
+        {
+            PlanLoadingState.Visibility = Visibility.Collapsed;
+            if (PlanTabControl.Items.Count > 0)
+                PlanTabControl.Visibility = Visibility.Visible;
+            else
+                PlanEmptyState.Visibility = Visibility.Visible;
+        }
+
+        private void CancelPlanButton_Click(object sender, RoutedEventArgs e)
+        {
+            PerformanceTab.CancelActualPlan();
+        }
+
         private void OpenPlanTab(string planXml, string label, string? queryText = null)
         {
+            HidePlanLoading();
             var viewer = new Controls.PlanViewerControl();
             viewer.LoadPlan(planXml, label, queryText);
 

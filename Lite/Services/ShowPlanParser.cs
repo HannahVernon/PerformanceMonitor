@@ -864,6 +864,47 @@ public static class ShowPlanParser
             node.SpoolStack = physicalOpEl.Attribute("Stack")?.Value is "true" or "1";
             node.PrimaryNodeId = (int)ParseDouble(physicalOpEl.Attribute("PrimaryNodeId")?.Value);
 
+            // Eager Index Spool — suggest CREATE INDEX from SeekPredicateNew + OutputList
+            if (node.LogicalOp == "Eager Spool")
+            {
+                var spoolSeek = physicalOpEl.Element(Ns + "SeekPredicateNew")
+                             ?? physicalOpEl.Element(Ns + "SeekPredicate");
+                if (spoolSeek != null)
+                {
+                    var rangeCols = spoolSeek.Descendants(Ns + "RangeColumns")
+                        .SelectMany(rc => rc.Elements(Ns + "ColumnReference"));
+
+                    var keyColumns = new List<string>();
+                    string? tblSchema = null;
+                    string? tblName = null;
+
+                    foreach (var col in rangeCols)
+                    {
+                        var colName = col.Attribute("Column")?.Value;
+                        if (!string.IsNullOrEmpty(colName))
+                            keyColumns.Add(colName);
+                        tblSchema ??= col.Attribute("Schema")?.Value?.Replace("[", "").Replace("]", "");
+                        tblName ??= col.Attribute("Table")?.Value?.Replace("[", "").Replace("]", "");
+                    }
+
+                    if (keyColumns.Count > 0 && !string.IsNullOrEmpty(tblName))
+                    {
+                        var includeCols = relOpEl.Element(Ns + "OutputList")?.Elements(Ns + "ColumnReference")
+                            .Select(c => c.Attribute("Column")?.Value)
+                            .Where(c => !string.IsNullOrEmpty(c) && !keyColumns.Contains(c))
+                            .ToList() ?? new List<string?>();
+
+                        var prefix = !string.IsNullOrEmpty(tblSchema) ? $"{tblSchema}.{tblName}" : tblName;
+                        var keyStr = string.Join(", ", keyColumns);
+                        var sql = $"CREATE INDEX [{string.Join("_", keyColumns)}] ON {prefix} ({keyStr})";
+                        if (includeCols.Count > 0)
+                            sql += $" INCLUDE ({string.Join(", ", includeCols)})";
+                        sql += ";";
+                        node.SuggestedIndex = sql;
+                    }
+                }
+            }
+
             // Wave 3.9: Update DMLRequestSort + ActionColumn
             node.DMLRequestSort = physicalOpEl.Attribute("DMLRequestSort")?.Value is "true" or "1";
             var actionColEl = physicalOpEl.Element(Ns + "ActionColumn")?.Element(Ns + "ColumnReference");

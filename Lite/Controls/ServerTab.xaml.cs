@@ -81,6 +81,7 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
     private DateTime? _dailySummaryDate; // null = today
+    private CancellationTokenSource? _actualPlanCts;
 
     private static readonly HashSet<string> _defaultPerfmonCounters = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -2236,8 +2237,27 @@ public partial class ServerTab : UserControl
         SavePlanFile(row.LiveQueryPlan, $"ActualPlan_Session{row.SessionId}");
     }
 
+    private void ShowPlanLoading(string label)
+    {
+        PlanLoadingLabel.Text = $"Executing: {label}";
+        PlanEmptyState.Visibility = Visibility.Collapsed;
+        PlanTabControl.Visibility = Visibility.Collapsed;
+        PlanLoadingState.Visibility = Visibility.Visible;
+        PlanViewerTabItem.IsSelected = true;
+    }
+
+    private void HidePlanLoading()
+    {
+        PlanLoadingState.Visibility = Visibility.Collapsed;
+        if (PlanTabControl.Items.Count > 0)
+            PlanTabControl.Visibility = Visibility.Visible;
+        else
+            PlanEmptyState.Visibility = Visibility.Visible;
+    }
+
     private void OpenPlanTab(string planXml, string label, string? queryText = null)
     {
+        HidePlanLoading();
         var viewer = new PlanViewerControl();
         viewer.LoadPlan(planXml, label, queryText);
 
@@ -2275,6 +2295,11 @@ public partial class ServerTab : UserControl
                 PlanEmptyState.Visibility = Visibility.Visible;
             }
         }
+    }
+
+    private void CancelPlanButton_Click(object sender, RoutedEventArgs e)
+    {
+        _actualPlanCts?.Cancel();
     }
 
     private async void ViewEstimatedPlan_Click(object sender, RoutedEventArgs e)
@@ -2406,7 +2431,10 @@ public partial class ServerTab : UserControl
 
         if (result != MessageBoxResult.OK) return;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        ShowPlanLoading(label);
+
+        _actualPlanCts?.Dispose();
+        _actualPlanCts = new CancellationTokenSource();
 
         try
         {
@@ -2419,8 +2447,8 @@ public partial class ServerTab : UserControl
                 planXml,
                 isolationLevel,
                 isAzureSqlDb: false,
-                timeoutSeconds: 120,
-                cts.Token);
+                timeoutSeconds: 0,
+                _actualPlanCts.Token);
 
             if (!string.IsNullOrEmpty(actualPlanXml))
             {
@@ -2442,6 +2470,10 @@ public partial class ServerTab : UserControl
         {
             MessageBox.Show($"Failed to get actual plan:\n\n{ex.Message}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            HidePlanLoading();
         }
     }
 

@@ -549,6 +549,15 @@
                                    FontSize="13" Foreground="{DynamicResource ForegroundMutedBrush}"
                                    HorizontalAlignment="Center" Margin="0,8,0,0"/>
                     </StackPanel>
+                    <StackPanel x:Name="PlanLoadingState" HorizontalAlignment="Center"
+                                VerticalAlignment="Center" Visibility="Collapsed">
+                        <ProgressBar IsIndeterminate="True" Width="200" Height="4" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="PlanLoadingLabel" Text="Executing query for actual plan..."
+                                   FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                   HorizontalAlignment="Center"/>
+                        <Button x:Name="CancelPlanButton" Content="Cancel" Click="CancelPlanButton_Click"
+                                HorizontalAlignment="Center" Margin="0,12,0,0" Padding="16,4"/>
+                    </StackPanel>
                     <TabControl x:Name="PlanTabControl" Visibility="Collapsed"
                                 Background="Transparent"/>
                 </Grid>

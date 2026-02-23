@@ -41,6 +41,17 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>Raised when user wants to view a plan in the Plan Viewer tab. Args: (planXml, label, queryText)</summary>
         public event Action<string, string, string?>? ViewPlanRequested;
 
+        /// <summary>Raised when actual plan execution starts. Arg: label for the plan tab.</summary>
+        public event Action<string>? ActualPlanStarted;
+
+        /// <summary>Raised when actual plan execution finishes (success or failure).</summary>
+        public event Action? ActualPlanFinished;
+
+        private CancellationTokenSource? _actualPlanCts;
+
+        /// <summary>Cancels the in-flight actual plan execution, if any.</summary>
+        public void CancelActualPlan() => _actualPlanCts?.Cancel();
+
         private Popup? _filterPopup;
         private ColumnFilterPopup? _filterPopupContent;
 
@@ -818,7 +829,10 @@ namespace PerformanceMonitorDashboard.Controls
 
             if (result != MessageBoxResult.OK) return;
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            ActualPlanStarted?.Invoke(label);
+
+            _actualPlanCts?.Dispose();
+            _actualPlanCts = new CancellationTokenSource();
 
             try
             {
@@ -831,8 +845,8 @@ namespace PerformanceMonitorDashboard.Controls
                     planXml,
                     isolationLevel,
                     isAzureSqlDb: false,
-                    timeoutSeconds: 120,
-                    cts.Token);
+                    timeoutSeconds: 0,
+                    _actualPlanCts.Token);
 
                 if (!string.IsNullOrEmpty(actualPlanXml))
                 {
@@ -857,6 +871,10 @@ namespace PerformanceMonitorDashboard.Controls
                 MessageBox.Show($"Failed to get actual plan:\n\n{ex.Message}",
                     "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 _statusCallback?.Invoke("Actual plan capture failed.");
+            }
+            finally
+            {
+                ActualPlanFinished?.Invoke();
             }
         }
 
