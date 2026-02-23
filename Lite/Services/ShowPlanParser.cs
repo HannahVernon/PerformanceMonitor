@@ -157,8 +157,13 @@ public static class ShowPlanParser
             EstimateRebinds = ParseDouble(relOpEl.Attribute("EstimateRebinds")?.Value),
             EstimateRewinds = ParseDouble(relOpEl.Attribute("EstimateRewinds")?.Value),
             EstimatedRowSize = (int)ParseDouble(relOpEl.Attribute("AvgRowSize")?.Value),
-            Parallel = relOpEl.Attribute("Parallel")?.Value == "true" || relOpEl.Attribute("Parallel")?.Value == "1",
-            ExecutionMode = relOpEl.Attribute("EstimatedExecutionMode")?.Value
+            Parallel = relOpEl.Attribute("Parallel")?.Value is "true" or "1",
+            Partitioned = relOpEl.Attribute("Partitioned")?.Value is "true" or "1",
+            ExecutionMode = relOpEl.Attribute("EstimatedExecutionMode")?.Value,
+            // Adaptive join properties are on <RelOp> per XSD
+            IsAdaptive = relOpEl.Attribute("IsAdaptive")?.Value is "true" or "1",
+            AdaptiveThresholdRows = ParseDouble(relOpEl.Attribute("AdaptiveThresholdRows")?.Value),
+            EstimatedJoinType = relOpEl.Attribute("EstimatedJoinType")?.Value
         };
 
         // Map to icon
@@ -330,26 +335,46 @@ public static class ShowPlanParser
                     node.DefinedValues = string.Join("; ", dvParts);
             }
 
-            // Scan direction
+            // IndexScan / TableScan properties (IndexScanType / TableScanType per XSD)
             node.ScanDirection = physicalOpEl.Attribute("ScanDirection")?.Value;
-
-            // Forced index / scan / seek hints
             node.ForcedIndex = physicalOpEl.Attribute("ForcedIndex")?.Value is "true" or "1";
             node.ForceScan = physicalOpEl.Attribute("ForceScan")?.Value is "true" or "1";
             node.ForceSeek = physicalOpEl.Attribute("ForceSeek")?.Value is "true" or "1";
             node.NoExpandHint = physicalOpEl.Attribute("NoExpandHint")?.Value is "true" or "1";
+            node.Lookup = physicalOpEl.Attribute("Lookup")?.Value is "true" or "1";
+            node.DynamicSeek = physicalOpEl.Attribute("DynamicSeek")?.Value is "true" or "1";
 
-            // Table cardinality and rows to be read (these are on <RelOp>, not the physical op element)
+            // Table cardinality and rows to be read (on <RelOp> per XSD)
             node.TableCardinality = ParseDouble(relOpEl.Attribute("TableCardinality")?.Value);
             node.EstimatedRowsRead = ParseDouble(relOpEl.Attribute("EstimatedRowsRead")?.Value);
             if (node.EstimatedRowsRead == 0)
                 node.EstimatedRowsRead = ParseDouble(relOpEl.Attribute("EstimateRowsWithoutRowGoal")?.Value);
 
-            // TOP operator properties
+            // TOP operator properties (TopType per XSD)
             var topExprEl = physicalOpEl.Element(Ns + "TopExpression")?.Descendants(Ns + "ScalarOperator").FirstOrDefault();
             if (topExprEl != null)
                 node.TopExpression = topExprEl.Attribute("ScalarString")?.Value;
             node.IsPercent = physicalOpEl.Attribute("IsPercent")?.Value is "true" or "1";
+            node.WithTies = physicalOpEl.Attribute("WithTies")?.Value is "true" or "1";
+
+            // Sort properties (SortType per XSD)
+            node.SortDistinct = physicalOpEl.Attribute("Distinct")?.Value is "true" or "1";
+
+            // Filter properties (FilterType per XSD)
+            node.StartupExpression = physicalOpEl.Attribute("StartupExpression")?.Value is "true" or "1";
+
+            // Nested Loops properties (NestedLoopsType per XSD)
+            node.NLOptimized = physicalOpEl.Attribute("Optimized")?.Value is "true" or "1";
+            node.WithOrderedPrefetch = physicalOpEl.Attribute("WithOrderedPrefetch")?.Value is "true" or "1";
+            node.WithUnorderedPrefetch = physicalOpEl.Attribute("WithUnorderedPrefetch")?.Value is "true" or "1";
+
+            // Hash Match properties (HashType per XSD)
+            node.ManyToMany = physicalOpEl.Attribute("ManyToMany")?.Value is "true" or "1";
+            node.BitmapCreator = physicalOpEl.Attribute("BitmapCreator")?.Value is "true" or "1";
+
+            // Parallelism properties (ParallelismType per XSD)
+            node.Remoting = physicalOpEl.Attribute("Remoting")?.Value is "true" or "1";
+            node.LocalParallelism = physicalOpEl.Attribute("LocalParallelism")?.Value is "true" or "1";
 
             // SET predicate (UPDATE operator)
             var setPredicateEl = physicalOpEl.Element(Ns + "SetPredicate");
@@ -359,13 +384,7 @@ public static class ShowPlanParser
                 node.SetPredicate = so?.Attribute("ScalarString")?.Value;
             }
 
-            // Hash Match: ManyToMany
-            node.ManyToMany = physicalOpEl.Attribute("ManyToMany")?.Value is "true" or "1";
-
-            // Adaptive join properties
-            node.IsAdaptive = physicalOpEl.Attribute("IsAdaptive")?.Value is "true" or "1";
-            node.AdaptiveThresholdRows = ParseDouble(physicalOpEl.Attribute("AdaptiveThresholdRows")?.Value);
-            node.EstimatedJoinType = physicalOpEl.Attribute("EstimatedJoinType")?.Value;
+            // ActualJoinType from runtime info on adaptive joins
             node.ActualJoinType = physicalOpEl.Attribute("ActualJoinType")?.Value;
         }
 

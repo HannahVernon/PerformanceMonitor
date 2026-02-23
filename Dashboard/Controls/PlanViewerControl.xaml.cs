@@ -429,6 +429,8 @@ public partial class PlanViewerControl : UserControl
         if (!string.IsNullOrEmpty(node.ActualExecutionMode) && node.ActualExecutionMode != node.ExecutionMode)
             AddPropertyRow("Actual Exec Mode", node.ActualExecutionMode);
         AddPropertyRow("Parallel", node.Parallel ? "True" : "False");
+        if (node.Partitioned)
+            AddPropertyRow("Partitioned", "True");
         if (node.EstimatedDOP > 0)
             AddPropertyRow("Estimated DOP", $"{node.EstimatedDOP}");
 
@@ -442,6 +444,10 @@ public partial class PlanViewerControl : UserControl
             AddPropertyRow("ForceScan", node.ForceScan ? "True" : "False");
             AddPropertyRow("ForceSeek", node.ForceSeek ? "True" : "False");
             AddPropertyRow("NoExpandHint", node.NoExpandHint ? "True" : "False");
+            if (node.Lookup)
+                AddPropertyRow("Lookup", "True");
+            if (node.DynamicSeek)
+                AddPropertyRow("Dynamic Seek", "True");
         }
 
         if (!string.IsNullOrEmpty(node.StorageType))
@@ -470,7 +476,10 @@ public partial class PlanViewerControl : UserControl
             || !string.IsNullOrEmpty(node.OuterReferences)
             || !string.IsNullOrEmpty(node.InnerSideJoinColumns)
             || !string.IsNullOrEmpty(node.OuterSideJoinColumns)
-            || node.ManyToMany;
+            || node.ManyToMany || node.BitmapCreator
+            || node.SortDistinct || node.StartupExpression
+            || node.NLOptimized || node.WithOrderedPrefetch || node.WithUnorderedPrefetch
+            || node.WithTies || node.Remoting || node.LocalParallelism;
 
         if (hasOperatorDetails)
         {
@@ -478,7 +487,28 @@ public partial class PlanViewerControl : UserControl
             if (!string.IsNullOrEmpty(node.OrderBy))
                 AddPropertyRow("Order By", node.OrderBy, isCode: true);
             if (!string.IsNullOrEmpty(node.TopExpression))
-                AddPropertyRow("Top", node.IsPercent ? $"{node.TopExpression} PERCENT" : node.TopExpression);
+            {
+                var topText = node.TopExpression;
+                if (node.IsPercent) topText += " PERCENT";
+                if (node.WithTies) topText += " WITH TIES";
+                AddPropertyRow("Top", topText);
+            }
+            if (node.SortDistinct)
+                AddPropertyRow("Distinct Sort", "True");
+            if (node.StartupExpression)
+                AddPropertyRow("Startup Expression", "True");
+            if (node.NLOptimized)
+                AddPropertyRow("Optimized", "True");
+            if (node.WithOrderedPrefetch)
+                AddPropertyRow("Ordered Prefetch", "True");
+            if (node.WithUnorderedPrefetch)
+                AddPropertyRow("Unordered Prefetch", "True");
+            if (node.BitmapCreator)
+                AddPropertyRow("Bitmap Creator", "True");
+            if (node.Remoting)
+                AddPropertyRow("Remoting", "True");
+            if (node.LocalParallelism)
+                AddPropertyRow("Local Parallelism", "True");
             if (!string.IsNullOrEmpty(node.GroupBy))
                 AddPropertyRow("Group By", node.GroupBy, isCode: true);
             if (!string.IsNullOrEmpty(node.PartitionColumns))

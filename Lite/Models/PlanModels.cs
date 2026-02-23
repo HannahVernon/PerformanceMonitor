@@ -98,6 +98,23 @@ public class PlanNode
     public string? PartitioningType { get; set; }
     public string? StorageType { get; set; }
 
+    // RelOp-level properties (from <RelOp> element per XSD)
+    public bool Partitioned { get; set; }
+    public bool IsAdaptive { get; set; }
+    public double AdaptiveThresholdRows { get; set; }
+    public string? EstimatedJoinType { get; set; }
+    public string? ActualJoinType { get; set; }
+    public string? ActualExecutionMode { get; set; }
+
+    // Scan/Seek properties (IndexScanType / TableScanType)
+    public string? ScanDirection { get; set; }
+    public bool ForcedIndex { get; set; }
+    public bool ForceScan { get; set; }
+    public bool ForceSeek { get; set; }
+    public bool NoExpandHint { get; set; }
+    public bool Lookup { get; set; }
+    public bool DynamicSeek { get; set; }
+
     // Operator-specific properties
     public string? OrderBy { get; set; }
     public string? OuterReferences { get; set; }
@@ -106,23 +123,26 @@ public class PlanNode
     public string? GroupBy { get; set; }
     public string? PartitionColumns { get; set; }
     public string? DefinedValues { get; set; }
-    public string? ScanDirection { get; set; }
-    public bool ForcedIndex { get; set; }
-    public bool ForceScan { get; set; }
-    public bool ForceSeek { get; set; }
-    public bool NoExpandHint { get; set; }
     public double TableCardinality { get; set; }
     public double EstimatedRowsRead { get; set; }
     public string? TopExpression { get; set; }
     public bool IsPercent { get; set; }
+    public bool WithTies { get; set; }
     public bool ManyToMany { get; set; }
+    public bool BitmapCreator { get; set; }
     public string? SetPredicate { get; set; }
     public string? SegmentColumn { get; set; }
-    public string? ActualExecutionMode { get; set; }
-    public bool IsAdaptive { get; set; }
-    public double AdaptiveThresholdRows { get; set; }
-    public string? EstimatedJoinType { get; set; }
-    public string? ActualJoinType { get; set; }
+    public bool SortDistinct { get; set; }
+    public bool StartupExpression { get; set; }
+
+    // Nested Loops properties
+    public bool NLOptimized { get; set; }
+    public bool WithOrderedPrefetch { get; set; }
+    public bool WithUnorderedPrefetch { get; set; }
+
+    // Parallelism properties
+    public bool Remoting { get; set; }
+    public bool LocalParallelism { get; set; }
 
     // Extended actual I/O stats
     public long ActualScans { get; set; }

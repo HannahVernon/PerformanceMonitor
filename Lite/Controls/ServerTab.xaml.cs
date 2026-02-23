@@ -2261,6 +2261,28 @@ public partial class ServerTab : UserControl
                 planXml = hist.QueryPlan;
                 label = "Est Plan - History";
                 break;
+            case ProcedureStatsRow proc:
+                label = $"Est Plan - {proc.FullName}";
+                try
+                {
+                    var connStr = _server.GetConnectionString(_credentialService);
+                    planXml = await LocalDataService.FetchProcedurePlanOnDemandAsync(
+                        connStr, proc.DatabaseName, proc.SchemaName, proc.ObjectName);
+                }
+                catch { }
+                break;
+            case QueryStoreRow qs:
+                label = $"Est Plan - QS {qs.QueryId}";
+                if (qs.PlanId > 0)
+                {
+                    try
+                    {
+                        var connStr = _server.GetConnectionString(_credentialService);
+                        planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
+                    }
+                    catch { }
+                }
+                break;
         }
 
         if (!string.IsNullOrEmpty(planXml))
