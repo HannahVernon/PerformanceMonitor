@@ -29,6 +29,8 @@ public static class ShowPlanParser
         if (root == null) return plan;
 
         plan.BuildVersion = root.Attribute("Version")?.Value;
+        plan.Build = root.Attribute("Build")?.Value;
+        plan.ClusteredMode = root.Attribute("ClusteredMode")?.Value is "true" or "1";
 
         // Standard path: ShowPlanXML → BatchSequence → Batch → Statements
         var batches = root.Descendants(Ns + "Batch");
@@ -159,6 +161,45 @@ public static class ShowPlanParser
         };
 
         var queryPlanEl = stmtEl.Element(Ns + "QueryPlan");
+
+        // XSD gap: Dispatcher/PSP (on StmtSimple, not inside QueryPlan)
+        var dispatcherEl = stmtEl.Element(Ns + "Dispatcher");
+        if (dispatcherEl != null)
+        {
+            stmt.Dispatcher = new DispatcherInfo();
+            foreach (var pspEl in dispatcherEl.Elements(Ns + "ParameterSensitivePredicate"))
+            {
+                var psp = new ParameterSensitivePredicateInfo
+                {
+                    LowBoundary = ParseDouble(pspEl.Attribute("LowBoundary")?.Value),
+                    HighBoundary = ParseDouble(pspEl.Attribute("HighBoundary")?.Value)
+                };
+                var predEl = pspEl.Element(Ns + "Predicate")?.Descendants(Ns + "ScalarOperator").FirstOrDefault();
+                psp.PredicateText = predEl?.Attribute("ScalarString")?.Value;
+                foreach (var statEl in pspEl.Elements(Ns + "StatisticsInfo"))
+                {
+                    psp.Statistics.Add(new OptimizerStatsUsageItem
+                    {
+                        StatisticsName = statEl.Attribute("Statistics")?.Value?.Replace("[", "").Replace("]", "") ?? "",
+                        TableName = statEl.Attribute("Table")?.Value?.Replace("[", "").Replace("]", "") ?? "",
+                        DatabaseName = statEl.Attribute("Database")?.Value?.Replace("[", "").Replace("]", ""),
+                        SchemaName = statEl.Attribute("Schema")?.Value?.Replace("[", "").Replace("]", ""),
+                        ModificationCount = ParseLong(statEl.Attribute("ModificationCount")?.Value),
+                        SamplingPercent = ParseDouble(statEl.Attribute("SamplingPercent")?.Value),
+                        LastUpdate = statEl.Attribute("LastUpdate")?.Value
+                    });
+                }
+                stmt.Dispatcher.ParameterSensitivePredicates.Add(psp);
+            }
+            foreach (var oppEl in dispatcherEl.Elements(Ns + "OptionalParameterPredicate"))
+            {
+                var opp = new OptionalParameterPredicateInfo();
+                var oppPredEl = oppEl.Element(Ns + "Predicate")?.Descendants(Ns + "ScalarOperator").FirstOrDefault();
+                opp.PredicateText = oppPredEl?.Attribute("ScalarString")?.Value;
+                stmt.Dispatcher.OptionalParameterPredicates.Add(opp);
+            }
+        }
+
         if (queryPlanEl == null) return stmt;
 
         ParseStmtAttributes(stmt, stmtEl);
@@ -192,6 +233,47 @@ public static class ShowPlanParser
             opNode.Parent = stmtNode;
             stmtNode.Children.Add(opNode);
             stmt.RootNode = stmtNode;
+        }
+
+        // XSD gap: UDF sub-plans
+        foreach (var udfEl in stmtEl.Elements(Ns + "UDF"))
+        {
+            var udfInfo = new FunctionPlanInfo
+            {
+                ProcName = udfEl.Attribute("ProcName")?.Value ?? "",
+                IsNativelyCompiled = udfEl.Attribute("IsNativelyCompiled")?.Value is "true" or "1"
+            };
+            var udfStmts = udfEl.Element(Ns + "Statements");
+            if (udfStmts != null)
+            {
+                foreach (var childStmt in udfStmts.Elements())
+                {
+                    var parsed = ParseStatementAndChildren(childStmt);
+                    udfInfo.Statements.AddRange(parsed);
+                }
+            }
+            stmt.UdfPlans.Add(udfInfo);
+        }
+
+        // XSD gap: StoredProc sub-plan
+        var storedProcEl = stmtEl.Element(Ns + "StoredProc");
+        if (storedProcEl != null)
+        {
+            var spInfo = new FunctionPlanInfo
+            {
+                ProcName = storedProcEl.Attribute("ProcName")?.Value ?? "",
+                IsNativelyCompiled = storedProcEl.Attribute("IsNativelyCompiled")?.Value is "true" or "1"
+            };
+            var spStmts = storedProcEl.Element(Ns + "Statements");
+            if (spStmts != null)
+            {
+                foreach (var childStmt in spStmts.Elements())
+                {
+                    var parsed = ParseStatementAndChildren(childStmt);
+                    spInfo.Statements.AddRange(parsed);
+                }
+            }
+            stmt.StoredProcPlan = spInfo;
         }
 
         return stmt;
@@ -267,6 +349,16 @@ public static class ShowPlanParser
         stmt.QueryStoreStatementHintId = (int)ParseDouble(stmtEl.Attribute("QueryStoreStatementHintId")?.Value);
         stmt.QueryStoreStatementHintText = stmtEl.Attribute("QueryStoreStatementHintText")?.Value;
         stmt.QueryStoreStatementHintSource = stmtEl.Attribute("QueryStoreStatementHintSource")?.Value;
+
+        // XSD gap: Statement-level identifiers and handles
+        stmt.StatementId = (int)ParseDouble(stmtEl.Attribute("StatementId")?.Value);
+        stmt.StatementCompId = (int)ParseDouble(stmtEl.Attribute("StatementCompId")?.Value);
+        stmt.TemplatePlanGuideDB = stmtEl.Attribute("TemplatePlanGuideDB")?.Value;
+        stmt.TemplatePlanGuideName = stmtEl.Attribute("TemplatePlanGuideName")?.Value;
+        stmt.ParameterizedPlanHandle = stmtEl.Attribute("ParameterizedPlanHandle")?.Value;
+        stmt.BatchSqlHandle = stmtEl.Attribute("BatchSqlHandle")?.Value;
+        stmt.ContainsLedgerTables = stmtEl.Attribute("ContainsLedgerTables")?.Value is "true" or "1";
+        stmt.QueryCompilationReplay = (int)ParseDouble(stmtEl.Attribute("QueryCompilationReplay")?.Value);
     }
 
     /// <summary>
@@ -337,6 +429,18 @@ public static class ShowPlanParser
         // Wave 3.5: ParameterizedText
         stmt.ParameterizedText = queryPlanEl.Element(Ns + "ParameterizedText")?.Value;
 
+        // XSD gap: QueryPlan-level attributes
+        stmt.ContainsInterleavedExecutionCandidates = queryPlanEl.Attribute("ContainsInterleavedExecutionCandidates")?.Value is "true" or "1";
+        stmt.ContainsInlineScalarTsqlUdfs = queryPlanEl.Attribute("ContainsInlineScalarTsqlUdfs")?.Value is "true" or "1";
+        stmt.QueryVariantID = (int)ParseDouble(queryPlanEl.Attribute("QueryVariantID")?.Value);
+        stmt.DispatcherPlanHandle = queryPlanEl.Attribute("DispatcherPlanHandle")?.Value;
+        stmt.ExclusiveProfileTimeActive = queryPlanEl.Attribute("ExclusiveProfileTimeActive")?.Value is "true" or "1";
+
+        // XSD gap: OptimizationReplay
+        var optReplayEl = queryPlanEl.Element(Ns + "OptimizationReplay");
+        if (optReplayEl != null)
+            stmt.OptimizationReplayScript = optReplayEl.Attribute("Script")?.Value;
+
         // Missing indexes
         stmt.MissingIndexes = ParseMissingIndexes(queryPlanEl);
 
@@ -368,6 +472,8 @@ public static class ShowPlanParser
                 {
                     StatisticsName = statEl.Attribute("Statistics")?.Value?.Replace("[", "").Replace("]", "") ?? "",
                     TableName = statEl.Attribute("Table")?.Value?.Replace("[", "").Replace("]", "") ?? "",
+                    DatabaseName = statEl.Attribute("Database")?.Value?.Replace("[", "").Replace("]", ""),
+                    SchemaName = statEl.Attribute("Schema")?.Value?.Replace("[", "").Replace("]", ""),
                     ModificationCount = ParseLong(statEl.Attribute("ModificationCount")?.Value),
                     SamplingPercent = ParseDouble(statEl.Attribute("SamplingPercent")?.Value),
                     LastUpdate = statEl.Attribute("LastUpdate")?.Value
@@ -384,6 +490,14 @@ public static class ShowPlanParser
                 Branches = (int)ParseDouble(threadStatEl.Attribute("Branches")?.Value),
                 UsedThreads = (int)ParseDouble(threadStatEl.Attribute("UsedThreads")?.Value)
             };
+            foreach (var trEl in threadStatEl.Elements(Ns + "ThreadReservation"))
+            {
+                stmt.ThreadStats.Reservations.Add(new ThreadReservation
+                {
+                    NodeId = (int)ParseDouble(trEl.Attribute("NodeId")?.Value),
+                    ReservedThreads = (int)ParseDouble(trEl.Attribute("ReservedThreads")?.Value)
+                });
+            }
         }
 
         // ParameterList
@@ -426,6 +540,8 @@ public static class ShowPlanParser
                 CpuTimeMs = ParseLong(queryTimeEl.Attribute("CpuTime")?.Value),
                 ElapsedTimeMs = ParseLong(queryTimeEl.Attribute("ElapsedTime")?.Value)
             };
+            stmt.QueryUdfCpuTimeMs = ParseLong(queryTimeEl.Attribute("UdfCpuTime")?.Value);
+            stmt.QueryUdfElapsedTimeMs = ParseLong(queryTimeEl.Attribute("UdfElapsedTime")?.Value);
         }
 
         // Wave 3.12: TraceFlags
@@ -463,6 +579,20 @@ public static class ShowPlanParser
                     stmt.IndexedViews.Add(name);
             }
         }
+
+        // XSD gap: CardinalityFeedback
+        var ceFeedbackEl = queryPlanEl.Element(Ns + "CardinalityFeedback");
+        if (ceFeedbackEl != null)
+        {
+            foreach (var entry in ceFeedbackEl.Elements(Ns + "Entry"))
+            {
+                stmt.CardinalityFeedback.Add(new CardinalityFeedbackEntry
+                {
+                    Key = ParseLong(entry.Attribute("Key")?.Value),
+                    Value = ParseLong(entry.Attribute("Value")?.Value)
+                });
+            }
+        }
     }
 
     private static PlanNode ParseRelOp(XElement relOpEl)
@@ -486,7 +616,12 @@ public static class ShowPlanParser
             AdaptiveThresholdRows = ParseDouble(relOpEl.Attribute("AdaptiveThresholdRows")?.Value),
             EstimatedJoinType = relOpEl.Attribute("EstimatedJoinType")?.Value,
             // Wave 3.14: Estimated DOP per operator
-            EstimatedDOP = (int)ParseDouble(relOpEl.Attribute("EstimatedAvailableDegreeOfParallelism")?.Value)
+            EstimatedDOP = (int)ParseDouble(relOpEl.Attribute("EstimatedAvailableDegreeOfParallelism")?.Value),
+            // XSD gap: RelOp-level metadata
+            GroupExecuted = relOpEl.Attribute("GroupExecuted")?.Value is "true" or "1",
+            RemoteDataAccess = relOpEl.Attribute("RemoteDataAccess")?.Value is "true" or "1",
+            OptimizedHalloweenProtectionUsed = relOpEl.Attribute("OptimizedHalloweenProtectionUsed")?.Value is "true" or "1",
+            StatsCollectionId = ParseLong(relOpEl.Attribute("StatsCollectionId")?.Value)
         };
 
         // Map to icon
@@ -523,6 +658,11 @@ public static class ShowPlanParser
                 node.FullObjectName = !string.IsNullOrEmpty(fullName) ? fullName : null;
 
                 node.StorageType = objEl.Attribute("Storage")?.Value;
+                node.ServerName = objEl.Attribute("Server")?.Value?.Replace("[", "").Replace("]", "");
+                node.ObjectAlias = objEl.Attribute("Alias")?.Value?.Replace("[", "").Replace("]", "");
+                node.IndexKind = objEl.Attribute("IndexKind")?.Value;
+                node.FilteredIndex = objEl.Attribute("Filtered")?.Value is "true" or "1";
+                node.TableReferenceId = (int)ParseDouble(objEl.Attribute("TableReferenceId")?.Value);
             }
 
             // Hash keys for hash match operators
@@ -740,6 +880,146 @@ public static class ShowPlanParser
 
             // ActualJoinType from runtime info on adaptive joins
             node.ActualJoinType = physicalOpEl.Attribute("ActualJoinType")?.Value;
+
+            // XSD gap: ForceSeekColumnCount (IndexScan)
+            node.ForceSeekColumnCount = (int)ParseDouble(physicalOpEl.Attribute("ForceSeekColumnCount")?.Value);
+
+            // XSD gap: PartitionId (IndexScan, TableScan, Sort, NestedLoops, AdaptiveJoin)
+            var partitionIdEl = physicalOpEl.Element(Ns + "PartitionId");
+            if (partitionIdEl != null)
+            {
+                var pidCols = partitionIdEl.Elements(Ns + "ColumnReference")
+                    .Select(c => FormatColumnRef(c))
+                    .Where(s => !string.IsNullOrEmpty(s));
+                var pidStr = string.Join(", ", pidCols);
+                if (!string.IsNullOrEmpty(pidStr))
+                    node.PartitionId = pidStr;
+            }
+
+            // XSD gap: StarJoinInfo (Hash, Merge, NL, AdaptiveJoin)
+            var starJoinEl = physicalOpEl.Element(Ns + "StarJoinInfo");
+            if (starJoinEl != null)
+            {
+                node.IsStarJoin = starJoinEl.Attribute("Root")?.Value is "true" or "1";
+                node.StarJoinOperationType = starJoinEl.Attribute("OperationType")?.Value;
+            }
+
+            // XSD gap: ProbeColumn (NL, Parallelism, Update)
+            var probeColEl = physicalOpEl.Element(Ns + "ProbeColumn")?.Element(Ns + "ColumnReference");
+            if (probeColEl != null)
+                node.ProbeColumn = FormatColumnRef(probeColEl);
+
+            // XSD gap: InRow (Parallelism)
+            node.InRow = physicalOpEl.Attribute("InRow")?.Value is "true" or "1";
+
+            // XSD gap: ComputeSequence (ComputeScalar)
+            node.ComputeSequence = physicalOpEl.Attribute("ComputeSequence")?.Value is "true" or "1";
+
+            // XSD gap: RollupInfo (StreamAggregate)
+            var rollupEl = physicalOpEl.Element(Ns + "RollupInfo");
+            if (rollupEl != null)
+            {
+                node.RollupHighestLevel = (int)ParseDouble(rollupEl.Attribute("HighestLevel")?.Value);
+                foreach (var rlEl in rollupEl.Elements(Ns + "RollupLevel"))
+                    node.RollupLevels.Add((int)ParseDouble(rlEl.Attribute("Level")?.Value));
+            }
+
+            // XSD gap: TVF ParameterList
+            var tvfParamListEl = physicalOpEl.Element(Ns + "ParameterList");
+            if (tvfParamListEl != null)
+            {
+                var tvfCols = tvfParamListEl.Elements(Ns + "ColumnReference")
+                    .Select(c => FormatColumnRef(c))
+                    .Where(s => !string.IsNullOrEmpty(s));
+                var tvfStr = string.Join(", ", tvfCols);
+                if (!string.IsNullOrEmpty(tvfStr))
+                    node.TvfParameters = tvfStr;
+                // Also check for ScalarOperator children (TVF can have scalar params)
+                if (string.IsNullOrEmpty(node.TvfParameters))
+                {
+                    var tvfScalars = tvfParamListEl.Elements(Ns + "ScalarOperator")
+                        .Select(s => s.Attribute("ScalarString")?.Value)
+                        .Where(s => !string.IsNullOrEmpty(s));
+                    var tvfScalarStr = string.Join(", ", tvfScalars);
+                    if (!string.IsNullOrEmpty(tvfScalarStr))
+                        node.TvfParameters = tvfScalarStr;
+                }
+            }
+
+            // XSD gap: OriginalActionColumn (Update)
+            var origActionColEl = physicalOpEl.Element(Ns + "OriginalActionColumn")?.Element(Ns + "ColumnReference");
+            if (origActionColEl != null)
+                node.OriginalActionColumn = FormatColumnRef(origActionColEl);
+
+            // XSD gap: Scalar UDF structured detection
+            foreach (var udfEl in ScopedDescendants(physicalOpEl, Ns + "UserDefinedFunction"))
+            {
+                var udfRef = new ScalarUdfReference
+                {
+                    FunctionName = udfEl.Attribute("FunctionName")?.Value?.Replace("[", "").Replace("]", "") ?? "",
+                    IsClrFunction = udfEl.Attribute("IsClrFunction")?.Value is "true" or "1"
+                };
+                var clrEl = udfEl.Element(Ns + "CLRFunction");
+                if (clrEl != null)
+                {
+                    udfRef.ClrAssembly = clrEl.Attribute("Assembly")?.Value;
+                    udfRef.ClrClass = clrEl.Attribute("Class")?.Value;
+                    udfRef.ClrMethod = clrEl.Attribute("Method")?.Value;
+                }
+                if (!string.IsNullOrEmpty(udfRef.FunctionName))
+                    node.ScalarUdfs.Add(udfRef);
+            }
+
+            // XSD gap: TieColumns (Top operator)
+            node.TieColumns = ParseColumnList(physicalOpEl, "TieColumns");
+
+            // XSD gap: UDXName (Extension operator)
+            node.UdxName = physicalOpEl.Attribute("UDXName")?.Value;
+
+            // XSD gap: Operator-level IndexedViewInfo
+            var opIvInfoEl = physicalOpEl.Element(Ns + "IndexedViewInfo");
+            if (opIvInfoEl != null)
+            {
+                foreach (var ivObjEl in opIvInfoEl.Elements(Ns + "Object"))
+                {
+                    var ivDb = ivObjEl.Attribute("Database")?.Value?.Replace("[", "").Replace("]", "");
+                    var ivSchema = ivObjEl.Attribute("Schema")?.Value?.Replace("[", "").Replace("]", "");
+                    var ivTable = ivObjEl.Attribute("Table")?.Value?.Replace("[", "").Replace("]", "");
+                    var ivIndex = ivObjEl.Attribute("Index")?.Value?.Replace("[", "").Replace("]", "");
+                    var ivParts = new List<string>();
+                    if (!string.IsNullOrEmpty(ivDb)) ivParts.Add(ivDb);
+                    if (!string.IsNullOrEmpty(ivSchema)) ivParts.Add(ivSchema);
+                    if (!string.IsNullOrEmpty(ivTable)) ivParts.Add(ivTable);
+                    if (!string.IsNullOrEmpty(ivIndex)) ivParts.Add(ivIndex);
+                    var ivName = string.Join(".", ivParts);
+                    if (!string.IsNullOrEmpty(ivName))
+                        node.OperatorIndexedViews.Add(ivName);
+                }
+            }
+
+            // XSD gap: NamedParameterList (IndexScan)
+            var namedParamListEl = physicalOpEl.Element(Ns + "NamedParameterList");
+            if (namedParamListEl != null)
+            {
+                foreach (var npEl in namedParamListEl.Elements(Ns + "NamedParameter"))
+                {
+                    var np = new NamedParameterInfo
+                    {
+                        Name = npEl.Attribute("Name")?.Value ?? ""
+                    };
+                    var npScalar = npEl.Element(Ns + "ScalarOperator");
+                    if (npScalar != null)
+                        np.ScalarString = npScalar.Attribute("ScalarString")?.Value;
+                    if (!string.IsNullOrEmpty(np.Name))
+                        node.NamedParameters.Add(np);
+                }
+            }
+
+            // XSD gap: Remote operator metadata
+            node.RemoteDestination = physicalOpEl.Attribute("RemoteDestination")?.Value;
+            node.RemoteSource = physicalOpEl.Attribute("RemoteSource")?.Value;
+            node.RemoteObject = physicalOpEl.Attribute("RemoteObject")?.Value;
+            node.RemoteQuery = physicalOpEl.Attribute("RemoteQuery")?.Value;
         }
 
         // Output columns
@@ -860,6 +1140,38 @@ public static class ShowPlanParser
             node.ActualSegmentSkips = totalSegmentSkips;
             node.UdfCpuTimeUs = totalUdfCpu;
             node.UdfElapsedTimeUs = maxUdfElapsed;
+
+            // Store per-thread data for parallel skew analysis
+            foreach (var thread in runtimeEl.Elements(Ns + "RunTimeCountersPerThread"))
+            {
+                node.PerThreadStats.Add(new PerThreadRuntimeInfo
+                {
+                    ThreadId = (int)ParseDouble(thread.Attribute("Thread")?.Value),
+                    ActualRows = ParseLong(thread.Attribute("ActualRows")?.Value),
+                    ActualExecutions = ParseLong(thread.Attribute("ActualExecutions")?.Value),
+                    ActualElapsedMs = ParseLong(thread.Attribute("ActualElapsedms")?.Value),
+                    ActualCPUMs = ParseLong(thread.Attribute("ActualCPUms")?.Value),
+                    ActualRowsRead = ParseLong(thread.Attribute("ActualRowsRead")?.Value),
+                    ActualLogicalReads = ParseLong(thread.Attribute("ActualLogicalReads")?.Value),
+                    ActualPhysicalReads = ParseLong(thread.Attribute("ActualPhysicalReads")?.Value),
+                    ActualScans = ParseLong(thread.Attribute("ActualScans")?.Value),
+                    ActualReadAheads = ParseLong(thread.Attribute("ActualReadAheads")?.Value),
+                    FirstActiveTime = ParseLong(thread.Attribute("FirstActiveTime")?.Value),
+                    LastActiveTime = ParseLong(thread.Attribute("LastActiveTime")?.Value),
+                    OpenTime = ParseLong(thread.Attribute("OpenTime")?.Value),
+                    FirstRowTime = ParseLong(thread.Attribute("FirstRowTime")?.Value),
+                    LastRowTime = ParseLong(thread.Attribute("LastRowTime")?.Value),
+                    CloseTime = ParseLong(thread.Attribute("CloseTime")?.Value),
+                    InputMemoryGrant = ParseLong(thread.Attribute("InputMemoryGrant")?.Value),
+                    OutputMemoryGrant = ParseLong(thread.Attribute("OutputMemoryGrant")?.Value),
+                    UsedMemoryGrant = ParseLong(thread.Attribute("UsedMemoryGrant")?.Value),
+                    Batches = ParseLong(thread.Attribute("Batches")?.Value),
+                    ActualEndOfScans = ParseLong(thread.Attribute("ActualEndOfScans")?.Value),
+                    ActualLocallyAggregatedRows = ParseLong(thread.Attribute("ActualLocallyAggregatedRows")?.Value),
+                    IsInterleavedExecuted = thread.Attribute("IsInterleavedExecuted")?.Value is "true" or "1",
+                    RowRequalifications = ParseLong(thread.Attribute("RowRequalifications")?.Value)
+                });
+            }
         }
 
         // Recurse into child RelOps
@@ -982,6 +1294,36 @@ public static class ShowPlanParser
             });
         }
 
+        if (warningsEl.Attribute("SpatialGuess")?.Value is "true" or "1")
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Spatial Guess",
+                Message = "Spatial index selectivity was guessed",
+                Severity = PlanWarningSeverity.Info
+            });
+        }
+
+        if (warningsEl.Attribute("UnmatchedIndexes")?.Value is "true" or "1")
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Unmatched Indexes",
+                Message = "Indexes could not be matched due to parameterization",
+                Severity = PlanWarningSeverity.Warning
+            });
+        }
+
+        if (warningsEl.Attribute("FullUpdateForOnlineIndexBuild")?.Value is "true" or "1")
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Full Update for Online Index Build",
+                Message = "Full update required for online index build operation",
+                Severity = PlanWarningSeverity.Info
+            });
+        }
+
         // Spill to TempDb (with enhanced details — Wave 3.7)
         foreach (var spillEl in warningsEl.Elements(Ns + "SpillToTempDb"))
         {
@@ -1004,6 +1346,72 @@ public static class ShowPlanParser
             {
                 WarningType = "Spill to TempDb",
                 Message = msg,
+                Severity = PlanWarningSeverity.Warning
+            });
+        }
+
+        // Sort spill details
+        foreach (var sortSpillEl in warningsEl.Elements(Ns + "SortSpillDetails"))
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Sort Spill",
+                Message = $"Sort spill — Granted: {ParseLong(sortSpillEl.Attribute("GrantedMemoryKb")?.Value):N0} KB, Used: {ParseLong(sortSpillEl.Attribute("UsedMemoryKb")?.Value):N0} KB, Writes: {ParseLong(sortSpillEl.Attribute("WritesToTempDb")?.Value):N0}, Reads: {ParseLong(sortSpillEl.Attribute("ReadsFromTempDb")?.Value):N0}",
+                Severity = PlanWarningSeverity.Warning,
+                SpillDetails = new SpillDetail
+                {
+                    SpillType = "Sort",
+                    GrantedMemoryKB = ParseLong(sortSpillEl.Attribute("GrantedMemoryKb")?.Value),
+                    UsedMemoryKB = ParseLong(sortSpillEl.Attribute("UsedMemoryKb")?.Value),
+                    WritesToTempDb = ParseLong(sortSpillEl.Attribute("WritesToTempDb")?.Value),
+                    ReadsFromTempDb = ParseLong(sortSpillEl.Attribute("ReadsFromTempDb")?.Value)
+                }
+            });
+        }
+
+        // Hash spill details
+        foreach (var hashSpillEl in warningsEl.Elements(Ns + "HashSpillDetails"))
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Hash Spill",
+                Message = $"Hash spill — Granted: {ParseLong(hashSpillEl.Attribute("GrantedMemoryKb")?.Value):N0} KB, Used: {ParseLong(hashSpillEl.Attribute("UsedMemoryKb")?.Value):N0} KB, Writes: {ParseLong(hashSpillEl.Attribute("WritesToTempDb")?.Value):N0}, Reads: {ParseLong(hashSpillEl.Attribute("ReadsFromTempDb")?.Value):N0}",
+                Severity = PlanWarningSeverity.Warning,
+                SpillDetails = new SpillDetail
+                {
+                    SpillType = "Hash",
+                    GrantedMemoryKB = ParseLong(hashSpillEl.Attribute("GrantedMemoryKb")?.Value),
+                    UsedMemoryKB = ParseLong(hashSpillEl.Attribute("UsedMemoryKb")?.Value),
+                    WritesToTempDb = ParseLong(hashSpillEl.Attribute("WritesToTempDb")?.Value),
+                    ReadsFromTempDb = ParseLong(hashSpillEl.Attribute("ReadsFromTempDb")?.Value)
+                }
+            });
+        }
+
+        // Exchange spill details
+        foreach (var exchSpillEl in warningsEl.Elements(Ns + "ExchangeSpillDetails"))
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Exchange Spill",
+                Message = $"Exchange spill — Writes: {ParseLong(exchSpillEl.Attribute("WritesToTempDb")?.Value):N0}",
+                Severity = PlanWarningSeverity.Warning,
+                SpillDetails = new SpillDetail
+                {
+                    SpillType = "Exchange",
+                    WritesToTempDb = ParseLong(exchSpillEl.Attribute("WritesToTempDb")?.Value)
+                }
+            });
+        }
+
+        // SpillOccurred
+        var spillOccurredEl = warningsEl.Element(Ns + "SpillOccurred");
+        if (spillOccurredEl != null)
+        {
+            result.Add(new PlanWarning
+            {
+                WarningType = "Spill Occurred",
+                Message = "Spill occurred during execution (from last query plan stats)",
                 Severity = PlanWarningSeverity.Warning
             });
         }

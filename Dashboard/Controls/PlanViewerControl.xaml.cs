@@ -64,6 +64,7 @@ public partial class PlanViewerControl : UserControl
             QueryTextExpander.Visibility = Visibility.Collapsed;
         }
         _currentPlan = ShowPlanParser.Parse(planXml);
+        PlanAnalyzer.Analyze(_currentPlan);
 
         var allStatements = _currentPlan.Batches
             .SelectMany(b => b.Statements)

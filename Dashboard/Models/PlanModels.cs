@@ -7,6 +7,8 @@ public class ParsedPlan
 {
     public string RawXml { get; set; } = "";
     public string? BuildVersion { get; set; }
+    public string? Build { get; set; }
+    public bool ClusteredMode { get; set; }
     public List<PlanBatch> Batches { get; set; } = new();
 
     public List<MissingIndex> AllMissingIndexes => Batches
@@ -84,6 +86,46 @@ public class PlanStatement
     public string? CursorRequestedType { get; set; }
     public string? CursorConcurrency { get; set; }
     public bool CursorForwardOnly { get; set; }
+
+    // XSD gap: Statement-level identifiers
+    public int StatementId { get; set; }
+    public int StatementCompId { get; set; }
+
+    // XSD gap: Template plan guide
+    public string? TemplatePlanGuideDB { get; set; }
+    public string? TemplatePlanGuideName { get; set; }
+
+    // XSD gap: Handle attributes
+    public string? ParameterizedPlanHandle { get; set; }
+    public string? BatchSqlHandle { get; set; }
+
+    // XSD gap: Feature flags
+    public bool ContainsLedgerTables { get; set; }
+    public bool ContainsInterleavedExecutionCandidates { get; set; }
+    public bool ContainsInlineScalarTsqlUdfs { get; set; }
+
+    // XSD gap: QueryPlan metadata
+    public int QueryVariantID { get; set; }
+    public string? DispatcherPlanHandle { get; set; }
+    public bool ExclusiveProfileTimeActive { get; set; }
+    public string? OptimizationReplayScript { get; set; }
+
+    // XSD gap: BaseStmtInfoType
+    public int QueryCompilationReplay { get; set; }
+
+    // XSD gap: QueryTimeStats UDF totals (statement-level, separate from per-node)
+    public long QueryUdfCpuTimeMs { get; set; }
+    public long QueryUdfElapsedTimeMs { get; set; }
+
+    // XSD gap: CardinalityFeedback
+    public List<CardinalityFeedbackEntry> CardinalityFeedback { get; set; } = new();
+
+    // XSD gap: Dispatcher/PSP
+    public DispatcherInfo? Dispatcher { get; set; }
+
+    // XSD gap: UDF/StoredProc sub-plans
+    public List<FunctionPlanInfo> UdfPlans { get; set; } = new();
+    public FunctionPlanInfo? StoredProcPlan { get; set; }
 }
 
 public class PlanNode
@@ -232,6 +274,46 @@ public class PlanNode
     public long ActualSegmentSkips { get; set; }
     public long UdfCpuTimeUs { get; set; }
     public long UdfElapsedTimeUs { get; set; }
+
+    // XSD gap: RelOp-level metadata
+    public bool GroupExecuted { get; set; }
+    public bool RemoteDataAccess { get; set; }
+    public bool OptimizedHalloweenProtectionUsed { get; set; }
+    public long StatsCollectionId { get; set; }
+
+    // XSD gap: Object metadata
+    public string? ServerName { get; set; }
+    public string? ObjectAlias { get; set; }
+    public string? IndexKind { get; set; }
+    public bool FilteredIndex { get; set; }
+    public int TableReferenceId { get; set; }
+
+    // XSD gap: Per-thread runtime data
+    public List<PerThreadRuntimeInfo> PerThreadStats { get; set; } = new();
+
+    // XSD gap: Operator-level properties
+    public int ForceSeekColumnCount { get; set; }
+    public string? PartitionId { get; set; }
+    public bool IsStarJoin { get; set; }
+    public string? StarJoinOperationType { get; set; }
+    public string? ProbeColumn { get; set; }
+    public bool InRow { get; set; }
+    public bool ComputeSequence { get; set; }
+    public int RollupHighestLevel { get; set; }
+    public List<int> RollupLevels { get; set; } = new();
+    public string? TvfParameters { get; set; }
+    public string? OriginalActionColumn { get; set; }
+    public List<ScalarUdfReference> ScalarUdfs { get; set; } = new();
+    public string? TieColumns { get; set; }
+    public string? UdxName { get; set; }
+    public List<string> OperatorIndexedViews { get; set; } = new();
+    public List<NamedParameterInfo> NamedParameters { get; set; } = new();
+
+    // Remote operator metadata
+    public string? RemoteDestination { get; set; }
+    public string? RemoteSource { get; set; }
+    public string? RemoteObject { get; set; }
+    public string? RemoteQuery { get; set; }
 }
 
 public class MissingIndex
@@ -251,6 +333,7 @@ public class PlanWarning
     public string WarningType { get; set; } = "";
     public string Message { get; set; } = "";
     public PlanWarningSeverity Severity { get; set; }
+    public SpillDetail? SpillDetails { get; set; }
 }
 
 public enum PlanWarningSeverity { Info, Warning, Critical }
@@ -281,6 +364,8 @@ public class OptimizerStatsUsageItem
 {
     public string StatisticsName { get; set; } = "";
     public string TableName { get; set; } = "";
+    public string? DatabaseName { get; set; }
+    public string? SchemaName { get; set; }
     public long ModificationCount { get; set; }
     public double SamplingPercent { get; set; }
     public string? LastUpdate { get; set; }
@@ -290,6 +375,7 @@ public class ThreadStatInfo
 {
     public int Branches { get; set; }
     public int UsedThreads { get; set; }
+    public List<ThreadReservation> Reservations { get; set; } = new();
 }
 
 public class SetOptionsInfo
@@ -329,4 +415,98 @@ public class TraceFlagInfo
     public int Value { get; set; }
     public string Scope { get; set; } = "";
     public bool IsCompileTime { get; set; }
+}
+
+public class CardinalityFeedbackEntry
+{
+    public long Key { get; set; }
+    public long Value { get; set; }
+}
+
+public class ThreadReservation
+{
+    public int NodeId { get; set; }
+    public int ReservedThreads { get; set; }
+}
+
+public class DispatcherInfo
+{
+    public List<ParameterSensitivePredicateInfo> ParameterSensitivePredicates { get; set; } = new();
+    public List<OptionalParameterPredicateInfo> OptionalParameterPredicates { get; set; } = new();
+}
+
+public class OptionalParameterPredicateInfo
+{
+    public string? PredicateText { get; set; }
+}
+
+public class ParameterSensitivePredicateInfo
+{
+    public double LowBoundary { get; set; }
+    public double HighBoundary { get; set; }
+    public string? PredicateText { get; set; }
+    public List<OptimizerStatsUsageItem> Statistics { get; set; } = new();
+}
+
+public class FunctionPlanInfo
+{
+    public string ProcName { get; set; } = "";
+    public bool IsNativelyCompiled { get; set; }
+    public List<PlanStatement> Statements { get; set; } = new();
+}
+
+public class PerThreadRuntimeInfo
+{
+    public int ThreadId { get; set; }
+    public long ActualRows { get; set; }
+    public long ActualExecutions { get; set; }
+    public long ActualElapsedMs { get; set; }
+    public long ActualCPUMs { get; set; }
+    public long ActualRowsRead { get; set; }
+    public long ActualLogicalReads { get; set; }
+    public long ActualPhysicalReads { get; set; }
+    public long ActualScans { get; set; }
+    public long ActualReadAheads { get; set; }
+    // Timing metadata
+    public long FirstActiveTime { get; set; }
+    public long LastActiveTime { get; set; }
+    public long OpenTime { get; set; }
+    public long FirstRowTime { get; set; }
+    public long LastRowTime { get; set; }
+    public long CloseTime { get; set; }
+    // Per-thread memory
+    public long InputMemoryGrant { get; set; }
+    public long OutputMemoryGrant { get; set; }
+    public long UsedMemoryGrant { get; set; }
+    // Batch mode
+    public long Batches { get; set; }
+    public long ActualEndOfScans { get; set; }
+    // Other
+    public long ActualLocallyAggregatedRows { get; set; }
+    public bool IsInterleavedExecuted { get; set; }
+    public long RowRequalifications { get; set; }
+}
+
+public class SpillDetail
+{
+    public string SpillType { get; set; } = ""; // "Sort", "Hash", "Exchange"
+    public long GrantedMemoryKB { get; set; }
+    public long UsedMemoryKB { get; set; }
+    public long WritesToTempDb { get; set; }
+    public long ReadsFromTempDb { get; set; }
+}
+
+public class ScalarUdfReference
+{
+    public string FunctionName { get; set; } = "";
+    public bool IsClrFunction { get; set; }
+    public string? ClrAssembly { get; set; }
+    public string? ClrClass { get; set; }
+    public string? ClrMethod { get; set; }
+}
+
+public class NamedParameterInfo
+{
+    public string Name { get; set; } = "";
+    public string? ScalarString { get; set; }
 }
