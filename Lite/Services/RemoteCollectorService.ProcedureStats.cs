@@ -41,7 +41,7 @@ DECLARE
     @sql nvarchar(max);
 
 SET @sql = CAST(N'
-SELECT TOP (150) * FROM (
+SELECT /* PerformanceMonitorLite */ TOP (150) * FROM (
 SELECT
     database_name = d.name,
     schema_name = OBJECT_SCHEMA_NAME(s.object_id, s.database_id),
@@ -186,7 +186,7 @@ EXECUTE sys.sp_executesql @sql;";
         const string azureSqlDbQuery = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-SELECT TOP (150)
+SELECT /* PerformanceMonitorLite */ TOP (150)
     database_name = DB_NAME(),
     schema_name = OBJECT_SCHEMA_NAME(s.object_id, s.database_id),
     object_name = OBJECT_NAME(s.object_id, s.database_id),

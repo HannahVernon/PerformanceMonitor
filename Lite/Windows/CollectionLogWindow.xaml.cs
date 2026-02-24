@@ -72,6 +72,11 @@ namespace PerformanceMonitorLite.Windows
             }
         }
 
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyCell(sender);
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "collection_log");
+
         private void Close_Click(object sender, RoutedEventArgs e)
         {
             Close();

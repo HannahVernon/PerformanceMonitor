@@ -27,7 +27,7 @@ public partial class RemoteCollectorService
         const string query = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-SELECT
+SELECT /* PerformanceMonitorLite */
     session_id = wt.session_id,
     wait_type = wt.wait_type,
     wait_duration_ms = wt.wait_duration_ms,
