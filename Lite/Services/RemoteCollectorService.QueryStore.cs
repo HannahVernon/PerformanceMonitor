@@ -30,7 +30,7 @@ public partial class RemoteCollectorService
         const string dbQuery = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-SELECT
+SELECT /* PerformanceMonitorLite */
     d.name
 FROM sys.databases AS d
 WHERE d.is_query_store_on = 1
@@ -137,7 +137,7 @@ OPTION(RECOMPILE);";
 EXECUTE [{escapedDbName}].sys.sp_executesql
     N'SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-     SELECT
+     SELECT /* PerformanceMonitorLite */
          query_id = qsq.query_id,
          plan_id = qsp.plan_id,
          execution_type_desc = qsrs.execution_type_desc,
@@ -199,6 +199,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
      JOIN sys.query_store_query_text AS qst
        ON qst.query_text_id = qsq.query_text_id
      WHERE qsrs.last_execution_time > @cutoff_time
+     AND   qst.query_sql_text NOT LIKE N''%PerformanceMonitorLite%''
      OPTION(RECOMPILE);',
     N'@cutoff_time datetime2(7)',
     @cutoff_time;";

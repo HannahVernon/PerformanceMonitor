@@ -513,10 +513,10 @@ namespace PerformanceMonitorDashboard.Helpers
         /// </summary>
         public static DataGrid? FindDataGridFromContextMenu(ContextMenu contextMenu)
         {
+            if (contextMenu.PlacementTarget is DataGrid grid)
+                return grid;
             if (contextMenu.PlacementTarget is DataGridRow row)
-            {
                 return FindParent<DataGrid>(row);
-            }
             return null;
         }
 

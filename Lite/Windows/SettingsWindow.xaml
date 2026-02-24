@@ -13,6 +13,13 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="/Themes/DarkTheme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click"/>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click"/>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click"/>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click"/>
+            </ContextMenu>
         </ResourceDictionary>
     </Window.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -257,7 +264,8 @@
                       CanUserAddRows="False" CanUserDeleteRows="False"
                       SelectionMode="Single"
                       Background="Transparent" BorderThickness="0"
-                      HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                      ContextMenu="{StaticResource DataGridContextMenu}">
                 <DataGrid.Columns>
                     <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="65"/>
                     <DataGridTextColumn Header="Collector" Binding="{Binding Name}" Width="160" IsReadOnly="True"/>

@@ -6,7 +6,18 @@
         Background="{StaticResource BackgroundBrush}">
 
     <Window.Resources>
-        <ResourceDictionary Source="/Themes/DarkTheme.xaml"/>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Themes/DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click"/>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click"/>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click"/>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click"/>
+            </ContextMenu>
+        </ResourceDictionary>
     </Window.Resources>
 
     <Grid>
@@ -31,7 +42,8 @@
                   CanUserSortColumns="True"
                   HeadersVisibility="Column"
                   GridLinesVisibility="Horizontal"
-                  Margin="10">
+                  Margin="10"
+                  ContextMenu="{StaticResource DataGridContextMenu}">
             <DataGrid.Columns>
                 <DataGridTextColumn Binding="{Binding CollectionTimeFormatted}" Width="140">
                     <DataGridTextColumn.Header>

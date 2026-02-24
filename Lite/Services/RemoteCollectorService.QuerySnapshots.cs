@@ -23,7 +23,7 @@ public partial class RemoteCollectorService
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 SET LOCK_TIMEOUT 1000;
 
-SELECT
+SELECT /* PerformanceMonitorLite */
     der.session_id,
     database_name = DB_NAME(der.database_id),
     elapsed_time_formatted =
