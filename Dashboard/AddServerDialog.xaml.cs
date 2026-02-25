@@ -107,6 +107,7 @@ namespace PerformanceMonitorDashboard
         private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage)> RunConnectionTestAsync(Button triggerButton)
         {
             triggerButton.IsEnabled = false;
+            SaveButton.IsEnabled = false;
             StatusText.Text = "Testing connection...";
             StatusText.Visibility = System.Windows.Visibility.Visible;
 
@@ -135,6 +136,7 @@ namespace PerformanceMonitorDashboard
             finally
             {
                 triggerButton.IsEnabled = true;
+                SaveButton.IsEnabled = true;
                 StatusText.Text = string.Empty;
                 StatusText.Visibility = System.Windows.Visibility.Collapsed;
             }

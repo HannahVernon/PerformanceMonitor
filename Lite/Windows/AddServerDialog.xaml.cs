@@ -140,6 +140,7 @@ public partial class AddServerDialog : Window
         }
 
         TestButton.IsEnabled = false;
+        SaveButton.IsEnabled = false;
         StatusText.Text = "Testing connection...";
 
         try
@@ -212,6 +213,7 @@ public partial class AddServerDialog : Window
         finally
         {
             TestButton.IsEnabled = true;
+            SaveButton.IsEnabled = true;
         }
     }
 
