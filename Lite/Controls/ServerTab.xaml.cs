@@ -196,6 +196,8 @@ public partial class ServerTab : UserControl
         Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryGrantActivityChart, "Memory_Grant_Activity");
         Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoReadChart, "File_IO_Read_Latency");
         Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteChart, "File_IO_Write_Latency");
+        Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoReadThroughputChart, "File_IO_Read_Throughput");
+        Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteThroughputChart, "File_IO_Write_Throughput");
         Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbChart, "TempDB_Stats");
         Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbFileIoChart, "TempDB_File_IO");
         Helpers.ContextMenuHelper.SetupChartContextMenu(LockWaitTrendChart, "Lock_Wait_Trends");
