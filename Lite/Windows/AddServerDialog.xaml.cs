@@ -165,7 +165,7 @@ public partial class AddServerDialog : Window
         return builder;
     }
 
-    private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage, bool MfaCancelled)> RunConnectionTestAsync()
+    private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage, bool MfaCancelled, string? ServerVersion)> RunConnectionTestAsync()
     {
         TestButton.IsEnabled = false;
         SaveButton.IsEnabled = false;
@@ -177,11 +177,15 @@ public partial class AddServerDialog : Window
         bool connected = false;
         string? errorMessage = null;
         bool mfaCancelled = false;
+        string? serverVersion = null;
 
         try
         {
             using var connection = new SqlConnection(BuildConnectionBuilder().ConnectionString);
             await connection.OpenAsync();
+            using var cmd = new SqlCommand("SELECT @@VERSION", connection);
+            var version = await cmd.ExecuteScalarAsync() as string;
+            serverVersion = version?.Split('\n')[0]?.Trim();
             connected = true;
         }
         catch (Exception ex)
@@ -196,7 +200,7 @@ public partial class AddServerDialog : Window
             SaveButton.IsEnabled = true;
         }
 
-        return (connected, errorMessage, mfaCancelled);
+        return (connected, errorMessage, mfaCancelled, serverVersion);
     }
 
     private async void TestButton_Click(object sender, RoutedEventArgs e)
@@ -207,11 +211,13 @@ public partial class AddServerDialog : Window
             return;
         }
 
-        var (connected, errorMessage, mfaCancelled) = await RunConnectionTestAsync();
+        var (connected, errorMessage, mfaCancelled, serverVersion) = await RunConnectionTestAsync();
 
         if (connected)
         {
-            StatusText.Text = $"Successfully connected to {ServerNameBox.Text.Trim()}!";
+            StatusText.Text = serverVersion != null
+                ? $"Success: {serverVersion}"
+                : $"Successfully connected to {ServerNameBox.Text.Trim()}!";
 
             if (AddedServer != null && EntraMfaAuthRadio.IsChecked == true)
             {
@@ -277,7 +283,7 @@ public partial class AddServerDialog : Window
         // Test connection when data collection is enabled
         if (EnabledCheckBox.IsChecked == true)
         {
-            var (connected, errorMessage, mfaCancelled) = await RunConnectionTestAsync();
+            var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync();
 
             if (!connected)
             {
