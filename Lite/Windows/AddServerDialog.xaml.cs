@@ -294,16 +294,25 @@ public partial class AddServerDialog : Window
                         var status = _serverManager.GetConnectionStatus(AddedServer.Id);
                         status.UserCancelledMfa = true;
                     }
-                    StatusText.Text = "Authentication cancelled by user. Click Save to try again, or uncheck \"Enable data collection for this server\" to save without connecting.";
+                    MessageBox.Show(
+                        "Authentication was cancelled. Click Save to try again, or uncheck \"Enable data collection for this server\" to save without connecting.",
+                        "Authentication Cancelled",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning
+                    );
                 }
                 else
                 {
-                    StatusText.Text = $"Failed to connect: {errorMessage}\n\nTo save this server without a working connection, uncheck \"Enable data collection for this server\".";
+                    var detail = errorMessage != null ? $"\n\nError: {errorMessage}" : string.Empty;
+                    MessageBox.Show(
+                        $"Could not connect to {ServerNameBox.Text.Trim()}.{detail}\n\nTo save this server without a working connection, uncheck \"Enable data collection for this server\".",
+                        "Connection Failed",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error
+                    );
                 }
                 return;
             }
-
-            StatusText.Text = string.Empty;
         }
 
         try
