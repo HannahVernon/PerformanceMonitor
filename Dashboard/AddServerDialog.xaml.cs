@@ -104,7 +104,7 @@ namespace PerformanceMonitorDashboard
             return true;
         }
 
-        private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage)> RunConnectionTestAsync(Button triggerButton)
+        private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage, string? ServerVersion)> RunConnectionTestAsync(Button triggerButton)
         {
             triggerButton.IsEnabled = false;
             SaveButton.IsEnabled = false;
@@ -113,6 +113,7 @@ namespace PerformanceMonitorDashboard
 
             bool connected = false;
             string? errorMessage = null;
+            string? serverVersion = null;
             try
             {
                 var cs = DatabaseService.BuildConnectionString(
@@ -126,6 +127,9 @@ namespace PerformanceMonitorDashboard
 
                 await using var connection = new SqlConnection(cs);
                 await connection.OpenAsync();
+                using var cmd = new SqlCommand("SELECT @@VERSION", connection);
+                var version = await cmd.ExecuteScalarAsync() as string;
+                serverVersion = version?.Split('\n')[0]?.Trim();
                 connected = true;
             }
             catch (Exception ex)
@@ -141,19 +145,22 @@ namespace PerformanceMonitorDashboard
                 StatusText.Visibility = System.Windows.Visibility.Collapsed;
             }
 
-            return (connected, errorMessage);
+            return (connected, errorMessage, serverVersion);
         }
 
         private async void TestConnection_Click(object sender, RoutedEventArgs e)
         {
             if (!ValidateInputs()) return;
 
-            var (connected, errorMessage) = await RunConnectionTestAsync(TestConnectionButton);
+            var (connected, errorMessage, serverVersion) = await RunConnectionTestAsync(TestConnectionButton);
 
             if (connected)
             {
+                var message = serverVersion != null
+                    ? $"Successfully connected to {ServerNameTextBox.Text}!\n\n{serverVersion}"
+                    : $"Successfully connected to {ServerNameTextBox.Text}!";
                 MessageBox.Show(
-                    $"Successfully connected to {ServerNameTextBox.Text}!",
+                    message,
                     "Connection Successful",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information
@@ -175,7 +182,7 @@ namespace PerformanceMonitorDashboard
         {
             if (!ValidateInputs()) return;
 
-            var (connected, errorMessage) = await RunConnectionTestAsync(SaveButton);
+            var (connected, errorMessage, _) = await RunConnectionTestAsync(SaveButton);
 
             if (!connected)
             {
