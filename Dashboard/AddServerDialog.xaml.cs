@@ -116,16 +116,29 @@ namespace PerformanceMonitorDashboard
             string? serverVersion = null;
             try
             {
-                var cs = DatabaseService.BuildConnectionString(
-                    ServerNameTextBox.Text.Trim(),
-                    WindowsAuthRadio.IsChecked == true,
-                    UsernameTextBox.Text.Trim(),
-                    PasswordBox.Password,
-                    GetSelectedEncryptMode(),
-                    TrustServerCertificateCheckBox.IsChecked == true
-                ).ConnectionString;
+                var builder = new SqlConnectionStringBuilder
+                {
+                    DataSource = ServerNameTextBox.Text.Trim(),
+                    InitialCatalog = "PerformanceMonitor",
+                    ApplicationName = "PerformanceMonitorDashboard",
+                    ConnectTimeout = 10,
+                    TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true,
+                    Encrypt = GetSelectedEncryptMode() switch
+                    {
+                        "Strict" => SqlConnectionEncryptOption.Strict,
+                        "Optional" => SqlConnectionEncryptOption.Optional,
+                        _ => SqlConnectionEncryptOption.Mandatory
+                    },
+                    IntegratedSecurity = WindowsAuthRadio.IsChecked == true
+                };
 
-                await using var connection = new SqlConnection(cs);
+                if (WindowsAuthRadio.IsChecked != true)
+                {
+                    builder.UserID = UsernameTextBox.Text.Trim();
+                    builder.Password = PasswordBox.Password;
+                }
+
+                await using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
                 using var cmd = new SqlCommand("SELECT @@VERSION", connection);
                 var version = await cmd.ExecuteScalarAsync() as string;
