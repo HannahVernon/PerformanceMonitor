@@ -141,9 +141,15 @@ public class DuckDbInitializer
 
             var existingVersion = await GetSchemaVersionAsync(connection);
 
-            /* Create tables first (IF NOT EXISTS) so migrations can ALTER them safely.
-               After an archive-and-reset the database is empty — running ALTER TABLE
-               before CREATE TABLE would fail on nonexistent tables. */
+            /* On a fresh/reset database (v0), skip migrations entirely — they DROP tables
+               expecting CREATE TABLE to follow, which is destructive on a blank DB.
+               Just create tables with the current schema and stamp the version. */
+            if (existingVersion > 0 && existingVersion < CurrentSchemaVersion)
+            {
+                _logger?.LogInformation("Schema upgrade needed: v{Old} -> v{New}", existingVersion, CurrentSchemaVersion);
+                await RunMigrationsAsync(connection, existingVersion);
+            }
+
             foreach (var tableStatement in Schema.GetAllTableStatements())
             {
                 await ExecuteNonQueryAsync(connection, tableStatement);
@@ -156,8 +162,6 @@ public class DuckDbInitializer
 
             if (existingVersion < CurrentSchemaVersion)
             {
-                _logger?.LogInformation("Schema upgrade needed: v{Old} -> v{New}", existingVersion, CurrentSchemaVersion);
-                await RunMigrationsAsync(connection, existingVersion);
                 await SetSchemaVersionAsync(connection, CurrentSchemaVersion);
             }
 
