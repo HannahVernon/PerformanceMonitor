@@ -43,23 +43,23 @@ public class SystemTrayService : IDisposable
 
         _trayIcon = new TaskbarIcon();
 
-        bool isLight = Helpers.ThemeManager.IsLight;
+        bool HasLightBackground = Helpers.ThemeManager.HasLightBackground;
 
         /* Custom tooltip styled to match current theme */
         _tooltipText = new TextBlock
         {
             Text = "Performance Monitor Lite",
-            Foreground = new SolidColorBrush(isLight
+            Foreground = new SolidColorBrush(HasLightBackground
                 ? (Color)ColorConverter.ConvertFromString("#1A1D23")
                 : (Color)ColorConverter.ConvertFromString("#E4E6EB")),
             FontSize = 12
         };
         _trayIcon.TrayToolTip = new Border
         {
-            Background = new SolidColorBrush(isLight
+            Background = new SolidColorBrush(HasLightBackground
                 ? (Color)ColorConverter.ConvertFromString("#FFFFFF")
                 : (Color)ColorConverter.ConvertFromString("#22252b")),
-            BorderBrush = new SolidColorBrush(isLight
+            BorderBrush = new SolidColorBrush(HasLightBackground
                 ? (Color)ColorConverter.ConvertFromString("#DEE2E6")
                 : (Color)ColorConverter.ConvertFromString("#33363e")),
             BorderThickness = new Thickness(1),
@@ -183,3 +183,4 @@ public class SystemTrayService : IDisposable
         _mainWindow.Dispatcher.InvokeAsync(Initialize);
     }
 }
+

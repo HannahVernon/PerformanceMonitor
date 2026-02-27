@@ -123,7 +123,7 @@ public partial class ProcedureHistoryWindow : Window
     private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-        if (Helpers.ThemeManager.IsLight)
+        if (Helpers.ThemeManager.HasLightBackground)
         {
             figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
             dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
@@ -195,3 +195,4 @@ public partial class ProcedureHistoryWindow : Window
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }
+

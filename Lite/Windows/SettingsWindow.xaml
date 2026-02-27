@@ -120,6 +120,7 @@
                     <ComboBox x:Name="ColorThemeCombo" Width="140" VerticalAlignment="Center">
                         <ComboBoxItem Content="Dark" Tag="Dark"/>
                         <ComboBoxItem Content="Light" Tag="Light"/>
+                        <ComboBoxItem Content="Cool Breeze" Tag="CoolBreeze"/>
                     </ComboBox>
                 </StackPanel>
             </StackPanel>

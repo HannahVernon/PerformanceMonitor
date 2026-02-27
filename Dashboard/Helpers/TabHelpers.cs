@@ -153,7 +153,17 @@ namespace PerformanceMonitorDashboard.Helpers
         {
             ScottPlot.Color figureBackground, dataBackground, textColor, gridColor, legendBg, legendFg, legendOutline;
 
-            if (ThemeManager.IsLight)
+            if (ThemeManager.CurrentTheme == "CoolBreeze")
+            {
+                figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
+                dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
+                textColor        = ScottPlot.Color.FromHex("#364D61");
+                gridColor        = ScottPlot.Color.FromHex("#A8BDD0").WithAlpha(120);
+                legendBg         = ScottPlot.Color.FromHex("#EEF4FA");
+                legendFg         = ScottPlot.Color.FromHex("#1A2A3A");
+                legendOutline    = ScottPlot.Color.FromHex("#A8BDD0");
+            }
+            else if (ThemeManager.HasLightBackground)
             {
                 figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
                 dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
@@ -198,9 +208,11 @@ namespace PerformanceMonitorDashboard.Helpers
         /// </summary>
         public static void ReapplyAxisColors(WpfPlot chart)
         {
-            var textColor = ThemeManager.IsLight
-                ? ScottPlot.Color.FromHex("#4A5568")
-                : ScottPlot.Color.FromHex("#9DA5B4");
+            var textColor = ThemeManager.CurrentTheme == "CoolBreeze"
+                ? ScottPlot.Color.FromHex("#364D61")
+                : ThemeManager.HasLightBackground
+                    ? ScottPlot.Color.FromHex("#4A5568")
+                    : ScottPlot.Color.FromHex("#9DA5B4");
             chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
             chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
             chart.Plot.Axes.Bottom.Label.ForeColor = textColor;
@@ -279,7 +291,15 @@ namespace PerformanceMonitorDashboard.Helpers
         {
             SolidColorBrush primaryBg, secondaryBg, fg, mutedFg, borderBrush;
 
-            if (ThemeManager.IsLight)
+            if (ThemeManager.CurrentTheme == "CoolBreeze")
+            {
+                primaryBg   = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EEF4FA"));
+                secondaryBg = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#DAE6F0"));
+                fg          = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1A2A3A"));
+                mutedFg     = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#5B7A90"));
+                borderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#A8BDD0"));
+            }
+            else if (ThemeManager.HasLightBackground)
             {
                 primaryBg   = new SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF));
                 secondaryBg = new SolidColorBrush(Color.FromRgb(0xF5, 0xF7, 0xFA));
@@ -300,10 +320,10 @@ namespace PerformanceMonitorDashboard.Helpers
             calendar.Foreground = fg;
             calendar.BorderBrush = borderBrush;
 
-            ApplyThemeRecursively(calendar, primaryBg, secondaryBg, fg, mutedFg, ThemeManager.IsLight);
+            ApplyThemeRecursively(calendar, primaryBg, secondaryBg, fg, mutedFg, ThemeManager.HasLightBackground);
         }
 
-        private static void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush secondaryBg, Brush fg, Brush mutedFg, bool isLight)
+        private static void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush secondaryBg, Brush fg, Brush mutedFg, bool HasLightBackground)
         {
             for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
             {
@@ -333,7 +353,7 @@ namespace PerformanceMonitorDashboard.Helpers
                 {
                     textBlock.Foreground = fg;
                 }
-                else if (!isLight)
+                else if (!HasLightBackground)
                 {
                     // Dark mode only: replace any light-colored backgrounds with the dark theme color
                     if (child is Border border && border.Background is SolidColorBrush bg)
@@ -348,7 +368,7 @@ namespace PerformanceMonitorDashboard.Helpers
                     }
                 }
 
-                ApplyThemeRecursively(child, primaryBg, secondaryBg, fg, mutedFg, isLight);
+                ApplyThemeRecursively(child, primaryBg, secondaryBg, fg, mutedFg, HasLightBackground);
             }
         }
 
@@ -778,3 +798,4 @@ namespace PerformanceMonitorDashboard.Helpers
         }
     }
 }
+

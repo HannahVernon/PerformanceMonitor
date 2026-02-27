@@ -168,9 +168,9 @@ public partial class App : Application
         LoadAlertSettings();
 
         // Apply saved color theme before the main window is shown
-        if (ColorTheme == "Light")
+        if (ColorTheme != "Dark")
         {
-            Helpers.ThemeManager.Apply("Light");
+            Helpers.ThemeManager.Apply(ColorTheme);
         }
 
         // Initialize logging
@@ -263,7 +263,7 @@ public partial class App : Application
             if (root.TryGetProperty("color_theme", out v))
             {
                 var t = v.GetString();
-                if (t == "Dark" || t == "Light") ColorTheme = t;
+                if (t == "Dark" || t == "Light" || t == "CoolBreeze") ColorTheme = t;
             }
 
             /* Update check settings */

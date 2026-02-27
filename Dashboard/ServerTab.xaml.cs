@@ -339,10 +339,14 @@ namespace PerformanceMonitorDashboard
 
         private void OnThemeChanged(string _)
         {
-            foreach (var chart in Helpers.TabHelpers.GetAllCharts(this))
+            foreach (var field in GetType().GetFields(
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
             {
-                Helpers.TabHelpers.ApplyThemeToChart(chart);
-                chart.Refresh();
+                if (field.GetValue(this) is ScottPlot.WPF.WpfPlot chart)
+                {
+                    Helpers.TabHelpers.ApplyThemeToChart(chart);
+                    chart.Refresh();
+                }
             }
         }
 

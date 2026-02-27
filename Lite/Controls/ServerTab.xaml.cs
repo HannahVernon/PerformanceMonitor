@@ -436,7 +436,14 @@ public partial class ServerTab : UserControl
     {
         SolidColorBrush primaryBg, fg, mutedFg, borderBrush;
 
-        if (Helpers.ThemeManager.IsLight)
+        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
+        {
+            primaryBg   = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#EEF4FA")!);
+            fg          = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#1A2A3A")!);
+            mutedFg     = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#5B7A90")!);
+            borderBrush = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#A8BDD0")!);
+        }
+        else if (Helpers.ThemeManager.HasLightBackground)
         {
             primaryBg   = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF));
             fg          = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1A, 0x1D, 0x23));
@@ -460,7 +467,7 @@ public partial class ServerTab : UserControl
 
     private void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush fg, Brush mutedFg)
     {
-        bool isLight = Helpers.ThemeManager.IsLight;
+        bool HasLightBackground = Helpers.ThemeManager.HasLightBackground;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
         {
             var child = VisualTreeHelper.GetChild(parent, i);
@@ -489,7 +496,7 @@ public partial class ServerTab : UserControl
             {
                 textBlock.Foreground = fg;
             }
-            else if (!isLight)
+            else if (!HasLightBackground)
             {
                 if (child is Border border && border.Background is SolidColorBrush bg && bg.Color.R > 200 && bg.Color.G > 200 && bg.Color.B > 200)
                     border.Background = primaryBg;
@@ -2210,7 +2217,17 @@ public partial class ServerTab : UserControl
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor, legendBg, legendFg, legendOutline;
 
-        if (Helpers.ThemeManager.IsLight)
+        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
+        {
+            figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
+            dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
+            textColor        = ScottPlot.Color.FromHex("#364D61");
+            gridColor        = ScottPlot.Color.FromHex("#A8BDD0").WithAlpha(120);
+            legendBg         = ScottPlot.Color.FromHex("#EEF4FA");
+            legendFg         = ScottPlot.Color.FromHex("#1A2A3A");
+            legendOutline    = ScottPlot.Color.FromHex("#A8BDD0");
+        }
+        else if (Helpers.ThemeManager.HasLightBackground)
         {
             figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
             dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
@@ -2250,10 +2267,14 @@ public partial class ServerTab : UserControl
 
     private void OnThemeChanged(string _)
     {
-        foreach (var chart in GetAllCharts(this))
+        foreach (var field in GetType().GetFields(
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
         {
-            ApplyTheme(chart);
-            chart.Refresh();
+            if (field.GetValue(this) is ScottPlot.WPF.WpfPlot chart)
+            {
+                ApplyTheme(chart);
+                chart.Refresh();
+            }
         }
     }
 
@@ -2273,7 +2294,7 @@ public partial class ServerTab : UserControl
     /// </summary>
     private static void ReapplyAxisColors(ScottPlot.WPF.WpfPlot chart)
     {
-        var textColor = Helpers.ThemeManager.IsLight
+        var textColor = Helpers.ThemeManager.HasLightBackground
             ? ScottPlot.Color.FromHex("#4A5568")
             : ScottPlot.Color.FromHex("#9DA5B4");
         chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
@@ -3362,3 +3383,4 @@ public partial class ServerTab : UserControl
         }
     }
 }
+

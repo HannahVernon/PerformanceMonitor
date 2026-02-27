@@ -19,8 +19,8 @@ namespace PerformanceMonitorLite.Helpers
         /// <summary>The currently active theme name ("Dark" or "Light").</summary>
         public static string CurrentTheme { get; private set; } = "Dark";
 
-        /// <summary>Returns true when the Light theme is active.</summary>
-        public static bool IsLight => CurrentTheme == "Light";
+        /// <summary>Returns true when the active theme uses a light background (Light or CoolBreeze).</summary>
+        public static bool HasLightBackground => CurrentTheme != "Dark";
 
         /// <summary>Fired after the theme dictionary has been swapped.</summary>
         public static event Action<string>? ThemeChanged;
@@ -32,9 +32,12 @@ namespace PerformanceMonitorLite.Helpers
         public static void Apply(string theme)
         {
             CurrentTheme = theme;
-            var uri = theme == "Light"
-                ? new Uri("pack://application:,,,/Themes/LightTheme.xaml")
-                : new Uri("pack://application:,,,/Themes/DarkTheme.xaml");
+            var uri = theme switch
+            {
+                "Light"      => new Uri("pack://application:,,,/Themes/LightTheme.xaml"),
+                "CoolBreeze" => new Uri("pack://application:,,,/Themes/CoolBreezeTheme.xaml"),
+                _            => new Uri("pack://application:,,,/Themes/DarkTheme.xaml")
+            };
 
             var dictionaries = Application.Current.Resources.MergedDictionaries;
             dictionaries.Clear();
