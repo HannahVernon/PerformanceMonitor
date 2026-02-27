@@ -20,6 +20,8 @@ namespace PerformanceMonitorDashboard
     {
         private readonly IUserPreferencesService _preferencesService;
         private bool _isLoading = true;
+        private readonly string _originalTheme = ThemeManager.CurrentTheme;
+        private bool _saved;
 
         public SettingsWindow(IUserPreferencesService preferencesService)
         {
@@ -605,6 +607,7 @@ namespace PerformanceMonitorDashboard
 
             _preferencesService.SavePreferences(prefs);
 
+            _saved = true;
             DialogResult = true;
             Close();
         }
@@ -613,6 +616,13 @@ namespace PerformanceMonitorDashboard
         {
             DialogResult = false;
             Close();
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!_saved)
+                ThemeManager.Apply(_originalTheme);
+            base.OnClosing(e);
         }
 
         // ============================================
