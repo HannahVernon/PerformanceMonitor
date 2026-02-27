@@ -603,9 +603,11 @@ namespace PerformanceMonitorDashboard.Services
         /// Gets currently running queries that exceed the duration threshold.
         /// Uses live DMV data (sys.dm_exec_requests) for immediate detection.
         /// </summary>
-        private async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(SqlConnection connection, int thresholdMinutes)
+        private async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(SqlConnection connection, int thresholdMinutes, bool excludeSpServerDiagnostics = true)
         {
-            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+            string spServerDiagnosticsFilter = excludeSpServerDiagnostics ? "AND r.wait_type NOT LIKE N'%SP_SERVER_DIAGNOSTICS%'" : "";
+
+            string query = @$"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
                 SELECT TOP (5)
                     r.session_id,
@@ -621,10 +623,11 @@ namespace PerformanceMonitorDashboard.Services
                 FROM sys.dm_exec_requests AS r
                 CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
                 JOIN sys.dm_exec_sessions AS s ON s.session_id = r.session_id
-                WHERE r.session_id > 50
-                AND r.total_elapsed_time >= @thresholdMs
-                AND t.text NOT LIKE N'%waitfor delay%'
-                AND t.text NOT LIKE N'%waitfor receive%'
+                WHERE 
+                    r.session_id > 50
+                    {spServerDiagnosticsFilter}
+                    AND r.total_elapsed_time >= @thresholdMs
+                    AND r.wait_type <> N'WAITFOR'
                 ORDER BY r.total_elapsed_time DESC
                 OPTION(MAXDOP 1, RECOMPILE);";
 
