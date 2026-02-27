@@ -75,7 +75,7 @@ public static class PlanAnalyzer
             if (grant.GrantedMemoryKB > 0 && grant.MaxUsedMemoryKB > 0)
             {
                 var wasteRatio = (double)grant.GrantedMemoryKB / grant.MaxUsedMemoryKB;
-                if (wasteRatio >= 10 && grant.GrantedMemoryKB > 1024)
+                if (wasteRatio >= 10 && grant.GrantedMemoryKB >= 1048576)
                 {
                     stmt.PlanWarnings.Add(new PlanWarning
                     {
@@ -98,7 +98,7 @@ public static class PlanAnalyzer
             }
 
             // Large memory grant with sort/hash guidance
-            if (grant.GrantedMemoryKB > 102400 && stmt.RootNode != null)
+            if (grant.GrantedMemoryKB >= 1048576 && stmt.RootNode != null)
             {
                 var consumers = new List<string>();
                 FindMemoryConsumers(stmt.RootNode, consumers);
@@ -112,7 +112,7 @@ public static class PlanAnalyzer
                 {
                     WarningType = "Large Memory Grant",
                     Message = $"Query granted {grantMB:F0} MB of memory.{guidance}",
-                    Severity = grantMB >= 512 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
+                    Severity = grantMB >= 4096 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
                 });
             }
         }
