@@ -102,7 +102,7 @@ public partial class ProcedureHistoryWindow : Window
         scatter.LegendText = label;
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
-        ApplyDarkTheme(HistoryChart);
+        ApplyTheme(HistoryChart);
 
         HistoryChart.Refresh();
     }
@@ -120,7 +120,7 @@ public partial class ProcedureHistoryWindow : Window
 
     private void MetricSelector_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded) UpdateChart(); }
 
-    private static void ApplyDarkTheme(ScottPlot.WPF.WpfPlot chart)
+    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
         if (Helpers.ThemeManager.IsLight)
@@ -147,7 +147,7 @@ public partial class ProcedureHistoryWindow : Window
 
     private void OnThemeChanged(string _)
     {
-        ApplyDarkTheme(HistoryChart);
+        ApplyTheme(HistoryChart);
         HistoryChart.Refresh();
     }
 

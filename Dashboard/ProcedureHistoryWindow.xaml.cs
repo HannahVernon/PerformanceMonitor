@@ -69,20 +69,20 @@ namespace PerformanceMonitorDashboard
 
             ProcedureIdentifierText.Text = $"Procedure Execution History: {objectName} in [{databaseName}]";
 
-            ApplyDarkModeToChart();
+            ApplyThemeToChart();
             Loaded += ProcedureHistoryWindow_Loaded;
             Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
             Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
-        private void ApplyDarkModeToChart()
+        private void ApplyThemeToChart()
         {
-            Helpers.TabHelpers.ApplyDarkModeToChart(HistoryChart);
+            Helpers.TabHelpers.ApplyThemeToChart(HistoryChart);
         }
 
         private void OnThemeChanged(string _)
         {
-            ApplyDarkModeToChart();
+            ApplyThemeToChart();
             HistoryChart.Refresh();
         }
 

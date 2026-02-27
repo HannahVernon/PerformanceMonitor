@@ -149,7 +149,7 @@ namespace PerformanceMonitorDashboard.Helpers
         /// <summary>
         /// Applies the current color theme to a ScottPlot chart.
         /// </summary>
-        public static void ApplyDarkModeToChart(WpfPlot chart)
+        public static void ApplyThemeToChart(WpfPlot chart)
         {
             ScottPlot.Color figureBackground, dataBackground, textColor, gridColor, legendBg, legendFg, legendOutline;
 
@@ -275,7 +275,7 @@ namespace PerformanceMonitorDashboard.Helpers
         /// <summary>
         /// Applies theme-appropriate styling to a WPF Calendar control (used by DatePicker popup).
         /// </summary>
-        public static void ApplyDarkThemeToCalendar(System.Windows.Controls.Calendar calendar)
+        public static void ApplyThemeToCalendar(System.Windows.Controls.Calendar calendar)
         {
             SolidColorBrush primaryBg, secondaryBg, fg, mutedFg, borderBrush;
 
@@ -300,10 +300,10 @@ namespace PerformanceMonitorDashboard.Helpers
             calendar.Foreground = fg;
             calendar.BorderBrush = borderBrush;
 
-            ApplyDarkThemeRecursively(calendar, primaryBg, secondaryBg, fg, mutedFg, ThemeManager.IsLight);
+            ApplyThemeRecursively(calendar, primaryBg, secondaryBg, fg, mutedFg, ThemeManager.IsLight);
         }
 
-        private static void ApplyDarkThemeRecursively(DependencyObject parent, Brush primaryBg, Brush secondaryBg, Brush fg, Brush mutedFg, bool isLight)
+        private static void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush secondaryBg, Brush fg, Brush mutedFg, bool isLight)
         {
             for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
             {
@@ -348,7 +348,7 @@ namespace PerformanceMonitorDashboard.Helpers
                     }
                 }
 
-                ApplyDarkThemeRecursively(child, primaryBg, secondaryBg, fg, mutedFg, isLight);
+                ApplyThemeRecursively(child, primaryBg, secondaryBg, fg, mutedFg, isLight);
             }
         }
 
