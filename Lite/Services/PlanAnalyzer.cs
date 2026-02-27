@@ -304,7 +304,8 @@ public static class PlanAnalyzer
             {
                 var maxThread = node.PerThreadStats.OrderByDescending(t => t.ActualRows).First();
                 var skewRatio = (double)maxThread.ActualRows / totalRows;
-                if (skewRatio >= 0.9 && node.PerThreadStats.Count >= 4)
+                var skewThreshold = node.PerThreadStats.Count == 2 ? 0.75 : 0.50;
+                if (skewRatio >= skewThreshold)
                 {
                     node.Warnings.Add(new PlanWarning
                     {
