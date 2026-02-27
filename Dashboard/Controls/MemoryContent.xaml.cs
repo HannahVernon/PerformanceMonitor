@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
  * This file is part of the SQL Server Performance Monitor.
@@ -212,7 +212,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
             MemoryStatsOverviewChart.Plot.Clear();
             _memoryStatsOverviewHover?.Clear();
-            TabHelpers.ApplyDarkModeToChart(MemoryStatsOverviewChart);
+            TabHelpers.ApplyThemeToChart(MemoryStatsOverviewChart);
 
             var dataList = memoryData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<MemoryStatsItem>();
             // Total Memory series with gap filling
@@ -487,7 +487,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
             MemoryGrantSizingChart.Plot.Clear();
             _memoryGrantSizingHover?.Clear();
-            TabHelpers.ApplyDarkModeToChart(MemoryGrantSizingChart);
+            TabHelpers.ApplyThemeToChart(MemoryGrantSizingChart);
 
             var poolIds = aggregated.Select(d => d.PoolId).Distinct().OrderBy(id => id).ToList();
             int colorIndex = 0;
@@ -556,7 +556,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
             MemoryGrantActivityChart.Plot.Clear();
             _memoryGrantActivityHover?.Clear();
-            TabHelpers.ApplyDarkModeToChart(MemoryGrantActivityChart);
+            TabHelpers.ApplyThemeToChart(MemoryGrantActivityChart);
 
             var poolIds = aggregated.Select(d => d.PoolId).Distinct().OrderBy(id => id).ToList();
             int colorIndex = 0;
@@ -727,7 +727,7 @@ namespace PerformanceMonitorDashboard.Controls
                 }
                 MemoryClerksChart.Plot.Clear();
                 _memoryClerksHover?.Clear();
-                TabHelpers.ApplyDarkModeToChart(MemoryClerksChart);
+                TabHelpers.ApplyThemeToChart(MemoryClerksChart);
 
                 DateTime rangeEnd = _memoryClerksToDate ?? Helpers.ServerTimeHelper.ServerNow;
                 DateTime rangeStart = _memoryClerksFromDate ?? rangeEnd.AddHours(-_memoryClerksHoursBack);
@@ -864,7 +864,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
             PlanCacheChart.Plot.Clear();
             _planCacheHover?.Clear();
-            TabHelpers.ApplyDarkModeToChart(PlanCacheChart);
+            TabHelpers.ApplyThemeToChart(PlanCacheChart);
 
             var dataList = data?.ToList() ?? new List<PlanCacheStatsItem>();
             if (dataList.Count > 0)
@@ -1005,7 +1005,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
             MemoryPressureEventsChart.Plot.Clear();
             _memoryPressureEventsHover?.Clear();
-            TabHelpers.ApplyDarkModeToChart(MemoryPressureEventsChart);
+            TabHelpers.ApplyThemeToChart(MemoryPressureEventsChart);
 
             // Only chart HIGH severity events
             var dataList = data?.Where(d => d.Severity.Equals("HIGH", StringComparison.OrdinalIgnoreCase))

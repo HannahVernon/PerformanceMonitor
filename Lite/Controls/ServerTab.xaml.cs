@@ -426,13 +426,13 @@ public partial class ServerTab : UserControl
                 var popup = datePicker.Template.FindName("PART_Popup", datePicker) as System.Windows.Controls.Primitives.Popup;
                 if (popup?.Child is System.Windows.Controls.Calendar calendar)
                 {
-                    ApplyDarkThemeToCalendar(calendar);
+                    ApplyThemeToCalendar(calendar);
                 }
             }));
         }
     }
 
-    private void ApplyDarkThemeToCalendar(System.Windows.Controls.Calendar calendar)
+    private void ApplyThemeToCalendar(System.Windows.Controls.Calendar calendar)
     {
         SolidColorBrush primaryBg, fg, mutedFg, borderBrush;
 
@@ -455,10 +455,10 @@ public partial class ServerTab : UserControl
         calendar.Foreground = fg;
         calendar.BorderBrush = borderBrush;
 
-        ApplyDarkThemeRecursively(calendar, primaryBg, fg, mutedFg);
+        ApplyThemeRecursively(calendar, primaryBg, fg, mutedFg);
     }
 
-    private void ApplyDarkThemeRecursively(DependencyObject parent, Brush primaryBg, Brush fg, Brush mutedFg)
+    private void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush fg, Brush mutedFg)
     {
         bool isLight = Helpers.ThemeManager.IsLight;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
@@ -497,7 +497,7 @@ public partial class ServerTab : UserControl
                     grid.Background = primaryBg;
             }
 
-            ApplyDarkThemeRecursively(child, primaryBg, fg, mutedFg);
+            ApplyThemeRecursively(child, primaryBg, fg, mutedFg);
         }
     }
 
@@ -736,7 +736,7 @@ public partial class ServerTab : UserControl
     {
         ClearChart(CpuChart);
         _cpuHover?.Clear();
-        ApplyDarkTheme(CpuChart);
+        ApplyTheme(CpuChart);
 
         if (data.Count == 0) { CpuChart.Refresh(); return; }
 
@@ -767,7 +767,7 @@ public partial class ServerTab : UserControl
     {
         ClearChart(MemoryChart);
         _memoryHover?.Clear();
-        ApplyDarkTheme(MemoryChart);
+        ApplyTheme(MemoryChart);
 
         if (data.Count == 0) { MemoryChart.Refresh(); return; }
 
@@ -827,8 +827,8 @@ public partial class ServerTab : UserControl
         ClearChart(MemoryGrantActivityChart);
         _memoryGrantSizingHover?.Clear();
         _memoryGrantActivityHover?.Clear();
-        ApplyDarkTheme(MemoryGrantSizingChart);
-        ApplyDarkTheme(MemoryGrantActivityChart);
+        ApplyTheme(MemoryGrantSizingChart);
+        ApplyTheme(MemoryGrantActivityChart);
 
         if (data.Count == 0)
         {
@@ -915,7 +915,7 @@ public partial class ServerTab : UserControl
     {
         ClearChart(TempDbChart);
         _tempDbHover?.Clear();
-        ApplyDarkTheme(TempDbChart);
+        ApplyTheme(TempDbChart);
 
         if (data.Count == 0) { TempDbChart.Refresh(); return; }
 
@@ -954,7 +954,7 @@ public partial class ServerTab : UserControl
     {
         ClearChart(TempDbFileIoChart);
         _tempDbFileIoHover?.Clear();
-        ApplyDarkTheme(TempDbFileIoChart);
+        ApplyTheme(TempDbFileIoChart);
 
         if (data.Count == 0) { TempDbFileIoChart.Refresh(); return; }
 
@@ -999,8 +999,8 @@ public partial class ServerTab : UserControl
         ClearChart(FileIoWriteChart);
         _fileIoReadHover?.Clear();
         _fileIoWriteHover?.Clear();
-        ApplyDarkTheme(FileIoReadChart);
-        ApplyDarkTheme(FileIoWriteChart);
+        ApplyTheme(FileIoReadChart);
+        ApplyTheme(FileIoWriteChart);
 
         if (data.Count == 0) { FileIoReadChart.Refresh(); FileIoWriteChart.Refresh(); return; }
 
@@ -1090,8 +1090,8 @@ public partial class ServerTab : UserControl
         ClearChart(FileIoWriteThroughputChart);
         _fileIoReadThroughputHover?.Clear();
         _fileIoWriteThroughputHover?.Clear();
-        ApplyDarkTheme(FileIoReadThroughputChart);
-        ApplyDarkTheme(FileIoWriteThroughputChart);
+        ApplyTheme(FileIoReadThroughputChart);
+        ApplyTheme(FileIoWriteThroughputChart);
 
         if (data.Count == 0) { FileIoReadThroughputChart.Refresh(); FileIoWriteThroughputChart.Refresh(); return; }
 
@@ -1153,7 +1153,7 @@ public partial class ServerTab : UserControl
     private void UpdateLockWaitTrendChart(List<LockWaitTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(LockWaitTrendChart);
-        ApplyDarkTheme(LockWaitTrendChart);
+        ApplyTheme(LockWaitTrendChart);
 
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
@@ -1215,7 +1215,7 @@ public partial class ServerTab : UserControl
     private void UpdateBlockingTrendChart(List<TrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(BlockingTrendChart);
-        ApplyDarkTheme(BlockingTrendChart);
+        ApplyTheme(BlockingTrendChart);
 
         /* Calculate X-axis range based on selected time window */
         DateTime rangeStart, rangeEnd;
@@ -1294,7 +1294,7 @@ public partial class ServerTab : UserControl
     private void UpdateDeadlockTrendChart(List<TrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(DeadlockTrendChart);
-        ApplyDarkTheme(DeadlockTrendChart);
+        ApplyTheme(DeadlockTrendChart);
 
         /* Calculate X-axis range based on selected time window */
         DateTime rangeStart, rangeEnd;
@@ -1375,7 +1375,7 @@ public partial class ServerTab : UserControl
     private void UpdateCurrentWaitsDurationChart(List<WaitingTaskTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(CurrentWaitsDurationChart);
-        ApplyDarkTheme(CurrentWaitsDurationChart);
+        ApplyTheme(CurrentWaitsDurationChart);
 
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
@@ -1440,7 +1440,7 @@ public partial class ServerTab : UserControl
     private void UpdateCurrentWaitsBlockedChart(List<BlockedSessionTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(CurrentWaitsBlockedChart);
-        ApplyDarkTheme(CurrentWaitsBlockedChart);
+        ApplyTheme(CurrentWaitsBlockedChart);
 
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
@@ -1507,7 +1507,7 @@ public partial class ServerTab : UserControl
     private void UpdateQueryDurationTrendChart(List<QueryTrendPoint> data)
     {
         ClearChart(QueryDurationTrendChart);
-        ApplyDarkTheme(QueryDurationTrendChart);
+        ApplyTheme(QueryDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(QueryDurationTrendChart, "Query Duration", "Duration (ms/sec)"); return; }
 
@@ -1531,7 +1531,7 @@ public partial class ServerTab : UserControl
     private void UpdateProcDurationTrendChart(List<QueryTrendPoint> data)
     {
         ClearChart(ProcDurationTrendChart);
-        ApplyDarkTheme(ProcDurationTrendChart);
+        ApplyTheme(ProcDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(ProcDurationTrendChart, "Procedure Duration", "Duration (ms/sec)"); return; }
 
@@ -1555,7 +1555,7 @@ public partial class ServerTab : UserControl
     private void UpdateQueryStoreDurationTrendChart(List<QueryTrendPoint> data)
     {
         ClearChart(QueryStoreDurationTrendChart);
-        ApplyDarkTheme(QueryStoreDurationTrendChart);
+        ApplyTheme(QueryStoreDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(QueryStoreDurationTrendChart, "Query Store Duration", "Duration (ms/sec)"); return; }
 
@@ -1579,7 +1579,7 @@ public partial class ServerTab : UserControl
     private void UpdateExecutionCountTrendChart(List<QueryTrendPoint> data)
     {
         ClearChart(ExecutionCountTrendChart);
-        ApplyDarkTheme(ExecutionCountTrendChart);
+        ApplyTheme(ExecutionCountTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(ExecutionCountTrendChart, "Executions", "Executions/sec"); return; }
 
@@ -1717,7 +1717,7 @@ public partial class ServerTab : UserControl
             var selected = _waitTypeItems.Where(i => i.IsSelected).Take(20).ToList();
 
             ClearChart(WaitStatsChart);
-            ApplyDarkTheme(WaitStatsChart);
+            ApplyTheme(WaitStatsChart);
             _waitStatsHover?.Clear();
 
             if (selected.Count == 0) { WaitStatsChart.Refresh(); return; }
@@ -1864,7 +1864,7 @@ public partial class ServerTab : UserControl
             var selected = _memoryClerkItems.Where(i => i.IsSelected).Take(20).ToList();
 
             ClearChart(MemoryClerksChart);
-            ApplyDarkTheme(MemoryClerksChart);
+            ApplyTheme(MemoryClerksChart);
             _memoryClerksHover?.Clear();
 
             if (selected.Count == 0)
@@ -2081,7 +2081,7 @@ public partial class ServerTab : UserControl
 
             ClearChart(PerfmonChart);
             _perfmonHover?.Clear();
-            ApplyDarkTheme(PerfmonChart);
+            ApplyTheme(PerfmonChart);
 
             if (selected.Count == 0) { PerfmonChart.Refresh(); return; }
 
@@ -2204,9 +2204,9 @@ public partial class ServerTab : UserControl
 
     /// <summary>
     /// Applies the Darling Data dark theme to a ScottPlot chart.
-    /// Matches Dashboard TabHelpers.ApplyDarkModeToChart exactly.
+    /// Matches Dashboard TabHelpers.ApplyThemeToChart exactly.
     /// </summary>
-    private static void ApplyDarkTheme(ScottPlot.WPF.WpfPlot chart)
+    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor, legendBg, legendFg, legendOutline;
 
@@ -2252,7 +2252,7 @@ public partial class ServerTab : UserControl
     {
         foreach (var chart in GetAllCharts(this))
         {
-            ApplyDarkTheme(chart);
+            ApplyTheme(chart);
             chart.Refresh();
         }
     }
@@ -3182,7 +3182,7 @@ public partial class ServerTab : UserControl
     private void UpdateCollectorDurationChart(List<CollectionLogRow> data)
     {
         ClearChart(CollectorDurationChart);
-        ApplyDarkTheme(CollectorDurationChart);
+        ApplyTheme(CollectorDurationChart);
 
         if (data.Count == 0) { CollectorDurationChart.Refresh(); return; }
 

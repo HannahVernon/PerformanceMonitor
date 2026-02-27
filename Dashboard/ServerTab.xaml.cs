@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -341,7 +341,7 @@ namespace PerformanceMonitorDashboard
         {
             foreach (var chart in Helpers.TabHelpers.GetAllCharts(this))
             {
-                Helpers.TabHelpers.ApplyDarkModeToChart(chart);
+                Helpers.TabHelpers.ApplyThemeToChart(chart);
                 chart.Refresh();
             }
         }
@@ -391,9 +391,9 @@ namespace PerformanceMonitorDashboard
             }
         }
 
-        private void ApplyDarkModeToChart(ScottPlot.WPF.WpfPlot chart)
+        private void ApplyThemeToChart(ScottPlot.WPF.WpfPlot chart)
         {
-            TabHelpers.ApplyDarkModeToChart(chart);
+            TabHelpers.ApplyThemeToChart(chart);
         }
 
         private void AutoRefreshToggle_Click(object sender, RoutedEventArgs e)
@@ -653,7 +653,7 @@ namespace PerformanceMonitorDashboard
                     var popup = datePicker.Template.FindName("PART_Popup", datePicker) as System.Windows.Controls.Primitives.Popup;
                     if (popup?.Child is System.Windows.Controls.Calendar calendar)
                     {
-                        TabHelpers.ApplyDarkThemeToCalendar(calendar);
+                        TabHelpers.ApplyThemeToCalendar(calendar);
                     }
                 }));
             }
@@ -1454,7 +1454,7 @@ namespace PerformanceMonitorDashboard
             // Blocking Events Chart (raw per-interval count, not delta)
             BlockingStatsBlockingEventsChart.Plot.Clear();
             _blockingEventsHover?.Clear();
-            ApplyDarkModeToChart(BlockingStatsBlockingEventsChart);
+            ApplyThemeToChart(BlockingStatsBlockingEventsChart);
             var (blockingXs, blockingYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
                 orderedData.Select(d => (double)d.BlockingEventCount));
@@ -1483,7 +1483,7 @@ namespace PerformanceMonitorDashboard
             // Blocking Duration Chart (raw per-interval total, not delta)
             BlockingStatsDurationChart.Plot.Clear();
             _blockingDurationHover?.Clear();
-            ApplyDarkModeToChart(BlockingStatsDurationChart);
+            ApplyThemeToChart(BlockingStatsDurationChart);
             var (durationXs, durationYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
                 orderedData.Select(d => (double)d.TotalBlockingDurationMs));
@@ -1512,7 +1512,7 @@ namespace PerformanceMonitorDashboard
             // Deadlock Count Chart (raw per-interval count, not delta)
             BlockingStatsDeadlocksChart.Plot.Clear();
             _deadlocksHover?.Clear();
-            ApplyDarkModeToChart(BlockingStatsDeadlocksChart);
+            ApplyThemeToChart(BlockingStatsDeadlocksChart);
             var (deadlockXs, deadlockYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
                 orderedData.Select(d => (double)d.DeadlockCount));
@@ -1541,7 +1541,7 @@ namespace PerformanceMonitorDashboard
             // Deadlock Wait Time Chart (raw per-interval total, not delta)
             BlockingStatsDeadlockWaitTimeChart.Plot.Clear();
             _deadlockWaitTimeHover?.Clear();
-            ApplyDarkModeToChart(BlockingStatsDeadlockWaitTimeChart);
+            ApplyThemeToChart(BlockingStatsDeadlockWaitTimeChart);
             var (deadlockWaitXs, deadlockWaitYs) = TabHelpers.FillTimeSeriesGaps(
                 orderedData.Select(d => d.CollectionTime),
                 orderedData.Select(d => (double)d.TotalDeadlockWaitTimeMs));
@@ -1577,7 +1577,7 @@ namespace PerformanceMonitorDashboard
             }
             CollectorDurationChart.Plot.Clear();
             _collectorDurationHover?.Clear();
-            ApplyDarkModeToChart(CollectorDurationChart);
+            ApplyThemeToChart(CollectorDurationChart);
 
             if (data.Count == 0) { CollectorDurationChart.Refresh(); return; }
 
@@ -1632,7 +1632,7 @@ namespace PerformanceMonitorDashboard
             }
             LockWaitStatsChart.Plot.Clear();
             _lockWaitStatsHover?.Clear();
-            ApplyDarkModeToChart(LockWaitStatsChart);
+            ApplyThemeToChart(LockWaitStatsChart);
 
             // Get all unique time points across all wait types for gap filling
             // Group by wait type and plot each as a separate series
@@ -1693,7 +1693,7 @@ namespace PerformanceMonitorDashboard
             }
             CurrentWaitsDurationChart.Plot.Clear();
             _currentWaitsDurationHover?.Clear();
-            ApplyDarkModeToChart(CurrentWaitsDurationChart);
+            ApplyThemeToChart(CurrentWaitsDurationChart);
 
             var waitTypes = data.Select(d => d.WaitType).Distinct().OrderBy(w => w).ToList();
             var colors = TabHelpers.ChartColors;
@@ -1750,7 +1750,7 @@ namespace PerformanceMonitorDashboard
             }
             CurrentWaitsBlockedChart.Plot.Clear();
             _currentWaitsBlockedHover?.Clear();
-            ApplyDarkModeToChart(CurrentWaitsBlockedChart);
+            ApplyThemeToChart(CurrentWaitsBlockedChart);
 
             var databases = data.Select(d => d.DatabaseName).Distinct().OrderBy(d => d).ToList();
             var colors = TabHelpers.ChartColors;
@@ -2094,7 +2094,7 @@ namespace PerformanceMonitorDashboard
             }
             ResourceOverviewCpuChart.Plot.Clear();
             _resourceOverviewCpuHover?.Clear();
-            ApplyDarkModeToChart(ResourceOverviewCpuChart);
+            ApplyThemeToChart(ResourceOverviewCpuChart);
 
             var dataList = cpuData?.OrderBy(d => d.SampleTime).ToList() ?? new List<CpuDataPoint>();
 
@@ -2146,7 +2146,7 @@ namespace PerformanceMonitorDashboard
             }
             ResourceOverviewMemoryChart.Plot.Clear();
             _resourceOverviewMemoryHover?.Clear();
-            ApplyDarkModeToChart(ResourceOverviewMemoryChart);
+            ApplyThemeToChart(ResourceOverviewMemoryChart);
 
             var dataList = memoryData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<MemoryDataPoint>();
             // Buffer Pool series with gap filling
@@ -2208,7 +2208,7 @@ namespace PerformanceMonitorDashboard
             }
             ResourceOverviewIoChart.Plot.Clear();
             _resourceOverviewIoHover?.Clear();
-            ApplyDarkModeToChart(ResourceOverviewIoChart);
+            ApplyThemeToChart(ResourceOverviewIoChart);
 
             var dataList = ioData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<FileIoDataPoint>();
             int bucketMinutes = hoursBack <= 1 ? 1 : hoursBack <= 6 ? 5 : hoursBack <= 24 ? 15 : 60;
@@ -2286,7 +2286,7 @@ namespace PerformanceMonitorDashboard
             }
             ResourceOverviewWaitChart.Plot.Clear();
             _resourceOverviewWaitHover?.Clear();
-            ApplyDarkModeToChart(ResourceOverviewWaitChart);
+            ApplyThemeToChart(ResourceOverviewWaitChart);
 
             var dataList = waitData?.OrderBy(d => d.CollectionTime).ToList() ?? new List<WaitStatsDataPoint>();
 

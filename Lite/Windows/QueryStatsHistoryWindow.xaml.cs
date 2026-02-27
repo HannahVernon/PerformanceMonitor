@@ -99,7 +99,7 @@ public partial class QueryStatsHistoryWindow : Window
         scatter.LegendText = label;
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
-        ApplyDarkTheme(HistoryChart);
+        ApplyTheme(HistoryChart);
 
         HistoryChart.Refresh();
     }
@@ -177,7 +177,7 @@ public partial class QueryStatsHistoryWindow : Window
         }
     }
 
-    private static void ApplyDarkTheme(ScottPlot.WPF.WpfPlot chart)
+    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
         if (Helpers.ThemeManager.IsLight)
@@ -204,7 +204,7 @@ public partial class QueryStatsHistoryWindow : Window
 
     private void OnThemeChanged(string _)
     {
-        ApplyDarkTheme(HistoryChart);
+        ApplyTheme(HistoryChart);
         HistoryChart.Refresh();
     }
 

@@ -60,20 +60,20 @@ namespace PerformanceMonitorDashboard
 
             QueryIdentifierText.Text = $"Query Stats History: {queryHash} in [{databaseName}]";
 
-            ApplyDarkModeToChart();
+            ApplyThemeToChart();
             Loaded += QueryStatsHistoryWindow_Loaded;
             Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
             Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
-        private void ApplyDarkModeToChart()
+        private void ApplyThemeToChart()
         {
-            Helpers.TabHelpers.ApplyDarkModeToChart(HistoryChart);
+            Helpers.TabHelpers.ApplyThemeToChart(HistoryChart);
         }
 
         private void OnThemeChanged(string _)
         {
-            ApplyDarkModeToChart();
+            ApplyThemeToChart();
             HistoryChart.Refresh();
         }
 
