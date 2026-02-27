@@ -11,9 +11,6 @@
         Background="{DynamicResource BackgroundBrush}">
     <Window.Resources>
         <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Themes/DarkTheme.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
             <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
         </ResourceDictionary>
     </Window.Resources>
@@ -108,11 +105,14 @@
                                             <Style TargetType="Ellipse">
                                                 <Setter Property="Fill" Value="{DynamicResource ForegroundMutedBrush}"/>
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsOnline}" Value="True">
+                                                    <DataTrigger Binding="{Binding DotStatus}" Value="Online">
                                                         <Setter Property="Fill" Value="{DynamicResource SuccessBrush}"/>
                                                     </DataTrigger>
-                                                    <DataTrigger Binding="{Binding IsOnline}" Value="False">
+                                                    <DataTrigger Binding="{Binding DotStatus}" Value="Offline">
                                                         <Setter Property="Fill" Value="{DynamicResource ErrorBrush}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding DotStatus}" Value="Warning">
+                                                        <Setter Property="Fill" Value="{DynamicResource WarningBrush}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>

@@ -24,6 +24,8 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Controls;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Services;
+using System.ComponentModel;
+using System.Windows.Data;
 
 namespace PerformanceMonitorDashboard
 {
@@ -347,6 +349,9 @@ namespace PerformanceMonitorDashboard
                 var status = _serverManager.GetConnectionStatus(server.Id);
                 _serverListItems.Add(new ServerListItem(server, status));
             }
+
+            // Add default sort for the list of servers by server display name.
+            _serverListItems.OrderBy(s => s.DisplayName).ToList().ForEach(s => _serverListItems.Move(_serverListItems.IndexOf(s), _serverListItems.Count - 1)); 
 
             // Also refresh the landing page if it exists
             if (_landingPage != null)

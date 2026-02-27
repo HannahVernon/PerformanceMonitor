@@ -7,7 +7,7 @@
  */
 
 using System;
-using System.Collections.Generic;
+//using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
@@ -81,6 +81,9 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 _serverHealthStatuses.Add(new ServerHealthStatus(server));
             }
+
+            // Sort servers alphabetically by display name
+            _serverHealthStatuses.OrderBy(s => s.Server.DisplayName).ToList().ForEach(s => _serverHealthStatuses.Move(_serverHealthStatuses.IndexOf(s), _serverHealthStatuses.Count - 1));
 
             UpdateSubtitle();
             UpdateEmptyState();
