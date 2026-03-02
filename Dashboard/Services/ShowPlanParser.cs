@@ -1434,67 +1434,86 @@ public static class ShowPlanParser
             });
         }
 
-        // Spill to TempDb (with enhanced details — Wave 3.7)
-        foreach (var spillEl in warningsEl.Elements(Ns + "SpillToTempDb"))
-        {
-            var spillLevel = spillEl.Attribute("SpillLevel")?.Value ?? "?";
-            var threadCount = spillEl.Attribute("SpilledThreadCount")?.Value ?? "?";
-            var msg = $"Spill level {spillLevel}, {threadCount} thread(s)";
+        // Spill warnings — merge SpillToTempDb context (level, threads) into Sort/Hash detail warnings.
+        // SpillToTempDb has the level and thread count; SortSpillDetails/HashSpillDetails have the memory/IO.
+        // Combine them into a single warning per spill. Only emit standalone SpillToTempDb when no detail exists.
+        var spillToTempDbEl = warningsEl.Element(Ns + "SpillToTempDb");
+        var spillLevel = spillToTempDbEl?.Attribute("SpillLevel")?.Value ?? "?";
+        var spillThreads = spillToTempDbEl?.Attribute("SpilledThreadCount")?.Value ?? "?";
 
-            var grantedKB = ParseLong(spillEl.Attribute("GrantedMemoryKB")?.Value);
-            var usedKB = ParseLong(spillEl.Attribute("UsedMemoryKB")?.Value);
-            var writes = ParseLong(spillEl.Attribute("WritesToTempDb")?.Value);
-            var reads = ParseLong(spillEl.Attribute("ReadsFromTempDb")?.Value);
+        // Sort spill details (merged with SpillToTempDb context)
+        foreach (var sortSpillEl in warningsEl.Elements(Ns + "SortSpillDetails"))
+        {
+            var granted = ParseLong(sortSpillEl.Attribute("GrantedMemoryKb")?.Value);
+            var used = ParseLong(sortSpillEl.Attribute("UsedMemoryKb")?.Value);
+            var writes = ParseLong(sortSpillEl.Attribute("WritesToTempDb")?.Value);
+            var reads = ParseLong(sortSpillEl.Attribute("ReadsFromTempDb")?.Value);
+            var prefix = spillToTempDbEl != null
+                ? $"Sort spill level {spillLevel}, {spillThreads} thread(s)"
+                : "Sort spill";
+            result.Add(new PlanWarning
+            {
+                WarningType = "Sort Spill",
+                Message = $"{prefix} — Granted: {granted:N0} KB, Used: {used:N0} KB, Writes: {writes:N0}, Reads: {reads:N0}",
+                Severity = PlanWarningSeverity.Warning,
+                SpillDetails = new SpillDetail
+                {
+                    SpillType = "Sort",
+                    GrantedMemoryKB = granted,
+                    UsedMemoryKB = used,
+                    WritesToTempDb = writes,
+                    ReadsFromTempDb = reads
+                }
+            });
+        }
+
+        // Hash spill details (merged with SpillToTempDb context)
+        foreach (var hashSpillEl in warningsEl.Elements(Ns + "HashSpillDetails"))
+        {
+            var granted = ParseLong(hashSpillEl.Attribute("GrantedMemoryKb")?.Value);
+            var used = ParseLong(hashSpillEl.Attribute("UsedMemoryKb")?.Value);
+            var writes = ParseLong(hashSpillEl.Attribute("WritesToTempDb")?.Value);
+            var reads = ParseLong(hashSpillEl.Attribute("ReadsFromTempDb")?.Value);
+            var prefix = spillToTempDbEl != null
+                ? $"Hash spill level {spillLevel}, {spillThreads} thread(s)"
+                : "Hash spill";
+            result.Add(new PlanWarning
+            {
+                WarningType = "Hash Spill",
+                Message = $"{prefix} — Granted: {granted:N0} KB, Used: {used:N0} KB, Writes: {writes:N0}, Reads: {reads:N0}",
+                Severity = PlanWarningSeverity.Warning,
+                SpillDetails = new SpillDetail
+                {
+                    SpillType = "Hash",
+                    GrantedMemoryKB = granted,
+                    UsedMemoryKB = used,
+                    WritesToTempDb = writes,
+                    ReadsFromTempDb = reads
+                }
+            });
+        }
+
+        // Standalone SpillToTempDb — only when no Sort/Hash detail elements consumed the context
+        if (spillToTempDbEl != null &&
+            !warningsEl.Elements(Ns + "SortSpillDetails").Any() &&
+            !warningsEl.Elements(Ns + "HashSpillDetails").Any())
+        {
+            var msg = $"Spill level {spillLevel}, {spillThreads} thread(s)";
+            var grantedKB = ParseLong(spillToTempDbEl.Attribute("GrantedMemoryKB")?.Value);
+            var usedKB = ParseLong(spillToTempDbEl.Attribute("UsedMemoryKB")?.Value);
+            var writes = ParseLong(spillToTempDbEl.Attribute("WritesToTempDb")?.Value);
+            var reads = ParseLong(spillToTempDbEl.Attribute("ReadsFromTempDb")?.Value);
             if (grantedKB > 0 || writes > 0)
             {
                 msg += $" — Granted: {grantedKB:N0} KB, Used: {usedKB:N0} KB";
                 if (writes > 0) msg += $", Writes: {writes:N0}";
                 if (reads > 0) msg += $", Reads: {reads:N0}";
             }
-
             result.Add(new PlanWarning
             {
                 WarningType = "Spill to TempDb",
                 Message = msg,
                 Severity = PlanWarningSeverity.Warning
-            });
-        }
-
-        // Sort spill details
-        foreach (var sortSpillEl in warningsEl.Elements(Ns + "SortSpillDetails"))
-        {
-            result.Add(new PlanWarning
-            {
-                WarningType = "Sort Spill",
-                Message = $"Sort spill — Granted: {ParseLong(sortSpillEl.Attribute("GrantedMemoryKb")?.Value):N0} KB, Used: {ParseLong(sortSpillEl.Attribute("UsedMemoryKb")?.Value):N0} KB, Writes: {ParseLong(sortSpillEl.Attribute("WritesToTempDb")?.Value):N0}, Reads: {ParseLong(sortSpillEl.Attribute("ReadsFromTempDb")?.Value):N0}",
-                Severity = PlanWarningSeverity.Warning,
-                SpillDetails = new SpillDetail
-                {
-                    SpillType = "Sort",
-                    GrantedMemoryKB = ParseLong(sortSpillEl.Attribute("GrantedMemoryKb")?.Value),
-                    UsedMemoryKB = ParseLong(sortSpillEl.Attribute("UsedMemoryKb")?.Value),
-                    WritesToTempDb = ParseLong(sortSpillEl.Attribute("WritesToTempDb")?.Value),
-                    ReadsFromTempDb = ParseLong(sortSpillEl.Attribute("ReadsFromTempDb")?.Value)
-                }
-            });
-        }
-
-        // Hash spill details
-        foreach (var hashSpillEl in warningsEl.Elements(Ns + "HashSpillDetails"))
-        {
-            result.Add(new PlanWarning
-            {
-                WarningType = "Hash Spill",
-                Message = $"Hash spill — Granted: {ParseLong(hashSpillEl.Attribute("GrantedMemoryKb")?.Value):N0} KB, Used: {ParseLong(hashSpillEl.Attribute("UsedMemoryKb")?.Value):N0} KB, Writes: {ParseLong(hashSpillEl.Attribute("WritesToTempDb")?.Value):N0}, Reads: {ParseLong(hashSpillEl.Attribute("ReadsFromTempDb")?.Value):N0}",
-                Severity = PlanWarningSeverity.Warning,
-                SpillDetails = new SpillDetail
-                {
-                    SpillType = "Hash",
-                    GrantedMemoryKB = ParseLong(hashSpillEl.Attribute("GrantedMemoryKb")?.Value),
-                    UsedMemoryKB = ParseLong(hashSpillEl.Attribute("UsedMemoryKb")?.Value),
-                    WritesToTempDb = ParseLong(hashSpillEl.Attribute("WritesToTempDb")?.Value),
-                    ReadsFromTempDb = ParseLong(hashSpillEl.Attribute("ReadsFromTempDb")?.Value)
-                }
             });
         }
 

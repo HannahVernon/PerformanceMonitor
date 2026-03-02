@@ -189,7 +189,7 @@ public static class PlanAnalyzer
             stmt.PlanWarnings.Add(new PlanWarning
             {
                 WarningType = "Optimize For Unknown",
-                Message = "OPTIMIZE FOR UNKNOWN forces average density estimates for all parameters instead of using the actual sniffed values. This rarely produces a better plan — it just trades one bad estimate for a different bad estimate. Address the root cause: add better indexes so the plan is less sensitive to parameter values, use OPTION (RECOMPILE) for volatile parameters, or restructure the query.",
+                Message = "OPTIMIZE FOR UNKNOWN uses average density estimates instead of sniffed parameter values. This can help when parameter sniffing causes plan instability, but may produce suboptimal plans for skewed data distributions.",
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -216,6 +216,34 @@ public static class PlanAnalyzer
                 }
             }
         }
+
+        // Rule 30: Overly wide missing index suggestions
+        // Flag when SQL Server suggests an index with too many include columns (> 5)
+        // or too many key columns (> 4) — these "kitchen sink" indexes are rarely practical.
+        foreach (var mi in stmt.MissingIndexes)
+        {
+            var keyCount = mi.EqualityColumns.Count + mi.InequalityColumns.Count;
+            var includeCount = mi.IncludeColumns.Count;
+
+            if (includeCount > 5)
+            {
+                stmt.PlanWarnings.Add(new PlanWarning
+                {
+                    WarningType = "Wide Index Suggestion",
+                    Message = $"Missing index suggestion for {mi.Table} has {includeCount} INCLUDE columns. This is a \"kitchen sink\" index — SQL Server suggests covering every column the query touches, but the resulting index would be very wide and expensive to maintain. Evaluate which columns are actually needed, or consider a narrower index with fewer includes.",
+                    Severity = PlanWarningSeverity.Warning
+                });
+            }
+            else if (keyCount > 4)
+            {
+                stmt.PlanWarnings.Add(new PlanWarning
+                {
+                    WarningType = "Wide Index Suggestion",
+                    Message = $"Missing index suggestion for {mi.Table} has {keyCount} key columns ({mi.EqualityColumns.Count} equality + {mi.InequalityColumns.Count} inequality). Wide key columns increase index size and maintenance cost. Evaluate whether all key columns are needed for seek predicates.",
+                    Severity = PlanWarningSeverity.Warning
+                });
+            }
+        }
     }
 
     private static void AnalyzeNodeTree(PlanNode node, PlanStatement stmt)
@@ -229,12 +257,14 @@ public static class PlanAnalyzer
     private static void AnalyzeNode(PlanNode node, PlanStatement stmt)
     {
         // Rule 1: Filter operators — rows survived the tree just to be discarded
+        // Quantify the impact by summing child subtree cost (reads, CPU, time).
         if (node.PhysicalOp == "Filter" && !string.IsNullOrEmpty(node.Predicate))
         {
+            var impact = QuantifyFilterImpact(node);
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "Filter Operator",
-                Message = $"Filter operator discarding rows late in the plan. Rows were read, joined, or processed only to be thrown away here. Predicate: {Truncate(node.Predicate, 200)}",
+                Message = $"Filter operator discarding rows late in the plan.{impact} Predicate: {Truncate(node.Predicate, 200)}",
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -267,30 +297,49 @@ public static class PlanAnalyzer
         }
 
         // Rule 5: Large estimate vs actual row gaps (actual plans only)
+        // Only warn when the bad estimate actually causes observable harm:
+        // - The node itself spilled (Sort/Hash with bad memory grant)
+        // - A parent join may have chosen the wrong strategy
+        // - Root nodes with no parent to harm are skipped
+        // - Nodes whose only parents are Parallelism/Top/Sort (no spill) are skipped
         if (node.HasActualStats && node.EstimateRows > 0)
         {
             if (node.ActualRows == 0)
             {
-                node.Warnings.Add(new PlanWarning
+                // Zero rows is always worth noting — resources were allocated for nothing
+                if (node.EstimateRows >= 100)
                 {
-                    WarningType = "Row Estimate Mismatch",
-                    Message = $"Estimated {node.EstimateRows:N0} rows but actual 0 rows returned. SQL Server allocated resources for rows that never materialized.",
-                    Severity = node.EstimateRows >= 100 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
-                });
-            }
-            else
-            {
-                var ratio = node.ActualRows / node.EstimateRows;
-                if (ratio >= 10.0 || ratio <= 0.1)
-                {
-                    var direction = ratio >= 10.0 ? "underestimated" : "overestimated";
-                    var factor = ratio >= 10.0 ? ratio : 1.0 / ratio;
                     node.Warnings.Add(new PlanWarning
                     {
                         WarningType = "Row Estimate Mismatch",
-                        Message = $"Estimated {node.EstimateRows:N0} rows, actual {node.ActualRows:N0} ({factor:F0}x {direction}). Bad estimates cause SQL Server to choose wrong join types, memory grants, and parallelism.",
-                        Severity = factor >= 100 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
+                        Message = $"Estimated {node.EstimateRows:N0} rows but actual 0 rows returned. SQL Server allocated resources for rows that never materialized.",
+                        Severity = PlanWarningSeverity.Warning
                     });
+                }
+            }
+            else
+            {
+                // Compare per-execution actuals to estimates (SQL Server estimates are per-execution)
+                var executions = node.ActualExecutions > 0 ? node.ActualExecutions : 1;
+                var actualPerExec = (double)node.ActualRows / executions;
+                var ratio = actualPerExec / node.EstimateRows;
+                if (ratio >= 10.0 || ratio <= 0.1)
+                {
+                    var harm = AssessEstimateHarm(node, ratio);
+                    if (harm != null)
+                    {
+                        var direction = ratio >= 10.0 ? "underestimated" : "overestimated";
+                        var factor = ratio >= 10.0 ? ratio : 1.0 / ratio;
+                        var actualDisplay = executions > 1
+                            ? $"actual {actualPerExec:N0}/exec ({node.ActualRows:N0} total across {executions:N0} executions)"
+                            : $"actual {node.ActualRows:N0}";
+                        node.Warnings.Add(new PlanWarning
+                        {
+                            WarningType = "Row Estimate Mismatch",
+                            Message = $"Estimated {node.EstimateRows:N0} rows, {actualDisplay} ({factor:F0}x {direction}). {harm}",
+                            Severity = factor >= 100 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
+                        });
+                    }
                 }
             }
         }
@@ -516,35 +565,72 @@ public static class PlanAnalyzer
         }
 
         // Rule 16: Nested Loops high inner-side execution count
+        // Deep analysis: combine execution count + outer estimate mismatch + inner cost
         if (node.PhysicalOp == "Nested Loops" &&
             node.LogicalOp.Contains("Join", StringComparison.OrdinalIgnoreCase) &&
+            !node.IsAdaptive &&
             node.Children.Count >= 2)
         {
+            var outerChild = node.Children[0];
             var innerChild = node.Children[1];
 
             if (innerChild.HasActualStats && innerChild.ActualExecutions > 100000)
             {
                 var dop = stmt.DegreeOfParallelism > 0 ? stmt.DegreeOfParallelism : 1;
+                var details = new List<string>();
+
+                // Core fact
+                details.Add($"Nested Loops inner side executed {innerChild.ActualExecutions:N0} times (DOP {dop}).");
+
+                // Outer side estimate mismatch — explains WHY the optimizer chose NL
+                if (outerChild.HasActualStats && outerChild.EstimateRows > 0)
+                {
+                    var outerExecs = outerChild.ActualExecutions > 0 ? outerChild.ActualExecutions : 1;
+                    var outerActualPerExec = (double)outerChild.ActualRows / outerExecs;
+                    var outerRatio = outerActualPerExec / outerChild.EstimateRows;
+                    if (outerRatio >= 10.0)
+                    {
+                        details.Add($"Outer side: estimated {outerChild.EstimateRows:N0} rows, actual {outerActualPerExec:N0} ({outerRatio:F0}x underestimate). The optimizer chose Nested Loops expecting far fewer iterations.");
+                    }
+                }
+
+                // Inner side cost — reads and time spent doing the repeated work
+                long innerReads = SumSubtreeReads(innerChild);
+                if (innerReads > 0)
+                    details.Add($"Inner side total: {innerReads:N0} logical reads.");
+
+                if (innerChild.ActualElapsedMs > 0)
+                {
+                    var stmtMs = stmt.QueryTimeStats?.ElapsedTimeMs ?? 0;
+                    if (stmtMs > 0)
+                    {
+                        var pct = (double)innerChild.ActualElapsedMs / stmtMs * 100;
+                        details.Add($"Inner side time: {innerChild.ActualElapsedMs:N0}ms ({pct:N0}% of statement).");
+                    }
+                    else
+                    {
+                        details.Add($"Inner side time: {innerChild.ActualElapsedMs:N0}ms.");
+                    }
+                }
+
+                // Cause/recommendation
+                var hasParams = stmt.Parameters.Count > 0;
+                if (hasParams)
+                    details.Add("This may be caused by parameter sniffing — the optimizer chose Nested Loops based on a sniffed value that produced far fewer outer rows.");
+                else
+                    details.Add("Consider whether a hash or merge join would be more appropriate for this row count.");
+
                 node.Warnings.Add(new PlanWarning
                 {
                     WarningType = "Nested Loops High Executions",
-                    Message = $"Nested Loops inner side executed {innerChild.ActualExecutions:N0} times (DOP {dop}). This is likely caused by parameter sniffing or a bad row estimate on the outer side — the optimizer chose Nested Loops expecting far fewer rows.",
+                    Message = string.Join(" ", details),
                     Severity = innerChild.ActualExecutions > 1000000
                         ? PlanWarningSeverity.Critical
                         : PlanWarningSeverity.Warning
                 });
             }
-            else if (!innerChild.HasActualStats && innerChild.EstimateRebinds > 100000)
-            {
-                node.Warnings.Add(new PlanWarning
-                {
-                    WarningType = "Nested Loops High Executions",
-                    Message = $"Nested Loops inner side estimated to execute {innerChild.EstimateRebinds + 1:N0} times. This may be caused by parameter sniffing or a poor estimate on the outer side.",
-                    Severity = innerChild.EstimateRebinds > 1000000
-                        ? PlanWarningSeverity.Critical
-                        : PlanWarningSeverity.Warning
-                });
-            }
+            // Estimated plans: the optimizer knew the row count and chose Nested Loops
+            // deliberately — don't second-guess it without actual execution data.
         }
 
         // Rule 17: Many-to-many Merge Join
@@ -911,6 +997,146 @@ public static class PlanAnalyzer
 
         var maxChildElapsed = node.Children.Max(c => c.ActualElapsedMs);
         return Math.Max(0, node.ActualElapsedMs - maxChildElapsed);
+    }
+
+    /// <summary>
+    /// Quantifies the cost of work below a Filter operator by summing child subtree metrics.
+    /// </summary>
+    private static string QuantifyFilterImpact(PlanNode filterNode)
+    {
+        if (filterNode.Children.Count == 0)
+            return "";
+
+        var parts = new List<string>();
+
+        // Rows input vs output — how many rows did the filter discard?
+        var inputRows = filterNode.Children.Sum(c => c.ActualRows);
+        if (filterNode.HasActualStats && inputRows > 0 && filterNode.ActualRows < inputRows)
+        {
+            var discarded = inputRows - filterNode.ActualRows;
+            var pct = (double)discarded / inputRows * 100;
+            parts.Add($"{discarded:N0} of {inputRows:N0} rows discarded ({pct:N0}%)");
+        }
+
+        // Logical reads across the entire child subtree
+        long totalReads = 0;
+        foreach (var child in filterNode.Children)
+            totalReads += SumSubtreeReads(child);
+        if (totalReads > 0)
+            parts.Add($"{totalReads:N0} logical reads below");
+
+        // Elapsed time: use the direct child's time (cumulative in row mode, includes its children)
+        var childElapsed = filterNode.Children.Max(c => c.ActualElapsedMs);
+        if (childElapsed > 0)
+            parts.Add($"{childElapsed:N0}ms elapsed below");
+
+        if (parts.Count == 0)
+            return "";
+
+        return $" Subtree cost to produce filtered rows: {string.Join(", ", parts)}.";
+    }
+
+    private static long SumSubtreeReads(PlanNode node)
+    {
+        long reads = node.ActualLogicalReads;
+        foreach (var child in node.Children)
+            reads += SumSubtreeReads(child);
+        return reads;
+    }
+
+    /// <summary>
+    /// Determines whether a row estimate mismatch actually caused observable harm.
+    /// Returns a description of the harm, or null if the bad estimate is benign.
+    /// </summary>
+    private static string? AssessEstimateHarm(PlanNode node, double ratio)
+    {
+        // Root node: no parent to harm.
+        // The synthetic statement root (SELECT/INSERT/etc.) has NodeId == -1.
+        if (node.Parent == null || node.Parent.NodeId == -1)
+            return null;
+
+        // The node itself has a spill — bad estimate caused bad memory grant
+        if (HasSpillWarning(node))
+        {
+            return ratio >= 10.0
+                ? "The underestimate likely caused an insufficient memory grant, leading to a spill to TempDB."
+                : "The overestimate may have caused an excessive memory grant, wasting workspace memory.";
+        }
+
+        // Sort/Hash that did NOT spill — estimate was wrong but no observable harm
+        if ((node.PhysicalOp.Contains("Sort", StringComparison.OrdinalIgnoreCase) ||
+             node.PhysicalOp.Contains("Hash", StringComparison.OrdinalIgnoreCase)) &&
+            !HasSpillWarning(node))
+        {
+            return null;
+        }
+
+        // The node is a join — bad estimate means wrong join type or excessive work
+        // Adaptive joins (2017+) switch strategy at runtime, so the estimate didn't lock in a bad choice.
+        if (node.LogicalOp.Contains("Join", StringComparison.OrdinalIgnoreCase) && !node.IsAdaptive)
+        {
+            return ratio >= 10.0
+                ? "The underestimate may have caused the optimizer to choose a suboptimal join strategy."
+                : "The overestimate may have caused the optimizer to choose a suboptimal join strategy.";
+        }
+
+        // Walk up to check if a parent was harmed by this bad estimate
+        var ancestor = node.Parent;
+        while (ancestor != null)
+        {
+            // Transparent operators — skip through
+            if (ancestor.PhysicalOp == "Parallelism" ||
+                ancestor.PhysicalOp == "Compute Scalar" ||
+                ancestor.PhysicalOp == "Segment" ||
+                ancestor.PhysicalOp == "Sequence Project" ||
+                ancestor.PhysicalOp == "Top" ||
+                ancestor.PhysicalOp == "Filter")
+            {
+                ancestor = ancestor.Parent;
+                continue;
+            }
+
+            // Parent join — bad row count from below caused wrong join choice
+            // Adaptive joins handle this at runtime, so skip them.
+            if (ancestor.LogicalOp.Contains("Join", StringComparison.OrdinalIgnoreCase))
+            {
+                if (ancestor.IsAdaptive)
+                    return null; // Adaptive join self-corrects — no harm
+
+                return ratio >= 10.0
+                    ? $"The underestimate may have caused the optimizer to choose {ancestor.PhysicalOp} when a different join type would be more efficient."
+                    : $"The overestimate may have caused the optimizer to choose {ancestor.PhysicalOp} when a different join type would be more efficient.";
+            }
+
+            // Parent Sort/Hash that spilled — downstream bad estimate caused the spill
+            if (HasSpillWarning(ancestor))
+            {
+                return ratio >= 10.0
+                    ? $"The underestimate contributed to {ancestor.PhysicalOp} (Node {ancestor.NodeId}) spilling to TempDB."
+                    : $"The overestimate contributed to {ancestor.PhysicalOp} (Node {ancestor.NodeId}) receiving an excessive memory grant.";
+            }
+
+            // Parent Sort/Hash with no spill — benign
+            if (ancestor.PhysicalOp.Contains("Sort", StringComparison.OrdinalIgnoreCase) ||
+                ancestor.PhysicalOp.Contains("Hash", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            // Any other operator — stop walking
+            break;
+        }
+
+        // Default: the estimate is off but we can't identify specific harm
+        return null;
+    }
+
+    /// <summary>
+    /// Checks if a node has any spill-related warnings (Sort/Hash/Exchange spills).
+    /// </summary>
+    private static bool HasSpillWarning(PlanNode node)
+    {
+        return node.Warnings.Any(w => w.SpillDetails != null);
     }
 
     private static string Truncate(string value, int maxLength)
