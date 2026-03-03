@@ -195,24 +195,30 @@ LIMIT 3";
     /// Gets long-running queries from the latest collection snapshot.
     /// Returns sessions whose total elapsed time exceeds the given threshold.
     /// </summary>
-    public async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(int serverId, int thresholdMinutes)
+    public async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(
+        int serverId,
+        int thresholdMinutes,
+        int maxResults = 5,
+        bool excludeSpServerDiagnostics = true,
+        bool excludeWaitFor = true,
+        bool excludeBackups = true,
+        bool excludeMiscWaits = true)
     {
+        maxResults = Math.Clamp(maxResults, 1, int.MaxValue);
+
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var thresholdMs = (long)thresholdMinutes * 60 * 1000;
 
-        // Exclude internal SP_SERVER_DIAGNOSTICS queries by default, as they often run long and aren't actionable.
-        string spServerDiagnosticsFilter = "AND r.wait_type NOT LIKE N'%SP_SERVER_DIAGNOSTICS%'";
-
-        // Exclude WAITFOR queries by default, as they can run indefinitely and may not indicate a problem.
-        string waitForFilter = "AND r.wait_type NOT IN (N'WAITFOR', N'BROKER_RECEIVE_WAITFOR')";
-
-        // Exclude backup waits if specified, as they can run long and aren't typically actionable in this context.
-        string backupsFilter = "AND r.wait_type NOT IN (N'BACKUPTHREAD', N'BACKUPIO')";
-
-        // Exclude miscellaneous wait type that aren't typically actionable
-        string miscWaitsFilter = "AND r.wait_type NOT IN (N'XE_LIVE_TARGET_TVF')";
+        string spServerDiagnosticsFilter = excludeSpServerDiagnostics
+            ? "AND r.wait_type NOT LIKE N'%SP_SERVER_DIAGNOSTICS%'" : "";
+        string waitForFilter = excludeWaitFor
+            ? "AND r.wait_type NOT IN (N'WAITFOR', N'BROKER_RECEIVE_WAITFOR')" : "";
+        string backupsFilter = excludeBackups
+            ? "AND r.wait_type NOT IN (N'BACKUPTHREAD', N'BACKUPIO')" : "";
+        string miscWaitsFilter = excludeMiscWaits
+            ? "AND r.wait_type NOT IN (N'XE_LIVE_TARGET_TVF')" : "";
 
         command.CommandText = @$"
                 SELECT
@@ -235,7 +241,7 @@ LIMIT 3";
                     {miscWaitsFilter}
                     AND total_elapsed_time_ms >= $2
                 ORDER BY total_elapsed_time_ms DESC
-                LIMIT 5;";
+                LIMIT {maxResults};";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = thresholdMs });
