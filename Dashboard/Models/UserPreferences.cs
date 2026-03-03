@@ -11,6 +11,9 @@ namespace PerformanceMonitorDashboard.Models
 {
     public class UserPreferences
     {
+        // Time display mode: ServerTime, LocalTime, UTC
+        public string TimeDisplayMode { get; set; } = "ServerTime";
+
         // Default date range preferences (hours back)
         public int DefaultHoursBack { get; set; } = 24;
 
@@ -110,6 +113,9 @@ namespace PerformanceMonitorDashboard.Models
 
         // Navigation settings
         public bool FocusServerTabOnClick { get; set; } = true;
+
+        // Color theme ("Dark" or "Light")
+        public string ColorTheme { get; set; } = "Dark";
 
         // Update check settings
         public bool CheckForUpdatesOnStartup { get; set; } = true;

@@ -20,6 +20,8 @@ namespace PerformanceMonitorDashboard
     {
         private readonly IUserPreferencesService _preferencesService;
         private bool _isLoading = true;
+        private readonly string _originalTheme = ThemeManager.CurrentTheme;
+        private bool _saved;
 
         public SettingsWindow(IUserPreferencesService preferencesService)
         {
@@ -104,6 +106,30 @@ namespace PerformanceMonitorDashboard
             // Navigation settings
             FocusServerTabCheckBox.IsChecked = prefs.FocusServerTabOnClick;
 
+            // Time display mode
+            foreach (ComboBoxItem item in TimeDisplayModeComboBox.Items)
+            {
+                if (item.Tag?.ToString() == prefs.TimeDisplayMode)
+                {
+                    TimeDisplayModeComboBox.SelectedItem = item;
+                    break;
+                }
+            }
+            if (TimeDisplayModeComboBox.SelectedItem == null)
+                TimeDisplayModeComboBox.SelectedIndex = 0;
+
+            // Color theme
+            foreach (System.Windows.Controls.ComboBoxItem item in ColorThemeComboBox.Items)
+            {
+                if (item.Tag?.ToString() == prefs.ColorTheme)
+                {
+                    ColorThemeComboBox.SelectedItem = item;
+                    break;
+                }
+            }
+            if (ColorThemeComboBox.SelectedItem == null)
+                ColorThemeComboBox.SelectedIndex = 0;
+
             // Query logging settings
             LogSlowQueriesCheckBox.IsChecked = prefs.LogSlowQueries;
             QueryLogger.SetEnabled(prefs.LogSlowQueries);
@@ -181,6 +207,15 @@ namespace PerformanceMonitorDashboard
         private void DefaultTimeRangeComboBox_Changed(object sender, SelectionChangedEventArgs e)
         {
             // Just UI update, actual save happens on OK
+        }
+
+        private void ColorThemeComboBox_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isLoading) return;
+            if (ColorThemeComboBox.SelectedItem is ComboBoxItem item && item.Tag is string theme)
+            {
+                ThemeManager.Apply(theme);
+            }
         }
 
         private void LogSlowQueriesCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -485,6 +520,20 @@ namespace PerformanceMonitorDashboard
             // Save navigation settings
             prefs.FocusServerTabOnClick = FocusServerTabCheckBox.IsChecked == true;
 
+            // Save time display mode
+            if (TimeDisplayModeComboBox.SelectedItem is ComboBoxItem tdmItem && tdmItem.Tag != null)
+            {
+                prefs.TimeDisplayMode = tdmItem.Tag.ToString()!;
+                if (Enum.TryParse<TimeDisplayMode>(prefs.TimeDisplayMode, out var tdm))
+                    ServerTimeHelper.CurrentDisplayMode = tdm;
+            }
+
+            // Save color theme
+            if (ColorThemeComboBox.SelectedItem is ComboBoxItem themeItem && themeItem.Tag != null)
+            {
+                prefs.ColorTheme = themeItem.Tag.ToString()!;
+            }
+
             // Save query logging settings
             prefs.LogSlowQueries = LogSlowQueriesCheckBox.IsChecked == true;
             QueryLogger.SetEnabled(prefs.LogSlowQueries);
@@ -578,6 +627,7 @@ namespace PerformanceMonitorDashboard
 
             _preferencesService.SavePreferences(prefs);
 
+            _saved = true;
             DialogResult = true;
             Close();
         }
@@ -586,6 +636,13 @@ namespace PerformanceMonitorDashboard
         {
             DialogResult = false;
             Close();
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!_saved)
+                ThemeManager.Apply(_originalTheme);
+            base.OnClosing(e);
         }
 
         // ============================================

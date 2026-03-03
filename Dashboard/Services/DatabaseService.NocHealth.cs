@@ -563,7 +563,7 @@ namespace PerformanceMonitorDashboard.Services
                     waiting_tasks_count_delta,
                     avg_ms_per_wait =
                         CASE WHEN waiting_tasks_count_delta > 0
-                        THEN CAST(wait_time_ms_delta AS decimal(19, 2)) / waiting_tasks_count_delta
+                        THEN CAST(CAST(wait_time_ms_delta AS decimal(19, 2)) / waiting_tasks_count_delta AS decimal(18, 4))
                         ELSE 0 END
                 FROM collect.wait_stats
                 WHERE wait_type IN (N'THREADPOOL', N'RESOURCE_SEMAPHORE', N'RESOURCE_SEMAPHORE_QUERY_COMPILE')
@@ -605,9 +605,22 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         private async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(SqlConnection connection, int thresholdMinutes)
         {
-            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-                SELECT TOP (5)
+            // Exclude internal SP_SERVER_DIAGNOSTICS queries by default, as they often run long and aren't actionable.
+            string spServerDiagnosticsFilter = "AND r.wait_type NOT LIKE N'%SP_SERVER_DIAGNOSTICS%'";
+
+            // Exclude WAITFOR queries by default, as they can run indefinitely and may not indicate a problem.
+            string waitForFilter = "AND r.wait_type NOT IN (N'WAITFOR', N'BROKER_RECEIVE_WAITFOR')";
+
+            // Exclude backup waits if specified, as they can run long and aren't typically actionable in this context.
+            string backupsFilter = "AND r.wait_type NOT IN (N'BACKUPTHREAD', N'BACKUPIO')";
+
+            // Exclude miscellaneous wait type that aren't typically actionable
+            string miscWaitsFilter = "AND r.wait_type NOT IN (N'XE_LIVE_TARGET_TVF')";
+
+            string query = @$"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                SELECT TOP(5)
                     r.session_id,
                     DB_NAME(r.database_id) AS database_name,
                     SUBSTRING(t.text, 1, 300) AS query_text,
@@ -621,10 +634,13 @@ namespace PerformanceMonitorDashboard.Services
                 FROM sys.dm_exec_requests AS r
                 CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
                 JOIN sys.dm_exec_sessions AS s ON s.session_id = r.session_id
-                WHERE r.session_id > 50
-                AND r.total_elapsed_time >= @thresholdMs
-                AND t.text NOT LIKE N'%waitfor delay%'
-                AND t.text NOT LIKE N'%waitfor receive%'
+                WHERE 
+                    r.session_id > 50
+                    AND r.total_elapsed_time >= @thresholdMs
+                    {spServerDiagnosticsFilter}
+                    {waitForFilter}
+                    {backupsFilter}
+                    {miscWaitsFilter}
                 ORDER BY r.total_elapsed_time DESC
                 OPTION(MAXDOP 1, RECOMPILE);";
 

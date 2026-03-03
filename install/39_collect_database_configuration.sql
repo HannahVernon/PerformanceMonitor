@@ -161,10 +161,18 @@ BEGIN
                 database_id = d.database_id,
                 database_name = d.name
             FROM sys.databases AS d
+            LEFT JOIN sys.dm_hadr_database_replica_states AS drs
+                ON d.database_id = drs.database_id
+                AND drs.is_local = 1
             WHERE d.database_id > 4
             AND   d.name != DB_NAME()
             AND   d.state_desc = N'ONLINE'
             AND   d.database_id < 32761 /*exclude contained AG system databases*/
+            AND
+            (
+                drs.database_id IS NULL          /*not in any AG*/
+                OR drs.is_primary_replica = 1    /*primary replica*/
+            )
             ORDER BY
                 d.name
             OPTION (RECOMPILE);

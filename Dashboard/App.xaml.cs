@@ -24,6 +24,8 @@ namespace PerformanceMonitorDashboard
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            NativeMethods.SetAppUserModelId("DarlingData.PerformanceMonitor.Dashboard");
+
             // Check for existing instance
             _singleInstanceMutex = new Mutex(true, MutexName, out _ownsMutex);
 
@@ -36,6 +38,10 @@ namespace PerformanceMonitorDashboard
             }
 
             base.OnStartup(e);
+
+            // Apply saved color theme before the main window is shown
+            var prefs = new Services.UserPreferencesService().GetPreferences();
+            ThemeManager.Apply(prefs.ColorTheme ?? "Dark");
 
             // Register global exception handlers
             AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;

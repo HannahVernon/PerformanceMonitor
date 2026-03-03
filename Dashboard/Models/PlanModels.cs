@@ -110,6 +110,12 @@ public class PlanStatement
     public bool ExclusiveProfileTimeActive { get; set; }
     public string? OptimizationReplayScript { get; set; }
 
+    // QueryPlan-level MemoryGrant attribute (unsignedLong)
+    public long QueryPlanMemoryGrantKB { get; set; }
+
+    // StmtUseDb: USE database statement
+    public string? StmtUseDatabaseName { get; set; }
+
     // XSD gap: BaseStmtInfoType
     public int QueryCompilationReplay { get; set; }
 
@@ -272,8 +278,11 @@ public class PlanNode
     public string? ActionColumn { get; set; }
     public long ActualSegmentReads { get; set; }
     public long ActualSegmentSkips { get; set; }
-    public long UdfCpuTimeUs { get; set; }
-    public long UdfElapsedTimeUs { get; set; }
+    public long UdfCpuTimeMs { get; set; }
+    public long UdfElapsedTimeMs { get; set; }
+    public long InputMemoryGrantKB { get; set; }
+    public long OutputMemoryGrantKB { get; set; }
+    public long UsedMemoryGrantKB { get; set; }
 
     // XSD gap: RelOp-level metadata
     public bool GroupExecuted { get; set; }
@@ -317,6 +326,26 @@ public class PlanNode
     public string? RemoteSource { get; set; }
     public string? RemoteObject { get; set; }
     public string? RemoteQuery { get; set; }
+
+    // GuessedSelectivity — optimizer guessed selectivity on predicates
+    public bool GuessedSelectivity { get; set; }
+
+    // ForeignKeyReferenceCheck attributes
+    public int ForeignKeyReferencesCount { get; set; }
+    public int NoMatchingIndexCount { get; set; }
+    public int PartialMatchingIndexCount { get; set; }
+
+    // ConstantScan Values (parsed rows as displayable string)
+    public string? ConstantScanValues { get; set; }
+
+    // SpillOccurred detail flag (node-level, from Warnings element)
+    public bool SpillOccurredDetail { get; set; }
+
+    // UDX UsedUDXColumns (column references for CLR aggregate operators)
+    public string? UdxUsedColumns { get; set; }
+
+    // Row Goal: the optimizer's estimate before TOP/EXISTS reduced it
+    public double EstimateRowsWithoutRowGoal { get; set; }
 }
 
 public class MissingIndex

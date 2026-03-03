@@ -40,6 +40,8 @@ public partial class SettingsWindow : Window
         LoadDefaultTimeRange();
         LoadConnectionTimeout();
         LoadCsvSeparator();
+        LoadColorTheme();
+        LoadTimeDisplayMode();
         LoadAlertSettings();
         LoadSmtpSettings();
     }
@@ -113,8 +115,12 @@ public partial class SettingsWindow : Window
         SaveDefaultTimeRange();
         SaveConnectionTimeout();
         SaveCsvSeparator();
+        SaveColorTheme();
+        SaveTimeDisplayMode();
         SaveAlertSettings();
         SaveSmtpSettings();
+
+        _saved = true;
 
         var message = mcpChanged
             ? "Settings saved. MCP changes take effect after restarting the application."
@@ -304,6 +310,114 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             AppLogger.Error("Settings", $"Failed to save CSV separator: {ex.Message}");
+        }
+    }
+
+    private bool _isLoadingTheme;
+    private readonly string _originalTheme = Helpers.ThemeManager.CurrentTheme;
+    private bool _saved;
+
+    private void ColorThemeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isLoadingTheme) return;
+        if (ColorThemeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string theme)
+            Helpers.ThemeManager.Apply(theme);
+    }
+
+    private void LoadColorTheme()
+    {
+        _isLoadingTheme = true;
+        foreach (ComboBoxItem item in ColorThemeCombo.Items)
+        {
+            if (item.Tag?.ToString() == App.ColorTheme)
+            {
+                ColorThemeCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (ColorThemeCombo.SelectedItem == null)
+            ColorThemeCombo.SelectedIndex = 0;
+        _isLoadingTheme = false;
+    }
+
+    private void SaveColorTheme()
+    {
+        if (ColorThemeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string theme)
+        {
+            App.ColorTheme = theme;
+            Helpers.ThemeManager.Apply(theme);
+        }
+
+        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
+        try
+        {
+            JsonNode? root;
+            if (File.Exists(settingsPath))
+            {
+                var json = File.ReadAllText(settingsPath);
+                root = JsonNode.Parse(json) ?? new JsonObject();
+            }
+            else
+            {
+                root = new JsonObject();
+            }
+
+            root["color_theme"] = App.ColorTheme;
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(settingsPath, root.ToJsonString(options));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Settings", $"Failed to save color theme: {ex.Message}");
+        }
+    }
+
+    private void LoadTimeDisplayMode()
+    {
+        foreach (ComboBoxItem item in TimeDisplayModeCombo.Items)
+        {
+            if (item.Tag?.ToString() == App.TimeDisplayMode)
+            {
+                TimeDisplayModeCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (TimeDisplayModeCombo.SelectedItem == null)
+            TimeDisplayModeCombo.SelectedIndex = 0;
+    }
+
+    private void SaveTimeDisplayMode()
+    {
+        if (TimeDisplayModeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string mode)
+        {
+            App.TimeDisplayMode = mode;
+            if (System.Enum.TryParse<Helpers.TimeDisplayMode>(mode, out var tdm))
+                ServerTimeHelper.CurrentDisplayMode = tdm;
+        }
+
+        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
+        try
+        {
+            JsonNode? root;
+            if (File.Exists(settingsPath))
+            {
+                var json = File.ReadAllText(settingsPath);
+                root = JsonNode.Parse(json) ?? new JsonObject();
+            }
+            else
+            {
+                root = new JsonObject();
+            }
+
+            root["time_display_mode"] = App.TimeDisplayMode;
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(settingsPath, root.ToJsonString(options));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Settings", $"Failed to save time display mode: {ex.Message}");
         }
     }
 
@@ -620,6 +734,15 @@ public partial class SettingsWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!_saved)
+            Helpers.ThemeManager.Apply(_originalTheme);
         Close();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (!_saved)
+            Helpers.ThemeManager.Apply(_originalTheme);
+        base.OnClosing(e);
     }
 }
