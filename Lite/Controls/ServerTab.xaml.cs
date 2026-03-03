@@ -2816,6 +2816,20 @@ public partial class ServerTab : UserControl
 
     private void OpenPlanTab(string planXml, string label, string? queryText = null)
     {
+        try
+        {
+            System.Xml.Linq.XDocument.Parse(planXml);
+        }
+        catch (System.Xml.XmlException ex)
+        {
+            MessageBox.Show(
+                $"The plan XML is not valid:\n\n{ex.Message}",
+                "Invalid Plan XML",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         HidePlanLoading();
         var viewer = new PlanViewerControl();
         viewer.LoadPlan(planXml, label, queryText);
