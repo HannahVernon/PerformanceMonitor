@@ -22,19 +22,19 @@
         <!-- Form Fields -->
         <StackPanel Grid.Row="1">
             <!-- Server Name/Address -->
-            <TextBlock Text="Server Name/Address:" Margin="0,0,0,4"
+            <TextBlock Text="Server Name/Address:" FontWeight="Bold" Margin="0,0,0,4"
                        Foreground="{DynamicResource ForegroundBrush}"/>
             <TextBox x:Name="ServerNameTextBox" Margin="0,0,0,12"
                      ToolTip="e.g., localhost, server.domain.com, 192.168.1.100, server\instance"/>
 
             <!-- Display Name -->
-            <TextBlock Text="Display Name (optional):" Margin="0,0,0,4"
+            <TextBlock Text="Display Name (optional):" FontWeight="Bold" Margin="0,0,0,4"
                        Foreground="{DynamicResource ForegroundBrush}"/>
             <TextBox x:Name="DisplayNameTextBox" Margin="0,0,0,12"
                      ToolTip="Friendly name to display in the server list"/>
 
             <!-- Authentication Type -->
-            <TextBlock Text="Authentication:" Margin="0,0,0,4"
+            <TextBlock Text="Authentication:" FontWeight="Bold" Margin="0,0,0,4"
                        Foreground="{DynamicResource ForegroundBrush}"/>
             <StackPanel Margin="0,0,0,12">
                 <RadioButton x:Name="WindowsAuthRadio" Content="Windows Authentication"
@@ -76,7 +76,7 @@
             </StackPanel>
 
             <!-- Connection Options -->
-            <TextBlock Text="Connection Options:" Margin="0,0,0,4"
+            <TextBlock Text="Connection Options:" FontWeight="Bold" Margin="0,0,0,4"
                        Foreground="{DynamicResource ForegroundBrush}"/>
             <StackPanel Margin="0,0,0,12">
                 <!-- Encryption Mode -->
