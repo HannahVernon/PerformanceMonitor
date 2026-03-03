@@ -238,6 +238,26 @@ public partial class ServerTab : UserControl
 
         /* Initial load is triggered by MainWindow.ConnectToServer calling RefreshData()
            after collectors finish - no Loaded handler needed */
+
+        KeyDown += ServerTab_KeyDown;
+        Focusable = true;
+    }
+
+    private void ServerTab_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.V &&
+            System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control &&
+            e.OriginalSource is not System.Windows.Controls.TextBox &&
+            PlanViewerTabItem.IsSelected)
+        {
+            var xml = System.Windows.Clipboard.GetText();
+            if (!string.IsNullOrWhiteSpace(xml))
+            {
+                e.Handled = true;
+                OpenPlanTab(xml, "Pasted Plan");
+                PlanViewerTabItem.IsSelected = true;
+            }
+        }
     }
 
     private void InitializeTimeComboBoxes()

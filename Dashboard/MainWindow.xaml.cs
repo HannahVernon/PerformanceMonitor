@@ -1693,7 +1693,6 @@ namespace PerformanceMonitorDashboard
             }
 
             _mainPlanTabControl = new TabControl
-
             {
                 Background = System.Windows.Media.Brushes.Transparent,
                 BorderThickness = new Thickness(0)
@@ -1869,18 +1868,25 @@ namespace PerformanceMonitorDashboard
                 var dialog = new Microsoft.Win32.OpenFileDialog
                 {
                     Filter = "SQL Plan Files (*.sqlplan)|*.sqlplan|XML Files (*.xml)|*.xml|All Files (*.*)|*.*",
-                    DefaultExt = ".sqlplan"
+                    DefaultExt = ".sqlplan",
+                    Multiselect = true
                 };
                 if (dialog.ShowDialog() != true) return;
-                try
+                var isFirst = true;
+                foreach (var fileName in dialog.FileNames)
                 {
-                    var xml = System.IO.File.ReadAllText(dialog.FileName);
-                    LoadPlanIntoSubTab(subTab, xml, System.IO.Path.GetFileName(dialog.FileName));
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Failed to open file:\n\n{ex.Message}", "Error",
-                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    try
+                    {
+                        var xml = System.IO.File.ReadAllText(fileName);
+                        var targetTab = isFirst ? subTab : AddNewEmptyPlanSubTab();
+                        LoadPlanIntoSubTab(targetTab, xml, System.IO.Path.GetFileName(fileName));
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Failed to open file:\n\n{ex.Message}", "Error",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                    isFirst = false;
                 }
             };
 
@@ -1987,35 +1993,12 @@ namespace PerformanceMonitorDashboard
             return _mainPlanTabControl.SelectedItem as TabItem;
         }
 
-        public void OpenMainWindowPlanTab(string planXml, string label, string? queryText = null)
-        {
-            if (_planViewerTab == null || !ServerTabControl.Items.Contains(_planViewerTab))
-                OpenPlanViewerTab();
-
-            var activeSubTab = GetActivePlanSubTab();
-            if (activeSubTab?.Content is Grid g &&
-                g.Children.Count >= 2 &&
-                g.Children[1] is Controls.PlanViewerControl { Visibility: Visibility.Collapsed })
-            {
-                // Active sub-tab is empty — load into it
-                LoadPlanIntoSubTab(activeSubTab, planXml, label, queryText);
-            }
-            else
-            {
-                // Active sub-tab already has a plan — open a new one
-                var newSubTab = AddNewEmptyPlanSubTab();
-                LoadPlanIntoSubTab(newSubTab, planXml, label, queryText);
-            }
-
-            ServerTabControl.SelectedItem = _planViewerTab;
-        }
-
         private void MainWindowPlanViewer_DragOver(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
                 var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-                if (files?.Length > 0 && IsPlanFile(files[0]))
+                if (files?.Any(IsPlanFile) == true)
                 {
                     e.Effects = DragDropEffects.Copy;
                     e.Handled = true;
@@ -2029,9 +2012,24 @@ namespace PerformanceMonitorDashboard
         private void MainWindowPlanViewer_Drop(object sender, DragEventArgs e)
         {
             if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
-            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-            if (files?.Length > 0 && IsPlanFile(files[0]))
-                LoadMainWindowPlanFromFileIntoActiveTab(files[0]);
+            var planFiles = (e.Data.GetData(DataFormats.FileDrop) as string[])
+                ?.Where(IsPlanFile).ToArray();
+            if (planFiles == null || planFiles.Length == 0) return;
+            LoadMainWindowPlanFromFileIntoActiveTab(planFiles[0]);
+            for (var i = 1; i < planFiles.Length; i++)
+            {
+                var newTab = AddNewEmptyPlanSubTab();
+                try
+                {
+                    var xml = System.IO.File.ReadAllText(planFiles[i]);
+                    LoadPlanIntoSubTab(newTab, xml, System.IO.Path.GetFileName(planFiles[i]));
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to open file:\n\n{ex.Message}", "Error",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
         }
 
         private void MainWindowPlanViewer_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
