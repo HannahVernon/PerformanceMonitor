@@ -1652,8 +1652,8 @@ public partial class MainWindow : Window
                     LoadPlanIntoSubTab(subTab, xml, "Pasted Plan");
                     return;
                 }
-                // Nothing on clipboard — open paste dialog
-                OpenLitePasteDialog(subTab);
+                MessageBox.Show("The clipboard does not contain any text.", "Paste Plan XML",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
             };
 
             // Insert before "+" tab
@@ -1709,67 +1709,6 @@ public partial class MainWindow : Window
                 headerLabel.Text = uniqueLabel.Length > 30 ? uniqueLabel[..30] + "\u2026" : uniqueLabel;
                 headerLabel.ToolTip = uniqueLabel;
             }
-        }
-
-        private void OpenLitePasteDialog(TabItem targetSubTab)
-        {
-            var win = new Window
-            {
-                Title = "Paste Execution Plan XML",
-                Width = 700,
-                Height = 500,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                Background = (System.Windows.Media.Brush)FindResource("BackgroundBrush")
-            };
-            var grid = new Grid { Margin = new Thickness(12) };
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var lbl = new TextBlock
-            {
-                Text = "Paste execution plan XML below and click Load Plan:",
-                Foreground = (System.Windows.Media.Brush)FindResource("ForegroundBrush"),
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            Grid.SetRow(lbl, 0);
-            var textBox = new TextBox
-            {
-                AcceptsReturn = true, AcceptsTab = true,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                FontSize = 11,
-                Background = (System.Windows.Media.Brush)FindResource("BackgroundLightBrush"),
-                Foreground = (System.Windows.Media.Brush)FindResource("ForegroundBrush"),
-                BorderThickness = new Thickness(1), Padding = new Thickness(6),
-                TextWrapping = TextWrapping.NoWrap
-            };
-            Grid.SetRow(textBox, 1);
-            var btnPanel = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(0, 8, 0, 0)
-            };
-            var loadBtn = new Button { Content = "Load Plan", Width = 90, Height = 28, Padding = new Thickness(0) };
-            var cancelBtn = new Button { Content = "Cancel", Width = 70, Height = 28, Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(0) };
-            btnPanel.Children.Add(loadBtn);
-            btnPanel.Children.Add(cancelBtn);
-            Grid.SetRow(btnPanel, 2);
-            grid.Children.Add(lbl);
-            grid.Children.Add(textBox);
-            grid.Children.Add(btnPanel);
-            win.Content = grid;
-            cancelBtn.Click += (_, _) => win.Close();
-            loadBtn.Click += (_, _) =>
-            {
-                var xml2 = textBox.Text.Trim();
-                if (string.IsNullOrEmpty(xml2)) return;
-                win.Close();
-                LoadPlanIntoSubTab(targetSubTab, xml2, "Pasted Plan");
-            };
-            win.ShowDialog();
         }
 
         /// <summary>
