@@ -195,8 +195,10 @@ LIMIT 3";
     /// Gets long-running queries from the latest collection snapshot.
     /// Returns sessions whose total elapsed time exceeds the given threshold.
     /// </summary>
-    public async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(int serverId, int thresholdMinutes)
+    public async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(int serverId, int thresholdMinutes, int maxResults = 5)
     {
+        maxResults = Math.Clamp(maxResults, 1, int.MaxValue);
+
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
@@ -235,7 +237,7 @@ LIMIT 3";
                     {miscWaitsFilter}
                     AND total_elapsed_time_ms >= $2
                 ORDER BY total_elapsed_time_ms DESC
-                LIMIT 5;";
+                LIMIT {maxResults};";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = thresholdMs });

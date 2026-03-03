@@ -605,6 +605,7 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         private async Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(SqlConnection connection, int thresholdMinutes, int maxResults = 5)
         {
+            maxResults = Math.Clamp(maxResults, 1, int.MaxValue);
 
             // Exclude internal SP_SERVER_DIAGNOSTICS queries by default, as they often run long and aren't actionable.
             string spServerDiagnosticsFilter = "AND r.wait_type NOT LIKE N'%SP_SERVER_DIAGNOSTICS%'";

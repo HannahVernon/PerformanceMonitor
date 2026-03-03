@@ -386,6 +386,7 @@ public partial class SettingsWindow : Window
         AlertPoisonWaitThresholdBox.Text = App.AlertPoisonWaitThresholdMs.ToString();
         AlertLongRunningQueryCheckBox.IsChecked = App.AlertLongRunningQueryEnabled;
         AlertLongRunningQueryThresholdBox.Text = App.AlertLongRunningQueryThresholdMinutes.ToString();
+        AlertLongRunningQueryMaxResultsBox.Text = App.AlertLongRunningQueryMaxResults.ToString();
         AlertTempDbSpaceCheckBox.IsChecked = App.AlertTempDbSpaceEnabled;
         AlertTempDbSpaceThresholdBox.Text = App.AlertTempDbSpaceThresholdPercent.ToString();
         AlertLongRunningJobCheckBox.IsChecked = App.AlertLongRunningJobEnabled;
@@ -413,6 +414,8 @@ public partial class SettingsWindow : Window
         App.AlertLongRunningQueryEnabled = AlertLongRunningQueryCheckBox.IsChecked == true;
         if (int.TryParse(AlertLongRunningQueryThresholdBox.Text, out var lrq) && lrq > 0)
             App.AlertLongRunningQueryThresholdMinutes = lrq;
+        if (int.TryParse(AlertLongRunningQueryMaxResultsBox.Text, out var lrqMax) && lrqMax >= 1 && lrqMax <= int.MaxValue)
+            App.AlertLongRunningQueryMaxResults = lrqMax;
         App.AlertTempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true;
         if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb > 0 && tempDb <= 100)
             App.AlertTempDbSpaceThresholdPercent = tempDb;
@@ -447,6 +450,7 @@ public partial class SettingsWindow : Window
             root["alert_poison_wait_threshold_ms"] = App.AlertPoisonWaitThresholdMs;
             root["alert_long_running_query_enabled"] = App.AlertLongRunningQueryEnabled;
             root["alert_long_running_query_threshold_minutes"] = App.AlertLongRunningQueryThresholdMinutes;
+            root["alert_long_running_query_max_results"] = App.AlertLongRunningQueryMaxResults;
             root["alert_tempdb_space_enabled"] = App.AlertTempDbSpaceEnabled;
             root["alert_tempdb_space_threshold_percent"] = App.AlertTempDbSpaceThresholdPercent;
             root["alert_long_running_job_enabled"] = App.AlertLongRunningJobEnabled;

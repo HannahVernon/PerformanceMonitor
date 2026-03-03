@@ -1122,7 +1122,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var longRunning = await _dataService.GetLongRunningQueriesAsync(summary.ServerId, App.AlertLongRunningQueryThresholdMinutes);
+                var longRunning = await _dataService.GetLongRunningQueriesAsync(summary.ServerId, App.AlertLongRunningQueryThresholdMinutes, App.AlertLongRunningQueryMaxResults);
 
                 if (longRunning.Count > 0)
                 {

@@ -172,7 +172,12 @@
                     <CheckBox x:Name="AlertLongRunningQueryCheckBox" Content="Long-running queries over" VerticalAlignment="Center"
                               Foreground="{DynamicResource ForegroundBrush}"/>
                     <TextBox x:Name="AlertLongRunningQueryThresholdBox" Width="45" Text="30" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="minutes" VerticalAlignment="Center" Margin="2,0,0,0"
+                    <TextBlock Text="minutes," VerticalAlignment="Center" Margin="2,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBlock Text="return up to" VerticalAlignment="Center" Margin="6,0,6,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertLongRunningQueryMaxResultsBox" Width="45" Text="5" VerticalAlignment="Center"/>
+                    <TextBlock Text="results" VerticalAlignment="Center" Margin="2,0,0,0"
                                Foreground="{DynamicResource ForegroundBrush}"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="20,6,0,0">

@@ -562,13 +562,13 @@ namespace PerformanceMonitorDashboard
             else if (prefs.NotifyOnLongRunningQueries)
                 validationErrors.Add("Long-running query threshold must be a positive number");
 
-            if (int.TryParse(LongRunningQueryMaxResultsTextBox.Text, out int lrqMaxResults) && lrqMaxResults > 0)
+            if (int.TryParse(LongRunningQueryMaxResultsTextBox.Text, out int lrqMaxResults) && lrqMaxResults >= 1 && lrqMaxResults <= int.MaxValue)
             {
                 prefs.LongRunningQueryMaxResults = lrqMaxResults;
             }
             else
             {
-                validationErrors.Add("Long-running query max results must be a positive number");
+                validationErrors.Add($"Long-running query max results must be between 1 and {int.MaxValue}");
             }
 
             prefs.NotifyOnTempDbSpace = NotifyOnTempDbSpaceCheckBox.IsChecked == true;
