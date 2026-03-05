@@ -189,9 +189,13 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         private async Task<(long TotalBlocked, decimal LongestBlockedSeconds)> GetBlockingValuesAsync(SqlConnection connection, IReadOnlyList<string> excludedDatabases)
         {
-            var dbFilter = excludedDatabases.Count > 0
-                ? $"AND DB_NAME(s.dbid) NOT IN ({string.Join(", ", excludedDatabases.Select(db => $"N'{db.Replace("'", "''")}'"))})"
-                : "";
+            var dbFilter = "";
+            var dbParams = new List<string>();
+            for (int i = 0; i < excludedDatabases.Count; i++)
+                dbParams.Add($"@exdb{i}");
+            if (dbParams.Count > 0)
+                dbFilter = $"AND DB_NAME(s.dbid) NOT IN ({string.Join(", ", dbParams)})";
+
             var query = $@"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
                 SELECT
@@ -207,6 +211,8 @@ namespace PerformanceMonitorDashboard.Services
             {
                 using var cmd = new SqlCommand(query, connection);
                 cmd.CommandTimeout = 10;
+                for (int i = 0; i < excludedDatabases.Count; i++)
+                    cmd.Parameters.AddWithValue($"@exdb{i}", excludedDatabases[i]);
                 using var reader = await cmd.ExecuteReaderAsync();
 
                 if (await reader.ReadAsync())
@@ -454,7 +460,10 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         private async Task<long?> GetFilteredDeadlockCountAsync(SqlConnection connection, IReadOnlyList<string> excludedDatabases)
         {
-            var dbFilter = string.Join(", ", excludedDatabases.Select(db => $"N'{db.Replace("'", "''")}'"));
+            var dbParams = new List<string>();
+            for (int i = 0; i < excludedDatabases.Count; i++)
+                dbParams.Add($"@exdb{i}");
+
             var query = $@"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
                 SELECT
@@ -462,7 +471,7 @@ namespace PerformanceMonitorDashboard.Services
                         COALESCE(SUM(bds.deadlock_count_delta), 0)
                 FROM collect.blocking_deadlock_stats AS bds
                 WHERE bds.collection_time >= DATEADD(MINUTE, -5, SYSUTCDATETIME())
-                AND   bds.database_name NOT IN ({dbFilter})
+                AND   bds.database_name NOT IN ({string.Join(", ", dbParams)})
                 AND   bds.deadlock_count_delta IS NOT NULL
                 OPTION(MAXDOP 1, RECOMPILE);";
 
@@ -470,8 +479,10 @@ namespace PerformanceMonitorDashboard.Services
             {
                 using var cmd = new SqlCommand(query, connection);
                 cmd.CommandTimeout = 10;
+                for (int i = 0; i < excludedDatabases.Count; i++)
+                    cmd.Parameters.AddWithValue($"@exdb{i}", excludedDatabases[i]);
                 var result = await cmd.ExecuteScalarAsync();
-                return result is long l ? l : (result is int i ? (long)i : 0);
+                return result is long l ? l : (result is int i2 ? (long)i2 : 0);
             }
             catch (Exception ex)
             {
