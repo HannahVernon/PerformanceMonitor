@@ -482,21 +482,20 @@ public partial class SettingsWindow : Window
         App.AlertLongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true;
         if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult >= 2 && jobMult <= 20)
             App.AlertLongRunningJobMultiplier = jobMult;
+        var validationErrors = new List<string>();
         if (int.TryParse(AlertCooldownBox.Text, out var alertCooldown) && alertCooldown >= 1 && alertCooldown <= 120)
             App.AlertCooldownMinutes = alertCooldown;
         else
-        {
-            MessageBox.Show("Tray notification cooldown must be between 1 and 120 minutes.",
-                "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+            validationErrors.Add("Tray notification cooldown must be between 1 and 120 minutes.");
         if (int.TryParse(EmailCooldownBox.Text, out var emailCooldown) && emailCooldown >= 1 && emailCooldown <= 120)
             App.EmailCooldownMinutes = emailCooldown;
         else
+            validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes.");
+        if (validationErrors.Count > 0)
         {
-            MessageBox.Show("Email alert cooldown must be between 1 and 120 minutes.",
+            MessageBox.Show(
+                string.Join("\n", validationErrors),
                 "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
         }
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
