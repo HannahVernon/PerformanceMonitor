@@ -123,11 +123,9 @@ public partial class SettingsWindow : Window
         SaveSmtpSettings();
 
         _saved = true;
+        if (mcpChanged) McpSettingsChanged = true;
 
-        var message = mcpChanged
-            ? "Settings saved. MCP changes take effect after restarting the application."
-            : "Settings saved.";
-        MessageBox.Show(message, "Settings", MessageBoxButton.OK, MessageBoxImage.Information);
+        MessageBox.Show("Settings saved.", "Settings", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private bool SaveMcpSettings()
@@ -352,6 +350,7 @@ public partial class SettingsWindow : Window
     private bool _isLoadingTheme;
     private readonly string _originalTheme = Helpers.ThemeManager.CurrentTheme;
     private bool _saved;
+    public bool McpSettingsChanged { get; private set; }
 
     private void ColorThemeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {

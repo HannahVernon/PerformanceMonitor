@@ -216,6 +216,36 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        private async Task StopMcpServerAsync()
+        {
+            if (_mcpHostService != null)
+            {
+                try
+                {
+                    _mcpCts?.Cancel();
+                    using var shutdownCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await _mcpHostService.StopAsync(shutdownCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[MCP] Error stopping MCP server: {ex.Message}", ex);
+                }
+                _mcpHostService = null;
+                _mcpCts?.Dispose();
+                _mcpCts = null;
+            }
+        }
+
+        private async void RestartMcpServerIfNeeded(bool wasEnabled, int oldPort)
+        {
+            var prefs = _preferencesService.GetPreferences();
+            bool changed = prefs.McpEnabled != wasEnabled || prefs.McpPort != oldPort;
+            if (!changed) return;
+
+            await StopMcpServerAsync();
+            StartMcpServerIfEnabled();
+        }
+
         private void InitializeNotificationService()
         {
             _notificationService = new NotificationService(this, _preferencesService);
@@ -259,6 +289,9 @@ namespace PerformanceMonitorDashboard
                 {
                     Logger.Error($"[MCP] Error stopping MCP server: {ex.Message}", ex);
                 }
+                _mcpHostService = null;
+                _mcpCts?.Dispose();
+                _mcpCts = null;
             }
 
             // Save alert history to disk
@@ -897,6 +930,10 @@ namespace PerformanceMonitorDashboard
 
         private void Settings_Click(object sender, RoutedEventArgs e)
         {
+            var oldPrefs = _preferencesService.GetPreferences();
+            bool wasEnabled = oldPrefs.McpEnabled;
+            int oldPort = oldPrefs.McpPort;
+
             var dialog = new SettingsWindow(_preferencesService);
             dialog.Owner = this;
             if (dialog.ShowDialog() == true)
@@ -912,6 +949,8 @@ namespace PerformanceMonitorDashboard
                         serverTab.RefreshAutoRefreshSettings();
                     }
                 }
+
+                RestartMcpServerIfNeeded(wasEnabled, oldPort);
             }
         }
 
