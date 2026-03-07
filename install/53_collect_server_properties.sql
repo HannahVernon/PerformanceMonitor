@@ -212,9 +212,9 @@ BEGIN
                     N'SHA2_256',
                     CONCAT
                     (
-                        SERVERPROPERTY(N'Edition'), N'|',
-                        SERVERPROPERTY(N'ProductVersion'), N'|',
-                        SERVERPROPERTY(N'ProductLevel'), N'|',
+                        CONVERT(nvarchar(128), SERVERPROPERTY(N'Edition')), N'|',
+                        CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')), N'|',
+                        CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductLevel')), N'|',
                         @engine_edition, N'|',
                         (SELECT osi.cpu_count FROM sys.dm_os_sys_info AS osi), N'|',
                         (SELECT osi.physical_memory_kb FROM sys.dm_os_sys_info AS osi), N'|',
