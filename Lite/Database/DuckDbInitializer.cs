@@ -86,7 +86,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 15;
+    internal const int CurrentSchemaVersion = 16;
 
     private readonly string _archivePath;
 
@@ -496,6 +496,14 @@ public class DuckDbInitializer
                     Must drop/recreate because DuckDB appender writes by position. */
             _logger?.LogInformation("Running migration to v15: rebuilding file_io_stats for queued I/O columns");
             await ExecuteNonQueryAsync(connection, "DROP TABLE IF EXISTS file_io_stats");
+        }
+
+        if (fromVersion < 16)
+        {
+            /* v16: Added database_size_stats and server_properties tables for FinOps monitoring.
+                    New tables only — no existing table changes needed. Tables created by
+                    GetAllTableStatements() during initialization. */
+            _logger?.LogInformation("Running migration to v16: adding FinOps tables (database_size_stats, server_properties)");
         }
     }
 

@@ -591,6 +591,55 @@ CREATE TABLE IF NOT EXISTS running_jobs (
     public const string CreateRunningJobsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_running_jobs_time ON running_jobs(server_id, collection_time)";
 
+    public const string CreateDatabaseSizeStatsTable = @"
+CREATE TABLE IF NOT EXISTS database_size_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    database_name VARCHAR NOT NULL,
+    database_id INTEGER NOT NULL,
+    file_id INTEGER NOT NULL,
+    file_type_desc VARCHAR NOT NULL,
+    file_name VARCHAR NOT NULL,
+    physical_name VARCHAR NOT NULL,
+    total_size_mb DECIMAL(19,2) NOT NULL,
+    used_size_mb DECIMAL(19,2),
+    auto_growth_mb DECIMAL(19,2),
+    max_size_mb DECIMAL(19,2),
+    recovery_model_desc VARCHAR,
+    compatibility_level INTEGER,
+    state_desc VARCHAR
+)";
+
+    public const string CreateDatabaseSizeStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_database_size_stats_time ON database_size_stats(server_id, collection_time)";
+
+    public const string CreateServerPropertiesTable = @"
+CREATE TABLE IF NOT EXISTS server_properties (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    edition VARCHAR NOT NULL,
+    product_version VARCHAR NOT NULL,
+    product_level VARCHAR NOT NULL,
+    product_update_level VARCHAR,
+    engine_edition INTEGER NOT NULL,
+    cpu_count INTEGER NOT NULL,
+    hyperthread_ratio INTEGER NOT NULL,
+    physical_memory_mb BIGINT NOT NULL,
+    socket_count INTEGER,
+    cores_per_socket INTEGER,
+    is_hadr_enabled BOOLEAN,
+    is_clustered BOOLEAN,
+    enterprise_features VARCHAR,
+    service_objective VARCHAR
+)";
+
+    public const string CreateServerPropertiesIndex = @"
+CREATE INDEX IF NOT EXISTS idx_server_properties_time ON server_properties(server_id, collection_time)";
+
     public const string CreateAlertLogTable = @"
 CREATE TABLE IF NOT EXISTS config_alert_log (
     alert_time TIMESTAMP NOT NULL,
@@ -633,6 +682,8 @@ CREATE TABLE IF NOT EXISTS config_alert_log (
         yield return CreateDatabaseScopedConfigTable;
         yield return CreateTraceFlagsTable;
         yield return CreateRunningJobsTable;
+        yield return CreateDatabaseSizeStatsTable;
+        yield return CreateServerPropertiesTable;
         yield return CreateAlertLogTable;
     }
 
@@ -660,5 +711,7 @@ CREATE TABLE IF NOT EXISTS config_alert_log (
         yield return CreateDatabaseScopedConfigIndex;
         yield return CreateTraceFlagsIndex;
         yield return CreateRunningJobsIndex;
+        yield return CreateDatabaseSizeStatsIndex;
+        yield return CreateServerPropertiesIndex;
     }
 }

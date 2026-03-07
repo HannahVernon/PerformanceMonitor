@@ -1406,5 +1406,88 @@ BEGIN
     PRINT 'Created collect.running_jobs table';
 END;
 
+/*
+Database Size Statistics Table (FinOps)
+*/
+IF OBJECT_ID(N'collect.database_size_stats', N'U') IS NULL
+BEGIN
+    CREATE TABLE
+        collect.database_size_stats
+    (
+        collection_id bigint IDENTITY NOT NULL,
+        collection_time datetime2(7) NOT NULL
+            DEFAULT SYSDATETIME(),
+        database_name sysname NOT NULL,
+        database_id integer NOT NULL,
+        file_id integer NOT NULL,
+        file_type_desc nvarchar(60) NOT NULL,
+        file_name sysname NOT NULL,
+        physical_name nvarchar(260) NOT NULL,
+        total_size_mb decimal(19,2) NOT NULL,
+        used_size_mb decimal(19,2) NULL,
+        auto_growth_mb decimal(19,2) NULL,
+        max_size_mb decimal(19,2) NULL,
+        recovery_model_desc nvarchar(12) NULL,
+        compatibility_level integer NULL,
+        state_desc nvarchar(60) NULL,
+        /*Analysis helpers - computed columns*/
+        free_space_mb AS
+        (
+            total_size_mb - used_size_mb
+        ),
+        used_pct AS
+        (
+            used_size_mb * 100.0 /
+              NULLIF(total_size_mb, 0)
+        ),
+        CONSTRAINT
+            PK_database_size_stats
+        PRIMARY KEY CLUSTERED
+            (collection_time, collection_id)
+        WITH
+            (DATA_COMPRESSION = PAGE)
+    );
+
+    PRINT 'Created collect.database_size_stats table';
+END;
+
+/*
+Server Properties Table (FinOps)
+*/
+IF OBJECT_ID(N'collect.server_properties', N'U') IS NULL
+BEGIN
+    CREATE TABLE
+        collect.server_properties
+    (
+        collection_id bigint IDENTITY NOT NULL,
+        collection_time datetime2(7) NOT NULL
+            DEFAULT SYSDATETIME(),
+        server_name sysname NOT NULL,
+        edition sysname NOT NULL,
+        product_version sysname NOT NULL,
+        product_level sysname NOT NULL,
+        product_update_level sysname NULL,
+        engine_edition integer NOT NULL,
+        cpu_count integer NOT NULL,
+        hyperthread_ratio integer NOT NULL,
+        physical_memory_mb bigint NOT NULL,
+        socket_count integer NULL,
+        cores_per_socket integer NULL,
+        is_hadr_enabled bit NULL,
+        is_clustered bit NULL,
+        enterprise_features nvarchar(max) NULL,
+        service_objective sysname NULL,
+        row_hash binary(32) NULL,
+        CONSTRAINT
+            PK_server_properties
+        PRIMARY KEY CLUSTERED
+            (collection_time, collection_id)
+        WITH
+            (DATA_COMPRESSION = PAGE)
+    );
+
+    PRINT 'Created collect.server_properties table';
+END;
+
 PRINT 'All collection tables created successfully';
 GO
