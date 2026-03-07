@@ -136,8 +136,8 @@ public class DuckDbSchemaTests : IDisposable
         foreach (var _ in Schema.GetAllTableStatements())
             tableCount++;
 
-        /* 24 tables from Schema (schema_version is created separately by DuckDbInitializer) */
-        Assert.Equal(24, tableCount);
+        /* 26 tables from Schema (schema_version is created separately by DuckDbInitializer) */
+        Assert.Equal(26, tableCount);
     }
 
     [Fact]
