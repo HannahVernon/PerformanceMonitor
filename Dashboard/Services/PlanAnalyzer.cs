@@ -197,7 +197,7 @@ public static partial class PlanAnalyzer
             if (elapsed >= 1000 && cpu > 0)
             {
                 var ratio = (double)cpu / elapsed;
-                if (ratio <= 1.3)
+                if (ratio >= 0.8 && ratio <= 1.3)
                 {
                     stmt.PlanWarnings.Add(new PlanWarning
                     {
@@ -205,6 +205,30 @@ public static partial class PlanAnalyzer
                         Message = $"Parallel plan (DOP {stmt.DegreeOfParallelism}) but CPU time ({cpu:N0}ms) is nearly equal to elapsed time ({elapsed:N0}ms). " +
                                   $"The work ran essentially serially despite the overhead of parallelism. " +
                                   $"Look for parallel thread skew, blocking exchanges, or serial zones in the plan that prevent effective parallel execution.",
+                        Severity = PlanWarningSeverity.Warning
+                    });
+                }
+            }
+        }
+
+        // Rule 31: Parallel wait bottleneck — elapsed time significantly exceeds CPU time
+        if (stmt.DegreeOfParallelism > 1 && stmt.QueryTimeStats != null)
+        {
+            var cpu = stmt.QueryTimeStats.CpuTimeMs;
+            var elapsed = stmt.QueryTimeStats.ElapsedTimeMs;
+
+            if (elapsed >= 1000 && cpu > 0)
+            {
+                var ratio = (double)cpu / elapsed;
+                if (ratio < 0.8)
+                {
+                    var waitPct = (1.0 - ratio) * 100;
+                    stmt.PlanWarnings.Add(new PlanWarning
+                    {
+                        WarningType = "Parallel Wait Bottleneck",
+                        Message = $"Parallel plan (DOP {stmt.DegreeOfParallelism}) with elapsed time ({elapsed:N0}ms) significantly exceeding CPU time ({cpu:N0}ms). " +
+                                  $"Approximately {waitPct:N0}% of elapsed time was spent waiting rather than on CPU. " +
+                                  $"Common causes include spills to tempdb, physical I/O reads, lock or latch contention, and memory grant waits.",
                         Severity = PlanWarningSeverity.Warning
                     });
                 }
@@ -288,10 +312,16 @@ public static partial class PlanAnalyzer
         if (node.PhysicalOp == "Filter" && !string.IsNullOrEmpty(node.Predicate))
         {
             var impact = QuantifyFilterImpact(node);
+            var predicate = Truncate(node.Predicate, 200);
+            var message = "Filter operator discarding rows late in the plan.";
+            if (!string.IsNullOrEmpty(impact))
+                message += $"\n{impact}";
+            message += $"\nPredicate: {predicate}";
+
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "Filter Operator",
-                Message = $"Filter operator discarding rows late in the plan.{impact} Predicate: {Truncate(node.Predicate, 200)}",
+                Message = message,
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -477,7 +507,7 @@ public static partial class PlanAnalyzer
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "Key Lookup",
-                Message = $"Key Lookup — SQL Server found rows via a nonclustered index but had to go back to the clustered index for additional columns. Alter the nonclustered index to add the predicate column as a key column or as an INCLUDE column. Predicate: {Truncate(node.Predicate, 200)}",
+                Message = $"Key Lookup — SQL Server found rows via a nonclustered index but had to go back to the clustered index for additional columns. Alter the nonclustered index to add the predicate column as a key column or as an INCLUDE column.\nPredicate: {Truncate(node.Predicate, 200)}",
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -505,7 +535,7 @@ public static partial class PlanAnalyzer
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "Non-SARGable Predicate",
-                Message = $"{nonSargableAdvice} Predicate: {Truncate(node.Predicate!, 200)}",
+                Message = $"{nonSargableAdvice}\nPredicate: {Truncate(node.Predicate!, 200)}",
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -1125,7 +1155,7 @@ public static partial class PlanAnalyzer
         if (parts.Count == 0)
             return "";
 
-        return $" Subtree cost to produce filtered rows: {string.Join(", ", parts)}.";
+        return string.Join("\n", parts.Select(p => "• " + p));
     }
 
     private static long SumSubtreeReads(PlanNode node)
