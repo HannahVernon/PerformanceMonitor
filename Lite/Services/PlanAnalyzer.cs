@@ -545,10 +545,11 @@ public static partial class PlanAnalyzer
         if (nonSargableReason == null && IsRowstoreScan(node) && !string.IsNullOrEmpty(node.Predicate) &&
             !IsProbeOnly(node.Predicate))
         {
+            var displayPredicate = StripProbeExpressions(node.Predicate);
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "Scan With Predicate",
-                Message = $"Scan with residual predicate — SQL Server is reading every row and filtering after the fact. Create an index on the predicate columns. Predicate: {Truncate(node.Predicate, 200)}",
+                Message = $"Scan with residual predicate — SQL Server is reading every row and filtering after the fact. Check that you have appropriate indexes.\nPredicate: {Truncate(displayPredicate, 200)}",
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -757,7 +758,7 @@ public static partial class PlanAnalyzer
                     inner.Warnings.Add(new PlanWarning
                     {
                         WarningType = "Top Above Scan",
-                        Message = $"Top operator reads from {scanCandidate.PhysicalOp} (Node {scanCandidate.NodeId}) on the inner side of Nested Loops (Node {node.NodeId}).{predInfo} Create an index on the predicate columns to convert the scan into a seek.",
+                        Message = $"Top operator reads from {scanCandidate.PhysicalOp} (Node {scanCandidate.NodeId}) on the inner side of Nested Loops (Node {node.NodeId}).{predInfo} Check that you have appropriate indexes to convert the scan into a seek.",
                         Severity = PlanWarningSeverity.Warning
                     });
                 }
@@ -783,7 +784,7 @@ public static partial class PlanAnalyzer
         // Rule 28: Row Count Spool — NOT IN with nullable column
         // Pattern: Row Count Spool with high rewinds, child scan has IS NULL predicate,
         // and statement text contains NOT IN
-        if (node.PhysicalOp == "Row Count Spool")
+        if (node.PhysicalOp.Contains("Row Count Spool"))
         {
             var rewinds = node.HasActualStats ? (double)node.ActualRewinds : node.EstimateRewinds;
             if (rewinds > 10000 && HasNotInPattern(node, stmt))
@@ -877,6 +878,21 @@ public static partial class PlanAnalyzer
 
         // If nothing meaningful remains, it was PROBE-only
         return stripped.Length == 0;
+    }
+
+    /// <summary>
+    /// Strips PROBE(...) bitmap filter expressions from a predicate for display,
+    /// leaving only the real residual predicate columns.
+    /// </summary>
+    private static string StripProbeExpressions(string predicate)
+    {
+        var stripped = Regex.Replace(predicate, @"\s*AND\s+PROBE\s*\([^()]*(?:\([^()]*\)[^()]*)*\)", "",
+            RegexOptions.IgnoreCase);
+        stripped = Regex.Replace(stripped, @"PROBE\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*AND\s+", "",
+            RegexOptions.IgnoreCase);
+        stripped = Regex.Replace(stripped, @"PROBE\s*\([^()]*(?:\([^()]*\)[^()]*)*\)", "",
+            RegexOptions.IgnoreCase);
+        return stripped.Trim();
     }
 
     /// <summary>
