@@ -38,6 +38,7 @@ public partial class ServerTab : UserControl
     public int ServerId => _serverId;
     private readonly CredentialService _credentialService;
     private readonly DispatcherTimer _refreshTimer;
+    private bool _isRefreshing;
     private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.Panels.LegendPanel?> _legendPanels = new();
     private List<SelectableItem> _waitTypeItems = new();
     private List<SelectableItem> _perfmonCounterItems = new();
@@ -140,7 +141,19 @@ public partial class ServerTab : UserControl
         {
             Interval = TimeSpan.FromSeconds(60)
         };
-        _refreshTimer.Tick += async (s, e) => await RefreshAllDataAsync();
+        _refreshTimer.Tick += async (s, e) =>
+        {
+            if (_isRefreshing) return;
+            _isRefreshing = true;
+            try
+            {
+                await RefreshAllDataAsync();
+            }
+            finally
+            {
+                _isRefreshing = false;
+            }
+        };
         _refreshTimer.Start();
 
         /* Initialize time picker ComboBoxes */
