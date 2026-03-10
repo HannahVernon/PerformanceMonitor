@@ -23,6 +23,7 @@ public partial class LocalDataService
     /// </summary>
     public async Task<List<QueryStoreRow>> GetQueryStoreTopQueriesAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null)
     {
+        using var _q = TimeQuery("GetQueryStoreTopQueriesAsync", "v_query_store_stats top N");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 

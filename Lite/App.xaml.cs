@@ -189,6 +189,8 @@ public partial class App : Application
         // Initialize logging
         var logDirectory = Path.Combine(exeDirectory, "logs");
         AppLogger.Initialize(logDirectory);
+        Helpers.MethodProfiler.Initialize(logDirectory);
+        Helpers.QueryLogger.Initialize(logDirectory);
         AppLogger.Info("App", $"Starting PerformanceMonitorLite v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version}");
         AppLogger.Info("App", $"Data directory: {DataDirectory}");
 

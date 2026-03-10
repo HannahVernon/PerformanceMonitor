@@ -26,6 +26,8 @@ public partial class FinOpsTab : UserControl
     private LocalDataService? _dataService;
     private ServerManager? _serverManager;
     private CredentialService? _credentialService;
+    private List<ServerPropertyRow>? _serverInventoryCache;
+    private DateTime _serverInventoryCacheTime;
 
     public FinOpsTab()
     {
@@ -52,6 +54,7 @@ public partial class FinOpsTab : UserControl
     public void RefreshServerList()
     {
         if (_serverManager == null) return;
+        _serverInventoryCache = null; // Invalidate cache when server list changes
 
         var previousSelection = ServerSelector.SelectedItem as ServerConnection;
         var servers = _serverManager.GetAllServers();
@@ -101,13 +104,16 @@ public partial class FinOpsTab : UserControl
 
     private async System.Threading.Tasks.Task LoadPerServerDataAsync()
     {
+        using var _profiler = Helpers.MethodProfiler.StartTiming("FinOps-PerServerData");
         var serverId = GetSelectedServerId();
         if (serverId == 0 || _dataService == null) return;
 
-        await LoadUtilizationAsync(serverId);
-        await LoadDatabaseResourcesAsync(serverId);
-        await LoadApplicationConnectionsAsync(serverId);
-        await LoadDatabaseSizesAsync(serverId);
+        await System.Threading.Tasks.Task.WhenAll(
+            LoadUtilizationAsync(serverId),
+            LoadDatabaseResourcesAsync(serverId),
+            LoadApplicationConnectionsAsync(serverId),
+            LoadDatabaseSizesAsync(serverId)
+        );
     }
 
     private async System.Threading.Tasks.Task LoadUtilizationAsync(int serverId)
@@ -123,17 +129,17 @@ public partial class FinOpsTab : UserControl
 
             if (data != null)
             {
-                var topTotal = await _dataService.GetTopResourceConsumersByTotalAsync(serverId);
-                TopTotalGrid.ItemsSource = topTotal;
+                var topTotalTask = _dataService.GetTopResourceConsumersByTotalAsync(serverId);
+                var topAvgTask = _dataService.GetTopResourceConsumersByAvgAsync(serverId);
+                var sizesTask = _dataService.GetDatabaseSizeSummaryAsync(serverId);
+                var trendTask = _dataService.GetProvisioningTrendAsync(serverId);
 
-                var topAvg = await _dataService.GetTopResourceConsumersByAvgAsync(serverId);
-                TopAvgGrid.ItemsSource = topAvg;
+                await System.Threading.Tasks.Task.WhenAll(topTotalTask, topAvgTask, sizesTask, trendTask);
 
-                var sizes = await _dataService.GetDatabaseSizeSummaryAsync(serverId);
-                DbSizeChart.ItemsSource = sizes;
-
-                var trend = await _dataService.GetProvisioningTrendAsync(serverId);
-                ProvisioningTrendGrid.ItemsSource = trend;
+                TopTotalGrid.ItemsSource = topTotalTask.Result;
+                TopAvgGrid.ItemsSource = topAvgTask.Result;
+                DbSizeChart.ItemsSource = sizesTask.Result;
+                ProvisioningTrendGrid.ItemsSource = trendTask.Result;
             }
         }
         catch (Exception ex)
@@ -318,9 +324,20 @@ public partial class FinOpsTab : UserControl
         }
     }
 
-    private async System.Threading.Tasks.Task LoadServerInventoryAsync()
+    private async System.Threading.Tasks.Task LoadServerInventoryAsync(bool forceRefresh = false)
     {
+        using var _profiler = Helpers.MethodProfiler.StartTiming("FinOps-ServerInventory");
         if (_dataService == null || _serverManager == null || _credentialService == null) return;
+
+        // Use cache if available and less than 5 minutes old
+        if (!forceRefresh && _serverInventoryCache != null
+            && (DateTime.Now - _serverInventoryCacheTime).TotalMinutes < 5)
+        {
+            ServerInventoryDataGrid.ItemsSource = _serverInventoryCache;
+            NoServerInventoryMessage.Visibility = _serverInventoryCache.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            ServerInventoryCountIndicator.Text = _serverInventoryCache.Count > 0 ? $"{_serverInventoryCache.Count} server(s)" : "";
+            return;
+        }
 
         try
         {
@@ -341,10 +358,10 @@ public partial class FinOpsTab : UserControl
                     {
                         var serverId = RemoteCollectorService.GetDeterministicHashCode(server.ServerName);
                         var (avgCpu, storageGb, idleDbs, status) = await _dataService!.GetServerMetricsAsync(serverId);
-                        item.AvgCpuPct = avgCpu;
-                        item.StorageTotalGb = storageGb;
-                        item.IdleDbCount = idleDbs;
-                        item.ProvisioningStatus = status;
+                        if (avgCpu.HasValue) item.AvgCpuPct = avgCpu;
+                        if (storageGb.HasValue) item.StorageTotalGb = storageGb;
+                        if (idleDbs.HasValue) item.IdleDbCount = idleDbs;
+                        if (status != null) item.ProvisioningStatus = status;
                     }
                     catch
                     {
@@ -362,6 +379,9 @@ public partial class FinOpsTab : UserControl
 
             var results = await System.Threading.Tasks.Task.WhenAll(tasks);
             var data = results.Where(r => r != null).Cast<ServerPropertyRow>().ToList();
+
+            _serverInventoryCache = data;
+            _serverInventoryCacheTime = DateTime.Now;
 
             ServerInventoryDataGrid.ItemsSource = data;
             NoServerInventoryMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -535,7 +555,7 @@ public partial class FinOpsTab : UserControl
 
     private async void RefreshServerInventory_Click(object sender, RoutedEventArgs e)
     {
-        await LoadServerInventoryAsync();
+        await LoadServerInventoryAsync(forceRefresh: true);
     }
 
     private async void RefreshStorageGrowth_Click(object sender, RoutedEventArgs e)
@@ -562,6 +582,7 @@ public partial class FinOpsTab : UserControl
 
     private async void OptimizationRefresh_Click(object sender, RoutedEventArgs e)
     {
+        using var _profiler = Helpers.MethodProfiler.StartTiming("FinOps-OptimizationRefresh");
         var serverId = GetSelectedServerId();
         if (serverId == 0 || _dataService == null) return;
 
@@ -576,6 +597,7 @@ public partial class FinOpsTab : UserControl
 
     private async void RunIndexAnalysis_Click(object sender, RoutedEventArgs e)
     {
+        using var _profiler = Helpers.MethodProfiler.StartTiming("FinOps-IndexAnalysis");
         if (_serverManager == null || _credentialService == null) return;
 
         var server = ServerSelector.SelectedItem as ServerConnection;

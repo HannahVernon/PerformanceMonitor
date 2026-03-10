@@ -561,6 +561,7 @@ public partial class ServerTab : UserControl
 
         try
         {
+            using var _profiler = Helpers.MethodProfiler.StartTiming($"ServerTab-{_server?.DisplayName}");
             var loadSw = Stopwatch.StartNew();
 
             /* Load all tabs in parallel */
