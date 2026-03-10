@@ -423,6 +423,7 @@ ORDER BY collection_time, database_name";
     /// </summary>
     public async Task<UtilizationEfficiencyRow?> GetUtilizationEfficiencyAsync(int serverId)
     {
+        using var _q = TimeQuery("GetUtilizationEfficiencyAsync", "utilization efficiency stats");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 

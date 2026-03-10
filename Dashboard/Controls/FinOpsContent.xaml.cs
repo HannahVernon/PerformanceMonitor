@@ -28,6 +28,8 @@ namespace PerformanceMonitorDashboard.Controls
         private DatabaseService? _databaseService;
         private ServerManager? _serverManager;
         private CredentialService? _credentialService;
+        private List<FinOpsServerInventory>? _serverInventoryCache;
+        private DateTime _serverInventoryCacheTime;
 
         public FinOpsContent()
         {
@@ -126,17 +128,10 @@ namespace PerformanceMonitorDashboard.Controls
 
                 if (efficiency != null)
                 {
-                    var topTotal = await _databaseService.GetFinOpsTopResourceConsumersByTotalAsync();
-                    TopTotalGrid.ItemsSource = topTotal;
-
-                    var topAvg = await _databaseService.GetFinOpsTopResourceConsumersByAvgAsync();
-                    TopAvgGrid.ItemsSource = topAvg;
-
-                    var sizes = await _databaseService.GetFinOpsDatabaseSizeSummaryAsync();
-                    DbSizeChart.ItemsSource = sizes;
-
-                    var trend = await _databaseService.GetFinOpsProvisioningTrendAsync();
-                    ProvisioningTrendGrid.ItemsSource = trend;
+                    TopTotalGrid.ItemsSource = await _databaseService.GetFinOpsTopResourceConsumersByTotalAsync();
+                    TopAvgGrid.ItemsSource = await _databaseService.GetFinOpsTopResourceConsumersByAvgAsync();
+                    DbSizeChart.ItemsSource = await _databaseService.GetFinOpsDatabaseSizeSummaryAsync();
+                    ProvisioningTrendGrid.ItemsSource = await _databaseService.GetFinOpsProvisioningTrendAsync();
                 }
             }
             catch (Exception ex)
@@ -539,9 +534,19 @@ namespace PerformanceMonitorDashboard.Controls
         // Server Inventory Tab
         // ============================================
 
-        private async Task LoadServerInventoryAsync()
+        private async Task LoadServerInventoryAsync(bool forceRefresh = false)
         {
             if (_serverManager == null || _credentialService == null) return;
+
+            // Use cache if available and less than 5 minutes old
+            if (!forceRefresh && _serverInventoryCache != null
+                && (DateTime.Now - _serverInventoryCacheTime).TotalMinutes < 5)
+            {
+                ServerInventoryDataGrid.ItemsSource = _serverInventoryCache;
+                ServerInventoryNoDataMessage.Visibility = _serverInventoryCache.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                ServerInventoryCountIndicator.Text = _serverInventoryCache.Count > 0 ? $"{_serverInventoryCache.Count} server(s)" : "";
+                return;
+            }
 
             try
             {
@@ -583,6 +588,9 @@ namespace PerformanceMonitorDashboard.Controls
 
                 var results = await Task.WhenAll(tasks);
                 var allItems = results.Where(r => r != null).Cast<FinOpsServerInventory>().ToList();
+
+                _serverInventoryCache = allItems;
+                _serverInventoryCacheTime = DateTime.Now;
 
                 ServerInventoryDataGrid.ItemsSource = allItems;
                 ServerInventoryNoDataMessage.Visibility = allItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -648,7 +656,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private async void ServerInventoryRefresh_Click(object sender, RoutedEventArgs e)
         {
-            await LoadServerInventoryAsync();
+            await LoadServerInventoryAsync(forceRefresh: true);
         }
 
         // ============================================

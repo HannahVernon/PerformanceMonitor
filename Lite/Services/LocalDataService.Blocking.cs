@@ -136,6 +136,7 @@ LIMIT 50";
     /// </summary>
     public async Task<List<QuerySnapshotRow>> GetLatestQuerySnapshotsAsync(int serverId, int hoursBack = 4, DateTime? fromDate = null, DateTime? toDate = null)
     {
+        using var _q = TimeQuery("GetLatestQuerySnapshotsAsync", "v_query_snapshots latest");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 

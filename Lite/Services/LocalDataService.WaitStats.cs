@@ -20,6 +20,7 @@ public partial class LocalDataService
     /// </summary>
     public async Task<List<WaitStatsRow>> GetWaitStatsAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
     {
+        using var _q = TimeQuery("GetWaitStatsAsync", "v_wait_stats top by delta");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 

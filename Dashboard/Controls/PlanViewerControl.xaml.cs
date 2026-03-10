@@ -2034,7 +2034,7 @@ public partial class PlanViewerControl : UserControl
         if (statement.MemoryGrant != null)
         {
             var mg = statement.MemoryGrant;
-            AddRow("Memory grant", $"{mg.GrantedMemoryKB:N0} KB granted, {mg.MaxUsedMemoryKB:N0} KB used");
+            AddRow("Memory grant", $"{FormatMemoryGrantKB(mg.GrantedMemoryKB)} granted, {FormatMemoryGrantKB(mg.MaxUsedMemoryKB)} used");
             if (mg.GrantWaitTimeMs > 0)
                 AddRow("Grant wait", $"{mg.GrantWaitTimeMs:N0}ms");
         }
@@ -2076,6 +2076,19 @@ public partial class PlanViewerControl : UserControl
             AddRow("Early abort", statement.StatementOptmEarlyAbortReason);
 
         RuntimeSummaryContent.Children.Add(grid);
+    }
+
+    /// <summary>
+    /// Formats a memory value given in KB to a human-readable string.
+    /// Under 1,024 KB: show KB. 1,024-1,048,576 KB: show MB (1 decimal). Over 1,048,576 KB: show GB (2 decimals).
+    /// </summary>
+    private static string FormatMemoryGrantKB(long kb)
+    {
+        if (kb < 1024)
+            return $"{kb:N0} KB";
+        if (kb < 1024 * 1024)
+            return $"{kb / 1024.0:N1} MB";
+        return $"{kb / (1024.0 * 1024.0):N2} GB";
     }
 
     private void UpdateInsightsHeader()
