@@ -339,11 +339,18 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
                     sqlSw.Stop();
 
                     duckSw.Start();
+                    var flushSw = new Stopwatch();
+                    var readerSw = new Stopwatch();
+                    var appendSw = new Stopwatch();
 
                     using (var appender = duckConnection.CreateAppender("query_store_stats"))
                     {
-                        while (await reader.ReadAsync(cancellationToken))
+                        while (true)
                         {
+                            readerSw.Start();
+                            var hasRow = await reader.ReadAsync(cancellationToken);
+                            readerSw.Stop();
+                            if (!hasRow) break;
                             /* Reader ordinals match SELECT column order:
                                0=query_id, 1=plan_id, 2=execution_type_desc,
                                3=first_execution_time (dto), 4=last_execution_time (dto),
@@ -364,6 +371,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
                                46=is_forced_plan, 47=force_failure_count, 48=last_force_failure_reason,
                                49=compatibility_level, 50=query_plan_text, 51=query_plan_hash */
 
+                            appendSw.Start();
                             var row = appender.CreateRow();
                             row.AppendValue(GenerateCollectionId())                                                             /* collection_id */
                                .AppendValue(collectionTime)                                                                     /* collection_time */
@@ -423,12 +431,28 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
                                .AppendValue(reader.IsDBNull(50) ? (string?)null : reader.GetString(50))                         /* query_plan_text */
                                .AppendValue(reader.IsDBNull(51) ? (string?)null : reader.GetString(51))                         /* query_plan_hash */
                                .EndRow();
+                            appendSw.Stop();
 
                             totalRows++;
                         }
-                    }
+
+                        flushSw.Start();
+                    } /* appender.Dispose() flushes here */
+                    flushSw.Stop();
 
                     duckSw.Stop();
+
+                    if (duckSw.ElapsedMilliseconds > 2000)
+                    {
+                        _logger?.LogWarning(
+                            "Query Store DuckDB write spike: {TotalMs}ms total (reader: {ReaderMs}ms, append: {AppendMs}ms, flush: {FlushMs}ms, rows: {Rows}, db: {Db})",
+                            duckSw.ElapsedMilliseconds,
+                            readerSw.ElapsedMilliseconds,
+                            appendSw.ElapsedMilliseconds,
+                            flushSw.ElapsedMilliseconds,
+                            totalRows,
+                            dbName);
+                    }
                 }
                 catch (SqlException ex)
                 {
