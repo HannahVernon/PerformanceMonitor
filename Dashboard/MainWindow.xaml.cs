@@ -1352,7 +1352,8 @@ namespace PerformanceMonitorDashboard
 
                     _emailAlertService.RecordAlert(serverId, serverName, "High CPU",
                         $"{totalCpu:F0}%",
-                        $"{prefs.CpuThresholdPercent}%", !isMuted, isMuted ? "muted" : "tray", muted: isMuted);
+                        $"{prefs.CpuThresholdPercent}%", !isMuted, isMuted ? "muted" : "tray", muted: isMuted,
+                        detailText: $"  CPU: {totalCpu:F0}%\n  Threshold: {prefs.CpuThresholdPercent}%");
 
                     if (!isMuted)
                     {
