@@ -1044,13 +1044,16 @@ public partial class MainWindow : Window
                         Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning);
                 }
 
+                var cpuDetailText = $"  CPU: {summary.CpuPercent:F0}%\n  Threshold: {App.AlertCpuThreshold}%";
+
                 await _emailAlertService.TrySendAlertEmailAsync(
                     "High CPU",
                     summary.DisplayName,
                     $"{summary.CpuPercent:F0}%",
                     $"{App.AlertCpuThreshold}%",
                     summary.ServerId,
-                    muted: isMuted);
+                    muted: isMuted,
+                    detailText: cpuDetailText);
             }
         }
         else if (_activeCpuAlert.TryGetValue(key, out var wasCpu) && wasCpu)

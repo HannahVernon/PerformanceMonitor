@@ -462,7 +462,8 @@ namespace PerformanceMonitorDashboard.Controls
         {
             if (sender is not MenuItem menuItem) return;
             var contextMenu = menuItem.Parent as ContextMenu;
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu!);
+            if (contextMenu == null) return;
+            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
             if (dataGrid?.SelectedItem is not AlertHistoryDisplayItem item) return;
 
             var detailWindow = new AlertDetailWindow(item) { Owner = Window.GetWindow(this) };
@@ -474,7 +475,8 @@ namespace PerformanceMonitorDashboard.Controls
             if (MuteRuleService == null) return;
             if (sender is not MenuItem menuItem) return;
             var contextMenu = menuItem.Parent as ContextMenu;
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu!);
+            if (contextMenu == null) return;
+            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
             if (dataGrid?.SelectedItem is not AlertHistoryDisplayItem item) return;
 
             var context = new AlertMuteContext
@@ -496,15 +498,16 @@ namespace PerformanceMonitorDashboard.Controls
             if (MuteRuleService == null) return;
             if (sender is not MenuItem menuItem) return;
             var contextMenu = menuItem.Parent as ContextMenu;
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu!);
+            if (contextMenu == null) return;
+            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
             if (dataGrid?.SelectedItem is not AlertHistoryDisplayItem item) return;
 
-            var rule = new MuteRule
+            var context = new AlertMuteContext
             {
                 MetricName = item.MetricName
             };
 
-            var dialog = new MuteRuleDialog(rule) { Owner = Window.GetWindow(this) };
+            var dialog = new MuteRuleDialog(context) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() == true)
             {
                 MuteRuleService.AddRule(dialog.Rule);

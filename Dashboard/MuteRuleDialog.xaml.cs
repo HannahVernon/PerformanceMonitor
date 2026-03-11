@@ -25,8 +25,8 @@ namespace PerformanceMonitorDashboard
             {
                 Title = "Edit Mute Rule";
                 HeaderText.Text = "Edit Mute Rule";
-                PopulateFromRule(existingRule);
-                Rule = existingRule;
+                Rule = existingRule.Clone();
+                PopulateFromRule(Rule);
             }
             else
             {
@@ -118,6 +118,15 @@ namespace PerformanceMonitorDashboard
                 2 => DateTime.UtcNow.AddDays(7),
                 _ => null
             };
+
+            if (Rule.ServerName == null && Rule.MetricName == null && Rule.DatabasePattern == null
+                && Rule.QueryTextPattern == null && Rule.WaitTypePattern == null && Rule.JobNamePattern == null)
+            {
+                var result = MessageBox.Show(
+                    "This rule has no filters and will mute ALL alerts. Are you sure?",
+                    "Mute All Alerts", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (result != MessageBoxResult.Yes) return;
+            }
 
             DialogResult = true;
         }

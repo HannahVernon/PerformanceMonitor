@@ -64,17 +64,17 @@ public sealed class McpAlertTools
         {
             var settings = new
             {
-                alerts_enabled = App.AlertsEnabled,
+                notifications_enabled = App.AlertsEnabled,
                 notify_connection_changes = App.NotifyConnectionChanges,
                 cpu = new
                 {
                     enabled = App.AlertCpuEnabled,
-                    threshold = App.AlertCpuThreshold
+                    threshold_percent = App.AlertCpuThreshold
                 },
                 blocking = new
                 {
                     enabled = App.AlertBlockingEnabled,
-                    threshold = App.AlertBlockingThreshold
+                    threshold_seconds = App.AlertBlockingThreshold
                 },
                 deadlocks = new
                 {

@@ -106,7 +106,8 @@ namespace PerformanceMonitorLite.Services
             }
             catch (Exception ex)
             {
-                AppLogger.Warn("MuteRuleService", $"Failed to persist new mute rule to DuckDB — rule will be lost on restart: {ex.Message}");
+                AppLogger.Warn("MuteRuleService", $"Failed to persist new mute rule to DuckDB — rule will not be saved: {ex.Message}");
+                return;
             }
 
             lock (_lock)
@@ -209,7 +210,6 @@ namespace PerformanceMonitorLite.Services
             {
                 expiredIds = _rules.Where(r => r.IsExpired).Select(r => r.Id).ToList();
                 if (expiredIds.Count == 0) return 0;
-                _rules.RemoveAll(r => r.IsExpired);
             }
 
             try
@@ -228,6 +228,12 @@ namespace PerformanceMonitorLite.Services
             catch (Exception ex)
             {
                 AppLogger.Warn("MuteRuleService", $"Failed to purge expired mute rules from DuckDB: {ex.Message}");
+                return 0;
+            }
+
+            lock (_lock)
+            {
+                _rules.RemoveAll(r => expiredIds.Contains(r.Id));
             }
 
             return expiredIds.Count;

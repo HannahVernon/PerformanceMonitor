@@ -216,6 +216,7 @@ public class EmailAlertService
             }
 
             using var connection = duckDb.CreateConnection();
+            using var writeLock = duckDb.AcquireWriteLock();
             await connection.OpenAsync();
 
             using var command = connection.CreateCommand();

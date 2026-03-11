@@ -19,6 +19,21 @@ public class MuteRule
 
     public bool IsExpired => ExpiresAtUtc.HasValue && DateTime.UtcNow >= ExpiresAtUtc.Value;
 
+    public MuteRule Clone() => new()
+    {
+        Id = Id,
+        Enabled = Enabled,
+        CreatedAtUtc = CreatedAtUtc,
+        ExpiresAtUtc = ExpiresAtUtc,
+        Reason = Reason,
+        ServerName = ServerName,
+        MetricName = MetricName,
+        DatabasePattern = DatabasePattern,
+        QueryTextPattern = QueryTextPattern,
+        WaitTypePattern = WaitTypePattern,
+        JobNamePattern = JobNamePattern
+    };
+
     public string ExpiresDisplay => ExpiresAtUtc.HasValue
         ? (IsExpired ? "Expired" : ExpiresAtUtc.Value.ToLocalTime().ToString("g"))
         : "Never";
