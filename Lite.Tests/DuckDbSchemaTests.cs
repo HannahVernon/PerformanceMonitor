@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitorLite.Database;
@@ -161,7 +162,9 @@ public class DuckDbSchemaTests : IDisposable
 
     /// <summary>
     /// DuckDB does not support NOT NULL on ALTER TABLE ADD COLUMN.
-    /// This test scans the migration source code to prevent regressions.
+    /// This test scans the migration source code to prevent regressions,
+    /// including multi-line statements where ADD COLUMN and NOT NULL
+    /// appear on different lines within the same SQL statement.
     /// </summary>
     [Fact]
     public void Migrations_DoNotUseNotNullOnAlterTableAddColumn()
@@ -169,18 +172,25 @@ public class DuckDbSchemaTests : IDisposable
         var sourceFile = FindSourceFile("DuckDbInitializer.cs");
         Assert.True(sourceFile != null, "Could not find DuckDbInitializer.cs in the Lite project tree");
 
-        var lines = File.ReadAllLines(sourceFile!);
-        var violations = new System.Collections.Generic.List<string>();
+        var content = File.ReadAllText(sourceFile!);
 
-        for (int i = 0; i < lines.Length; i++)
+        // Strip line comments (// ...) and block comments (/* ... */)
+        var stripped = Regex.Replace(content, @"//[^\r\n]*", " ");
+        stripped = Regex.Replace(stripped, @"/\*.*?\*/", " ", RegexOptions.Singleline);
+
+        // Match ADD COLUMN ... NOT NULL within the same SQL statement (up to the next semicolon).
+        // RegexOptions.IgnoreCase + Singleline so . matches newlines.
+        var pattern = @"ADD\s+COLUMN\b[^;]*?\bNOT\s+NULL\b";
+        var matches = Regex.Matches(stripped, pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        var violations = new System.Collections.Generic.List<string>();
+        foreach (Match m in matches)
         {
-            var line = lines[i];
-            if (line.Contains("ADD COLUMN", StringComparison.OrdinalIgnoreCase)
-                && line.Contains("NOT NULL", StringComparison.OrdinalIgnoreCase)
-                && !line.TrimStart().StartsWith("/*") && !line.TrimStart().StartsWith("//") && !line.TrimStart().StartsWith("*"))
-            {
-                violations.Add($"Line {i + 1}: {line.Trim()}");
-            }
+            // Find the line number in the original content for a useful error message
+            int lineNum = content[..m.Index].Split('\n').Length;
+            var snippet = m.Value.Replace("\r", "").Replace("\n", " ");
+            if (snippet.Length > 120) snippet = snippet[..120] + "...";
+            violations.Add($"Line ~{lineNum}: {snippet}");
         }
 
         Assert.True(violations.Count == 0,
