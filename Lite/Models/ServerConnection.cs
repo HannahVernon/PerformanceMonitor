@@ -71,6 +71,13 @@ public class ServerConnection
     public string? DatabaseName { get; set; }
 
     /// <summary>
+    /// When true, sets ApplicationIntent=ReadOnly on the connection string.
+    /// Required for connecting to AG listener read-only replicas and
+    /// Azure SQL Business Critical / Managed Instance built-in read replicas.
+    /// </summary>
+    public bool ReadOnlyIntent { get; set; } = false;
+
+    /// <summary>
     /// Display-only property for showing authentication type in UI.
     /// </summary>
     [JsonIgnore]
@@ -153,7 +160,8 @@ public class ServerConnection
             ConnectTimeout = 15,
             CommandTimeout = 60,
             TrustServerCertificate = TrustServerCertificate,
-            MultipleActiveResultSets = true
+            MultipleActiveResultSets = true,
+            ApplicationIntent = ReadOnlyIntent ? ApplicationIntent.ReadOnly : ApplicationIntent.ReadWrite
         };
 
         // Set encryption mode
