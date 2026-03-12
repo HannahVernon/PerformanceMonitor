@@ -408,6 +408,16 @@ namespace PerformanceMonitorInstallerGui
                             upgradeFailure == 0 ? "Success" : "Warning");
                         LogMessage("", "Info");
                     }
+
+                    /*Abort if any upgrade scripts failed — proceeding would reinstall over a partially-upgraded database*/
+                    if (upgradeFailure > 0)
+                    {
+                        LogMessage("", "Info");
+                        LogMessage("Installation aborted: upgrade scripts must succeed before installation can proceed.", "Error");
+                        LogMessage("Fix the errors above and re-run the installer.", "Error");
+                        SetUIState(installing: false);
+                        return;
+                    }
                 }
 
                 /*

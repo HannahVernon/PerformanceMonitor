@@ -103,6 +103,7 @@ END;";
         private const int ShortTimeoutSeconds = 60;       // Quick operations (cleanup, queries)
         private const int MediumTimeoutSeconds = 120;     // Dependency installation
         private const int LongTimeoutSeconds = 300;       // SQL file execution (5 minutes)
+        private const int UpgradeTimeoutSeconds = 3600;   // Upgrade data migrations (1 hour, large tables)
 
         /*
         Exit codes for granular error reporting
@@ -117,6 +118,7 @@ END;";
             public const int VersionCheckFailed = 5;
             public const int SqlFilesNotFound = 6;
             public const int UninstallFailed = 7;
+            public const int UpgradesFailed = 8;
         }
 
         static async Task<int> Main(string[] args)
@@ -523,8 +525,9 @@ END;";
                     string fileName = Path.GetFileName(f);
                     if (!SqlFileNamePattern.IsMatch(fileName))
                         return false;
-                    /*Exclude test and troubleshooting scripts from main install*/
-                    if (fileName.StartsWith("97_", StringComparison.Ordinal) ||
+                    /*Exclude uninstall, test, and troubleshooting scripts from main install*/
+                    if (fileName.StartsWith("00_", StringComparison.Ordinal) ||
+                        fileName.StartsWith("97_", StringComparison.Ordinal) ||
                         fileName.StartsWith("99_", StringComparison.Ordinal))
                         return false;
                     return true;
@@ -699,6 +702,21 @@ END;";
 
                         Console.WriteLine();
                         Console.WriteLine($"Upgrades complete: {upgradeSuccessCount} succeeded, {upgradeFailureCount} failed");
+
+                        /*Abort if any upgrade scripts failed — proceeding would reinstall over a partially-upgraded database*/
+                        if (upgradeFailureCount > 0)
+                        {
+                            Console.WriteLine();
+                            Console.WriteLine("================================================================================");
+                            Console.WriteLine("Installation aborted: upgrade scripts must succeed before installation can proceed.");
+                            Console.WriteLine("Fix the errors above and re-run the installer.");
+                            Console.WriteLine("================================================================================");
+                            if (!automatedMode)
+                            {
+                                WaitForExit();
+                            }
+                            return ExitCodes.UpgradesFailed;
+                        }
                     }
                     else
                     {
@@ -1332,7 +1350,15 @@ END;";
                         return version.ToString();
                     }
 
-                    return null;
+                    /*
+                    Fallback: database and history table exist but no SUCCESS rows.
+                    This can happen if a prior GUI install didn't write history (#538/#539).
+                    Return "1.0.0" so all idempotent upgrade scripts are attempted
+                    rather than treating this as a fresh install (which would drop the database).
+                    */
+                    Console.WriteLine("Warning: PerformanceMonitor database exists but installation_history has no records.");
+                    Console.WriteLine("Treating as v1.0.0 to apply all available upgrades.");
+                    return "1.0.0";
                 }
             }
             catch (SqlException ex)
@@ -1480,7 +1506,7 @@ END;";
 
                         using (var cmd = new SqlCommand(trimmedBatch, connection))
                         {
-                            cmd.CommandTimeout = LongTimeoutSeconds;
+                            cmd.CommandTimeout = UpgradeTimeoutSeconds;
                             try
                             {
                                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);

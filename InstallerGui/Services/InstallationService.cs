@@ -238,8 +238,9 @@ namespace PerformanceMonitorInstallerGui.Services
                         /*Match numbered SQL files but exclude 97 (tests) and 99 (troubleshooting)*/
                         if (!SqlFilePattern.IsMatch(fileName))
                             return false;
-                        /*Exclude test and troubleshooting scripts from main install*/
-                        if (fileName.StartsWith("97_", StringComparison.Ordinal) ||
+                        /*Exclude uninstall, test, and troubleshooting scripts from main install*/
+                        if (fileName.StartsWith("00_", StringComparison.Ordinal) ||
+                            fileName.StartsWith("97_", StringComparison.Ordinal) ||
                             fileName.StartsWith("99_", StringComparison.Ordinal))
                             return false;
                         return true;
@@ -1113,7 +1114,13 @@ END;";
                     return version.ToString();
                 }
 
-                return null;
+                /*
+                Fallback: database and history table exist but no SUCCESS rows.
+                This can happen if a prior GUI install didn't write history (#538/#539).
+                Return "1.0.0" so all idempotent upgrade scripts are attempted
+                rather than treating this as a fresh install (which would drop the database).
+                */
+                return "1.0.0";
             }
             catch (SqlException)
             {
@@ -1272,7 +1279,7 @@ END;";
                             continue;
 
                         using var cmd = new SqlCommand(trimmedBatch, connection);
-                        cmd.CommandTimeout = 300;
+                        cmd.CommandTimeout = 3600; /*1 hour — upgrade migrations on large tables need extended time*/
 
                         try
                         {
