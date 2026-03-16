@@ -192,37 +192,13 @@ OPTION(RECOMPILE);";
         if (isAzureSqlDb)
         {
             // Azure SQL DB: each database is isolated, so we must connect to each one individually.
-            // First get the database list from master, then query sys.database_files per database.
-            var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
-            var databases = new List<string>();
-
-            using (var masterConn = new SqlConnection(
-                new SqlConnectionStringBuilder(baseConnStr) { ConnectTimeout = ConnectionTimeoutSeconds, InitialCatalog = "master" }.ConnectionString))
-            {
-                await masterConn.OpenAsync(cancellationToken);
-                // HAS_DBACCESS() returns false for user databases when queried from master on Azure SQL DB,
-                // so we skip that filter here — inaccessible databases are handled by the try/catch below.
-                using var dbListCmd = new SqlCommand(
-                    "SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 ORDER BY name;",
-                    masterConn);
-                dbListCmd.CommandTimeout = CommandTimeoutSeconds;
-                using var dbReader = await dbListCmd.ExecuteReaderAsync(cancellationToken);
-                while (await dbReader.ReadAsync(cancellationToken))
-                    databases.Add(dbReader.GetString(0));
-            }
+            var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
             foreach (var dbName in databases)
             {
                 try
                 {
-                    var dbConnStr = new SqlConnectionStringBuilder(baseConnStr)
-                    {
-                        ConnectTimeout = ConnectionTimeoutSeconds,
-                        InitialCatalog = dbName
-                    }.ConnectionString;
-
-                    using var dbConn = new SqlConnection(dbConnStr);
-                    await dbConn.OpenAsync(cancellationToken);
+                    using var dbConn = await OpenAzureDatabaseConnectionAsync(server, dbName, cancellationToken);
                     using var cmd = new SqlCommand(azureSqlDbQuery, dbConn);
                     cmd.CommandTimeout = CommandTimeoutSeconds;
                     using var reader = await cmd.ExecuteReaderAsync(cancellationToken);

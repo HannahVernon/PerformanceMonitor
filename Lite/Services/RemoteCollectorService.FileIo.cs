@@ -92,11 +92,6 @@ OPTION(RECOMPILE);";
         _lastDuckDbMs = 0;
 
         var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
-
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         /* Collect all rows first */
         var fileStats = new List<(
@@ -105,25 +100,34 @@ OPTION(RECOMPILE);";
             long IoStallReadMs, long IoStallWriteMs, long IoStallQueuedReadMs, long IoStallQueuedWriteMs,
             int DatabaseId, int FileId)>();
 
-        while (await reader.ReadAsync(cancellationToken))
+        if (isAzureSqlDb)
         {
-            fileStats.Add((
-                DatabaseName: reader.IsDBNull(0) ? "Unknown" : reader.GetString(0),
-                FileName: reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
-                FileType: reader.IsDBNull(2) ? "Unknown" : reader.GetString(2),
-                PhysicalName: reader.IsDBNull(3) ? "" : reader.GetString(3),
-                SizeMb: reader.IsDBNull(4) ? 0m : reader.GetDecimal(4),
-                NumOfReads: reader.IsDBNull(5) ? 0L : reader.GetInt64(5),
-                NumOfWrites: reader.IsDBNull(6) ? 0L : reader.GetInt64(6),
-                ReadBytes: reader.IsDBNull(7) ? 0L : reader.GetInt64(7),
-                WriteBytes: reader.IsDBNull(8) ? 0L : reader.GetInt64(8),
-                IoStallReadMs: reader.IsDBNull(9) ? 0L : reader.GetInt64(9),
-                IoStallWriteMs: reader.IsDBNull(10) ? 0L : reader.GetInt64(10),
-                IoStallQueuedReadMs: reader.IsDBNull(11) ? 0L : reader.GetInt64(11),
-                IoStallQueuedWriteMs: reader.IsDBNull(12) ? 0L : reader.GetInt64(12),
-                DatabaseId: reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13)),
-                FileId: reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14))
-            ));
+            // Azure SQL DB: dm_io_virtual_file_stats is scoped to the connected database,
+            // so we must connect to each database individually.
+            var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
+            foreach (var dbName in databases)
+            {
+                try
+                {
+                    using var dbConn = await OpenAzureDatabaseConnectionAsync(server, dbName, cancellationToken);
+                    using var cmd = new SqlCommand(query, dbConn) { CommandTimeout = CommandTimeoutSeconds };
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                        fileStats.Add(ReadFileIoRow(reader));
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug("Skipping database '{Database}' for file I/O: {Error}", dbName, ex.Message);
+                }
+            }
+        }
+        else
+        {
+            using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
+            using var command = new SqlCommand(query, sqlConnection) { CommandTimeout = CommandTimeoutSeconds };
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                fileStats.Add(ReadFileIoRow(reader));
         }
         sqlSw.Stop();
 
@@ -187,5 +191,28 @@ OPTION(RECOMPILE);";
 
         _logger?.LogDebug("Collected {RowCount} file I/O stats for server '{Server}'", rowsCollected, server.DisplayName);
         return rowsCollected;
+    }
+
+    private static (string DatabaseName, string FileName, string FileType, string PhysicalName,
+        decimal SizeMb, long NumOfReads, long NumOfWrites, long ReadBytes, long WriteBytes,
+        long IoStallReadMs, long IoStallWriteMs, long IoStallQueuedReadMs, long IoStallQueuedWriteMs,
+        int DatabaseId, int FileId) ReadFileIoRow(SqlDataReader reader)
+    {
+        return (
+            DatabaseName: reader.IsDBNull(0) ? "Unknown" : reader.GetString(0),
+            FileName: reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
+            FileType: reader.IsDBNull(2) ? "Unknown" : reader.GetString(2),
+            PhysicalName: reader.IsDBNull(3) ? "" : reader.GetString(3),
+            SizeMb: reader.IsDBNull(4) ? 0m : reader.GetDecimal(4),
+            NumOfReads: reader.IsDBNull(5) ? 0L : reader.GetInt64(5),
+            NumOfWrites: reader.IsDBNull(6) ? 0L : reader.GetInt64(6),
+            ReadBytes: reader.IsDBNull(7) ? 0L : reader.GetInt64(7),
+            WriteBytes: reader.IsDBNull(8) ? 0L : reader.GetInt64(8),
+            IoStallReadMs: reader.IsDBNull(9) ? 0L : reader.GetInt64(9),
+            IoStallWriteMs: reader.IsDBNull(10) ? 0L : reader.GetInt64(10),
+            IoStallQueuedReadMs: reader.IsDBNull(11) ? 0L : reader.GetInt64(11),
+            IoStallQueuedWriteMs: reader.IsDBNull(12) ? 0L : reader.GetInt64(12),
+            DatabaseId: reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13)),
+            FileId: reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14)));
     }
 }

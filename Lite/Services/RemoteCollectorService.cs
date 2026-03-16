@@ -483,6 +483,50 @@ public partial class RemoteCollectorService
     }
 
     /// <summary>
+    /// Enumerates online databases on an Azure SQL DB logical server.
+    /// HAS_DBACCESS() returns false for user databases from master on Azure SQL DB,
+    /// so we skip that filter — inaccessible databases should be handled by callers via try/catch.
+    /// </summary>
+    protected async Task<List<string>> GetAzureDatabaseListAsync(ServerConnection server, CancellationToken cancellationToken)
+    {
+        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var connStr = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            ConnectTimeout = ConnectionTimeoutSeconds,
+            InitialCatalog = "master"
+        }.ConnectionString;
+
+        var databases = new List<string>();
+        using var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(cancellationToken);
+        using var cmd = new SqlCommand(
+            "SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 ORDER BY name;",
+            conn)
+        { CommandTimeout = CommandTimeoutSeconds };
+        using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            databases.Add(reader.GetString(0));
+        return databases;
+    }
+
+    /// <summary>
+    /// Opens a SQL connection to a specific database on an Azure SQL DB logical server.
+    /// </summary>
+    protected async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerConnection server, string databaseName, CancellationToken cancellationToken)
+    {
+        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var connStr = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            ConnectTimeout = ConnectionTimeoutSeconds,
+            InitialCatalog = databaseName
+        }.ConnectionString;
+
+        var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(cancellationToken);
+        return conn;
+    }
+
+    /// <summary>
     /// Creates a SQL connection to a remote server.
     /// Throws InvalidOperationException if MFA authentication was cancelled by user.
     /// </summary>
