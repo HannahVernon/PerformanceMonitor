@@ -180,8 +180,6 @@ ORDER BY
     qs.total_elapsed_time DESC
 OPTION(RECOMPILE);";
 
-        string query = isAzureSqlDb ? azureSqlDbQuery : standardQuery;
-
         var serverId = GetServerId(server);
         var collectionTime = DateTime.UtcNow;
         var rowsCollected = 0;
@@ -189,14 +187,36 @@ OPTION(RECOMPILE);";
         _lastDuckDbMs = 0;
 
         var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
 
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        // Build list of (SqlConnection, query) pairs to execute
+        var connections = new List<(SqlConnection Connection, string Query, bool OwnsConnection)>();
 
-        sqlSw.Stop();
+        if (isAzureSqlDb)
+        {
+            // Azure SQL DB: dm_exec_query_stats is scoped to the connected database,
+            // so we must connect to each database individually.
+            var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
+            foreach (var dbName in databases)
+            {
+                try
+                {
+                    var conn = await OpenAzureDatabaseConnectionAsync(server, dbName, cancellationToken);
+                    connections.Add((conn, azureSqlDbQuery, true));
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug("Skipping database '{Database}' for query stats: {Error}", dbName, ex.Message);
+                }
+            }
+        }
+        else
+        {
+            var conn = await CreateConnectionAsync(server, cancellationToken);
+            connections.Add((conn, standardQuery, true));
+        }
 
+        try
+        {
         var duckSw = Stopwatch.StartNew();
 
         using (var duckConnection = _duckDb.CreateConnection())
@@ -205,6 +225,13 @@ OPTION(RECOMPILE);";
 
             using (var appender = duckConnection.CreateAppender("query_stats"))
             {
+                foreach (var (sqlConnection, query, _) in connections)
+                {
+                using var command = new SqlCommand(query, sqlConnection);
+                command.CommandTimeout = CommandTimeoutSeconds;
+
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     /* Reader ordinals match SELECT column order:
@@ -306,12 +333,20 @@ OPTION(RECOMPILE);";
 
                     rowsCollected++;
                 }
+                } // end foreach connection
             }
         }
 
+        sqlSw.Stop();
         duckSw.Stop();
         _lastSqlMs = sqlSw.ElapsedMilliseconds;
         _lastDuckDbMs = duckSw.ElapsedMilliseconds;
+        }
+        finally
+        {
+            foreach (var (conn, _, _) in connections)
+                conn.Dispose();
+        }
 
         _logger?.LogDebug("Collected {RowCount} query stats for server '{Server}'", rowsCollected, server.DisplayName);
         return rowsCollected;

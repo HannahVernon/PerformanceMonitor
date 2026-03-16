@@ -75,7 +75,19 @@ ORDER BY database_name, file_type_desc, file_name";
         using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync();
 
+        // sys.master_files doesn't exist on Azure SQL DB — dynamic SQL picks the right catalog view
         const string query = @"
+DECLARE
+    @storage_sql nvarchar(MAX) =
+        CASE
+            WHEN CONVERT(int, SERVERPROPERTY('EngineEdition')) = 5
+            THEN N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.database_files'
+            ELSE N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files'
+        END,
+    @storage_gb decimal(19,2);
+
+EXEC sys.sp_executesql @storage_sql, N'@gb decimal(19,2) OUTPUT', @gb = @storage_gb OUTPUT;
+
 SELECT
     CONVERT(nvarchar(256), SERVERPROPERTY('Edition')),
     CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')),
@@ -84,7 +96,7 @@ SELECT
     si.cpu_count,
     si.physical_memory_kb / 1024,
     si.sqlserver_start_time,
-    (SELECT SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files),
+    @storage_gb,
     si.socket_count,
     si.cores_per_socket,
     CONVERT(int, SERVERPROPERTY('EngineEdition')),
