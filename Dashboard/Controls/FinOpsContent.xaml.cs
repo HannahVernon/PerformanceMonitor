@@ -40,6 +40,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
+            TabHelpers.AutoSizeColumnMinWidths(RecommendationsDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(DatabaseResourcesDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(DatabaseSizesDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(ApplicationConnectionsDataGrid);
@@ -54,6 +55,7 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.AutoSizeColumnMinWidths(IndexAnalysisSummaryGrid);
             TabHelpers.AutoSizeColumnMinWidths(IndexAnalysisDetailGrid);
 
+            TabHelpers.FreezeColumns(RecommendationsDataGrid, 1);
             TabHelpers.FreezeColumns(DatabaseResourcesDataGrid, 1);
             TabHelpers.FreezeColumns(DatabaseSizesDataGrid, 1);
             TabHelpers.FreezeColumns(ApplicationConnectionsDataGrid, 1);
@@ -100,6 +102,7 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 await Task.WhenAll(
+                    LoadRecommendationsAsync(),
                     LoadUtilizationAsync(),
                     LoadDatabaseResourcesAsync(),
                     LoadDatabaseSizesAsync(),
@@ -116,6 +119,27 @@ namespace PerformanceMonitorDashboard.Controls
             catch (Exception ex)
             {
                 Logger.Error($"Error refreshing FinOps data: {ex.Message}", ex);
+            }
+        }
+
+        // ============================================
+        // Recommendations Tab
+        // ============================================
+
+        private async Task LoadRecommendationsAsync()
+        {
+            if (_databaseService == null) return;
+
+            try
+            {
+                var data = await _databaseService.GetFinOpsRecommendationsAsync(_currentServerMonthlyCost);
+                RecommendationsDataGrid.ItemsSource = data;
+                RecommendationsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                RecommendationsCountIndicator.Text = data.Count > 0 ? $"{data.Count} recommendation(s)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading recommendations: {ex.Message}", ex);
             }
         }
 
@@ -705,6 +729,11 @@ namespace PerformanceMonitorDashboard.Controls
         // ============================================
         // Refresh Button Handlers
         // ============================================
+
+        private async void RecommendationsRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadRecommendationsAsync();
+        }
 
         private async void UtilizationRefresh_Click(object sender, RoutedEventArgs e)
         {

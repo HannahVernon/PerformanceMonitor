@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitorDashboard.Helpers;
@@ -1629,6 +1630,359 @@ OPTION(MAXDOP 1, RECOMPILE);";
 
             return items;
         }
+
+        // ============================================
+        // FinOps Recommendations Engine
+        // ============================================
+
+        /// <summary>
+        /// Runs all Phase 1 recommendation checks and returns a consolidated list.
+        /// </summary>
+        public async Task<List<FinOpsRecommendation>> GetFinOpsRecommendationsAsync(decimal monthlyCost)
+        {
+            var recommendations = new List<FinOpsRecommendation>();
+
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            // 1. Enterprise feature usage audit
+            try
+            {
+                using var editionCmd = new SqlCommand(
+                    "SELECT CAST(SERVERPROPERTY('Edition') AS NVARCHAR(128))", connection);
+                editionCmd.CommandTimeout = 30;
+                var edition = (string?)await editionCmd.ExecuteScalarAsync() ?? "";
+
+                if (edition.Contains("Enterprise", StringComparison.OrdinalIgnoreCase))
+                {
+                    using var featCmd = new SqlCommand(@"
+SELECT
+    DB_NAME(database_id) AS database_name,
+    feature_name
+FROM sys.dm_db_persisted_sku_features", connection);
+                    featCmd.CommandTimeout = 30;
+
+                    var features = new List<string>();
+                    using var featReader = await featCmd.ExecuteReaderAsync();
+                    while (await featReader.ReadAsync())
+                    {
+                        var db = featReader.IsDBNull(0) ? "" : featReader.GetString(0);
+                        var feat = featReader.IsDBNull(1) ? "" : featReader.GetString(1);
+                        features.Add($"{db}: {feat}");
+                    }
+
+                    if (features.Count == 0)
+                    {
+                        recommendations.Add(new FinOpsRecommendation
+                        {
+                            Category = "Licensing",
+                            Severity = "High",
+                            Confidence = "High",
+                            Finding = "Enterprise Edition with no Enterprise-only features",
+                            Detail = "No database uses Enterprise-only features (partitioning, compression, etc.). " +
+                                     "Consider downgrading to Standard Edition for significant license savings.",
+                            EstMonthlySavings = monthlyCost > 0 ? monthlyCost * 0.40m : null
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (Enterprise features): {ex.Message}", ex);
+            }
+
+            // 2. CPU right-sizing score
+            try
+            {
+                using var cpuCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    v.p95_cpu_pct,
+    v.cpu_count,
+    v.avg_cpu_pct,
+    v.max_cpu_pct
+FROM report.finops_utilization_efficiency AS v
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                cpuCmd.CommandTimeout = 120;
+
+                using var cpuReader = await cpuCmd.ExecuteReaderAsync();
+                if (await cpuReader.ReadAsync())
+                {
+                    var p95 = cpuReader.IsDBNull(0) ? 0m : Convert.ToDecimal(cpuReader.GetValue(0));
+                    var cpuCount = cpuReader.IsDBNull(1) ? 0 : Convert.ToInt32(cpuReader.GetValue(1));
+                    var avg = cpuReader.IsDBNull(2) ? 0m : Convert.ToDecimal(cpuReader.GetValue(2));
+                    var max = cpuReader.IsDBNull(3) ? 0 : Convert.ToInt32(cpuReader.GetValue(3));
+
+                    if (p95 < 30 && cpuCount > 4)
+                    {
+                        var targetCores = Math.Max(4, (int)(cpuCount * (p95 / 70m)));
+                        var savingsPct = 1m - ((decimal)targetCores / cpuCount);
+                        recommendations.Add(new FinOpsRecommendation
+                        {
+                            Category = "Compute",
+                            Severity = p95 < 15 ? "High" : "Medium",
+                            Confidence = "Medium",
+                            Finding = $"CPU over-provisioned ({cpuCount} cores, P95 = {p95:N1}%)",
+                            Detail = $"P95 CPU utilization is {p95:N1}% (avg {avg:N1}%, max {max}%) across {cpuCount} cores. " +
+                                     $"Consider reducing to ~{targetCores} cores.",
+                            EstMonthlySavings = monthlyCost > 0 ? monthlyCost * savingsPct * 0.60m : null
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (CPU right-sizing): {ex.Message}", ex);
+            }
+
+            // 3. Memory right-sizing score
+            try
+            {
+                using var memCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT TOP (1)
+    ms.buffer_pool_mb,
+    (SELECT CAST(SERVERPROPERTY('PhysicalMemoryInMB') AS INT)) AS physical_memory_mb
+FROM collect.memory_stats AS ms
+ORDER BY ms.collection_time DESC
+OPTION(MAXDOP 1);", connection);
+                memCmd.CommandTimeout = 30;
+
+                using var memReader = await memCmd.ExecuteReaderAsync();
+                if (await memReader.ReadAsync())
+                {
+                    var bpMb = memReader.IsDBNull(0) ? 0 : Convert.ToInt32(memReader.GetValue(0));
+                    var physMb = memReader.IsDBNull(1) ? 0 : Convert.ToInt32(memReader.GetValue(1));
+
+                    if (physMb > 0)
+                    {
+                        var bpRatio = (decimal)bpMb / physMb;
+                        if (bpRatio < 0.50m && physMb > 8192)
+                        {
+                            var targetMb = Math.Max(8192, bpMb * 2);
+                            recommendations.Add(new FinOpsRecommendation
+                            {
+                                Category = "Memory",
+                                Severity = bpRatio < 0.30m ? "High" : "Medium",
+                                Confidence = "Medium",
+                                Finding = $"Memory over-provisioned (buffer pool uses {bpRatio:P0} of {physMb / 1024}GB RAM)",
+                                Detail = $"Buffer pool is {bpMb:N0} MB out of {physMb:N0} MB physical RAM ({bpRatio:P0} utilization). " +
+                                         $"Consider reducing to ~{targetMb / 1024}GB.",
+                                EstMonthlySavings = monthlyCost > 0 ? monthlyCost * (1m - (decimal)targetMb / physMb) * 0.30m : null
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (Memory right-sizing): {ex.Message}", ex);
+            }
+
+            // 4. Unused index cost quantification
+            try
+            {
+                var spExists = await CheckSpIndexCleanupExistsAsync();
+                if (!spExists)
+                {
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Indexes",
+                        Severity = "Low",
+                        Confidence = "Low",
+                        Finding = "Index analysis unavailable (sp_IndexCleanup not installed)",
+                        Detail = "Install sp_IndexCleanup from https://github.com/erikdarlingdata/DarlingData " +
+                                 "to identify unused and duplicate indexes that waste storage and add write overhead."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (Index analysis): {ex.Message}", ex);
+            }
+
+            // 5. Compression savings estimator
+            try
+            {
+                using var compCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    s.name AS schema_name,
+    t.name AS table_name,
+    i.name AS index_name,
+    i.type_desc,
+    p.data_compression_desc,
+    SUM(a.total_pages) * 8 / 1024.0 AS size_mb
+FROM sys.tables AS t
+JOIN sys.schemas AS s ON t.schema_id = s.schema_id
+JOIN sys.indexes AS i ON t.object_id = i.object_id
+JOIN sys.partitions AS p ON i.object_id = p.object_id AND i.index_id = p.index_id
+JOIN sys.allocation_units AS a ON p.partition_id = a.container_id
+WHERE p.data_compression_desc = N'NONE'
+AND   t.is_ms_shipped = 0
+GROUP BY
+    s.name,
+    t.name,
+    i.name,
+    i.type_desc,
+    p.data_compression_desc
+HAVING SUM(a.total_pages) * 8 / 1024.0 >= 1024
+ORDER BY
+    size_mb DESC
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                compCmd.CommandTimeout = 60;
+
+                var candidates = new List<(string Schema, string Table, string Index, string Type, decimal SizeMb)>();
+                using var compReader = await compCmd.ExecuteReaderAsync();
+                while (await compReader.ReadAsync())
+                {
+                    candidates.Add((
+                        compReader.IsDBNull(0) ? "" : compReader.GetString(0),
+                        compReader.IsDBNull(1) ? "" : compReader.GetString(1),
+                        compReader.IsDBNull(2) ? "" : compReader.GetString(2),
+                        compReader.IsDBNull(3) ? "" : compReader.GetString(3),
+                        compReader.IsDBNull(5) ? 0m : Convert.ToDecimal(compReader.GetValue(5))
+                    ));
+                }
+
+                if (candidates.Count > 0)
+                {
+                    var totalGb = candidates.Sum(c => c.SizeMb) / 1024m;
+                    var topItems = candidates.Take(5)
+                        .Select(c => $"{c.Schema}.{c.Table} ({c.SizeMb / 1024:N1}GB)")
+                        .ToList();
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Storage",
+                        Severity = totalGb > 50 ? "High" : totalGb > 10 ? "Medium" : "Low",
+                        Confidence = "High",
+                        Finding = $"{candidates.Count} uncompressed object(s) >= 1GB ({totalGb:N1}GB total)",
+                        Detail = $"Large uncompressed tables/indexes: {string.Join("; ", topItems)}" +
+                                 (candidates.Count > 5 ? $" and {candidates.Count - 5} more" : "") +
+                                 ". Consider PAGE or ROW compression to reduce storage and improve I/O."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (Compression): {ex.Message}", ex);
+            }
+
+            // 6. Dormant database detection with cost impact
+            try
+            {
+                var idleDbs = await GetFinOpsIdleDatabasesAsync();
+                if (idleDbs.Count > 0)
+                {
+                    var totalSizeGb = idleDbs.Sum(d => d.TotalSizeMb) / 1024m;
+                    var dbNames = string.Join(", ", idleDbs.Take(5).Select(d => d.DatabaseName));
+                    var costShare = 0m;
+                    if (monthlyCost > 0)
+                    {
+                        // Estimate cost share proportional to storage footprint
+                        var allDbSizes = await GetFinOpsDatabaseSizeStatsAsync();
+                        var totalMb = allDbSizes.Sum(d => d.TotalSizeMb);
+                        if (totalMb > 0)
+                            costShare = (idleDbs.Sum(d => d.TotalSizeMb) / totalMb) * monthlyCost;
+                    }
+
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Databases",
+                        Severity = idleDbs.Count >= 3 ? "High" : "Medium",
+                        Confidence = "High",
+                        Finding = $"{idleDbs.Count} idle database(s) consuming {totalSizeGb:N1}GB",
+                        Detail = $"No query activity in 7 days: {dbNames}" +
+                                 (idleDbs.Count > 5 ? $" and {idleDbs.Count - 5} more" : "") +
+                                 ". Consider archiving or removing these databases.",
+                        EstMonthlySavings = costShare > 0 ? costShare : null
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (Dormant databases): {ex.Message}", ex);
+            }
+
+            // 7. Dev/test workload detection
+            try
+            {
+                using var devTestCmd = new SqlCommand(@"
+SELECT name
+FROM sys.databases
+WHERE (name LIKE N'%dev%' OR name LIKE N'%test%' OR name LIKE N'%staging%' OR name LIKE N'%qa%')
+AND   database_id > 4", connection);
+                devTestCmd.CommandTimeout = 30;
+
+                var devDbs = new List<string>();
+                using var devReader = await devTestCmd.ExecuteReaderAsync();
+                while (await devReader.ReadAsync())
+                {
+                    if (!devReader.IsDBNull(0))
+                        devDbs.Add(devReader.GetString(0));
+                }
+
+                if (devDbs.Count > 0)
+                {
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Environment",
+                        Severity = "Medium",
+                        Confidence = "Low",
+                        Finding = $"{devDbs.Count} possible dev/test database(s) on production server",
+                        Detail = $"Databases matching dev/test patterns: {string.Join(", ", devDbs.Take(10))}" +
+                                 (devDbs.Count > 10 ? $" and {devDbs.Count - 10} more" : "") +
+                                 ". If these are non-production workloads, consider moving to a lower-cost tier or separate server."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (Dev/test detection): {ex.Message}", ex);
+            }
+
+            // 8. tempdb over-provisioning
+            try
+            {
+                using var tempdbCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    allocated_mb =
+        (SELECT SUM(size) * 8.0 / 1024 FROM tempdb.sys.database_files WHERE type = 0),
+    peak_used_mb =
+        ISNULL((SELECT MAX(total_reserved_mb) FROM collect.tempdb_stats
+         WHERE collection_time >= DATEADD(DAY, -7, SYSDATETIME())), 0)
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                tempdbCmd.CommandTimeout = 30;
+
+                using var tempdbReader = await tempdbCmd.ExecuteReaderAsync();
+                if (await tempdbReader.ReadAsync())
+                {
+                    var allocatedMb = tempdbReader.IsDBNull(0) ? 0m : Convert.ToDecimal(tempdbReader.GetValue(0));
+                    var peakUsedMb = tempdbReader.IsDBNull(1) ? 0m : Convert.ToDecimal(tempdbReader.GetValue(1));
+
+                    if (allocatedMb > 1024 && peakUsedMb > 0 && (peakUsedMb / allocatedMb) < 0.25m)
+                    {
+                        var usagePct = peakUsedMb / allocatedMb * 100m;
+                        recommendations.Add(new FinOpsRecommendation
+                        {
+                            Category = "tempdb",
+                            Severity = usagePct < 10 ? "Medium" : "Low",
+                            Confidence = "Medium",
+                            Finding = $"tempdb over-provisioned (peak usage {usagePct:N0}% of {allocatedMb / 1024:N1}GB allocated)",
+                            Detail = $"tempdb is pre-allocated at {allocatedMb:N0}MB but 7-day peak usage was only " +
+                                     $"{peakUsedMb:N0}MB ({usagePct:N1}%). Consider reducing initial size to reclaim disk space."
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Recommendation check failed (tempdb): {ex.Message}", ex);
+            }
+
+            return recommendations;
+        }
     }
 
     // ============================================
@@ -1961,5 +2315,16 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string LatchWaitCount { get; set; } = "";
         public string DailyLatchWaitsSaved { get; set; } = "";
         public string AvgLatchWaitMs { get; set; } = "";
+    }
+
+    public class FinOpsRecommendation
+    {
+        public string Category { get; set; } = "";
+        public string Severity { get; set; } = "";
+        public string Confidence { get; set; } = "";
+        public string Finding { get; set; } = "";
+        public string Detail { get; set; } = "";
+        public decimal? EstMonthlySavings { get; set; }
+        public string EstMonthlySavingsDisplay => EstMonthlySavings.HasValue ? $"${EstMonthlySavings.Value:N0}" : "";
     }
 }

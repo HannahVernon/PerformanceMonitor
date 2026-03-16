@@ -46,6 +46,77 @@
 
         <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0">
 
+        <!-- Recommendations Sub-Tab -->
+        <TabItem Header="Recommendations">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                    <TextBlock Text="Cost-Saving Recommendations" VerticalAlignment="Center" Margin="0,0,10,0"
+                               FontWeight="Bold" FontSize="14"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <Button Content="Refresh" Click="RecommendationsRefresh_Click"
+                            Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                    <TextBlock x:Name="RecommendationsCountIndicator" VerticalAlignment="Center" Margin="12,0,0,0"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                </StackPanel>
+
+                <!-- No Data Message -->
+                <TextBlock x:Name="RecommendationsNoDataMessage" Grid.Row="1"
+                           Text="No recommendations — all checks passed or insufficient data for analysis."
+                           Margin="10,0" Visibility="Collapsed"
+                           Foreground="{DynamicResource ForegroundMutedBrush}" FontStyle="Italic"/>
+
+                <!-- Recommendations DataGrid -->
+                <DataGrid x:Name="RecommendationsDataGrid" Grid.Row="2" Margin="10,4,10,10"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserSortColumns="True" CanUserResizeColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                          RowStyle="{StaticResource DefaultRowStyle}"
+                          Background="Transparent" BorderThickness="0"
+                          RowBackground="Transparent"
+                          AlternatingRowBackground="{DynamicResource DataGridAlternatingRowBrush}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" MinWidth="120" Width="Auto"/>
+                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" MinWidth="80" Width="Auto">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Severity}" Value="High">
+                                            <Setter Property="Foreground" Value="#E74C3C"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Severity}" Value="Medium">
+                                            <Setter Property="Foreground" Value="#F39C12"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Severity}" Value="Low">
+                                            <Setter Property="Foreground" Value="#27AE60"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" MinWidth="90" Width="Auto"/>
+                        <DataGridTextColumn Header="Finding" Binding="{Binding Finding}" MinWidth="250" Width="Auto"/>
+                        <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" MinWidth="400" Width="*"/>
+                        <DataGridTextColumn Header="Est. Savings ($/mo)" Binding="{Binding EstMonthlySavingsDisplay}" MinWidth="110" Width="Auto">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </TabItem>
+
         <!-- Utilization Sub-Tab -->
         <TabItem Header="Utilization">
             <Grid>

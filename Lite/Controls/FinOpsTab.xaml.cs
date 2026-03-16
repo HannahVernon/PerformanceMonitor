@@ -130,6 +130,7 @@ public partial class FinOpsTab : UserControl
             _currentServerMonthlyCost = selectedServer.MonthlyCostUsd;
 
         await System.Threading.Tasks.Task.WhenAll(
+            LoadRecommendationsAsync(serverId),
             LoadUtilizationAsync(serverId),
             LoadDatabaseResourcesAsync(serverId),
             LoadApplicationConnectionsAsync(serverId),
@@ -141,6 +142,26 @@ public partial class FinOpsTab : UserControl
             LoadExpensiveQueriesAsync(serverId),
             LoadMemoryGrantEfficiencyAsync(serverId)
         );
+    }
+
+    private async System.Threading.Tasks.Task LoadRecommendationsAsync(int serverId)
+    {
+        if (_dataService == null || _credentialService == null) return;
+
+        try
+        {
+            var connectionString = (ServerSelector.SelectedItem as Models.ServerConnection)?.GetConnectionString(_credentialService);
+            if (string.IsNullOrEmpty(connectionString)) return;
+
+            var data = await _dataService.GetRecommendationsAsync(serverId, connectionString, _currentServerMonthlyCost);
+            RecommendationsDataGrid.ItemsSource = data;
+            RecommendationsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            RecommendationsCountIndicator.Text = data.Count > 0 ? $"{data.Count} recommendation(s)" : "";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Failed to load recommendations: {ex.Message}");
+        }
     }
 
     private async System.Threading.Tasks.Task LoadUtilizationAsync(int serverId)
@@ -639,6 +660,12 @@ public partial class FinOpsTab : UserControl
     private async void ServerSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         await LoadPerServerDataAsync();
+    }
+
+    private async void RefreshRecommendations_Click(object sender, RoutedEventArgs e)
+    {
+        var serverId = GetSelectedServerId();
+        if (serverId != 0) await LoadRecommendationsAsync(serverId);
     }
 
     private async void RefreshUtilization_Click(object sender, RoutedEventArgs e)
