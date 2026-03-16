@@ -1535,6 +1535,15 @@ public class UtilizationEfficiencyRow
     public int CurrentWorkersCount { get; set; }
     public int CpuCount { get; set; }
     public string ProvisioningStatus { get; set; } = "";
+
+    // FinOps cost — proportional to server monthly budget
+    public decimal MonthlyCost { get; set; }
+    public decimal AnnualCost => MonthlyCost * 12m;
+
+    // Health score (Increment 6)
+    public decimal FreeSpacePct { get; set; }
+    public int HealthScore { get; set; }
+    public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
 }
 
 public class DatabaseResourceUsageRow
@@ -1577,6 +1586,9 @@ public class DatabaseSizeRow
     public decimal? VolumeTotalMb { get; set; }
     public decimal? VolumeFreeMb { get; set; }
     public string? RecoveryModel { get; set; }
+
+    // FinOps cost — proportional share of server monthly budget
+    public decimal MonthlyCostShare { get; set; }
 }
 
 public class ServerPropertyRow
@@ -1613,6 +1625,27 @@ public class ServerPropertyRow
     public string HadrDisplay => IsHadrEnabled.HasValue ? (IsHadrEnabled.Value ? "Yes" : "No") : "";
     public string ClusteredDisplay => IsClustered.HasValue ? (IsClustered.Value ? "Yes" : "No") : "";
     public string ProvisioningDisplay => ProvisioningStatus?.Replace("_", " ") ?? "";
+
+    // FinOps cost — from server config
+    public decimal MonthlyCost { get; set; }
+    public decimal AnnualCost => MonthlyCost * 12m;
+
+    // License warning (Increment 5)
+    public string? LicenseWarning
+    {
+        get
+        {
+            if (!Edition.Contains("Standard", StringComparison.OrdinalIgnoreCase)) return null;
+            var warnings = new List<string>();
+            if (CpuCount > 24) warnings.Add($"CPU: {CpuCount} cores (Standard limited to 24)");
+            if (PhysicalMemoryMb > 131072) warnings.Add($"RAM: {PhysicalMemoryMb / 1024}GB (Standard limited to 128GB)");
+            return warnings.Count > 0 ? string.Join("; ", warnings) : null;
+        }
+    }
+
+    // Health score (Increment 6)
+    public int HealthScore { get; set; }
+    public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
 }
 
 public class DatabaseSizeTrendPoint
@@ -1658,6 +1691,9 @@ public class WaitCategorySummaryRow
     public decimal PctOfTotal { get; set; }
     public string TopWaitType { get; set; } = "";
     public long TopWaitTimeMs { get; set; }
+
+    // FinOps cost — proportional share of server monthly budget based on wait time fraction
+    public decimal MonthlyCostShare { get; set; }
 }
 
 public class ExpensiveQueryRow
@@ -1669,6 +1705,43 @@ public class ExpensiveQueryRow
     public decimal AvgReadsPerExec { get; set; }
     public long Executions { get; set; }
     public string QueryPreview { get; set; } = "";
+
+    // FinOps cost — proportional share of server monthly budget based on CPU fraction
+    public decimal MonthlyCostShare { get; set; }
+}
+
+public static class FinOpsHealthCalculator
+{
+    public static int CpuScore(decimal p95Pct)
+    {
+        if (p95Pct <= 70) return (int)(100 - p95Pct * 50 / 70);
+        return (int)Math.Max(0, 50 - (p95Pct - 70) * 50 / 30);
+    }
+
+    public static int MemoryScore(decimal bufferPoolRatio)
+    {
+        if (bufferPoolRatio <= 0.30m) return 60;
+        if (bufferPoolRatio <= 0.85m) return 100;
+        if (bufferPoolRatio <= 0.95m) return (int)(100 - (bufferPoolRatio - 0.85m) * 800);
+        return (int)Math.Max(0, 20 - (bufferPoolRatio - 0.95m) * 400);
+    }
+
+    public static int StorageScore(decimal freeSpacePct)
+    {
+        if (freeSpacePct >= 30) return 100;
+        if (freeSpacePct >= 10) return (int)(50 + (freeSpacePct - 10) * 2.5m);
+        return (int)(freeSpacePct * 5);
+    }
+
+    public static int Overall(int cpu, int memory, int storage) =>
+        (int)(cpu * 0.40 + memory * 0.30 + storage * 0.30);
+
+    public static string ScoreColor(int score) => score switch
+    {
+        >= 80 => "#27AE60",
+        >= 60 => "#F39C12",
+        _ => "#E74C3C"
+    };
 }
 
 public class IndexCleanupResultRow

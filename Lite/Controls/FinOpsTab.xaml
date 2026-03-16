@@ -53,6 +53,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
@@ -250,13 +251,36 @@
                     </GroupBox>
                 </Grid>
 
+                <!-- Cost Summary Cards (Increment 4) -->
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="10,8,10,0">
+                    <Border x:Name="HealthScoreBorder" CornerRadius="4" Padding="6,2" Margin="0,0,8,0"
+                            VerticalAlignment="Center" Background="Gray" Visibility="Collapsed">
+                        <TextBlock x:Name="HealthScoreText" Text="" FontWeight="Bold" Foreground="White" FontSize="12"/>
+                    </Border>
+                    <Border Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="10,4" Margin="0,0,8,0"
+                            x:Name="ComputeCostCard" Visibility="Collapsed">
+                        <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12">
+                            <Run Text="Budget: " FontWeight="SemiBold"/>
+                            <Run x:Name="AnnualComputeCostText" Text="$0"/>
+                        </TextBlock>
+                    </Border>
+                    <Border Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="10,4"
+                            x:Name="TotalCostCard" Visibility="Collapsed">
+                        <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12" FontWeight="Bold">
+                            <Run Text="Annual: "/>
+                            <Run x:Name="AnnualTotalCostText" Text="$0"/>
+                        </TextBlock>
+                    </Border>
+                    <Border x:Name="StorageCostCard" Visibility="Collapsed"/>
+                </StackPanel>
+
                 <!-- Classification Explanation -->
-                <TextBlock x:Name="ClassificationExplanation" Grid.Row="2" Margin="12,8,10,4"
+                <TextBlock x:Name="ClassificationExplanation" Grid.Row="3" Margin="12,8,10,4"
                            VerticalAlignment="Top" TextWrapping="Wrap" FontSize="12"
                            Foreground="{DynamicResource ForegroundMutedBrush}"/>
 
                 <!-- Provisioning Trend (7-day) -->
-                <Expander Header="7-Day Provisioning Trend" IsExpanded="False" Grid.Row="3" Margin="10,4,10,0">
+                <Expander Header="7-Day Provisioning Trend" IsExpanded="False" Grid.Row="4" Margin="10,4,10,0">
                     <DataGrid x:Name="ProvisioningTrendGrid"
                               AutoGenerateColumns="False" IsReadOnly="True"
                               CanUserSortColumns="False" HeadersVisibility="Column"
@@ -301,7 +325,7 @@
                 </Expander>
 
                 <!-- Resource Summaries -->
-                <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" Margin="0,0,0,0">
+                <ScrollViewer Grid.Row="5" VerticalScrollBarVisibility="Auto" Margin="0,0,0,0">
                     <Grid x:Name="SummaryContent">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -920,6 +944,13 @@
                                         <TextBlock Text="Recovery Model" FontWeight="Bold" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Monthly Cost ($)" Binding="{Binding MonthlyCostShare, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -1557,6 +1588,14 @@
                                             </Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Est. Cost ($)" Binding="{Binding MonthlyCostShare, StringFormat='{}{0:N2}'}" Width="120"
+                                                        ToolTipService.ToolTip="Proportional share of server budget for this time window, based on wait time fraction.">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="HorizontalAlignment" Value="Right"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <TextBlock x:Name="WaitCategorySummaryNoDataMessage"
@@ -1629,6 +1668,13 @@
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
                                     <DataGridTextColumn Header="Executions" Binding="{Binding Executions, StringFormat='{}{0:N0}'}" Width="100">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="HorizontalAlignment" Value="Right"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Est. Cost ($)" Binding="{Binding MonthlyCostShare, StringFormat='{}{0:N2}'}" Width="100">
                                         <DataGridTextColumn.ElementStyle>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="HorizontalAlignment" Value="Right"/>
@@ -2000,6 +2046,39 @@
                                         <TextBlock Text="Last Updated" FontWeight="Bold" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Monthly ($)" Binding="{Binding MonthlyCost, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Annual ($)" Binding="{Binding AnnualCost, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Health" Binding="{Binding HealthScore}" Width="60">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HealthScoreColor}" Value="#27AE60">
+                                                <Setter Property="Foreground" Value="#27AE60"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding HealthScoreColor}" Value="#F39C12">
+                                                <Setter Property="Foreground" Value="#F39C12"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding HealthScoreColor}" Value="#E74C3C">
+                                                <Setter Property="Foreground" Value="#E74C3C"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="License Warning" Binding="{Binding LicenseWarning}" Width="250">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="#E74C3C"/>
+                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             <DataGridTextColumn Binding="{Binding HadrDisplay}" Width="60">
                                 <DataGridTextColumn.Header>

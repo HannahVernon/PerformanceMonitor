@@ -30,6 +30,7 @@ namespace PerformanceMonitorDashboard.Controls
         private CredentialService? _credentialService;
         private List<FinOpsServerInventory>? _serverInventoryCache;
         private DateTime _serverInventoryCacheTime;
+        private decimal _currentServerMonthlyCost;
 
         public FinOpsContent()
         {
@@ -86,6 +87,7 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var connectionString = server.GetConnectionString(_credentialService);
                 _databaseService = new DatabaseService(connectionString);
+                _currentServerMonthlyCost = server.MonthlyCostUsd;
                 await RefreshDataAsync();
             }
         }
@@ -128,6 +130,18 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var efficiency = await _databaseService.GetFinOpsUtilizationEfficiencyAsync();
+
+                if (efficiency != null)
+                {
+                    efficiency.MonthlyCost = _currentServerMonthlyCost;
+
+                    // Compute free space % for health score from database sizes
+                    var dbSizes = await _databaseService.GetFinOpsDatabaseSizeStatsAsync();
+                    var totalStorageMb = dbSizes.Sum(d => d.TotalSizeMb);
+                    var totalFreeMb = dbSizes.Sum(d => d.FreeSpaceMb);
+                    efficiency.FreeSpacePct = totalStorageMb > 0 ? totalFreeMb / totalStorageMb * 100m : 100m;
+                }
+
                 UpdateUtilizationSummary(efficiency);
                 NoUtilizationMessage.Visibility = efficiency == null ? Visibility.Visible : Visibility.Collapsed;
                 SummaryContent.Visibility = efficiency == null ? Visibility.Collapsed : Visibility.Visible;
@@ -240,6 +254,31 @@ namespace PerformanceMonitorDashboard.Controls
                     : $"Buffer pool uses {bpPct:N0}% of physical RAM and memory ratio is {efficiency.MemoryRatio:N2} (threshold: 0.95). Memory pressure is high.",
                 _ => ""
             };
+
+            /* Cost summary cards — show if monthly cost is configured */
+            if (efficiency.MonthlyCost > 0)
+            {
+                AnnualComputeCostText.Text = $"${efficiency.MonthlyCost:N0}/mo";
+                AnnualTotalCostText.Text = $"${efficiency.AnnualCost:N0}/yr";
+                ComputeCostCard.Visibility = Visibility.Visible;
+                TotalCostCard.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                ComputeCostCard.Visibility = Visibility.Collapsed;
+                TotalCostCard.Visibility = Visibility.Collapsed;
+            }
+            StorageCostCard.Visibility = Visibility.Collapsed;
+
+            /* Health score */
+            var bpRatio = efficiency.PhysicalMemoryMb > 0 ? (decimal)efficiency.BufferPoolMb / efficiency.PhysicalMemoryMb : 0m;
+            var cpuScore = FinOpsHealthCalculator.CpuScore(efficiency.P95CpuPct);
+            var memScore = FinOpsHealthCalculator.MemoryScore(bpRatio);
+            var storScore = FinOpsHealthCalculator.StorageScore(efficiency.FreeSpacePct);
+            efficiency.HealthScore = FinOpsHealthCalculator.Overall(cpuScore, memScore, storScore);
+            HealthScoreText.Text = $"Health: {efficiency.HealthScore}";
+            HealthScoreBorder.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(efficiency.HealthScoreColor));
+            HealthScoreBorder.Visibility = Visibility.Visible;
         }
 
         private static void SetBar(Border bar, ColumnDefinition filled, ColumnDefinition empty, double pct)
@@ -401,6 +440,19 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var hoursBack = GetWaitStatsHoursBack();
                 var data = await _databaseService.GetFinOpsWaitCategorySummaryAsync(hoursBack);
+
+                // Compute proportional cost shares — scaled to time window
+                if (_currentServerMonthlyCost > 0 && data.Count > 0)
+                {
+                    var windowBudget = _currentServerMonthlyCost * (hoursBack / 730.0m);
+                    var totalWait = data.Sum(w => w.TotalWaitTimeMs);
+                    if (totalWait > 0)
+                    {
+                        foreach (var w in data)
+                            w.MonthlyCostShare = (w.TotalWaitTimeMs / (decimal)totalWait) * windowBudget;
+                    }
+                }
+
                 WaitCategorySummaryDataGrid.ItemsSource = data;
                 WaitCategorySummaryNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }
@@ -422,6 +474,19 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var hoursBack = GetExpensiveQueriesHoursBack();
                 var data = await _databaseService.GetFinOpsExpensiveQueriesAsync(hoursBack);
+
+                // Compute proportional cost shares — scaled to time window
+                if (_currentServerMonthlyCost > 0 && data.Count > 0)
+                {
+                    var windowBudget = _currentServerMonthlyCost * (hoursBack / 730.0m);
+                    var totalCpu = data.Sum(q => q.TotalCpuMs);
+                    if (totalCpu > 0)
+                    {
+                        foreach (var q in data)
+                            q.MonthlyCostShare = (q.TotalCpuMs / (decimal)totalCpu) * windowBudget;
+                    }
+                }
+
                 ExpensiveQueriesDataGrid.ItemsSource = data;
                 ExpensiveQueriesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 ExpensiveQueriesCountIndicator.Text = data.Count > 0 ? $"{data.Count} query(s)" : "";
@@ -512,6 +577,18 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetFinOpsDatabaseSizeStatsAsync();
+
+                // Compute proportional cost shares
+                if (_currentServerMonthlyCost > 0 && data.Count > 0)
+                {
+                    var totalMb = data.Sum(d => d.TotalSizeMb);
+                    if (totalMb > 0)
+                    {
+                        foreach (var d in data)
+                            d.MonthlyCostShare = (d.TotalSizeMb / totalMb) * _currentServerMonthlyCost;
+                    }
+                }
+
                 DatabaseSizesDataGrid.ItemsSource = data;
                 DatabaseSizesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 DbSizeCountIndicator.Text = data.Count > 0 ? $"{data.Count} file(s)" : "";
@@ -574,6 +651,7 @@ namespace PerformanceMonitorDashboard.Controls
                         // Step 1: Query live server properties (works from any DB context)
                         var item = await DatabaseService.GetServerPropertiesLiveAsync(connStr);
                         item.ServerName = server.DisplayName;
+                        item.MonthlyCost = server.MonthlyCostUsd;
 
                         // Step 2: Try to augment with collected metrics from PerformanceMonitor DB
                         try
@@ -601,6 +679,15 @@ namespace PerformanceMonitorDashboard.Controls
 
                 var results = await Task.WhenAll(tasks);
                 var allItems = results.Where(r => r != null).Cast<FinOpsServerInventory>().ToList();
+
+                // Compute health scores for each server
+                foreach (var item in allItems)
+                {
+                    var cpuScore = FinOpsHealthCalculator.CpuScore(item.AvgCpuPct ?? 0m);
+                    var memScore = 80; // Default — we don't have buffer pool ratio in inventory
+                    var storScore = FinOpsHealthCalculator.StorageScore(50); // Default — no file-level free space in inventory
+                    item.HealthScore = FinOpsHealthCalculator.Overall(cpuScore, memScore, storScore);
+                }
 
                 _serverInventoryCache = allItems;
                 _serverInventoryCacheTime = DateTime.Now;

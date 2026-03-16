@@ -63,6 +63,12 @@ namespace PerformanceMonitorDashboard.Models
         public bool TrustServerCertificate { get; set; } = false;
 
         /// <summary>
+        /// Monthly cost of this server in USD, used for FinOps cost attribution.
+        /// Set to 0 to hide cost columns. All FinOps costs are proportional to this budget.
+        /// </summary>
+        public decimal MonthlyCostUsd { get; set; } = 0m;
+
+        /// <summary>
         /// Display-only property for showing authentication type in UI.
         /// </summary>
         [JsonIgnore]

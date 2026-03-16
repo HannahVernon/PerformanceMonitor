@@ -820,6 +820,14 @@ OPTION(MAXDOP 1, RECOMPILE);";
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 WITH
+    boundaries AS
+    (
+        SELECT
+            latest_time  = MAX(collection_time),
+            earliest_time = MIN(collection_time),
+            days_of_data = DATEDIFF(DAY, MIN(collection_time), MAX(collection_time))
+        FROM collect.database_size_stats
+    ),
     latest AS
     (
         SELECT
@@ -829,8 +837,8 @@ WITH
         FROM collect.database_size_stats
         WHERE collection_time =
         (
-            SELECT MAX(collection_time)
-            FROM collect.database_size_stats
+            SELECT latest_time
+            FROM boundaries
         )
         GROUP BY
             database_name
@@ -866,38 +874,55 @@ WITH
         )
         GROUP BY
             database_name
+    ),
+    oldest AS
+    (
+        SELECT
+            database_name,
+            size_mb =
+                SUM(total_size_mb)
+        FROM collect.database_size_stats
+        WHERE collection_time =
+        (
+            SELECT earliest_time
+            FROM boundaries
+        )
+        GROUP BY
+            database_name
     )
 SELECT
     l.database_name,
     l.current_size_mb,
-    p7.size_mb,
-    p30.size_mb,
+    COALESCE(p7.size_mb, o.size_mb),
+    COALESCE(p30.size_mb, p7.size_mb, o.size_mb),
     growth_7d_mb =
-        l.current_size_mb - ISNULL(p7.size_mb, l.current_size_mb),
+        l.current_size_mb - COALESCE(p7.size_mb, o.size_mb, l.current_size_mb),
     growth_30d_mb =
-        l.current_size_mb - ISNULL(p30.size_mb, l.current_size_mb),
+        l.current_size_mb - COALESCE(p30.size_mb, p7.size_mb, o.size_mb, l.current_size_mb),
     daily_growth_rate_mb =
         CASE
-            WHEN p30.size_mb IS NOT NULL
-            THEN (l.current_size_mb - p30.size_mb) / 30.0
-            WHEN p7.size_mb IS NOT NULL
-            THEN (l.current_size_mb - p7.size_mb) / 7.0
+            WHEN b.days_of_data >= 1
+            THEN (l.current_size_mb - COALESCE(o.size_mb, l.current_size_mb)) / CAST(b.days_of_data AS decimal(10,1))
             ELSE 0
         END,
     growth_pct_30d =
         CASE
-            WHEN p30.size_mb IS NOT NULL
-            AND  p30.size_mb > 0
-            THEN (l.current_size_mb - p30.size_mb) * 100.0 / p30.size_mb
+            WHEN COALESCE(p30.size_mb, p7.size_mb, o.size_mb) IS NOT NULL
+            AND  COALESCE(p30.size_mb, p7.size_mb, o.size_mb) > 0
+            THEN (l.current_size_mb - COALESCE(p30.size_mb, p7.size_mb, o.size_mb)) * 100.0
+                 / COALESCE(p30.size_mb, p7.size_mb, o.size_mb)
             ELSE 0
         END
 FROM latest AS l
+CROSS JOIN boundaries AS b
 LEFT JOIN past_7d AS p7
   ON p7.database_name = l.database_name
 LEFT JOIN past_30d AS p30
   ON p30.database_name = l.database_name
+LEFT JOIN oldest AS o
+  ON o.database_name = l.database_name
 ORDER BY
-    l.current_size_mb - ISNULL(p30.size_mb, l.current_size_mb) DESC
+    l.current_size_mb - COALESCE(p30.size_mb, p7.size_mb, o.size_mb, l.current_size_mb) DESC
 OPTION(MAXDOP 1, RECOMPILE);";
 
             using var command = new SqlCommand(query, connection);
@@ -1643,6 +1668,15 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public int BufferPoolMb { get; set; }
         public int TotalServerMemoryMb { get; set; }
         public string ProvisioningStatus { get; set; } = "";
+
+        // FinOps cost — proportional to server monthly budget
+        public decimal MonthlyCost { get; set; }
+        public decimal AnnualCost => MonthlyCost * 12m;
+
+        // Health score (Increment 6)
+        public decimal FreeSpacePct { get; set; }
+        public int HealthScore { get; set; }
+        public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
     }
 
     public class FinOpsApplicationResourceUsage
@@ -1685,6 +1719,27 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string ProvisioningDisplay => ProvisioningStatus?.Replace("_", " ") ?? "";
         public string HadrDisplay => IsHadrEnabled.HasValue ? (IsHadrEnabled.Value ? "Yes" : "No") : "";
         public string ClusteredDisplay => IsClustered.HasValue ? (IsClustered.Value ? "Yes" : "No") : "";
+
+        // FinOps cost — from server config
+        public decimal MonthlyCost { get; set; }
+        public decimal AnnualCost => MonthlyCost * 12m;
+
+        // License warning (Increment 5)
+        public string? LicenseWarning
+        {
+            get
+            {
+                if (!Edition.Contains("Standard", StringComparison.OrdinalIgnoreCase)) return null;
+                var warnings = new List<string>();
+                if (CpuCount > 24) warnings.Add($"CPU: {CpuCount} cores (Standard limited to 24)");
+                if (PhysicalMemoryMb > 131072) warnings.Add($"RAM: {PhysicalMemoryMb / 1024}GB (Standard limited to 128GB)");
+                return warnings.Count > 0 ? string.Join("; ", warnings) : null;
+            }
+        }
+
+        // Health score (Increment 6)
+        public int HealthScore { get; set; }
+        public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
     }
 
     public class FinOpsDatabaseSizeStats
@@ -1708,6 +1763,9 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string VolumeMountPoint { get; set; } = "";
         public decimal VolumeTotalMb { get; set; }
         public decimal VolumeFreeMb { get; set; }
+
+        // FinOps cost — proportional share of server monthly budget
+        public decimal MonthlyCostShare { get; set; }
     }
 
     public class FinOpsTopResourceConsumer
@@ -1773,6 +1831,9 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public decimal PctOfTotal { get; set; }
         public string TopWaitType { get; set; } = "";
         public long TopWaitTimeMs { get; set; }
+
+        // FinOps cost — proportional share of server monthly budget based on wait time fraction
+        public decimal MonthlyCostShare { get; set; }
     }
 
     public class FinOpsExpensiveQuery
@@ -1784,6 +1845,9 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public decimal AvgReadsPerExec { get; set; }
         public long Executions { get; set; }
         public string QueryPreview { get; set; } = "";
+
+        // FinOps cost — proportional share of server monthly budget based on CPU fraction
+        public decimal MonthlyCostShare { get; set; }
     }
 
     public class IndexCleanupResult
@@ -1830,6 +1894,40 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public long ForcedGrants { get; set; }
         public string DayDisplay => Day.ToString("ddd MM/dd");
         public decimal WastedMb => AvgGrantedMb - AvgUsedMb;
+    }
+
+    public static class FinOpsHealthCalculator
+    {
+        public static int CpuScore(decimal p95Pct)
+        {
+            if (p95Pct <= 70) return (int)(100 - p95Pct * 50 / 70);
+            return (int)Math.Max(0, 50 - (p95Pct - 70) * 50 / 30);
+        }
+
+        public static int MemoryScore(decimal bufferPoolRatio)
+        {
+            if (bufferPoolRatio <= 0.30m) return 60;
+            if (bufferPoolRatio <= 0.85m) return 100;
+            if (bufferPoolRatio <= 0.95m) return (int)(100 - (bufferPoolRatio - 0.85m) * 800);
+            return (int)Math.Max(0, 20 - (bufferPoolRatio - 0.95m) * 400);
+        }
+
+        public static int StorageScore(decimal freeSpacePct)
+        {
+            if (freeSpacePct >= 30) return 100;
+            if (freeSpacePct >= 10) return (int)(50 + (freeSpacePct - 10) * 2.5m);
+            return (int)(freeSpacePct * 5);
+        }
+
+        public static int Overall(int cpu, int memory, int storage) =>
+            (int)(cpu * 0.40 + memory * 0.30 + storage * 0.30);
+
+        public static string ScoreColor(int score) => score switch
+        {
+            >= 80 => "#27AE60",
+            >= 60 => "#F39C12",
+            _ => "#E74C3C"
+        };
     }
 
     public class IndexCleanupSummary
