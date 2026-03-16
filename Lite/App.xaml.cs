@@ -8,6 +8,7 @@
 
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -18,6 +19,9 @@ namespace PerformanceMonitorLite;
 
 public partial class App : Application
 {
+    [DllImport("shell32.dll", SetLastError = true)]
+    private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
+
     private const string MutexName = "PerformanceMonitorLite_SingleInstance";
     private Mutex? _singleInstanceMutex;
     private bool _ownsMutex;
@@ -60,10 +64,18 @@ public partial class App : Application
     public static int AlertPoisonWaitThresholdMs { get; set; } = 500;
     public static bool AlertLongRunningQueryEnabled { get; set; } = true;
     public static int AlertLongRunningQueryThresholdMinutes { get; set; } = 30;
+    public static int AlertLongRunningQueryMaxResults { get; set; } = 5;
+    public static bool AlertLongRunningQueryExcludeSpServerDiagnostics { get; set; } = true;
+    public static bool AlertLongRunningQueryExcludeWaitFor { get; set; } = true;
+    public static bool AlertLongRunningQueryExcludeBackups { get; set; } = true;
+    public static bool AlertLongRunningQueryExcludeMiscWaits { get; set; } = true;
+    public static List<string> AlertExcludedDatabases { get; set; } = new();
     public static bool AlertTempDbSpaceEnabled { get; set; } = true;
     public static int AlertTempDbSpaceThresholdPercent { get; set; } = 80;
     public static bool AlertLongRunningJobEnabled { get; set; } = true;
     public static int AlertLongRunningJobMultiplier { get; set; } = 3;
+    public static int AlertCooldownMinutes { get; set; } = 5;  // Tray notification cooldown between repeated alerts
+    public static int EmailCooldownMinutes { get; set; } = 15; // Email cooldown between repeated alerts
 
     /* Connection settings */
     public static int ConnectionTimeoutSeconds { get; set; } = 5;
@@ -79,6 +91,9 @@ public partial class App : Application
 
     /* System tray settings */
     public static bool MinimizeToTray { get; set; } = true;
+
+    /* Time display mode ("ServerTime", "LocalTime", "UTC") */
+    public static string TimeDisplayMode { get; set; } = "ServerTime";
 
     /* Color theme ("Dark" or "Light") */
     public static string ColorTheme { get; set; } = "Dark";
@@ -133,6 +148,7 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        SetCurrentProcessExplicitAppUserModelID("DarlingData.PerformanceMonitor.Lite");
 
         // Check for existing instance
         _singleInstanceMutex = new Mutex(true, MutexName, out _ownsMutex);
@@ -173,6 +189,8 @@ public partial class App : Application
         // Initialize logging
         var logDirectory = Path.Combine(exeDirectory, "logs");
         AppLogger.Initialize(logDirectory);
+        Helpers.MethodProfiler.Initialize(logDirectory);
+        Helpers.QueryLogger.Initialize(logDirectory);
         AppLogger.Info("App", $"Starting PerformanceMonitorLite v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version}");
         AppLogger.Info("App", $"Data directory: {DataDirectory}");
 
@@ -234,10 +252,26 @@ public partial class App : Application
             if (root.TryGetProperty("alert_poison_wait_threshold_ms", out v)) AlertPoisonWaitThresholdMs = v.GetInt32();
             if (root.TryGetProperty("alert_long_running_query_enabled", out v)) AlertLongRunningQueryEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_threshold_minutes", out v)) AlertLongRunningQueryThresholdMinutes = v.GetInt32();
+            if (root.TryGetProperty("alert_long_running_query_max_results", out v)) AlertLongRunningQueryMaxResults = (int)Math.Clamp(v.GetInt64(), 1, 1000);
+            if (root.TryGetProperty("alert_long_running_query_exclude_sp_server_diagnostics", out v)) AlertLongRunningQueryExcludeSpServerDiagnostics = v.GetBoolean();
+            if (root.TryGetProperty("alert_long_running_query_exclude_waitfor", out v)) AlertLongRunningQueryExcludeWaitFor = v.GetBoolean();
+            if (root.TryGetProperty("alert_long_running_query_exclude_backups", out v)) AlertLongRunningQueryExcludeBackups = v.GetBoolean();
+            if (root.TryGetProperty("alert_long_running_query_exclude_misc_waits", out v)) AlertLongRunningQueryExcludeMiscWaits = v.GetBoolean();
+            if (root.TryGetProperty("alert_excluded_databases", out v) && v.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                AlertExcludedDatabases = new List<string>();
+                foreach (var elem in v.EnumerateArray())
+                {
+                    var db = elem.GetString();
+                    if (!string.IsNullOrWhiteSpace(db)) AlertExcludedDatabases.Add(db);
+                }
+            }
             if (root.TryGetProperty("alert_tempdb_space_enabled", out v)) AlertTempDbSpaceEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_tempdb_space_threshold_percent", out v)) AlertTempDbSpaceThresholdPercent = v.GetInt32();
             if (root.TryGetProperty("alert_long_running_job_enabled", out v)) AlertLongRunningJobEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_job_multiplier", out v)) AlertLongRunningJobMultiplier = v.GetInt32();
+            if (root.TryGetProperty("alert_cooldown_minutes", out v)) AlertCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
+            if (root.TryGetProperty("email_cooldown_minutes", out v)) EmailCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
 
             /* Connection settings */
             if (root.TryGetProperty("connection_timeout_seconds", out v))
@@ -255,6 +289,18 @@ public partial class App : Application
 
             /* System tray settings */
             if (root.TryGetProperty("minimize_to_tray", out v)) MinimizeToTray = v.GetBoolean();
+
+            /* Time display mode */
+            if (root.TryGetProperty("time_display_mode", out v))
+            {
+                var t = v.GetString();
+                if (t == "ServerTime" || t == "LocalTime" || t == "UTC")
+                {
+                    TimeDisplayMode = t;
+                    if (Enum.TryParse<Helpers.TimeDisplayMode>(t, out var tdm))
+                        Services.ServerTimeHelper.CurrentDisplayMode = tdm;
+                }
+            }
 
             /* Color theme */
             if (root.TryGetProperty("color_theme", out v))
@@ -294,6 +340,16 @@ public partial class App : Application
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
+        /* Silently swallow Hardcodet TrayToolTip race condition (issue #422).
+           The crash occurs in Popup.CreateWindow when showing the custom visual tooltip
+           and is harmless — the tooltip simply doesn't show that one time. */
+        if (IsTrayToolTipCrash(e.Exception))
+        {
+            AppLogger.Warn("Dispatcher", "Suppressed Hardcodet TrayToolTip crash (issue #422)");
+            e.Handled = true;
+            return;
+        }
+
         AppLogger.Error("Dispatcher", "Unhandled exception", e.Exception);
         AppLogger.Flush();
 
@@ -312,6 +368,16 @@ public partial class App : Application
         AppLogger.Error("Task", "Unobserved task exception", e.Exception);
         AppLogger.Flush();
         e.SetObserved(); /* Prevent process termination */
+    }
+
+    /// <summary>
+    /// Detects the Hardcodet TrayToolTip race condition crash (issue #422).
+    /// </summary>
+    private static bool IsTrayToolTipCrash(Exception ex)
+    {
+        return ex is System.ArgumentException
+            && ex.Message.Contains("VisualTarget")
+            && ex.StackTrace?.Contains("TaskbarIcon") == true;
     }
 
     private static string FormatExceptionDetails(Exception? ex)

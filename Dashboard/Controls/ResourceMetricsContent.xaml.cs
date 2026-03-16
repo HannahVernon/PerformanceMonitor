@@ -199,7 +199,8 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.SetupChartContextMenu(PerfmonCountersChart, "Perfmon_Counters", "collect.perfmon_stats");
 
             // Wait Stats Detail chart
-            TabHelpers.SetupChartContextMenu(WaitStatsDetailChart, "Wait_Stats_Detail", "collect.wait_stats");
+            var waitStatsMenu = TabHelpers.SetupChartContextMenu(WaitStatsDetailChart, "Wait_Stats_Detail", "collect.wait_stats");
+            AddWaitDrillDownMenuItem(WaitStatsDetailChart, waitStatsMenu);
         }
 
         /// <summary>
@@ -1813,6 +1814,48 @@ namespace PerformanceMonitorDashboard.Controls
             await UpdateWaitStatsDetailChartAsync();
         }
 
+        private void AddWaitDrillDownMenuItem(ScottPlot.WPF.WpfPlot chart, ContextMenu contextMenu)
+        {
+            contextMenu.Items.Insert(0, new Separator());
+            var drillDownItem = new MenuItem { Header = "Show Queries With This Wait" };
+            drillDownItem.Click += ShowQueriesForWaitType_Click;
+            contextMenu.Items.Insert(0, drillDownItem);
+
+            contextMenu.Opened += (s, _) =>
+            {
+                var pos = System.Windows.Input.Mouse.GetPosition(chart);
+                var nearest = _waitStatsHover?.GetNearestSeries(pos);
+                if (nearest.HasValue)
+                {
+                    drillDownItem.Tag = (nearest.Value.Label, nearest.Value.Time);
+                    drillDownItem.Header = $"Show Queries With {nearest.Value.Label.Replace("_", "__")}";
+                    drillDownItem.IsEnabled = true;
+                }
+                else
+                {
+                    drillDownItem.Tag = null;
+                    drillDownItem.Header = "Show Queries With This Wait";
+                    drillDownItem.IsEnabled = false;
+                }
+            };
+        }
+
+        private void ShowQueriesForWaitType_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem) return;
+            if (menuItem.Tag is not ValueTuple<string, DateTime> tag) return;
+            if (_databaseService == null) return;
+
+            // ±15 minute window around the clicked point
+            var fromDate = tag.Item2.AddMinutes(-15);
+            var toDate = tag.Item2.AddMinutes(15);
+
+            var window = new WaitDrillDownWindow(
+                _databaseService, tag.Item1, 1, fromDate, toDate);
+            window.Owner = Window.GetWindow(this);
+            window.ShowDialog();
+        }
+
         private void WaitStatsMetric_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_allWaitStatsDetailData != null)
@@ -1839,7 +1882,7 @@ namespace PerformanceMonitorDashboard.Controls
             WaitTypeCountText.Text = $"{count} / 30 selected";
             WaitTypeCountText.Foreground = count >= 30
                 ? new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E57373")!)
-                : (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush");
+                : (System.Windows.Media.Brush)FindResource("ForegroundBrush");
         }
 
         private void WaitTypeSearch_TextChanged(object sender, TextChangedEventArgs e)

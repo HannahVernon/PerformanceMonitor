@@ -43,7 +43,7 @@ public partial class AddServerDialog : Window
     /// </summary>
     public AddServerDialog(ServerManager serverManager, ServerConnection existing) : this(serverManager)
     {
-        Title = "Edit Server";
+        Title = "Edit SQL Server";
         ServerNameBox.Text = existing.ServerName;
         DisplayNameBox.Text = existing.DisplayName;
         EnabledCheckBox.IsChecked = existing.IsEnabled;
@@ -59,6 +59,7 @@ public partial class AddServerDialog : Window
         FavoriteCheckBox.IsChecked = existing.IsFavorite;
         DescriptionTextBox.Text = existing.Description ?? "";
         DatabaseNameBox.Text = existing.DatabaseName ?? "";
+        ReadOnlyIntentCheckBox.IsChecked = existing.ReadOnlyIntent;
 
         // Set authentication mode
         if (existing.AuthenticationType == AuthenticationTypes.EntraMFA)
@@ -140,7 +141,10 @@ public partial class AddServerDialog : Window
             ApplicationName = "PerformanceMonitorLite",
             ConnectTimeout = 10,
             TrustServerCertificate = TrustCertCheckBox.IsChecked == true,
-            Encrypt = ParseEncryptOption(GetSelectedEncryptMode())
+            Encrypt = ParseEncryptOption(GetSelectedEncryptMode()),
+            ApplicationIntent = ReadOnlyIntentCheckBox.IsChecked == true
+                ? ApplicationIntent.ReadOnly
+                : ApplicationIntent.ReadWrite
         };
 
         if (WindowsAuthRadio.IsChecked == true)
@@ -330,7 +334,7 @@ public partial class AddServerDialog : Window
 
         try
         {
-            if (AddedServer != null && Title == "Edit Server")
+            if (AddedServer != null && Title == "Edit SQL Server")
             {
                 /* Editing existing server */
                 AddedServer.ServerName = serverName;
@@ -342,6 +346,7 @@ public partial class AddServerDialog : Window
                 AddedServer.IsFavorite = FavoriteCheckBox.IsChecked == true;
                 AddedServer.Description = DescriptionTextBox.Text.Trim();
                 AddedServer.DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim();
+                AddedServer.ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true;
 
                 _serverManager.UpdateServer(AddedServer, username, password);
             }
@@ -358,7 +363,8 @@ public partial class AddServerDialog : Window
                     EncryptMode = GetSelectedEncryptMode(),
                     IsFavorite = FavoriteCheckBox.IsChecked == true,
                     Description = DescriptionTextBox.Text.Trim(),
-                    DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim()
+                    DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim(),
+                    ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true
                 };
 
                 _serverManager.AddServer(AddedServer, username, password);

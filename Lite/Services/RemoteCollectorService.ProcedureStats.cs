@@ -76,9 +76,10 @@ CROSS APPLY
     FROM sys.dm_exec_plan_attributes(s.plan_handle) AS pa
     WHERE pa.attribute = N''dbid''
 ) AS pa
-LEFT JOIN sys.databases AS d
+INNER JOIN sys.databases AS d
   ON pa.dbid = d.database_id
-WHERE pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
+WHERE d.state = 0
+AND   pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
 AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
 
 UNION ALL
@@ -130,9 +131,10 @@ CROSS APPLY
     FROM sys.dm_exec_plan_attributes(s.plan_handle) AS pa
     WHERE pa.attribute = N''dbid''
 ) AS pa
-LEFT JOIN sys.databases AS d
+INNER JOIN sys.databases AS d
   ON pa.dbid = d.database_id
-WHERE pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
+WHERE d.state = 0
+AND   pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
 AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
 
 UNION ALL
@@ -171,9 +173,10 @@ CROSS APPLY
     FROM sys.dm_exec_plan_attributes(s.plan_handle) AS pa
     WHERE pa.attribute = N''dbid''
 ) AS pa
-LEFT JOIN sys.databases AS d
+INNER JOIN sys.databases AS d
   ON pa.dbid = d.database_id
-WHERE pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
+WHERE d.state = 0
+AND   pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
 AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
 ) AS combined
 ORDER BY total_elapsed_time DESC
@@ -275,19 +278,19 @@ OPTION(RECOMPILE);";
                     /* Delta key: plan_handle to prevent cross-contamination
                        when multiple plans exist for the same object */
                     var deltaKey = planHandle ?? $"{dbName}.{schemaName}.{objectName}";
-                    var deltaExec = _deltaCalculator.CalculateDelta(serverId, "proc_stats_exec", deltaKey, execCount);
-                    var deltaWorker = _deltaCalculator.CalculateDelta(serverId, "proc_stats_worker", deltaKey, workerTime);
-                    var deltaElapsed = _deltaCalculator.CalculateDelta(serverId, "proc_stats_elapsed", deltaKey, elapsedTime);
-                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads);
-                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites);
-                    var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads);
+                    var deltaExec = _deltaCalculator.CalculateDelta(serverId, "proc_stats_exec", deltaKey, execCount, baselineOnly: true);
+                    var deltaWorker = _deltaCalculator.CalculateDelta(serverId, "proc_stats_worker", deltaKey, workerTime, baselineOnly: true);
+                    var deltaElapsed = _deltaCalculator.CalculateDelta(serverId, "proc_stats_elapsed", deltaKey, elapsedTime, baselineOnly: true);
+                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads, baselineOnly: true);
+                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites, baselineOnly: true);
+                    var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads, baselineOnly: true);
 
                     /* Appender column order must match DuckDB table definition exactly */
                     var row = appender.CreateRow();
                     row.AppendValue(GenerateCollectionId())                                     /* collection_id */
                        .AppendValue(collectionTime)                                             /* collection_time */
                        .AppendValue(serverId)                                                   /* server_id */
-                       .AppendValue(server.ServerName)                                          /* server_name */
+                       .AppendValue(GetServerNameForStorage(server))                                          /* server_name */
                        .AppendValue(dbName)                                                     /* database_name */
                        .AppendValue(schemaName)                                                 /* schema_name */
                        .AppendValue(objectName)                                                 /* object_name */

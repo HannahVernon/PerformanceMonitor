@@ -1,4 +1,4 @@
-﻿/*
+/*
 Copyright 2026 Darling Data, LLC
 https://www.erikdarling.com/
 
@@ -20,9 +20,10 @@ GO
 
 /*
 Procedure, trigger, and function stats collector
-Collects execution statistics from sys.dm_exec_procedure_stats, 
+Collects execution statistics from sys.dm_exec_procedure_stats,
 sys.dm_exec_trigger_stats, and sys.dm_exec_function_stats
-Includes execution plans for performance analysis
+LOB columns are compressed with COMPRESS() before storage
+Unchanged rows are skipped via row_hash deduplication
 */
 
 IF OBJECT_ID(N'collect.procedure_stats_collector', N'P') IS NULL
@@ -48,7 +49,9 @@ BEGIN
         @server_start_time datetime2(7),
         @last_collection_time datetime2(7) = NULL,
         @frequency_minutes integer = NULL,
-        @cutoff_time datetime2(7) = NULL;
+        @cutoff_time datetime2(7) = NULL,
+        @collect_query bit = 1,
+        @collect_plan bit = 1;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -107,16 +110,25 @@ BEGIN
         END;
 
         /*
-        First run detection - collect last 1 hour of procedures if this is the first execution
+        Read collection flags for optional plan collection
+        */
+        SELECT
+            @collect_query = cs.collect_query,
+            @collect_plan = cs.collect_plan
+        FROM config.collection_schedule AS cs
+        WHERE cs.collector_name = N'procedure_stats_collector';
+
+        /*
+        First run detection - collect all procedures if this is the first execution
         */
         IF NOT EXISTS (SELECT 1/0 FROM collect.procedure_stats)
         AND NOT EXISTS (SELECT 1/0 FROM config.collection_log WHERE collector_name = N'procedure_stats_collector')
         BEGIN
-            SET @cutoff_time = DATEADD(HOUR, -1, SYSDATETIME());
+            SET @cutoff_time = CONVERT(datetime2(7), '19000101');
 
             IF @debug = 1
             BEGIN
-                RAISERROR(N'First run detected - collecting last 1 hour of procedure stats', 0, 1) WITH NOWAIT;
+                RAISERROR(N'First run detected - collecting all procedures from sys.dm_exec_procedure_stats', 0, 1) WITH NOWAIT;
             END;
         END;
         ELSE
@@ -154,22 +166,48 @@ BEGIN
         END;
 
         /*
-        Read collection flag for plans
+        Stage 1: Collect procedure, trigger, and function statistics into temp table
+        Temp table stays nvarchar(max) — COMPRESS happens at INSERT to permanent table
         */
-        DECLARE
-            @collect_plan bit = 1;
+        CREATE TABLE
+            #procedure_stats_staging
+        (
+            server_start_time datetime2(7) NOT NULL,
+            object_type nvarchar(20) NOT NULL,
+            database_name sysname NOT NULL,
+            object_id integer NOT NULL,
+            object_name sysname NULL,
+            schema_name sysname NULL,
+            type_desc nvarchar(60) NULL,
+            sql_handle varbinary(64) NOT NULL,
+            plan_handle varbinary(64) NOT NULL,
+            cached_time datetime2(7) NOT NULL,
+            last_execution_time datetime2(7) NOT NULL,
+            execution_count bigint NOT NULL,
+            total_worker_time bigint NOT NULL,
+            min_worker_time bigint NOT NULL,
+            max_worker_time bigint NOT NULL,
+            total_elapsed_time bigint NOT NULL,
+            min_elapsed_time bigint NOT NULL,
+            max_elapsed_time bigint NOT NULL,
+            total_logical_reads bigint NOT NULL,
+            min_logical_reads bigint NOT NULL,
+            max_logical_reads bigint NOT NULL,
+            total_physical_reads bigint NOT NULL,
+            min_physical_reads bigint NOT NULL,
+            max_physical_reads bigint NOT NULL,
+            total_logical_writes bigint NOT NULL,
+            min_logical_writes bigint NOT NULL,
+            max_logical_writes bigint NOT NULL,
+            total_spills bigint NULL,
+            min_spills bigint NULL,
+            max_spills bigint NULL,
+            query_plan_text nvarchar(max) NULL,
+            row_hash binary(32) NULL
+        );
 
-        SELECT
-            @collect_plan = cs.collect_plan
-        FROM config.collection_schedule AS cs
-        WHERE cs.collector_name = N'procedure_stats_collector';
-
-        /*
-        Collect procedure, trigger, and function statistics
-        Single query with UNION ALL to collect from all three DMVs
-        */
         INSERT INTO
-            collect.procedure_stats
+            #procedure_stats_staging
         (
             server_start_time,
             object_type,
@@ -250,14 +288,15 @@ BEGIN
             ) AS tqp
         OUTER APPLY
         (
-            SELECT 
+            SELECT
                 dbid = CONVERT(integer, pa.value)
             FROM sys.dm_exec_plan_attributes(ps.plan_handle) AS pa
             WHERE pa.attribute = N'dbid'
         ) AS pa
-        LEFT JOIN sys.databases AS d
+        INNER JOIN sys.databases AS d
           ON pa.dbid = d.database_id
         WHERE ps.last_execution_time >= @cutoff_time
+        AND   d.state = 0 /*ONLINE only — skip RESTORING databases (mirroring/AG secondary)*/
         AND   pa.dbid NOT IN
         (
             1, 3, 4, 32761, 32767,
@@ -423,9 +462,10 @@ BEGIN
             FROM sys.dm_exec_plan_attributes(ts.plan_handle) AS pa
             WHERE pa.attribute = N'dbid'
         ) AS pa
-        LEFT JOIN sys.databases AS d
+        INNER JOIN sys.databases AS d
           ON pa.dbid = d.database_id
         WHERE ts.last_execution_time >= @cutoff_time
+        AND   d.state = 0 /*ONLINE only — skip RESTORING databases (mirroring/AG secondary)*/
         AND   pa.dbid NOT IN
         (
             1, 3, 4, 32761, 32767,
@@ -481,14 +521,15 @@ BEGIN
             ) AS tqp
         OUTER APPLY
         (
-            SELECT 
+            SELECT
                 dbid = CONVERT(integer, pa.value)
             FROM sys.dm_exec_plan_attributes(fs.plan_handle) AS pa
             WHERE pa.attribute = N'dbid'
         ) AS pa
-        LEFT JOIN sys.databases AS d
+        INNER JOIN sys.databases AS d
           ON pa.dbid = d.database_id
         WHERE fs.last_execution_time >= @cutoff_time
+        AND   d.state = 0 /*ONLINE only — skip RESTORING databases (mirroring/AG secondary)*/
         AND   pa.dbid NOT IN
         (
             1, 3, 4, 32761, 32767,
@@ -496,9 +537,197 @@ BEGIN
         )
         AND   pa.dbid < 32761 /*exclude contained AG system databases*/
         OPTION(RECOMPILE);
-        
+
+        /*
+        Stage 2: Compute row_hash on staging data
+        Hash of cumulative metric columns — changes when procedure executes
+        total_spills is nullable (functions don't have spills), use ISNULL
+        */
+        UPDATE
+            #procedure_stats_staging
+        SET
+            row_hash =
+                HASHBYTES
+                (
+                    'SHA2_256',
+                    CAST(execution_count AS binary(8)) +
+                    CAST(total_worker_time AS binary(8)) +
+                    CAST(total_elapsed_time AS binary(8)) +
+                    CAST(total_logical_reads AS binary(8)) +
+                    CAST(total_physical_reads AS binary(8)) +
+                    CAST(total_logical_writes AS binary(8)) +
+                    ISNULL(CAST(total_spills AS binary(8)), 0x0000000000000000)
+                );
+
+        /*
+        Ensure tracking table exists
+        */
+        IF OBJECT_ID(N'collect.procedure_stats_latest_hash', N'U') IS NULL
+        BEGIN
+            CREATE TABLE
+                collect.procedure_stats_latest_hash
+            (
+                database_name sysname NOT NULL,
+                object_id integer NOT NULL,
+                plan_handle varbinary(64) NOT NULL,
+                row_hash binary(32) NOT NULL,
+                last_seen datetime2(7) NOT NULL
+                    DEFAULT SYSDATETIME(),
+                CONSTRAINT
+                    PK_procedure_stats_latest_hash
+                PRIMARY KEY CLUSTERED
+                    (database_name, object_id, plan_handle)
+                WITH
+                    (DATA_COMPRESSION = PAGE)
+            );
+        END;
+
+        /*
+        Stage 3: INSERT only changed rows with COMPRESS on LOB columns
+        */
+        INSERT INTO
+            collect.procedure_stats
+        (
+            server_start_time,
+            object_type,
+            database_name,
+            object_id,
+            object_name,
+            schema_name,
+            type_desc,
+            sql_handle,
+            plan_handle,
+            cached_time,
+            last_execution_time,
+            execution_count,
+            total_worker_time,
+            min_worker_time,
+            max_worker_time,
+            total_elapsed_time,
+            min_elapsed_time,
+            max_elapsed_time,
+            total_logical_reads,
+            min_logical_reads,
+            max_logical_reads,
+            total_physical_reads,
+            min_physical_reads,
+            max_physical_reads,
+            total_logical_writes,
+            min_logical_writes,
+            max_logical_writes,
+            total_spills,
+            min_spills,
+            max_spills,
+            query_plan_text,
+            row_hash
+        )
+        SELECT
+            s.server_start_time,
+            s.object_type,
+            s.database_name,
+            s.object_id,
+            s.object_name,
+            s.schema_name,
+            s.type_desc,
+            s.sql_handle,
+            s.plan_handle,
+            s.cached_time,
+            s.last_execution_time,
+            s.execution_count,
+            s.total_worker_time,
+            s.min_worker_time,
+            s.max_worker_time,
+            s.total_elapsed_time,
+            s.min_elapsed_time,
+            s.max_elapsed_time,
+            s.total_logical_reads,
+            s.min_logical_reads,
+            s.max_logical_reads,
+            s.total_physical_reads,
+            s.min_physical_reads,
+            s.max_physical_reads,
+            s.total_logical_writes,
+            s.min_logical_writes,
+            s.max_logical_writes,
+            s.total_spills,
+            s.min_spills,
+            s.max_spills,
+            COMPRESS(s.query_plan_text),
+            s.row_hash
+        FROM #procedure_stats_staging AS s
+        LEFT JOIN collect.procedure_stats_latest_hash AS h
+            ON  h.database_name = s.database_name
+            AND h.object_id = s.object_id
+            AND h.plan_handle = s.plan_handle
+            AND h.row_hash = s.row_hash
+        WHERE h.database_name IS NULL /*no match = new or changed*/
+        OPTION(RECOMPILE);
+
         SET @rows_collected = ROWCOUNT_BIG();
-        
+
+        /*
+        Stage 4: Update tracking table with current hashes
+        */
+        MERGE collect.procedure_stats_latest_hash AS t
+        USING
+        (
+            SELECT
+                database_name,
+                object_id,
+                plan_handle,
+                row_hash
+            FROM
+            (
+                SELECT
+                    s2.database_name,
+                    s2.object_id,
+                    s2.plan_handle,
+                    s2.row_hash,
+                    rn = ROW_NUMBER() OVER
+                    (
+                        PARTITION BY
+                            s2.database_name,
+                            s2.object_id,
+                            s2.plan_handle
+                        ORDER BY
+                            s2.last_execution_time DESC
+                    )
+                FROM #procedure_stats_staging AS s2
+            ) AS ranked
+            WHERE ranked.rn = 1
+        ) AS s
+            ON  t.database_name = s.database_name
+            AND t.object_id = s.object_id
+            AND t.plan_handle = s.plan_handle
+        WHEN MATCHED
+        THEN UPDATE SET
+            t.row_hash = s.row_hash,
+            t.last_seen = SYSDATETIME()
+        WHEN NOT MATCHED
+        THEN INSERT
+        (
+            database_name,
+            object_id,
+            plan_handle,
+            row_hash,
+            last_seen
+        )
+        VALUES
+        (
+            s.database_name,
+            s.object_id,
+            s.plan_handle,
+            s.row_hash,
+            SYSDATETIME()
+        );
+
+        IF @debug = 1
+        BEGIN
+            DECLARE @staging_count bigint;
+            SELECT @staging_count = COUNT_BIG(*) FROM #procedure_stats_staging;
+            RAISERROR(N'Staged %I64d rows, inserted %I64d changed rows', 0, 1, @staging_count, @rows_collected) WITH NOWAIT;
+        END;
+
         /*
         Calculate deltas for the newly inserted data
         */
@@ -506,7 +735,7 @@ BEGIN
             @table_name = N'procedure_stats',
             @debug = @debug;
 
-        /*Tie statement sto procedures when possible*/
+        /*Tie statements to procedures when possible*/
         UPDATE
             qs
         SET
@@ -522,7 +751,6 @@ BEGIN
         AND   qs.object_name IS NULL
         OPTION(RECOMPILE);
 
-        
         /*
         Log successful collection
         */
@@ -541,24 +769,24 @@ BEGIN
             @rows_collected,
             DATEDIFF(MILLISECOND, @start_time, SYSDATETIME())
         );
-        
+
         IF @debug = 1
         BEGIN
             RAISERROR(N'Collected %d procedure/trigger/function stats rows', 0, 1, @rows_collected) WITH NOWAIT;
         END;
-        
+
         COMMIT TRANSACTION;
-        
+
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0
         BEGIN
             ROLLBACK TRANSACTION;
         END;
-        
+
         DECLARE
             @error_message nvarchar(4000) = ERROR_MESSAGE();
-        
+
         /*
         Log the error
         */
@@ -577,11 +805,12 @@ BEGIN
             DATEDIFF(MILLISECOND, @start_time, SYSDATETIME()),
             @error_message
         );
-        
+
         RAISERROR(N'Error in procedure stats collector: %s', 16, 1, @error_message);
     END CATCH;
 END;
 GO
 
 PRINT 'Procedure stats collector created successfully';
+PRINT 'LOB columns compressed with COMPRESS(), unchanged rows skipped via row_hash';
 GO

@@ -19,14 +19,75 @@ using Microsoft.Data.SqlClient;
 
 namespace PerformanceMonitorInstaller
 {
-    class Program
+    partial class Program
     {
+        /// <summary>
+        /// Complete uninstall SQL: stops traces, deletes all 3 Agent jobs,
+        /// drops both XE sessions, and drops the database.
+        /// </summary>
+        private const string UninstallSql = @"
+/*
+Remove SQL Agent jobs
+*/
+USE msdb;
+
+IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'PerformanceMonitor - Collection')
+BEGIN
+    EXECUTE msdb.dbo.sp_delete_job @job_name = N'PerformanceMonitor - Collection', @delete_unused_schedule = 1;
+    PRINT 'Deleted job: PerformanceMonitor - Collection';
+END;
+
+IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'PerformanceMonitor - Data Retention')
+BEGIN
+    EXECUTE msdb.dbo.sp_delete_job @job_name = N'PerformanceMonitor - Data Retention', @delete_unused_schedule = 1;
+    PRINT 'Deleted job: PerformanceMonitor - Data Retention';
+END;
+
+IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'PerformanceMonitor - Hung Job Monitor')
+BEGIN
+    EXECUTE msdb.dbo.sp_delete_job @job_name = N'PerformanceMonitor - Hung Job Monitor', @delete_unused_schedule = 1;
+    PRINT 'Deleted job: PerformanceMonitor - Hung Job Monitor';
+END;
+
+/*
+Drop Extended Events sessions
+*/
+USE master;
+
+IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'PerformanceMonitor_BlockedProcess')
+BEGIN
+    IF EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'PerformanceMonitor_BlockedProcess')
+        ALTER EVENT SESSION [PerformanceMonitor_BlockedProcess] ON SERVER STATE = STOP;
+    DROP EVENT SESSION [PerformanceMonitor_BlockedProcess] ON SERVER;
+    PRINT 'Dropped XE session: PerformanceMonitor_BlockedProcess';
+END;
+
+IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'PerformanceMonitor_Deadlock')
+BEGIN
+    IF EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'PerformanceMonitor_Deadlock')
+        ALTER EVENT SESSION [PerformanceMonitor_Deadlock] ON SERVER STATE = STOP;
+    DROP EVENT SESSION [PerformanceMonitor_Deadlock] ON SERVER;
+    PRINT 'Dropped XE session: PerformanceMonitor_Deadlock';
+END;
+
+/*
+Drop the database
+*/
+IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'PerformanceMonitor')
+BEGIN
+    ALTER DATABASE PerformanceMonitor SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE PerformanceMonitor;
+    PRINT 'PerformanceMonitor database dropped';
+END
+ELSE
+BEGIN
+    PRINT 'PerformanceMonitor database does not exist';
+END;";
+
         /*
         Pre-compiled regex patterns for performance
         */
-        private static readonly Regex GoBatchPattern = new Regex(
-            @"^\s*GO\s*(?:--[^\r\n]*)?\s*$",
-            RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        private static readonly Regex GoBatchPattern = GoBatchRegExp();
 
         private static readonly Regex SqlFileNamePattern = new Regex(
             @"^\d{2}[a-z]?_.*\.sql$",
@@ -55,6 +116,7 @@ namespace PerformanceMonitorInstaller
             public const int PartialInstallation = 4;
             public const int VersionCheckFailed = 5;
             public const int SqlFilesNotFound = 6;
+            public const int UninstallFailed = 7;
         }
 
         static async Task<int> Main(string[] args)
@@ -90,14 +152,16 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  PerformanceMonitorInstaller.exe <server> [options]                 Windows Auth");
                 Console.WriteLine("  PerformanceMonitorInstaller.exe <server> <username> <password>     SQL Auth");
                 Console.WriteLine("  PerformanceMonitorInstaller.exe <server> <username>                SQL Auth (password via env var)");
+                Console.WriteLine("  PerformanceMonitorInstaller.exe <server> --entra <email>           Entra ID (MFA)");
                 Console.WriteLine();
                 Console.WriteLine("Options:");
                 Console.WriteLine("  -h, --help           Show this help message");
                 Console.WriteLine("  --reinstall          Drop existing database and perform clean install");
+                Console.WriteLine("  --uninstall          Remove database, Agent jobs, and XE sessions");
                 Console.WriteLine("  --reset-schedule     Reset collection schedule to recommended defaults");
-                Console.WriteLine("  --preserve-jobs      Keep existing SQL Agent jobs (owner, schedule, notifications)");
                 Console.WriteLine("  --encrypt=<level>    Connection encryption: mandatory (default), optional, strict");
                 Console.WriteLine("  --trust-cert         Trust server certificate without validation");
+                Console.WriteLine("  --entra <email>      Use Microsoft Entra ID interactive authentication (MFA)");
                 Console.WriteLine();
                 Console.WriteLine("Environment Variables:");
                 Console.WriteLine("  PM_SQL_PASSWORD      SQL Auth password (avoids passing on command line)");
@@ -110,14 +174,27 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  4  Partial installation (non-critical failures)");
                 Console.WriteLine("  5  Version check failed");
                 Console.WriteLine("  6  SQL files not found");
+                Console.WriteLine("  7  Uninstall failed");
                 return 0;
             }
 
             bool automatedMode = args.Length > 0;
             bool reinstallMode = args.Any(a => a.Equals("--reinstall", StringComparison.OrdinalIgnoreCase));
+            bool uninstallMode = args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase));
             bool resetSchedule = args.Any(a => a.Equals("--reset-schedule", StringComparison.OrdinalIgnoreCase));
-            bool preserveJobs = args.Any(a => a.Equals("--preserve-jobs", StringComparison.OrdinalIgnoreCase));
             bool trustCert = args.Any(a => a.Equals("--trust-cert", StringComparison.OrdinalIgnoreCase));
+            bool entraMode = args.Any(a => a.Equals("--entra", StringComparison.OrdinalIgnoreCase));
+
+            /*Parse --entra email (the argument following --entra)*/
+            string? entraEmail = null;
+            if (entraMode)
+            {
+                int entraIndex = Array.FindIndex(args, a => a.Equals("--entra", StringComparison.OrdinalIgnoreCase));
+                if (entraIndex >= 0 && entraIndex + 1 < args.Length && !args[entraIndex + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    entraEmail = args[entraIndex + 1];
+                }
+            }
 
             /*Parse encryption option (default: Mandatory)*/
             var encryptArg = args.FirstOrDefault(a => a.StartsWith("--encrypt=", StringComparison.OrdinalIgnoreCase));
@@ -134,17 +211,28 @@ namespace PerformanceMonitorInstaller
             }
 
             /*Filter out option flags to get positional arguments*/
-            var filteredArgs = args
+            /*Filter out option flags and --entra <email> to get positional arguments*/
+            var filteredArgsList = args
                 .Where(a => !a.Equals("--reinstall", StringComparison.OrdinalIgnoreCase))
+                .Where(a => !a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase))
                 .Where(a => !a.Equals("--reset-schedule", StringComparison.OrdinalIgnoreCase))
-                .Where(a => !a.Equals("--preserve-jobs", StringComparison.OrdinalIgnoreCase))
                 .Where(a => !a.Equals("--trust-cert", StringComparison.OrdinalIgnoreCase))
                 .Where(a => !a.StartsWith("--encrypt=", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+                .Where(a => !a.Equals("--entra", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            /*Remove the entra email from positional args if present*/
+            if (entraEmail != null)
+            {
+                filteredArgsList.Remove(entraEmail);
+            }
+
+            var filteredArgs = filteredArgsList.ToArray();
             string? serverName;
             string? username = null;
             string? password = null;
             bool useWindowsAuth;
+            bool useEntraAuth = false;
 
             if (automatedMode)
             {
@@ -153,7 +241,25 @@ namespace PerformanceMonitorInstaller
                 */
                 serverName = filteredArgs.Length > 0 ? filteredArgs[0] : null;
 
-                if (filteredArgs.Length >= 2)
+                if (entraMode)
+                {
+                    /*Microsoft Entra ID interactive authentication*/
+                    useWindowsAuth = false;
+                    useEntraAuth = true;
+                    username = entraEmail;
+
+                    if (string.IsNullOrWhiteSpace(username))
+                    {
+                        Console.WriteLine("Error: Email address is required for Entra ID authentication.");
+                        Console.WriteLine("Usage: PerformanceMonitorInstaller.exe <server> --entra <email>");
+                        return ExitCodes.InvalidArguments;
+                    }
+
+                    Console.WriteLine($"Server: {serverName}");
+                    Console.WriteLine($"Authentication: Microsoft Entra ID ({username})");
+                    Console.WriteLine("A browser window will open for interactive authentication...");
+                }
+                else if (filteredArgs.Length >= 2)
                 {
                     /*SQL Authentication - password from env var or command-line*/
                     useWindowsAuth = false;
@@ -222,13 +328,37 @@ namespace PerformanceMonitorInstaller
                     return ExitCodes.InvalidArguments;
                 }
 
-                Console.Write("Use Windows Authentication? (Y/N, default Y): ");
-                string? authResponse = Console.ReadLine();
-                useWindowsAuth = string.IsNullOrWhiteSpace(authResponse) ||
-                                       authResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase);
+                Console.WriteLine("Authentication type:");
+                Console.WriteLine("  [W] Windows Authentication (default)");
+                Console.WriteLine("  [S] SQL Server Authentication");
+                Console.WriteLine("  [E] Microsoft Entra ID (interactive MFA)");
+                Console.Write("Choice (W/S/E, default W): ");
+                string? authResponse = Console.ReadLine()?.Trim();
 
-                if (!useWindowsAuth)
+                if (string.IsNullOrWhiteSpace(authResponse) || authResponse.Equals("W", StringComparison.OrdinalIgnoreCase))
                 {
+                    useWindowsAuth = true;
+                }
+                else if (authResponse.Equals("E", StringComparison.OrdinalIgnoreCase))
+                {
+                    useWindowsAuth = false;
+                    useEntraAuth = true;
+
+                    Console.Write("Email address (UPN): ");
+                    username = Console.ReadLine();
+                    if (string.IsNullOrWhiteSpace(username))
+                    {
+                        Console.WriteLine("Error: Email address is required for Entra ID authentication.");
+                        WaitForExit();
+                        return ExitCodes.InvalidArguments;
+                    }
+
+                    Console.WriteLine("A browser window will open for interactive authentication...");
+                }
+                else
+                {
+                    useWindowsAuth = false;
+
                     Console.Write("SQL Server login: ");
                     username = Console.ReadLine();
                     if (string.IsNullOrWhiteSpace(username))
@@ -259,11 +389,19 @@ namespace PerformanceMonitorInstaller
                 DataSource = serverName,
                 InitialCatalog = "master",
                 Encrypt = encryptOption,
-                TrustServerCertificate = trustCert,
-                IntegratedSecurity = useWindowsAuth
+                TrustServerCertificate = trustCert
             };
 
-            if (!useWindowsAuth)
+            if (useEntraAuth)
+            {
+                builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryInteractive;
+                builder.UserID = username;
+            }
+            else if (useWindowsAuth)
+            {
+                builder.IntegratedSecurity = true;
+            }
+            else
             {
                 builder.UserID = username;
                 builder.Password = password;
@@ -311,6 +449,14 @@ namespace PerformanceMonitorInstaller
                     WaitForExit();
                 }
                 return ExitCodes.ConnectionFailed;
+            }
+
+            /*
+            Handle --uninstall mode (no SQL files needed)
+            */
+            if (uninstallMode)
+            {
+                return await PerformUninstallAsync(builder.ConnectionString, automatedMode);
             }
 
             /*
@@ -471,41 +617,7 @@ namespace PerformanceMonitorInstaller
                             /*Database or procedure doesn't exist - no traces to clean*/
                         }
 
-                        string cleanupSql = @"
-/*
-Remove any existing Agent jobs
-*/
-USE msdb;
-
-IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'PerformanceMonitor - Collection')
-BEGIN
-    EXECUTE msdb.dbo.sp_delete_job @job_name = N'PerformanceMonitor - Collection';
-    PRINT 'Dropped PerformanceMonitor - Collection job';
-END;
-
-IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'PerformanceMonitor - Data Retention')
-BEGIN
-    EXECUTE msdb.dbo.sp_delete_job @job_name = N'PerformanceMonitor - Data Retention';
-    PRINT 'Dropped PerformanceMonitor - Data Retention job';
-END;
-
-/*
-Drop the database
-*/
-USE master;
-
-IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'PerformanceMonitor')
-BEGIN
-    ALTER DATABASE PerformanceMonitor SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE PerformanceMonitor;
-    PRINT 'PerformanceMonitor database dropped successfully';
-END
-ELSE
-BEGIN
-    PRINT 'PerformanceMonitor database does not exist';
-END";
-
-                        using (var command = new SqlCommand(cleanupSql, connection))
+                        using (var command = new SqlCommand(UninstallSql, connection))
                         {
                             command.CommandTimeout = ShortTimeoutSeconds;
                             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -657,16 +769,6 @@ END";
                         }
 
                         /*
-                        Preserve existing SQL Agent jobs if requested — flip the T-SQL
-                        variable so existing jobs are left untouched during upgrade
-                        */
-                        if (preserveJobs && fileName.StartsWith("45_", StringComparison.Ordinal))
-                        {
-                            sqlContent = sqlContent.Replace("@preserve_jobs bit = 0", "@preserve_jobs bit = 1");
-                            Console.Write("(preserving existing jobs) ");
-                        }
-
-                        /*
                         Remove SQLCMD directives (:r includes) as we're executing files directly
                         */
                         sqlContent = SqlCmdDirectivePattern.Replace(sqlContent, "");
@@ -775,6 +877,14 @@ END";
                     {
                         await connection.OpenAsync().ConfigureAwait(false);
 
+                        /*Capture timestamp before running so we only check errors from this run.
+                          Use SYSDATETIME() (local) because collection_time is stored in server local time.*/
+                        DateTime validationStart;
+                        using (var command = new SqlCommand("SELECT SYSDATETIME();", connection))
+                        {
+                            validationStart = (DateTime)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+                        }
+
                         /*Run master collector once with @force_run_all to collect everything immediately*/
                         Console.Write("Executing master collector... ");
                         using (var command = new SqlCommand("EXECUTE PerformanceMonitor.collect.scheduled_master_collector @force_run_all = 1, @debug = 0;", connection))
@@ -785,37 +895,46 @@ END";
                         Console.WriteLine("✓ Success");
 
                         /*
-                        Verify data was collected
+                        Verify data was collected — only from this validation run, not historical errors
                         */
                         Console.WriteLine();
                         Console.Write("Verifying data collection... ");
 
-                        /* First check total count in collection_log */
-                        int totalLogEntries = 0;
-                        using (var command = new SqlCommand(@"
-                            SELECT COUNT(*) FROM PerformanceMonitor.config.collection_log;", connection))
-                        {
-                            totalLogEntries = (int)(await command.ExecuteScalarAsync().ConfigureAwait(false) ?? 0);
-                        }
-
-                        /* Check successful collections (all time - we just installed) */
+                        /* Check successful collections from this run */
                         int collectedCount = 0;
                         using (var command = new SqlCommand(@"
                             SELECT
                                 COUNT(DISTINCT collector_name)
                             FROM PerformanceMonitor.config.collection_log
-                            WHERE collection_status = 'SUCCESS';", connection))
+                            WHERE collection_status = 'SUCCESS'
+                            AND   collection_time >= @validation_start;", connection))
                         {
+                            command.Parameters.AddWithValue("@validation_start", validationStart);
                             collectedCount = (int)(await command.ExecuteScalarAsync().ConfigureAwait(false) ?? 0);
+                        }
+
+                        /* Total log entries from this run */
+                        int totalLogEntries = 0;
+                        using (var command = new SqlCommand(@"
+                            SELECT COUNT(*)
+                            FROM PerformanceMonitor.config.collection_log
+                            WHERE collection_time >= @validation_start;", connection))
+                        {
+                            command.Parameters.AddWithValue("@validation_start", validationStart);
+                            totalLogEntries = (int)(await command.ExecuteScalarAsync().ConfigureAwait(false) ?? 0);
                         }
 
                         Console.WriteLine($"✓ {collectedCount} collectors ran successfully (total log entries: {totalLogEntries})");
 
-                        /* Show failed collectors if any */
+                        /* Show failed collectors from this run */
                         int errorCount = 0;
                         using (var command = new SqlCommand(@"
-                            SELECT COUNT(*) FROM PerformanceMonitor.config.collection_log WHERE collection_status = 'ERROR';", connection))
+                            SELECT COUNT(*)
+                            FROM PerformanceMonitor.config.collection_log
+                            WHERE collection_status = 'ERROR'
+                            AND   collection_time >= @validation_start;", connection))
                         {
+                            command.Parameters.AddWithValue("@validation_start", validationStart);
                             errorCount = (int)(await command.ExecuteScalarAsync().ConfigureAwait(false) ?? 0);
                         }
 
@@ -829,8 +948,10 @@ END";
                                     error_message
                                 FROM PerformanceMonitor.config.collection_log
                                 WHERE collection_status = 'ERROR'
+                                AND   collection_time >= @validation_start
                                 ORDER BY collection_time DESC;", connection))
                             {
+                                command.Parameters.AddWithValue("@validation_start", validationStart);
                                 using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
                                 {
                                     while (await reader.ReadAsync().ConfigureAwait(false))
@@ -857,8 +978,10 @@ END";
                                     error_message
                                 FROM PerformanceMonitor.config.collection_log
                                 WHERE collection_status = 'SUCCESS'
+                                AND   collection_time >= @validation_start
                                 ORDER BY collection_time DESC;", connection))
                             {
+                                command.Parameters.AddWithValue("@validation_start", validationStart);
                                 using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
                                 {
                                     while (await reader.ReadAsync().ConfigureAwait(false))
@@ -1079,6 +1202,86 @@ END";
         Log installation history to database
         Tracks version, duration, success/failure, and upgrade detection
         */
+
+        /// <summary>
+        /// Performs a complete uninstall: stops traces, removes jobs, XE sessions, and database.
+        /// </summary>
+        private static async Task<int> PerformUninstallAsync(string connectionString, bool automatedMode)
+        {
+            Console.WriteLine();
+            Console.WriteLine("================================================================================");
+            Console.WriteLine("UNINSTALL MODE");
+            Console.WriteLine("================================================================================");
+            Console.WriteLine();
+
+            if (!automatedMode)
+            {
+                Console.WriteLine("This will remove:");
+                Console.WriteLine("  - SQL Agent jobs (Collection, Data Retention, Hung Job Monitor)");
+                Console.WriteLine("  - Extended Events sessions (BlockedProcess, Deadlock)");
+                Console.WriteLine("  - Server-side traces");
+                Console.WriteLine("  - PerformanceMonitor database and ALL collected data");
+                Console.WriteLine();
+                Console.Write("Are you sure you want to continue? (Y/N, default N): ");
+                string? confirm = Console.ReadLine();
+                if (!confirm?.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase) ?? true)
+                {
+                    Console.WriteLine("Uninstall cancelled.");
+                    WaitForExit();
+                    return ExitCodes.Success;
+                }
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("Uninstalling Performance Monitor...");
+
+            try
+            {
+                using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync().ConfigureAwait(false);
+
+                /*Stop traces first (procedure lives in the database)*/
+                try
+                {
+                    using var traceCmd = new SqlCommand(
+                        "EXECUTE PerformanceMonitor.collect.trace_management_collector @action = 'STOP';",
+                        connection);
+                    traceCmd.CommandTimeout = ShortTimeoutSeconds;
+                    await traceCmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    Console.WriteLine("✓ Stopped server-side traces");
+                }
+                catch (SqlException)
+                {
+                    Console.WriteLine("  No traces to stop (database or procedure not found)");
+                }
+
+                /*Remove jobs, XE sessions, and database*/
+                using var command = new SqlCommand(UninstallSql, connection);
+                command.CommandTimeout = ShortTimeoutSeconds;
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+
+                Console.WriteLine();
+                Console.WriteLine("✓ Uninstall completed successfully");
+                Console.WriteLine();
+                Console.WriteLine("Note: blocked process threshold (s) was NOT reset.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"Uninstall failed: {ex.Message}");
+                if (!automatedMode)
+                {
+                    WaitForExit();
+                }
+                return ExitCodes.UninstallFailed;
+            }
+
+            if (!automatedMode)
+            {
+                WaitForExit();
+            }
+            return ExitCodes.Success;
+        }
 
         /*
         Get currently installed version from database
@@ -1792,5 +1995,8 @@ END";
 
             return reportPath;
         }
+
+        [GeneratedRegex(@"^\s*GO\s*(?:--[^\r\n]*)?\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
+        private static partial Regex GoBatchRegExp();
     }
 }

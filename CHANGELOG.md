@@ -5,6 +5,167 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-03-11
+
+**Contributors:** [@HannahVernon](https://github.com/HannahVernon), [@ClaudioESSilva](https://github.com/ClaudioESSilva), [@dphugo](https://github.com/dphugo), [@Orestes](https://github.com/Orestes) — thank you!
+
+### Important
+
+- **Schema upgrade**: Three large collection tables (`query_stats`, `procedure_stats`, `query_store_data`) are migrated to use `COMPRESS()` for query text and plan columns. The upgrade performs a table swap (create new → migrate data → rename) which may take several minutes on large tables. A `row_hash` column is added for deduplication. Three new tracking tables are also created. Volume stats columns are added to `database_size_stats`. Upgrade scripts run automatically via the CLI/GUI installer and use idempotent checks.
+
+  Compression results measured on a production instance:
+
+  | Table | Compressed | Uncompressed | Ratio |
+  |---|---|---|---|
+  | query_stats | 18.0 MB | 339.0 MB | 18.8x |
+  | query_store_data | 13.5 MB | 258.0 MB | 19.1x |
+  | **Total** | **31.5 MB** | **597 MB** | **~19x** |
+
+### Added
+
+- **FinOps monitoring tab** — database size tracking, server properties, storage growth analysis (7d/30d), index analysis with unused/duplicate/compressible detection, utilization efficiency, idle database identification, and estate-level resource views ([#474])
+- **Named collection presets** — Aggressive, Balanced, and Low-Impact schedule profiles via `config.apply_collection_preset` ([#454])
+- **Entra ID interactive MFA authentication** in both CLI and GUI installers for Azure SQL MI connections ([#481])
+- **MCP port validation** — TCP port conflict detection, range validation (1024+), Auto port button, and auto-restart on settings change ([#453])
+- **Alert database exclusion filters** — filter blocking and deadlock alerts by database in both Dashboard and Lite ([#410], [#412])
+- **Configurable alert cooldown periods** for tray notifications and email alerts
+- **Wait stats query drill-down** — click a wait type to see the queries causing it ([#372])
+- **Configurable long-running query settings** — max results, WAITFOR/backup/diagnostics exclusions ([#415])
+- **Uninstall option** in both CLI and GUI installers ([#431])
+- **Session stats collector** for active session tracking ([#474])
+- **LOB compression and deduplication** for query stats tables to reduce storage ([#419])
+- **Volume-level drive space** enrichment in database size stats via `dm_os_volume_stats`
+- **GUI installer installation history** logging to `config.installation_history` ([#414])
+- **ReadOnlyIntent connection option** — Lite connections can set `ApplicationIntent=ReadOnly` for automatic read routing to Always On AG readable secondaries ([#515])
+- **Alert muting** — mute individual alerts or create pattern-based mute rules by server, metric, database, or application. Manage Mute Rules window with enable/disable toggle. Alert history detail view with double-click drill-down and context-sensitive detail text. Poison wait type documentation links. ([#512])
+- **SignPath code signing** — all release binaries (Dashboard, Lite, Installers) are digitally signed, eliminating Windows SmartScreen warnings ([#511])
+- CI version bump check on PRs to main
+- Permissions section in README with least-privilege setup ([#421])
+
+### Changed
+
+- **Utilization tab redesigned** — ported to Dashboard with aligned metrics between apps ([#478])
+- PlanAnalyzer rules synced from PerformanceStudio — Rule 5 message format, seek predicate parsing, spool labels, unmatched index detail ([#416], [#475], [#480])
+- Data retention now purges processed XE staging rows
+- GeneratedRegex conversion for compile-time regex patterns ([#346], [#420])
+- Server health card width increased from 260 to 300 for less text truncation ([#489])
+- User's locale used for date/time formatting in WPF bindings ([#459])
+- XML processing instructions stripped from sql_command/sql_text display
+- Parameterized queries in blocking/deadlock alert filtering
+- **DuckDB 1.5.0 upgrade** — non-blocking checkpointing eliminates read stalls during WAL flushes, free block reuse stabilizes database file size without archive-and-reset cycles ([#516])
+- **Automatic parquet compaction** — archive files are merged into monthly files after each archive cycle, reducing file count from 2,600+ to ~75 and eliminating per-file metadata overhead on glob scans ([#516])
+
+  Combined with the UI responsiveness overhaul (#510), Lite's refresh cycle improved 13-26x:
+
+  | Metric | Before | After |
+  |---|---|---|
+  | Lite `RefreshAllDataAsync` | 6-13s | < 500ms |
+  | Parquet files scanned per query | 233 | 19 |
+  | Archive-and-reset frequency | 21/day | ~0 |
+  | `v_wait_stats` query time | 1,700ms | 27ms |
+
+- **Monthly archive retention** — switched from 90-day file-age deletion to 3-month calendar-month rolling window, aligned with compacted monthly filenames ([#516])
+- **Lite status bar** shows used data size vs file size (e.g., "Database: 175.5 / 423.8 MB") via DuckDB `pragma_database_size()` ([#517])
+- **Query Store collector diagnostics** — reader/append/flush timing breakdown logged when collection exceeds 2 seconds, for identifying SQL Server DMV contention under heavy workloads ([#518])
+- SSMS-parity edge tooltips on plan viewer operator connections and ManyToMany indicator always shown for merge join operators ([#504])
+- **Lite UI responsiveness overhaul** — visible-tab-only refresh, sub-tab awareness, Query Store collector optimization (NULL plan XML + LOOP JOIN hint), and DuckDB write reduction ([#510])
+
+  Timer tick improvements measured under TPC-C load on SQL2022:
+
+  | Scenario | Before | After | Improvement |
+  |---|---|---|---|
+  | Lite idle | 6-13s | 546-750ms | ~90% |
+  | Lite under TPC-C | 6-13s | ~3s | ~70% |
+  | Dashboard idle | 5.6s | 0.6-0.8s | 86% |
+  | Dashboard under TPC-C | 5.6s | 1.8-2.0s | 64% |
+
+  Query Store collector specifically:
+
+  | Metric | Before | After |
+  |---|---|---|
+  | query_store collector total | 6-18s | ~600ms |
+  | query_store SQL time | 374-1,104ms | ~300ms (LOOP JOIN hint) |
+  | query_store DuckDB write | 6-16s | ~75-230ms (NULL plan XML) |
+
+### Fixed
+
+- **UI hang** when opening Dashboard tab for offline server — replaced synchronous `.GetAwaiter().GetResult()` with proper `await` ([#477])
+- **First-collection spike** skewing PerfMon, wait stats, file I/O, memory grant, query stats, and procedure stats charts — first cumulative value now treated as baseline ([#482])
+- **Wait type filter TextBox** too small to read ([#488])
+- **Poison wait false positives** and alert log parsing ([#445], [#448])
+- **RID Lookup** analyzer rule matching new PhysicalOp label ([#429])
+- **procedure_stats** plan query using DECOMPRESS after compression migration
+- **database_size_stats** InvalidCastException on compatibility_level
+- **Deadlock filter** using wrong column reference in `GetFilteredDeadlockCountAsync`
+- **RESTORING database** filter added to waiting_tasks collector ([#430])
+- Custom TrayToolTip crash — replaced with plain ToolTipText ([#422])
+- **Lite tab switch freeze** — added `_isRefreshing` guard to prevent tab switch handler from competing with timer ticks for DuckDB connection, eliminating "not responding" hangs ([#510])
+- DuckDB read lock acquisition resilience
+- Formatted duration columns sorting alphabetically instead of numerically
+- Settings window staying open on validation errors
+- Deserialization clamping and validation abort issues
+- **sp_IndexCleanup** summary grid column mapping off-by-one, expanded both grids to show all columns from both result sets ([#503])
+- **Rule 22 table variable** false positive on modification operators — INSERT/UPDATE/DELETE on table variables is expected ([#513])
+- **ComboBox focus steal** in plan viewer stealing keyboard focus from other controls ([#508])
+- **DOP 2 skew** false positive — parallel skew rule no longer fires at DOP 2 ([#508])
+- **ReadOnlyIntent connections** sharing server_id in DuckDB when the same server was added with and without ReadOnlyIntent ([#521])
+
+[2.2.0]: https://github.com/erikdarlingdata/PerformanceMonitor/compare/v2.1.0...v2.2.0
+
+## [2.1.0] - 2026-03-04
+
+### Important
+
+- **Schema upgrade**: The `config.collection_schedule` table gains two new columns (`collect_query`, `collect_plan`) for optional query text and execution plan collection. Both default to enabled to preserve existing behavior. Upgrade scripts run automatically via the CLI/GUI installer and use idempotent checks.
+
+### Added
+
+- **Light theme and "Cool Breeze" theme** — full light mode support for both Dashboard and Lite with live preview in settings ([#347])
+- **Standalone Plan Viewer** — open, paste (Ctrl+V), or drag & drop `.sqlplan` files independent of any server connection, with tabbed multi-plan support ([#359])
+- **Time display mode toggle** — show timestamps in Server Time, Local Time, or UTC with timezone labels across all grids and tooltips ([#17])
+- **30 PlanAnalyzer rules** — expanded from 12 to 30 rules covering implicit conversions, GetRangeThroughConvert, lazy spools, OR expansion, exchange spills, RID lookups, and more ([#327], [#349], [#356], [#379])
+- **Wait stats banner** in plan viewer showing top waits for the query ([#373])
+- **UDF runtime details** — CPU and elapsed time shown in Runtime Summary pane when UDFs are present ([#382])
+- **Sortable statement grid** and canvas panning in plan viewer ([#331])
+- **Comma-separated column filters** — enter multiple values separated by commas in text filters ([#348])
+- **Optional query text and plan collection** — per-collector flags in `config.collection_schedule` to disable query text or plan capture ([#337])
+- **`--preserve-jobs` installer flag** — keep existing SQL Agent job schedules during upgrade ([#326])
+- **Copy Query Text** context menu on Dashboard statements grid ([#367])
+- **Server list sorting** by display name in both Dashboard and Lite ([#30])
+- **Warning status icon** in server health indicators ([#355])
+- Reserved threads and 10 missing ShowPlan XML attributes in plan viewer ([#378])
+- Nightly build workflow for CI ([#332])
+
+### Changed
+
+- PlanAnalyzer warning messages rewritten to be actionable with expert-guided per-rule advice ([#370], [#371])
+- PlanAnalyzer rule tuning: time-based spill analysis (Rule 7), lowered parallel skew thresholds (Rule 8), memory grant floor raised to 1GB/4GB (Rule 9), skip PROBE-only bitmap predicates (Rule 11) ([#341], [#342], [#343], [#358])
+- First-run collector lookback reduced from 3-7 days to 1 hour for faster initial data ([#335])
+- Plan canvas aligns top-left and resets scroll on statement switch ([#366])
+- Plan viewer polish: index suggestions, property panel improvements, muted brush audit ([#365])
+- Add Server dialog visual parity between Dashboard and Lite with theme-driven PasswordBox styling ([#289])
+
+### Fixed
+
+- **OverflowException** on wait stats page with large decimal values — SQL Server `decimal(38,24)` exceeding .NET precision ([#395])
+- **SQL dumps** on mirroring passive servers with RESTORING databases ([#384])
+- **UI hang** when adding first server to Dashboard ([#387])
+- **UTC/local timezone mismatch** in blocked process XML processor ([#383])
+- **AG secondary filter** skipping all inaccessible databases in cross-database collectors ([#325])
+- DuckDB column aliases in long-running queries ([#391])
+- sp_server_diagnostics and WAITFOR excluded from long-running query alerts ([#362])
+- UDF timing units corrected: microseconds to milliseconds ([#338])
+- DuckDB migration ordering after archive-and-reset ([#314])
+- Int16 cast error in long-running query alerts ([#313])
+- Missing dark mode on 19 SystemEventsContent charts ([#321])
+- Missing tooltips on charts after theme changes ([#319])
+- Operator time per-thread calculation synced across all plan viewers ([#392])
+- Theme StaticResource/DynamicResource binding fix for runtime theme switching
+- Memory grant MB display, missing index quality scoring, wildcard LIKE detection ([#393])
+- **Installer validation** reporting historical collection errors as current failures — now filters to current run only ([#400])
+- **query_snapshots schema mismatch** after sp_WhoIsActive upgrade — collector auto-recreates daily table when column order changes ([#401])
+- **Missing upgrade script** for `default_trace_events` columns (`duration_us`, `end_time`) on 2.0.0→2.1.0 upgrade path ([#400])
+
 ## [2.0.0] - 2026-02-25
 
 ### Important
@@ -180,6 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Delta normalization for per-second rate calculations
 - Dark theme UI
 
+[2.1.0]: https://github.com/erikdarlingdata/PerformanceMonitor/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/erikdarlingdata/PerformanceMonitor/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/erikdarlingdata/PerformanceMonitor/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/erikdarlingdata/PerformanceMonitor/compare/v1.1.0...v1.2.0
@@ -274,3 +436,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#281]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/281
 [#284]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/284
 [#287]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/287
+[#313]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/313
+[#314]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/314
+[#17]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/17
+[#30]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/30
+[#319]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/319
+[#321]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/321
+[#325]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/325
+[#326]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/326
+[#327]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/327
+[#331]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/331
+[#332]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/332
+[#335]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/335
+[#337]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/337
+[#338]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/338
+[#341]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/341
+[#342]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/342
+[#343]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/343
+[#347]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/347
+[#348]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/348
+[#349]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/349
+[#355]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/355
+[#356]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/356
+[#358]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/358
+[#359]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/359
+[#362]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/362
+[#365]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/365
+[#366]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/366
+[#367]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/367
+[#370]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/370
+[#371]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/371
+[#373]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/373
+[#378]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/378
+[#379]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/379
+[#382]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/382
+[#383]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/383
+[#384]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/384
+[#387]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/387
+[#391]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/391
+[#392]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/392
+[#393]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/393
+[#289]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/289
+[#395]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/395
+[#400]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/400
+[#401]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/401
+[#410]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/410
+[#412]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/412
+[#414]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/414
+[#415]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/415
+[#416]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/416
+[#419]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/419
+[#420]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/420
+[#421]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/421
+[#422]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/422
+[#429]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/429
+[#430]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/430
+[#431]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/431
+[#445]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/445
+[#448]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/448
+[#453]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/453
+[#454]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/454
+[#459]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/459
+[#474]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/474
+[#475]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/475
+[#477]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/477
+[#478]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/478
+[#480]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/480
+[#481]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/481
+[#482]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/482
+[#488]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/488
+[#489]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/489
+[#503]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/503
+[#504]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/504
+[#508]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/508
+[#510]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/510
+[#512]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/512
+[#511]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/511
+[#513]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/513
+[#515]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/515
+[#516]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/516
+[#517]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/517
+[#518]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/518
+[#521]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/521
