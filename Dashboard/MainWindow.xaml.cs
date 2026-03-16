@@ -423,10 +423,29 @@ namespace PerformanceMonitorDashboard
                             _notificationService?.ShowServerOfflineNotification(
                                 item.DisplayName,
                                 newStatus.ErrorMessage);
+
+                            var errorDetail = newStatus.ErrorMessage ?? "Connection failed";
+                            _emailAlertService.RecordAlert(item.Id, item.DisplayName, "Server Unreachable",
+                                errorDetail, "Online", true, "email");
+                            _ = _emailAlertService.TrySendAlertEmailAsync(
+                                "Server Unreachable",
+                                item.DisplayName,
+                                errorDetail,
+                                "Online",
+                                item.Id);
                         }
                         else if (!wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
                         {
                             _notificationService?.ShowConnectionRestoredNotification(item.DisplayName);
+
+                            _emailAlertService.RecordAlert(item.Id, item.DisplayName, "Server Restored",
+                                "Online", "Online", true, "email");
+                            _ = _emailAlertService.TrySendAlertEmailAsync(
+                                "Server Restored",
+                                item.DisplayName,
+                                "Connection restored",
+                                "Online",
+                                item.Id);
                         }
                     }
 
@@ -502,7 +521,26 @@ namespace PerformanceMonitorDashboard
             var utcOffset = connStatus.UtcOffsetMinutes ?? (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes;
             Helpers.ServerTimeHelper.UtcOffsetMinutes = utcOffset;
 
-            var serverTab = new ServerTab(server, utcOffset);
+            ServerTab serverTab;
+            try
+            {
+                serverTab = new ServerTab(server, utcOffset);
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException?.Message ?? ex.Message;
+                System.Windows.MessageBox.Show(
+                    $"Failed to open server tab for '{server.DisplayName}'.\n\n" +
+                    $"This is usually caused by a missing Visual C++ Redistributable (x64) " +
+                    $"or an OS compatibility issue with the SkiaSharp rendering library.\n\n" +
+                    $"Download the latest VC++ Redistributable from:\n" +
+                    $"https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n" +
+                    $"Error: {inner}",
+                    "Chart Initialization Error",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+                return;
+            }
             serverTab.AlertAcknowledged += (_, _) =>
             {
                 _emailAlertService.HideAllAlerts(8760, server.DisplayName);

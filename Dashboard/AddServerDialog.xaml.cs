@@ -42,6 +42,7 @@ namespace PerformanceMonitorDashboard
             ServerNameTextBox.Text = existingServer.ServerName;
             DescriptionTextBox.Text = existingServer.Description;
             IsFavoriteCheckBox.IsChecked = existingServer.IsFavorite;
+            MonthlyCostTextBox.Text = existingServer.MonthlyCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             // Load encryption settings
             EncryptModeComboBox.SelectedIndex = existingServer.EncryptMode switch
@@ -328,9 +329,15 @@ namespace PerformanceMonitorDashboard
                 ServerConnection.IsFavorite = IsFavoriteCheckBox.IsChecked == true;
                 ServerConnection.EncryptMode = GetSelectedEncryptMode();
                 ServerConnection.TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true;
+                if (decimal.TryParse(MonthlyCostTextBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var editCost) && editCost >= 0)
+                    ServerConnection.MonthlyCostUsd = editCost;
             }
             else
             {
+                decimal monthlyCost = 0m;
+                if (decimal.TryParse(MonthlyCostTextBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var newCost) && newCost >= 0)
+                    monthlyCost = newCost;
+
                 ServerConnection = new ServerConnection
                 {
                     DisplayName = displayName,
@@ -341,7 +348,8 @@ namespace PerformanceMonitorDashboard
                     CreatedDate = DateTime.Now,
                     LastConnected = DateTime.Now,
                     EncryptMode = GetSelectedEncryptMode(),
-                    TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true
+                    TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true,
+                    MonthlyCostUsd = monthlyCost
                 };
             }
 

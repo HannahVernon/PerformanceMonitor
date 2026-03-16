@@ -57,7 +57,8 @@ OPTION(RECOMPILE);";
         using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         decimal userObjMb = 0, internalObjMb = 0, versionStoreMb = 0, totalReservedMb = 0, unallocatedMb = 0;
-        int topSessionId = 0, totalSessions = 0;
+        int topSessionId = 0;
+        long totalSessions = 0;
         decimal topSessionMb = 0;
 
         if (await reader.ReadAsync(cancellationToken))
@@ -73,7 +74,7 @@ OPTION(RECOMPILE);";
         {
             topSessionId = reader.IsDBNull(0) ? 0 : Convert.ToInt32(reader.GetValue(0));
             topSessionMb = reader.IsDBNull(1) ? 0m : reader.GetDecimal(1);
-            totalSessions = reader.IsDBNull(2) ? 0 : (int)reader.GetInt64(2);
+            totalSessions = reader.IsDBNull(2) ? 0L : reader.GetInt64(2);
         }
         sqlSw.Stop();
 

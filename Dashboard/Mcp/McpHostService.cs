@@ -81,7 +81,8 @@ public sealed class McpHostService : BackgroundService
                 .WithTools<McpTempDbTools>()
                 .WithTools<McpPerfmonTools>()
                 .WithTools<McpAlertTools>()
-                .WithTools<McpJobTools>();
+                .WithTools<McpJobTools>()
+                .WithTools<McpPlanTools>();
 
             _app = builder.Build();
             _app.MapMcp();

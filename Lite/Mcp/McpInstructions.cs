@@ -107,6 +107,25 @@ internal static class McpInstructions
         |------|---------|----------------|
         | `get_running_jobs` | Currently running SQL Agent jobs with duration vs historical average/p95 | `server_name` |
 
+        ### Execution Plan Analysis Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `analyze_query_plan` | Analyze plan from plan cache by query_hash | `query_hash` (required), `server_name` |
+        | `analyze_procedure_plan` | Analyze procedure plan by plan_handle | `plan_handle` (required), `server_name` |
+        | `analyze_query_store_plan` | Analyze plan from Query Store (fetches on-demand from SQL Server) | `database_name` (required), `plan_id` (required), `server_name` |
+        | `analyze_plan_xml` | Analyze raw showplan XML directly | `plan_xml` (required) |
+        | `get_plan_xml` | Get raw showplan XML by query_hash | `query_hash` (required), `server_name` |
+
+        Plan analysis detects 31 performance anti-patterns including:
+        - Missing indexes with CREATE statements and impact scores
+        - Non-SARGable predicates, implicit conversions, data type mismatches
+        - Memory grant issues, spills to TempDB
+        - Parallelism problems: serial plan reasons, thread skew, ineffective parallelism
+        - Parameter sniffing (compiled vs runtime value mismatches)
+        - Expensive operators: key lookups, scans with residual predicates, eager spools
+        - Join issues: OR clauses, high nested loop executions, many-to-many merge joins
+        - UDF execution overhead, table variable usage, CTE multiple references
+
         ### Diagnostic Analysis Tools
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
@@ -133,6 +152,7 @@ internal static class McpInstructions
         6. **Compare**: Use `compare_analysis` to see if problems are new (compare last 4 hours vs yesterday same time)
         7. **Config**: Use `audit_config` for edition-aware configuration recommendations
         8. **Query investigation**: After finding a problematic query via `get_top_queries_by_cpu`, use `get_query_trend` with its `query_hash` to see performance history
+        9. **Plan analysis**: Use `analyze_query_plan` with the `query_hash` from step 8 to get detailed plan analysis with warnings, missing indexes, and optimization recommendations
 
         ## Wait Type to Tool Mapping
 

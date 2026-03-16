@@ -2446,6 +2446,58 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
+        /// Fetches the most recent plan XML for a query identified by query_hash.
+        /// Used by MCP plan analysis tools.
+        /// </summary>
+        public async Task<string?> GetPlanXmlByQueryHashAsync(string queryHash)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            CAST(DECOMPRESS(qs.query_plan_text) AS nvarchar(max))
+        FROM collect.query_stats AS qs
+        WHERE qs.query_hash = CONVERT(binary(8), @queryHash, 1)
+        ORDER BY qs.last_execution_time DESC;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@queryHash", SqlDbType.NVarChar, 20) { Value = queryHash });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
+
+        /// <summary>
+        /// Fetches the most recent plan XML for a procedure identified by sql_handle.
+        /// Used by MCP plan analysis tools.
+        /// </summary>
+        public async Task<string?> GetProcedurePlanXmlBySqlHandleAsync(string sqlHandle)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            CAST(DECOMPRESS(ps.query_plan_text) AS nvarchar(max))
+        FROM collect.procedure_stats AS ps
+        WHERE ps.sql_handle = CONVERT(varbinary(64), @sqlHandle, 1)
+        ORDER BY ps.last_execution_time DESC;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@sqlHandle", SqlDbType.NVarChar, 130) { Value = sqlHandle });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
+
+        /// <summary>
         /// Gets execution count trends from query stats deltas, aggregated by collection time.
         /// </summary>
         public async Task<List<ExecutionTrendItem>> GetExecutionTrendsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)

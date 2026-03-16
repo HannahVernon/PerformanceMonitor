@@ -148,7 +148,7 @@ BEGIN
                         ELSE CONVERT(decimal(19,2), df.max_size * 8.0 / 1024.0)
                     END,
                 recovery_model_desc =
-                    CONVERT(nvarchar(12), DATABASEPROPERTYEX(DB_NAME(), N'Recovery')),
+                    CONVERT(nvarchar(60), DATABASEPROPERTYEX(DB_NAME(), N'Recovery')),
                 compatibility_level = NULL,
                 state_desc = N'ONLINE',
                 volume_mount_point = NULL,

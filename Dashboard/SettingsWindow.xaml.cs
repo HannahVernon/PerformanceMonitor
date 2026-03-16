@@ -198,6 +198,7 @@ namespace PerformanceMonitorDashboard
             }
 
             UpdateSmtpControlStates();
+
         }
 
         private void NocRefreshIntervalComboBox_Changed(object sender, SelectionChangedEventArgs e)

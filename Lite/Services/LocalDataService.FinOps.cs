@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
@@ -75,7 +76,19 @@ ORDER BY database_name, file_type_desc, file_name";
         using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync();
 
+        // sys.master_files doesn't exist on Azure SQL DB — dynamic SQL picks the right catalog view
         const string query = @"
+DECLARE
+    @storage_sql nvarchar(MAX) =
+        CASE
+            WHEN CONVERT(int, SERVERPROPERTY('EngineEdition')) = 5
+            THEN N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.database_files'
+            ELSE N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files'
+        END,
+    @storage_gb decimal(19,2);
+
+EXEC sys.sp_executesql @storage_sql, N'@gb decimal(19,2) OUTPUT', @gb = @storage_gb OUTPUT;
+
 SELECT
     CONVERT(nvarchar(256), SERVERPROPERTY('Edition')),
     CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')),
@@ -84,7 +97,7 @@ SELECT
     si.cpu_count,
     si.physical_memory_kb / 1024,
     si.sqlserver_start_time,
-    (SELECT SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files),
+    @storage_gb,
     si.socket_count,
     si.cores_per_socket,
     CONVERT(int, SERVERPROPERTY('EngineEdition')),
@@ -1452,6 +1465,326 @@ ORDER BY CAST(collection_time AS DATE)";
         }
         return items;
     }
+
+    // ============================================
+    // FinOps Recommendations Engine
+    // ============================================
+
+    /// <summary>
+    /// Runs all Phase 1 recommendation checks and returns a consolidated list.
+    /// Uses DuckDB for collected data and live SQL queries for server-specific checks.
+    /// </summary>
+    public async Task<List<RecommendationRow>> GetRecommendationsAsync(int serverId, string connectionString, decimal monthlyCost)
+    {
+        var recommendations = new List<RecommendationRow>();
+
+        // 1. Enterprise feature usage audit (live SQL query)
+        try
+        {
+            using var sqlConn = new SqlConnection(connectionString);
+            await sqlConn.OpenAsync();
+
+            using var editionCmd = new SqlCommand(
+                "SELECT CAST(SERVERPROPERTY('Edition') AS NVARCHAR(128))", sqlConn);
+            editionCmd.CommandTimeout = 30;
+            var edition = (string?)await editionCmd.ExecuteScalarAsync() ?? "";
+
+            if (edition.Contains("Enterprise", StringComparison.OrdinalIgnoreCase))
+            {
+                using var featCmd = new SqlCommand(@"
+SELECT
+    DB_NAME(database_id) AS database_name,
+    feature_name
+FROM sys.dm_db_persisted_sku_features", sqlConn);
+                featCmd.CommandTimeout = 30;
+
+                var features = new List<string>();
+                using var featReader = await featCmd.ExecuteReaderAsync();
+                while (await featReader.ReadAsync())
+                {
+                    var db = featReader.IsDBNull(0) ? "" : featReader.GetString(0);
+                    var feat = featReader.IsDBNull(1) ? "" : featReader.GetString(1);
+                    features.Add($"{db}: {feat}");
+                }
+
+                if (features.Count == 0)
+                {
+                    recommendations.Add(new RecommendationRow
+                    {
+                        Category = "Licensing",
+                        Severity = "High",
+                        Confidence = "High",
+                        Finding = "Enterprise Edition with no Enterprise-only features",
+                        Detail = "No database uses Enterprise-only features (partitioning, compression, etc.). " +
+                                 "Consider downgrading to Standard Edition for significant license savings.",
+                        EstMonthlySavings = monthlyCost > 0 ? monthlyCost * 0.40m : null
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (Enterprise features): {ex.Message}");
+        }
+
+        // 2. CPU right-sizing score (from DuckDB)
+        try
+        {
+            var util = await GetUtilizationEfficiencyAsync(serverId);
+            if (util != null && util.P95CpuPct < 30 && util.CpuCount > 4)
+            {
+                var targetCores = Math.Max(4, (int)(util.CpuCount * (util.P95CpuPct / 70m)));
+                var savingsPct = 1m - ((decimal)targetCores / util.CpuCount);
+                recommendations.Add(new RecommendationRow
+                {
+                    Category = "Compute",
+                    Severity = util.P95CpuPct < 15 ? "High" : "Medium",
+                    Confidence = "Medium",
+                    Finding = $"CPU over-provisioned ({util.CpuCount} cores, P95 = {util.P95CpuPct:N1}%)",
+                    Detail = $"P95 CPU utilization is {util.P95CpuPct:N1}% (avg {util.AvgCpuPct:N1}%, max {util.MaxCpuPct}%) across {util.CpuCount} cores. " +
+                             $"Consider reducing to ~{targetCores} cores.",
+                    EstMonthlySavings = monthlyCost > 0 ? monthlyCost * savingsPct * 0.60m : null
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (CPU right-sizing): {ex.Message}");
+        }
+
+        // 3. Memory right-sizing score (from DuckDB)
+        try
+        {
+            var util = await GetUtilizationEfficiencyAsync(serverId);
+            if (util != null && util.PhysicalMemoryMb > 8192)
+            {
+                var bpRatio = util.PhysicalMemoryMb > 0 ? (decimal)util.BufferPoolMb / util.PhysicalMemoryMb : 0m;
+                if (bpRatio < 0.50m)
+                {
+                    var targetMb = Math.Max(8192, util.BufferPoolMb * 2);
+                    recommendations.Add(new RecommendationRow
+                    {
+                        Category = "Memory",
+                        Severity = bpRatio < 0.30m ? "High" : "Medium",
+                        Confidence = "Medium",
+                        Finding = $"Memory over-provisioned (buffer pool uses {bpRatio:P0} of {util.PhysicalMemoryMb / 1024}GB RAM)",
+                        Detail = $"Buffer pool is {util.BufferPoolMb:N0} MB out of {util.PhysicalMemoryMb:N0} MB physical RAM ({bpRatio:P0} utilization). " +
+                                 $"Consider reducing to ~{targetMb / 1024}GB.",
+                        EstMonthlySavings = monthlyCost > 0 ? monthlyCost * (1m - (decimal)targetMb / util.PhysicalMemoryMb) * 0.30m : null
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (Memory right-sizing): {ex.Message}");
+        }
+
+        // 4. Unused index cost quantification (live SQL query)
+        try
+        {
+            var spExists = await CheckSpIndexCleanupExistsAsync(connectionString);
+            if (!spExists)
+            {
+                recommendations.Add(new RecommendationRow
+                {
+                    Category = "Indexes",
+                    Severity = "Low",
+                    Confidence = "Low",
+                    Finding = "Index analysis unavailable (sp_IndexCleanup not installed)",
+                    Detail = "Install sp_IndexCleanup from https://github.com/erikdarlingdata/DarlingData " +
+                             "to identify unused and duplicate indexes that waste storage and add write overhead."
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (Index analysis): {ex.Message}");
+        }
+
+        // 5. Compression savings estimator (live SQL query)
+        try
+        {
+            using var sqlConn = new SqlConnection(connectionString);
+            await sqlConn.OpenAsync();
+
+            using var compCmd = new SqlCommand(@"
+SELECT
+    s.name AS schema_name,
+    t.name AS table_name,
+    i.name AS index_name,
+    i.type_desc,
+    p.data_compression_desc,
+    SUM(a.total_pages) * 8 / 1024.0 AS size_mb
+FROM sys.tables AS t
+JOIN sys.schemas AS s ON t.schema_id = s.schema_id
+JOIN sys.indexes AS i ON t.object_id = i.object_id
+JOIN sys.partitions AS p ON i.object_id = p.object_id AND i.index_id = p.index_id
+JOIN sys.allocation_units AS a ON p.partition_id = a.container_id
+WHERE p.data_compression_desc = N'NONE'
+AND   t.is_ms_shipped = 0
+GROUP BY
+    s.name,
+    t.name,
+    i.name,
+    i.type_desc,
+    p.data_compression_desc
+HAVING SUM(a.total_pages) * 8 / 1024.0 >= 1024
+ORDER BY
+    size_mb DESC", sqlConn);
+            compCmd.CommandTimeout = 60;
+
+            var candidates = new List<(string Schema, string Table, string Index, string Type, decimal SizeMb)>();
+            using var compReader = await compCmd.ExecuteReaderAsync();
+            while (await compReader.ReadAsync())
+            {
+                candidates.Add((
+                    compReader.IsDBNull(0) ? "" : compReader.GetString(0),
+                    compReader.IsDBNull(1) ? "" : compReader.GetString(1),
+                    compReader.IsDBNull(2) ? "" : compReader.GetString(2),
+                    compReader.IsDBNull(3) ? "" : compReader.GetString(3),
+                    compReader.IsDBNull(5) ? 0m : Convert.ToDecimal(compReader.GetValue(5))
+                ));
+            }
+
+            if (candidates.Count > 0)
+            {
+                var totalGb = candidates.Sum(c => c.SizeMb) / 1024m;
+                var topItems = candidates.Take(5)
+                    .Select(c => $"{c.Schema}.{c.Table} ({c.SizeMb / 1024:N1}GB)")
+                    .ToList();
+                recommendations.Add(new RecommendationRow
+                {
+                    Category = "Storage",
+                    Severity = totalGb > 50 ? "High" : totalGb > 10 ? "Medium" : "Low",
+                    Confidence = "High",
+                    Finding = $"{candidates.Count} uncompressed object(s) >= 1GB ({totalGb:N1}GB total)",
+                    Detail = $"Large uncompressed tables/indexes: {string.Join("; ", topItems)}" +
+                             (candidates.Count > 5 ? $" and {candidates.Count - 5} more" : "") +
+                             ". Consider PAGE or ROW compression to reduce storage and improve I/O."
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (Compression): {ex.Message}");
+        }
+
+        // 6. Dormant database detection with cost impact (from DuckDB)
+        try
+        {
+            var idleDbs = await GetIdleDatabasesAsync(serverId);
+            if (idleDbs.Count > 0)
+            {
+                var totalSizeGb = idleDbs.Sum(d => d.TotalSizeMb) / 1024m;
+                var dbNames = string.Join(", ", idleDbs.Take(5).Select(d => d.DatabaseName));
+                var costShare = 0m;
+                if (monthlyCost > 0)
+                {
+                    var allDbSizes = await GetDatabaseSizeLatestAsync(serverId);
+                    var totalMb = allDbSizes.Sum(d => d.TotalSizeMb);
+                    if (totalMb > 0)
+                        costShare = (idleDbs.Sum(d => d.TotalSizeMb) / totalMb) * monthlyCost;
+                }
+
+                recommendations.Add(new RecommendationRow
+                {
+                    Category = "Databases",
+                    Severity = idleDbs.Count >= 3 ? "High" : "Medium",
+                    Confidence = "High",
+                    Finding = $"{idleDbs.Count} idle database(s) consuming {totalSizeGb:N1}GB",
+                    Detail = $"No query activity in 7 days: {dbNames}" +
+                             (idleDbs.Count > 5 ? $" and {idleDbs.Count - 5} more" : "") +
+                             ". Consider archiving or removing these databases.",
+                    EstMonthlySavings = costShare > 0 ? costShare : null
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (Dormant databases): {ex.Message}");
+        }
+
+        // 7. Dev/test workload detection (live SQL query)
+        try
+        {
+            using var sqlConn = new SqlConnection(connectionString);
+            await sqlConn.OpenAsync();
+
+            using var devTestCmd = new SqlCommand(@"
+SELECT name
+FROM sys.databases
+WHERE (name LIKE N'%dev%' OR name LIKE N'%test%' OR name LIKE N'%staging%' OR name LIKE N'%qa%')
+AND   database_id > 4", sqlConn);
+            devTestCmd.CommandTimeout = 30;
+
+            var devDbs = new List<string>();
+            using var devReader = await devTestCmd.ExecuteReaderAsync();
+            while (await devReader.ReadAsync())
+            {
+                if (!devReader.IsDBNull(0))
+                    devDbs.Add(devReader.GetString(0));
+            }
+
+            if (devDbs.Count > 0)
+            {
+                recommendations.Add(new RecommendationRow
+                {
+                    Category = "Environment",
+                    Severity = "Medium",
+                    Confidence = "Low",
+                    Finding = $"{devDbs.Count} possible dev/test database(s) on production server",
+                    Detail = $"Databases matching dev/test patterns: {string.Join(", ", devDbs.Take(10))}" +
+                             (devDbs.Count > 10 ? $" and {devDbs.Count - 10} more" : "") +
+                             ". If these are non-production workloads, consider moving to a lower-cost tier or separate server."
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (Dev/test detection): {ex.Message}");
+        }
+
+        // 8. tempdb over-provisioning (DuckDB for peak usage, live SQL for allocated size)
+        try
+        {
+            // Get peak usage from DuckDB
+            var tempdbData = await GetTempdbSummaryAsync(serverId);
+            var totalReservedRow = tempdbData.FirstOrDefault(t => t.Metric == "Total Reserved");
+            var peakUsedMb = totalReservedRow?.Peak24hMb ?? 0m;
+
+            // Get allocated size from live SQL
+            using var sqlConn = new SqlConnection(connectionString);
+            await sqlConn.OpenAsync();
+
+            using var allocCmd = new SqlCommand(
+                "SELECT SUM(size) * 8.0 / 1024 FROM tempdb.sys.database_files WHERE type = 0", sqlConn);
+            allocCmd.CommandTimeout = 30;
+            var allocResult = await allocCmd.ExecuteScalarAsync();
+            var allocatedMb = allocResult != null && allocResult != DBNull.Value
+                ? Convert.ToDecimal(allocResult) : 0m;
+
+            if (allocatedMb > 1024 && peakUsedMb > 0 && (peakUsedMb / allocatedMb) < 0.25m)
+            {
+                var usagePct = peakUsedMb / allocatedMb * 100m;
+                recommendations.Add(new RecommendationRow
+                {
+                    Category = "tempdb",
+                    Severity = usagePct < 10 ? "Medium" : "Low",
+                    Confidence = "Medium",
+                    Finding = $"tempdb over-provisioned (peak usage {usagePct:N0}% of {allocatedMb / 1024:N1}GB allocated)",
+                    Detail = $"tempdb is pre-allocated at {allocatedMb:N0}MB but peak usage was only " +
+                             $"{peakUsedMb:N0}MB ({usagePct:N1}%). Consider reducing initial size to reclaim disk space."
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Recommendation check failed (tempdb): {ex.Message}");
+        }
+
+        return recommendations;
+    }
 }
 
 public class ProvisioningTrendRow
@@ -1523,6 +1856,15 @@ public class UtilizationEfficiencyRow
     public int CurrentWorkersCount { get; set; }
     public int CpuCount { get; set; }
     public string ProvisioningStatus { get; set; } = "";
+
+    // FinOps cost — proportional to server monthly budget
+    public decimal MonthlyCost { get; set; }
+    public decimal AnnualCost => MonthlyCost * 12m;
+
+    // Health score (Increment 6)
+    public decimal FreeSpacePct { get; set; }
+    public int HealthScore { get; set; }
+    public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
 }
 
 public class DatabaseResourceUsageRow
@@ -1565,6 +1907,9 @@ public class DatabaseSizeRow
     public decimal? VolumeTotalMb { get; set; }
     public decimal? VolumeFreeMb { get; set; }
     public string? RecoveryModel { get; set; }
+
+    // FinOps cost — proportional share of server monthly budget
+    public decimal MonthlyCostShare { get; set; }
 }
 
 public class ServerPropertyRow
@@ -1601,6 +1946,27 @@ public class ServerPropertyRow
     public string HadrDisplay => IsHadrEnabled.HasValue ? (IsHadrEnabled.Value ? "Yes" : "No") : "";
     public string ClusteredDisplay => IsClustered.HasValue ? (IsClustered.Value ? "Yes" : "No") : "";
     public string ProvisioningDisplay => ProvisioningStatus?.Replace("_", " ") ?? "";
+
+    // FinOps cost — from server config
+    public decimal MonthlyCost { get; set; }
+    public decimal AnnualCost => MonthlyCost * 12m;
+
+    // License warning (Increment 5)
+    public string? LicenseWarning
+    {
+        get
+        {
+            if (!Edition.Contains("Standard", StringComparison.OrdinalIgnoreCase)) return null;
+            var warnings = new List<string>();
+            if (CpuCount > 24) warnings.Add($"CPU: {CpuCount} cores (Standard limited to 24)");
+            if (PhysicalMemoryMb > 131072) warnings.Add($"RAM: {PhysicalMemoryMb / 1024}GB (Standard limited to 128GB)");
+            return warnings.Count > 0 ? string.Join("; ", warnings) : null;
+        }
+    }
+
+    // Health score (Increment 6)
+    public int HealthScore { get; set; }
+    public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
 }
 
 public class DatabaseSizeTrendPoint
@@ -1646,6 +2012,9 @@ public class WaitCategorySummaryRow
     public decimal PctOfTotal { get; set; }
     public string TopWaitType { get; set; } = "";
     public long TopWaitTimeMs { get; set; }
+
+    // FinOps cost — proportional share of server monthly budget based on wait time fraction
+    public decimal MonthlyCostShare { get; set; }
 }
 
 public class ExpensiveQueryRow
@@ -1657,6 +2026,43 @@ public class ExpensiveQueryRow
     public decimal AvgReadsPerExec { get; set; }
     public long Executions { get; set; }
     public string QueryPreview { get; set; } = "";
+
+    // FinOps cost — proportional share of server monthly budget based on CPU fraction
+    public decimal MonthlyCostShare { get; set; }
+}
+
+public static class FinOpsHealthCalculator
+{
+    public static int CpuScore(decimal p95Pct)
+    {
+        if (p95Pct <= 70) return (int)(100 - p95Pct * 50 / 70);
+        return (int)Math.Max(0, 50 - (p95Pct - 70) * 50 / 30);
+    }
+
+    public static int MemoryScore(decimal bufferPoolRatio)
+    {
+        if (bufferPoolRatio <= 0.30m) return 60;
+        if (bufferPoolRatio <= 0.85m) return 100;
+        if (bufferPoolRatio <= 0.95m) return (int)(100 - (bufferPoolRatio - 0.85m) * 800);
+        return (int)Math.Max(0, 20 - (bufferPoolRatio - 0.95m) * 400);
+    }
+
+    public static int StorageScore(decimal freeSpacePct)
+    {
+        if (freeSpacePct >= 30) return 100;
+        if (freeSpacePct >= 10) return (int)(50 + (freeSpacePct - 10) * 2.5m);
+        return (int)(freeSpacePct * 5);
+    }
+
+    public static int Overall(int cpu, int memory, int storage) =>
+        (int)(cpu * 0.40 + memory * 0.30 + storage * 0.30);
+
+    public static string ScoreColor(int score) => score switch
+    {
+        >= 80 => "#27AE60",
+        >= 60 => "#F39C12",
+        _ => "#E74C3C"
+    };
 }
 
 public class IndexCleanupResultRow
@@ -1709,4 +2115,15 @@ public class IndexCleanupSummaryRow
     public string LatchWaitCount { get; set; } = "";
     public string DailyLatchWaitsSaved { get; set; } = "";
     public string AvgLatchWaitMs { get; set; } = "";
+}
+
+public class RecommendationRow
+{
+    public string Category { get; set; } = "";
+    public string Severity { get; set; } = "";
+    public string Confidence { get; set; } = "";
+    public string Finding { get; set; } = "";
+    public string Detail { get; set; } = "";
+    public decimal? EstMonthlySavings { get; set; }
+    public string EstMonthlySavingsDisplay => EstMonthlySavings.HasValue ? $"${EstMonthlySavings.Value:N0}" : "";
 }

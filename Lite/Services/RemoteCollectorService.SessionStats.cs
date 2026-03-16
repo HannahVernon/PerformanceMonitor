@@ -107,7 +107,7 @@ OPTION(RECOMPILE);";
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     var programName = reader.GetString(0);
-                    var connectionCount = Convert.ToInt32(reader.GetValue(1));
+                    var connectionCount = Convert.ToInt64(reader.GetValue(1));
                     var runningCount = Convert.ToInt32(reader.GetValue(2));
                     var sleepingCount = Convert.ToInt32(reader.GetValue(3));
                     var dormantCount = Convert.ToInt32(reader.GetValue(4));

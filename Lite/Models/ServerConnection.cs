@@ -64,6 +64,12 @@ public class ServerConnection
     public bool TrustServerCertificate { get; set; } = false;
 
     /// <summary>
+    /// Monthly cost of this server in USD, used for FinOps cost attribution.
+    /// Set to 0 to hide cost columns. All FinOps costs are proportional to this budget.
+    /// </summary>
+    public decimal MonthlyCostUsd { get; set; } = 0m;
+
+    /// <summary>
     /// Optional database name for the initial connection.
     /// Required for Azure SQL Database (which doesn't allow connecting to master).
     /// Leave empty for on-premises SQL Server (defaults to master).

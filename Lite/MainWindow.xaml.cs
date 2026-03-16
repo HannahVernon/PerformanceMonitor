@@ -840,6 +840,102 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private async void ImportDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        /* Open folder browser to select the old Lite install directory */
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select Previous Lite Install Folder",
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog(this) != true || string.IsNullOrWhiteSpace(dialog.FolderName))
+        {
+            return;
+        }
+
+        var sourceFolder = dialog.FolderName;
+
+        /* Validate that monitor.duckdb exists in the selected folder */
+        if (!DataImportService.ValidateSourceFolder(sourceFolder))
+        {
+            MessageBox.Show(
+                "The selected folder does not contain a monitor.duckdb file.\n\n" +
+                "Please select the folder where the previous Lite application was installed.",
+                "Invalid Folder",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        /* Prevent double-clicks */
+        ImportDataButton.IsEnabled = false;
+        ImportDataButtonText.Text = "Importing...";
+        StatusText.Text = "Importing data from previous install...";
+
+        try
+        {
+            var importService = new DataImportService(_databaseInitializer, App.ArchiveDirectory);
+
+            /* The tryLockOldDb callback runs on the UI thread to show the retry dialog */
+            var result = await Task.Run(async () =>
+                await importService.RunImportAsync(sourceFolder, async _ =>
+                {
+                    var answer = MessageBoxResult.Cancel;
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        answer = MessageBox.Show(
+                            "Could not lock the database to flush current data.\n\n" +
+                            "Close the previous Lite application and click OK to try again.",
+                            "Database Locked",
+                            MessageBoxButton.OKCancel,
+                            MessageBoxImage.Warning);
+                    });
+                    return answer == MessageBoxResult.OK;
+                }));
+
+            if (result.Success)
+            {
+                StatusText.Text = "Import complete";
+                MessageBox.Show(
+                    $"Import completed successfully.\n\n" +
+                    $"Tables flushed from old database: {result.TablesFlushed}\n" +
+                    $"Parquet files imported: {result.FilesImported}\n\n" +
+                    "Historical data is now available in all views.",
+                    "Import Complete",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            else
+            {
+                StatusText.Text = "Import cancelled or failed";
+                if (!string.IsNullOrEmpty(result.ErrorMessage))
+                {
+                    MessageBox.Show(
+                        result.ErrorMessage,
+                        "Import Failed",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("DataImport", "Unhandled import error", ex);
+            StatusText.Text = "Import failed";
+            MessageBox.Show(
+                $"An unexpected error occurred during import:\n\n{ex.Message}",
+                "Import Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            ImportDataButton.IsEnabled = true;
+            ImportDataButtonText.Text = "Import Data";
+        }
+    }
+
     /// <summary>
     /// Gets the ServerConnection from a context menu click on a server list item.
     /// </summary>
