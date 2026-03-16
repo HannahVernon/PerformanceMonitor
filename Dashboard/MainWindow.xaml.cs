@@ -423,10 +423,29 @@ namespace PerformanceMonitorDashboard
                             _notificationService?.ShowServerOfflineNotification(
                                 item.DisplayName,
                                 newStatus.ErrorMessage);
+
+                            var errorDetail = newStatus.ErrorMessage ?? "Connection failed";
+                            _emailAlertService.RecordAlert(item.Id, item.DisplayName, "Server Unreachable",
+                                errorDetail, "Online", true, "email");
+                            _ = _emailAlertService.TrySendAlertEmailAsync(
+                                "Server Unreachable",
+                                item.DisplayName,
+                                errorDetail,
+                                "Online",
+                                item.Id);
                         }
                         else if (!wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
                         {
                             _notificationService?.ShowConnectionRestoredNotification(item.DisplayName);
+
+                            _emailAlertService.RecordAlert(item.Id, item.DisplayName, "Server Restored",
+                                "Online", "Online", true, "email");
+                            _ = _emailAlertService.TrySendAlertEmailAsync(
+                                "Server Restored",
+                                item.DisplayName,
+                                "Connection restored",
+                                "Online",
+                                item.Id);
                         }
                     }
 
