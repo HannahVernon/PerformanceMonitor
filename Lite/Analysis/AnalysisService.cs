@@ -92,8 +92,9 @@ public class AnalysisService
 
         try
         {
-            // 0. Check minimum data span
-            var dataSpanHours = await GetDataSpanHoursAsync(context);
+            // 0. Check minimum data span — total history, not the analysis window.
+            // A server with 100h of total history can be analyzed over a 4h window.
+            var dataSpanHours = await GetTotalDataSpanHoursAsync(context.ServerId);
             if (dataSpanHours < MinimumDataHours)
             {
                 var needed = MinimumDataHours >= 24
@@ -266,10 +267,12 @@ public class AnalysisService
     }
 
     /// <summary>
-    /// Returns the actual span of collected data for a server in the given time range.
-    /// Uses wait_stats as the canary — if wait data is being collected, everything else is too.
+    /// Returns the total span of collected data for a server (no time range filter).
+    /// This answers "has this server been monitored long enough?" — separate from
+    /// the analysis window. A server with 100 hours of total history can safely
+    /// be analyzed over a 4-hour window without dilution.
     /// </summary>
-    private async Task<double> GetDataSpanHoursAsync(AnalysisContext context)
+    private async Task<double> GetTotalDataSpanHoursAsync(int serverId)
     {
         try
         {
@@ -281,13 +284,9 @@ public class AnalysisService
             cmd.CommandText = @"
 SELECT EXTRACT(EPOCH FROM (MAX(collection_time) - MIN(collection_time))) / 3600.0
 FROM wait_stats
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3";
+WHERE server_id = $1";
 
-            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
-            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
-            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+            cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
 
             var result = await cmd.ExecuteScalarAsync();
             if (result == null || result is DBNull)
