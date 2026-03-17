@@ -1201,7 +1201,8 @@ SELECT
     SUM(delta_logical_reads) AS total_reads,
     CAST(SUM(delta_logical_reads) * 1.0 / NULLIF(SUM(delta_execution_count), 0) AS DECIMAL(19,0)) AS avg_reads,
     SUM(delta_execution_count) AS executions,
-    query_text AS query_preview
+    LEFT(query_text, 200) AS query_preview,
+    query_text AS full_query_text
 FROM v_query_stats
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -1232,7 +1233,8 @@ LIMIT $3";
                 TotalReads = reader.IsDBNull(3) ? 0 : ToInt64(reader.GetValue(3)),
                 AvgReadsPerExec = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
                 Executions = reader.IsDBNull(5) ? 0 : ToInt64(reader.GetValue(5)),
-                QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6)
+                QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                FullQueryText = reader.IsDBNull(7) ? "" : reader.GetString(7)
             });
         }
         return items;
@@ -1259,13 +1261,20 @@ SELECT
     SUM(delta_logical_reads) AS total_reads,
     SUM(delta_logical_writes) AS total_writes,
     SUM(COALESCE(max_grant_kb, 0)) / 1024.0 AS total_memory_mb,
+    (SELECT LEFT(qs2.query_text, 200) FROM query_stats qs2
+     WHERE qs2.query_hash = qs.query_hash
+     AND qs2.server_id = $1
+     AND qs2.collection_time >= $2
+     AND qs2.query_text IS NOT NULL AND qs2.query_text != ''
+     ORDER BY qs2.delta_execution_count DESC NULLS LAST
+     LIMIT 1) AS sample_query_text,
     (SELECT qs2.query_text FROM query_stats qs2
      WHERE qs2.query_hash = qs.query_hash
      AND qs2.server_id = $1
      AND qs2.collection_time >= $2
      AND qs2.query_text IS NOT NULL AND qs2.query_text != ''
      ORDER BY qs2.delta_execution_count DESC NULLS LAST
-     LIMIT 1) AS sample_query_text
+     LIMIT 1) AS full_query_text
 FROM query_stats AS qs
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -1293,7 +1302,8 @@ ORDER BY SUM(delta_worker_time) DESC";
                 TotalReads = reader.IsDBNull(5) ? 0 : ToInt64(reader.GetValue(5)),
                 TotalWrites = reader.IsDBNull(6) ? 0 : ToInt64(reader.GetValue(6)),
                 TotalMemoryMb = reader.IsDBNull(7) ? 0m : Convert.ToDecimal(reader.GetValue(7)),
-                SampleQueryText = reader.IsDBNull(8) ? "" : reader.GetString(8)
+                SampleQueryText = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                FullQueryText = reader.IsDBNull(9) ? "" : reader.GetString(9)
             });
         }
 
@@ -2201,6 +2211,7 @@ public class ExpensiveQueryRow
     public decimal AvgReadsPerExec { get; set; }
     public long Executions { get; set; }
     public string QueryPreview { get; set; } = "";
+    public string FullQueryText { get; set; } = "";
 
     // FinOps cost — proportional share of server monthly budget based on CPU fraction
     public decimal MonthlyCostShare { get; set; }
@@ -2321,6 +2332,7 @@ public class HighImpactQueryRow
     public decimal ExecutionsShare { get; set; }
     public int ImpactScore { get; set; }
     public string SampleQueryText { get; set; } = "";
+    public string FullQueryText { get; set; } = "";
 
     public string ImpactScoreColor => ImpactScore switch
     {

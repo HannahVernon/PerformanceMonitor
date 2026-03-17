@@ -1306,6 +1306,16 @@ SELECT TOP(@topN)
     executions =
         SUM(qs.execution_count_delta),
     query_preview =
+        LEFT
+        (
+            CONVERT
+            (
+                nvarchar(max),
+                DECOMPRESS(qs.query_text)
+            ),
+            200
+        ),
+    full_query_text =
         CONVERT
         (
             nvarchar(max),
@@ -1343,7 +1353,8 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         TotalReads = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
                         AvgReadsPerExec = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
                         Executions = reader.IsDBNull(5) ? 0 : Convert.ToInt64(reader.GetValue(5)),
-                        QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6)
+                        QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                        FullQueryText = reader.IsDBNull(7) ? "" : reader.GetString(7)
                     });
                 }
             }
@@ -1475,7 +1486,8 @@ SELECT
             CASE WHEN memory_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
             CASE WHEN executions_pctl IS NOT NULL THEN 1.0 ELSE 0 END
         ) * 100),
-    sample_query_text
+    query_preview = LEFT(sample_query_text, 200),
+    full_query_text = sample_query_text
 FROM with_text
 ORDER BY
     (
@@ -1514,7 +1526,8 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         MemoryShare = reader.IsDBNull(12) ? 0m : Convert.ToDecimal(reader.GetValue(12)),
                         ExecutionsShare = reader.IsDBNull(13) ? 0m : Convert.ToDecimal(reader.GetValue(13)),
                         ImpactScore = reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14)),
-                        SampleQueryText = reader.IsDBNull(15) ? "" : reader.GetString(15)
+                        SampleQueryText = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                        FullQueryText = reader.IsDBNull(16) ? "" : reader.GetString(16)
                     });
                 }
             }
@@ -2417,6 +2430,7 @@ ORDER BY SUM(CAST(is_running_long AS int)) DESC", connection);
         public decimal AvgReadsPerExec { get; set; }
         public long Executions { get; set; }
         public string QueryPreview { get; set; } = "";
+        public string FullQueryText { get; set; } = "";
 
         // FinOps cost — proportional share of server monthly budget based on CPU fraction
         public decimal MonthlyCostShare { get; set; }
@@ -2564,6 +2578,7 @@ ORDER BY SUM(CAST(is_running_long AS int)) DESC", connection);
         public decimal ExecutionsShare { get; set; }
         public int ImpactScore { get; set; }
         public string SampleQueryText { get; set; } = "";
+        public string FullQueryText { get; set; } = "";
 
         public string ImpactScoreColor => ImpactScore switch
         {
