@@ -128,6 +128,36 @@ internal static class McpInstructions
         | `get_critical_issues` | Detected performance issues with severity, problem area, and investigation queries | `server_name`, `hours_back` |
         | `get_session_stats` | Session/connection counts: running, sleeping, dormant, top application/host | `server_name`, `hours_back` |
 
+        ### Active Query Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_active_queries` | sp_WhoIsActive snapshots — what was running at each collection point | `server_name`, `hours_back` (default 1), `limit` (default 50) |
+
+        ### Server Inventory Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_server_properties` | Server edition, version, CPU count, memory, HADR status | `server_name` |
+        | `get_database_sizes` | Database file sizes, space usage, volume free space | `server_name` |
+
+        ### System Event Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_default_trace_events` | Default trace: auto-growth, config changes, object creation/deletion | `server_name`, `hours_back`, `limit` |
+        | `get_trace_analysis` | Processed trace data: long-running queries with CPU, reads, duration | `server_name`, `hours_back`, `limit` |
+        | `get_memory_pressure_events` | Ring buffer memory pressure notifications | `server_name`, `hours_back` |
+
+        ### Health Parser Tools (system_health extended events)
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_health_parser_system_health` | Overall system health indicators | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_severe_errors` | Stack dumps, non-yielding schedulers, critical errors | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_io_issues` | 15-second I/O warnings, stalled I/O subsystems | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_scheduler_issues` | Non-yielding/deadlocked schedulers | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_conditions` | Low memory notifications, memory pressure indicators | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_cpu_tasks` | Long-running CPU-bound tasks | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_broker` | Memory broker shrink/grow notifications | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_node_oom` | NUMA node out-of-memory conditions | `server_name`, `hours_back`, `limit` |
+
         ### Execution Plan Analysis Tools
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|

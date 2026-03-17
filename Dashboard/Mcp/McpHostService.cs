@@ -86,7 +86,11 @@ public sealed class McpHostService : BackgroundService
                 .WithTools<McpLatchSpinlockTools>()
                 .WithTools<McpSchedulerTools>()
                 .WithTools<McpConfigHistoryTools>()
-                .WithTools<McpDiagnosticTools>();
+                .WithTools<McpDiagnosticTools>()
+                .WithTools<McpActiveQueryTools>()
+                .WithTools<McpSystemEventTools>()
+                .WithTools<McpHealthParserTools>()
+                .WithTools<McpServerInventoryTools>();
 
             _app = builder.Build();
             _app.MapMcp();
