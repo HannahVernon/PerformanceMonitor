@@ -42,6 +42,7 @@ public partial class FinOpsTab : UserControl
     private DataGridFilterManager<IndexCleanupResultRow>? _indexDetailFilterMgr;
     private DataGridFilterManager<ApplicationConnectionRow>? _appConnectionsFilterMgr;
     private DataGridFilterManager<ServerPropertyRow>? _serverInventoryFilterMgr;
+    private DataGridFilterManager<HighImpactQueryRow>? _highImpactFilterMgr;
 
     public FinOpsTab()
     {
@@ -143,7 +144,8 @@ public partial class FinOpsTab : UserControl
             LoadTempdbSummaryAsync(serverId),
             LoadWaitCategorySummaryAsync(serverId),
             LoadExpensiveQueriesAsync(serverId),
-            LoadMemoryGrantEfficiencyAsync(serverId)
+            LoadMemoryGrantEfficiencyAsync(serverId),
+            LoadHighImpactQueriesAsync(serverId)
         );
     }
 
@@ -555,6 +557,37 @@ public partial class FinOpsTab : UserControl
         }
     }
 
+    private int GetHighImpactHoursBack()
+    {
+        return HighImpactTimeRangeCombo.SelectedIndex switch
+        {
+            0 => 1,
+            1 => 4,
+            2 => 12,
+            3 => 24,
+            4 => 168,
+            _ => 24
+        };
+    }
+
+    private async System.Threading.Tasks.Task LoadHighImpactQueriesAsync(int serverId)
+    {
+        if (_dataService == null) return;
+
+        try
+        {
+            var hoursBack = GetHighImpactHoursBack();
+            var data = await _dataService.GetHighImpactQueriesAsync(serverId, hoursBack);
+            HighImpactDataGrid.ItemsSource = data;
+            HighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            HighImpactCountIndicator.Text = data.Count > 0 ? $"{data.Count} high-impact query(s)" : "";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Failed to load high-impact queries: {ex.Message}");
+        }
+    }
+
     private int GetWaitStatsHoursBack()
     {
         return WaitStatsTimeRangeCombo.SelectedIndex switch
@@ -722,6 +755,20 @@ public partial class FinOpsTab : UserControl
         var serverId = GetSelectedServerId();
         if (serverId == 0) return;
         await LoadExpensiveQueriesAsync(serverId);
+    }
+
+    private async void RefreshHighImpact_Click(object sender, RoutedEventArgs e)
+    {
+        var serverId = GetSelectedServerId();
+        if (serverId != 0) await LoadHighImpactQueriesAsync(serverId);
+    }
+
+    private async void HighImpactTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || _dataService == null) return;
+        var serverId = GetSelectedServerId();
+        if (serverId == 0) return;
+        await LoadHighImpactQueriesAsync(serverId);
     }
 
     private async void OptimizationRefresh_Click(object sender, RoutedEventArgs e)
@@ -913,6 +960,7 @@ public partial class FinOpsTab : UserControl
         _indexDetailFilterMgr = new DataGridFilterManager<IndexCleanupResultRow>(IndexAnalysisDetailGrid);
         _appConnectionsFilterMgr = new DataGridFilterManager<ApplicationConnectionRow>(ApplicationConnectionsDataGrid);
         _serverInventoryFilterMgr = new DataGridFilterManager<ServerPropertyRow>(ServerInventoryDataGrid);
+        _highImpactFilterMgr = new DataGridFilterManager<HighImpactQueryRow>(HighImpactDataGrid);
 
         _filterManagers[DatabaseResourcesDataGrid] = _dbResourcesFilterMgr;
         _filterManagers[StorageGrowthDataGrid] = _storageGrowthFilterMgr;
@@ -921,6 +969,7 @@ public partial class FinOpsTab : UserControl
         _filterManagers[IndexAnalysisDetailGrid] = _indexDetailFilterMgr;
         _filterManagers[ApplicationConnectionsDataGrid] = _appConnectionsFilterMgr;
         _filterManagers[ServerInventoryDataGrid] = _serverInventoryFilterMgr;
+        _filterManagers[HighImpactDataGrid] = _highImpactFilterMgr;
     }
 
     private void EnsureFilterPopup()

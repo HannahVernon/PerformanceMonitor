@@ -54,6 +54,7 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.AutoSizeColumnMinWidths(ExpensiveQueriesDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(IndexAnalysisSummaryGrid);
             TabHelpers.AutoSizeColumnMinWidths(IndexAnalysisDetailGrid);
+            TabHelpers.AutoSizeColumnMinWidths(HighImpactDataGrid);
 
             TabHelpers.FreezeColumns(RecommendationsDataGrid, 1);
             TabHelpers.FreezeColumns(DatabaseResourcesDataGrid, 1);
@@ -67,6 +68,7 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.FreezeColumns(WaitCategorySummaryDataGrid, 1);
             TabHelpers.FreezeColumns(ExpensiveQueriesDataGrid, 1);
             TabHelpers.FreezeColumns(IndexAnalysisDetailGrid, 1);
+            TabHelpers.FreezeColumns(HighImpactDataGrid, 1);
         }
 
         /// <summary>
@@ -120,7 +122,8 @@ namespace PerformanceMonitorDashboard.Controls
                     LoadTempdbSummaryAsync(),
                     LoadWaitCategorySummaryAsync(),
                     LoadExpensiveQueriesAsync(),
-                    LoadMemoryGrantEfficiencyAsync()
+                    LoadMemoryGrantEfficiencyAsync(),
+                    LoadHighImpactQueriesAsync()
                 );
             }
             catch (Exception ex)
@@ -734,6 +737,41 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         // ============================================
+        // High Impact Queries Tab
+        // ============================================
+
+        private int GetHighImpactHoursBack()
+        {
+            return HighImpactTimeRangeCombo.SelectedIndex switch
+            {
+                0 => 1,
+                1 => 4,
+                2 => 12,
+                3 => 24,
+                4 => 168,
+                _ => 24
+            };
+        }
+
+        private async Task LoadHighImpactQueriesAsync()
+        {
+            if (_databaseService == null) return;
+
+            try
+            {
+                var hoursBack = GetHighImpactHoursBack();
+                var data = await _databaseService.GetFinOpsHighImpactQueriesAsync(hoursBack);
+                HighImpactDataGrid.ItemsSource = data;
+                HighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                HighImpactCountIndicator.Text = data.Count > 0 ? $"{data.Count} high-impact query(s)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading high-impact queries: {ex.Message}", ex);
+            }
+        }
+
+        // ============================================
         // Refresh Button Handlers
         // ============================================
 
@@ -783,6 +821,17 @@ namespace PerformanceMonitorDashboard.Controls
         private async void DatabaseSizesRefresh_Click(object sender, RoutedEventArgs e)
         {
             await LoadDatabaseSizesAsync();
+        }
+
+        private async void HighImpactRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadHighImpactQueriesAsync();
+        }
+
+        private async void HighImpactTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (!IsLoaded || _databaseService == null) return;
+            await LoadHighImpactQueriesAsync();
         }
 
         private async void ApplicationConnectionsRefresh_Click(object sender, RoutedEventArgs e)

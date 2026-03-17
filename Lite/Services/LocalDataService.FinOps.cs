@@ -1239,6 +1239,125 @@ LIMIT $3";
     }
 
     /// <summary>
+    /// Fetches high-impact queries — 80/20 analysis across CPU, duration, reads, writes, memory, executions.
+    /// Aggregates to query_hash level from DuckDB, then scores in C#.
+    /// </summary>
+    public async Task<List<HighImpactQueryRow>> GetHighImpactQueriesAsync(int serverId, int hoursBack = 24)
+    {
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+
+        var cutoff = DateTime.UtcNow.AddHours(-hoursBack);
+
+        command.CommandText = @"
+SELECT
+    query_hash,
+    MIN(database_name) AS database_name,
+    SUM(delta_execution_count) AS total_executions,
+    SUM(delta_worker_time) / 1000.0 AS total_cpu_ms,
+    SUM(delta_elapsed_time) / 1000.0 AS total_duration_ms,
+    SUM(delta_logical_reads) AS total_reads,
+    SUM(delta_logical_writes) AS total_writes,
+    SUM(COALESCE(max_grant_kb, 0)) / 1024.0 AS total_memory_mb,
+    (SELECT qs2.query_text FROM query_stats qs2
+     WHERE qs2.query_hash = qs.query_hash
+     AND qs2.server_id = $1
+     AND qs2.collection_time >= $2
+     AND qs2.query_text IS NOT NULL AND qs2.query_text != ''
+     ORDER BY qs2.delta_execution_count DESC NULLS LAST
+     LIMIT 1) AS sample_query_text
+FROM query_stats AS qs
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   query_hash IS NOT NULL AND query_hash != ''
+AND   delta_execution_count > 0
+GROUP BY query_hash
+HAVING SUM(delta_execution_count) > 0
+ORDER BY SUM(delta_worker_time) DESC";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = cutoff });
+
+        // Step 1: Read aggregated data
+        var allRows = new List<HighImpactQueryRow>();
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            allRows.Add(new HighImpactQueryRow
+            {
+                QueryHash = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                DatabaseName = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                TotalExecutions = reader.IsDBNull(2) ? 0 : ToInt64(reader.GetValue(2)),
+                TotalCpuMs = reader.IsDBNull(3) ? 0m : Convert.ToDecimal(reader.GetValue(3)),
+                TotalDurationMs = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
+                TotalReads = reader.IsDBNull(5) ? 0 : ToInt64(reader.GetValue(5)),
+                TotalWrites = reader.IsDBNull(6) ? 0 : ToInt64(reader.GetValue(6)),
+                TotalMemoryMb = reader.IsDBNull(7) ? 0m : Convert.ToDecimal(reader.GetValue(7)),
+                SampleQueryText = reader.IsDBNull(8) ? "" : reader.GetString(8)
+            });
+        }
+
+        if (allRows.Count == 0) return allRows;
+
+        // Step 2: Find "interesting" hashes — top 10 per dimension via UNION
+        var interesting = new HashSet<string>();
+        foreach (var hash in allRows.OrderByDescending(r => r.TotalCpuMs).Take(10).Select(r => r.QueryHash)) interesting.Add(hash);
+        foreach (var hash in allRows.OrderByDescending(r => r.TotalDurationMs).Take(10).Select(r => r.QueryHash)) interesting.Add(hash);
+        foreach (var hash in allRows.OrderByDescending(r => r.TotalReads).Take(10).Select(r => r.QueryHash)) interesting.Add(hash);
+        foreach (var hash in allRows.OrderByDescending(r => r.TotalWrites).Take(10).Select(r => r.QueryHash)) interesting.Add(hash);
+        foreach (var hash in allRows.OrderByDescending(r => r.TotalMemoryMb).Take(10).Select(r => r.QueryHash)) interesting.Add(hash);
+        foreach (var hash in allRows.OrderByDescending(r => r.TotalExecutions).Take(10).Select(r => r.QueryHash)) interesting.Add(hash);
+
+        var filtered = allRows.Where(r => interesting.Contains(r.QueryHash)).ToList();
+
+        if (filtered.Count == 0) return filtered;
+
+        // Step 3: Compute PERCENT_RANK and share for the interesting set
+        var cpuValues = filtered.Select(r => r.TotalCpuMs).OrderBy(v => v).ToList();
+        var durationValues = filtered.Select(r => r.TotalDurationMs).OrderBy(v => v).ToList();
+        var readsValues = filtered.Select(r => (decimal)r.TotalReads).OrderBy(v => v).ToList();
+        var writesValues = filtered.Select(r => (decimal)r.TotalWrites).OrderBy(v => v).ToList();
+        var memoryValues = filtered.Select(r => r.TotalMemoryMb).OrderBy(v => v).ToList();
+        var execValues = filtered.Select(r => (decimal)r.TotalExecutions).OrderBy(v => v).ToList();
+
+        var totalCpu = filtered.Sum(r => r.TotalCpuMs);
+        var totalDuration = filtered.Sum(r => r.TotalDurationMs);
+        var totalReads = filtered.Sum(r => (decimal)r.TotalReads);
+        var totalWrites = filtered.Sum(r => (decimal)r.TotalWrites);
+        var totalMemory = filtered.Sum(r => r.TotalMemoryMb);
+        var totalExecs = filtered.Sum(r => (decimal)r.TotalExecutions);
+
+        foreach (var row in filtered)
+        {
+            var cpuPctl = PercentRank(cpuValues, row.TotalCpuMs);
+            var durationPctl = PercentRank(durationValues, row.TotalDurationMs);
+            var readsPctl = PercentRank(readsValues, (decimal)row.TotalReads);
+            var writesPctl = PercentRank(writesValues, (decimal)row.TotalWrites);
+            var memoryPctl = PercentRank(memoryValues, row.TotalMemoryMb);
+            var execsPctl = PercentRank(execValues, (decimal)row.TotalExecutions);
+
+            row.CpuShare = totalCpu > 0 ? Math.Round(100m * row.TotalCpuMs / totalCpu, 1) : 0;
+            row.DurationShare = totalDuration > 0 ? Math.Round(100m * row.TotalDurationMs / totalDuration, 1) : 0;
+            row.ReadsShare = totalReads > 0 ? Math.Round(100m * row.TotalReads / totalReads, 1) : 0;
+            row.WritesShare = totalWrites > 0 ? Math.Round(100m * row.TotalWrites / totalWrites, 1) : 0;
+            row.MemoryShare = totalMemory > 0 ? Math.Round(100m * row.TotalMemoryMb / totalMemory, 1) : 0;
+            row.ExecutionsShare = totalExecs > 0 ? Math.Round(100m * row.TotalExecutions / totalExecs, 1) : 0;
+
+            var pctlSum = cpuPctl + durationPctl + readsPctl + writesPctl + memoryPctl + execsPctl;
+            row.ImpactScore = (int)(pctlSum / 6m * 100m);
+        }
+
+        return filtered.OrderByDescending(r => r.ImpactScore).ToList();
+    }
+
+    private static decimal PercentRank(List<decimal> sortedValues, decimal value)
+    {
+        if (sortedValues.Count <= 1) return 0;
+        int rank = sortedValues.Count(v => v < value);
+        return (decimal)rank / (sortedValues.Count - 1);
+    }
+
+    /// <summary>
     /// Checks if sp_IndexCleanup is installed on the target SQL Server.
     /// </summary>
     public static async Task<bool> CheckSpIndexCleanupExistsAsync(string connectionString)
@@ -2182,4 +2301,31 @@ public class RecommendationRow
     public string Detail { get; set; } = "";
     public decimal? EstMonthlySavings { get; set; }
     public string EstMonthlySavingsDisplay => EstMonthlySavings.HasValue ? $"${EstMonthlySavings.Value:N0}" : "";
+}
+
+public class HighImpactQueryRow
+{
+    public string QueryHash { get; set; } = "";
+    public string DatabaseName { get; set; } = "";
+    public long TotalExecutions { get; set; }
+    public decimal TotalCpuMs { get; set; }
+    public decimal TotalDurationMs { get; set; }
+    public long TotalReads { get; set; }
+    public long TotalWrites { get; set; }
+    public decimal TotalMemoryMb { get; set; }
+    public decimal CpuShare { get; set; }
+    public decimal DurationShare { get; set; }
+    public decimal ReadsShare { get; set; }
+    public decimal WritesShare { get; set; }
+    public decimal MemoryShare { get; set; }
+    public decimal ExecutionsShare { get; set; }
+    public int ImpactScore { get; set; }
+    public string SampleQueryText { get; set; } = "";
+
+    public string ImpactScoreColor => ImpactScore switch
+    {
+        >= 80 => "#E74C3C",
+        >= 60 => "#F39C12",
+        _ => "#27AE60"
+    };
 }

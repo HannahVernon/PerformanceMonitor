@@ -1356,6 +1356,177 @@ OPTION(MAXDOP 1, RECOMPILE);";
         }
 
         /// <summary>
+        /// Fetches high-impact queries — 80/20 analysis across CPU, duration, reads, writes, memory, executions.
+        /// </summary>
+        public async Task<List<FinOpsHighImpactQuery>> GetFinOpsHighImpactQueriesAsync(int hoursBack = 24)
+        {
+            var items = new List<FinOpsHighImpactQuery>();
+
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            const string query = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+DECLARE @cutoff datetime2(7) = DATEADD(HOUR, -@hoursBack, SYSDATETIME());
+
+WITH
+    agg AS
+    (
+        SELECT
+            qs.query_hash,
+            database_name = MIN(qs.database_name),
+            total_executions = SUM(qs.execution_count_delta),
+            total_cpu_ms = SUM(qs.total_worker_time_delta) / 1000.0,
+            total_duration_ms = SUM(qs.total_elapsed_time_delta) / 1000.0,
+            total_reads = SUM(qs.total_logical_reads_delta),
+            total_writes = SUM(qs.total_logical_writes_delta),
+            total_memory_mb = SUM(ISNULL(qs.max_grant_kb, 0)) / 1024.0
+        FROM collect.query_stats AS qs
+        WHERE qs.collection_time >= @cutoff
+        AND   qs.query_hash IS NOT NULL
+        AND   qs.execution_count_delta > 0
+        GROUP BY
+            qs.query_hash
+        HAVING
+            SUM(qs.execution_count_delta) > 0
+    ),
+    interesting AS
+    (
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_cpu_ms DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_duration_ms DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_reads DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_writes DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_memory_mb DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_executions DESC) x
+    ),
+    scored AS
+    (
+        SELECT
+            a.*,
+            cpu_pctl = PERCENT_RANK() OVER (ORDER BY a.total_cpu_ms),
+            duration_pctl = PERCENT_RANK() OVER (ORDER BY a.total_duration_ms),
+            reads_pctl = PERCENT_RANK() OVER (ORDER BY a.total_reads),
+            writes_pctl = PERCENT_RANK() OVER (ORDER BY a.total_writes),
+            memory_pctl = PERCENT_RANK() OVER (ORDER BY a.total_memory_mb),
+            executions_pctl = PERCENT_RANK() OVER (ORDER BY a.total_executions),
+            cpu_share = CONVERT(decimal(5,1), 100.0 * a.total_cpu_ms / NULLIF(SUM(a.total_cpu_ms) OVER (), 0)),
+            duration_share = CONVERT(decimal(5,1), 100.0 * a.total_duration_ms / NULLIF(SUM(a.total_duration_ms) OVER (), 0)),
+            reads_share = CONVERT(decimal(5,1), 100.0 * a.total_reads / NULLIF(SUM(CONVERT(float, a.total_reads)) OVER (), 0)),
+            writes_share = CONVERT(decimal(5,1), 100.0 * a.total_writes / NULLIF(SUM(CONVERT(float, a.total_writes)) OVER (), 0)),
+            memory_share = CONVERT(decimal(5,1), 100.0 * a.total_memory_mb / NULLIF(SUM(a.total_memory_mb) OVER (), 0)),
+            executions_share = CONVERT(decimal(5,1), 100.0 * a.total_executions / NULLIF(SUM(CONVERT(float, a.total_executions)) OVER (), 0))
+        FROM agg AS a
+        JOIN interesting AS i
+          ON a.query_hash = i.query_hash
+    ),
+    with_text AS
+    (
+        SELECT
+            s.*,
+            sample_query_text =
+            (
+                SELECT TOP (1)
+                    CASE
+                        WHEN qs2.query_text IS NOT NULL
+                        THEN LEFT(CAST(DECOMPRESS(qs2.query_text) AS nvarchar(max)), 500)
+                        ELSE N''
+                    END
+                FROM collect.query_stats AS qs2
+                WHERE qs2.query_hash = s.query_hash
+                AND   qs2.collection_time >= @cutoff
+                AND   qs2.query_text IS NOT NULL
+                ORDER BY
+                    qs2.execution_count_delta DESC
+            )
+        FROM scored AS s
+    )
+SELECT
+    query_hash_display = CONVERT(varchar(20), query_hash, 1),
+    database_name,
+    total_executions,
+    total_cpu_ms,
+    total_duration_ms,
+    total_reads,
+    total_writes,
+    total_memory_mb,
+    cpu_share,
+    duration_share,
+    reads_share,
+    writes_share,
+    memory_share,
+    executions_share,
+    impact_score =
+        CONVERT(int,
+        (
+            ISNULL(cpu_pctl, 0) +
+            ISNULL(duration_pctl, 0) +
+            ISNULL(reads_pctl, 0) +
+            ISNULL(writes_pctl, 0) +
+            ISNULL(memory_pctl, 0) +
+            ISNULL(executions_pctl, 0)
+        ) /
+        (
+            CASE WHEN cpu_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN duration_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN reads_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN writes_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN memory_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN executions_pctl IS NOT NULL THEN 1.0 ELSE 0 END
+        ) * 100),
+    sample_query_text
+FROM with_text
+ORDER BY
+    (
+        ISNULL(cpu_pctl, 0) +
+        ISNULL(duration_pctl, 0) +
+        ISNULL(reads_pctl, 0) +
+        ISNULL(writes_pctl, 0) +
+        ISNULL(memory_pctl, 0) +
+        ISNULL(executions_pctl, 0)
+    ) DESC
+OPTION(MAXDOP 1, RECOMPILE);";
+
+            using var command = new SqlCommand(query, connection);
+            command.Parameters.AddWithValue("@hoursBack", hoursBack);
+            command.CommandTimeout = 120;
+
+            using (StartQueryTiming("FinOps_HighImpactQueries", query, connection))
+            {
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    items.Add(new FinOpsHighImpactQuery
+                    {
+                        QueryHashDisplay = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                        DatabaseName = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                        TotalExecutions = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+                        TotalCpuMs = reader.IsDBNull(3) ? 0m : Convert.ToDecimal(reader.GetValue(3)),
+                        TotalDurationMs = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
+                        TotalReads = reader.IsDBNull(5) ? 0 : Convert.ToInt64(reader.GetValue(5)),
+                        TotalWrites = reader.IsDBNull(6) ? 0 : Convert.ToInt64(reader.GetValue(6)),
+                        TotalMemoryMb = reader.IsDBNull(7) ? 0m : Convert.ToDecimal(reader.GetValue(7)),
+                        CpuShare = reader.IsDBNull(8) ? 0m : Convert.ToDecimal(reader.GetValue(8)),
+                        DurationShare = reader.IsDBNull(9) ? 0m : Convert.ToDecimal(reader.GetValue(9)),
+                        ReadsShare = reader.IsDBNull(10) ? 0m : Convert.ToDecimal(reader.GetValue(10)),
+                        WritesShare = reader.IsDBNull(11) ? 0m : Convert.ToDecimal(reader.GetValue(11)),
+                        MemoryShare = reader.IsDBNull(12) ? 0m : Convert.ToDecimal(reader.GetValue(12)),
+                        ExecutionsShare = reader.IsDBNull(13) ? 0m : Convert.ToDecimal(reader.GetValue(13)),
+                        ImpactScore = reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14)),
+                        SampleQueryText = reader.IsDBNull(15) ? "" : reader.GetString(15)
+                    });
+                }
+            }
+
+            return items;
+        }
+
+        /// <summary>
         /// Checks if sp_IndexCleanup is installed on the target server.
         /// </summary>
         public async Task<bool> CheckSpIndexCleanupExistsAsync()
@@ -2377,5 +2548,32 @@ ORDER BY SUM(CAST(is_running_long AS int)) DESC", connection);
         public string Detail { get; set; } = "";
         public decimal? EstMonthlySavings { get; set; }
         public string EstMonthlySavingsDisplay => EstMonthlySavings.HasValue ? $"${EstMonthlySavings.Value:N0}" : "";
+    }
+
+    public class FinOpsHighImpactQuery
+    {
+        public string QueryHashDisplay { get; set; } = "";
+        public string DatabaseName { get; set; } = "";
+        public long TotalExecutions { get; set; }
+        public decimal TotalCpuMs { get; set; }
+        public decimal TotalDurationMs { get; set; }
+        public long TotalReads { get; set; }
+        public long TotalWrites { get; set; }
+        public decimal TotalMemoryMb { get; set; }
+        public decimal CpuShare { get; set; }
+        public decimal DurationShare { get; set; }
+        public decimal ReadsShare { get; set; }
+        public decimal WritesShare { get; set; }
+        public decimal MemoryShare { get; set; }
+        public decimal ExecutionsShare { get; set; }
+        public int ImpactScore { get; set; }
+        public string SampleQueryText { get; set; } = "";
+
+        public string ImpactScoreColor => ImpactScore switch
+        {
+            >= 80 => "#E74C3C",
+            >= 60 => "#F39C12",
+            _ => "#27AE60"
+        };
     }
 }
