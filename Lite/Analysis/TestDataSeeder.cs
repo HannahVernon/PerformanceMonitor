@@ -1397,4 +1397,372 @@ VALUES ($1, $2, $3, $4, 'UserDB', 5, 1, 'ROWS', 'UserDB', 'D:\Data\UserDB.mdf',
             await cmd.ExecuteNonQueryAsync();
         }
     }
+
+    // ============================================
+    // FinOps Test Scenarios
+    // ============================================
+
+    /// <summary>
+    /// Scenario 1: Over-provisioned Enterprise server.
+    /// 32 cores, 256GB RAM, but avg CPU 8%, buffer pool only 40GB of 256GB.
+    ///
+    /// Expected recommendations:
+    ///   - CPU right-sizing (P95 &lt; 30%, many cores)
+    ///   - Memory right-sizing (buffer pool &lt; 50% of physical RAM)
+    /// </summary>
+    public async Task SeedOverProvisionedEnterpriseAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        // 32 cores, 256GB RAM, but avg CPU 8%, buffer pool only 40GB of 256GB
+        await SeedCpuUtilizationAsync(8, 2);
+        await SeedMemoryStatsAsync(totalPhysicalMb: 262_144, bufferPoolMb: 40_960, targetMb: 245_760);
+        await SeedServerPropertiesAsync(cpuCount: 32, htRatio: 2, physicalMemMb: 262_144,
+            edition: "Enterprise Edition");
+        await SeedFileSizeAsync(totalDataSizeMb: 51_200); // 50GB — tiny for 256GB RAM
+    }
+
+    /// <summary>
+    /// Scenario 2: Idle databases with cost impact.
+    /// 3 databases seeded — only 1 has query activity, the other 2 are idle.
+    ///
+    /// Expected recommendations:
+    ///   - Dormant database detection (2 idle databases)
+    /// </summary>
+    public async Task SeedIdleDatabasesAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        // Seed database sizes for 3 databases + query activity for only 1
+        await SeedDatabaseSizesForIdleTestAsync();
+        await SeedQueryStatsForDatabaseAsync("ActiveDB", executions: 5000, cpuMs: 100_000);
+    }
+
+    /// <summary>
+    /// Scenario 3: High impact query skew — one query consuming 80%+ of CPU.
+    ///
+    /// Expected: HighImpactScorer.Score() returns query "AAAA" with dominant CpuShare.
+    /// </summary>
+    public async Task SeedHighImpactQuerySkewAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        // 5 queries: one uses 80% CPU, rest split the remaining 20%
+        await SeedQueryStatsForHighImpactAsync();
+    }
+
+    /// <summary>
+    /// Scenario 4: Dev/test databases on a production server.
+    /// Seeds database_size_stats with databases named "staging_app", "dev_analytics", "test_warehouse".
+    ///
+    /// NOTE: The recommendation engine detects dev/test databases via a LIVE SQL query
+    /// (sys.databases WHERE name LIKE '%dev%'). This won't fire against DuckDB test data.
+    /// The scenario documents the expected behavior but the live check will silently fail.
+    /// Use this scenario to test the idle-database detection path instead.
+    /// </summary>
+    public async Task SeedDevTestDatabasesAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        await SeedDatabaseSizesWithNamesAsync("staging_app", "dev_analytics", "test_warehouse", "ProductionDB");
+    }
+
+    /// <summary>
+    /// Scenario 5: Long-running maintenance jobs.
+    /// Seeds running_jobs with a job that ran long 5+ times in 7 days.
+    ///
+    /// Expected recommendations:
+    ///   - Maintenance window efficiency warning
+    /// </summary>
+    public async Task SeedLongRunningJobsAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        await SeedRunningJobsForMaintenanceTestAsync();
+    }
+
+    /// <summary>
+    /// Scenario 6: Clean FinOps server — no recommendations expected.
+    /// Healthy CPU (50%), good buffer pool ratio (75%), no idle databases.
+    ///
+    /// Expected: empty or minimal recommendation list.
+    /// </summary>
+    public async Task SeedCleanFinOpsServerAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        // Healthy: 50% CPU, 75% buffer pool ratio, no idle databases
+        await SeedCpuUtilizationAsync(50, 5);
+        await SeedMemoryStatsAsync(totalPhysicalMb: 65_536, bufferPoolMb: 49_152, targetMb: 57_344);
+        await SeedServerPropertiesAsync(cpuCount: 8, htRatio: 2, physicalMemMb: 65_536,
+            edition: "Developer Edition");
+        await SeedFileSizeAsync(totalDataSizeMb: 204_800); // 200GB
+    }
+
+    // ============================================
+    // FinOps Test Runner Methods
+    // ============================================
+
+    /// <summary>
+    /// Runs the FinOps recommendation engine against test data.
+    /// Pass empty strings for connectionString/utilityConnectionString to skip live SQL checks.
+    /// </summary>
+    public async Task<List<PerformanceMonitorLite.Services.RecommendationRow>> RunFinOpsRecommendationsAsync(
+        PerformanceMonitorLite.Services.LocalDataService dataService, decimal monthlyCost = 10000m)
+    {
+        return await dataService.GetRecommendationsAsync(TestServerId, "", "", monthlyCost);
+    }
+
+    /// <summary>
+    /// Runs the High Impact scorer against test data.
+    /// </summary>
+    public async Task<List<PerformanceMonitorLite.Services.HighImpactQueryRow>> RunHighImpactAnalysisAsync(
+        PerformanceMonitorLite.Services.LocalDataService dataService, int hoursBack = 24)
+    {
+        return await dataService.GetHighImpactQueriesAsync(TestServerId, hoursBack);
+    }
+
+    // ============================================
+    // FinOps Seed Helpers
+    // ============================================
+
+    /// <summary>
+    /// Seeds database_size_stats with 3 databases for idle-database testing.
+    /// "ActiveDB" will have query_stats activity (seeded separately).
+    /// "OldReportsDB" (50GB) and "ArchiveDB" (100GB) have no activity — should be detected as idle.
+    /// </summary>
+    internal async Task SeedDatabaseSizesForIdleTestAsync()
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        var databases = new (string name, int dbId, decimal totalSizeMb)[]
+        {
+            ("ActiveDB",      10, 20_480),   // 20GB — active
+            ("OldReportsDB",  11, 51_200),   // 50GB — idle
+            ("ArchiveDB",     12, 102_400),  // 100GB — idle
+        };
+
+        foreach (var (name, dbId, totalSizeMb) in databases)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO database_size_stats
+    (collection_id, collection_time, server_id, server_name,
+     database_name, database_id, file_id, file_type_desc, file_name, physical_name,
+     total_size_mb, used_size_mb)
+VALUES ($1, $2, $3, $4, $5, $6, 1, 'ROWS', $7, $8, $9, $10)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = name });
+            cmd.Parameters.Add(new DuckDBParameter { Value = dbId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"{name}.mdf" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"D:\\Data\\{name}.mdf" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = totalSizeMb });
+            cmd.Parameters.Add(new DuckDBParameter { Value = totalSizeMb * 0.8m }); // 80% used
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Seeds query_stats with activity for a specific database.
+    /// Used to mark a database as "active" so it's excluded from idle detection.
+    /// </summary>
+    internal async Task SeedQueryStatsForDatabaseAsync(string databaseName, long executions, long cpuMs)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        // Spread across 16 collection points so it falls within time-range queries
+        var execsPerPoint = executions / 16;
+        var cpuPerPoint = cpuMs * 1000 / 16; // convert ms to microseconds for delta_worker_time
+
+        for (var i = 0; i < 16; i++)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO query_stats
+    (collection_id, collection_time, server_id, server_name,
+     database_name, query_hash, delta_execution_count,
+     delta_worker_time, delta_elapsed_time, delta_logical_reads)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+
+            var t = TestPeriodStart.AddMinutes(i * 15);
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = t });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = databaseName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"0xACTIVE{i:D4}" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = execsPerPoint });
+            cmd.Parameters.Add(new DuckDBParameter { Value = cpuPerPoint });
+            cmd.Parameters.Add(new DuckDBParameter { Value = cpuPerPoint * 2 });
+            cmd.Parameters.Add(new DuckDBParameter { Value = execsPerPoint * 500L });
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Seeds query_stats for high-impact skew testing.
+    /// 5 queries with one dominant (80% CPU):
+    ///   AAAA — 800,000ms CPU, 10,000 executions (the monster)
+    ///   BBBB — 50,000ms CPU, 5,000 executions
+    ///   CCCC — 50,000ms CPU, 2,000 executions
+    ///   DDDD — 50,000ms CPU, 1,000 executions
+    ///   EEEE — 50,000ms CPU, 500 executions
+    /// </summary>
+    internal async Task SeedQueryStatsForHighImpactAsync()
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        var queries = new (string hash, long cpuMs, long executions, long reads, long writes, long memoryKb)[]
+        {
+            ("AAAA", 800_000, 10_000, 50_000_000, 1_000_000, 512_000),  // The monster
+            ("BBBB",  50_000,  5_000,  5_000_000,   100_000,  64_000),
+            ("CCCC",  50_000,  2_000,  3_000_000,    50_000,  32_000),
+            ("DDDD",  50_000,  1_000,  2_000_000,    25_000,  16_000),
+            ("EEEE",  50_000,    500,  1_000_000,    10_000,   8_000),
+        };
+
+        foreach (var (hash, cpuMs, executions, reads, writes, memoryKb) in queries)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO query_stats
+    (collection_id, collection_time, server_id, server_name,
+     database_name, query_hash, query_text,
+     delta_execution_count, delta_worker_time, delta_elapsed_time,
+     delta_logical_reads, delta_logical_writes, max_grant_kb)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd.AddMinutes(-30) }); // recent
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "UserDB" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = hash });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"SELECT /* {hash} */ * FROM dbo.SomeTable" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = executions });
+            cmd.Parameters.Add(new DuckDBParameter { Value = cpuMs * 1000L }); // microseconds
+            cmd.Parameters.Add(new DuckDBParameter { Value = cpuMs * 2000L }); // elapsed ~2x CPU
+            cmd.Parameters.Add(new DuckDBParameter { Value = reads });
+            cmd.Parameters.Add(new DuckDBParameter { Value = writes });
+            cmd.Parameters.Add(new DuckDBParameter { Value = memoryKb });
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Seeds database_size_stats with named databases.
+    /// Used for dev/test detection testing and general size seeding.
+    /// </summary>
+    internal async Task SeedDatabaseSizesWithNamesAsync(params string[] databaseNames)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        for (var i = 0; i < databaseNames.Length; i++)
+        {
+            var name = databaseNames[i];
+            var sizeMb = 10_240m + (i * 5_120m); // 10GB, 15GB, 20GB, 25GB, ...
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO database_size_stats
+    (collection_id, collection_time, server_id, server_name,
+     database_name, database_id, file_id, file_type_desc, file_name, physical_name,
+     total_size_mb, used_size_mb)
+VALUES ($1, $2, $3, $4, $5, $6, 1, 'ROWS', $7, $8, $9, $10)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = name });
+            cmd.Parameters.Add(new DuckDBParameter { Value = 10 + i }); // database_id
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"{name}.mdf" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"D:\\Data\\{name}.mdf" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = sizeMb });
+            cmd.Parameters.Add(new DuckDBParameter { Value = sizeMb * 0.7m }); // 70% used
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Seeds running_jobs for maintenance window testing.
+    /// Creates a "Weekly Index Rebuild" job that ran long 5 times in 7 days,
+    /// and a normal "Stats Update" job for contrast.
+    /// </summary>
+    internal async Task SeedRunningJobsForMaintenanceTestAsync()
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        // "Weekly Index Rebuild" — ran long 5 times
+        var jobId = Guid.NewGuid().ToString();
+        for (var i = 0; i < 5; i++)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO running_jobs
+    (collection_time, server_id, server_name, job_name, job_id,
+     job_enabled, start_time, current_duration_seconds,
+     avg_duration_seconds, p95_duration_seconds, successful_run_count,
+     is_running_long, percent_of_average)
+VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, 50, true, $10)";
+
+            // Spread collections across the 7-day window the recommendation engine queries
+            var collectionTime = DateTime.UtcNow.AddDays(-6).AddDays(i * 1.2);
+            cmd.Parameters.Add(new DuckDBParameter { Value = collectionTime });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "Weekly Index Rebuild" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = jobId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = collectionTime.AddSeconds(-900) }); // started 15min ago
+            cmd.Parameters.Add(new DuckDBParameter { Value = 900L });   // current_duration_seconds (15min)
+            cmd.Parameters.Add(new DuckDBParameter { Value = 300L });   // avg_duration_seconds (5min historical)
+            cmd.Parameters.Add(new DuckDBParameter { Value = 450L });   // p95_duration_seconds
+            cmd.Parameters.Add(new DuckDBParameter { Value = 300.0 });  // percent_of_average = 300%
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // "Stats Update" — normal job, not running long
+        using var normalCmd = connection.CreateCommand();
+        normalCmd.CommandText = @"
+INSERT INTO running_jobs
+    (collection_time, server_id, server_name, job_name, job_id,
+     job_enabled, start_time, current_duration_seconds,
+     avg_duration_seconds, p95_duration_seconds, successful_run_count,
+     is_running_long, percent_of_average)
+VALUES ($1, $2, $3, $4, $5, true, $6, 120, 100, 130, 200, false, 120.0)";
+
+        normalCmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd.AddMinutes(-5) });
+        normalCmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+        normalCmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+        normalCmd.Parameters.Add(new DuckDBParameter { Value = "Stats Update" });
+        normalCmd.Parameters.Add(new DuckDBParameter { Value = Guid.NewGuid().ToString() });
+        normalCmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd.AddMinutes(-7) });
+
+        await normalCmd.ExecuteNonQueryAsync();
+    }
 }
