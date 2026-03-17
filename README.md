@@ -81,6 +81,8 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 Data starts flowing within 1–5 minutes. That's it. No installation on your server, no Agent jobs, no sysadmin required.
 
+**Upgrading?** Click **Import Data** in the sidebar and point it at your old Lite folder — all historical data (DuckDB + Parquet archives) is imported into the new install.
+
 **Always On AG?** Enable **ReadOnlyIntent** in the connection settings to route Lite's monitoring queries to a readable secondary, keeping the primary clear.
 
 ### Lite Collectors
@@ -126,7 +128,7 @@ All configuration lives in the `config/` folder:
 
 | File | Purpose |
 |---|---|
-| `servers.json` | Server connections (passwords in Windows Credential Manager) |
+| `servers.json` | Server connections (passwords in Windows Credential Manager). Optional **Utility Database** per server for community procs installed outside master. |
 | `settings.json` | Retention, MCP server, startup behavior, alert thresholds, SMTP configuration |
 | `collection_schedule.json` | Per-collector enable/disable and frequency |
 | `ignored_wait_types.json` | 144 benign wait types excluded by default |
@@ -169,7 +171,7 @@ PerformanceMonitorInstaller.exe YourServerName --uninstall
 PerformanceMonitorInstaller.exe YourServerName sa YourPassword --uninstall
 ```
 
-The installer automatically tests the connection, executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. A GUI installer (`InstallerGui/`) is also available with the same functionality.
+The installer automatically tests the connection, checks the SQL Server version (2016+ required), executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. A GUI installer (`InstallerGui/`) is also available with the same functionality.
 
 ### CLI Installer Options
 
@@ -197,9 +199,10 @@ The installer automatically tests the connection, executes SQL scripts, download
 | `2` | Connection failed |
 | `3` | Critical file failed (scripts 01–03) |
 | `4` | Partial installation (non-critical failures) |
-| `5` | Version check failed |
+| `5` | Version check failed (SQL Server 2014 or earlier) |
 | `6` | SQL files not found |
 | `7` | Uninstall failed |
+| `8` | Upgrade script failed |
 
 ### Post-Installation
 
@@ -333,7 +336,7 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history |
 | **Perfmon** | Selectable SQL Server performance counters over time |
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
-| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, application connections, wait/query/TempDB/memory grant optimization |
+| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
 
 Both editions feature auto-refresh, configurable time ranges, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
 
@@ -354,7 +357,7 @@ Both editions include a real-time alert engine that monitors for performance iss
 | **TempDB space** | 80% | Fires when TempDB usage exceeds the percentage threshold |
 | **Long-running agent jobs** | 3× average | Fires when a job's current duration exceeds a multiple of its historical average |
 | **High CPU** | 90% (Full), 80% (Lite) | Fires when total CPU (SQL + other) exceeds the threshold |
-| **Connection changes** | N/A | Fires when a monitored server goes offline or comes back online |
+| **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online (tray + email) |
 
 All thresholds are configurable in Settings.
 
