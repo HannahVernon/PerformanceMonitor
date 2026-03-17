@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitorLite.Database;
+using PerformanceMonitorLite.Mcp;
+using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 
 namespace PerformanceMonitorLite.Analysis;
@@ -72,6 +74,9 @@ public class DrillDownCollector
 
                 if (pathKeys.Any(k => k.StartsWith("BAD_ACTOR_")))
                     await CollectBadActorDetail(finding, context);
+
+                // Plan analysis: for findings with top queries, analyze their cached plans
+                await CollectPlanAnalysis(finding, context);
 
                 // Remove empty drill-down dictionaries
                 if (finding.DrillDown.Count == 0)
@@ -542,6 +547,116 @@ LIMIT 5";
 
         if (items.Count > 0)
             finding.DrillDown!["pending_grants"] = items;
+    }
+
+    /// <summary>
+    /// For findings that have query hashes (from top_cpu_queries, bad_actor_query, or queries_at_spike),
+    /// fetch cached plan XML and run PlanAnalyzer to surface warnings and missing indexes.
+    /// </summary>
+    private async Task CollectPlanAnalysis(AnalysisFinding finding, AnalysisContext context)
+    {
+        if (finding.DrillDown == null) return;
+
+        // Collect query hashes from drill-down data
+        var queryHashes = new List<string>();
+
+        if (finding.DrillDown.TryGetValue("bad_actor_query", out var badActor) && badActor != null)
+        {
+            // bad_actor_query is a single anonymous object — extract hash from finding key
+            var hash = finding.RootFactKey.Replace("BAD_ACTOR_", "");
+            if (!string.IsNullOrEmpty(hash)) queryHashes.Add(hash);
+        }
+
+        // Only analyze plans for findings with a small number of query hashes (bad actors).
+        // Skip top_cpu_queries (5 plans would be too heavy) — those have next_tools for manual follow-up.
+        if (queryHashes.Count == 0) return;
+
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        var planFindings = new List<object>();
+
+        foreach (var hash in queryHashes.Take(3)) // Max 3 plans to analyze
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SELECT query_plan_xml
+FROM v_query_stats
+WHERE server_id = $1
+AND   query_hash = $2
+AND   query_plan_xml IS NOT NULL
+AND   LENGTH(query_plan_xml) > 100
+ORDER BY collection_time DESC
+LIMIT 1";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = hash });
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) continue;
+
+            var planXml = reader.IsDBNull(0) ? null : reader.GetString(0);
+            if (string.IsNullOrEmpty(planXml)) continue;
+
+            try
+            {
+                var plan = ShowPlanParser.Parse(planXml);
+                PlanAnalyzer.Analyze(plan);
+
+                var allWarnings = plan.Batches
+                    .SelectMany(b => b.Statements)
+                    .Where(s => s.RootNode != null)
+                    .SelectMany(s =>
+                    {
+                        var nodeWarnings = new List<PlanNode>();
+                        CollectPlanNodes(s.RootNode!, nodeWarnings);
+                        return s.PlanWarnings
+                            .Concat(nodeWarnings.SelectMany(n => n.Warnings));
+                    })
+                    .ToList();
+
+                var missingIndexes = plan.AllMissingIndexes;
+
+                if (allWarnings.Count == 0 && missingIndexes.Count == 0) continue;
+
+                planFindings.Add(new
+                {
+                    query_hash = hash,
+                    warning_count = allWarnings.Count,
+                    critical_count = allWarnings.Count(w => w.Severity == PlanWarningSeverity.Critical),
+                    warnings = allWarnings
+                        .OrderByDescending(w => w.Severity)
+                        .Take(10)
+                        .Select(w => new
+                        {
+                            severity = w.Severity.ToString(),
+                            type = w.WarningType,
+                            message = McpHelpers.Truncate(w.Message, 300)
+                        }),
+                    missing_indexes = missingIndexes.Take(5).Select(idx => new
+                    {
+                        table = $"{idx.Schema}.{idx.Table}",
+                        impact = idx.Impact,
+                        create_statement = idx.CreateStatement
+                    })
+                });
+            }
+            catch
+            {
+                // Plan parsing can fail on malformed XML — skip silently
+            }
+        }
+
+        if (planFindings.Count > 0)
+            finding.DrillDown["plan_analysis"] = planFindings;
+    }
+
+    private static void CollectPlanNodes(PlanNode node, List<PlanNode> nodes)
+    {
+        nodes.Add(node);
+        foreach (var child in node.Children)
+            CollectPlanNodes(child, nodes);
     }
 
     private async Task CollectBadActorDetail(AnalysisFinding finding, AnalysisContext context)
