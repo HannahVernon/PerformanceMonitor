@@ -430,6 +430,7 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var data = await _databaseService.GetFinOpsTempdbSummaryAsync();
                 TempdbPressureDataGrid.ItemsSource = data;
+                TempdbPressureDataGrid.Visibility = data.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
                 TempdbPressureNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }
             catch (Exception ex)

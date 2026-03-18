@@ -1686,7 +1686,7 @@
                                             </Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Binding="{Binding Warning}" Width="200">
+                                    <DataGridTextColumn Binding="{Binding Warning}" Width="*">
                                         <DataGridTextColumn.Header>
                                             <StackPanel Orientation="Horizontal">
                                                 <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Warning" Click="FinOpsFilter_Click" Margin="0,0,4,0"/>
