@@ -39,7 +39,7 @@
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,6,10,0">
             <TextBlock Text="Server:" VerticalAlignment="Center" Margin="0,0,6,0"
                        FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
-            <ComboBox x:Name="ServerSelector" Width="260" DisplayMemberPath="DisplayName"
+            <ComboBox x:Name="ServerSelector" Width="260" DisplayMemberPath="DisplayNameWithIntent"
                       SelectionChanged="ServerSelector_SelectionChanged"/>
         </StackPanel>
 
