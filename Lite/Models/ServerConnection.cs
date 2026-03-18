@@ -64,11 +64,23 @@ public class ServerConnection
     public bool TrustServerCertificate { get; set; } = false;
 
     /// <summary>
+    /// Monthly cost of this server in USD, used for FinOps cost attribution.
+    /// Set to 0 to hide cost columns. All FinOps costs are proportional to this budget.
+    /// </summary>
+    public decimal MonthlyCostUsd { get; set; } = 0m;
+
+    /// <summary>
     /// Optional database name for the initial connection.
     /// Required for Azure SQL Database (which doesn't allow connecting to master).
     /// Leave empty for on-premises SQL Server (defaults to master).
     /// </summary>
     public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// Optional database where community stored procedures (sp_IndexCleanup) are installed.
+    /// When null or empty, falls back to the connection database.
+    /// </summary>
+    public string? UtilityDatabase { get; set; }
 
     /// <summary>
     /// When true, sets ApplicationIntent=ReadOnly on the connection string.
@@ -159,6 +171,24 @@ public class ServerConnection
         }
 
         return BuildConnectionString(username, password);
+    }
+
+    /// <summary>
+    /// Returns a connection string targeting UtilityDatabase if set, otherwise falls back to GetConnectionString().
+    /// Used for locating community stored procedures (sp_IndexCleanup) that may be installed in a non-default database.
+    /// </summary>
+    public string GetUtilityConnectionString(CredentialService credentialService)
+    {
+        var baseConnStr = GetConnectionString(credentialService);
+
+        if (string.IsNullOrWhiteSpace(UtilityDatabase))
+            return baseConnStr;
+
+        var builder = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            InitialCatalog = UtilityDatabase
+        };
+        return builder.ConnectionString;
     }
 
     /// <summary>

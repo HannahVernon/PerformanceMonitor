@@ -1014,8 +1014,8 @@ namespace PerformanceMonitorDashboard.Services
                             AvgRows = reader.IsDBNull(24) ? null : reader.GetInt64(24),
                             MinRows = reader.IsDBNull(25) ? null : reader.GetInt64(25),
                             MaxRows = reader.IsDBNull(26) ? null : reader.GetInt64(26),
-                            MinDop = reader.IsDBNull(27) ? null : reader.GetInt16(27),
-                            MaxDop = reader.IsDBNull(28) ? null : reader.GetInt16(28),
+                            MinDop = reader.IsDBNull(27) ? null : Convert.ToInt16(reader.GetValue(27)),
+                            MaxDop = reader.IsDBNull(28) ? null : Convert.ToInt16(reader.GetValue(28)),
                             MinGrantKb = reader.IsDBNull(29) ? null : reader.GetInt64(29),
                             MaxGrantKb = reader.IsDBNull(30) ? null : reader.GetInt64(30),
                             TotalSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
@@ -2440,6 +2440,58 @@ namespace PerformanceMonitorDashboard.Services
             using var command = new SqlCommand(query, connection);
             command.CommandTimeout = 120;
             command.Parameters.Add(new SqlParameter("@collection_id", SqlDbType.BigInt) { Value = collectionId });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
+
+        /// <summary>
+        /// Fetches the most recent plan XML for a query identified by query_hash.
+        /// Used by MCP plan analysis tools.
+        /// </summary>
+        public async Task<string?> GetPlanXmlByQueryHashAsync(string queryHash)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            CAST(DECOMPRESS(qs.query_plan_text) AS nvarchar(max))
+        FROM collect.query_stats AS qs
+        WHERE qs.query_hash = CONVERT(binary(8), @queryHash, 1)
+        ORDER BY qs.last_execution_time DESC;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@queryHash", SqlDbType.NVarChar, 20) { Value = queryHash });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
+
+        /// <summary>
+        /// Fetches the most recent plan XML for a procedure identified by sql_handle.
+        /// Used by MCP plan analysis tools.
+        /// </summary>
+        public async Task<string?> GetProcedurePlanXmlBySqlHandleAsync(string sqlHandle)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            CAST(DECOMPRESS(ps.query_plan_text) AS nvarchar(max))
+        FROM collect.procedure_stats AS ps
+        WHERE ps.sql_handle = CONVERT(varbinary(64), @sqlHandle, 1)
+        ORDER BY ps.last_execution_time DESC;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@sqlHandle", SqlDbType.NVarChar, 130) { Value = sqlHandle });
 
             var result = await command.ExecuteScalarAsync();
             return result == DBNull.Value || result == null ? null : (string)result;

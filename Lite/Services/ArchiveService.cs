@@ -33,7 +33,7 @@ public class ArchiveService
     /* Tables eligible for archival with their time column.
        IMPORTANT: Every table with time-series data must be listed here,
        or it will grow unbounded and push the DB past the 512 MB reset threshold. */
-    private static readonly (string Table, string TimeColumn)[] ArchivableTables =
+    internal static readonly (string Table, string TimeColumn)[] ArchivableTables =
     [
         ("wait_stats", "collection_time"),
         ("query_stats", "collection_time"),

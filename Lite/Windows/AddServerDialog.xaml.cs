@@ -59,7 +59,9 @@ public partial class AddServerDialog : Window
         FavoriteCheckBox.IsChecked = existing.IsFavorite;
         DescriptionTextBox.Text = existing.Description ?? "";
         DatabaseNameBox.Text = existing.DatabaseName ?? "";
+        UtilityDatabaseBox.Text = existing.UtilityDatabase ?? "";
         ReadOnlyIntentCheckBox.IsChecked = existing.ReadOnlyIntent;
+        MonthlyCostBox.Text = existing.MonthlyCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
         // Set authentication mode
         if (existing.AuthenticationType == AuthenticationTypes.EntraMFA)
@@ -346,13 +348,20 @@ public partial class AddServerDialog : Window
                 AddedServer.IsFavorite = FavoriteCheckBox.IsChecked == true;
                 AddedServer.Description = DescriptionTextBox.Text.Trim();
                 AddedServer.DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim();
+                AddedServer.UtilityDatabase = string.IsNullOrWhiteSpace(UtilityDatabaseBox.Text) ? null : UtilityDatabaseBox.Text.Trim();
                 AddedServer.ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true;
+                if (decimal.TryParse(MonthlyCostBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var editCost) && editCost >= 0)
+                    AddedServer.MonthlyCostUsd = editCost;
 
                 _serverManager.UpdateServer(AddedServer, username, password);
             }
             else
             {
                 /* Adding new server */
+                decimal monthlyCost = 0m;
+                if (decimal.TryParse(MonthlyCostBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var newCost) && newCost >= 0)
+                    monthlyCost = newCost;
+
                 AddedServer = new ServerConnection
                 {
                     ServerName = serverName,
@@ -364,7 +373,9 @@ public partial class AddServerDialog : Window
                     IsFavorite = FavoriteCheckBox.IsChecked == true,
                     Description = DescriptionTextBox.Text.Trim(),
                     DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim(),
-                    ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true
+                    UtilityDatabase = string.IsNullOrWhiteSpace(UtilityDatabaseBox.Text) ? null : UtilityDatabaseBox.Text.Trim(),
+                    ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true,
+                    MonthlyCostUsd = monthlyCost
                 };
 
                 _serverManager.AddServer(AddedServer, username, password);

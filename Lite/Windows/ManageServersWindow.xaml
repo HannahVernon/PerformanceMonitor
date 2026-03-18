@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Manage Servers"
-        Height="500" Width="700"
+        Height="500" Width="830"
         WindowStartupLocation="CenterOwner"
         Icon="/EDD.ico"
         Background="{DynamicResource BackgroundBrush}">
@@ -51,6 +51,13 @@
                 <DataGridTextColumn Header="Server" Binding="{Binding ServerNameDisplay}" Width="200"/>
                 <DataGridTextColumn Header="Auth" Binding="{Binding AuthenticationDisplay}" Width="100"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding StatusDisplay}" Width="80"/>
+                <DataGridTextColumn Header="Monthly Cost ($)" Binding="{Binding MonthlyCostUsd, StringFormat='{}{0:N0}'}" Width="120">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTextColumn Header="Last Connected" Binding="{Binding LastConnected, StringFormat=yyyy-MM-dd HH:mm}" Width="140"/>
             </DataGrid.Columns>
         </DataGrid>

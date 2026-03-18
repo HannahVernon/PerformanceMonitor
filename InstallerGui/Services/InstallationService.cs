@@ -42,6 +42,31 @@ namespace PerformanceMonitorInstallerGui.Services
         public string SqlServerEdition { get; set; } = string.Empty;
         public bool IsConnected { get; set; }
         public string? ErrorMessage { get; set; }
+        public int EngineEdition { get; set; }
+        public int ProductMajorVersion { get; set; }
+
+        /// <summary>
+        /// Returns true if the SQL Server version is supported (2016+).
+        /// Only checked for on-prem Standard (2) and Enterprise (3).
+        /// Azure MI (8) is always current and skips the check.
+        /// </summary>
+        public bool IsSupportedVersion =>
+            EngineEdition is 8 || ProductMajorVersion >= 13;
+
+        /// <summary>
+        /// Human-readable version name for error messages.
+        /// </summary>
+        public string ProductMajorVersionName => ProductMajorVersion switch
+        {
+            11 => "SQL Server 2012",
+            12 => "SQL Server 2014",
+            13 => "SQL Server 2016",
+            14 => "SQL Server 2017",
+            15 => "SQL Server 2019",
+            16 => "SQL Server 2022",
+            17 => "SQL Server 2025",
+            _ => $"SQL Server (version {ProductMajorVersion})"
+        };
     }
 
     /// <summary>
@@ -112,6 +137,7 @@ namespace PerformanceMonitorInstallerGui.Services
             /*Set encryption mode: Optional, Mandatory, or Strict*/
             builder.Encrypt = encryption switch
             {
+                "Optional" => SqlConnectionEncryptOption.Optional,
                 "Mandatory" => SqlConnectionEncryptOption.Mandatory,
                 "Strict" => SqlConnectionEncryptOption.Strict,
                 _ => SqlConnectionEncryptOption.Mandatory
@@ -149,7 +175,13 @@ namespace PerformanceMonitorInstallerGui.Services
 
                 info.IsConnected = true;
 
-                using var command = new SqlCommand("SELECT @@VERSION, SERVERPROPERTY('Edition'), @@SERVERNAME;", connection);
+                using var command = new SqlCommand(@"
+                    SELECT
+                        @@VERSION,
+                        SERVERPROPERTY('Edition'),
+                        @@SERVERNAME,
+                        CONVERT(int, SERVERPROPERTY('EngineEdition')),
+                        SERVERPROPERTY('ProductMajorVersion');", connection);
                 using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
                 if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -157,6 +189,8 @@ namespace PerformanceMonitorInstallerGui.Services
                     info.SqlServerVersion = reader.GetString(0);
                     info.SqlServerEdition = reader.GetString(1);
                     info.ServerName = reader.GetString(2);
+                    info.EngineEdition = reader.IsDBNull(3) ? 0 : reader.GetInt32(3);
+                    info.ProductMajorVersion = reader.IsDBNull(4) ? 0 : int.TryParse(reader.GetValue(4).ToString(), out var v) ? v : 0;
                 }
             }
             catch (Exception ex)
@@ -238,8 +272,9 @@ namespace PerformanceMonitorInstallerGui.Services
                         /*Match numbered SQL files but exclude 97 (tests) and 99 (troubleshooting)*/
                         if (!SqlFilePattern.IsMatch(fileName))
                             return false;
-                        /*Exclude test and troubleshooting scripts from main install*/
-                        if (fileName.StartsWith("97_", StringComparison.Ordinal) ||
+                        /*Exclude uninstall, test, and troubleshooting scripts from main install*/
+                        if (fileName.StartsWith("00_", StringComparison.Ordinal) ||
+                            fileName.StartsWith("97_", StringComparison.Ordinal) ||
                             fileName.StartsWith("99_", StringComparison.Ordinal))
                             return false;
                         return true;
@@ -1113,7 +1148,13 @@ END;";
                     return version.ToString();
                 }
 
-                return null;
+                /*
+                Fallback: database and history table exist but no SUCCESS rows.
+                This can happen if a prior GUI install didn't write history (#538/#539).
+                Return "1.0.0" so all idempotent upgrade scripts are attempted
+                rather than treating this as a fresh install (which would drop the database).
+                */
+                return "1.0.0";
             }
             catch (SqlException)
             {
@@ -1272,7 +1313,7 @@ END;";
                             continue;
 
                         using var cmd = new SqlCommand(trimmedBatch, connection);
-                        cmd.CommandTimeout = 300;
+                        cmd.CommandTimeout = 3600; /*1 hour — upgrade migrations on large tables need extended time*/
 
                         try
                         {
@@ -1418,101 +1459,94 @@ END;";
             int filesFailed,
             bool isSuccess)
         {
+            using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync().ConfigureAwait(false);
+
+            /*Check if this is an upgrade by checking for existing installation*/
+            string? previousVersion = null;
+            string installationType = "INSTALL";
+
             try
             {
-                using var connection = new SqlConnection(connectionString);
-                await connection.OpenAsync().ConfigureAwait(false);
+                using var checkCmd = new SqlCommand(@"
+                    SELECT TOP 1 installer_version
+                    FROM PerformanceMonitor.config.installation_history
+                    WHERE installation_status = 'SUCCESS'
+                    ORDER BY installation_date DESC;", connection);
 
-                /*Check if this is an upgrade by checking for existing installation*/
-                string? previousVersion = null;
-                string installationType = "INSTALL";
-
-                try
+                var result = await checkCmd.ExecuteScalarAsync().ConfigureAwait(false);
+                if (result != null && result != DBNull.Value)
                 {
-                    using var checkCmd = new SqlCommand(@"
-                        SELECT TOP 1 installer_version
-                        FROM PerformanceMonitor.config.installation_history
-                        WHERE installation_status = 'SUCCESS'
-                        ORDER BY installation_date DESC;", connection);
-
-                    var result = await checkCmd.ExecuteScalarAsync().ConfigureAwait(false);
-                    if (result != null && result != DBNull.Value)
-                    {
-                        previousVersion = result.ToString();
-                        bool isSameVersion = Version.TryParse(previousVersion, out var prevVer)
-                            && Version.TryParse(assemblyVersion, out var currVer)
-                            && prevVer == currVer;
-                        installationType = isSameVersion ? "REINSTALL" : "UPGRADE";
-                    }
+                    previousVersion = result.ToString();
+                    bool isSameVersion = Version.TryParse(previousVersion, out var prevVer)
+                        && Version.TryParse(assemblyVersion, out var currVer)
+                        && prevVer == currVer;
+                    installationType = isSameVersion ? "REINSTALL" : "UPGRADE";
                 }
-                catch (SqlException)
-                {
-                    /*Table might not exist yet on first install*/
-                }
-
-                /*Get SQL Server version info*/
-                string sqlVersion = "";
-                string sqlEdition = "";
-
-                using (var versionCmd = new SqlCommand("SELECT @@VERSION, SERVERPROPERTY('Edition');", connection))
-                using (var reader = await versionCmd.ExecuteReaderAsync().ConfigureAwait(false))
-                {
-                    if (await reader.ReadAsync().ConfigureAwait(false))
-                    {
-                        sqlVersion = reader.GetString(0);
-                        sqlEdition = reader.GetString(1);
-                    }
-                }
-
-                long durationMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
-                string status = isSuccess ? "SUCCESS" : (filesFailed > 0 ? "PARTIAL" : "FAILED");
-
-                var insertSql = @"
-                    INSERT INTO PerformanceMonitor.config.installation_history
-                    (
-                        installer_version,
-                        installer_info_version,
-                        sql_server_version,
-                        sql_server_edition,
-                        installation_type,
-                        previous_version,
-                        installation_status,
-                        files_executed,
-                        files_failed,
-                        installation_duration_ms
-                    )
-                    VALUES
-                    (
-                        @installer_version,
-                        @installer_info_version,
-                        @sql_server_version,
-                        @sql_server_edition,
-                        @installation_type,
-                        @previous_version,
-                        @installation_status,
-                        @files_executed,
-                        @files_failed,
-                        @installation_duration_ms
-                    );";
-
-                using var insertCmd = new SqlCommand(insertSql, connection);
-                insertCmd.Parameters.Add(new SqlParameter("@installer_version", SqlDbType.NVarChar, 50) { Value = assemblyVersion });
-                insertCmd.Parameters.Add(new SqlParameter("@installer_info_version", SqlDbType.NVarChar, 100) { Value = (object?)infoVersion ?? DBNull.Value });
-                insertCmd.Parameters.Add(new SqlParameter("@sql_server_version", SqlDbType.NVarChar, 500) { Value = sqlVersion });
-                insertCmd.Parameters.Add(new SqlParameter("@sql_server_edition", SqlDbType.NVarChar, 128) { Value = sqlEdition });
-                insertCmd.Parameters.Add(new SqlParameter("@installation_type", SqlDbType.VarChar, 20) { Value = installationType });
-                insertCmd.Parameters.Add(new SqlParameter("@previous_version", SqlDbType.NVarChar, 50) { Value = (object?)previousVersion ?? DBNull.Value });
-                insertCmd.Parameters.Add(new SqlParameter("@installation_status", SqlDbType.VarChar, 20) { Value = status });
-                insertCmd.Parameters.Add(new SqlParameter("@files_executed", SqlDbType.Int) { Value = filesExecuted });
-                insertCmd.Parameters.Add(new SqlParameter("@files_failed", SqlDbType.Int) { Value = filesFailed });
-                insertCmd.Parameters.Add(new SqlParameter("@installation_duration_ms", SqlDbType.BigInt) { Value = durationMs });
-
-                await insertCmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
-            catch
+            catch (SqlException)
             {
-                /*Don't let history logging failure break the installation*/
+                /*Table might not exist yet on first install*/
             }
+
+            /*Get SQL Server version info*/
+            string sqlVersion = "";
+            string sqlEdition = "";
+
+            using (var versionCmd = new SqlCommand("SELECT @@VERSION, SERVERPROPERTY('Edition');", connection))
+            using (var reader = await versionCmd.ExecuteReaderAsync().ConfigureAwait(false))
+            {
+                if (await reader.ReadAsync().ConfigureAwait(false))
+                {
+                    sqlVersion = reader.GetString(0);
+                    sqlEdition = reader.GetString(1);
+                }
+            }
+
+            long durationMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
+            string status = isSuccess ? "SUCCESS" : (filesFailed > 0 ? "PARTIAL" : "FAILED");
+
+            var insertSql = @"
+                INSERT INTO PerformanceMonitor.config.installation_history
+                (
+                    installer_version,
+                    installer_info_version,
+                    sql_server_version,
+                    sql_server_edition,
+                    installation_type,
+                    previous_version,
+                    installation_status,
+                    files_executed,
+                    files_failed,
+                    installation_duration_ms
+                )
+                VALUES
+                (
+                    @installer_version,
+                    @installer_info_version,
+                    @sql_server_version,
+                    @sql_server_edition,
+                    @installation_type,
+                    @previous_version,
+                    @installation_status,
+                    @files_executed,
+                    @files_failed,
+                    @installation_duration_ms
+                );";
+
+            using var insertCmd = new SqlCommand(insertSql, connection);
+            insertCmd.Parameters.Add(new SqlParameter("@installer_version", SqlDbType.NVarChar, 50) { Value = assemblyVersion });
+            insertCmd.Parameters.Add(new SqlParameter("@installer_info_version", SqlDbType.NVarChar, 100) { Value = (object?)infoVersion ?? DBNull.Value });
+            insertCmd.Parameters.Add(new SqlParameter("@sql_server_version", SqlDbType.NVarChar, 500) { Value = sqlVersion });
+            insertCmd.Parameters.Add(new SqlParameter("@sql_server_edition", SqlDbType.NVarChar, 128) { Value = sqlEdition });
+            insertCmd.Parameters.Add(new SqlParameter("@installation_type", SqlDbType.VarChar, 20) { Value = installationType });
+            insertCmd.Parameters.Add(new SqlParameter("@previous_version", SqlDbType.NVarChar, 50) { Value = (object?)previousVersion ?? DBNull.Value });
+            insertCmd.Parameters.Add(new SqlParameter("@installation_status", SqlDbType.VarChar, 20) { Value = status });
+            insertCmd.Parameters.Add(new SqlParameter("@files_executed", SqlDbType.Int) { Value = filesExecuted });
+            insertCmd.Parameters.Add(new SqlParameter("@files_failed", SqlDbType.Int) { Value = filesFailed });
+            insertCmd.Parameters.Add(new SqlParameter("@installation_duration_ms", SqlDbType.BigInt) { Value = durationMs });
+
+            await insertCmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
         [GeneratedRegex(@"^\d{2}[a-z]?_.*\.sql$")]
