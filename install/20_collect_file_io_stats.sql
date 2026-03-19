@@ -134,14 +134,14 @@ BEGIN
                 ISNULL
                 (
                     d.name,
-                    N'UNKNOWN'
+                    DB_NAME(vfs.database_id)
                 ),
             file_id = vfs.file_id,
             file_name =
                 ISNULL
                 (
                     mf.name,
-                    N'UNKNOWN'
+                    N'File_' + CONVERT(nvarchar(10), vfs.file_id)
                 ),
             file_type_desc =
                 ISNULL
@@ -149,7 +149,7 @@ BEGIN
                     mf.type_desc,
                     N'UNKNOWN'
                 ),
-            physical_name = mf.physical_name,
+            physical_name = ISNULL(mf.physical_name, N''),
             size_on_disk_bytes = vfs.size_on_disk_bytes,
             num_of_reads = vfs.num_of_reads,
             num_of_bytes_read = vfs.num_of_bytes_read,

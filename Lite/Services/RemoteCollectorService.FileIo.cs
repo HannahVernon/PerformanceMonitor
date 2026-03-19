@@ -59,10 +59,10 @@ OPTION(RECOMPILE);"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT
-    database_name = ISNULL(d.name, N'Unknown'),
-    file_name = mf.name,
-    file_type = mf.type_desc,
-    physical_name = mf.physical_name,
+    database_name = ISNULL(d.name, DB_NAME(vfs.database_id)),
+    file_name = ISNULL(mf.name, N'File_' + CONVERT(nvarchar(10), vfs.file_id)),
+    file_type = ISNULL(mf.type_desc, N'UNKNOWN'),
+    physical_name = ISNULL(mf.physical_name, N''),
     size_mb = CONVERT(decimal(18,2), vfs.size_on_disk_bytes / 1048576.0),
     num_of_reads = vfs.num_of_reads,
     num_of_writes = vfs.num_of_writes,
