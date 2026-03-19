@@ -83,11 +83,12 @@ namespace PerformanceMonitorInstallerGui
             }
         }
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
                 FindInstallationFiles();
+                await CheckForInstallerUpdateAsync();
             }
             catch (Exception ex)
             {
@@ -779,6 +780,38 @@ namespace PerformanceMonitorInstallerGui
         /// <summary>
         /// Report progress from installation service
         /// </summary>
+        private async Task CheckForInstallerUpdateAsync()
+        {
+            try
+            {
+                using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                client.DefaultRequestHeaders.Add("User-Agent", "PerformanceMonitor");
+                client.DefaultRequestHeaders.Add("Accept", "application/vnd.github.v3+json");
+
+                var response = await client.GetAsync(
+                    "https://api.github.com/repos/erikdarlingdata/PerformanceMonitor/releases/latest");
+
+                if (!response.IsSuccessStatusCode) return;
+
+                var json = await response.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var tagName = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
+                var versionString = tagName.TrimStart('v', 'V');
+
+                if (!Version.TryParse(versionString, out var latest)) return;
+                if (!Version.TryParse(AppAssemblyVersion, out var current)) return;
+
+                if (latest > current)
+                {
+                    LogMessage($"A newer version ({tagName}) is available at https://github.com/erikdarlingdata/PerformanceMonitor/releases", "Warning");
+                }
+            }
+            catch
+            {
+                /* Best effort — don't block installation if GitHub is unreachable */
+            }
+        }
+
         private void ReportProgress(InstallationProgress progress)
         {
             LogMessage(progress.Message, progress.Status);
