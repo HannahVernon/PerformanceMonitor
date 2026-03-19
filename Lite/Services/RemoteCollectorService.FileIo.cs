@@ -199,9 +199,9 @@ OPTION(RECOMPILE);";
         int DatabaseId, int FileId) ReadFileIoRow(SqlDataReader reader)
     {
         return (
-            DatabaseName: reader.IsDBNull(0) ? "Unknown" : reader.GetString(0),
-            FileName: reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
-            FileType: reader.IsDBNull(2) ? "Unknown" : reader.GetString(2),
+            DatabaseName: reader.IsDBNull(0) ? $"DB_{reader.GetValue(13)}" : reader.GetString(0),
+            FileName: reader.IsDBNull(1) ? $"File_{reader.GetValue(14)}" : reader.GetString(1),
+            FileType: reader.IsDBNull(2) ? "UNKNOWN" : reader.GetString(2),
             PhysicalName: reader.IsDBNull(3) ? "" : reader.GetString(3),
             SizeMb: reader.IsDBNull(4) ? 0m : reader.GetDecimal(4),
             NumOfReads: reader.IsDBNull(5) ? 0L : reader.GetInt64(5),
