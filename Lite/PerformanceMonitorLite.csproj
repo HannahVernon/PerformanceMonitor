@@ -49,16 +49,16 @@
     <PackageReference Include="CredentialManagement" Version="1.0.2" />
 
     <!-- Background service hosting -->
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
 
     <!-- Logging -->
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.5" />
 
     <!-- System tray -->
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
 
     <!-- JSON configuration -->
-    <PackageReference Include="System.Text.Json" Version="10.0.3" />
+    <PackageReference Include="System.Text.Json" Version="10.0.5" />
 
     <!-- MCP server for LLM tool access -->
     <PackageReference Include="ModelContextProtocol" Version="0.7.0-preview.1" />

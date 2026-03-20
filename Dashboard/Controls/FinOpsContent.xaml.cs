@@ -16,7 +16,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
-using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;

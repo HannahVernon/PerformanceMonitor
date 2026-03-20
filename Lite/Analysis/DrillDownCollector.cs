@@ -74,7 +74,7 @@ public class DrillDownCollector
                 if (pathKeys.Contains("MEMORY_GRANT_PENDING"))
                     await CollectPendingGrants(finding, context);
 
-                if (pathKeys.Any(k => k.StartsWith("BAD_ACTOR_")))
+                if (pathKeys.Any(k => k.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase)))
                     await CollectBadActorDetail(finding, context);
 
                 // Plan analysis: for findings with top queries, analyze their cached plans
@@ -563,7 +563,7 @@ LIMIT 5";
 
         // Only analyze plans for bad actor findings (1 plan each).
         // Skip top_cpu_queries (5 plans would be too heavy).
-        if (!finding.RootFactKey.StartsWith("BAD_ACTOR_")) return;
+        if (!finding.RootFactKey.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase)) return;
 
         var queryHash = finding.RootFactKey.Replace("BAD_ACTOR_", "");
         if (string.IsNullOrEmpty(queryHash)) return;

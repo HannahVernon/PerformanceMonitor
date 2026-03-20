@@ -308,8 +308,8 @@ public class FactScorer
     /// </summary>
     private static double ScoreAnomalyFact(Fact fact)
     {
-        if (fact.Key.StartsWith("ANOMALY_CPU_SPIKE") || fact.Key.StartsWith("ANOMALY_READ_LATENCY")
-            || fact.Key.StartsWith("ANOMALY_WRITE_LATENCY"))
+        if (fact.Key.StartsWith("ANOMALY_CPU_SPIKE", StringComparison.OrdinalIgnoreCase) || fact.Key.StartsWith("ANOMALY_READ_LATENCY", StringComparison.OrdinalIgnoreCase)
+            || fact.Key.StartsWith("ANOMALY_WRITE_LATENCY", StringComparison.OrdinalIgnoreCase))
         {
             // Deviation-based scoring: 2σ = 0.5, 4σ = 1.0
             var deviation = fact.Metadata.GetValueOrDefault("deviation_sigma");
@@ -319,7 +319,7 @@ public class FactScorer
             return base_score * confidence;
         }
 
-        if (fact.Key.StartsWith("ANOMALY_WAIT_"))
+        if (fact.Key.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
         {
             // Ratio-based scoring: 5x = 0.5, 20x = 1.0
             var ratio = fact.Metadata.GetValueOrDefault("ratio");
@@ -327,7 +327,7 @@ public class FactScorer
             return 0.5 + 0.5 * Math.Min((ratio - 5.0) / 15.0, 1.0);
         }
 
-        if (fact.Key.StartsWith("ANOMALY_BLOCKING_SPIKE") || fact.Key.StartsWith("ANOMALY_DEADLOCK_SPIKE"))
+        if (fact.Key.StartsWith("ANOMALY_BLOCKING_SPIKE", StringComparison.OrdinalIgnoreCase) || fact.Key.StartsWith("ANOMALY_DEADLOCK_SPIKE", StringComparison.OrdinalIgnoreCase))
         {
             // Ratio-based: 3x = 0.5, 10x = 1.0
             var ratio = fact.Metadata.GetValueOrDefault("ratio");

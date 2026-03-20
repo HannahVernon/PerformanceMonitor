@@ -261,11 +261,13 @@ COPY (
             if (month != null && table != null)
             {
                 var key = (month, table);
-                if (!groups.ContainsKey(key))
+                if (!groups.TryGetValue(key, out List<string>? value))
                 {
-                    groups[key] = [];
+                    value = [];
+                    groups[key] = value;
                 }
-                groups[key].Add(file);
+
+                value.Add(file);
             }
             else
             {

@@ -100,7 +100,7 @@ public class IdempotencyTests : IAsyncLifetime
                 var batches = SplitBatches(sql);
 
                 using var connection = new SqlConnection(connectionString);
-                await connection.OpenAsync();
+                await connection.OpenAsync(TestContext.Current.CancellationToken);
 
                 foreach (var batch in batches)
                 {
@@ -113,7 +113,7 @@ public class IdempotencyTests : IAsyncLifetime
 
                     try
                     {
-                        await cmd.ExecuteNonQueryAsync();
+                        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
                     }
                     catch (SqlException ex)
                     {

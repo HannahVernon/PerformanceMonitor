@@ -180,6 +180,29 @@ namespace PerformanceMonitorDashboard
                 var prefs = _preferencesService.GetPreferences();
                 if (!prefs.CheckForUpdatesOnStartup) return;
 
+                // Try Velopack first (supports download + apply)
+                try
+                {
+                    var mgr = new Velopack.UpdateManager(
+                        new Velopack.Sources.GithubSource(
+                            "https://github.com/erikdarlingdata/PerformanceMonitor", null, false));
+
+                    var newVersion = await mgr.CheckForUpdatesAsync();
+                    if (newVersion != null)
+                    {
+                        _notificationService?.ShowNotification(
+                            "Update Available",
+                            $"Performance Monitor {newVersion.TargetFullRelease.Version} is available. Use Help > About to download and install.",
+                            NotificationType.Info);
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Velopack packages may not exist yet — fall through to legacy check
+                }
+
+                // Fallback: GitHub Releases API check (notification only)
                 var result = await UpdateCheckService.CheckForUpdateAsync();
                 if (result?.IsUpdateAvailable == true)
                 {
