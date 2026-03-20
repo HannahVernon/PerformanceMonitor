@@ -325,7 +325,7 @@ public static partial class PlanAnalyzer
     private static void CheckForTableVariables(PlanNode node, bool isModification,
         ref bool hasTableVar, ref bool modifiesTableVar)
     {
-        if (!string.IsNullOrEmpty(node.ObjectName) && node.ObjectName.StartsWith("@"))
+        if (!string.IsNullOrEmpty(node.ObjectName) && node.ObjectName.StartsWith("@", StringComparison.OrdinalIgnoreCase))
         {
             hasTableVar = true;
             if (isModification && (node.PhysicalOp.Contains("Insert", StringComparison.OrdinalIgnoreCase)
@@ -573,7 +573,7 @@ public static partial class PlanAnalyzer
                     "Leading wildcard LIKE prevents an index seek — SQL Server must scan every row. If substring search performance is critical, consider a full-text index or a trigram-based approach.",
                 "CASE expression in predicate" =>
                     "CASE expression in a predicate prevents an index seek. Rewrite using separate WHERE clauses combined with OR, or split into multiple queries.",
-                _ when nonSargableReason.StartsWith("Function call") =>
+                _ when nonSargableReason.StartsWith("Function call", StringComparison.OrdinalIgnoreCase) =>
                     $"{nonSargableReason} prevents an index seek. Remove the function from the column side — apply it to the parameter instead, or create a computed column with the expression and index that.",
                 _ =>
                     $"{nonSargableReason} prevents an index seek, forcing a scan."

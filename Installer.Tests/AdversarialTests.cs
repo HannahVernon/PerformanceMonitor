@@ -36,11 +36,11 @@ public class AdversarialTests : IAsyncLifetime
         // Insert a canary row we can check survived
         using (var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString()))
         {
-            await conn.OpenAsync();
+            await conn.OpenAsync(TestContext.Current.CancellationToken);
             using var cmd = new SqlCommand(@"
                 CREATE TABLE config.canary_data (id int NOT NULL, value nvarchar(50) NOT NULL);
                 INSERT INTO config.canary_data VALUES (1, 'must_survive');", conn);
-            await cmd.ExecuteNonQueryAsync();
+            await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
         }
 
         // Create a poisoned upgrade that will fail
@@ -58,17 +58,19 @@ public class AdversarialTests : IAsyncLifetime
             dir.RootPath,
             TestDatabaseHelper.GetTestDbConnectionString(),
             "2.0.0",
-            "2.1.0");
+            "2.1.0",
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.True(failureCount > 0, "Upgrade should have failed");
 
         // The critical assertion: database and data must still exist
         using (var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString()))
         {
-            await conn.OpenAsync();
+            await conn.OpenAsync(TestContext.Current.CancellationToken);
             using var cmd = new SqlCommand(
                 "SELECT value FROM config.canary_data WHERE id = 1;", conn);
-            var result = await cmd.ExecuteScalarAsync();
+            var result = await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
             Assert.Equal("must_survive", result?.ToString());
         }
     }
@@ -91,10 +93,10 @@ public class AdversarialTests : IAsyncLifetime
         // Verify: only installation_history exists, no collect/report schemas
         using (var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString()))
         {
-            await conn.OpenAsync();
+            await conn.OpenAsync(TestContext.Current.CancellationToken);
             using var cmd = new SqlCommand(
                 "SELECT COUNT(*) FROM sys.tables WHERE schema_id != SCHEMA_ID('config');", conn);
-            var nonConfigTables = (int)(await cmd.ExecuteScalarAsync())!;
+            var nonConfigTables = (int)(await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken))!;
             Assert.Equal(0, nonConfigTables);
         }
 
@@ -112,18 +114,18 @@ public class AdversarialTests : IAsyncLifetime
             var fileName = Path.GetFileName(file);
             try
             {
-                var sql = await File.ReadAllTextAsync(file);
+                var sql = await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken);
                 sql = RewriteForTestDatabase(sql);
                 var batches = SplitGoBatches(sql);
 
                 using var conn = new SqlConnection(connectionString);
-                await conn.OpenAsync();
+                await conn.OpenAsync(TestContext.Current.CancellationToken);
 
                 foreach (var batch in batches)
                 {
                     if (string.IsNullOrWhiteSpace(batch)) continue;
                     using var cmd = new SqlCommand(batch, conn) { CommandTimeout = 120 };
-                    try { await cmd.ExecuteNonQueryAsync(); }
+                    try { await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken); }
                     catch (SqlException ex)
                     {
                         if (IsExpectedTestFailure(ex, fileName)) continue;
@@ -144,12 +146,12 @@ public class AdversarialTests : IAsyncLifetime
         // Verify core tables were created from the partial state
         using (var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString()))
         {
-            await conn.OpenAsync();
+            await conn.OpenAsync(TestContext.Current.CancellationToken);
             using var cmd = new SqlCommand(@"
                 SELECT COUNT(*) FROM sys.tables
                 WHERE schema_id = SCHEMA_ID('collect')
                 AND name IN ('wait_stats', 'query_stats', 'cpu_utilization_stats');", conn);
-            var collectTables = (int)(await cmd.ExecuteScalarAsync())!;
+            var collectTables = (int)(await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken))!;
             Assert.True(collectTables >= 3, $"Expected at least 3 collect tables, got {collectTables}");
         }
     }
@@ -190,17 +192,19 @@ public class AdversarialTests : IAsyncLifetime
         var result = await InstallationService.ExecuteInstallationAsync(
             TestDatabaseHelper.GetTestDbConnectionString(),
             files,
-            cleanInstall: false);
+            cleanInstall: false,
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.False(result.Success);
         Assert.True(result.FilesFailed >= 1);
 
         // Verify abort: scripts after 02_ must NOT have run
         using var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString());
-        await conn.OpenAsync();
+        await conn.OpenAsync(TestContext.Current.CancellationToken);
         using var cmd = new SqlCommand(
             "SELECT OBJECT_ID('dbo.should_not_exist', 'U');", conn);
-        var obj = await cmd.ExecuteScalarAsync();
+        var obj = await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
         Assert.True(obj == null || obj == DBNull.Value,
             "03_config.sql should not have executed after 02_ critical failure");
     }
@@ -243,13 +247,13 @@ public class AdversarialTests : IAsyncLifetime
 
         // Version must still be 2.0.0 — no SUCCESS row written for 2.1.0
         using var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString());
-        await conn.OpenAsync();
+        await conn.OpenAsync(TestContext.Current.CancellationToken);
         using var cmd = new SqlCommand(@"
             SELECT TOP 1 installer_version
             FROM config.installation_history
             WHERE installation_status = 'SUCCESS'
             ORDER BY installation_date DESC;", conn);
-        var version = await cmd.ExecuteScalarAsync();
+        var version = await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
         Assert.Equal("2.0.0", version?.ToString());
     }
 
@@ -278,16 +282,18 @@ public class AdversarialTests : IAsyncLifetime
         var result = await InstallationService.ExecuteInstallationAsync(
             TestDatabaseHelper.GetTestDbConnectionString(),
             files,
-            cleanInstall: false);
+            cleanInstall: false,
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         // 04_ failed but 05_ should have run
         Assert.True(result.FilesFailed >= 1);
 
         using var conn = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString());
-        await conn.OpenAsync();
+        await conn.OpenAsync(TestContext.Current.CancellationToken);
         using var cmd = new SqlCommand(
             "SELECT OBJECT_ID('dbo.proof_it_continued', 'U');", conn);
-        var obj = await cmd.ExecuteScalarAsync();
+        var obj = await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
         Assert.True(obj != null && obj != DBNull.Value,
             "05_ should have executed despite 04_ failure");
     }
@@ -313,7 +319,9 @@ public class AdversarialTests : IAsyncLifetime
         var result = await InstallationService.ExecuteInstallationAsync(
             TestDatabaseHelper.GetTestDbConnectionString(),
             files,
-            cleanInstall: false);
+            cleanInstall: false,
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         // Should complete (not throw), with 04_ counted as failed
         Assert.True(result.FilesFailed >= 1);
@@ -337,7 +345,9 @@ public class AdversarialTests : IAsyncLifetime
         var result = await InstallationService.ExecuteInstallationAsync(
             TestDatabaseHelper.GetTestDbConnectionString(),
             files,
-            cleanInstall: false);
+            cleanInstall: false,
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.True(result.Success);
     }
@@ -351,7 +361,9 @@ public class AdversarialTests : IAsyncLifetime
     public async Task VersionCheck_Sql2022_IsSupported()
     {
         var info = await InstallationService.TestConnectionAsync(
-            TestDatabaseHelper.GetConnectionString());
+            TestDatabaseHelper.GetConnectionString(),
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         Assert.True(info.IsConnected);
         Assert.True(info.ProductMajorVersion >= 13,
@@ -409,7 +421,7 @@ public class AdversarialTests : IAsyncLifetime
         // Intentionally bad connection string
         var badConnStr = "Server=DOESNOTEXIST;Database=master;User Id=sa;Password=x;TrustServerCertificate=true;Connect Timeout=2;";
 
-        var version = await InstallationService.GetInstalledVersionAsync(badConnStr);
+        var version = await InstallationService.GetInstalledVersionAsync(badConnStr, cancellationToken: TestContext.Current.CancellationToken);
 
         // GUI swallows exceptions and returns null.
         // This means a transient network failure could cause the GUI to treat
@@ -431,14 +443,14 @@ public class AdversarialTests : IAsyncLifetime
         // Verify the login can connect but has no dbcreator
         using (var conn = new SqlConnection(restrictedConnStr))
         {
-            await conn.OpenAsync();
+            await conn.OpenAsync(TestContext.Current.CancellationToken);
             using var cmd = new SqlCommand("SELECT IS_SRVROLEMEMBER('dbcreator');", conn);
-            var isDbCreator = await cmd.ExecuteScalarAsync();
+            var isDbCreator = await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
             Assert.Equal(0, Convert.ToInt32(isDbCreator));
         }
 
         // Version detection should return null (no PerformanceMonitor database)
-        var version = await InstallationService.GetInstalledVersionAsync(restrictedConnStr);
+        var version = await InstallationService.GetInstalledVersionAsync(restrictedConnStr, cancellationToken: TestContext.Current.CancellationToken);
         Assert.Null(version);
 
         // Try to install — 01_install_database.sql should fail on CREATE DATABASE
@@ -455,7 +467,9 @@ IF DB_ID(N'PerformanceMonitor_RestrictedTest') IS NULL
         var result = await InstallationService.ExecuteInstallationAsync(
             restrictedConnStr,
             files,
-            cleanInstall: false);
+            cleanInstall: false,
+            cancellationToken: TestContext.Current.CancellationToken
+            );
 
         // Must fail — and because 01_ is critical, it should abort
         Assert.False(result.Success);

@@ -81,7 +81,7 @@ public class VersionDetectionTests : IAsyncLifetime
 
         // Add a newer success row
         using var connection = new SqlConnection(TestDatabaseHelper.GetTestDbConnectionString());
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
         using var cmd = new SqlCommand(@"
             -- Use explicit future date to ensure this row sorts first
             INSERT INTO config.installation_history
@@ -89,7 +89,7 @@ public class VersionDetectionTests : IAsyncLifetime
             VALUES
                 (N'2.2.0', N'SUCCESS', N'UPGRADE', @@VERSION, N'Test', DATEADD(HOUR, 1, SYSDATETIME()));",
             connection);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
 
         var version = await GetInstalledVersionFromTestDbAsync();
         Assert.Equal("2.2.0", version);
@@ -106,19 +106,19 @@ public class VersionDetectionTests : IAsyncLifetime
         try
         {
             using var connection = new SqlConnection(TestDatabaseHelper.GetConnectionString());
-            await connection.OpenAsync();
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
 
             // Check if database exists
             using var dbCheckCmd = new SqlCommand($@"
                 SELECT database_id FROM sys.databases WHERE name = N'{testDbName}';", connection);
-            var dbExists = await dbCheckCmd.ExecuteScalarAsync();
+            var dbExists = await dbCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
             if (dbExists == null || dbExists == DBNull.Value)
                 return null;
 
             // Check if installation_history table exists
             using var tableCheckCmd = new SqlCommand($@"
                 SELECT OBJECT_ID(N'{testDbName}.config.installation_history', N'U');", connection);
-            var tableExists = await tableCheckCmd.ExecuteScalarAsync();
+            var tableExists = await tableCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
             if (tableExists == null || tableExists == DBNull.Value)
                 return null;
 
@@ -128,7 +128,7 @@ public class VersionDetectionTests : IAsyncLifetime
                 FROM {testDbName}.config.installation_history
                 WHERE installation_status = 'SUCCESS'
                 ORDER BY installation_date DESC;", connection);
-            var version = await versionCmd.ExecuteScalarAsync();
+            var version = await versionCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
             if (version != null && version != DBNull.Value)
                 return version.ToString();
 

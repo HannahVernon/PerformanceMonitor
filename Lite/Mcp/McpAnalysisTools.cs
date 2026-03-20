@@ -794,15 +794,15 @@ internal static class ToolRecommendations
             if (!ByFactKey.TryGetValue(key, out var recommendations))
             {
                 // Handle dynamic keys by checking prefix
-                if (key.StartsWith("BAD_ACTOR_"))
+                if (key.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase))
                     ByFactKey.TryGetValue("BAD_ACTOR", out recommendations);
-                else if (key.StartsWith("ANOMALY_CPU"))
+                else if (key.StartsWith("ANOMALY_CPU", StringComparison.OrdinalIgnoreCase))
                     ByFactKey.TryGetValue("ANOMALY_CPU", out recommendations);
-                else if (key.StartsWith("ANOMALY_WAIT_"))
+                else if (key.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
                     ByFactKey.TryGetValue("ANOMALY_WAIT", out recommendations);
-                else if (key.StartsWith("ANOMALY_BLOCKING") || key.StartsWith("ANOMALY_DEADLOCK"))
+                else if (key.StartsWith("ANOMALY_BLOCKING", StringComparison.OrdinalIgnoreCase) || key.StartsWith("ANOMALY_DEADLOCK", StringComparison.OrdinalIgnoreCase))
                     ByFactKey.TryGetValue("ANOMALY_BLOCKING", out recommendations);
-                else if (key.StartsWith("ANOMALY_READ") || key.StartsWith("ANOMALY_WRITE"))
+                else if (key.StartsWith("ANOMALY_READ", StringComparison.OrdinalIgnoreCase) || key.StartsWith("ANOMALY_WRITE", StringComparison.OrdinalIgnoreCase))
                     ByFactKey.TryGetValue("ANOMALY_IO", out recommendations);
                 if (recommendations == null) continue;
             }

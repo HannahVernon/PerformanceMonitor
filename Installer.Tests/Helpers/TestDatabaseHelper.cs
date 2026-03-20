@@ -19,18 +19,18 @@ public static class TestDatabaseHelper
     public static async Task CreateTestDatabaseAsync()
     {
         using var connection = new SqlConnection(GetConnectionString());
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = new SqlCommand($@"
             IF DB_ID(N'{TestDatabaseName}') IS NULL
                 CREATE DATABASE [{TestDatabaseName}];", connection);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
     public static async Task DropTestDatabaseAsync()
     {
         using var connection = new SqlConnection(GetConnectionString());
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = new SqlCommand($@"
             IF DB_ID(N'{TestDatabaseName}') IS NOT NULL
@@ -38,7 +38,7 @@ public static class TestDatabaseHelper
                 ALTER DATABASE [{TestDatabaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
                 DROP DATABASE [{TestDatabaseName}];
             END;", connection);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>
@@ -50,7 +50,7 @@ public static class TestDatabaseHelper
         await CreateTestDatabaseAsync();
 
         using var connection = new SqlConnection(GetTestDbConnectionString());
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         // Must match the real schema from 01_install_database.sql exactly,
         // otherwise CREATE OR ALTER VIEW on config.current_version will fail
@@ -83,7 +83,7 @@ public static class TestDatabaseHelper
             VALUES
                 (N'{version}', N'SUCCESS', N'UPGRADE', @@VERSION, N'Test');",
             connection);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>
@@ -95,7 +95,7 @@ public static class TestDatabaseHelper
         await CreateTestDatabaseAsync();
 
         using var connection = new SqlConnection(GetTestDbConnectionString());
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = new SqlCommand(@"
             IF SCHEMA_ID('config') IS NULL
@@ -120,7 +120,7 @@ public static class TestDatabaseHelper
                     CONSTRAINT PK_installation_history PRIMARY KEY CLUSTERED (installation_id)
                 );",
             connection);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>
@@ -131,7 +131,7 @@ public static class TestDatabaseHelper
         await CreateInstallationWithNoSuccessRowsAsync();
 
         using var connection = new SqlConnection(GetTestDbConnectionString());
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = new SqlCommand(@"
             INSERT INTO config.installation_history
@@ -139,6 +139,6 @@ public static class TestDatabaseHelper
             VALUES
                 (N'2.0.0', N'FAILED', N'UPGRADE', @@VERSION, N'Test');",
             connection);
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 }

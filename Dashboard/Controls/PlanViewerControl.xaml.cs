@@ -454,7 +454,7 @@ public partial class PlanViewerControl : UserControl
         };
     }
 
-    private object BuildEdgeTooltipContent(PlanNode child)
+    private Border BuildEdgeTooltipContent(PlanNode child)
     {
         var grid = new Grid { MinWidth = 240 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

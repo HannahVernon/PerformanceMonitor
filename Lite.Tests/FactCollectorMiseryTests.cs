@@ -279,7 +279,7 @@ public class FactCollectorMiseryTests : IDisposable
         // Insert just one CPU data point manually
         using var readLock = _duckDb.AcquireReadLock();
         using var connection = _duckDb.CreateConnection();
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
@@ -292,7 +292,7 @@ VALUES (-9999, $1, $2, $3, $4, 42, 10)";
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerId });
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerName });
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestPeriodEnd.AddMinutes(-30) });
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
 
         var collector = new DuckDbFactCollector(_duckDb);
         var context = TestDataSeeder.CreateTestContext();
@@ -733,7 +733,7 @@ VALUES (-9999, $1, $2, $3, $4, 42, 10)";
         // Seed a session-level trace flag (not global)
         using var readLock = _duckDb.AcquireReadLock();
         using var connection = _duckDb.CreateConnection();
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
@@ -745,7 +745,7 @@ VALUES (-99999, $1, $2, $3, 1118, true, false, true)";
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestPeriodEnd });
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerId });
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerName });
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
 
         var collector = new DuckDbFactCollector(_duckDb);
         var context = TestDataSeeder.CreateTestContext();
@@ -773,7 +773,7 @@ VALUES (-99999, $1, $2, $3, 1118, true, false, true)";
         // Seed query_stats with delta_execution_count = 0 (stale row)
         using var readLock = _duckDb.AcquireReadLock();
         using var connection = _duckDb.CreateConnection();
-        await connection.OpenAsync();
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
@@ -786,7 +786,7 @@ VALUES (-99998, $1, $2, $3, '0xSTALE0001', 500, 16, 0, 0, 0)";
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestPeriodEnd.AddMinutes(-30) });
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerId });
         cmd.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerName });
-        await cmd.ExecuteNonQueryAsync();
+        await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
 
         var collector = new DuckDbFactCollector(_duckDb);
         var context = TestDataSeeder.CreateTestContext();

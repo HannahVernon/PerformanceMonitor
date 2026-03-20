@@ -1671,15 +1671,15 @@ FROM latest WHERE rn = 1";
     /// </summary>
     private static bool IsGeneralLockWait(string waitType)
     {
-        if (!waitType.StartsWith("LCK_M_")) return false;
+        if (!waitType.StartsWith("LCK_M_", StringComparison.OrdinalIgnoreCase)) return false;
 
         // Keep individual: reader/writer locks
         if (waitType is "LCK_M_S" or "LCK_M_IS") return false;
 
         // Keep individual: range locks (serializable/repeatable read)
-        if (waitType.StartsWith("LCK_M_RS_") ||
-            waitType.StartsWith("LCK_M_RIn_") ||
-            waitType.StartsWith("LCK_M_RX_")) return false;
+        if (waitType.StartsWith("LCK_M_RS_", StringComparison.OrdinalIgnoreCase) ||
+            waitType.StartsWith("LCK_M_RIn_", StringComparison.OrdinalIgnoreCase) ||
+            waitType.StartsWith("LCK_M_RX_", StringComparison.OrdinalIgnoreCase)) return false;
 
         // Everything else (X, U, IX, SIX, BU, IU, UIX, etc.) -> group
         return true;
