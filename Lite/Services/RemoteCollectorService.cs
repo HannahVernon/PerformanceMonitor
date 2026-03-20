@@ -279,6 +279,9 @@ public partial class RemoteCollectorService
         await EnsureBlockedProcessXeSessionAsync(server, engineEdition, cancellationToken);
         await EnsureDeadlockXeSessionAsync(server, engineEdition, cancellationToken);
 
+        /* Persist edition/version to DuckDB for the analysis engine */
+        await PersistServerMetadataAsync(server, serverStatus);
+
         AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)})");
         _logger?.LogInformation("Running {Count} collectors for server '{Server}' (initial load)",
             enabledSchedules.Count, server.DisplayName);
@@ -425,6 +428,40 @@ public partial class RemoteCollectorService
     }
 
     /// <summary>
+    /// Persists SQL Server edition and major version to the servers table.
+    /// Called once per collection cycle so the analysis engine can provide
+    /// edition-specific recommendations (e.g., memory caps for Standard edition).
+    /// </summary>
+    private async Task PersistServerMetadataAsync(ServerConnection server, ServerConnectionStatus status)
+    {
+        if (status.SqlEngineEdition == 0 && status.SqlMajorVersion == 0) return;
+
+        try
+        {
+            var serverId = GetServerId(server);
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+UPDATE servers
+SET sql_engine_edition = $1,
+    sql_major_version = $2
+WHERE server_id = $3";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = status.SqlEngineEdition });
+            cmd.Parameters.Add(new DuckDBParameter { Value = status.SqlMajorVersion });
+            cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Collector", $"Failed to persist server metadata for '{server.DisplayName}': {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Logs a collection attempt to the collection_log table.
     /// </summary>
     private async Task LogCollectionAsync(int serverId, string serverName, string collectorName, DateTime startTime, string status, string? errorMessage, int rowsCollected, long sqlMs = 0, long duckDbMs = 0)
@@ -480,6 +517,50 @@ public partial class RemoteCollectorService
                 AppLogger.Error("Collector", $"COLLECTION LOGGING STILL BROKEN: {_logInsertFailures} consecutive failures. Last error: {ex.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// Enumerates online databases on an Azure SQL DB logical server.
+    /// HAS_DBACCESS() returns false for user databases from master on Azure SQL DB,
+    /// so we skip that filter — inaccessible databases should be handled by callers via try/catch.
+    /// </summary>
+    protected async Task<List<string>> GetAzureDatabaseListAsync(ServerConnection server, CancellationToken cancellationToken)
+    {
+        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var connStr = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            ConnectTimeout = ConnectionTimeoutSeconds,
+            InitialCatalog = "master"
+        }.ConnectionString;
+
+        var databases = new List<string>();
+        using var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(cancellationToken);
+        using var cmd = new SqlCommand(
+            "SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 ORDER BY name;",
+            conn)
+        { CommandTimeout = CommandTimeoutSeconds };
+        using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            databases.Add(reader.GetString(0));
+        return databases;
+    }
+
+    /// <summary>
+    /// Opens a SQL connection to a specific database on an Azure SQL DB logical server.
+    /// </summary>
+    protected async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerConnection server, string databaseName, CancellationToken cancellationToken)
+    {
+        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var connStr = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            ConnectTimeout = ConnectionTimeoutSeconds,
+            InitialCatalog = databaseName
+        }.ConnectionString;
+
+        var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(cancellationToken);
+        return conn;
     }
 
     /// <summary>

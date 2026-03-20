@@ -116,7 +116,13 @@ SELECT
     volume_total_mb =
         CONVERT(decimal(19,2), vs.total_bytes / 1048576.0),
     volume_free_mb =
-        CONVERT(decimal(19,2), vs.available_bytes / 1048576.0)
+        CONVERT(decimal(19,2), vs.available_bytes / 1048576.0),
+    is_percent_growth =
+        mf.is_percent_growth,
+    growth_pct =
+        CASE WHEN mf.is_percent_growth = 1 THEN mf.growth ELSE NULL END,
+    vlf_count =
+        CASE WHEN mf.type = 1 /*LOG*/ THEN (SELECT COUNT(*) FROM sys.dm_db_log_info(mf.database_id) AS li WHERE li.file_id = mf.file_id) ELSE NULL END
 FROM sys.master_files AS mf
 JOIN sys.databases AS d
   ON d.database_id = mf.database_id
@@ -169,13 +175,17 @@ SELECT
     volume_total_mb =
         CONVERT(decimal(19,2), NULL),
     volume_free_mb =
-        CONVERT(decimal(19,2), NULL)
+        CONVERT(decimal(19,2), NULL),
+    is_percent_growth =
+        df.is_percent_growth,
+    growth_pct =
+        CASE WHEN df.is_percent_growth = 1 THEN df.growth ELSE NULL END,
+    vlf_count =
+        CASE WHEN df.type = 1 /*LOG*/ THEN (SELECT COUNT(*) FROM sys.dm_db_log_info(DB_ID()) AS li WHERE li.file_id = df.file_id) ELSE NULL END
 FROM sys.database_files AS df
 ORDER BY
     df.file_id
 OPTION(RECOMPILE);";
-
-        string query = isAzureSqlDb ? azureSqlDbQuery : onPremQuery;
 
         var serverId = GetServerId(server);
         var collectionTime = DateTime.UtcNow;
@@ -187,33 +197,46 @@ OPTION(RECOMPILE);";
             string FileName, string PhysicalName, decimal TotalSizeMb, decimal? UsedSizeMb,
             decimal? AutoGrowthMb, decimal? MaxSizeMb, string? RecoveryModel,
             int? CompatibilityLevel, string? StateDesc, string? VolumeMountPoint,
-            decimal? VolumeTotalMb, decimal? VolumeFreeMb)>();
+            decimal? VolumeTotalMb, decimal? VolumeFreeMb, bool? IsPercentGrowth,
+            int? GrowthPct, int? VlfCount)>();
 
         var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
 
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        if (isAzureSqlDb)
         {
-            rows.Add((
-                reader.GetString(0),
-                Convert.ToInt32(reader.GetValue(1)),
-                Convert.ToInt32(reader.GetValue(2)),
-                reader.GetString(3),
-                reader.GetString(4),
-                reader.GetString(5),
-                reader.GetDecimal(6),
-                reader.IsDBNull(7) ? null : reader.GetDecimal(7),
-                reader.IsDBNull(8) ? null : reader.GetDecimal(8),
-                reader.IsDBNull(9) ? null : reader.GetDecimal(9),
-                reader.IsDBNull(10) ? null : reader.GetString(10),
-                reader.IsDBNull(11) ? null : Convert.ToInt32(reader.GetValue(11)),
-                reader.IsDBNull(12) ? null : reader.GetString(12),
-                reader.IsDBNull(13) ? null : reader.GetString(13),
-                reader.IsDBNull(14) ? null : reader.GetDecimal(14),
-                reader.IsDBNull(15) ? null : reader.GetDecimal(15)));
+            // Azure SQL DB: each database is isolated, so we must connect to each one individually.
+            var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
+
+            foreach (var dbName in databases)
+            {
+                try
+                {
+                    using var dbConn = await OpenAzureDatabaseConnectionAsync(server, dbName, cancellationToken);
+                    using var cmd = new SqlCommand(azureSqlDbQuery, dbConn);
+                    cmd.CommandTimeout = CommandTimeoutSeconds;
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        rows.Add(ReadSizeRow(reader));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug("Skipping database '{Database}' for size collection: {Error}", dbName, ex.Message);
+                }
+            }
+        }
+        else
+        {
+            using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
+            using var command = new SqlCommand(onPremQuery, sqlConnection);
+            command.CommandTimeout = CommandTimeoutSeconds;
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                rows.Add(ReadSizeRow(reader));
+            }
         }
         sqlSw.Stop();
 
@@ -248,6 +271,9 @@ OPTION(RECOMPILE);";
                        .AppendValue(r.VolumeMountPoint)
                        .AppendValue(r.VolumeTotalMb)
                        .AppendValue(r.VolumeFreeMb)
+                       .AppendValue(r.IsPercentGrowth)
+                       .AppendValue(r.GrowthPct)
+                       .AppendValue(r.VlfCount)
                        .EndRow();
                     rowsCollected++;
                 }
@@ -260,5 +286,34 @@ OPTION(RECOMPILE);";
 
         _logger?.LogDebug("Collected {RowCount} database size rows for server '{Server}'", rowsCollected, server.DisplayName);
         return rowsCollected;
+    }
+
+    private static (string DatabaseName, int DatabaseId, int FileId, string FileTypeDesc,
+        string FileName, string PhysicalName, decimal TotalSizeMb, decimal? UsedSizeMb,
+        decimal? AutoGrowthMb, decimal? MaxSizeMb, string? RecoveryModel,
+        int? CompatibilityLevel, string? StateDesc, string? VolumeMountPoint,
+        decimal? VolumeTotalMb, decimal? VolumeFreeMb, bool? IsPercentGrowth,
+        int? GrowthPct, int? VlfCount) ReadSizeRow(SqlDataReader reader)
+    {
+        return (
+            reader.GetString(0),
+            Convert.ToInt32(reader.GetValue(1)),
+            Convert.ToInt32(reader.GetValue(2)),
+            reader.GetString(3),
+            reader.GetString(4),
+            reader.GetString(5),
+            reader.GetDecimal(6),
+            reader.IsDBNull(7) ? null : reader.GetDecimal(7),
+            reader.IsDBNull(8) ? null : reader.GetDecimal(8),
+            reader.IsDBNull(9) ? null : reader.GetDecimal(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : Convert.ToInt32(reader.GetValue(11)),
+            reader.IsDBNull(12) ? null : reader.GetString(12),
+            reader.IsDBNull(13) ? null : reader.GetString(13),
+            reader.IsDBNull(14) ? null : reader.GetDecimal(14),
+            reader.IsDBNull(15) ? null : reader.GetDecimal(15),
+            reader.IsDBNull(16) ? null : (bool?)(Convert.ToInt32(reader.GetValue(16)) == 1),
+            reader.IsDBNull(17) ? null : Convert.ToInt32(reader.GetValue(17)),
+            reader.IsDBNull(18) ? null : Convert.ToInt32(reader.GetValue(18)));
     }
 }

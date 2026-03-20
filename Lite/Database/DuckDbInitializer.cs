@@ -86,7 +86,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 21;
+    internal const int CurrentSchemaVersion = 22;
 
     private readonly string _archivePath;
 
@@ -192,6 +192,8 @@ public class DuckDbInitializer
         }
 
         await CreateArchiveViewsAsync();
+
+        await InitializeAnalysisSchemaAsync();
     }
 
     /// <summary>
@@ -581,6 +583,22 @@ public class DuckDbInitializer
                 _logger?.LogWarning("Migration to v21 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
+
+        if (fromVersion < 22)
+        {
+            _logger?.LogInformation("Running migration to v22: adding growth rate and VLF count columns to database_size_stats");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE database_size_stats ADD COLUMN IF NOT EXISTS is_percent_growth BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE database_size_stats ADD COLUMN IF NOT EXISTS growth_pct INTEGER");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE database_size_stats ADD COLUMN IF NOT EXISTS vlf_count INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v22 failed");
+                throw;
+            }
+        }
     }
 
     /// <summary>
@@ -696,6 +714,57 @@ public class DuckDbInitializer
         }
 
         _logger?.LogDebug("Archive views created/refreshed for {Count} tables", ArchivableTables.Length);
+    }
+
+    /// <summary>
+    /// Initializes the analysis engine schema (separate version track from main schema).
+    /// Only called when App.AnalysisEnabled is true.
+    /// Internal for test access.
+    /// </summary>
+    internal async Task InitializeAnalysisSchemaAsync()
+    {
+        using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await ExecuteNonQueryAsync(connection,
+            "CREATE TABLE IF NOT EXISTS analysis_schema_version (version INTEGER NOT NULL)");
+
+        var existingVersion = 0;
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT COALESCE(MAX(version), 0) FROM analysis_schema_version";
+            var result = await cmd.ExecuteScalarAsync();
+            existingVersion = Convert.ToInt32(result);
+        }
+        catch { /* Table doesn't exist yet */ }
+
+        foreach (var tableStatement in AnalysisSchema.GetAllTableStatements())
+        {
+            await ExecuteNonQueryAsync(connection, tableStatement);
+        }
+
+        foreach (var indexStatement in AnalysisSchema.GetAllIndexStatements())
+        {
+            await ExecuteNonQueryAsync(connection, indexStatement);
+        }
+
+        if (existingVersion < AnalysisSchema.CurrentVersion)
+        {
+            // Run migrations for version upgrades
+            foreach (var migration in AnalysisSchema.GetMigrationStatements(existingVersion))
+            {
+                try { await ExecuteNonQueryAsync(connection, migration); }
+                catch { /* Column/table may already exist */ }
+            }
+
+            await ExecuteNonQueryAsync(connection, "DELETE FROM analysis_schema_version");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "INSERT INTO analysis_schema_version (version) VALUES ($1)";
+            cmd.Parameters.Add(new DuckDBParameter { Value = AnalysisSchema.CurrentVersion });
+            await cmd.ExecuteNonQueryAsync();
+            _logger?.LogInformation("Analysis schema initialized at version {Version}", AnalysisSchema.CurrentVersion);
+        }
     }
 
     /// <summary>

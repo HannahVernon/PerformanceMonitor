@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.AspNetCore;
+using PerformanceMonitorLite.Analysis;
+using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Services;
 
 namespace PerformanceMonitorLite.Mcp;
@@ -17,14 +19,16 @@ public sealed class McpHostService : BackgroundService
     private readonly LocalDataService _dataService;
     private readonly ServerManager _serverManager;
     private readonly MuteRuleService _muteRuleService;
+    private readonly DuckDbInitializer _duckDb;
     private readonly int _port;
     private WebApplication? _app;
 
-    public McpHostService(LocalDataService dataService, ServerManager serverManager, MuteRuleService muteRuleService, int port)
+    public McpHostService(LocalDataService dataService, ServerManager serverManager, MuteRuleService muteRuleService, DuckDbInitializer duckDb, int port)
     {
         _dataService = dataService;
         _serverManager = serverManager;
         _muteRuleService = muteRuleService;
+        _duckDb = duckDb;
         _port = port;
     }
 
@@ -47,6 +51,8 @@ public sealed class McpHostService : BackgroundService
             builder.Services.AddSingleton(_dataService);
             builder.Services.AddSingleton(_serverManager);
             builder.Services.AddSingleton(_muteRuleService);
+            var planFetcher = new SqlPlanFetcher(_serverManager);
+            builder.Services.AddSingleton(new AnalysisService(_duckDb, planFetcher));
 
             /* Register MCP server with all tool classes */
             builder.Services
@@ -71,7 +77,12 @@ public sealed class McpHostService : BackgroundService
                 .WithTools<McpTempDbTools>()
                 .WithTools<McpPerfmonTools>()
                 .WithTools<McpAlertTools>()
-                .WithTools<McpJobTools>();
+                .WithTools<McpJobTools>()
+                .WithTools<McpPlanTools>()
+                .WithTools<McpConfigTools>()
+                .WithTools<McpServerInfoTools>()
+                .WithTools<McpSessionTools>()
+                .WithTools<McpAnalysisTools>();
 
             _app = builder.Build();
             _app.MapMcp();

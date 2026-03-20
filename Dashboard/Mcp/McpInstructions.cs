@@ -103,11 +103,96 @@ internal static class McpInstructions
         |------|---------|----------------|
         | `get_running_jobs` | Currently running SQL Agent jobs with duration vs historical average/p95 | `server_name` |
 
+        ### Latch & Spinlock Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_latch_stats` | Top latch contention by class with per-second rates | `server_name`, `hours_back`, `top` |
+        | `get_spinlock_stats` | Top spinlock contention with collisions, spins, backoffs | `server_name`, `hours_back`, `top` |
+
+        ### Scheduler Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_cpu_scheduler_pressure` | Runnable task queue, worker thread utilization, pressure warnings | `server_name` |
+
+        ### Configuration History Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_server_config_changes` | sp_configure change history with old/new values | `server_name`, `hours_back` (default 168) |
+        | `get_database_config_changes` | Database setting change history (RCSI, recovery model, etc.) | `server_name`, `hours_back` (default 168) |
+        | `get_trace_flag_changes` | Trace flag enable/disable history | `server_name`, `hours_back` (default 168) |
+
+        ### Diagnostic Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_plan_cache_bloat` | Plan cache composition: single-use vs multi-use plan counts and sizes | `server_name`, `hours_back` |
+        | `get_critical_issues` | Detected performance issues with severity, problem area, and investigation queries | `server_name`, `hours_back` |
+        | `get_session_stats` | Session/connection counts: running, sleeping, dormant, top application/host | `server_name`, `hours_back` |
+
+        ### Active Query Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_active_queries` | sp_WhoIsActive snapshots — what was running at each collection point | `server_name`, `hours_back` (default 1), `limit` (default 50) |
+
+        ### Server Inventory Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_server_properties` | Server edition, version, CPU count, memory, HADR status | `server_name` |
+        | `get_database_sizes` | Database file sizes, space usage, volume free space | `server_name` |
+
+        ### System Event Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_default_trace_events` | Default trace: auto-growth, config changes, object creation/deletion | `server_name`, `hours_back`, `limit` |
+        | `get_trace_analysis` | Processed trace data: long-running queries with CPU, reads, duration | `server_name`, `hours_back`, `limit` |
+        | `get_memory_pressure_events` | Ring buffer memory pressure notifications | `server_name`, `hours_back` |
+
+        ### Health Parser Tools (system_health extended events)
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_health_parser_system_health` | Overall system health indicators | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_severe_errors` | Stack dumps, non-yielding schedulers, critical errors | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_io_issues` | 15-second I/O warnings, stalled I/O subsystems | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_scheduler_issues` | Non-yielding/deadlocked schedulers | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_conditions` | Low memory notifications, memory pressure indicators | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_cpu_tasks` | Long-running CPU-bound tasks | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_broker` | Memory broker shrink/grow notifications | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_node_oom` | NUMA node out-of-memory conditions | `server_name`, `hours_back`, `limit` |
+
+        ### Execution Plan Analysis Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `analyze_query_plan` | Analyze plan from plan cache by query_hash | `query_hash` (required), `server_name` |
+        | `analyze_procedure_plan` | Analyze procedure plan by sql_handle | `sql_handle` (required), `server_name` |
+        | `analyze_query_store_plan` | Analyze plan from Query Store by database + query_id | `database_name` (required), `query_id` (required), `server_name` |
+        | `analyze_plan_xml` | Analyze raw showplan XML directly | `plan_xml` (required) |
+        | `get_plan_xml` | Get raw showplan XML by query_hash | `query_hash` (required), `server_name` |
+
+        Plan analysis detects 31 performance anti-patterns including:
+        - Missing indexes with CREATE statements and impact scores
+        - Non-SARGable predicates, implicit conversions, data type mismatches
+        - Memory grant issues, spills to TempDB
+        - Parallelism problems: serial plan reasons, thread skew, ineffective parallelism
+        - Parameter sniffing (compiled vs runtime value mismatches)
+        - Expensive operators: key lookups, scans with residual predicates, eager spools
+        - Join issues: OR clauses, high nested loop executions, many-to-many merge joins
+        - UDF execution overhead, table variable usage, CTE multiple references
+
+        ### Diagnostic Analysis Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `analyze_server` | Runs the inference engine: scores facts, traverses relationship graph, returns evidence-backed findings with severity, drill-down data, and recommended next tools | `server_name`, `hours_back` (default 4) |
+        | `get_analysis_facts` | Exposes raw scored facts from the collect+score pipeline with base severity, amplifiers, and metadata | `server_name`, `hours_back` (default 4), `source` (filter), `min_severity` |
+        | `compare_analysis` | Compares two time periods showing severity deltas for each fact | `server_name`, `hours_back` (default 4), `baseline_hours_back` (default 28) |
+        | `audit_config` | Edition-aware configuration audit: CTFP, MAXDOP, max memory, max worker threads | `server_name` |
+        | `get_analysis_findings` | Retrieves persisted findings from previous analysis runs | `server_name`, `hours_back` (default 24) |
+        | `mute_analysis_finding` | Mutes a finding pattern by story_path_hash | `story_path_hash` (required), `server_name`, `reason` |
+
         ## Recommended Workflow
 
         1. **Start**: `list_servers` — see what's monitored and which servers are online
         2. **Verify**: `get_collection_health` — check collectors are running successfully
-        3. **Overview**: `get_daily_summary` — high-level health: blocking, deadlocks, CPU spikes, memory pressure
+        3. **Diagnose**: `analyze_server` — run the inference engine for evidence-backed assessment with drill-down data
+        4. **Overview**: `get_daily_summary` — high-level health: blocking, deadlocks, CPU spikes, memory pressure
         4. **Drill down** based on findings:
            - High wait times → `get_wait_stats` → `get_wait_trend` to see changes
            - CPU pressure → `get_cpu_utilization` → `get_top_queries_by_cpu` or `get_expensive_queries`
@@ -117,6 +202,7 @@ internal static class McpInstructions
            - I/O latency → `get_file_io_stats` → `get_file_io_trend`
            - TempDB pressure → `get_tempdb_trend`
         5. **Query investigation**: After finding a problematic query via `get_top_queries_by_cpu`, `get_query_store_top`, or `get_expensive_queries`, use `get_query_trend` with its `query_hash` to see performance history
+        6. **Plan analysis**: Use `analyze_query_plan` with the `query_hash` from step 5 to get detailed plan analysis with warnings, missing indexes, and optimization recommendations
 
         ## Wait Type to Tool Mapping
 
