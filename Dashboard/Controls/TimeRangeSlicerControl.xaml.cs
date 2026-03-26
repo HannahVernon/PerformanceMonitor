@@ -23,6 +23,9 @@ public partial class TimeRangeSlicerControl : UserControl
     private string _metricLabel = "Sessions";
     private bool _isExpanded = true;
 
+    private List<(DateTime Time, double Value)>? _overlayData;
+    private string? _overlayLabel;
+
     private double _rangeStart;
     private double _rangeEnd = 1.0;
 
@@ -90,6 +93,21 @@ public partial class TimeRangeSlicerControl : UserControl
         }
 
         UpdateRangeLabel();
+        Redraw();
+    }
+
+    public void SetOverlay(List<(DateTime Time, double Value)> data, string label)
+    {
+        _overlayData = data.Count >= 1 ? data : null;
+        _overlayLabel = label;
+        Redraw();
+    }
+
+    public void ClearOverlay()
+    {
+        if (_overlayData == null) return;
+        _overlayData = null;
+        _overlayLabel = null;
         Redraw();
     }
 
@@ -235,6 +253,43 @@ public partial class TimeRangeSlicerControl : UserControl
         DrawHandle(selRight - HandleWidthPx, h, handleBrush);
         AddLine(selLeft, 0, selRight, 0, handleBrush, 0.5);
         AddLine(selLeft, h, selRight, h, handleBrush, 0.5);
+
+        // Overlay trend line (per-item highlight from grid selection)
+        // Overlay dots (per-item highlight from grid selection)
+        if (_overlayData != null && _overlayData.Count >= 1)
+        {
+            var overlayMax = _overlayData.Max(d => d.Value);
+            if (overlayMax <= 0) overlayMax = 1;
+
+            var dotBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF6F00"));
+            var firstBucket = _data[0].BucketTime;
+            var lastBucket = _data[^1].BucketTime;
+            foreach (var pt in _overlayData)
+            {
+                if (pt.Time < firstBucket || pt.Time > lastBucket) continue;
+                var norm = NormAtTime(pt.Time);
+                var ox = norm * w;
+                var oy = Math.Clamp(chartBottom - (pt.Value / overlayMax) * chartHeight, chartTop, chartBottom);
+                var dot = new Ellipse { Width = 5, Height = 5, Fill = dotBrush };
+                Canvas.SetLeft(dot, ox - 2.5);
+                Canvas.SetTop(dot, oy - 2.5);
+                SlicerCanvas.Children.Add(dot);
+            }
+
+            if (!string.IsNullOrEmpty(_overlayLabel))
+            {
+                var overlayLabelTb = new TextBlock
+                {
+                    Text = _overlayLabel,
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = dotBrush
+                };
+                Canvas.SetLeft(overlayLabelTb, 8);
+                Canvas.SetTop(overlayLabelTb, 2);
+                SlicerCanvas.Children.Add(overlayLabelTb);
+            }
+        }
     }
 
     private void AddRect(double x, double y, double width, double height, Brush fill)
