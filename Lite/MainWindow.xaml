@@ -8,6 +8,8 @@
         WindowStartupLocation="CenterScreen"
         WindowState="Maximized"
         Icon="EDD.ico"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True"
         Background="{DynamicResource BackgroundBrush}">
     <Window.Resources>
         <ResourceDictionary>
