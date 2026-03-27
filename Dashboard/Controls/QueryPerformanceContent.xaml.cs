@@ -97,6 +97,7 @@ namespace PerformanceMonitorDashboard.Controls
         private int _activeQueriesHoursBack = 1;
         private DateTime? _activeQueriesFromDate;
         private DateTime? _activeQueriesToDate;
+        private bool _isDrillDownActive;
 
         // Query Stats state
         private int _queryStatsHoursBack = 24;
@@ -153,6 +154,7 @@ namespace PerformanceMonitorDashboard.Controls
             SetupChartSaveMenus();
             Loaded += OnLoaded;
             Unloaded += OnUnloaded;
+            SubTabControl.SelectionChanged += (s, e) => { if (e.Source == SubTabControl) _isDrillDownActive = false; };
             Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
 
             _queryDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsQueryChart, "ms/sec");
@@ -704,6 +706,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         public void SetTimeRange(int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
         {
+            _isDrillDownActive = false;
             _activeQueriesHoursBack = hoursBack;
             _activeQueriesFromDate = fromDate;
             _activeQueriesToDate = toDate;
@@ -1064,6 +1067,7 @@ namespace PerformanceMonitorDashboard.Controls
         {
             using var _ = Helpers.MethodProfiler.StartTiming("QueryPerf-ActiveQueries");
             if (_databaseService == null) return;
+            if (_isDrillDownActive) return;
 
             try
             {
@@ -2674,6 +2678,7 @@ namespace PerformanceMonitorDashboard.Controls
         private async Task RefreshActiveQueriesWithRangeAsync(DateTime from, DateTime to)
         {
             if (_databaseService == null) return;
+            _isDrillDownActive = true;
             var snapshots = await _databaseService.GetQuerySnapshotsAsync(0, from, to);
             SetItemsSourcePreservingSort(ActiveQueriesDataGrid, snapshots);
             ActiveQueriesNoDataMessage.Visibility = snapshots.Count == 0 ? Visibility.Visible : Visibility.Collapsed;

@@ -3120,6 +3120,7 @@ public partial class ServerTab : UserControl
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate, "HH:mm")} \u2192 {ServerTimeHelper.FormatServerTime(toDate, "HH:mm")}";
+        _ = LoadActiveQueriesSlicerAsync();
     }
 
     private async void OnMemoryDrillDown(DateTime time)
@@ -3133,6 +3134,7 @@ public partial class ServerTab : UserControl
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate, "HH:mm")} \u2192 {ServerTimeHelper.FormatServerTime(toDate, "HH:mm")}";
+        _ = LoadActiveQueriesSlicerAsync();
     }
 
     private async void OnTempDbDrillDown(DateTime time)
@@ -3147,6 +3149,7 @@ public partial class ServerTab : UserControl
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate, "HH:mm")} \u2192 {ServerTimeHelper.FormatServerTime(toDate, "HH:mm")}";
+        _ = LoadActiveQueriesSlicerAsync();
     }
 
     private async void OnBlockingDrillDown(DateTime time)
@@ -3187,6 +3190,7 @@ public partial class ServerTab : UserControl
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate, "HH:mm")} \u2192 {ServerTimeHelper.FormatServerTime(toDate, "HH:mm")}";
+        _ = LoadActiveQueriesSlicerAsync();
     }
 
     /// <summary>
