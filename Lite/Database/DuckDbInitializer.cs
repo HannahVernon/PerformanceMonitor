@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 22;
+    internal const int CurrentSchemaVersion = 24;
 
     private readonly string _archivePath;
 
@@ -610,6 +610,35 @@ public class DuckDbInitializer
                 throw;
             }
         }
+
+        if (fromVersion < 23)
+        {
+            _logger?.LogInformation("Running migration to v23: adding dismissed_archive_alerts sidecar table");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, Schema.CreateDismissedArchiveAlertsTable);
+                await ExecuteNonQueryAsync(connection, Schema.CreateDismissedArchiveAlertsIndex);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v23 failed");
+                throw;
+            }
+        }
+
+        if (fromVersion < 24)
+        {
+            _logger?.LogInformation("Running migration to v24: adding vcore_count column to server_properties for Azure SQL DB vCore tracking");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS vcore_count INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v24 failed");
+                throw;
+            }
+        }
     }
 
     /// <summary>
@@ -697,9 +726,22 @@ public class DuckDbInitializer
                 {
                     var globPath = parquetGlob.Replace("\\", "/");
                     if (table == "config_alert_log")
-                        viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT *, 'live' AS source FROM {table} UNION ALL BY NAME SELECT *, 'archive' AS source FROM read_parquet('{globPath}', union_by_name=true)";
+                    {
+                        viewSql = $@"CREATE OR REPLACE VIEW v_{table} AS
+SELECT *, 'live' AS source FROM {table}
+UNION ALL BY NAME
+SELECT *, 'archive' AS source FROM read_parquet('{globPath}', union_by_name=true) p
+WHERE NOT EXISTS (
+    SELECT 1 FROM dismissed_archive_alerts d
+    WHERE d.alert_time = p.alert_time
+    AND   d.server_id  = p.server_id
+    AND   d.metric_name = p.metric_name
+)";
+                    }
                     else
+                    {
                         viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table} UNION ALL BY NAME SELECT * FROM read_parquet('{globPath}', union_by_name=true)";
+                    }
                 }
                 else
                 {

@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -104,15 +105,20 @@ LIMIT $2";
     /// Dismisses specific alerts by marking them as dismissed in DuckDB.
     /// Uses a single batched UPDATE with an exclusive write lock and transaction
     /// to prevent race conditions with archival and ensure all-or-nothing semantics.
+    /// If alerts only exist in archived parquet, inserts into dismissed_archive_alerts instead.
+    /// Logs structured telemetry and verifies dismissal success.
     /// </summary>
     public async Task<int> DismissAlertsAsync(List<AlertHistoryRow> alerts)
     {
         if (alerts.Count == 0) return 0;
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         if (App.LogAlertDismissals)
-            AppLogger.Info("AlertDismiss", $"Dismissing {alerts.Count} selected alert(s)");
+            AppLogger.Info("AlertDismiss", $"Action=DismissSelected, Requested={alerts.Count}");
 
         using var connection = await OpenWriteConnectionAsync();
+        int archivedDismissed = 0;
 
         using var beginCmd = connection.CreateCommand();
         beginCmd.CommandText = "BEGIN TRANSACTION";
@@ -146,16 +152,46 @@ AND    (alert_time, server_id, metric_name) IN (VALUES {valuesClauses})";
 
             var totalAffected = await command.ExecuteNonQueryAsync();
 
+            // Sidecar fallback for alerts that weren't in the live table (archived to parquet)
+            if (totalAffected < alerts.Count)
+            {
+                foreach (var alert in alerts)
+                {
+                    using var sidecarCmd = connection.CreateCommand();
+                    sidecarCmd.CommandText = @"
+INSERT INTO dismissed_archive_alerts (alert_time, server_id, metric_name)
+SELECT $1, $2, $3
+WHERE NOT EXISTS (
+    SELECT 1 FROM config_alert_log
+    WHERE  alert_time = $1 AND server_id = $2 AND metric_name = $3
+)
+AND NOT EXISTS (
+    SELECT 1 FROM dismissed_archive_alerts
+    WHERE  alert_time = $1 AND server_id = $2 AND metric_name = $3
+)";
+                    sidecarCmd.Parameters.Add(new DuckDBParameter { Value = alert.AlertTime });
+                    sidecarCmd.Parameters.Add(new DuckDBParameter { Value = alert.ServerId });
+                    sidecarCmd.Parameters.Add(new DuckDBParameter { Value = alert.MetricName });
+                    archivedDismissed += await sidecarCmd.ExecuteNonQueryAsync();
+                }
+            }
+
             using var commitCmd = connection.CreateCommand();
             commitCmd.CommandText = "COMMIT";
             await commitCmd.ExecuteNonQueryAsync();
 
-            if (totalAffected < alerts.Count && App.LogAlertDismissals)
-                AppLogger.Warn("AlertDismiss", $"Dismiss: {totalAffected} of {alerts.Count} alert(s) updated — {alerts.Count - totalAffected} may be archived to parquet");
+            sw.Stop();
 
             if (App.LogAlertDismissals)
-                AppLogger.Info("AlertDismiss", $"Dismiss complete: {totalAffected} row(s) updated out of {alerts.Count} selected");
-            return totalAffected;
+                AppLogger.Info("AlertDismiss", $"Action=DismissSelected, Result=Complete, Requested={alerts.Count}, LiveUpdated={totalAffected}, ArchivedDismissed={archivedDismissed}, Duration={sw.ElapsedMilliseconds}ms");
+
+            // Post-dismiss verification: confirm the dismissed rows are no longer visible
+            if (totalAffected > 0)
+            {
+                await VerifyDismissAsync(connection, alerts, totalAffected);
+            }
+
+            return totalAffected + archivedDismissed;
         }
         catch
         {
@@ -176,11 +212,15 @@ AND    (alert_time, server_id, metric_name) IN (VALUES {valuesClauses})";
     /// <summary>
     /// Dismisses all visible (non-dismissed) alerts matching the current filter criteria.
     /// Uses an exclusive write lock to prevent race conditions with archival.
+    /// Updates the live table, then inserts any remaining archived alerts into the sidecar table.
+    /// Logs structured telemetry and verifies dismissal success.
     /// </summary>
     public async Task<int> DismissAllVisibleAlertsAsync(int hoursBack, int? serverId = null)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         if (App.LogAlertDismissals)
-            AppLogger.Info("AlertDismiss", $"Dismissing all visible alerts: hoursBack={hoursBack}, serverId={serverId?.ToString() ?? "all"}");
+            AppLogger.Info("AlertDismiss", $"Action=DismissAll, HoursBack={hoursBack}, ServerId={serverId?.ToString() ?? "all"}");
 
         using var connection = await OpenWriteConnectionAsync();
         using var command = connection.CreateCommand();
@@ -208,10 +248,145 @@ AND    dismissed = FALSE";
             command.Parameters.Add(new DuckDBParameter { Value = cutoff });
         }
 
-        var affected = await command.ExecuteNonQueryAsync();
+        var liveAffected = await command.ExecuteNonQueryAsync();
+
+        // Dismiss any remaining archived alerts that matched the filter
+        using var sidecarCmd = connection.CreateCommand();
+        if (serverId.HasValue)
+        {
+            sidecarCmd.CommandText = @"
+INSERT INTO dismissed_archive_alerts (alert_time, server_id, metric_name)
+SELECT v.alert_time, v.server_id, v.metric_name
+FROM   v_config_alert_log v
+WHERE  v.alert_time >= $1
+AND    v.server_id = $2
+AND    v.dismissed = FALSE
+AND    NOT EXISTS (
+    SELECT 1 FROM config_alert_log l
+    WHERE  l.alert_time = v.alert_time
+    AND    l.server_id  = v.server_id
+    AND    l.metric_name = v.metric_name
+)
+AND    NOT EXISTS (
+    SELECT 1 FROM dismissed_archive_alerts d
+    WHERE  d.alert_time = v.alert_time
+    AND    d.server_id  = v.server_id
+    AND    d.metric_name = v.metric_name
+)";
+            sidecarCmd.Parameters.Add(new DuckDBParameter { Value = cutoff });
+            sidecarCmd.Parameters.Add(new DuckDBParameter { Value = serverId.Value });
+        }
+        else
+        {
+            sidecarCmd.CommandText = @"
+INSERT INTO dismissed_archive_alerts (alert_time, server_id, metric_name)
+SELECT v.alert_time, v.server_id, v.metric_name
+FROM   v_config_alert_log v
+WHERE  v.alert_time >= $1
+AND    v.dismissed = FALSE
+AND    NOT EXISTS (
+    SELECT 1 FROM config_alert_log l
+    WHERE  l.alert_time = v.alert_time
+    AND    l.server_id  = v.server_id
+    AND    l.metric_name = v.metric_name
+)
+AND    NOT EXISTS (
+    SELECT 1 FROM dismissed_archive_alerts d
+    WHERE  d.alert_time = v.alert_time
+    AND    d.server_id  = v.server_id
+    AND    d.metric_name = v.metric_name
+)";
+            sidecarCmd.Parameters.Add(new DuckDBParameter { Value = cutoff });
+        }
+
+        var archivedAffected = await sidecarCmd.ExecuteNonQueryAsync();
+        sw.Stop();
+
         if (App.LogAlertDismissals)
-            AppLogger.Info("AlertDismiss", $"Dismiss all complete: {affected} row(s) updated (cutoff={cutoff:O})");
-        return affected;
+            AppLogger.Info("AlertDismiss", $"Action=DismissAll, Result=Complete, LiveUpdated={liveAffected}, ArchivedDismissed={archivedAffected}, Cutoff={cutoff:O}, Duration={sw.ElapsedMilliseconds}ms");
+
+        // Post-dismiss verification: confirm no undismissed live rows remain
+        if (liveAffected > 0)
+        {
+            await VerifyDismissAllAsync(connection, cutoff, serverId, liveAffected);
+        }
+
+        return liveAffected + archivedAffected;
+    }
+
+    /// <summary>
+    /// Verifies that specific dismissed alerts are no longer in undismissed state.
+    /// </summary>
+    private static async System.Threading.Tasks.Task VerifyDismissAsync(LockedConnection connection, List<AlertHistoryRow> alerts, int expectedDismissed)
+    {
+        try
+        {
+            // Check how many of the targeted alerts are still undismissed
+            int stillUndismissed = 0;
+            foreach (var alert in alerts)
+            {
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = @"
+SELECT COUNT(1) FROM config_alert_log
+WHERE  alert_time = $1
+AND    server_id = $2
+AND    metric_name = $3
+AND    dismissed = FALSE";
+                cmd.Parameters.Add(new DuckDBParameter { Value = alert.AlertTime });
+                cmd.Parameters.Add(new DuckDBParameter { Value = alert.ServerId });
+                cmd.Parameters.Add(new DuckDBParameter { Value = alert.MetricName });
+                var count = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+                if (count > 0) stillUndismissed++;
+            }
+
+            if (stillUndismissed > 0)
+                AppLogger.Warn("AlertDismiss", $"Action=DismissVerify, Result=Mismatch, StillUndismissed={stillUndismissed}, ExpectedDismissed={expectedDismissed}");
+            else if (App.LogAlertDismissals)
+                AppLogger.Info("AlertDismiss", $"Action=DismissVerify, Result=Verified, Confirmed={expectedDismissed}");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("AlertDismiss", $"Action=DismissVerify, Result=Error, Message={ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Verifies that no undismissed alerts remain in the dismissed time range.
+    /// </summary>
+    private static async System.Threading.Tasks.Task VerifyDismissAllAsync(LockedConnection connection, DateTime cutoff, int? serverId, int expectedDismissed)
+    {
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            if (serverId.HasValue)
+            {
+                cmd.CommandText = @"
+SELECT COUNT(1) FROM config_alert_log
+WHERE  alert_time >= $1
+AND    server_id = $2
+AND    dismissed = FALSE";
+                cmd.Parameters.Add(new DuckDBParameter { Value = cutoff });
+                cmd.Parameters.Add(new DuckDBParameter { Value = serverId.Value });
+            }
+            else
+            {
+                cmd.CommandText = @"
+SELECT COUNT(1) FROM config_alert_log
+WHERE  alert_time >= $1
+AND    dismissed = FALSE";
+                cmd.Parameters.Add(new DuckDBParameter { Value = cutoff });
+            }
+
+            var remaining = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+            if (remaining > 0)
+                AppLogger.Warn("AlertDismiss", $"Action=DismissAllVerify, Result=Mismatch, StillUndismissed={remaining}, ExpectedDismissed={expectedDismissed}");
+            else if (App.LogAlertDismissals)
+                AppLogger.Info("AlertDismiss", $"Action=DismissAllVerify, Result=Verified, Confirmed={expectedDismissed}");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("AlertDismiss", $"Action=DismissAllVerify, Result=Error, Message={ex.Message}");
+        }
     }
 }
 
