@@ -599,6 +599,7 @@ public partial class SettingsWindow : Window
             "7 days" => 2,
             _ => 3
         };
+        LogAlertDismissalsCheckBox.IsChecked = App.LogAlertDismissals;
         UpdateAlertControlStates();
     }
 
@@ -649,6 +650,7 @@ public partial class SettingsWindow : Window
         else
             validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes.");
         App.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
+        App.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
         try
@@ -692,6 +694,7 @@ public partial class SettingsWindow : Window
             root["alert_cooldown_minutes"] = App.AlertCooldownMinutes;
             root["email_cooldown_minutes"] = App.EmailCooldownMinutes;
             root["mute_rule_default_expiration"] = App.MuteRuleDefaultExpiration;
+            root["log_alert_dismissals"] = App.LogAlertDismissals;
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             File.WriteAllText(settingsPath, root.ToJsonString(options));
