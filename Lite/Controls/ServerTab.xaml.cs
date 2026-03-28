@@ -429,11 +429,11 @@ public partial class ServerTab : UserControl
 
     private void SetPickersFromDateTime(DateTime serverTime, DatePicker datePicker, ComboBox hourCombo, ComboBox minuteCombo)
     {
-        /* Convert server time to local time for display in UI */
-        var localTime = ServerTimeHelper.ToLocalTime(serverTime);
-        datePicker.SelectedDate = localTime.Date;
-        hourCombo.SelectedIndex = localTime.Hour;
-        minuteCombo.SelectedIndex = localTime.Minute / 15;
+        /* Convert server time to the current display mode for UI */
+        var displayTime = ServerTimeHelper.ConvertForDisplay(serverTime, ServerTimeHelper.CurrentDisplayMode);
+        datePicker.SelectedDate = displayTime.Date;
+        hourCombo.SelectedIndex = displayTime.Hour;
+        minuteCombo.SelectedIndex = displayTime.Minute / 15;
     }
 
     /// <summary>
@@ -549,7 +549,44 @@ public partial class ServerTab : UserControl
         };
         if (mode == ServerTimeHelper.CurrentDisplayMode) return;
 
-        ServerTimeHelper.CurrentDisplayMode = mode;
+        // Re-convert custom range pickers from old display mode to new.
+        // Suppress refreshes while updating pickers to avoid cascading queries.
+        var oldMode = ServerTimeHelper.CurrentDisplayMode;
+        _isRefreshing = true;
+        try
+        {
+            if (IsCustomRange)
+            {
+                var fromPicker = GetDateTimeFromPickers(FromDatePicker!, FromHourCombo, FromMinuteCombo);
+                var toPicker = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
+                if (fromPicker.HasValue && toPicker.HasValue)
+                {
+                    var fromServer = ServerTimeHelper.DisplayTimeToServerTime(fromPicker.Value, oldMode);
+                    var toServer = ServerTimeHelper.DisplayTimeToServerTime(toPicker.Value, oldMode);
+                    ServerTimeHelper.CurrentDisplayMode = mode;
+                    var fromNew = ServerTimeHelper.ConvertForDisplay(fromServer, mode);
+                    var toNew = ServerTimeHelper.ConvertForDisplay(toServer, mode);
+                    FromDatePicker.SelectedDate = fromNew.Date;
+                    FromHourCombo.SelectedIndex = fromNew.Hour;
+                    FromMinuteCombo.SelectedIndex = fromNew.Minute / 15;
+                    ToDatePicker.SelectedDate = toNew.Date;
+                    ToHourCombo.SelectedIndex = toNew.Hour;
+                    ToMinuteCombo.SelectedIndex = toNew.Minute / 15;
+                }
+                else
+                {
+                    ServerTimeHelper.CurrentDisplayMode = mode;
+                }
+            }
+            else
+            {
+                ServerTimeHelper.CurrentDisplayMode = mode;
+            }
+        }
+        finally
+        {
+            _isRefreshing = false;
+        }
 
         // Refresh all DataGrid bindings so ServerTimeConverter re-evaluates
         QuerySnapshotsGrid.Items.Refresh();
@@ -742,8 +779,8 @@ public partial class ServerTab : UserControl
             var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
             if (fromLocal.HasValue && toLocal.HasValue)
             {
-                fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
             }
         }
 
@@ -1435,8 +1472,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 
@@ -1522,8 +1559,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 
@@ -1667,8 +1704,8 @@ public partial class ServerTab : UserControl
             var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
             if (fromLocal.HasValue && toLocal.HasValue)
             {
-                fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
             }
         }
         await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
@@ -2578,8 +2615,8 @@ public partial class ServerTab : UserControl
             var fromLocal = GetDateTimeFromPickers(FromDatePicker!, FromHourCombo, FromMinuteCombo);
             var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
             if (fromLocal.HasValue && toLocal.HasValue)
-                return (ServerTimeHelper.LocalToServerTime(fromLocal.Value),
-                        ServerTimeHelper.LocalToServerTime(toLocal.Value));
+                return (ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode),
+                        ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode));
         }
         return (null, null);
     }
@@ -2908,8 +2945,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
             var metric = (HeatmapMetric)HeatmapMetricCombo.SelectedIndex;
@@ -3205,7 +3242,8 @@ public partial class ServerTab : UserControl
     /// </summary>
     private void SetDrillDownTimeRange(DateTime fromServer, DateTime toServer)
     {
-        // Display in the current time mode (server time, local time, or UTC)
+        // Pickers store time in the current display mode. Downstream reads use
+        // DisplayTimeToServerTime() to convert back.
         var fromDisplay = ServerTimeHelper.ConvertForDisplay(fromServer, ServerTimeHelper.CurrentDisplayMode);
         var toDisplay = ServerTimeHelper.ConvertForDisplay(toServer, ServerTimeHelper.CurrentDisplayMode);
 
@@ -3261,8 +3299,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
             double globalMax = 0;
@@ -3411,8 +3449,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 
@@ -3621,8 +3659,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
             double globalMax = 0;
@@ -4615,8 +4653,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 
@@ -4720,8 +4758,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 
@@ -4818,8 +4856,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 
@@ -4914,8 +4952,8 @@ public partial class ServerTab : UserControl
                 var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
                 if (fromLocal.HasValue && toLocal.HasValue)
                 {
-                    fromDate = ServerTimeHelper.LocalToServerTime(fromLocal.Value);
-                    toDate = ServerTimeHelper.LocalToServerTime(toLocal.Value);
+                    fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
+                    toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
             }
 

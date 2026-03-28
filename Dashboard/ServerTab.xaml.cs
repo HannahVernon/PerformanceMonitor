@@ -47,6 +47,7 @@ namespace PerformanceMonitorDashboard
         private readonly UserPreferencesService _preferencesService;
         private DispatcherTimer? _autoRefreshTimer;
         private bool _isRefreshing;
+        private bool _suppressPickerUpdates;
 
         // Filter state dictionaries for each DataGrid
 
@@ -663,11 +664,13 @@ namespace PerformanceMonitorDashboard
 
         private async void GlobalCustomDateTime_Changed(object sender, SelectionChangedEventArgs e)
         {
+            if (_suppressPickerUpdates) return;
             await UpdateGlobalDateTimeRange();
         }
 
         private async void GlobalTimeCombo_Changed(object sender, SelectionChangedEventArgs e)
         {
+            if (_suppressPickerUpdates) return;
             // Only update if both dates are selected (time change alone isn't meaningful without dates)
             if (GlobalFromDate.SelectedDate.HasValue && GlobalToDate.SelectedDate.HasValue)
             {
@@ -684,10 +687,10 @@ namespace PerformanceMonitorDashboard
 
                 if (fromDateTime.HasValue && toDateTime.HasValue)
                 {
-                    /* Convert local dates/times to server time - user picks in their timezone,
-                       but database stores collection_time in server's timezone */
-                    _globalFromDate = Helpers.ServerTimeHelper.ToServerTime(fromDateTime.Value);
-                    _globalToDate = Helpers.ServerTimeHelper.ToServerTime(toDateTime.Value);
+                    /* Convert display-mode time back to server time — pickers show time
+                       in the current display mode (server, local, or UTC) */
+                    _globalFromDate = Helpers.ServerTimeHelper.DisplayTimeToServerTime(fromDateTime.Value, Helpers.ServerTimeHelper.CurrentDisplayMode);
+                    _globalToDate = Helpers.ServerTimeHelper.DisplayTimeToServerTime(toDateTime.Value, Helpers.ServerTimeHelper.CurrentDisplayMode);
 
                     if (_globalFromDate > _globalToDate)
                     {
@@ -1686,7 +1689,27 @@ namespace PerformanceMonitorDashboard
             };
             if (mode == ServerTimeHelper.CurrentDisplayMode) return;
 
-            ServerTimeHelper.CurrentDisplayMode = mode;
+            // Re-convert custom range pickers from old display mode to new.
+            // Suppress picker change handlers to avoid validation errors and cascading refreshes.
+            var oldMode = ServerTimeHelper.CurrentDisplayMode;
+            var fromPicker = GetDateTimeFromPickers(GlobalFromDate, GlobalFromHour, GlobalFromMinute);
+            var toPicker = GetDateTimeFromPickers(GlobalToDate, GlobalToHour, GlobalToMinute);
+            _suppressPickerUpdates = true;
+            try
+            {
+                ServerTimeHelper.CurrentDisplayMode = mode;
+                if (fromPicker.HasValue && toPicker.HasValue)
+                {
+                    var fromServer = Helpers.ServerTimeHelper.DisplayTimeToServerTime(fromPicker.Value, oldMode);
+                    var toServer = Helpers.ServerTimeHelper.DisplayTimeToServerTime(toPicker.Value, oldMode);
+                    SetPickersFromDateTime(fromServer, GlobalFromDate, GlobalFromHour, GlobalFromMinute);
+                    SetPickersFromDateTime(toServer, GlobalToDate, GlobalToHour, GlobalToMinute);
+                }
+            }
+            finally
+            {
+                _suppressPickerUpdates = false;
+            }
 
             // Persist preference
             var prefs = _preferencesService.GetPreferences();

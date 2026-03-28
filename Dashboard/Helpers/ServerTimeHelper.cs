@@ -71,6 +71,16 @@ namespace PerformanceMonitorDashboard.Helpers
         };
 
         /// <summary>
+        /// Converts a display-mode DateTime back to server time. Reverse of ConvertForDisplay.
+        /// </summary>
+        public static DateTime DisplayTimeToServerTime(DateTime displayTime, TimeDisplayMode mode) => mode switch
+        {
+            TimeDisplayMode.LocalTime => ToServerTime(displayTime),
+            TimeDisplayMode.UTC => displayTime.AddMinutes(_utcOffsetMinutes),
+            _ => displayTime
+        };
+
+        /// <summary>
         /// Returns a short timezone label for the current display mode (e.g., "UTC", "PST", "UTC-8:00").
         /// </summary>
         public static string GetTimezoneLabel(TimeDisplayMode mode) => mode switch

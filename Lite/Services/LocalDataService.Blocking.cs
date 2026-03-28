@@ -68,6 +68,16 @@ public static class ServerTimeHelper
     };
 
     /// <summary>
+    /// Converts a display-mode DateTime back to server time. Reverse of ConvertForDisplay.
+    /// </summary>
+    public static DateTime DisplayTimeToServerTime(DateTime displayTime, Helpers.TimeDisplayMode mode) => mode switch
+    {
+        Helpers.TimeDisplayMode.LocalTime => LocalToServerTime(displayTime),
+        Helpers.TimeDisplayMode.UTC => displayTime.AddMinutes(_utcOffsetMinutes),
+        _ => displayTime
+    };
+
+    /// <summary>
     /// Returns a short timezone label for the current display mode.
     /// </summary>
     public static string GetTimezoneLabel(Helpers.TimeDisplayMode mode) => mode switch
