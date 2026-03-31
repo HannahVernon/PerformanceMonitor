@@ -53,6 +53,27 @@ public partial class LocalDataService
     }
 
     /// <summary>
+    /// Creates and opens a DuckDB connection wrapped in an exclusive write lock.
+    /// Use for UPDATE/DELETE/INSERT operations that must not race with archival or compaction.
+    /// A 5-second timeout prevents UI freeze if archival currently holds the lock.
+    /// </summary>
+    internal async Task<LockedConnection> OpenWriteConnectionAsync()
+    {
+        var writeLock = _duckDb.AcquireWriteLock(timeout: TimeSpan.FromSeconds(5));
+        try
+        {
+            var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+            return new LockedConnection(connection, writeLock);
+        }
+        catch
+        {
+            writeLock.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Safely converts a DuckDB value to double, handling BigInteger from SUM aggregations.
     /// </summary>
     protected static double ToDouble(object value)

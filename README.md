@@ -22,7 +22,7 @@
 | **Requires** | SQL Agent running ([see permissions](#permissions)) | `VIEW SERVER STATE` ([see permissions](#permissions)) |
 | **Get started** | Run the installer, open the dashboard | Download, run, add a server, done |
 
-Both editions include real-time alerts (system tray + email), charts and graphs, dark and light themes, CSV export, and a built-in MCP server for AI-powered analysis with tools like Claude.
+Both editions include real-time alerts (system tray + email + webhooks), charts and graphs, dark and light themes, CSV export, and a built-in MCP server for AI-powered analysis with tools like Claude.
 
 All release binaries are digitally signed via [SignPath](https://signpath.io) — no more Windows SmartScreen warnings.
 
@@ -42,7 +42,7 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 🔍 **32 specialized T-SQL collectors** running on configurable schedules with named presets (Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments.
 
-🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications plus styled HTML emails with full XML attachments for offline analysis
+🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications, styled HTML emails with full XML attachments, and webhook notifications for external integrations
 
 📊 **NOC-style dashboard** with green/yellow/red health cards, auto-refresh, configurable time ranges, and dark/light themes
 
@@ -173,7 +173,7 @@ PerformanceMonitorInstaller.exe YourServerName --uninstall
 PerformanceMonitorInstaller.exe YourServerName sa YourPassword --uninstall
 ```
 
-The installer automatically tests the connection, checks the SQL Server version (2016+ required), executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. A GUI installer (`InstallerGui/`) is also available with the same functionality.
+The installer automatically tests the connection, checks the SQL Server version (2016+ required), executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. You can also install directly from the Dashboard's Add Server dialog.
 
 ### CLI Installer Options
 
@@ -301,7 +301,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Graphical plan viewer | Built-in with 30-rule PlanAnalyzer | Built-in with 30-rule PlanAnalyzer |
 | Standalone plan viewer | Open/paste/drag `.sqlplan` files | Open/paste/drag `.sqlplan` files |
 | Community tools (sp_WhoIsActive, sp_BlitzLock) | Installed automatically | Not needed |
-| Alerts (tray + email) | Blocking, deadlocks, CPU | Blocking, deadlocks, CPU |
+| Alerts (tray + email + webhooks) | Blocking, deadlocks, CPU | Blocking, deadlocks, CPU |
 | Dashboard | Separate app | Built-in |
 | Themes | Dark and light | Dark and light |
 | Portability | Server-bound | Single executable |
@@ -316,7 +316,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Tab | Contents |
 |---|---|
 | **Overview** | Resource overview, daily summary, critical issues, server config changes, database config changes, trace flag changes, collection health |
-| **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns |
+| **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns, query heatmap |
 | **Resource Metrics** | Server trends, wait stats, TempDB, file I/O latency, perfmon counters, default trace events, trace analysis, session stats, latch stats, spinlock stats |
 | **Memory** | Memory overview, grants, clerks, plan cache, memory pressure events |
 | **Locking** | Blocking chains, deadlocks, blocking/deadlock trends |
@@ -328,11 +328,12 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 
 | Tab | Contents |
 |---|---|
+| **Overview** | 2x2 resource chart grid (CPU, Memory, Wait Stats, TempDB) with drill-down |
 | **Active Queries** | Running queries with session details, wait types, blocking, DOP, memory grants |
 | **Wait Stats** | Filterable wait statistics chart with delta calculations |
 | **CPU** | SQL Server CPU vs Other Processes over time |
 | **Memory** | Physical memory overview, SQL Server memory trend, memory clerk breakdown |
-| **Queries** | Performance trends, top queries and procedures by duration, Query Store integration |
+| **Queries** | Performance trends, top queries and procedures by duration, Query Store integration, query heatmap |
 | **File I/O** | Read/write I/O trends per database file |
 | **TempDB** | Space usage breakdown and TempDB file I/O |
 | **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history |
@@ -340,7 +341,7 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
 | **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
 
-Both editions feature auto-refresh, configurable time ranges, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
+Both editions feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
 
 ---
 
@@ -369,8 +370,9 @@ All thresholds are configurable in Settings.
 
 - **System tray** — balloon notifications with a configurable per-metric cooldown (default: 5 minutes)
 - **Email (SMTP)** — styled HTML emails with a configurable per-metric cooldown (default: 15 minutes), plus configurable SMTP settings (server, port, SSL, authentication, recipients)
+- **Webhook** — HTTP POST to a configurable endpoint for integration with external alerting systems (Slack, Teams, PagerDuty, etc.)
 
-Both cooldown periods are independently configurable in Settings under the Performance Alerts section.
+All cooldown periods are independently configurable in Settings under the Performance Alerts section.
 
 ### Email Alerts
 
@@ -599,8 +601,8 @@ Monitor/
 ├── install/          # 58 SQL installation scripts
 ├── upgrades/         # Version-specific upgrade scripts
 ├── Installer/        # CLI installer for Full Edition database (C#)
-├── InstallerGui/     # GUI installer for Full Edition database (WPF)
-├── Dashboard/        # Full Edition dashboard application (WPF)
+├── Installer.Core/   # Shared installation library (CLI + Dashboard)
+├── Dashboard/        # Full Edition dashboard application (WPF, includes installer)
 │
 │   Lite Edition (standalone desktop app, nothing installed on server)
 ├── Lite/             # Lite Edition desktop application (WPF)
@@ -624,9 +626,6 @@ dotnet build Lite/PerformanceMonitorLite.csproj
 
 # CLI Installer (self-contained)
 dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
-
-# GUI Installer
-dotnet publish InstallerGui/InstallerGui.csproj -c Release -r win-x64 --self-contained
 ```
 
 ---

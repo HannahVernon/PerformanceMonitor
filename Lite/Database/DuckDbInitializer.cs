@@ -49,10 +49,21 @@ public class DuckDbInitializer
     /// <summary>
     /// Acquires an exclusive write lock on the database. Blocks until all readers finish.
     /// Dispose the returned object to release the lock.
+    /// When a timeout is specified, throws <see cref="TimeoutException"/> if the lock
+    /// cannot be acquired within the given duration (e.g., archival is in progress).
     /// </summary>
-    public IDisposable AcquireWriteLock()
+    public IDisposable AcquireWriteLock(TimeSpan? timeout = null)
     {
-        s_dbLock.EnterWriteLock();
+        if (timeout.HasValue)
+        {
+            if (!s_dbLock.TryEnterWriteLock(timeout.Value))
+                throw new TimeoutException(
+                    "Could not acquire database write lock — another operation (archival or maintenance) may be in progress. Please try again in a few moments.");
+        }
+        else
+        {
+            s_dbLock.EnterWriteLock();
+        }
         return new LockReleaser(s_dbLock, write: true);
     }
 
