@@ -59,6 +59,7 @@ public partial class RemoteCollectorService
     private readonly ScheduleManager _scheduleManager;
     private readonly ILogger<RemoteCollectorService>? _logger;
     private readonly DeltaCalculator _deltaCalculator;
+    public DeltaCalculator DeltaCalculator => _deltaCalculator;
     private static long s_idCounter = DateTime.UtcNow.Ticks;
 
     /// <summary>
@@ -163,6 +164,36 @@ public partial class RemoteCollectorService
     }
 
     /// <summary>
+    /// Clears collector health entries for a server that has been removed.
+    /// Prevents stale error counts from showing in the status bar.
+    /// </summary>
+    public void ClearHealthForServer(int serverId)
+    {
+        lock (_healthLock)
+        {
+            var keys = _collectorHealth.Keys.Where(k => k.ServerId == serverId).ToList();
+            foreach (var key in keys)
+                _collectorHealth.Remove(key);
+        }
+    }
+
+    /// <summary>
+    /// Clears collector health entries for all servers NOT in the provided set.
+    /// Used after Manage Servers to purge stale entries for removed servers.
+    /// </summary>
+    public void ClearHealthExcept(HashSet<int> activeServerIds)
+    {
+        lock (_healthLock)
+        {
+            var keys = _collectorHealth.Keys
+                .Where(k => !activeServerIds.Contains(k.ServerId))
+                .ToList();
+            foreach (var key in keys)
+                _collectorHealth.Remove(key);
+        }
+    }
+
+    /// <summary>
     /// Records a collector execution result for health tracking.
     /// </summary>
     private void RecordCollectorResult(int serverId, string collectorName, string status, string? errorMessage = null)
@@ -205,10 +236,9 @@ public partial class RemoteCollectorService
     /// </summary>
     public async Task RunDueCollectorsAsync(CancellationToken cancellationToken = default)
     {
-        var dueCollectors = _scheduleManager.GetDueCollectors();
         var enabledServers = _serverManager.GetEnabledServers();
 
-        if (dueCollectors.Count == 0 || enabledServers.Count == 0)
+        if (enabledServers.Count == 0)
         {
             return;
         }
@@ -228,15 +258,22 @@ public partial class RemoteCollectorService
             onlineServers.Add(server);
         }
 
-        _logger?.LogInformation("Running {CollectorCount} collectors for {OnlineCount}/{TotalCount} servers ({SkippedCount} offline, skipped)",
-            dueCollectors.Count, onlineServers.Count, enabledServers.Count, skippedOffline);
+        if (onlineServers.Count == 0)
+        {
+            return;
+        }
+
+        _logger?.LogInformation("Checking per-server schedules for {OnlineCount}/{TotalCount} servers ({SkippedCount} offline, skipped)",
+            onlineServers.Count, enabledServers.Count, skippedOffline);
 
         /* Run servers in parallel, but collectors within each server sequentially.
            DuckDB is single-writer; running all collectors in parallel causes spin-wait
            contention (50%+ CPU, multi-second stalls). Sequential per-server eliminates
-           this while still allowing multi-server parallelism. */
+           this while still allowing multi-server parallelism.
+           Each server gets its own due-collector list from per-server schedules. */
         var serverTasks = onlineServers.Select(server => Task.Run(async () =>
         {
+            var dueCollectors = _scheduleManager.GetDueCollectorsForServer(server.Id);
             foreach (var collector in dueCollectors)
             {
                 await RunCollectorAsync(server, collector.Name, cancellationToken);
@@ -269,8 +306,8 @@ public partial class RemoteCollectorService
     /// </summary>
     public async Task RunAllCollectorsForServerAsync(ServerConnection server, CancellationToken cancellationToken = default)
     {
-        var enabledSchedules = _scheduleManager.GetEnabledSchedules()
-            .Concat(_scheduleManager.GetOnLoadCollectors())
+        var enabledSchedules = _scheduleManager.GetSchedulesForServer(server.Id)
+            .Where(s => s.Enabled)
             .ToList();
 
         /* Ensure XE sessions are set up before collecting */
@@ -278,6 +315,9 @@ public partial class RemoteCollectorService
         var engineEdition = serverStatus.SqlEngineEdition;
         await EnsureBlockedProcessXeSessionAsync(server, engineEdition, cancellationToken);
         await EnsureDeadlockXeSessionAsync(server, engineEdition, cancellationToken);
+
+        /* Persist edition/version to DuckDB for the analysis engine */
+        await PersistServerMetadataAsync(server, serverStatus);
 
         AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)})");
         _logger?.LogInformation("Running {Count} collectors for server '{Server}' (initial load)",
@@ -314,8 +354,9 @@ public partial class RemoteCollectorService
             var majorVersion = serverStatus.SqlMajorVersion;
             var engineEdition = serverStatus.SqlEngineEdition;
             var isAwsRds = serverStatus.IsAwsRds;
+            var hasMsdbAccess = serverStatus.HasMsdbAccess;
 
-            if (!IsCollectorSupported(collectorName, majorVersion, engineEdition, isAwsRds))
+            if (!IsCollectorSupported(collectorName, majorVersion, engineEdition, isAwsRds, hasMsdbAccess))
             {
                 AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED (version {majorVersion}, edition {engineEdition})");
                 return;
@@ -362,7 +403,7 @@ public partial class RemoteCollectorService
                 _ => throw new ArgumentException($"Unknown collector: {collectorName}")
             };
 
-            _scheduleManager.MarkCollectorRun(collectorName, startTime);
+            _scheduleManager.MarkCollectorRunForServer(server.Id, collectorName, startTime);
 
             var elapsed = (int)(DateTime.UtcNow - startTime).TotalMilliseconds;
             AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} => {rowsCollected} rows in {elapsed}ms (sql:{_lastSqlMs}ms, duck:{_lastDuckDbMs}ms)");
@@ -425,6 +466,40 @@ public partial class RemoteCollectorService
     }
 
     /// <summary>
+    /// Persists SQL Server edition and major version to the servers table.
+    /// Called once per collection cycle so the analysis engine can provide
+    /// edition-specific recommendations (e.g., memory caps for Standard edition).
+    /// </summary>
+    private async Task PersistServerMetadataAsync(ServerConnection server, ServerConnectionStatus status)
+    {
+        if (status.SqlEngineEdition == 0 && status.SqlMajorVersion == 0) return;
+
+        try
+        {
+            var serverId = GetServerId(server);
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+UPDATE servers
+SET sql_engine_edition = $1,
+    sql_major_version = $2
+WHERE server_id = $3";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = status.SqlEngineEdition });
+            cmd.Parameters.Add(new DuckDBParameter { Value = status.SqlMajorVersion });
+            cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Collector", $"Failed to persist server metadata for '{server.DisplayName}': {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Logs a collection attempt to the collection_log table.
     /// </summary>
     private async Task LogCollectionAsync(int serverId, string serverName, string collectorName, DateTime startTime, string status, string? errorMessage, int rowsCollected, long sqlMs = 0, long duckDbMs = 0)
@@ -480,6 +555,50 @@ public partial class RemoteCollectorService
                 AppLogger.Error("Collector", $"COLLECTION LOGGING STILL BROKEN: {_logInsertFailures} consecutive failures. Last error: {ex.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// Enumerates online databases on an Azure SQL DB logical server.
+    /// HAS_DBACCESS() returns false for user databases from master on Azure SQL DB,
+    /// so we skip that filter — inaccessible databases should be handled by callers via try/catch.
+    /// </summary>
+    protected async Task<List<string>> GetAzureDatabaseListAsync(ServerConnection server, CancellationToken cancellationToken)
+    {
+        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var connStr = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            ConnectTimeout = ConnectionTimeoutSeconds,
+            InitialCatalog = "master"
+        }.ConnectionString;
+
+        var databases = new List<string>();
+        using var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(cancellationToken);
+        using var cmd = new SqlCommand(
+            "SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 ORDER BY name;",
+            conn)
+        { CommandTimeout = CommandTimeoutSeconds };
+        using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            databases.Add(reader.GetString(0));
+        return databases;
+    }
+
+    /// <summary>
+    /// Opens a SQL connection to a specific database on an Azure SQL DB logical server.
+    /// </summary>
+    protected async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerConnection server, string databaseName, CancellationToken cancellationToken)
+    {
+        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var connStr = new SqlConnectionStringBuilder(baseConnStr)
+        {
+            ConnectTimeout = ConnectionTimeoutSeconds,
+            InitialCatalog = databaseName
+        }.ConnectionString;
+
+        var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(cancellationToken);
+        return conn;
     }
 
     /// <summary>
@@ -570,12 +689,18 @@ public partial class RemoteCollectorService
 
     /// <summary>
     /// Gets the server name used for DuckDB storage and hashing.
+    /// Appends the database name for Azure SQL Database connections so that
+    /// different databases on the same logical server get distinct server_ids.
     /// Appends ":RO" for ReadOnlyIntent connections so they get a
     /// different server_id than read-write connections to the same host.
     /// </summary>
     internal static string GetServerNameForStorage(ServerConnection server)
     {
-        return server.ReadOnlyIntent ? server.ServerName + ":RO" : server.ServerName;
+        var name = string.IsNullOrWhiteSpace(server.DatabaseName)
+            ? server.ServerName
+            : server.ServerName + ":" + server.DatabaseName;
+
+        return server.ReadOnlyIntent ? name + ":RO" : name;
     }
 
     /// <summary>
@@ -659,7 +784,7 @@ public partial class RemoteCollectorService
     /// Version 13 = SQL Server 2016, 14 = 2017, 15 = 2019, 16 = 2022, 17 = 2025.
     /// Engine edition 5 = Azure SQL DB, 8 = Azure MI.
     /// </summary>
-    private static bool IsCollectorSupported(string collectorName, int majorVersion, int engineEdition, bool isAwsRds = false)
+    private static bool IsCollectorSupported(string collectorName, int majorVersion, int engineEdition, bool isAwsRds = false, bool hasMsdbAccess = true)
     {
         bool isAzureSqlDb = engineEdition == 5;
         bool isAzureMi = engineEdition == 8;
@@ -696,6 +821,16 @@ public partial class RemoteCollectorService
             switch (collectorName)
             {
                 case "running_jobs":      /* msdb.dbo.syssessions not accessible */
+                    return false;
+            }
+        }
+
+        /* msdb access gate — login may not have access to msdb on any edition */
+        if (!hasMsdbAccess)
+        {
+            switch (collectorName)
+            {
+                case "running_jobs":      /* requires msdb.dbo.sysjobs, sysjobactivity, etc. */
                     return false;
             }
         }

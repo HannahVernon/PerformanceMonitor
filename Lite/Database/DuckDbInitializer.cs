@@ -49,10 +49,21 @@ public class DuckDbInitializer
     /// <summary>
     /// Acquires an exclusive write lock on the database. Blocks until all readers finish.
     /// Dispose the returned object to release the lock.
+    /// When a timeout is specified, throws <see cref="TimeoutException"/> if the lock
+    /// cannot be acquired within the given duration (e.g., archival is in progress).
     /// </summary>
-    public IDisposable AcquireWriteLock()
+    public IDisposable AcquireWriteLock(TimeSpan? timeout = null)
     {
-        s_dbLock.EnterWriteLock();
+        if (timeout.HasValue)
+        {
+            if (!s_dbLock.TryEnterWriteLock(timeout.Value))
+                throw new TimeoutException(
+                    "Could not acquire database write lock — another operation (archival or maintenance) may be in progress. Please try again in a few moments.");
+        }
+        else
+        {
+            s_dbLock.EnterWriteLock();
+        }
         return new LockReleaser(s_dbLock, write: true);
     }
 
@@ -86,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 21;
+    internal const int CurrentSchemaVersion = 24;
 
     private readonly string _archivePath;
 
@@ -192,6 +203,8 @@ public class DuckDbInitializer
         }
 
         await CreateArchiveViewsAsync();
+
+        await InitializeAnalysisSchemaAsync();
     }
 
     /// <summary>
@@ -581,6 +594,51 @@ public class DuckDbInitializer
                 _logger?.LogWarning("Migration to v21 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
+
+        if (fromVersion < 22)
+        {
+            _logger?.LogInformation("Running migration to v22: adding growth rate and VLF count columns to database_size_stats");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE database_size_stats ADD COLUMN IF NOT EXISTS is_percent_growth BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE database_size_stats ADD COLUMN IF NOT EXISTS growth_pct INTEGER");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE database_size_stats ADD COLUMN IF NOT EXISTS vlf_count INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v22 failed");
+                throw;
+            }
+        }
+
+        if (fromVersion < 23)
+        {
+            _logger?.LogInformation("Running migration to v23: adding dismissed_archive_alerts sidecar table");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, Schema.CreateDismissedArchiveAlertsTable);
+                await ExecuteNonQueryAsync(connection, Schema.CreateDismissedArchiveAlertsIndex);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v23 failed");
+                throw;
+            }
+        }
+
+        if (fromVersion < 24)
+        {
+            _logger?.LogInformation("Running migration to v24: adding vcore_count column to server_properties for Azure SQL DB vCore tracking");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS vcore_count INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v24 failed");
+                throw;
+            }
+        }
     }
 
     /// <summary>
@@ -667,11 +725,30 @@ public class DuckDbInitializer
                 if (hasParquetFiles)
                 {
                     var globPath = parquetGlob.Replace("\\", "/");
-                    viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table} UNION ALL BY NAME SELECT * FROM read_parquet('{globPath}', union_by_name=true)";
+                    if (table == "config_alert_log")
+                    {
+                        viewSql = $@"CREATE OR REPLACE VIEW v_{table} AS
+SELECT *, 'live' AS source FROM {table}
+UNION ALL BY NAME
+SELECT *, 'archive' AS source FROM read_parquet('{globPath}', union_by_name=true) p
+WHERE NOT EXISTS (
+    SELECT 1 FROM dismissed_archive_alerts d
+    WHERE d.alert_time = p.alert_time
+    AND   d.server_id  = p.server_id
+    AND   d.metric_name = p.metric_name
+)";
+                    }
+                    else
+                    {
+                        viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table} UNION ALL BY NAME SELECT * FROM read_parquet('{globPath}', union_by_name=true)";
+                    }
                 }
                 else
                 {
-                    viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table}";
+                    if (table == "config_alert_log")
+                        viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT *, 'live' AS source FROM {table}";
+                    else
+                        viewSql = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table}";
                 }
 
                 using var cmd = connection.CreateCommand();
@@ -685,7 +762,10 @@ public class DuckDbInitializer
                 try
                 {
                     using var fallbackCmd = connection.CreateCommand();
-                    fallbackCmd.CommandText = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table}";
+                    if (table == "config_alert_log")
+                        fallbackCmd.CommandText = $"CREATE OR REPLACE VIEW v_{table} AS SELECT *, 'live' AS source FROM {table}";
+                    else
+                        fallbackCmd.CommandText = $"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table}";
                     await fallbackCmd.ExecuteNonQueryAsync();
                 }
                 catch (Exception fallbackEx)
@@ -696,6 +776,57 @@ public class DuckDbInitializer
         }
 
         _logger?.LogDebug("Archive views created/refreshed for {Count} tables", ArchivableTables.Length);
+    }
+
+    /// <summary>
+    /// Initializes the analysis engine schema (separate version track from main schema).
+    /// Only called when App.AnalysisEnabled is true.
+    /// Internal for test access.
+    /// </summary>
+    internal async Task InitializeAnalysisSchemaAsync()
+    {
+        using var connection = CreateConnection();
+        await connection.OpenAsync();
+
+        await ExecuteNonQueryAsync(connection,
+            "CREATE TABLE IF NOT EXISTS analysis_schema_version (version INTEGER NOT NULL)");
+
+        var existingVersion = 0;
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT COALESCE(MAX(version), 0) FROM analysis_schema_version";
+            var result = await cmd.ExecuteScalarAsync();
+            existingVersion = Convert.ToInt32(result);
+        }
+        catch { /* Table doesn't exist yet */ }
+
+        foreach (var tableStatement in AnalysisSchema.GetAllTableStatements())
+        {
+            await ExecuteNonQueryAsync(connection, tableStatement);
+        }
+
+        foreach (var indexStatement in AnalysisSchema.GetAllIndexStatements())
+        {
+            await ExecuteNonQueryAsync(connection, indexStatement);
+        }
+
+        if (existingVersion < AnalysisSchema.CurrentVersion)
+        {
+            // Run migrations for version upgrades
+            foreach (var migration in AnalysisSchema.GetMigrationStatements(existingVersion))
+            {
+                try { await ExecuteNonQueryAsync(connection, migration); }
+                catch { /* Column/table may already exist */ }
+            }
+
+            await ExecuteNonQueryAsync(connection, "DELETE FROM analysis_schema_version");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "INSERT INTO analysis_schema_version (version) VALUES ($1)";
+            cmd.Parameters.Add(new DuckDBParameter { Value = AnalysisSchema.CurrentVersion });
+            await cmd.ExecuteNonQueryAsync();
+            _logger?.LogInformation("Analysis schema initialized at version {Version}", AnalysisSchema.CurrentVersion);
+        }
     }
 
     /// <summary>

@@ -103,6 +103,7 @@ namespace PerformanceMonitorDashboard
 
             _credentialService = new CredentialService();
             _emailAlertService = new EmailAlertService(_preferencesService);
+            _ = new WebhookAlertService(_preferencesService);
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
@@ -151,8 +152,10 @@ namespace PerformanceMonitorDashboard
             // Sync preferences
             var startupPrefs = _preferencesService.GetPreferences();
             TabHelpers.CsvSeparator = startupPrefs.CsvSeparator;
-            if (Enum.TryParse<Helpers.TimeDisplayMode>(startupPrefs.TimeDisplayMode, out var tdm))
-                Helpers.ServerTimeHelper.CurrentDisplayMode = tdm;
+            MuteRuleDialog.DefaultExpiration = startupPrefs.MuteRuleDefaultExpiration;
+            // Charts always render in server time; force the dropdown to match on startup
+            // so the display isn't misleading. The preference is still saved when changed.
+            Helpers.ServerTimeHelper.CurrentDisplayMode = Helpers.TimeDisplayMode.ServerTime;
 
             await LoadServerListAsync();
             InitializeNotificationService();
@@ -176,9 +179,34 @@ namespace PerformanceMonitorDashboard
         {
             try
             {
+                await Task.Delay(5000); // Don't slow down startup
+
                 var prefs = _preferencesService.GetPreferences();
                 if (!prefs.CheckForUpdatesOnStartup) return;
 
+                // Try Velopack first (supports download + apply)
+                try
+                {
+                    var mgr = new Velopack.UpdateManager(
+                        new Velopack.Sources.GithubSource(
+                            "https://github.com/erikdarlingdata/PerformanceMonitor", null, false));
+
+                    var newVersion = await mgr.CheckForUpdatesAsync();
+                    if (newVersion != null)
+                    {
+                        _notificationService?.ShowNotification(
+                            "Update Available",
+                            $"Performance Monitor {newVersion.TargetFullRelease.Version} is available. Use Help > About to download and install.",
+                            NotificationType.Info);
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Velopack packages may not exist yet — fall through to legacy check
+                }
+
+                // Fallback: GitHub Releases API check (notification only)
                 var result = await UpdateCheckService.CheckForUpdateAsync();
                 if (result?.IsUpdateAvailable == true)
                 {
@@ -423,10 +451,29 @@ namespace PerformanceMonitorDashboard
                             _notificationService?.ShowServerOfflineNotification(
                                 item.DisplayName,
                                 newStatus.ErrorMessage);
+
+                            var errorDetail = newStatus.ErrorMessage ?? "Connection failed";
+                            _emailAlertService.RecordAlert(item.Id, item.DisplayName, "Server Unreachable",
+                                errorDetail, "Online", true, "email");
+                            _ = _emailAlertService.TrySendAlertEmailAsync(
+                                "Server Unreachable",
+                                item.DisplayName,
+                                errorDetail,
+                                "Online",
+                                item.Id);
                         }
                         else if (!wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
                         {
                             _notificationService?.ShowConnectionRestoredNotification(item.DisplayName);
+
+                            _emailAlertService.RecordAlert(item.Id, item.DisplayName, "Server Restored",
+                                "Online", "Online", true, "email");
+                            _ = _emailAlertService.TrySendAlertEmailAsync(
+                                "Server Restored",
+                                item.DisplayName,
+                                "Connection restored",
+                                "Online",
+                                item.Id);
                         }
                     }
 
@@ -502,10 +549,29 @@ namespace PerformanceMonitorDashboard
             var utcOffset = connStatus.UtcOffsetMinutes ?? (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes;
             Helpers.ServerTimeHelper.UtcOffsetMinutes = utcOffset;
 
-            var serverTab = new ServerTab(server, utcOffset);
+            ServerTab serverTab;
+            try
+            {
+                serverTab = new ServerTab(server, utcOffset);
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException?.Message ?? ex.Message;
+                System.Windows.MessageBox.Show(
+                    $"Failed to open server tab for '{server.DisplayNameWithIntent}'.\n\n" +
+                    $"This is usually caused by a missing Visual C++ Redistributable (x64) " +
+                    $"or an OS compatibility issue with the SkiaSharp rendering library.\n\n" +
+                    $"Download the latest VC++ Redistributable from:\n" +
+                    $"https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n" +
+                    $"Error: {inner}",
+                    "Chart Initialization Error",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+                return;
+            }
             serverTab.AlertAcknowledged += (_, _) =>
             {
-                _emailAlertService.HideAllAlerts(8760, server.DisplayName);
+                _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
                 UpdateAlertBadge();
                 _alertsHistoryContent?.RefreshAlerts();
             };
@@ -513,7 +579,7 @@ namespace PerformanceMonitorDashboard
             var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
             var headerText = new TextBlock
             {
-                Text = server.DisplayName,
+                Text = server.ReadOnlyIntent ? $"{server.DisplayName} (RO)" : server.DisplayName,
                 VerticalAlignment = VerticalAlignment.Center
             };
             var closeButton = new Button
@@ -846,7 +912,7 @@ namespace PerformanceMonitorDashboard
                     await LoadServerListAsync();
 
                     MessageBox.Show(
-                        $"Server '{server.DisplayName}' added successfully!\n\n" +
+                        $"Server '{server.DisplayNameWithIntent}' added successfully!\n\n" +
                         (server.AuthenticationType == Models.AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {server.AuthenticationDisplay} — credentials saved securely to Windows Credential Manager"),
                         "Server Added",
                         MessageBoxButton.OK,
@@ -887,12 +953,12 @@ namespace PerformanceMonitorDashboard
                             if (tabItem.Header is StackPanel headerPanel &&
                                 headerPanel.Children[0] is TextBlock headerText)
                             {
-                                headerText.Text = updatedServer.DisplayName;
+                                headerText.Text = updatedServer.ReadOnlyIntent ? $"{updatedServer.DisplayName} (RO)" : updatedServer.DisplayName;
                             }
                         }
 
                         MessageBox.Show(
-                            $"Server '{updatedServer.DisplayName}' updated successfully!\n\n" +
+                            $"Server '{updatedServer.DisplayNameWithIntent}' updated successfully!\n\n" +
                             (updatedServer.AuthenticationType == Models.AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {updatedServer.AuthenticationDisplay} — credentials updated securely in Windows Credential Manager"),
                             "Server Updated",
                             MessageBoxButton.OK,
@@ -917,7 +983,7 @@ namespace PerformanceMonitorDashboard
             if (ServerListView.SelectedItem is ServerListItem item)
             {
                 var server = item.Server;
-                var dialog = new RemoveServerDialog(server.DisplayName);
+                var dialog = new RemoveServerDialog(server.DisplayNameWithIntent);
                 dialog.Owner = this;
 
                 if (dialog.ShowDialog() == true)
@@ -932,7 +998,7 @@ namespace PerformanceMonitorDashboard
                         catch (Exception ex)
                         {
                             MessageBox.Show(
-                                $"Could not drop the PerformanceMonitor database on '{server.DisplayName}':\n\n{ex.Message}\n\nThe server will still be removed from the Dashboard.",
+                                $"Could not drop the PerformanceMonitor database on '{server.DisplayNameWithIntent}':\n\n{ex.Message}\n\nThe server will still be removed from the Dashboard.",
                                 "Database Drop Failed",
                                 MessageBoxButton.OK,
                                 MessageBoxImage.Warning
@@ -954,7 +1020,7 @@ namespace PerformanceMonitorDashboard
                     await LoadServerListAsync();
 
                     MessageBox.Show(
-                        $"Server '{server.DisplayName}' removed successfully!",
+                        $"Server '{server.DisplayNameWithIntent}' removed successfully!",
                         "Server Removed",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information
@@ -1024,6 +1090,35 @@ namespace PerformanceMonitorDashboard
             var dialog = new AboutWindow();
             dialog.Owner = this;
             dialog.ShowDialog();
+        }
+
+        private void ViewLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            var logFile = Logger.GetCurrentLogFile();
+            try
+            {
+                if (System.IO.File.Exists(logFile))
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = logFile,
+                        UseShellExecute = true
+                    });
+                }
+                else
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = Logger.GetLogDirectory(),
+                        UseShellExecute = true
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not open log file: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>
@@ -1185,7 +1280,7 @@ namespace PerformanceMonitorDashboard
                            so the badge delta calculation sees the correct baseline. */
                         var prevDeadlockCount = _previousDeadlockCounts.TryGetValue(server.Id, out var pdc) ? pdc : 0;
 
-                        await EvaluateAlertConditionsAsync(server.Id, server.DisplayName, health, databaseService);
+                        await EvaluateAlertConditionsAsync(server.Id, server.DisplayNameWithIntent, health, databaseService);
 
                         /* Update tab badges from alert health data.
                            This ensures badges update even when the NOC view isn't active. */
@@ -1591,7 +1686,7 @@ namespace PerformanceMonitorDashboard
         private static string Truncate(string text, int maxLength = 300)
         {
             if (string.IsNullOrEmpty(text)) return "";
-            text = text.Trim();
+            text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
             return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
         }
 
@@ -1890,7 +1985,7 @@ namespace PerformanceMonitorDashboard
                 var server = _serverManager.GetAllServers().FirstOrDefault(s => s.Id == serverId);
                 if (server != null)
                 {
-                    _emailAlertService.HideAllAlerts(8760, server.DisplayName);
+                    _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
                     UpdateAlertBadge();
                     _alertsHistoryContent?.RefreshAlerts();
                 }

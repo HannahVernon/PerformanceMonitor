@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitorDashboard.Helpers;
@@ -321,7 +322,10 @@ OPTION(MAXDOP 1, RECOMPILE);";
                     state_desc,
                     volume_mount_point,
                     volume_total_mb,
-                    volume_free_mb
+                    volume_free_mb,
+                    is_percent_growth,
+                    growth_pct,
+                    vlf_count
                 FROM collect.database_size_stats
                 WHERE collection_time =
                 (
@@ -363,7 +367,10 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         StateDesc = reader.IsDBNull(15) ? "" : reader.GetString(15),
                         VolumeMountPoint = reader.IsDBNull(16) ? "" : reader.GetString(16),
                         VolumeTotalMb = reader.IsDBNull(17) ? 0m : Convert.ToDecimal(reader.GetValue(17)),
-                        VolumeFreeMb = reader.IsDBNull(18) ? 0m : Convert.ToDecimal(reader.GetValue(18))
+                        VolumeFreeMb = reader.IsDBNull(18) ? 0m : Convert.ToDecimal(reader.GetValue(18)),
+                        IsPercentGrowth = reader.IsDBNull(19) ? null : (bool?)(Convert.ToInt32(reader.GetValue(19)) == 1),
+                        GrowthPct = reader.IsDBNull(20) ? null : Convert.ToInt32(reader.GetValue(20)),
+                        VlfCount = reader.IsDBNull(21) ? null : Convert.ToInt32(reader.GetValue(21))
                     });
                 }
             }
@@ -820,6 +827,14 @@ OPTION(MAXDOP 1, RECOMPILE);";
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 WITH
+    boundaries AS
+    (
+        SELECT
+            latest_time  = MAX(collection_time),
+            earliest_time = MIN(collection_time),
+            days_of_data = DATEDIFF(DAY, MIN(collection_time), MAX(collection_time))
+        FROM collect.database_size_stats
+    ),
     latest AS
     (
         SELECT
@@ -829,8 +844,8 @@ WITH
         FROM collect.database_size_stats
         WHERE collection_time =
         (
-            SELECT MAX(collection_time)
-            FROM collect.database_size_stats
+            SELECT latest_time
+            FROM boundaries
         )
         GROUP BY
             database_name
@@ -866,38 +881,55 @@ WITH
         )
         GROUP BY
             database_name
+    ),
+    oldest AS
+    (
+        SELECT
+            database_name,
+            size_mb =
+                SUM(total_size_mb)
+        FROM collect.database_size_stats
+        WHERE collection_time =
+        (
+            SELECT earliest_time
+            FROM boundaries
+        )
+        GROUP BY
+            database_name
     )
 SELECT
     l.database_name,
     l.current_size_mb,
-    p7.size_mb,
-    p30.size_mb,
+    COALESCE(p7.size_mb, o.size_mb),
+    COALESCE(p30.size_mb, p7.size_mb, o.size_mb),
     growth_7d_mb =
-        l.current_size_mb - ISNULL(p7.size_mb, l.current_size_mb),
+        l.current_size_mb - COALESCE(p7.size_mb, o.size_mb, l.current_size_mb),
     growth_30d_mb =
-        l.current_size_mb - ISNULL(p30.size_mb, l.current_size_mb),
+        l.current_size_mb - COALESCE(p30.size_mb, p7.size_mb, o.size_mb, l.current_size_mb),
     daily_growth_rate_mb =
         CASE
-            WHEN p30.size_mb IS NOT NULL
-            THEN (l.current_size_mb - p30.size_mb) / 30.0
-            WHEN p7.size_mb IS NOT NULL
-            THEN (l.current_size_mb - p7.size_mb) / 7.0
+            WHEN b.days_of_data >= 1
+            THEN (l.current_size_mb - COALESCE(o.size_mb, l.current_size_mb)) / CAST(b.days_of_data AS decimal(10,1))
             ELSE 0
         END,
     growth_pct_30d =
         CASE
-            WHEN p30.size_mb IS NOT NULL
-            AND  p30.size_mb > 0
-            THEN (l.current_size_mb - p30.size_mb) * 100.0 / p30.size_mb
+            WHEN COALESCE(p30.size_mb, p7.size_mb, o.size_mb) IS NOT NULL
+            AND  COALESCE(p30.size_mb, p7.size_mb, o.size_mb) > 0
+            THEN (l.current_size_mb - COALESCE(p30.size_mb, p7.size_mb, o.size_mb)) * 100.0
+                 / COALESCE(p30.size_mb, p7.size_mb, o.size_mb)
             ELSE 0
         END
 FROM latest AS l
+CROSS JOIN boundaries AS b
 LEFT JOIN past_7d AS p7
   ON p7.database_name = l.database_name
 LEFT JOIN past_30d AS p30
   ON p30.database_name = l.database_name
+LEFT JOIN oldest AS o
+  ON o.database_name = l.database_name
 ORDER BY
-    l.current_size_mb - ISNULL(p30.size_mb, l.current_size_mb) DESC
+    l.current_size_mb - COALESCE(p30.size_mb, p7.size_mb, o.size_mb, l.current_size_mb) DESC
 OPTION(MAXDOP 1, RECOMPILE);";
 
             using var command = new SqlCommand(query, connection);
@@ -979,7 +1011,7 @@ FROM db_sizes AS ds
 LEFT JOIN db_activity AS a
   ON a.database_name = ds.database_name
 WHERE ISNULL(a.total_executions, 0) = 0
-AND   ds.database_name NOT IN (N'master', N'model', N'msdb', N'tempdb')
+AND   ds.database_name NOT IN (N'master', N'model', N'msdb', N'tempdb', N'PerformanceMonitor')
 ORDER BY
     ds.total_size_mb DESC
 OPTION(MAXDOP 1, RECOMPILE);";
@@ -1288,6 +1320,12 @@ SELECT TOP(@topN)
                 DECOMPRESS(qs.query_text)
             ),
             200
+        ),
+    full_query_text =
+        CONVERT
+        (
+            nvarchar(max),
+            DECOMPRESS(qs.query_text)
         )
 FROM collect.query_stats AS qs
 WHERE qs.collection_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME())
@@ -1321,7 +1359,181 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         TotalReads = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
                         AvgReadsPerExec = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
                         Executions = reader.IsDBNull(5) ? 0 : Convert.ToInt64(reader.GetValue(5)),
-                        QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6)
+                        QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                        FullQueryText = reader.IsDBNull(7) ? "" : reader.GetString(7)
+                    });
+                }
+            }
+
+            return items;
+        }
+
+        /// <summary>
+        /// Fetches high-impact queries — 80/20 analysis across CPU, duration, reads, writes, memory, executions.
+        /// </summary>
+        public async Task<List<FinOpsHighImpactQuery>> GetFinOpsHighImpactQueriesAsync(int hoursBack = 24)
+        {
+            var items = new List<FinOpsHighImpactQuery>();
+
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            const string query = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+DECLARE @cutoff datetime2(7) = DATEADD(HOUR, -@hoursBack, SYSDATETIME());
+
+WITH
+    agg AS
+    (
+        SELECT
+            qs.query_hash,
+            database_name = MIN(qs.database_name),
+            total_executions = SUM(qs.execution_count_delta),
+            total_cpu_ms = SUM(qs.total_worker_time_delta) / 1000.0,
+            total_duration_ms = SUM(qs.total_elapsed_time_delta) / 1000.0,
+            total_reads = SUM(qs.total_logical_reads_delta),
+            total_writes = SUM(qs.total_logical_writes_delta),
+            total_memory_mb = SUM(ISNULL(qs.max_grant_kb, 0)) / 1024.0
+        FROM collect.query_stats AS qs
+        WHERE qs.collection_time >= @cutoff
+        AND   qs.query_hash IS NOT NULL
+        AND   qs.execution_count_delta > 0
+        GROUP BY
+            qs.query_hash
+        HAVING
+            SUM(qs.execution_count_delta) > 0
+    ),
+    interesting AS
+    (
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_cpu_ms DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_duration_ms DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_reads DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_writes DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_memory_mb DESC) x
+        UNION
+        SELECT query_hash FROM (SELECT TOP (10) query_hash FROM agg ORDER BY total_executions DESC) x
+    ),
+    scored AS
+    (
+        SELECT
+            a.*,
+            cpu_pctl = PERCENT_RANK() OVER (ORDER BY a.total_cpu_ms),
+            duration_pctl = PERCENT_RANK() OVER (ORDER BY a.total_duration_ms),
+            reads_pctl = PERCENT_RANK() OVER (ORDER BY a.total_reads),
+            writes_pctl = PERCENT_RANK() OVER (ORDER BY a.total_writes),
+            memory_pctl = PERCENT_RANK() OVER (ORDER BY a.total_memory_mb),
+            executions_pctl = PERCENT_RANK() OVER (ORDER BY a.total_executions),
+            cpu_share = CONVERT(decimal(5,1), 100.0 * a.total_cpu_ms / NULLIF(SUM(a.total_cpu_ms) OVER (), 0)),
+            duration_share = CONVERT(decimal(5,1), 100.0 * a.total_duration_ms / NULLIF(SUM(a.total_duration_ms) OVER (), 0)),
+            reads_share = CONVERT(decimal(5,1), 100.0 * a.total_reads / NULLIF(SUM(CONVERT(float, a.total_reads)) OVER (), 0)),
+            writes_share = CONVERT(decimal(5,1), 100.0 * a.total_writes / NULLIF(SUM(CONVERT(float, a.total_writes)) OVER (), 0)),
+            memory_share = CONVERT(decimal(5,1), 100.0 * a.total_memory_mb / NULLIF(SUM(a.total_memory_mb) OVER (), 0)),
+            executions_share = CONVERT(decimal(5,1), 100.0 * a.total_executions / NULLIF(SUM(CONVERT(float, a.total_executions)) OVER (), 0))
+        FROM agg AS a
+        JOIN interesting AS i
+          ON a.query_hash = i.query_hash
+    ),
+    with_text AS
+    (
+        SELECT
+            s.*,
+            sample_query_text =
+            (
+                SELECT TOP (1)
+                    CASE
+                        WHEN qs2.query_text IS NOT NULL
+                        THEN CAST(DECOMPRESS(qs2.query_text) AS nvarchar(max))
+                        ELSE N''
+                    END
+                FROM collect.query_stats AS qs2
+                WHERE qs2.query_hash = s.query_hash
+                AND   qs2.collection_time >= @cutoff
+                AND   qs2.query_text IS NOT NULL
+                ORDER BY
+                    qs2.execution_count_delta DESC
+            )
+        FROM scored AS s
+    )
+SELECT
+    query_hash_display = CONVERT(varchar(20), query_hash, 1),
+    database_name,
+    total_executions,
+    total_cpu_ms,
+    total_duration_ms,
+    total_reads,
+    total_writes,
+    total_memory_mb,
+    cpu_share,
+    duration_share,
+    reads_share,
+    writes_share,
+    memory_share,
+    executions_share,
+    impact_score =
+        CONVERT(int,
+        (
+            ISNULL(cpu_pctl, 0) +
+            ISNULL(duration_pctl, 0) +
+            ISNULL(reads_pctl, 0) +
+            ISNULL(writes_pctl, 0) +
+            ISNULL(memory_pctl, 0) +
+            ISNULL(executions_pctl, 0)
+        ) /
+        (
+            CASE WHEN cpu_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN duration_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN reads_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN writes_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN memory_pctl IS NOT NULL THEN 1.0 ELSE 0 END +
+            CASE WHEN executions_pctl IS NOT NULL THEN 1.0 ELSE 0 END
+        ) * 100),
+    query_preview = LEFT(sample_query_text, 200),
+    full_query_text = sample_query_text
+FROM with_text
+ORDER BY
+    (
+        ISNULL(cpu_pctl, 0) +
+        ISNULL(duration_pctl, 0) +
+        ISNULL(reads_pctl, 0) +
+        ISNULL(writes_pctl, 0) +
+        ISNULL(memory_pctl, 0) +
+        ISNULL(executions_pctl, 0)
+    ) DESC
+OPTION(MAXDOP 1, RECOMPILE);";
+
+            using var command = new SqlCommand(query, connection);
+            command.Parameters.AddWithValue("@hoursBack", hoursBack);
+            command.CommandTimeout = 120;
+
+            using (StartQueryTiming("FinOps_HighImpactQueries", query, connection))
+            {
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    items.Add(new FinOpsHighImpactQuery
+                    {
+                        QueryHashDisplay = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                        DatabaseName = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                        TotalExecutions = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+                        TotalCpuMs = reader.IsDBNull(3) ? 0m : Convert.ToDecimal(reader.GetValue(3)),
+                        TotalDurationMs = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
+                        TotalReads = reader.IsDBNull(5) ? 0 : Convert.ToInt64(reader.GetValue(5)),
+                        TotalWrites = reader.IsDBNull(6) ? 0 : Convert.ToInt64(reader.GetValue(6)),
+                        TotalMemoryMb = reader.IsDBNull(7) ? 0m : Convert.ToDecimal(reader.GetValue(7)),
+                        CpuShare = reader.IsDBNull(8) ? 0m : Convert.ToDecimal(reader.GetValue(8)),
+                        DurationShare = reader.IsDBNull(9) ? 0m : Convert.ToDecimal(reader.GetValue(9)),
+                        ReadsShare = reader.IsDBNull(10) ? 0m : Convert.ToDecimal(reader.GetValue(10)),
+                        WritesShare = reader.IsDBNull(11) ? 0m : Convert.ToDecimal(reader.GetValue(11)),
+                        MemoryShare = reader.IsDBNull(12) ? 0m : Convert.ToDecimal(reader.GetValue(12)),
+                        ExecutionsShare = reader.IsDBNull(13) ? 0m : Convert.ToDecimal(reader.GetValue(13)),
+                        ImpactScore = reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14)),
+                        SampleQueryText = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                        FullQueryText = reader.IsDBNull(16) ? "" : reader.GetString(16)
                     });
                 }
             }
@@ -1604,6 +1816,609 @@ OPTION(MAXDOP 1, RECOMPILE);";
 
             return items;
         }
+
+        // ============================================
+        // FinOps Recommendations Engine
+        // ============================================
+
+        /// <summary>
+        /// Runs all Phase 1 recommendation checks and returns a consolidated list.
+        /// </summary>
+        public async Task<List<FinOpsRecommendation>> GetFinOpsRecommendationsAsync(decimal monthlyCost)
+        {
+            var recommendations = new List<FinOpsRecommendation>();
+
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            // 1. Enterprise feature usage audit
+            try
+            {
+                using var editionCmd = new SqlCommand(
+                    "SELECT CAST(SERVERPROPERTY('Edition') AS NVARCHAR(128))", connection);
+                editionCmd.CommandTimeout = 30;
+                var edition = (string?)await editionCmd.ExecuteScalarAsync() ?? "";
+
+                if (edition.Contains("Enterprise", StringComparison.OrdinalIgnoreCase))
+                {
+                    var hasDatabaseId = false;
+                    using (var colCheck = new SqlCommand(
+                        "SELECT COL_LENGTH('sys.dm_db_persisted_sku_features', 'database_id')", connection))
+                    {
+                        colCheck.CommandTimeout = 10;
+                        hasDatabaseId = await colCheck.ExecuteScalarAsync() is not null and not DBNull;
+                    }
+
+                    var featSql = hasDatabaseId
+                        ? "SELECT DB_NAME(database_id) AS database_name, feature_name FROM sys.dm_db_persisted_sku_features"
+                        : "SELECT N'(unknown)' AS database_name, feature_name FROM sys.dm_db_persisted_sku_features";
+                    using var featCmd = new SqlCommand(featSql, connection);
+                    featCmd.CommandTimeout = 30;
+
+                    var features = new List<string>();
+                    using var featReader = await featCmd.ExecuteReaderAsync();
+                    while (await featReader.ReadAsync())
+                    {
+                        var db = featReader.IsDBNull(0) ? "" : featReader.GetString(0);
+                        var feat = featReader.IsDBNull(1) ? "" : featReader.GetString(1);
+                        features.Add($"{db}: {feat}");
+                    }
+
+                    if (features.Count == 0)
+                    {
+                        recommendations.Add(new FinOpsRecommendation
+                        {
+                            Category = "Licensing",
+                            Severity = "High",
+                            Confidence = "High",
+                            Finding = "Enterprise Edition with no Enterprise-only features detected",
+                            Detail = "sys.dm_db_persisted_sku_features reports no Enterprise-only feature usage. " +
+                                     "Review whether Standard Edition would meet workload requirements for potential license savings.",
+                            EstMonthlySavings = monthlyCost > 0 ? monthlyCost * 0.40m : null
+                        });
+                    }
+                    else
+                    {
+                        // Check 8: Enterprise feature detail report — list what blocks a downgrade
+                        recommendations.Add(new FinOpsRecommendation
+                        {
+                            Category = "Licensing",
+                            Severity = "Low",
+                            Confidence = "High",
+                            Finding = "Enterprise features in use — downgrade blockers identified",
+                            Detail = $"The following databases use Enterprise-only features: {string.Join("; ", features.Take(20))}" +
+                                     (features.Count > 20 ? $" and {features.Count - 20} more" : "") +
+                                     ". Address these before considering a Standard Edition downgrade."
+                        });
+
+                        // Check 10: License cost impact estimate (only when features ARE in use)
+                        using var cpuInfoCmd = new SqlCommand(
+                            "SELECT cpu_count FROM sys.dm_os_sys_info", connection);
+                        cpuInfoCmd.CommandTimeout = 30;
+                        var cpuCountObj = await cpuInfoCmd.ExecuteScalarAsync();
+                        var coreLicenseCount = cpuCountObj != null ? Convert.ToInt32(cpuCountObj) : 0;
+                        if (coreLicenseCount > 0)
+                        {
+                            var monthlySavings = coreLicenseCount * 5000m / 12m;
+                            recommendations.Add(new FinOpsRecommendation
+                            {
+                                Category = "Licensing",
+                                Severity = "Low",
+                                Confidence = "Low",
+                                Finding = $"Enterprise to Standard would save ~${monthlySavings:N0}/mo at list pricing ({coreLicenseCount} cores)",
+                                Detail = "Based on list pricing differential of ~$5,000/core/year between Enterprise and Standard. " +
+                                         "Actual savings depend on your licensing agreement. See Enterprise feature audit for downgrade blockers.",
+                                EstMonthlySavings = monthlySavings
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Enterprise features): {ex.Message}", ex);
+            }
+
+            // 2. CPU right-sizing score
+            try
+            {
+                using var cpuCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    v.p95_cpu_pct,
+    v.cpu_count,
+    v.avg_cpu_pct,
+    v.max_cpu_pct
+FROM report.finops_utilization_efficiency AS v
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                cpuCmd.CommandTimeout = 120;
+
+                using var cpuReader = await cpuCmd.ExecuteReaderAsync();
+                if (await cpuReader.ReadAsync())
+                {
+                    var p95 = cpuReader.IsDBNull(0) ? 0m : Convert.ToDecimal(cpuReader.GetValue(0));
+                    var cpuCount = cpuReader.IsDBNull(1) ? 0 : Convert.ToInt32(cpuReader.GetValue(1));
+                    var avg = cpuReader.IsDBNull(2) ? 0m : Convert.ToDecimal(cpuReader.GetValue(2));
+                    var max = cpuReader.IsDBNull(3) ? 0 : Convert.ToInt32(cpuReader.GetValue(3));
+
+                    if (p95 < 30 && cpuCount > 4)
+                    {
+                        var targetCores = Math.Max(4, (int)(cpuCount * (p95 / 70m)));
+                        var savingsPct = 1m - ((decimal)targetCores / cpuCount);
+                        recommendations.Add(new FinOpsRecommendation
+                        {
+                            Category = "Compute",
+                            Severity = p95 < 15 ? "High" : "Medium",
+                            Confidence = "Medium",
+                            Finding = $"CPU over-provisioned ({cpuCount} cores, P95 = {p95:N1}%)",
+                            Detail = $"P95 CPU utilization is {p95:N1}% (avg {avg:N1}%, max {max}%) across {cpuCount} cores. " +
+                                     $"Consider reducing to ~{targetCores} cores.",
+                            EstMonthlySavings = monthlyCost > 0 ? monthlyCost * savingsPct * 0.60m : null
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (CPU right-sizing): {ex.Message}", ex);
+            }
+
+            // 3. Memory right-sizing score
+            try
+            {
+                using var memCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT TOP (1)
+    ms.buffer_pool_mb,
+    (SELECT CAST(SERVERPROPERTY('PhysicalMemoryInMB') AS INT)) AS physical_memory_mb
+FROM collect.memory_stats AS ms
+ORDER BY ms.collection_time DESC
+OPTION(MAXDOP 1);", connection);
+                memCmd.CommandTimeout = 30;
+
+                using var memReader = await memCmd.ExecuteReaderAsync();
+                if (await memReader.ReadAsync())
+                {
+                    var bpMb = memReader.IsDBNull(0) ? 0 : Convert.ToInt32(memReader.GetValue(0));
+                    var physMb = memReader.IsDBNull(1) ? 0 : Convert.ToInt32(memReader.GetValue(1));
+
+                    if (physMb > 0)
+                    {
+                        var bpRatio = (decimal)bpMb / physMb;
+                        if (bpRatio < 0.50m && physMb > 8192)
+                        {
+                            var targetMb = Math.Max(8192, bpMb * 2);
+                            recommendations.Add(new FinOpsRecommendation
+                            {
+                                Category = "Memory",
+                                Severity = bpRatio < 0.30m ? "High" : "Medium",
+                                Confidence = "Medium",
+                                Finding = $"Memory over-provisioned (buffer pool uses {bpRatio:P0} of {physMb / 1024}GB RAM)",
+                                Detail = $"Buffer pool is {bpMb:N0} MB out of {physMb:N0} MB physical RAM ({bpRatio:P0} utilization). " +
+                                         $"Consider reducing to ~{targetMb / 1024}GB.",
+                                EstMonthlySavings = monthlyCost > 0 ? monthlyCost * (1m - (decimal)targetMb / physMb) * 0.30m : null
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Memory right-sizing): {ex.Message}", ex);
+            }
+
+            // 4. Unused index cost quantification
+            try
+            {
+                var spExists = await CheckSpIndexCleanupExistsAsync();
+                if (!spExists)
+                {
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Indexes",
+                        Severity = "Low",
+                        Confidence = "Low",
+                        Finding = "Index analysis unavailable (sp_IndexCleanup not installed)",
+                        Detail = "Install sp_IndexCleanup from https://github.com/erikdarlingdata/DarlingData " +
+                                 "to identify unused and duplicate indexes that waste storage and add write overhead."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Index analysis): {ex.Message}", ex);
+            }
+
+            // 5. Compression savings estimator
+            try
+            {
+                using var compCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    s.name AS schema_name,
+    t.name AS table_name,
+    i.name AS index_name,
+    i.type_desc,
+    p.data_compression_desc,
+    SUM(a.total_pages) * 8 / 1024.0 AS size_mb
+FROM sys.tables AS t
+JOIN sys.schemas AS s ON t.schema_id = s.schema_id
+JOIN sys.indexes AS i ON t.object_id = i.object_id
+JOIN sys.partitions AS p ON i.object_id = p.object_id AND i.index_id = p.index_id
+JOIN sys.allocation_units AS a ON p.partition_id = a.container_id
+WHERE p.data_compression_desc = N'NONE'
+AND   t.is_ms_shipped = 0
+GROUP BY
+    s.name,
+    t.name,
+    i.name,
+    i.type_desc,
+    p.data_compression_desc
+HAVING SUM(a.total_pages) * 8 / 1024.0 >= 1024
+ORDER BY
+    size_mb DESC
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                compCmd.CommandTimeout = 60;
+
+                var candidates = new List<(string Schema, string Table, string Index, string Type, decimal SizeMb)>();
+                using var compReader = await compCmd.ExecuteReaderAsync();
+                while (await compReader.ReadAsync())
+                {
+                    candidates.Add((
+                        compReader.IsDBNull(0) ? "" : compReader.GetString(0),
+                        compReader.IsDBNull(1) ? "" : compReader.GetString(1),
+                        compReader.IsDBNull(2) ? "" : compReader.GetString(2),
+                        compReader.IsDBNull(3) ? "" : compReader.GetString(3),
+                        compReader.IsDBNull(5) ? 0m : Convert.ToDecimal(compReader.GetValue(5))
+                    ));
+                }
+
+                if (candidates.Count > 0)
+                {
+                    var totalGb = candidates.Sum(c => c.SizeMb) / 1024m;
+                    var topItems = candidates.Take(5)
+                        .Select(c => $"{c.Schema}.{c.Table} ({c.SizeMb / 1024:N1}GB)")
+                        .ToList();
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Storage",
+                        Severity = totalGb > 50 ? "High" : totalGb > 10 ? "Medium" : "Low",
+                        Confidence = "High",
+                        Finding = $"{candidates.Count} uncompressed object(s) >= 1GB ({totalGb:N1}GB total)",
+                        Detail = $"Large uncompressed tables/indexes: {string.Join("; ", topItems)}" +
+                                 (candidates.Count > 5 ? $" and {candidates.Count - 5} more" : "") +
+                                 ". Consider PAGE or ROW compression to reduce storage and improve I/O."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Compression): {ex.Message}", ex);
+            }
+
+            // 6. Dormant database detection with cost impact
+            try
+            {
+                var idleDbs = await GetFinOpsIdleDatabasesAsync();
+                if (idleDbs.Count > 0)
+                {
+                    var totalSizeGb = idleDbs.Sum(d => d.TotalSizeMb) / 1024m;
+                    var dbNames = string.Join(", ", idleDbs.Take(5).Select(d => d.DatabaseName));
+                    var costShare = 0m;
+                    if (monthlyCost > 0)
+                    {
+                        // Estimate cost share proportional to storage footprint
+                        var allDbSizes = await GetFinOpsDatabaseSizeStatsAsync();
+                        var totalMb = allDbSizes.Sum(d => d.TotalSizeMb);
+                        if (totalMb > 0)
+                            costShare = (idleDbs.Sum(d => d.TotalSizeMb) / totalMb) * monthlyCost;
+                    }
+
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Databases",
+                        Severity = idleDbs.Count >= 3 ? "High" : "Medium",
+                        Confidence = "High",
+                        Finding = $"{idleDbs.Count} idle database(s) consuming {totalSizeGb:N1}GB",
+                        Detail = $"No query activity in 7 days: {dbNames}" +
+                                 (idleDbs.Count > 5 ? $" and {idleDbs.Count - 5} more" : "") +
+                                 ". Consider archiving or removing these databases.",
+                        EstMonthlySavings = costShare > 0 ? costShare : null
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Dormant databases): {ex.Message}", ex);
+            }
+
+            // 7. Dev/test workload detection
+            try
+            {
+                using var devTestCmd = new SqlCommand(@"
+SELECT name
+FROM sys.databases
+WHERE (name LIKE N'%dev%' OR name LIKE N'%test%' OR name LIKE N'%staging%' OR name LIKE N'%qa%')
+AND   database_id > 4", connection);
+                devTestCmd.CommandTimeout = 30;
+
+                var devDbs = new List<string>();
+                using var devReader = await devTestCmd.ExecuteReaderAsync();
+                while (await devReader.ReadAsync())
+                {
+                    if (!devReader.IsDBNull(0))
+                        devDbs.Add(devReader.GetString(0));
+                }
+
+                if (devDbs.Count > 0)
+                {
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Environment",
+                        Severity = "Medium",
+                        Confidence = "Low",
+                        Finding = $"{devDbs.Count} possible dev/test database(s) on production server",
+                        Detail = $"Databases matching dev/test patterns: {string.Join(", ", devDbs.Take(10))}" +
+                                 (devDbs.Count > 10 ? $" and {devDbs.Count - 10} more" : "") +
+                                 ". If these are non-production workloads, consider moving to a lower-cost tier or separate server."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Dev/test detection): {ex.Message}", ex);
+            }
+
+            // 11. Maintenance window efficiency — jobs running long
+            try
+            {
+                using var jobCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT TOP 10
+    job_name,
+    avg_runs = COUNT(*),
+    avg_duration_seconds = AVG(current_duration_seconds),
+    max_duration_seconds = MAX(current_duration_seconds),
+    avg_historical = AVG(avg_duration_seconds),
+    times_ran_long = SUM(CAST(is_running_long AS int))
+FROM collect.running_jobs
+WHERE collection_time >= DATEADD(DAY, -7, SYSDATETIME())
+AND   avg_duration_seconds > 0
+GROUP BY job_name
+HAVING SUM(CAST(is_running_long AS int)) >= 3
+ORDER BY SUM(CAST(is_running_long AS int)) DESC", connection);
+                jobCmd.CommandTimeout = 60;
+
+                using var jobReader = await jobCmd.ExecuteReaderAsync();
+                while (await jobReader.ReadAsync())
+                {
+                    var jobName = jobReader.IsDBNull(0) ? "" : jobReader.GetString(0);
+                    var avgDuration = jobReader.IsDBNull(2) ? 0L : Convert.ToInt64(jobReader.GetValue(2));
+                    var maxDuration = jobReader.IsDBNull(3) ? 0L : Convert.ToInt64(jobReader.GetValue(3));
+                    var avgHistorical = jobReader.IsDBNull(4) ? 0L : Convert.ToInt64(jobReader.GetValue(4));
+                    var timesLong = jobReader.IsDBNull(5) ? 0 : Convert.ToInt32(jobReader.GetValue(5));
+
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Maintenance",
+                        Severity = timesLong >= 5 ? "Medium" : "Low",
+                        Confidence = "High",
+                        Finding = $"{jobName} ran long {timesLong} times in 7 days",
+                        Detail = $"Average duration: {FormatDuration(avgDuration)}, max: {FormatDuration(maxDuration)}, " +
+                                 $"historical average: {FormatDuration(avgHistorical)}. " +
+                                 "Review whether this job's schedule or operations need tuning."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Maintenance window): {ex.Message}", ex);
+            }
+
+            // 12. VM right-sizing — prescriptive core/memory targets
+            try
+            {
+                using var vmCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    p95_cpu = (SELECT TOP (1) PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY cus.sqlserver_cpu_utilization) OVER ()
+               FROM collect.cpu_utilization_stats AS cus
+               WHERE cus.collection_time >= DATEADD(DAY, -7, SYSDATETIME())),
+    cpu_count = (SELECT si.cpu_count FROM sys.dm_os_sys_info AS si),
+    buffer_pool_mb = (SELECT pc.cntr_value / 1024
+                      FROM sys.dm_os_performance_counters AS pc
+                      WHERE pc.counter_name = N'Database Cache Memory (KB)'
+                      AND   pc.object_name LIKE N'%Buffer Manager%'),
+    physical_memory_mb = (SELECT si.physical_memory_kb / 1024 FROM sys.dm_os_sys_info AS si)
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                vmCmd.CommandTimeout = 60;
+
+                using var vmReader = await vmCmd.ExecuteReaderAsync();
+                if (await vmReader.ReadAsync())
+                {
+                    var p95Cpu = vmReader.IsDBNull(0) ? 0m : Convert.ToDecimal(vmReader.GetValue(0));
+                    var cpuCount = vmReader.IsDBNull(1) ? 0 : Convert.ToInt32(vmReader.GetValue(1));
+                    var bpMb = vmReader.IsDBNull(2) ? 0 : Convert.ToInt32(vmReader.GetValue(2));
+                    var physMb = vmReader.IsDBNull(3) ? 0 : Convert.ToInt32(vmReader.GetValue(3));
+
+                    // CPU prescription: only if >= 4 cores
+                    if (cpuCount >= 4)
+                    {
+                        int targetCores = 0;
+                        if (p95Cpu < 15)
+                            targetCores = Math.Max(2, cpuCount / 4);
+                        else if (p95Cpu < 30)
+                            targetCores = Math.Max(2, cpuCount / 2);
+
+                        if (targetCores > 0 && targetCores < cpuCount)
+                        {
+                            recommendations.Add(new FinOpsRecommendation
+                            {
+                                Category = "Hardware",
+                                Severity = "Medium",
+                                Confidence = "Medium",
+                                Finding = $"CPU: reduce from {cpuCount} to {targetCores} cores (P95 CPU {p95Cpu:N1}%)",
+                                Detail = $"Over the last 7 days, P95 CPU utilization was {p95Cpu:N1}%. " +
+                                         $"Current allocation of {cpuCount} cores can safely be reduced to {targetCores} cores.",
+                                EstMonthlySavings = monthlyCost > 0
+                                    ? monthlyCost * (1m - (decimal)targetCores / cpuCount) * 0.50m
+                                    : null
+                            });
+                        }
+                    }
+
+                    // Memory prescription: only if >= 4096 MB
+                    if (physMb >= 4096 && physMb > 0)
+                    {
+                        var bpRatio = (decimal)bpMb / physMb;
+                        int targetMb = 0;
+                        if (bpRatio < 0.25m)
+                            targetMb = Math.Max(4096, physMb / 4);
+                        else if (bpRatio < 0.40m)
+                            targetMb = Math.Max(4096, physMb / 2);
+
+                        if (targetMb > 0 && targetMb < physMb)
+                        {
+                            recommendations.Add(new FinOpsRecommendation
+                            {
+                                Category = "Hardware",
+                                Severity = "Medium",
+                                Confidence = "Medium",
+                                Finding = $"Memory: reduce from {physMb / 1024}GB to {targetMb / 1024}GB (buffer pool uses {bpRatio:P0})",
+                                Detail = $"Buffer pool is using {bpMb:N0} MB of {physMb:N0} MB physical RAM ({bpRatio:P0}). " +
+                                         $"Reducing to {targetMb / 1024}GB would still leave headroom.",
+                                EstMonthlySavings = monthlyCost > 0
+                                    ? monthlyCost * (1m - (decimal)targetMb / physMb) * 0.30m
+                                    : null
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (VM right-sizing): {ex.Message}", ex);
+            }
+
+            // 13. Storage tier optimization — flag databases with low IO latency
+            try
+            {
+                using var storageCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    database_name = fio.database_name,
+    total_reads = SUM(fio.num_of_reads_delta),
+    total_stall_read_ms = SUM(fio.io_stall_read_ms_delta),
+    total_writes = SUM(fio.num_of_writes_delta),
+    total_stall_write_ms = SUM(fio.io_stall_write_ms_delta)
+FROM collect.file_io_stats AS fio
+WHERE fio.collection_time >= DATEADD(DAY, -7, SYSDATETIME())
+AND   fio.num_of_reads_delta > 0
+GROUP BY
+    fio.database_name
+HAVING SUM(fio.num_of_reads_delta) > 1000
+ORDER BY
+    SUM(fio.io_stall_read_ms_delta) * 1.0 / SUM(fio.num_of_reads_delta)
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                storageCmd.CommandTimeout = 60;
+
+                var lowLatencyDbs = new List<(string Name, decimal AvgReadMs, decimal AvgWriteMs)>();
+                using var storageReader = await storageCmd.ExecuteReaderAsync();
+                while (await storageReader.ReadAsync())
+                {
+                    var dbName = storageReader.IsDBNull(0) ? "" : storageReader.GetString(0);
+                    var totalReads = storageReader.IsDBNull(1) ? 0L : Convert.ToInt64(storageReader.GetValue(1));
+                    var totalStallRead = storageReader.IsDBNull(2) ? 0L : Convert.ToInt64(storageReader.GetValue(2));
+                    var totalWrites = storageReader.IsDBNull(3) ? 0L : Convert.ToInt64(storageReader.GetValue(3));
+                    var totalStallWrite = storageReader.IsDBNull(4) ? 0L : Convert.ToInt64(storageReader.GetValue(4));
+
+                    var avgReadMs = totalReads > 0 ? (decimal)totalStallRead / totalReads : 0m;
+                    var avgWriteMs = totalWrites > 0 ? (decimal)totalStallWrite / totalWrites : 0m;
+
+                    if (avgReadMs < 5m && avgWriteMs < 3m)
+                    {
+                        lowLatencyDbs.Add((dbName, avgReadMs, avgWriteMs));
+                    }
+                }
+
+                if (lowLatencyDbs.Count > 0)
+                {
+                    var detail = string.Join("; ", lowLatencyDbs.Take(10)
+                        .Select(d => $"{d.Name} (read {d.AvgReadMs:N1}ms, write {d.AvgWriteMs:N1}ms)"));
+                    recommendations.Add(new FinOpsRecommendation
+                    {
+                        Category = "Storage",
+                        Severity = "Low",
+                        Confidence = "Medium",
+                        Finding = $"{lowLatencyDbs.Count} database(s) with low IO latency — standard storage may suffice",
+                        Detail = $"These databases have avg read latency under 5ms and write under 3ms over 7 days: {detail}" +
+                                 (lowLatencyDbs.Count > 10 ? $" and {lowLatencyDbs.Count - 10} more" : "") +
+                                 ". Premium/high-performance storage may not be needed."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Storage tier): {ex.Message}", ex);
+            }
+
+            // 14. Reserved capacity candidates — stable CPU utilization
+            try
+            {
+                using var rcCmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    avg_cpu = AVG(CAST(cus.sqlserver_cpu_utilization AS decimal(5,2))),
+    stddev_cpu = STDEV(CAST(cus.sqlserver_cpu_utilization AS decimal(5,2))),
+    sample_count = COUNT(*)
+FROM collect.cpu_utilization_stats AS cus
+WHERE cus.collection_time >= DATEADD(DAY, -7, SYSDATETIME())
+HAVING COUNT(*) >= 24
+OPTION(MAXDOP 1, RECOMPILE);", connection);
+                rcCmd.CommandTimeout = 60;
+
+                using var rcReader = await rcCmd.ExecuteReaderAsync();
+                if (await rcReader.ReadAsync() && !rcReader.IsDBNull(0))
+                {
+                    var avgCpu = Convert.ToDecimal(rcReader.GetValue(0));
+                    var stddevCpu = rcReader.IsDBNull(1) ? 0m : Convert.ToDecimal(rcReader.GetValue(1));
+
+                    if (avgCpu > 20 && stddevCpu > 0)
+                    {
+                        var cv = stddevCpu / avgCpu;
+                        if (cv < 0.3m)
+                        {
+                            var confidence = cv < 0.15m ? "High" : "Medium";
+                            recommendations.Add(new FinOpsRecommendation
+                            {
+                                Category = "Cloud",
+                                Severity = "Low",
+                                Confidence = confidence,
+                                Finding = $"Stable CPU utilization (avg {avgCpu:N1}%, CV {cv:N2}) — reserved capacity candidate",
+                                Detail = $"CPU utilization is consistently {avgCpu:N1}% with low variance (\u00b1{stddevCpu:N1}%). " +
+                                         "Reserved pricing typically saves 30-40% over pay-as-you-go for predictable workloads."
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{ServerLabel}] Recommendation check failed (Reserved capacity): {ex.Message}", ex);
+            }
+
+            return recommendations;
+        }
+
+        private static string FormatDuration(long seconds)
+        {
+            if (seconds >= 3600)
+                return $"{seconds / 3600}h {(seconds % 3600) / 60}m {seconds % 60}s";
+            if (seconds >= 60)
+                return $"{seconds / 60}m {seconds % 60}s";
+            return $"{seconds}s";
+        }
     }
 
     // ============================================
@@ -1643,6 +2458,15 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public int BufferPoolMb { get; set; }
         public int TotalServerMemoryMb { get; set; }
         public string ProvisioningStatus { get; set; } = "";
+
+        // FinOps cost — proportional to server monthly budget
+        public decimal MonthlyCost { get; set; }
+        public decimal AnnualCost => MonthlyCost * 12m;
+
+        // Health score (Increment 6)
+        public decimal FreeSpacePct { get; set; }
+        public int HealthScore { get; set; }
+        public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
     }
 
     public class FinOpsApplicationResourceUsage
@@ -1685,6 +2509,27 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string ProvisioningDisplay => ProvisioningStatus?.Replace("_", " ") ?? "";
         public string HadrDisplay => IsHadrEnabled.HasValue ? (IsHadrEnabled.Value ? "Yes" : "No") : "";
         public string ClusteredDisplay => IsClustered.HasValue ? (IsClustered.Value ? "Yes" : "No") : "";
+
+        // FinOps cost — from server config
+        public decimal MonthlyCost { get; set; }
+        public decimal AnnualCost => MonthlyCost * 12m;
+
+        // License warning (Increment 5)
+        public string? LicenseWarning
+        {
+            get
+            {
+                if (!Edition.Contains("Standard", StringComparison.OrdinalIgnoreCase)) return null;
+                var warnings = new List<string>();
+                if (CpuCount > 24) warnings.Add($"CPU: {CpuCount} cores (Standard limited to 24)");
+                if (PhysicalMemoryMb > 131072) warnings.Add($"RAM: {PhysicalMemoryMb / 1024}GB (Standard limited to 128GB)");
+                return warnings.Count > 0 ? string.Join("; ", warnings) : null;
+            }
+        }
+
+        // Health score (Increment 6)
+        public int HealthScore { get; set; }
+        public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
     }
 
     public class FinOpsDatabaseSizeStats
@@ -1708,6 +2553,32 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string VolumeMountPoint { get; set; } = "";
         public decimal VolumeTotalMb { get; set; }
         public decimal VolumeFreeMb { get; set; }
+        public bool? IsPercentGrowth { get; set; }
+        public int? GrowthPct { get; set; }
+        public int? VlfCount { get; set; }
+
+        // FinOps cost — proportional share of server monthly budget
+        public decimal MonthlyCostShare { get; set; }
+
+        public string GrowthDisplay => IsPercentGrowth switch
+        {
+            null  => "-",
+            true  => GrowthPct.HasValue ? $"{GrowthPct}%" : "-",
+            false => AutoGrowthMb == 0 ? "Disabled" : $"{AutoGrowthMb:N0} MB"
+        };
+
+        public decimal AutoGrowthSort => IsPercentGrowth switch
+        {
+            null  => -1m,
+            true  => (decimal)(GrowthPct ?? -1),
+            false => AutoGrowthMb
+        };
+
+        public string VlfCountDisplay => string.Equals(FileTypeDesc, "LOG", StringComparison.OrdinalIgnoreCase)
+            ? (VlfCount?.ToString() ?? "-") : "N/A";
+
+        public int VlfCountSort => string.Equals(FileTypeDesc, "LOG", StringComparison.OrdinalIgnoreCase)
+            ? (VlfCount ?? 0) : -1;
     }
 
     public class FinOpsTopResourceConsumer
@@ -1773,6 +2644,9 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public decimal PctOfTotal { get; set; }
         public string TopWaitType { get; set; } = "";
         public long TopWaitTimeMs { get; set; }
+
+        // FinOps cost — proportional share of server monthly budget based on wait time fraction
+        public decimal MonthlyCostShare { get; set; }
     }
 
     public class FinOpsExpensiveQuery
@@ -1784,6 +2658,10 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public decimal AvgReadsPerExec { get; set; }
         public long Executions { get; set; }
         public string QueryPreview { get; set; } = "";
+        public string FullQueryText { get; set; } = "";
+
+        // FinOps cost — proportional share of server monthly budget based on CPU fraction
+        public decimal MonthlyCostShare { get; set; }
     }
 
     public class IndexCleanupResult
@@ -1803,6 +2681,11 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string IndexWrites { get; set; } = "";
         public string OriginalIndexDefinition { get; set; } = "";
         public string Script { get; set; } = "";
+
+        public decimal IndexSizeGbSort => NumericSortHelper.Parse(IndexSizeGb);
+        public decimal IndexRowsSort => NumericSortHelper.Parse(IndexRows);
+        public decimal IndexReadsSort => NumericSortHelper.Parse(IndexReads);
+        public decimal IndexWritesSort => NumericSortHelper.Parse(IndexWrites);
     }
 
     public class FinOpsProvisioningTrend
@@ -1830,6 +2713,40 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public long ForcedGrants { get; set; }
         public string DayDisplay => Day.ToString("ddd MM/dd");
         public decimal WastedMb => AvgGrantedMb - AvgUsedMb;
+    }
+
+    public static class FinOpsHealthCalculator
+    {
+        public static int CpuScore(decimal p95Pct)
+        {
+            if (p95Pct <= 70) return (int)(100 - p95Pct * 50 / 70);
+            return (int)Math.Max(0, 50 - (p95Pct - 70) * 50 / 30);
+        }
+
+        public static int MemoryScore(decimal bufferPoolRatio)
+        {
+            if (bufferPoolRatio <= 0.30m) return 60;
+            if (bufferPoolRatio <= 0.85m) return 100;
+            if (bufferPoolRatio <= 0.95m) return (int)(100 - (bufferPoolRatio - 0.85m) * 800);
+            return (int)Math.Max(0, 20 - (bufferPoolRatio - 0.95m) * 400);
+        }
+
+        public static int StorageScore(decimal freeSpacePct)
+        {
+            if (freeSpacePct >= 30) return 100;
+            if (freeSpacePct >= 10) return (int)(50 + (freeSpacePct - 10) * 2.5m);
+            return (int)(freeSpacePct * 5);
+        }
+
+        public static int Overall(int cpu, int memory, int storage) =>
+            (int)(cpu * 0.40 + memory * 0.30 + storage * 0.30);
+
+        public static string ScoreColor(int score) => score switch
+        {
+            >= 80 => "#27AE60",
+            >= 60 => "#F39C12",
+            _ => "#E74C3C"
+        };
     }
 
     public class IndexCleanupSummary
@@ -1863,5 +2780,74 @@ OPTION(MAXDOP 1, RECOMPILE);";
         public string LatchWaitCount { get; set; } = "";
         public string DailyLatchWaitsSaved { get; set; } = "";
         public string AvgLatchWaitMs { get; set; } = "";
+
+        public decimal TotalIndexesSort => NumericSortHelper.Parse(TotalIndexes);
+        public decimal RemovableIndexesSort => NumericSortHelper.Parse(RemovableIndexes);
+        public decimal MergeableIndexesSort => NumericSortHelper.Parse(MergeableIndexes);
+        public decimal CompressableIndexesSort => NumericSortHelper.Parse(CompressableIndexes);
+        public decimal PercentRemovableSort => NumericSortHelper.Parse(PercentRemovable);
+        public decimal CurrentSizeGbSort => NumericSortHelper.Parse(CurrentSizeGb);
+        public decimal SizeAfterCleanupGbSort => NumericSortHelper.Parse(SizeAfterCleanupGb);
+        public decimal SpaceSavedGbSort => NumericSortHelper.Parse(SpaceSavedGb);
+        public decimal SpaceReductionPercentSort => NumericSortHelper.Parse(SpaceReductionPercent);
+        public decimal TotalRowsSort => NumericSortHelper.Parse(TotalRows);
+        public decimal WritesSort => NumericSortHelper.Parse(Writes);
+        public decimal DailyWriteOpsSavedSort => NumericSortHelper.Parse(DailyWriteOpsSaved);
+        public decimal LockWaitCountSort => NumericSortHelper.Parse(LockWaitCount);
+        public decimal DailyLockWaitsSavedSort => NumericSortHelper.Parse(DailyLockWaitsSaved);
+        public decimal AvgLockWaitMsSort => NumericSortHelper.Parse(AvgLockWaitMs);
+        public decimal LatchWaitCountSort => NumericSortHelper.Parse(LatchWaitCount);
+        public decimal DailyLatchWaitsSavedSort => NumericSortHelper.Parse(DailyLatchWaitsSaved);
+        public decimal AvgLatchWaitMsSort => NumericSortHelper.Parse(AvgLatchWaitMs);
+    }
+
+    public class FinOpsRecommendation
+    {
+        public string Category { get; set; } = "";
+        public string Severity { get; set; } = "";
+        public string Confidence { get; set; } = "";
+        public string Finding { get; set; } = "";
+        public string Detail { get; set; } = "";
+        public decimal? EstMonthlySavings { get; set; }
+        public string EstMonthlySavingsDisplay => EstMonthlySavings.HasValue ? $"${EstMonthlySavings.Value:N0}" : "";
+    }
+
+    public class FinOpsHighImpactQuery
+    {
+        public string QueryHashDisplay { get; set; } = "";
+        public string DatabaseName { get; set; } = "";
+        public long TotalExecutions { get; set; }
+        public decimal TotalCpuMs { get; set; }
+        public decimal TotalDurationMs { get; set; }
+        public long TotalReads { get; set; }
+        public long TotalWrites { get; set; }
+        public decimal TotalMemoryMb { get; set; }
+        public decimal CpuShare { get; set; }
+        public decimal DurationShare { get; set; }
+        public decimal ReadsShare { get; set; }
+        public decimal WritesShare { get; set; }
+        public decimal MemoryShare { get; set; }
+        public decimal ExecutionsShare { get; set; }
+        public int ImpactScore { get; set; }
+        public string SampleQueryText { get; set; } = "";
+        public string FullQueryText { get; set; } = "";
+
+        public string ImpactScoreColor => ImpactScore switch
+        {
+            >= 80 => "#E74C3C",
+            >= 60 => "#F39C12",
+            _ => "#27AE60"
+        };
+    }
+
+    internal static class NumericSortHelper
+    {
+        internal static decimal Parse(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return -1m;
+            var cleaned = s.Replace(",", "").Replace("%", "").Trim();
+            return decimal.TryParse(cleaned, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : -1m;
+        }
     }
 }

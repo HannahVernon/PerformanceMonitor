@@ -14,6 +14,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Media;
 using Microsoft.Win32;
@@ -30,6 +31,11 @@ namespace PerformanceMonitorDashboard.Controls
         private CredentialService? _credentialService;
         private List<FinOpsServerInventory>? _serverInventoryCache;
         private DateTime _serverInventoryCacheTime;
+        private decimal _currentServerMonthlyCost;
+
+        private DataGridFilterManager<FinOpsDatabaseSizeStats>? _dbSizesFilterMgr;
+        private Popup? _dbSizeFilterPopup;
+        private ColumnFilterPopup? _dbSizeFilterPopupContent;
 
         public FinOpsContent()
         {
@@ -39,6 +45,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
+            TabHelpers.AutoSizeColumnMinWidths(RecommendationsDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(DatabaseResourcesDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(DatabaseSizesDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(ApplicationConnectionsDataGrid);
@@ -52,7 +59,9 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.AutoSizeColumnMinWidths(ExpensiveQueriesDataGrid);
             TabHelpers.AutoSizeColumnMinWidths(IndexAnalysisSummaryGrid);
             TabHelpers.AutoSizeColumnMinWidths(IndexAnalysisDetailGrid);
+            TabHelpers.AutoSizeColumnMinWidths(HighImpactDataGrid);
 
+            TabHelpers.FreezeColumns(RecommendationsDataGrid, 1);
             TabHelpers.FreezeColumns(DatabaseResourcesDataGrid, 1);
             TabHelpers.FreezeColumns(DatabaseSizesDataGrid, 1);
             TabHelpers.FreezeColumns(ApplicationConnectionsDataGrid, 1);
@@ -64,6 +73,9 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.FreezeColumns(WaitCategorySummaryDataGrid, 1);
             TabHelpers.FreezeColumns(ExpensiveQueriesDataGrid, 1);
             TabHelpers.FreezeColumns(IndexAnalysisDetailGrid, 1);
+            TabHelpers.FreezeColumns(HighImpactDataGrid, 1);
+
+            _dbSizesFilterMgr = new DataGridFilterManager<FinOpsDatabaseSizeStats>(DatabaseSizesDataGrid);
         }
 
         /// <summary>
@@ -86,6 +98,7 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var connectionString = server.GetConnectionString(_credentialService);
                 _databaseService = new DatabaseService(connectionString);
+                _currentServerMonthlyCost = server.MonthlyCostUsd;
                 await RefreshDataAsync();
             }
         }
@@ -97,17 +110,53 @@ namespace PerformanceMonitorDashboard.Controls
         {
             try
             {
+                // Re-read monthly cost from server manager in case user edited the server config
+                if (ServerSelector.SelectedItem is ServerConnection selectedServer && _serverManager != null)
+                {
+                    var fresh = _serverManager.GetServerById(selectedServer.Id);
+                    _currentServerMonthlyCost = fresh?.MonthlyCostUsd ?? selectedServer.MonthlyCostUsd;
+                }
+
                 await Task.WhenAll(
+                    LoadRecommendationsAsync(),
                     LoadUtilizationAsync(),
                     LoadDatabaseResourcesAsync(),
                     LoadDatabaseSizesAsync(),
                     LoadApplicationConnectionsAsync(),
-                    LoadServerInventoryAsync()
+                    LoadServerInventoryAsync(),
+                    LoadStorageGrowthAsync(),
+                    LoadIdleDatabasesAsync(),
+                    LoadTempdbSummaryAsync(),
+                    LoadWaitCategorySummaryAsync(),
+                    LoadExpensiveQueriesAsync(),
+                    LoadMemoryGrantEfficiencyAsync(),
+                    LoadHighImpactQueriesAsync()
                 );
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error refreshing FinOps data: {ex.Message}", ex);
+            }
+        }
+
+        // ============================================
+        // Recommendations Tab
+        // ============================================
+
+        private async Task LoadRecommendationsAsync()
+        {
+            if (_databaseService == null) return;
+
+            try
+            {
+                var data = await _databaseService.GetFinOpsRecommendationsAsync(_currentServerMonthlyCost);
+                RecommendationsDataGrid.ItemsSource = data;
+                RecommendationsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                RecommendationsCountIndicator.Text = data.Count > 0 ? $"{data.Count} recommendation(s)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading recommendations: {ex.Message}", ex);
             }
         }
 
@@ -122,6 +171,18 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var efficiency = await _databaseService.GetFinOpsUtilizationEfficiencyAsync();
+
+                if (efficiency != null)
+                {
+                    efficiency.MonthlyCost = _currentServerMonthlyCost;
+
+                    // Compute free space % for health score from database sizes
+                    var dbSizes = await _databaseService.GetFinOpsDatabaseSizeStatsAsync();
+                    var totalStorageMb = dbSizes.Sum(d => d.TotalSizeMb);
+                    var totalFreeMb = dbSizes.Sum(d => d.FreeSpaceMb);
+                    efficiency.FreeSpacePct = totalStorageMb > 0 ? totalFreeMb / totalStorageMb * 100m : 100m;
+                }
+
                 UpdateUtilizationSummary(efficiency);
                 NoUtilizationMessage.Visibility = efficiency == null ? Visibility.Visible : Visibility.Collapsed;
                 SummaryContent.Visibility = efficiency == null ? Visibility.Collapsed : Visibility.Visible;
@@ -132,6 +193,13 @@ namespace PerformanceMonitorDashboard.Controls
                     TopAvgGrid.ItemsSource = await _databaseService.GetFinOpsTopResourceConsumersByAvgAsync();
                     DbSizeChart.ItemsSource = await _databaseService.GetFinOpsDatabaseSizeSummaryAsync();
                     ProvisioningTrendGrid.ItemsSource = await _databaseService.GetFinOpsProvisioningTrendAsync();
+                }
+                else
+                {
+                    TopTotalGrid.ItemsSource = null;
+                    TopAvgGrid.ItemsSource = null;
+                    DbSizeChart.ItemsSource = null;
+                    ProvisioningTrendGrid.ItemsSource = null;
                 }
             }
             catch (Exception ex)
@@ -227,6 +295,31 @@ namespace PerformanceMonitorDashboard.Controls
                     : $"Buffer pool uses {bpPct:N0}% of physical RAM and memory ratio is {efficiency.MemoryRatio:N2} (threshold: 0.95). Memory pressure is high.",
                 _ => ""
             };
+
+            /* Cost summary cards — show if monthly cost is configured */
+            if (efficiency.MonthlyCost > 0)
+            {
+                AnnualComputeCostText.Text = $"${efficiency.MonthlyCost:N0}/mo";
+                AnnualTotalCostText.Text = $"${efficiency.AnnualCost:N0}/yr";
+                ComputeCostCard.Visibility = Visibility.Visible;
+                TotalCostCard.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                ComputeCostCard.Visibility = Visibility.Collapsed;
+                TotalCostCard.Visibility = Visibility.Collapsed;
+            }
+            StorageCostCard.Visibility = Visibility.Collapsed;
+
+            /* Health score */
+            var bpRatio = efficiency.PhysicalMemoryMb > 0 ? (decimal)efficiency.BufferPoolMb / efficiency.PhysicalMemoryMb : 0m;
+            var cpuScore = FinOpsHealthCalculator.CpuScore(efficiency.P95CpuPct);
+            var memScore = FinOpsHealthCalculator.MemoryScore(bpRatio);
+            var storScore = FinOpsHealthCalculator.StorageScore(efficiency.FreeSpacePct);
+            efficiency.HealthScore = FinOpsHealthCalculator.Overall(cpuScore, memScore, storScore);
+            HealthScoreText.Text = $"Health: {efficiency.HealthScore}";
+            HealthScoreBorder.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(efficiency.HealthScoreColor));
+            HealthScoreBorder.Visibility = Visibility.Visible;
         }
 
         private static void SetBar(Border bar, ColumnDefinition filled, ColumnDefinition empty, double pct)
@@ -388,6 +481,19 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var hoursBack = GetWaitStatsHoursBack();
                 var data = await _databaseService.GetFinOpsWaitCategorySummaryAsync(hoursBack);
+
+                // Compute proportional cost shares — scaled to time window
+                if (_currentServerMonthlyCost > 0 && data.Count > 0)
+                {
+                    var windowBudget = _currentServerMonthlyCost * (hoursBack / 730.0m);
+                    var totalWait = data.Sum(w => w.TotalWaitTimeMs);
+                    if (totalWait > 0)
+                    {
+                        foreach (var w in data)
+                            w.MonthlyCostShare = (w.TotalWaitTimeMs / (decimal)totalWait) * windowBudget;
+                    }
+                }
+
                 WaitCategorySummaryDataGrid.ItemsSource = data;
                 WaitCategorySummaryNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }
@@ -409,6 +515,19 @@ namespace PerformanceMonitorDashboard.Controls
             {
                 var hoursBack = GetExpensiveQueriesHoursBack();
                 var data = await _databaseService.GetFinOpsExpensiveQueriesAsync(hoursBack);
+
+                // Compute proportional cost shares — scaled to time window
+                if (_currentServerMonthlyCost > 0 && data.Count > 0)
+                {
+                    var windowBudget = _currentServerMonthlyCost * (hoursBack / 730.0m);
+                    var totalCpu = data.Sum(q => q.TotalCpuMs);
+                    if (totalCpu > 0)
+                    {
+                        foreach (var q in data)
+                            q.MonthlyCostShare = (q.TotalCpuMs / (decimal)totalCpu) * windowBudget;
+                    }
+                }
+
                 ExpensiveQueriesDataGrid.ItemsSource = data;
                 ExpensiveQueriesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 ExpensiveQueriesCountIndicator.Text = data.Count > 0 ? $"{data.Count} query(s)" : "";
@@ -499,14 +618,73 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetFinOpsDatabaseSizeStatsAsync();
-                DatabaseSizesDataGrid.ItemsSource = data;
-                DatabaseSizesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-                DbSizeCountIndicator.Text = data.Count > 0 ? $"{data.Count} file(s)" : "";
+
+                // Compute proportional cost shares
+                if (_currentServerMonthlyCost > 0 && data.Count > 0)
+                {
+                    var totalMb = data.Sum(d => d.TotalSizeMb);
+                    if (totalMb > 0)
+                    {
+                        foreach (var d in data)
+                            d.MonthlyCostShare = (d.TotalSizeMb / totalMb) * _currentServerMonthlyCost;
+                    }
+                }
+
+                if (_dbSizesFilterMgr == null) return;
+                _dbSizesFilterMgr.UpdateData(data);
+                UpdateDbSizeCountUI();
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error loading database sizes: {ex.Message}", ex);
             }
+        }
+
+        private void UpdateDbSizeCountUI()
+        {
+            var list = DatabaseSizesDataGrid.ItemsSource as System.Collections.IList;
+            int count = list?.Count ?? 0;
+            DatabaseSizesNoDataMessage.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            DbSizeCountIndicator.Text = count > 0 ? $"{count} file(s)" : "";
+        }
+
+        private void DatabaseSizesFilter_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.Tag is not string columnName) return;
+
+            if (_dbSizeFilterPopup == null)
+            {
+                _dbSizeFilterPopupContent = new ColumnFilterPopup();
+                _dbSizeFilterPopupContent.FilterApplied += FilterPopup_DbSizeFilterApplied;
+                _dbSizeFilterPopupContent.FilterCleared += FilterPopup_DbSizeFilterCleared;
+                _dbSizeFilterPopup = new Popup
+                {
+                    Child = _dbSizeFilterPopupContent,
+                    StaysOpen = false,
+                    Placement = PlacementMode.Bottom,
+                    AllowsTransparency = true
+                };
+            }
+
+            _dbSizesFilterMgr!.Filters.TryGetValue(columnName, out var existingFilter);
+            _dbSizeFilterPopupContent!.Initialize(columnName, existingFilter);
+            _dbSizeFilterPopup.PlacementTarget = button;
+            _dbSizeFilterPopup.IsOpen = true;
+        }
+
+        private void FilterPopup_DbSizeFilterApplied(object? sender, FilterAppliedEventArgs e)
+        {
+            if (_dbSizeFilterPopup != null)
+                _dbSizeFilterPopup.IsOpen = false;
+
+            _dbSizesFilterMgr!.SetFilter(e.FilterState);
+            UpdateDbSizeCountUI();
+        }
+
+        private void FilterPopup_DbSizeFilterCleared(object? sender, EventArgs e)
+        {
+            if (_dbSizeFilterPopup != null)
+                _dbSizeFilterPopup.IsOpen = false;
         }
 
         // ============================================
@@ -561,6 +739,7 @@ namespace PerformanceMonitorDashboard.Controls
                         // Step 1: Query live server properties (works from any DB context)
                         var item = await DatabaseService.GetServerPropertiesLiveAsync(connStr);
                         item.ServerName = server.DisplayName;
+                        item.MonthlyCost = server.MonthlyCostUsd;
 
                         // Step 2: Try to augment with collected metrics from PerformanceMonitor DB
                         try
@@ -589,6 +768,15 @@ namespace PerformanceMonitorDashboard.Controls
                 var results = await Task.WhenAll(tasks);
                 var allItems = results.Where(r => r != null).Cast<FinOpsServerInventory>().ToList();
 
+                // Compute health scores for each server
+                foreach (var item in allItems)
+                {
+                    var cpuScore = FinOpsHealthCalculator.CpuScore(item.AvgCpuPct ?? 0m);
+                    var memScore = 80; // Default — we don't have buffer pool ratio in inventory
+                    var storScore = FinOpsHealthCalculator.StorageScore(50); // Default — no file-level free space in inventory
+                    item.HealthScore = FinOpsHealthCalculator.Overall(cpuScore, memScore, storScore);
+                }
+
                 _serverInventoryCache = allItems;
                 _serverInventoryCacheTime = DateTime.Now;
 
@@ -603,8 +791,48 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         // ============================================
+        // High Impact Queries Tab
+        // ============================================
+
+        private int GetHighImpactHoursBack()
+        {
+            return HighImpactTimeRangeCombo.SelectedIndex switch
+            {
+                0 => 1,
+                1 => 4,
+                2 => 12,
+                3 => 24,
+                4 => 168,
+                _ => 24
+            };
+        }
+
+        private async Task LoadHighImpactQueriesAsync()
+        {
+            if (_databaseService == null) return;
+
+            try
+            {
+                var hoursBack = GetHighImpactHoursBack();
+                var data = await _databaseService.GetFinOpsHighImpactQueriesAsync(hoursBack);
+                HighImpactDataGrid.ItemsSource = data;
+                HighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                HighImpactCountIndicator.Text = data.Count > 0 ? $"{data.Count} high-impact query(s)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading high-impact queries: {ex.Message}", ex);
+            }
+        }
+
+        // ============================================
         // Refresh Button Handlers
         // ============================================
+
+        private async void RecommendationsRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadRecommendationsAsync();
+        }
 
         private async void UtilizationRefresh_Click(object sender, RoutedEventArgs e)
         {
@@ -649,6 +877,17 @@ namespace PerformanceMonitorDashboard.Controls
             await LoadDatabaseSizesAsync();
         }
 
+        private async void HighImpactRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadHighImpactQueriesAsync();
+        }
+
+        private async void HighImpactTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (!IsLoaded || _databaseService == null) return;
+            await LoadHighImpactQueriesAsync();
+        }
+
         private async void ApplicationConnectionsRefresh_Click(object sender, RoutedEventArgs e)
         {
             await LoadApplicationConnectionsAsync();
@@ -663,11 +902,22 @@ namespace PerformanceMonitorDashboard.Controls
         // Copy / Export Context Menu Handlers
         // ============================================
 
+        private static DataGrid? FindParentDataGrid(DependencyObject? element)
+        {
+            while (element != null)
+            {
+                if (element is DataGrid dg) return dg;
+                element = VisualTreeHelper.GetParent(element);
+            }
+            return null;
+        }
+
         private void CopyCell_Click(object sender, RoutedEventArgs e)
         {
             if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
             {
-                if (contextMenu.PlacementTarget is DataGrid grid && grid.CurrentCell.Column != null)
+                var grid = FindParentDataGrid(contextMenu.PlacementTarget);
+                if (grid != null && grid.CurrentCell.Column != null)
                 {
                     var cellContent = TabHelpers.GetCellContent(grid, grid.CurrentCell);
                     if (!string.IsNullOrEmpty(cellContent))
@@ -683,7 +933,8 @@ namespace PerformanceMonitorDashboard.Controls
         {
             if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
             {
-                if (contextMenu.PlacementTarget is DataGrid grid && grid.SelectedItem != null)
+                var grid = FindParentDataGrid(contextMenu.PlacementTarget);
+                if (grid != null && grid.SelectedItem != null)
                 {
                     var rowText = TabHelpers.GetRowAsText(grid, grid.SelectedItem);
                     if (!string.IsNullOrEmpty(rowText))
@@ -699,7 +950,8 @@ namespace PerformanceMonitorDashboard.Controls
         {
             if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
             {
-                if (contextMenu.PlacementTarget is DataGrid grid)
+                var grid = FindParentDataGrid(contextMenu.PlacementTarget);
+                if (grid != null)
                 {
                     var sb = new StringBuilder();
 
@@ -737,7 +989,8 @@ namespace PerformanceMonitorDashboard.Controls
         {
             if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
             {
-                if (contextMenu.PlacementTarget is DataGrid grid)
+                var grid = FindParentDataGrid(contextMenu.PlacementTarget);
+                if (grid != null)
                 {
                     var dialog = new SaveFileDialog
                     {
@@ -784,5 +1037,160 @@ namespace PerformanceMonitorDashboard.Controls
                 }
             }
         }
+        // ============================================
+        // Column Filtering
+        // ============================================
+
+        #region Column Filtering
+
+        private Popup? _filterPopup;
+        private ColumnFilterPopup? _filterPopupContent;
+        private DataGrid? _currentFilterGrid;
+        private readonly Dictionary<DataGrid, Dictionary<string, ColumnFilterState>> _gridFilters = new();
+        private readonly Dictionary<DataGrid, System.Collections.IEnumerable?> _gridUnfilteredData = new();
+
+        private void EnsureFinOpsFilterPopup()
+        {
+            if (_filterPopup == null)
+            {
+                _filterPopupContent = new ColumnFilterPopup();
+
+                _filterPopup = new Popup
+                {
+                    Child = _filterPopupContent,
+                    StaysOpen = false,
+                    Placement = PlacementMode.Bottom,
+                    AllowsTransparency = true
+                };
+            }
+        }
+
+        private void FinOpsFilter_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.Tag is not string columnName) return;
+
+            var dataGrid = TabHelpers.FindParent<DataGrid>(button);
+            if (dataGrid == null) return;
+
+            EnsureFinOpsFilterPopup();
+
+            // Rewire events — remove then add to avoid double-firing
+            _filterPopupContent!.FilterApplied -= FinOpsFilterPopup_Applied;
+            _filterPopupContent.FilterCleared -= FinOpsFilterPopup_Cleared;
+            _filterPopupContent.FilterApplied += FinOpsFilterPopup_Applied;
+            _filterPopupContent.FilterCleared += FinOpsFilterPopup_Cleared;
+
+            _currentFilterGrid = dataGrid;
+
+            if (!_gridFilters.ContainsKey(dataGrid))
+                _gridFilters[dataGrid] = new Dictionary<string, ColumnFilterState>();
+
+            _gridFilters[dataGrid].TryGetValue(columnName, out var existing);
+            _filterPopupContent.Initialize(columnName, existing);
+
+            _filterPopup!.PlacementTarget = button;
+            _filterPopup.IsOpen = true;
+        }
+
+        private void FinOpsFilterPopup_Applied(object? sender, FilterAppliedEventArgs e)
+        {
+            if (_filterPopup != null)
+                _filterPopup.IsOpen = false;
+
+            if (_currentFilterGrid == null) return;
+
+            if (!_gridFilters.ContainsKey(_currentFilterGrid))
+                _gridFilters[_currentFilterGrid] = new Dictionary<string, ColumnFilterState>();
+
+            if (e.FilterState.IsActive)
+            {
+                _gridFilters[_currentFilterGrid][e.FilterState.ColumnName] = e.FilterState;
+            }
+            else
+            {
+                _gridFilters[_currentFilterGrid].Remove(e.FilterState.ColumnName);
+            }
+
+            ApplyFinOpsFilters(_currentFilterGrid);
+            UpdateFinOpsFilterButtonStyles(_currentFilterGrid);
+        }
+
+        private void FinOpsFilterPopup_Cleared(object? sender, EventArgs e)
+        {
+            if (_filterPopup != null)
+                _filterPopup.IsOpen = false;
+        }
+
+        private void ApplyFinOpsFilters(DataGrid dataGrid)
+        {
+            // Capture unfiltered data on first filter application
+            if (!_gridUnfilteredData.TryGetValue(dataGrid, out var cached) || cached == null)
+            {
+                cached = dataGrid.ItemsSource;
+                _gridUnfilteredData[dataGrid] = cached;
+            }
+
+            var unfilteredData = cached;
+            if (unfilteredData == null) return;
+
+            if (!_gridFilters.TryGetValue(dataGrid, out var filters) || filters.Count == 0)
+            {
+                dataGrid.ItemsSource = unfilteredData;
+                return;
+            }
+
+            // Generic filtering: cast to IEnumerable, filter each item using reflection-based MatchesFilter
+            var sourceList = unfilteredData.Cast<object>().ToList();
+            var filteredData = sourceList.Where(item =>
+            {
+                foreach (var filter in filters.Values)
+                {
+                    if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }).ToList();
+
+            dataGrid.ItemsSource = filteredData;
+        }
+
+        /// <summary>
+        /// Updates filter button styles (gold when active, white when inactive) for any FinOps DataGrid.
+        /// </summary>
+        private void UpdateFinOpsFilterButtonStyles(DataGrid dataGrid)
+        {
+            if (!_gridFilters.TryGetValue(dataGrid, out var filters))
+                filters = new Dictionary<string, ColumnFilterState>();
+
+            foreach (var column in dataGrid.Columns)
+            {
+                if (column.Header is StackPanel headerPanel)
+                {
+                    var filterButton = headerPanel.Children.OfType<Button>().FirstOrDefault();
+                    if (filterButton != null && filterButton.Tag is string columnName)
+                    {
+                        bool hasActiveFilter = filters.TryGetValue(columnName, out var filter) && filter.IsActive;
+
+                        var textBlock = new System.Windows.Controls.TextBlock
+                        {
+                            Text = "\uE71C",
+                            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                            Foreground = hasActiveFilter
+                                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD7, 0x00)) // Gold
+                                : new SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF)) // White
+                        };
+                        filterButton.Content = textBlock;
+
+                        filterButton.ToolTip = hasActiveFilter && filter != null
+                            ? $"Filter: {filter.DisplayText}\n(Click to modify)"
+                            : "Click to filter";
+                    }
+                }
+            }
+        }
+
+        #endregion
     }
 }

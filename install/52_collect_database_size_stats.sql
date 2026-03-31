@@ -115,7 +115,10 @@ BEGIN
                 state_desc,
                 volume_mount_point,
                 volume_total_mb,
-                volume_free_mb
+                volume_free_mb,
+                is_percent_growth,
+                growth_pct,
+                vlf_count
             )
             SELECT
                 collection_time = @start_time,
@@ -148,12 +151,25 @@ BEGIN
                         ELSE CONVERT(decimal(19,2), df.max_size * 8.0 / 1024.0)
                     END,
                 recovery_model_desc =
-                    CONVERT(nvarchar(12), DATABASEPROPERTYEX(DB_NAME(), N'Recovery')),
+                    CONVERT(nvarchar(60), DATABASEPROPERTYEX(DB_NAME(), N'Recovery')),
                 compatibility_level = NULL,
                 state_desc = N'ONLINE',
                 volume_mount_point = NULL,
                 volume_total_mb = NULL,
-                volume_free_mb = NULL
+                volume_free_mb = NULL,
+                is_percent_growth = df.is_percent_growth,
+                growth_pct =
+                    CASE
+                        WHEN df.is_percent_growth = 1
+                        THEN df.growth
+                        ELSE NULL
+                    END,
+                vlf_count =
+                    CASE
+                        WHEN df.type = 1 /*LOG*/
+                        THEN (SELECT COUNT(*) FROM sys.dm_db_log_info(DB_ID()) AS li WHERE li.file_id = df.file_id)
+                        ELSE NULL
+                    END
             FROM sys.database_files AS df
             OPTION(RECOMPILE);
 
@@ -176,7 +192,7 @@ BEGIN
                     d.name,
                     d.database_id
                 FROM sys.databases AS d
-                WHERE d.state_desc = N'ONLINE'
+                WHERE d.state = 0 /*ONLINE only — skip RESTORING databases (mirroring/AG secondary)*/
                 AND   d.database_id > 0
                 AND   HAS_DBACCESS(d.name) = 1
                 ORDER BY
@@ -208,7 +224,10 @@ BEGIN
                         state_desc,
                         volume_mount_point,
                         volume_total_mb,
-                        volume_free_mb
+                        volume_free_mb,
+                        is_percent_growth,
+                        growth_pct,
+                        vlf_count
                     )
                     SELECT
                         collection_time = @start_time,
@@ -248,7 +267,20 @@ BEGIN
                         volume_total_mb =
                             CONVERT(decimal(19,2), vs.total_bytes / 1048576.0),
                         volume_free_mb =
-                            CONVERT(decimal(19,2), vs.available_bytes / 1048576.0)
+                            CONVERT(decimal(19,2), vs.available_bytes / 1048576.0),
+                        is_percent_growth = df.is_percent_growth,
+                        growth_pct =
+                            CASE
+                                WHEN df.is_percent_growth = 1
+                                THEN df.growth
+                                ELSE NULL
+                            END,
+                        vlf_count =
+                            CASE
+                                WHEN df.type = 1 /*LOG*/
+                                THEN (SELECT COUNT(*) FROM sys.dm_db_log_info(DB_ID()) AS li WHERE li.file_id = df.file_id)
+                                ELSE NULL
+                            END
                     FROM sys.database_files AS df
                     CROSS JOIN sys.databases AS d
                     CROSS APPLY sys.dm_os_volume_stats(DB_ID(), df.file_id) AS vs
@@ -269,7 +301,8 @@ BEGIN
                     */
                     IF @debug = 1
                     BEGIN
-                        RAISERROR(N'Error collecting size stats for database [%s]: %s', 0, 1, @db_name, @error_message) WITH NOWAIT;
+                        DECLARE @db_error_message nvarchar(4000) = ERROR_MESSAGE();
+                        RAISERROR(N'Error collecting size stats for database [%s]: %s', 0, 1, @db_name, @db_error_message) WITH NOWAIT;
                     END;
                 END CATCH;
 

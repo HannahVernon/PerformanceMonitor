@@ -95,7 +95,7 @@ SELECT
                 SUBSTRING(
                     st.text,
                     CHARINDEX(N''CREATE TRIGGER'', st.text) + 15,
-                    CHARINDEX(N'' ON '', st.text + N'' ON '') - CHARINDEX(N''CREATE TRIGGER'', st.text) - 15
+                    CHARINDEX(N'' ON '', st.text + N'' ON '', CHARINDEX(N''CREATE TRIGGER'', st.text) + 15) - CHARINDEX(N''CREATE TRIGGER'', st.text) - 15
                 ), N''['', N''''), N'']'', N'''')))
             ELSE N''trigger_'' + CONVERT(nvarchar(20), s.object_id)
         END
@@ -278,12 +278,12 @@ OPTION(RECOMPILE);";
                     /* Delta key: plan_handle to prevent cross-contamination
                        when multiple plans exist for the same object */
                     var deltaKey = planHandle ?? $"{dbName}.{schemaName}.{objectName}";
-                    var deltaExec = _deltaCalculator.CalculateDelta(serverId, "proc_stats_exec", deltaKey, execCount, baselineOnly: true);
-                    var deltaWorker = _deltaCalculator.CalculateDelta(serverId, "proc_stats_worker", deltaKey, workerTime, baselineOnly: true);
-                    var deltaElapsed = _deltaCalculator.CalculateDelta(serverId, "proc_stats_elapsed", deltaKey, elapsedTime, baselineOnly: true);
-                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads, baselineOnly: true);
-                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites, baselineOnly: true);
-                    var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads, baselineOnly: true);
+                    var deltaExec = _deltaCalculator.CalculateDelta(serverId, "proc_stats_exec", deltaKey, execCount, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWorker = _deltaCalculator.CalculateDelta(serverId, "proc_stats_worker", deltaKey, workerTime, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaElapsed = _deltaCalculator.CalculateDelta(serverId, "proc_stats_elapsed", deltaKey, elapsedTime, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
 
                     /* Appender column order must match DuckDB table definition exactly */
                     var row = appender.CreateRow();

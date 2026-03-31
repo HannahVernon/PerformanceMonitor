@@ -14,6 +14,7 @@ using System.Windows;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using PerformanceMonitorDashboard.Helpers;
+using Velopack;
 
 namespace PerformanceMonitorDashboard
 {
@@ -59,6 +60,10 @@ namespace PerformanceMonitorDashboard
             Logger.Info($"OS: {Environment.OSVersion}");
             Logger.Info($".NET Runtime: {Environment.Version}");
             Logger.Info($"Log Directory: {Logger.GetLogDirectory()}");
+
+            // Create and show main window (StartupUri removed for Velopack custom Main)
+            var mainWindow = new MainWindow();
+            mainWindow.Show();
         }
 
         protected override void OnExit(ExitEventArgs e)

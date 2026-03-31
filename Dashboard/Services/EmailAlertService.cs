@@ -64,7 +64,8 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
-        /// Attempts to send an alert email if SMTP is enabled and cooldown has elapsed.
+        /// Attempts to send alert notifications (email, Teams, Slack) based on enabled channels.
+        /// Each channel operates independently — disabling email does not affect webhooks.
         /// Never throws.
         /// </summary>
         public async Task TrySendAlertEmailAsync(
@@ -78,64 +79,71 @@ namespace PerformanceMonitorDashboard.Services
             try
             {
                 var prefs = _preferencesService.GetPreferences();
-                if (!prefs.SmtpEnabled) return;
 
-                if (string.IsNullOrWhiteSpace(prefs.SmtpServer) ||
-                    string.IsNullOrWhiteSpace(prefs.SmtpFromAddress) ||
-                    string.IsNullOrWhiteSpace(prefs.SmtpRecipients))
+                /* Attempt email delivery if SMTP is fully configured */
+                if (prefs.SmtpEnabled &&
+                    !string.IsNullOrWhiteSpace(prefs.SmtpServer) &&
+                    !string.IsNullOrWhiteSpace(prefs.SmtpFromAddress) &&
+                    !string.IsNullOrWhiteSpace(prefs.SmtpRecipients))
                 {
-                    return;
-                }
+                    var cooldownKey = $"{serverId}:{metricName}";
+                    var withinCooldown = _cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
+                        DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(prefs.EmailCooldownMinutes);
 
-                var cooldownKey = $"{serverId}:{metricName}";
-                if (_cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                    DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(prefs.EmailCooldownMinutes))
-                {
-                    return;
-                }
-
-                var subject = $"[SQL Monitor Alert] {metricName} on {serverName}";
-                var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildAlertEmail(
-                    metricName, serverName, currentValue, thresholdValue, prefs.EmailCooldownMinutes, context);
-
-                string? sendError = null;
-                bool sent = false;
-
-                try
-                {
-                    await SendEmailAsync(prefs, subject, htmlBody, plainTextBody, context);
-                    sent = true;
-                    _cooldowns[cooldownKey] = DateTime.UtcNow;
-
-                    /* Log recovery if we had previous failures */
-                    if (_consecutiveFailures > 0)
+                    if (!withinCooldown)
                     {
-                        Logger.Info($"Alert email delivery recovered after {_consecutiveFailures} failure(s)");
-                    }
-                    _consecutiveFailures = 0;
-                    _lastFailureError = null;
+                        bool sent = false;
+                        string? sendError = null;
+                        var subject = $"[SQL Monitor Alert] {metricName} on {serverName}";
+                        var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildAlertEmail(
+                            metricName, serverName, currentValue, thresholdValue, prefs.EmailCooldownMinutes, context);
 
-                    Logger.Info($"Alert email sent for {metricName} on {serverName}");
-                }
-                catch (Exception ex)
-                {
-                    sendError = ex.Message;
-                    _consecutiveFailures++;
-                    _lastFailureError = ex.Message;
+                        try
+                        {
+                            await SendEmailAsync(prefs, subject, htmlBody, plainTextBody, context);
+                            sent = true;
+                            _cooldowns[cooldownKey] = DateTime.UtcNow;
 
-                    /* Loud on first 3 failures, then periodic reminders */
-                    if (_consecutiveFailures <= 3)
-                    {
-                        Logger.Error($"ALERT EMAIL FAILED ({_consecutiveFailures}x): {ex.GetType().Name}: {ex.Message}");
-                    }
-                    else if (_consecutiveFailures % 50 == 0)
-                    {
-                        Logger.Error($"ALERT EMAIL STILL FAILING: {_consecutiveFailures} consecutive failures. Last error: {ex.Message}");
+                            if (_consecutiveFailures > 0)
+                            {
+                                Logger.Info($"Alert email delivery recovered after {_consecutiveFailures} failure(s)");
+                            }
+                            _consecutiveFailures = 0;
+                            _lastFailureError = null;
+
+                            Logger.Info($"Alert email sent for {metricName} on {serverName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            sendError = ex.Message;
+                            _consecutiveFailures++;
+                            _lastFailureError = ex.Message;
+
+                            if (_consecutiveFailures <= 3)
+                            {
+                                Logger.Error($"ALERT EMAIL FAILED ({_consecutiveFailures}x): {ex.GetType().Name}: {ex.Message}");
+                            }
+                            else if (_consecutiveFailures % 50 == 0)
+                            {
+                                Logger.Error($"ALERT EMAIL STILL FAILING: {_consecutiveFailures} consecutive failures. Last error: {ex.Message}");
+                            }
+                        }
+
+                        RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, sent, "email", sendError);
                     }
                 }
 
-                /* Log the alert attempt */
-                RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, sent, "email", sendError);
+                /* Send webhook notifications (Teams / Slack) — independent of email */
+                var webhookService = WebhookAlertService.Current;
+                if (webhookService != null)
+                {
+                    var webhookSent = await webhookService.TrySendWebhookAlertsAsync(
+                        metricName, serverName, currentValue, thresholdValue, serverId, context);
+                    if (webhookSent)
+                    {
+                        RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, true, "webhook");
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -203,15 +211,22 @@ namespace PerformanceMonitorDashboard.Services
             if (keys.Count == 0) return;
 
             var keySet = new HashSet<(DateTime, string, string)>(keys);
+            int hidden = 0;
 
             lock (_alertLogLock)
             {
                 foreach (var alert in _alertLog)
                 {
                     if (keySet.Contains((alert.AlertTime, alert.ServerName, alert.MetricName)))
+                    {
                         alert.Hidden = true;
+                        hidden++;
+                    }
                 }
             }
+
+            if (_preferencesService.GetPreferences().LogAlertDismissals)
+                Logger.Info($"[AlertDismiss] Dismissed {hidden} of {keys.Count} selected alert(s)");
         }
 
         /// <summary>
@@ -220,6 +235,7 @@ namespace PerformanceMonitorDashboard.Services
         public void HideAllAlerts(int hoursBack, string? serverName = null)
         {
             var cutoff = DateTime.UtcNow.AddHours(-hoursBack);
+            int hidden = 0;
 
             lock (_alertLogLock)
             {
@@ -230,9 +246,13 @@ namespace PerformanceMonitorDashboard.Services
                         (serverName == null || alert.ServerName == serverName))
                     {
                         alert.Hidden = true;
+                        hidden++;
                     }
                 }
             }
+
+            if (_preferencesService.GetPreferences().LogAlertDismissals)
+                Logger.Info($"[AlertDismiss] Dismissed all: {hidden} alert(s) hidden (hoursBack={hoursBack}, server={serverName ?? "all"})");
         }
 
         /// <summary>

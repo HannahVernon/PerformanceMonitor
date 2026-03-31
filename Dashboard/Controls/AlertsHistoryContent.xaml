@@ -33,6 +33,10 @@
                 <MenuItem Header="Mute Similar Alerts..." Click="MuteSimilarAlerts_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F507;"/></MenuItem.Icon>
                 </MenuItem>
+                <Separator/>
+                <MenuItem Header="Dismiss Selected" Click="DismissSelected_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x2717;"/></MenuItem.Icon>
+                </MenuItem>
             </ContextMenu>
 
             <Style x:Key="DefaultRowStyle" TargetType="DataGridRow">
@@ -92,6 +96,8 @@
                     Margin="4,0,0,0" Padding="10,4" MinWidth="70"/>
             <TextBlock x:Name="AlertCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
                        FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+            <TextBlock x:Name="LastRefreshedIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
+                       FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"/>
         </StackPanel>
 
         <!-- DataGrid -->

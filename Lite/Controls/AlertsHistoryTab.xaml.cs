@@ -15,6 +15,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Models;
@@ -28,12 +29,16 @@ public partial class AlertsHistoryTab : UserControl
     private DataGridFilterManager<AlertHistoryRow>? _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
+    private DateTime? _lastRefreshed;
+    private readonly DispatcherTimer _staleDataTimer;
 
     public MuteRuleService? MuteRuleService { get; set; }
 
     public AlertsHistoryTab()
     {
         InitializeComponent();
+        _staleDataTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _staleDataTimer.Tick += StaleDataTimer_Tick;
     }
 
     /// <summary>
@@ -43,6 +48,7 @@ public partial class AlertsHistoryTab : UserControl
     {
         _dataService = dataService;
         _filterManager = new DataGridFilterManager<AlertHistoryRow>(AlertsDataGrid);
+        _staleDataTimer.Start();
     }
 
     /// <summary>
@@ -72,6 +78,10 @@ public partial class AlertsHistoryTab : UserControl
             var displayCount = AlertsDataGrid.ItemsSource is ICollection<AlertHistoryRow> coll ? coll.Count : alerts.Count;
             NoAlertsMessage.Visibility = displayCount == 0 ? Visibility.Visible : Visibility.Collapsed;
             AlertCountIndicator.Text = displayCount > 0 ? $"{displayCount} alert(s)" : "";
+            AppLogger.Debug("AlertsHistory", $"Loaded {displayCount} alert(s) (query returned {alerts.Count}, hoursBack={hoursBack}, serverId={serverId?.ToString() ?? "all"})");
+
+            _lastRefreshed = DateTime.UtcNow;
+            UpdateStaleDataIndicator();
 
             PopulateServerFilter(alerts);
         }
@@ -196,6 +206,39 @@ public partial class AlertsHistoryTab : UserControl
 
     #endregion
 
+    #region Stale Data Indicator
+
+    private void StaleDataTimer_Tick(object? sender, EventArgs e)
+    {
+        UpdateStaleDataIndicator();
+    }
+
+    private void UpdateStaleDataIndicator()
+    {
+        if (_lastRefreshed.HasValue)
+        {
+            var elapsed = DateTime.UtcNow - _lastRefreshed.Value;
+            LastRefreshedIndicator.Text = elapsed.TotalSeconds < 5
+                ? "Refreshed just now"
+                : elapsed.TotalMinutes < 1
+                    ? $"Refreshed {(int)elapsed.TotalSeconds}s ago"
+                    : $"Refreshed {(int)elapsed.TotalMinutes}m ago";
+        }
+
+        // Show archival warning if ArchiveService is currently running
+        if (ArchiveService.IsArchiving)
+        {
+            ArchivalWarning.Text = "⚠ Archival in progress";
+            ArchivalWarning.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            ArchivalWarning.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    #endregion
+
     #region Event Handlers
 
     private async void TimeRangeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -217,7 +260,9 @@ public partial class AlertsHistoryTab : UserControl
 
     private void AlertsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        DismissSelectedButton.IsEnabled = AlertsDataGrid.SelectedItems.Count > 0;
+        var selected = AlertsDataGrid.SelectedItems.OfType<AlertHistoryRow>().ToList();
+        var liveCount = selected.Count(a => !a.IsArchived);
+        DismissSelectedButton.IsEnabled = liveCount > 0;
     }
 
     private async void DismissSelected_Click(object sender, RoutedEventArgs e)
@@ -230,10 +275,46 @@ public partial class AlertsHistoryTab : UserControl
 
         if (selected.Count == 0) return;
 
+        var liveAlerts = selected.Where(a => !a.IsArchived).ToList();
+        var archivedCount = selected.Count - liveAlerts.Count;
+
+        if (liveAlerts.Count == 0)
+        {
+            MessageBox.Show(
+                "The selected alert(s) have been archived and cannot be dismissed.",
+                "Cannot Dismiss",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (archivedCount > 0)
+        {
+            var confirmResult = MessageBox.Show(
+                $"{archivedCount} of {selected.Count} selected alert(s) have been archived and cannot be dismissed.\n\n" +
+                $"Dismiss the remaining {liveAlerts.Count} alert(s)?",
+                "Partial Dismiss",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirmResult != MessageBoxResult.Yes) return;
+        }
+
         try
         {
-            await _dataService.DismissAlertsAsync(selected);
+            var affected = await _dataService.DismissAlertsAsync(liveAlerts);
+            if (affected < liveAlerts.Count && App.LogAlertDismissals)
+            {
+                AppLogger.Warn("AlertsHistory", $"Dismiss selected: only {affected} of {liveAlerts.Count} live alert(s) were updated");
+            }
             await LoadAlertsAsync();
+        }
+        catch (TimeoutException)
+        {
+            MessageBox.Show(
+                "The database is currently busy (archival or maintenance in progress).\n\nPlease try again in a few moments.",
+                "Dismiss Unavailable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -245,11 +326,29 @@ public partial class AlertsHistoryTab : UserControl
     {
         if (_dataService == null) return;
 
-        var displayCount = AlertsDataGrid.ItemsSource is System.Collections.ICollection coll ? coll.Count : 0;
-        if (displayCount == 0) return;
+        var allAlerts = (AlertsDataGrid.ItemsSource as IEnumerable<AlertHistoryRow>)?.ToList();
+        if (allAlerts == null || allAlerts.Count == 0) return;
+
+        var liveCount = allAlerts.Count(a => !a.IsArchived);
+        var archivedCount = allAlerts.Count - liveCount;
+
+        if (liveCount == 0)
+        {
+            MessageBox.Show(
+                "All visible alerts have been archived and cannot be dismissed.",
+                "Cannot Dismiss",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var message = $"Dismiss {liveCount} alert(s)?";
+        if (archivedCount > 0)
+            message += $"\n\n{archivedCount} archived alert(s) will remain visible.";
+        message += "\n\nDismissed alerts are hidden from this view but remain in the database.";
 
         var result = MessageBox.Show(
-            $"Dismiss all {displayCount} visible alert(s)?\n\nDismissed alerts are hidden from this view but remain in the database.",
+            message,
             "Dismiss All Alerts",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
@@ -260,8 +359,20 @@ public partial class AlertsHistoryTab : UserControl
         {
             var hoursBack = GetSelectedHoursBack();
             int? serverId = GetSelectedServerId();
-            await _dataService.DismissAllVisibleAlertsAsync(hoursBack, serverId);
+            var affected = await _dataService.DismissAllVisibleAlertsAsync(hoursBack, serverId);
+            if (affected < liveCount && App.LogAlertDismissals)
+            {
+                AppLogger.Warn("AlertsHistory", $"Dismiss all: only {affected} of {liveCount} live alert(s) were updated");
+            }
             await LoadAlertsAsync();
+        }
+        catch (TimeoutException)
+        {
+            MessageBox.Show(
+                "The database is currently busy (archival or maintenance in progress).\n\nPlease try again in a few moments.",
+                "Dismiss Unavailable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -444,6 +555,7 @@ public partial class AlertsHistoryTab : UserControl
             ServerName = item.ServerName,
             MetricName = item.MetricName
         };
+        context.PopulateFromDetailText(item.DetailText);
 
         var dialog = new Windows.MuteRuleDialog(context) { Owner = Window.GetWindow(this) };
         if (dialog.ShowDialog() == true)

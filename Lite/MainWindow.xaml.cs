@@ -36,6 +36,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _backgroundCts;
     private SystemTrayService? _trayService;
     private readonly Dictionary<string, TabItem> _openServerTabs = new();
+    private readonly Dictionary<string, (Action<int, int, DateTime?> AlertCounts, Action<int> ApplyTimeRange, Func<Task> ManualRefresh)> _tabEventHandlers = new();
     private readonly Dictionary<string, bool> _previousConnectionStates = new();
     private readonly Dictionary<string, bool> _previousCollectorErrorStates = new();
     private readonly Dictionary<string, DateTime> _lastCpuAlert = new();
@@ -165,25 +166,40 @@ public partial class MainWindow : Window
     {
         try
         {
+            await Task.Delay(5000); // Don't slow down startup
+
             if (!App.CheckForUpdatesOnStartup) return;
 
+            // Try Velopack first (supports download + apply)
+            try
+            {
+                var mgr = new Velopack.UpdateManager(
+                    new Velopack.Sources.GithubSource(
+                        "https://github.com/erikdarlingdata/PerformanceMonitor", null, false));
+
+                var newVersion = await mgr.CheckForUpdatesAsync();
+                if (newVersion != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        Title = $"Performance Monitor Lite — Update v{newVersion.TargetFullRelease.Version} available (Help > About)";
+                    });
+                    return;
+                }
+            }
+            catch
+            {
+                // Velopack packages may not exist yet — fall through
+            }
+
+            // Fallback: GitHub Releases API check
             var result = await UpdateCheckService.CheckForUpdateAsync();
             if (result?.IsUpdateAvailable == true)
             {
-                var answer = MessageBox.Show(
-                    $"Performance Monitor {result.LatestVersion} is available (you have {result.CurrentVersion}).\n\nWould you like to open the download page?",
-                    "Update Available",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Information);
-
-                if (answer == MessageBoxResult.Yes)
+                Dispatcher.Invoke(() =>
                 {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = result.ReleaseUrl,
-                        UseShellExecute = true
-                    });
-                }
+                    Title = $"Performance Monitor Lite — Update {result.LatestVersion} available (Help > About)";
+                });
             }
         }
         catch
@@ -262,7 +278,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            _mcpService = new McpHostService(_dataService!, _serverManager, _muteRuleService, mcpSettings.Port);
+            _mcpService = new McpHostService(_dataService!, _serverManager, _muteRuleService, _databaseInitializer, mcpSettings.Port);
             _ = _mcpService.StartAsync(_backgroundCts!.Token);
         }
         catch (Exception ex)
@@ -507,7 +523,7 @@ public partial class MainWindow : Window
         }
 
         var utcOffset = status.UtcOffsetMinutes ?? 0;
-        var serverTab = new ServerTab(server, _databaseInitializer, _serverManager.CredentialService, utcOffset);
+        var serverTab = new ServerTab(server, _databaseInitializer, _serverManager.CredentialService, utcOffset, status.HasMsdbAccess);
         var tabHeader = CreateTabHeader(server);
         var tabItem = new TabItem
         {
@@ -515,15 +531,13 @@ public partial class MainWindow : Window
             Content = serverTab
         };
 
-        /* Subscribe to alert counts for badge updates */
+        /* Subscribe to events — store handlers so we can unsubscribe on tab close */
         var serverId = server.Id;
-        serverTab.AlertCountsChanged += (blockingCount, deadlockCount, latestEventTime) =>
+        Action<int, int, DateTime?> alertHandler = (blockingCount, deadlockCount, latestEventTime) =>
         {
             Dispatcher.Invoke(() => UpdateTabBadge(tabHeader, serverId, blockingCount, deadlockCount, latestEventTime));
         };
-
-        /* Subscribe to "Apply to All" time range propagation */
-        serverTab.ApplyTimeRangeRequested += (selectedIndex) =>
+        Action<int> timeRangeHandler = (selectedIndex) =>
         {
             Dispatcher.Invoke(() =>
             {
@@ -536,13 +550,11 @@ public partial class MainWindow : Window
                 }
             });
         };
-
-        /* Re-collect on-load data (config, trace flags) when refresh button is clicked */
-        serverTab.ManualRefreshRequested += async () =>
+        Func<Task> refreshHandler = async () =>
         {
             if (_collectorService != null)
             {
-                var onLoadCollectors = _scheduleManager.GetOnLoadCollectors();
+                var onLoadCollectors = _scheduleManager.GetOnLoadCollectorsForServer(server.Id);
                 foreach (var collector in onLoadCollectors)
                 {
                     try
@@ -556,6 +568,11 @@ public partial class MainWindow : Window
                 }
             }
         };
+
+        serverTab.AlertCountsChanged += alertHandler;
+        serverTab.ApplyTimeRangeRequested += timeRangeHandler;
+        serverTab.ManualRefreshRequested += refreshHandler;
+        _tabEventHandlers[server.Id] = (alertHandler, timeRangeHandler, refreshHandler);
 
         _openServerTabs[server.Id] = tabItem;
         ServerTabControl.Items.Add(tabItem);
@@ -778,7 +795,20 @@ public partial class MainWindow : Window
         {
             if (tab.Content is ServerTab serverTab)
             {
+                /* Unsubscribe event handlers to prevent memory leaks */
+                if (_tabEventHandlers.TryGetValue(serverId, out var handlers))
+                {
+                    serverTab.AlertCountsChanged -= handlers.AlertCounts;
+                    serverTab.ApplyTimeRangeRequested -= handlers.ApplyTimeRange;
+                    serverTab.ManualRefreshRequested -= handlers.ManualRefresh;
+                    _tabEventHandlers.Remove(serverId);
+                }
+
                 serverTab.StopRefresh();
+                serverTab.DisposeChartHelpers();
+
+                /* Clear delta cache for this server to free memory */
+                _collectorService?.DeltaCalculator?.ClearServer(serverTab.ServerId);
             }
 
             ServerTabControl.Items.Remove(tab);
@@ -817,13 +847,23 @@ public partial class MainWindow : Window
 
         if (window.ServersChanged)
         {
+            // Purge collector health for servers that were removed
+            if (_collectorService != null)
+            {
+                var currentServerIds = new HashSet<int>(
+                    _serverManager.GetAllServers().Select(s =>
+                        RemoteCollectorService.GetDeterministicHashCode(
+                            RemoteCollectorService.GetServerNameForStorage(s))));
+                _collectorService.ClearHealthExcept(currentServerIds);
+            }
+
             RefreshServerList();
         }
     }
 
     private async void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new SettingsWindow(_scheduleManager, _backgroundService, _mcpService, _muteRuleService) { Owner = this };
+        var window = new SettingsWindow(_scheduleManager, _serverManager, _backgroundService, _mcpService, _muteRuleService) { Owner = this };
         window.ShowDialog();
         UpdateStatusBar();
 
@@ -838,6 +878,208 @@ public partial class MainWindow : Window
     {
         var window = new Windows.AboutWindow { Owner = this };
         window.ShowDialog();
+    }
+
+    private void ViewLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        var logFile = AppLogger.GetCurrentLogFile();
+        try
+        {
+            if (System.IO.File.Exists(logFile))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = logFile,
+                    UseShellExecute = true
+                });
+            }
+            else
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = AppLogger.GetLogDirectory(),
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not open log file: {ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ImportSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select Previous Lite Install Folder"
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        var oldConfigDir = System.IO.Path.Combine(dialog.FolderName, "config");
+        var serversJsonPath = System.IO.Path.Combine(oldConfigDir, "servers.json");
+        if (!System.IO.File.Exists(serversJsonPath))
+        {
+            MessageBox.Show(
+                "No config\\servers.json found in the selected folder.\n\nSelect the root folder of a previous Lite installation.",
+                "Import Settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            // Import server connections (upsert by server name)
+            var (imported, skipped) = _serverManager.ImportServersFromFile(serversJsonPath);
+
+            // Copy config files that don't already exist in the current install
+            var settingsFiles = new[] { "settings.json", "collection_schedule.json", "ignored_wait_types.json" };
+            int settingsCopied = 0;
+
+            foreach (var fileName in settingsFiles)
+            {
+                var source = System.IO.Path.Combine(oldConfigDir, fileName);
+                var target = System.IO.Path.Combine(App.ConfigDirectory, fileName);
+
+                if (System.IO.File.Exists(source) && !System.IO.File.Exists(target))
+                {
+                    System.IO.File.Copy(source, target);
+                    settingsCopied++;
+                }
+            }
+
+            // Copy alert_state.json from old root directory
+            var oldAlertState = System.IO.Path.Combine(dialog.FolderName, "alert_state.json");
+            var currentAlertState = System.IO.Path.Combine(App.DataDirectory, "alert_state.json");
+            if (System.IO.File.Exists(oldAlertState) && !System.IO.File.Exists(currentAlertState))
+            {
+                System.IO.File.Copy(oldAlertState, currentAlertState);
+                settingsCopied++;
+            }
+
+            var message = $"Imported {imported} server connection(s).";
+            if (skipped > 0)
+                message += $"\nSkipped {skipped} duplicate(s) (already configured).";
+            if (settingsCopied > 0)
+                message += $"\nCopied {settingsCopied} settings file(s).";
+            if (imported > 0)
+                message += "\n\nCredentials from the previous install are preserved.\nIf any connections fail to authenticate, re-enter the password in Manage Servers.";
+            if (settingsCopied > 0)
+                message += "\n\nRestart the application to apply imported settings.";
+
+            MessageBox.Show(message, "Import Settings", MessageBoxButton.OK, MessageBoxImage.Information);
+
+            if (imported > 0)
+                RefreshServerList();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to import settings: {ex.Message}", "Import Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void ImportDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        /* Open folder browser to select the old Lite install directory */
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select Previous Lite Install Folder",
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog(this) != true || string.IsNullOrWhiteSpace(dialog.FolderName))
+        {
+            return;
+        }
+
+        var sourceFolder = dialog.FolderName;
+
+        /* Validate that monitor.duckdb exists in the selected folder */
+        if (!DataImportService.ValidateSourceFolder(sourceFolder))
+        {
+            MessageBox.Show(
+                "The selected folder does not contain a monitor.duckdb file.\n\n" +
+                "Please select the folder where the previous Lite application was installed.",
+                "Invalid Folder",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        /* Prevent double-clicks */
+        ImportDataButton.IsEnabled = false;
+        ImportDataButtonText.Text = "Importing...";
+        StatusText.Text = "Importing data from previous install...";
+
+        try
+        {
+            var importService = new DataImportService(_databaseInitializer, App.ArchiveDirectory);
+
+            /* The tryLockOldDb callback runs on the UI thread to show the retry dialog */
+            var result = await Task.Run(async () =>
+                await importService.RunImportAsync(sourceFolder, async _ =>
+                {
+                    var answer = MessageBoxResult.Cancel;
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        answer = MessageBox.Show(
+                            "Could not lock the database to flush current data.\n\n" +
+                            "Close the previous Lite application and click OK to try again.",
+                            "Database Locked",
+                            MessageBoxButton.OKCancel,
+                            MessageBoxImage.Warning);
+                    });
+                    return answer == MessageBoxResult.OK;
+                }));
+
+            if (result.Success)
+            {
+                StatusText.Text = "Import complete — refreshing views...";
+                await _serverManager.CheckAllConnectionsAsync();
+                RefreshServerList();
+                UpdateStatusBar();
+                StatusText.Text = "Import complete";
+
+                MessageBox.Show(
+                    $"Import completed successfully.\n\n" +
+                    $"Tables flushed from old database: {result.TablesFlushed}\n" +
+                    $"Parquet files imported: {result.FilesImported}\n\n" +
+                    "Historical data is now available in all views.",
+                    "Import Complete",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            else
+            {
+                StatusText.Text = "Import cancelled or failed";
+                if (!string.IsNullOrEmpty(result.ErrorMessage))
+                {
+                    MessageBox.Show(
+                        result.ErrorMessage,
+                        "Import Failed",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("DataImport", "Unhandled import error", ex);
+            StatusText.Text = "Import failed";
+            MessageBox.Show(
+                $"An unexpected error occurred during import:\n\n{ex.Message}",
+                "Import Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            ImportDataButton.IsEnabled = true;
+            ImportDataButtonText.Text = "Import Data";
+        }
     }
 
     /// <summary>
@@ -899,6 +1141,9 @@ public partial class MainWindow : Window
         if (result == MessageBoxResult.Yes)
         {
             CloseServerTab(server.Id);
+            _collectorService?.ClearHealthForServer(
+                RemoteCollectorService.GetDeterministicHashCode(
+                    RemoteCollectorService.GetServerNameForStorage(server)));
             _serverManager.DeleteServer(server.Id);
             RefreshServerList();
             StatusText.Text = $"Removed server: {server.DisplayNameWithIntent}";
@@ -1447,7 +1692,7 @@ public partial class MainWindow : Window
         private static string TruncateText(string text, int maxLength = 300)
         {
             if (string.IsNullOrEmpty(text)) return "";
-            text = text.Trim();
+            text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
             return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
         }
 

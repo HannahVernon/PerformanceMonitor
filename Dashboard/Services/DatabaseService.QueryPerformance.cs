@@ -505,6 +505,147 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
+                public async Task<List<Models.TimeSliceBucket>> GetBlockingSlicerDataAsync(
+                    int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+                {
+                    var items = new List<Models.TimeSliceBucket>();
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    var timeFilter = fromDate.HasValue && toDate.HasValue
+                        ? "WHERE b.collection_time >= @from_date AND b.collection_time <= @to_date"
+                        : "WHERE b.collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    DATEADD(HOUR, DATEDIFF(HOUR, 0, b.collection_time), 0) AS bucket_hour,
+    COUNT(*) AS event_count,
+    ISNULL(SUM(b.wait_time_ms), 0) / 1000.0 AS total_wait_sec,
+    COUNT(DISTINCT b.spid) AS distinct_blocked,
+    COUNT(DISTINCT b.database_name) AS distinct_databases
+FROM collect.blocking_BlockedProcessReport AS b
+{timeFilter}
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, b.collection_time), 0)
+ORDER BY bucket_hour;";
+
+                    using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
+                    command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = hoursBack });
+                    if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                    if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        var eventCount = Convert.ToInt64(reader.GetValue(1));
+                        items.Add(new Models.TimeSliceBucket
+                        {
+                            BucketTime = reader.GetDateTime(0),
+                            SessionCount = eventCount,
+                            TotalCpu = Convert.ToDouble(reader.GetValue(2)),
+                            TotalReads = Convert.ToDouble(reader.GetValue(3)),
+                            TotalLogicalReads = Convert.ToDouble(reader.GetValue(4)),
+                            Value = eventCount,
+                        });
+                    }
+
+                    return items;
+                }
+
+                public async Task<List<Models.TimeSliceBucket>> GetDeadlockSlicerDataAsync(
+                    int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+                {
+                    var items = new List<Models.TimeSliceBucket>();
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    var timeFilter = fromDate.HasValue && toDate.HasValue
+                        ? "WHERE d.event_date >= @from_date AND d.event_date <= @to_date"
+                        : "WHERE d.event_date >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    DATEADD(HOUR, DATEDIFF(HOUR, 0, d.event_date), 0) AS bucket_hour,
+    COUNT(*) AS deadlock_count
+FROM collect.deadlocks AS d
+{timeFilter}
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, d.event_date), 0)
+ORDER BY bucket_hour;";
+
+                    using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
+                    command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = hoursBack });
+                    if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                    if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        var count = Convert.ToInt64(reader.GetValue(1));
+                        items.Add(new Models.TimeSliceBucket
+                        {
+                            BucketTime = reader.GetDateTime(0),
+                            SessionCount = count,
+                            Value = count,
+                        });
+                    }
+
+                    return items;
+                }
+
+                public async Task<List<Models.TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
+                    int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+                {
+                    var items = new List<Models.TimeSliceBucket>();
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    var timeFilter = fromDate.HasValue && toDate.HasValue
+                        ? "AND qs.collection_time >= @from_date AND qs.collection_time <= @to_date"
+                        : "AND qs.collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    DATEADD(HOUR, DATEDIFF(HOUR, 0, qs.collection_time), 0) AS bucket_hour,
+    COUNT(*) AS session_count,
+    ISNULL(SUM(TRY_CAST(qs.CPU AS money)), 0) AS total_cpu,
+    ISNULL(SUM(TRY_CAST(qs.CPU AS money)), 0) AS total_elapsed,
+    ISNULL(SUM(TRY_CAST(qs.reads AS money)), 0) AS total_reads,
+    ISNULL(SUM(TRY_CAST(qs.physical_reads AS money)), 0) AS total_physical_reads,
+    ISNULL(SUM(TRY_CAST(qs.writes AS money)), 0) AS total_writes
+FROM report.query_snapshots AS qs
+WHERE CONVERT(nvarchar(max), qs.sql_text) NOT LIKE N'WAITFOR%'
+{timeFilter}
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, qs.collection_time), 0)
+ORDER BY bucket_hour;";
+
+                    using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
+                    command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = hoursBack });
+                    if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                    if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        items.Add(new Models.TimeSliceBucket
+                        {
+                            BucketTime = reader.GetDateTime(0),
+                            SessionCount = Convert.ToInt64(reader.GetValue(1)),
+                            TotalCpu = Convert.ToDouble(reader.GetValue(2)),
+                            TotalElapsed = Convert.ToDouble(reader.GetValue(3)),
+                            TotalReads = Convert.ToDouble(reader.GetValue(4)),
+                            TotalLogicalReads = Convert.ToDouble(reader.GetValue(5)),
+                            TotalWrites = Convert.ToDouble(reader.GetValue(6)),
+                            Value = Convert.ToDouble(reader.GetValue(1)),
+                        });
+                    }
+                    return items;
+                }
+
                 public async Task<List<QuerySnapshotItem>> GetQuerySnapshotsAsync(int hoursBack = 1, DateTime? fromDate = null, DateTime? toDate = null)
                 {
                     var items = new List<QuerySnapshotItem>();
@@ -847,7 +988,58 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
-                public async Task<List<QueryStatsItem>> GetQueryStatsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+                public async Task<List<Models.TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
+                    int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+                {
+                    var items = new List<Models.TimeSliceBucket>();
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    var timeFilter = fromDate.HasValue && toDate.HasValue
+                        ? "AND qs.collection_time >= @from_date AND qs.collection_time <= @to_date"
+                        : "AND qs.collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    DATEADD(HOUR, DATEDIFF(HOUR, 0, qs.collection_time), 0) AS bucket_hour,
+    COUNT(DISTINCT qs.query_hash) AS query_count,
+    ISNULL(SUM(CAST(qs.total_worker_time AS float)), 0) / 1000.0 AS total_cpu_ms,
+    ISNULL(SUM(CAST(qs.total_elapsed_time AS float)), 0) / 1000.0 AS total_elapsed_ms,
+    ISNULL(SUM(CAST(qs.total_logical_reads AS float)), 0) AS total_reads,
+    ISNULL(SUM(CAST(qs.total_physical_reads AS float)), 0) AS total_physical_reads,
+    ISNULL(SUM(CAST(qs.total_logical_writes AS float)), 0) AS total_writes
+FROM collect.query_stats AS qs
+WHERE 1 = 1
+{timeFilter}
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, qs.collection_time), 0)
+ORDER BY bucket_hour;";
+
+                    using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
+                    command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = hoursBack });
+                    if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                    if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        items.Add(new Models.TimeSliceBucket
+                        {
+                            BucketTime = reader.GetDateTime(0),
+                            SessionCount = Convert.ToInt64(reader.GetValue(1)),
+                            TotalCpu = Convert.ToDouble(reader.GetValue(2)),
+                            TotalElapsed = Convert.ToDouble(reader.GetValue(3)),
+                            TotalReads = Convert.ToDouble(reader.GetValue(4)),
+                            TotalLogicalReads = Convert.ToDouble(reader.GetValue(5)),
+                            TotalWrites = Convert.ToDouble(reader.GetValue(6)),
+                            Value = Convert.ToDouble(reader.GetValue(2)),
+                        });
+                    }
+                    return items;
+                }
+
+                public async Task<List<QueryStatsItem>> GetQueryStatsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, bool fromSlicer = false)
                 {
                     var items = new List<QueryStatsItem>();
 
@@ -903,9 +1095,11 @@ namespace PerformanceMonitorDashboard.Services
                 plan_handle = MAX(qs.plan_handle)
             FROM collect.query_stats AS qs
             WHERE (
-                (@useCustomDates = 0 AND qs.last_execution_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME()))
+                (@fromSlicer = 1 AND qs.collection_time >= @fromDate AND qs.collection_time <= @toDate)
                 OR
-                (@useCustomDates = 1 AND
+                (@fromSlicer = 0 AND @useCustomDates = 0 AND qs.last_execution_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME()))
+                OR
+                (@fromSlicer = 0 AND @useCustomDates = 1 AND
                     ((qs.creation_time >= @fromDate AND qs.creation_time <= @toDate)
                     OR (qs.last_execution_time >= @fromDate AND qs.last_execution_time <= @toDate)
                     OR (qs.creation_time <= @fromDate AND qs.last_execution_time >= @toDate)))
@@ -977,6 +1171,7 @@ namespace PerformanceMonitorDashboard.Services
                     using var command = new SqlCommand(query, connection);
                     command.CommandTimeout = 120;
 
+                    command.Parameters.Add(new SqlParameter("@fromSlicer", SqlDbType.Bit) { Value = fromSlicer });
                     command.Parameters.Add(new SqlParameter("@useCustomDates", SqlDbType.Bit) { Value = useCustomDates });
                     command.Parameters.Add(new SqlParameter("@hoursBack", SqlDbType.Int) { Value = hoursBack });
                     command.Parameters.Add(new SqlParameter("@fromDate", SqlDbType.DateTime2) { Value = (object?)fromDate ?? DBNull.Value });
@@ -1014,8 +1209,8 @@ namespace PerformanceMonitorDashboard.Services
                             AvgRows = reader.IsDBNull(24) ? null : reader.GetInt64(24),
                             MinRows = reader.IsDBNull(25) ? null : reader.GetInt64(25),
                             MaxRows = reader.IsDBNull(26) ? null : reader.GetInt64(26),
-                            MinDop = reader.IsDBNull(27) ? null : reader.GetInt16(27),
-                            MaxDop = reader.IsDBNull(28) ? null : reader.GetInt16(28),
+                            MinDop = reader.IsDBNull(27) ? null : Convert.ToInt16(reader.GetValue(27)),
+                            MaxDop = reader.IsDBNull(28) ? null : Convert.ToInt16(reader.GetValue(28)),
                             MinGrantKb = reader.IsDBNull(29) ? null : reader.GetInt64(29),
                             MaxGrantKb = reader.IsDBNull(30) ? null : reader.GetInt64(30),
                             TotalSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
@@ -1032,7 +1227,58 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
-                public async Task<List<ProcedureStatsItem>> GetProcedureStatsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+                public async Task<List<Models.TimeSliceBucket>> GetProcStatsSlicerDataAsync(
+                    int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+                {
+                    var items = new List<Models.TimeSliceBucket>();
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    var timeFilter = fromDate.HasValue && toDate.HasValue
+                        ? "AND ps.collection_time >= @from_date AND ps.collection_time <= @to_date"
+                        : "AND ps.collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    DATEADD(HOUR, DATEDIFF(HOUR, 0, ps.collection_time), 0) AS bucket_hour,
+    COUNT(DISTINCT ps.object_name) AS proc_count,
+    ISNULL(SUM(CAST(ps.total_worker_time AS float)), 0) / 1000.0 AS total_cpu_ms,
+    ISNULL(SUM(CAST(ps.total_elapsed_time AS float)), 0) / 1000.0 AS total_elapsed_ms,
+    ISNULL(SUM(CAST(ps.total_logical_reads AS float)), 0) AS total_reads,
+    ISNULL(SUM(CAST(ps.total_physical_reads AS float)), 0) AS total_physical_reads,
+    ISNULL(SUM(CAST(ps.total_logical_writes AS float)), 0) AS total_writes
+FROM collect.procedure_stats AS ps
+WHERE 1 = 1
+{timeFilter}
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, ps.collection_time), 0)
+ORDER BY bucket_hour;";
+
+                    using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
+                    command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = hoursBack });
+                    if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                    if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        items.Add(new Models.TimeSliceBucket
+                        {
+                            BucketTime = reader.GetDateTime(0),
+                            SessionCount = Convert.ToInt64(reader.GetValue(1)),
+                            TotalCpu = Convert.ToDouble(reader.GetValue(2)),
+                            TotalElapsed = Convert.ToDouble(reader.GetValue(3)),
+                            TotalReads = Convert.ToDouble(reader.GetValue(4)),
+                            TotalLogicalReads = Convert.ToDouble(reader.GetValue(5)),
+                            TotalWrites = Convert.ToDouble(reader.GetValue(6)),
+                            Value = Convert.ToDouble(reader.GetValue(2)),
+                        });
+                    }
+                    return items;
+                }
+
+                public async Task<List<ProcedureStatsItem>> GetProcedureStatsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, bool fromSlicer = false)
                 {
                     var items = new List<ProcedureStatsItem>();
 
@@ -1084,9 +1330,11 @@ namespace PerformanceMonitorDashboard.Services
                 plan_handle = MAX(ps.plan_handle)
             FROM collect.procedure_stats AS ps
             WHERE (
-                (@useCustomDates = 0 AND ps.last_execution_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME()))
+                (@fromSlicer = 1 AND ps.collection_time >= @fromDate AND ps.collection_time <= @toDate)
                 OR
-                (@useCustomDates = 1 AND
+                (@fromSlicer = 0 AND @useCustomDates = 0 AND ps.last_execution_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME()))
+                OR
+                (@fromSlicer = 0 AND @useCustomDates = 1 AND
                     ((ps.cached_time >= @fromDate AND ps.cached_time <= @toDate)
                     OR (ps.last_execution_time >= @fromDate AND ps.last_execution_time <= @toDate)
                     OR (ps.cached_time <= @fromDate AND ps.last_execution_time >= @toDate)))
@@ -1152,6 +1400,7 @@ namespace PerformanceMonitorDashboard.Services
                     using var command = new SqlCommand(query, connection);
                     command.CommandTimeout = 120;
 
+                    command.Parameters.Add(new SqlParameter("@fromSlicer", SqlDbType.Bit) { Value = fromSlicer });
                     command.Parameters.Add(new SqlParameter("@useCustomDates", SqlDbType.Bit) { Value = useCustomDates });
                     command.Parameters.Add(new SqlParameter("@hoursBack", SqlDbType.Int) { Value = hoursBack });
                     command.Parameters.Add(new SqlParameter("@fromDate", SqlDbType.DateTime2) { Value = (object?)fromDate ?? DBNull.Value });
@@ -1205,7 +1454,58 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
-                public async Task<List<QueryStoreItem>> GetQueryStoreDataAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+                public async Task<List<Models.TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
+                    int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+                {
+                    var items = new List<Models.TimeSliceBucket>();
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    var timeFilter = fromDate.HasValue && toDate.HasValue
+                        ? "AND qsd.collection_time >= @from_date AND qsd.collection_time <= @to_date"
+                        : "AND qsd.collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    DATEADD(HOUR, DATEDIFF(HOUR, 0, qsd.collection_time), 0) AS bucket_hour,
+    COUNT(DISTINCT qsd.query_id) AS query_count,
+    ISNULL(SUM(qsd.avg_cpu_time * qsd.count_executions), 0) / 1000.0 AS total_cpu_ms,
+    ISNULL(SUM(qsd.avg_duration * qsd.count_executions), 0) / 1000.0 AS total_duration_ms,
+    ISNULL(SUM(qsd.avg_logical_io_reads * qsd.count_executions), 0) AS total_reads,
+    ISNULL(SUM(qsd.avg_physical_io_reads * qsd.count_executions), 0) AS total_physical_reads,
+    ISNULL(SUM(qsd.avg_logical_io_writes * qsd.count_executions), 0) AS total_writes
+FROM collect.query_store_data AS qsd
+WHERE CAST(DECOMPRESS(qsd.query_sql_text) AS nvarchar(max)) NOT LIKE N'WAITFOR%'
+{timeFilter}
+GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, qsd.collection_time), 0)
+ORDER BY bucket_hour;";
+
+                    using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
+                    command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = hoursBack });
+                    if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                    if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                    {
+                        items.Add(new Models.TimeSliceBucket
+                        {
+                            BucketTime = reader.GetDateTime(0),
+                            SessionCount = Convert.ToInt64(reader.GetValue(1)),
+                            TotalCpu = Convert.ToDouble(reader.GetValue(2)),
+                            TotalElapsed = Convert.ToDouble(reader.GetValue(3)),
+                            TotalReads = Convert.ToDouble(reader.GetValue(4)),
+                            TotalLogicalReads = Convert.ToDouble(reader.GetValue(5)),
+                            TotalWrites = Convert.ToDouble(reader.GetValue(6)),
+                            Value = Convert.ToDouble(reader.GetValue(2)),
+                        });
+                    }
+                    return items;
+                }
+
+                public async Task<List<QueryStoreItem>> GetQueryStoreDataAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, bool fromSlicer = false)
                 {
                     var items = new List<QueryStoreItem>();
 
@@ -1271,9 +1571,11 @@ namespace PerformanceMonitorDashboard.Services
             max_log_bytes_used = MAX(qsd.max_log_bytes_used)
         FROM collect.query_store_data AS qsd
         WHERE (
-            (@useCustomDates = 0 AND qsd.server_last_execution_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME()))
+            (@fromSlicer = 1 AND qsd.collection_time >= @fromDate AND qsd.collection_time <= @toDate)
             OR
-            (@useCustomDates = 1 AND
+            (@fromSlicer = 0 AND @useCustomDates = 0 AND qsd.server_last_execution_time >= DATEADD(HOUR, -@hoursBack, SYSDATETIME()))
+            OR
+            (@fromSlicer = 0 AND @useCustomDates = 1 AND
                 ((qsd.server_first_execution_time >= @fromDate AND qsd.server_first_execution_time <= @toDate)
                 OR (qsd.server_last_execution_time >= @fromDate AND qsd.server_last_execution_time <= @toDate)
                 OR (qsd.server_first_execution_time <= @fromDate AND qsd.server_last_execution_time >= @toDate)))
@@ -1294,6 +1596,7 @@ namespace PerformanceMonitorDashboard.Services
                     using var command = new SqlCommand(query, connection);
                     command.CommandTimeout = 120;
 
+                    command.Parameters.Add(new SqlParameter("@fromSlicer", SqlDbType.Bit) { Value = fromSlicer });
                     command.Parameters.Add(new SqlParameter("@useCustomDates", SqlDbType.Bit) { Value = useCustomDates });
                     command.Parameters.Add(new SqlParameter("@hoursBack", SqlDbType.Int) { Value = hoursBack });
                     command.Parameters.Add(new SqlParameter("@fromDate", SqlDbType.DateTime2) { Value = (object?)fromDate ?? DBNull.Value });
@@ -1674,6 +1977,7 @@ namespace PerformanceMonitorDashboard.Services
                 ta.event_name,
                 ta.database_name,
                 ta.login_name,
+                ta.nt_user_name,
                 ta.application_name,
                 ta.host_name,
                 ta.spid,
@@ -1708,6 +2012,7 @@ namespace PerformanceMonitorDashboard.Services
             event_name,
             database_name,
             login_name,
+            nt_user_name,
             application_name,
             host_name,
             spid,
@@ -1743,18 +2048,19 @@ namespace PerformanceMonitorDashboard.Services
                             EventName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
                             DatabaseName = reader.IsDBNull(3) ? null : reader.GetString(3),
                             LoginName = reader.IsDBNull(4) ? null : reader.GetString(4),
-                            ApplicationName = reader.IsDBNull(5) ? null : reader.GetString(5),
-                            HostName = reader.IsDBNull(6) ? null : reader.GetString(6),
-                            Spid = reader.IsDBNull(7) ? null : reader.GetInt32(7),
-                            DurationMs = reader.IsDBNull(8) ? null : reader.GetInt64(8),
-                            CpuMs = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-                            Reads = reader.IsDBNull(10) ? null : reader.GetInt64(10),
-                            Writes = reader.IsDBNull(11) ? null : reader.GetInt64(11),
-                            RowCounts = reader.IsDBNull(12) ? null : reader.GetInt64(12),
-                            StartTime = reader.IsDBNull(13) ? null : reader.GetDateTime(13),
-                            EndTime = reader.IsDBNull(14) ? null : reader.GetDateTime(14),
-                            SqlText = reader.IsDBNull(15) ? null : reader.GetString(15),
-                            ObjectId = reader.IsDBNull(16) ? null : reader.GetInt64(16)
+                            NtUserName = reader.IsDBNull(5) ? null : reader.GetString(5),
+                            ApplicationName = reader.IsDBNull(6) ? null : reader.GetString(6),
+                            HostName = reader.IsDBNull(7) ? null : reader.GetString(7),
+                            Spid = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+                            DurationMs = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                            CpuMs = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+                            Reads = reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                            Writes = reader.IsDBNull(12) ? null : reader.GetInt64(12),
+                            RowCounts = reader.IsDBNull(13) ? null : reader.GetInt64(13),
+                            StartTime = reader.IsDBNull(14) ? null : reader.GetDateTime(14),
+                            EndTime = reader.IsDBNull(15) ? null : reader.GetDateTime(15),
+                            SqlText = reader.IsDBNull(16) ? null : reader.GetString(16),
+                            ObjectId = reader.IsDBNull(17) ? null : reader.GetInt64(17)
                         });
                     }
 
@@ -2341,18 +2647,18 @@ namespace PerformanceMonitorDashboard.Services
                             TotalRows = reader.GetInt64(19),
                             MinRows = reader.GetInt64(20),
                             MaxRows = reader.GetInt64(21),
-                            MinDop = reader.GetInt16(22),
-                            MaxDop = reader.GetInt16(23),
+                            MinDop = Convert.ToInt16(reader.GetValue(22)),
+                            MaxDop = Convert.ToInt16(reader.GetValue(23)),
                             MinGrantKb = reader.GetInt64(24),
                             MaxGrantKb = reader.GetInt64(25),
                             MinUsedGrantKb = reader.GetInt64(26),
                             MaxUsedGrantKb = reader.GetInt64(27),
                             MinIdealGrantKb = reader.GetInt64(28),
                             MaxIdealGrantKb = reader.GetInt64(29),
-                            MinReservedThreads = reader.GetInt32(30),
-                            MaxReservedThreads = reader.GetInt32(31),
-                            MinUsedThreads = reader.GetInt32(32),
-                            MaxUsedThreads = reader.GetInt32(33),
+                            MinReservedThreads = Convert.ToInt32(reader.GetValue(30)),
+                            MaxReservedThreads = Convert.ToInt32(reader.GetValue(31)),
+                            MinUsedThreads = Convert.ToInt32(reader.GetValue(32)),
+                            MaxUsedThreads = Convert.ToInt32(reader.GetValue(33)),
                             TotalSpills = reader.GetInt64(34),
                             MinSpills = reader.GetInt64(35),
                             MaxSpills = reader.GetInt64(36),
@@ -2440,6 +2746,58 @@ namespace PerformanceMonitorDashboard.Services
             using var command = new SqlCommand(query, connection);
             command.CommandTimeout = 120;
             command.Parameters.Add(new SqlParameter("@collection_id", SqlDbType.BigInt) { Value = collectionId });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
+
+        /// <summary>
+        /// Fetches the most recent plan XML for a query identified by query_hash.
+        /// Used by MCP plan analysis tools.
+        /// </summary>
+        public async Task<string?> GetPlanXmlByQueryHashAsync(string queryHash)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            CAST(DECOMPRESS(qs.query_plan_text) AS nvarchar(max))
+        FROM collect.query_stats AS qs
+        WHERE qs.query_hash = CONVERT(binary(8), @queryHash, 1)
+        ORDER BY qs.last_execution_time DESC;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@queryHash", SqlDbType.NVarChar, 20) { Value = queryHash });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
+
+        /// <summary>
+        /// Fetches the most recent plan XML for a procedure identified by sql_handle.
+        /// Used by MCP plan analysis tools.
+        /// </summary>
+        public async Task<string?> GetProcedurePlanXmlBySqlHandleAsync(string sqlHandle)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            CAST(DECOMPRESS(ps.query_plan_text) AS nvarchar(max))
+        FROM collect.procedure_stats AS ps
+        WHERE ps.sql_handle = CONVERT(varbinary(64), @sqlHandle, 1)
+        ORDER BY ps.last_execution_time DESC;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@sqlHandle", SqlDbType.NVarChar, 130) { Value = sqlHandle });
 
             var result = await command.ExecuteScalarAsync();
             return result == DBNull.Value || result == null ? null : (string)result;
@@ -3227,6 +3585,168 @@ OPTION(MAXDOP 1, RECOMPILE);";
             }
 
             return items;
+        }
+
+        private static string GetHeatmapMetricExpr(Models.HeatmapMetric metric) => metric switch
+        {
+            Models.HeatmapMetric.Duration => "(qs.total_elapsed_time_delta / 1000.0) / NULLIF(qs.execution_count_delta, 0)",
+            Models.HeatmapMetric.Cpu => "(qs.total_worker_time_delta / 1000.0) / NULLIF(qs.execution_count_delta, 0)",
+            Models.HeatmapMetric.LogicalReads => "CAST(qs.total_logical_reads_delta AS float) / NULLIF(qs.execution_count_delta, 0)",
+            Models.HeatmapMetric.LogicalWrites => "CAST(qs.total_logical_writes_delta AS float) / NULLIF(qs.execution_count_delta, 0)",
+            Models.HeatmapMetric.ExecutionCount => "CAST(qs.execution_count_delta AS float)",
+            _ => "(qs.total_elapsed_time_delta / 1000.0) / NULLIF(qs.execution_count_delta, 0)"
+        };
+
+        private static readonly string[] HeatmapDurationLabels = { "0-1ms", "1-10ms", "10-100ms", "100ms-1s", "1-10s", "10-100s", ">100s" };
+        private static readonly string[] HeatmapCountLabels = { "0-1", "1-10", "10-100", "100-1K", "1K-10K", "10K-100K", ">100K" };
+
+        public async Task<Models.HeatmapResult> GetQueryHeatmapAsync(Models.HeatmapMetric metric, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            var metricExpr = GetHeatmapMetricExpr(metric);
+
+            string timeFilter;
+            if (fromDate.HasValue && toDate.HasValue)
+            {
+                timeFilter = "AND qs.collection_time >= @from_date AND qs.collection_time <= @to_date";
+            }
+            else
+            {
+                timeFilter = $"AND qs.collection_time >= DATEADD(HOUR, -{hoursBack}, GETDATE())";
+            }
+
+            var query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH per_query AS
+(
+    SELECT
+        time_bin = DATEADD(MINUTE, DATEDIFF(MINUTE, 0, qs.collection_time) / 5 * 5, 0),
+        metric_value = {metricExpr},
+        qs.query_hash,
+        query_preview = LEFT(CAST(DECOMPRESS(qs.query_text) AS nvarchar(max)), 120),
+        qs.execution_count_delta
+    FROM collect.query_stats AS qs
+    WHERE qs.execution_count_delta > 0
+    AND   {metricExpr} IS NOT NULL
+    {timeFilter}
+)
+SELECT
+    pq.time_bin,
+    bucket_index =
+        CASE
+            WHEN pq.metric_value < 1 THEN 0
+            WHEN pq.metric_value < 10 THEN 1
+            WHEN pq.metric_value < 100 THEN 2
+            WHEN pq.metric_value < 1000 THEN 3
+            WHEN pq.metric_value < 10000 THEN 4
+            WHEN pq.metric_value < 100000 THEN 5
+            ELSE 6
+        END,
+    query_count = COUNT(*),
+    top_query_hash = CONVERT(varchar(20), MAX(CASE WHEN pq.execution_count_delta = m.max_exec THEN pq.query_hash END), 1),
+    top_query_text = MAX(CASE WHEN pq.execution_count_delta = m.max_exec THEN pq.query_preview END)
+FROM per_query AS pq
+CROSS APPLY
+(
+    SELECT max_exec = MAX(pq2.execution_count_delta)
+    FROM per_query AS pq2
+    WHERE pq2.time_bin = pq.time_bin
+    AND   CASE
+            WHEN pq2.metric_value < 1 THEN 0
+            WHEN pq2.metric_value < 10 THEN 1
+            WHEN pq2.metric_value < 100 THEN 2
+            WHEN pq2.metric_value < 1000 THEN 3
+            WHEN pq2.metric_value < 10000 THEN 4
+            WHEN pq2.metric_value < 100000 THEN 5
+            ELSE 6
+          END =
+          CASE
+            WHEN pq.metric_value < 1 THEN 0
+            WHEN pq.metric_value < 10 THEN 1
+            WHEN pq.metric_value < 100 THEN 2
+            WHEN pq.metric_value < 1000 THEN 3
+            WHEN pq.metric_value < 10000 THEN 4
+            WHEN pq.metric_value < 100000 THEN 5
+            ELSE 6
+          END
+) AS m
+GROUP BY
+    pq.time_bin,
+    CASE
+        WHEN pq.metric_value < 1 THEN 0
+        WHEN pq.metric_value < 10 THEN 1
+        WHEN pq.metric_value < 100 THEN 2
+        WHEN pq.metric_value < 1000 THEN 3
+        WHEN pq.metric_value < 10000 THEN 4
+        WHEN pq.metric_value < 100000 THEN 5
+        ELSE 6
+    END
+ORDER BY
+    pq.time_bin,
+    bucket_index;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            if (fromDate.HasValue && toDate.HasValue)
+            {
+                command.Parameters.AddWithValue("@from_date", fromDate.Value);
+                command.Parameters.AddWithValue("@to_date", toDate.Value);
+            }
+
+            var rawCells = new System.Collections.Generic.List<Models.HeatmapCell>();
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                rawCells.Add(new Models.HeatmapCell
+                {
+                    TimeBucket = reader.GetDateTime(0),
+                    BucketIndex = reader.GetInt32(1),
+                    Count = Convert.ToInt64(reader.GetValue(2), CultureInfo.InvariantCulture),
+                    TopQueryHash = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                    TopQueryText = reader.IsDBNull(4) ? "" : reader.GetString(4)
+                });
+            }
+
+            if (rawCells.Count == 0)
+                return new Models.HeatmapResult();
+
+            var times = new System.Collections.Generic.List<DateTime>();
+            var timeIndex = new System.Collections.Generic.Dictionary<DateTime, int>();
+            foreach (var cell in rawCells)
+            {
+                if (!timeIndex.ContainsKey(cell.TimeBucket))
+                {
+                    timeIndex[cell.TimeBucket] = times.Count;
+                    times.Add(cell.TimeBucket);
+                }
+            }
+
+            int numBuckets = 7;
+            var intensities = new double[numBuckets, times.Count];
+            var cellDetails = new Models.HeatmapCell[numBuckets, times.Count];
+
+            foreach (var cell in rawCells)
+            {
+                if (!timeIndex.TryGetValue(cell.TimeBucket, out int col)) continue;
+                int row = Math.Clamp(cell.BucketIndex, 0, numBuckets - 1);
+                intensities[row, col] = cell.Count;
+                cellDetails[row, col] = cell;
+            }
+
+            var labels = metric == Models.HeatmapMetric.LogicalReads || metric == Models.HeatmapMetric.LogicalWrites || metric == Models.HeatmapMetric.ExecutionCount
+                ? HeatmapCountLabels
+                : HeatmapDurationLabels;
+
+            return new Models.HeatmapResult
+            {
+                Intensities = intensities,
+                TimeBuckets = times.ToArray(),
+                BucketLabels = labels,
+                CellDetails = cellDetails
+            };
         }
     }
 }

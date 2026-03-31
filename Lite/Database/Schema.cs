@@ -92,8 +92,8 @@ CREATE TABLE IF NOT EXISTS query_stats (
     max_physical_reads BIGINT,
     min_rows BIGINT,
     max_rows BIGINT,
-    min_dop INTEGER,
-    max_dop INTEGER,
+    min_dop BIGINT,
+    max_dop BIGINT,
     min_grant_kb BIGINT,
     max_grant_kb BIGINT,
     min_used_grant_kb BIGINT,
@@ -348,7 +348,7 @@ CREATE TABLE IF NOT EXISTS tempdb_stats (
     version_store_reserved_mb DECIMAL(18,2),
     total_reserved_mb DECIMAL(18,2),
     unallocated_mb DECIMAL(18,2),
-    total_sessions_using_tempdb INTEGER,
+    total_sessions_using_tempdb BIGINT,
     top_session_id INTEGER,
     top_session_tempdb_mb DECIMAL(18,2)
 )";
@@ -614,7 +614,10 @@ CREATE TABLE IF NOT EXISTS database_size_stats (
     state_desc VARCHAR,
     volume_mount_point VARCHAR,
     volume_total_mb DECIMAL(19,2),
-    volume_free_mb DECIMAL(19,2)
+    volume_free_mb DECIMAL(19,2),
+    is_percent_growth BOOLEAN,
+    growth_pct INTEGER,
+    vlf_count INTEGER
 )";
 
     public const string CreateDatabaseSizeStatsIndex = @"
@@ -639,7 +642,8 @@ CREATE TABLE IF NOT EXISTS server_properties (
     is_hadr_enabled BOOLEAN,
     is_clustered BOOLEAN,
     enterprise_features VARCHAR,
-    service_objective VARCHAR
+    service_objective VARCHAR,
+    vcore_count INTEGER
 )";
 
     public const string CreateServerPropertiesIndex = @"
@@ -652,7 +656,7 @@ CREATE TABLE IF NOT EXISTS session_stats (
     server_id INTEGER NOT NULL,
     server_name VARCHAR NOT NULL,
     program_name VARCHAR NOT NULL,
-    connection_count INTEGER NOT NULL,
+    connection_count BIGINT NOT NULL,
     running_count INTEGER NOT NULL,
     sleeping_count INTEGER NOT NULL,
     dormant_count INTEGER NOT NULL,
@@ -696,6 +700,18 @@ CREATE TABLE IF NOT EXISTS config_mute_rules (
     job_name_pattern VARCHAR
 )";
 
+    public const string CreateDismissedArchiveAlertsTable = @"
+CREATE TABLE IF NOT EXISTS dismissed_archive_alerts (
+    alert_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    metric_name VARCHAR NOT NULL,
+    dismissed_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+)";
+
+    public const string CreateDismissedArchiveAlertsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_dismissed_archive_alerts
+ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
+
     /// <summary>
     /// Returns all table creation statements in order.
     /// </summary>
@@ -729,6 +745,7 @@ CREATE TABLE IF NOT EXISTS config_mute_rules (
         yield return CreateSessionStatsTable;
         yield return CreateAlertLogTable;
         yield return CreateMuteRulesTable;
+        yield return CreateDismissedArchiveAlertsTable;
     }
 
     /// <summary>
@@ -758,5 +775,6 @@ CREATE TABLE IF NOT EXISTS config_mute_rules (
         yield return CreateDatabaseSizeStatsIndex;
         yield return CreateServerPropertiesIndex;
         yield return CreateSessionStatsIndex;
+        yield return CreateDismissedArchiveAlertsIndex;
     }
 }

@@ -5,6 +5,231 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-03-30
+
+### Important
+
+- **InstallerGui retired**: The standalone GUI installer has been removed. Installation, upgrade, and uninstall are now handled directly from the Dashboard's Add Server dialog, powered by the new Installer.Core shared library. The CLI installer continues to work as before. ([#755])
+
+### Added
+
+- **Dashboard integrated installer** — Add Server dialog now installs, upgrades, and uninstalls PerformanceMonitor directly, replacing the standalone InstallerGui ([#755])
+- **Installer.Core shared library** — shared installation logic used by both the CLI installer and Dashboard ([#755])
+- **Overview tab** for Lite with 2x2 resource chart grid (CPU, Memory, Wait Stats, TempDB) ([#689])
+- **Chart drill-down** on CPU, Memory, TempDB, Blocking, and Deadlock charts in both Dashboard and Lite — right-click any chart point to jump to Active Queries for that time window ([#682])
+- **Grid-to-slicer overlay** for Query Stats, Procedure Stats, and Query Store tabs — click a row to overlay its trend on the slicer chart ([#683])
+- **Query heatmap** tab in both Dashboard and Lite — visual heat map of query activity over time ([#739], [#743])
+- **Webhook notifications** for alerts — configurable webhook endpoint for alert delivery ([#725])
+- **Per-server collector schedule intervals** — customize collection frequency per server ([#703])
+- **Investigate button** in Critical Issues grid — jump directly to relevant tab from an alert ([#684])
+- **Dismiss Selected** context menu and View Log sidebar button for alert management ([#718], [#740])
+- **Alert archival awareness** — dismissed_archive_alerts sidecar table, source column for live vs archived alerts, stale-data indicator, structured telemetry ([#718])
+- **Dashboard read-only connection intent** — connections use `ApplicationIntent=ReadOnly` where supported ([#728])
+- FUNDING.yml for GitHub Sponsors ([#752])
+
+### Changed
+
+- **Installer architecture** refactored: CLI installer is now a thin wrapper over Installer.Core ([#755])
+- **DuckDB memory capped** at 2 GB during parquet compaction to prevent out-of-memory on large archives ([#758])
+- **Text rendering** improved with `TextOptions.TextFormattingMode="Display"` for sharper text ([#710])
+- **installation_history version columns** widened from nvarchar(255) to nvarchar(512) to handle long @@VERSION strings ([#712])
+
+### Fixed
+
+- **Memory leaks in Lite** — delta cache, event handlers, and chart helpers properly disposed ([#758])
+- **Doomed transaction errors** in delta framework and ensure_collection_table — ROLLBACK now occurs before error logging ([#756])
+- **XACT_STATE check** added after third-party stored procedure calls (sp_HumanEventsBlockViewer, sp_BlitzLock) to prevent doomed transaction errors ([#695])
+- **CREATE DATABASE failure** when model database has large default file sizes ([#676])
+- **CPU metrics mixed** for different Azure SQL databases on the same logical server ([#680])
+- **Azure SQL DB vCore** FinOps calculations incorrect for serverless/vCore tiers ([#736])
+- **Webhook alert recording** not persisting correctly ([#726])
+- **Drill-down timezone** misalignment between chart and detail view ([#747], [#750])
+- **Drill-down refresh** losing context on auto-refresh ([#744])
+- **Drill-down target** incorrectly routing Memory to Memory Grants instead of Active Queries ([#706])
+- **Heatmap colorbar stacking** when switching between servers ([#746])
+- **Display mode pickers** not reflecting current state on tab switch ([#751])
+- **Slicer custom range** handling and sub-hour display issues ([#704])
+- **Overlay selection** lost on Dashboard auto-refresh ([#683])
+- **Numeric values** in alert details treated as strings instead of numbers ([#732])
+- **FinOps VM right-sizing** query error — `PERCENTILE_CONT` missing required `OVER()` clause
+- **FinOps Enterprise features** query error on AWS RDS — `database_id` column not present in `sys.dm_db_persisted_sku_features` on RDS
+- **FinOps right-click copy** broken on all Dashboard FinOps grids — context menu walked to row instead of grid
+- **FinOps recommendation error logs** now include server name for easier troubleshooting
+
+### Deprecated
+
+- **InstallerGui** — removed from the solution and build pipeline. Use the Dashboard or CLI installer instead. ([#755])
+
+[#676]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/676
+[#680]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/680
+[#682]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/682
+[#683]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/683
+[#684]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/684
+[#689]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/689
+[#695]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/695
+[#703]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/703
+[#704]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/704
+[#706]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/706
+[#710]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/710
+[#712]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/712
+[#718]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/718
+[#725]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/725
+[#726]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/726
+[#728]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/728
+[#732]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/732
+[#736]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/736
+[#739]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/739
+[#740]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/740
+[#743]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/743
+[#744]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/744
+[#746]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/746
+[#747]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/747
+[#750]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/750
+[#751]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/751
+[#752]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/752
+[#755]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/755
+[#756]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/756
+[#758]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/758
+
+## [2.4.0] - 2026-03-23
+
+### Important
+
+- **Lite data directory moved**: Lite now stores all data (config, DuckDB, archives, logs) in `%LOCALAPPDATA%\PerformanceMonitorLite\` instead of alongside the executable. This enables auto-update support. Existing users upgrading from the zip should use **Import Settings** and **Import Data** to bring over their configuration and historical data from the old install folder.
+- **Auto-update (Windows)**: Both Dashboard and Lite now include Velopack auto-update. Users who install via the new Setup.exe will receive update notifications and can download + apply updates from within the app. Existing zip distribution continues to work as before.
+
+### Added
+
+- **Velopack auto-update** for Dashboard and Lite — check on startup, download + apply from About window with confirmation dialog before restart ([#635])
+- **Per-tab time range slicers** on Dashboard and Lite query tabs — filter data directly on each tab without changing global time range ([#655], [#662])
+- **Time display picker** (Local/UTC/Server) in Dashboard and Lite toolbars ([#646])
+- **Import Settings** — renamed from "Import Connections", now also copies `settings.json`, `collection_schedule.json`, `ignored_wait_types.json`, and `alert_state.json` from a previous install
+- **Alert muting improvements** — pre-fill context fields (database, query, wait type, job name) from alert detail text, configurable default expiration for new mute rules, tooltip on query text field ([#642])
+- **Missing date columns** on Query Stats and Procedure Stats tabs (`creation_time`, `last_execution_time`) ([#649], [#651], [#654])
+- **Trace pattern drill-down** now includes `CollectionTime` and `NtUserName` columns ([#663])
+- **DataGrid sort preservation** across auto-refresh — sort order no longer resets when data refreshes ([#659])
+- **CLI installer**: colored output (green/red/yellow) and version check on startup ([#639])
+- **GUI installer**: version check on startup
+- **Growth rate and VLF count** columns in Database Sizes (from v2.3.0 nightly, now in upgrade path) ([#567])
+- `llms.txt` and `CITATION.cff` for project discoverability ([#630])
+
+### Changed
+
+- **Lite data directory** moved to `%LOCALAPPDATA%\PerformanceMonitorLite\` for Velopack compatibility
+- **Delta gap detection** added to all cumulative-counter collectors (file I/O, wait stats, query stats, procedure stats, memory grants) — prevents inflated spikes after app restart ([#633])
+- **File I/O NULL fallbacks** improved when `sys.master_files` is inaccessible — falls back to `DB_NAME()` and `File_{id}` instead of generic "Unknown" ([#633])
+- **Running jobs collector** skipped gracefully when login lacks msdb access ([#656])
+- NuGet packages updated to latest minor versions ([#653])
+
+### Fixed
+
+- **Installer writing SUCCESS when files fail** — CLI tolerated 1 failure in automated mode, GUI had a similar workaround. Now any failure = not success.
+- **Query stats collector causing SQL dumps** on passive mirror servers — removed `dm_exec_plan_attributes` CROSS APPLY, uses temp table of ONLINE database IDs instead ([#632])
+- **Trigger name extraction** fails when comment before `CREATE TRIGGER` contains " ON " ([#666])
+- **FinOps expensive queries** DuckDB error — query referenced `statement_start_offset` column that doesn't exist in schema
+- **Imported parquet files** not recognized by archive compaction — added regex patterns for `imported_` prefix
+- **Auto-refresh after Import Data** — views now refresh immediately after import completes
+
+[#630]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/630
+[#632]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/632
+[#633]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/633
+[#635]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/635
+[#639]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/639
+[#642]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/642
+[#646]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/646
+[#649]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/649
+[#651]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/651
+[#653]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/653
+[#654]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/654
+[#655]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/655
+[#656]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/656
+[#659]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/659
+[#662]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/662
+[#663]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/663
+[#666]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/666
+[#567]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/567
+
+## [2.3.0] - 2026-03-18
+
+### Important
+
+- **Schema upgrade**: Six columns widened across three tables (`query_stats`, `cpu_scheduler_stats`, `waiting_tasks`, `database_size_stats`) to match DMV documentation types. These are in-place ALTER COLUMN operations — fast on any table size, no data migration. Upgrade scripts run automatically via the CLI/GUI installer.
+- **SQL Server version check**: Both installers now reject SQL Server 2014 and earlier before running any scripts, with a clear error message. Azure MI (EngineEdition 8) is always accepted. ([#543])
+- **Installer adversarial tests**: 35 automated tests covering upgrade failures, data survival, idempotency, version detection fallback, file filtering, restricted permissions, and more. These run as part of pre-release validation. ([#543])
+
+### Added
+
+- **ErikAI analysis engine** — rule-based inference engine for Lite that scores server health across wait stats, CPU, memory, I/O, blocking, tempdb, and query performance. Surfaces actionable findings with severity, detail, and recommended actions. Includes anomaly detection (baseline comparison for acute deviations), bad actor detection (per-query scoring for consistently terrible queries), and CPU spike detection for bursty workloads. ([#589], [#593])
+- **ErikAI Dashboard port** — full analysis engine ported to Dashboard with SQL Server backend ([#590])
+- **FinOps cost optimization recommendations** — Phase 1-4 checks: enterprise feature audit, CPU/memory right-sizing, compression savings estimator, unused index cost quantification, dormant database detection, dev/test workload detection, VM right-sizing, storage tier optimization, reserved capacity candidates ([#564])
+- **FinOps High Impact Queries** — 80/20 analysis showing which queries consume the most resources across all dimensions ([#564])
+- **FinOps dollar-denominated cost attribution** — per-server monthly cost setting with proportional database-level breakdown ([#564])
+- **On-demand plan fetch** for bad actor and analysis findings — click to retrieve execution plans for flagged queries ([#604])
+- **Plan analysis integration** — findings include execution plan analysis when plans are available ([#594])
+- **Server unreachable email alerts** — Dashboard sends email (not just tray notification) when a monitored server goes offline or comes back online ([#529])
+- **Column filters on all FinOps DataGrids** — filter funnel icons on every column header across all 7 FinOps grids in Lite and Dashboard ([#562])
+- **Column filters on Dashboard** IdleDatabases, TempDB, and Index Analysis grids
+- **Lite data import** — "Import Data" button brings in monitoring history from a previous Lite install via parquet files, preserving trend data across version upgrades ([#566])
+- **Per-server Utility Database setting** — Lite can call community stored procedures (sp_IndexCleanup) from a database other than master ([#555])
+- **SQL Server version check** in both CLI and GUI installers — rejects 2014 and earlier with a clear message ([#543])
+- **Execution plan analysis MCP tools** for both Dashboard and Lite
+- **Full MCP tool coverage** — Dashboard expanded from 28 to 57 tools, Lite from 32 to 51 tools ([#576], [#577])
+- **Self-sufficient analyze_server drill-down** — MCP tool returns complete analysis, not breadcrumb trail ([#578])
+- **NuGet package dependency licenses** in THIRD_PARTY_NOTICES.md
+
+### Changed
+
+- **Azure SQL DB FinOps** — all collectors (database sizes, query stats, file I/O) now connect to each database individually instead of only querying master. Server Inventory uses dynamic SQL to avoid `sys.master_files` dependency. ([#557])
+- **Index Analysis scroll fix** — both summary and detail grids now use proportional heights instead of Auto, so they scroll independently with large result sets ([#554])
+- **Dashboard Add Server dialog** — increased MaxHeight from 700 to 850px so buttons are visible when SQL auth fields are shown
+- **GUI installer** — Uninstall button now correctly enables after a successful install
+- **GUI installer** — fixed encryption mapping and history logging ([#612])
+- **Dashboard visible sub-tab only refresh** on auto-refresh ticks ([#528])
+- Analysis engine decouples data maturity check from analysis window
+
+### Fixed
+
+- **Installer dropping database on every upgrade** — `00_uninstall.sql` excluded from install file list, installer aborts on upgrade failure, version detection fallback returns "1.0.0" instead of null ([#538], [#539])
+- **SQL dumps on mirroring passive servers** from FinOps collectors ([#535])
+- **RetrievedFromCache** always showing False ([#536])
+- **Arithmetic overflow** in query_stats collector for dop/thread columns ([#547])
+- **Lite perfmon chart bugs** and Dashboard ScottPlot crash handling ([#544], [#545])
+- **PLE=0 scoring bug** — was scored as harmless, now correctly flagged ([#543])
+- **PercentRank >1.0** bug in HealthCalculator
+- **6 verified Lite bugs** from code review ([#611])
+- **Enterprise feature audit text** — partitioning is not Enterprise-only
+- **FinOps collector scheduling**, server switch, and utilization bugs
+- **Dashboard drill-down** Unicode arrow in story path split
+- **Empty DataGrid scrollbar artifacts** — hide grids when empty across all FinOps tabs
+- **Query preview** — truncated in row, full text in tooltip
+
+[#529]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/529
+[#535]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/535
+[#536]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/536
+[#538]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/538
+[#539]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/539
+[#543]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/543
+[#544]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/544
+[#545]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/545
+[#547]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/547
+[#554]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/554
+[#555]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/555
+[#557]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/557
+[#562]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/562
+[#564]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/564
+[#566]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/566
+[#576]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/576
+[#577]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/577
+[#578]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/578
+[#528]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/528
+[#589]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/589
+[#590]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/590
+[#593]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/593
+[#594]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/594
+[#604]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/604
+[#611]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/611
+[#612]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/612
+
 ## [2.2.0] - 2026-03-11
 
 **Contributors:** [@HannahVernon](https://github.com/HannahVernon), [@ClaudioESSilva](https://github.com/ClaudioESSilva), [@dphugo](https://github.com/dphugo), [@Orestes](https://github.com/Orestes) — thank you!

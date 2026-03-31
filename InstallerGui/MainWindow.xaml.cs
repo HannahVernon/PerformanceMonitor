@@ -15,19 +15,18 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Media;
-using PerformanceMonitorInstallerGui.Services;
+using Installer.Core;
+using Installer.Core.Models;
 using PerformanceMonitorInstallerGui.Utilities;
 
 namespace PerformanceMonitorInstallerGui
 {
     public partial class MainWindow : Window
     {
-        private readonly InstallationService _installationService;
+        private readonly DependencyInstaller _dependencyInstaller;
         private CancellationTokenSource? _cancellationTokenSource;
         private string? _connectionString;
-        private string? _sqlDirectory;
-        private string? _monitorRootDirectory;
-        private List<string>? _sqlFiles;
+        private ScriptProvider? _scriptProvider;
         private ServerInfo? _serverInfo;
         private InstallationResult? _installationResult;
         private string? _installedVersion;
@@ -61,7 +60,7 @@ namespace PerformanceMonitorInstallerGui
             try
             {
                 InitializeComponent();
-                _installationService = new InstallationService();
+                _dependencyInstaller = new DependencyInstaller();
 
                 /*Set window title with version*/
                 Title = $"Performance Monitor Installer v{AppVersion}";
@@ -83,11 +82,12 @@ namespace PerformanceMonitorInstallerGui
             }
         }
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
                 FindInstallationFiles();
+                await CheckForInstallerUpdateAsync();
             }
             catch (Exception ex)
             {
@@ -107,20 +107,18 @@ namespace PerformanceMonitorInstallerGui
         /// </summary>
         private void FindInstallationFiles()
         {
-            var (sqlDirectory, monitorRootDirectory, sqlFiles) = InstallationService.FindInstallationFiles();
+            _scriptProvider = ScriptProvider.AutoDiscover();
+            var scriptFiles = _scriptProvider.GetInstallFiles();
 
-            _sqlDirectory = sqlDirectory;
-            _monitorRootDirectory = monitorRootDirectory;
-            _sqlFiles = sqlFiles;
-
-            if (sqlDirectory != null)
+            if (scriptFiles.Count > 0)
             {
-                LogMessage($"Found {sqlFiles.Count} SQL files in: {sqlDirectory}", "Info");
+                LogMessage($"Found {scriptFiles.Count} SQL installation files", "Info");
             }
             else
             {
                 LogMessage("WARNING: No SQL installation files found.", "Warning");
                 LogMessage("Make sure the installer is in the Monitor directory or a subdirectory.", "Warning");
+                _scriptProvider = null;
                 InstallButton.IsEnabled = false;
 
                 MessageBox.Show(this,
@@ -267,6 +265,21 @@ namespace PerformanceMonitorInstallerGui
                         LogMessage($"Version: {versionLines[0]}", "Info");
                     }
 
+                    /*Check minimum SQL Server version (2016+ required for on-prem)*/
+                    if (!_serverInfo.IsSupportedVersion)
+                    {
+                        LogMessage($"{_serverInfo.ProductMajorVersionName} is not supported. SQL Server 2016 or later is required.", "Error");
+                        InstallButton.IsEnabled = false;
+                        MessageBox.Show(this,
+                            $"{_serverInfo.ProductMajorVersionName} is not supported.\n\n" +
+                            $"Performance Monitor requires SQL Server 2016 (13.x) or later.\n" +
+                            $"Server: {_serverInfo.ServerName}",
+                            "Unsupported SQL Server Version",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error);
+                        return;
+                    }
+
                     /*Check for installed version*/
                     _installedVersion = await InstallationService.GetInstalledVersionAsync(_connectionString);
                     if (_installedVersion != null)
@@ -274,10 +287,9 @@ namespace PerformanceMonitorInstallerGui
                         LogMessage($"Installed version: {_installedVersion}", "Info");
 
                         /*Check for applicable upgrades*/
-                        if (_monitorRootDirectory != null)
+                        if (_scriptProvider != null)
                         {
-                            var upgrades = InstallationService.GetApplicableUpgrades(
-                                _monitorRootDirectory,
+                            var upgrades = _scriptProvider.GetApplicableUpgrades(
                                 _installedVersion,
                                 AppAssemblyVersion);
                             if (upgrades.Count > 0)
@@ -295,7 +307,7 @@ namespace PerformanceMonitorInstallerGui
                         LogMessage("No existing installation detected (clean install)", "Info");
                     }
 
-                    InstallButton.IsEnabled = _sqlFiles != null && _sqlFiles.Count > 0;
+                    InstallButton.IsEnabled = _scriptProvider != null;
                     UninstallButton.IsEnabled = _installedVersion != null;
 
                     /*Show confirmation MessageBox*/
@@ -337,7 +349,7 @@ namespace PerformanceMonitorInstallerGui
         /// </summary>
         private async void Install_Click(object sender, RoutedEventArgs e)
         {
-            if (_connectionString == null || _sqlFiles == null || _sqlDirectory == null)
+            if (_connectionString == null || _scriptProvider == null)
             {
                 MessageBox.Show(this, "Please test the connection first.", "Validation Error",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -391,10 +403,10 @@ namespace PerformanceMonitorInstallerGui
                 Execute upgrades if applicable (only when not doing clean install)
                 */
                 bool isCleanInstall = CleanInstallCheckBox.IsChecked == true;
-                if (!isCleanInstall && _installedVersion != null && _monitorRootDirectory != null)
+                if (!isCleanInstall && _installedVersion != null && _scriptProvider != null)
                 {
                     var (upgradeSuccess, upgradeFailure, upgradeCount) = await InstallationService.ExecuteAllUpgradesAsync(
-                        _monitorRootDirectory,
+                        _scriptProvider,
                         _connectionString,
                         _installedVersion,
                         AppAssemblyVersion,
@@ -408,6 +420,16 @@ namespace PerformanceMonitorInstallerGui
                             upgradeFailure == 0 ? "Success" : "Warning");
                         LogMessage("", "Info");
                     }
+
+                    /*Abort if any upgrade scripts failed — proceeding would reinstall over a partially-upgraded database*/
+                    if (upgradeFailure > 0)
+                    {
+                        LogMessage("", "Info");
+                        LogMessage("Installation aborted: upgrade scripts must succeed before installation can proceed.", "Error");
+                        LogMessage("Fix the errors above and re-run the installer.", "Error");
+                        SetUIState(installing: false);
+                        return;
+                    }
                 }
 
                 /*
@@ -417,13 +439,13 @@ namespace PerformanceMonitorInstallerGui
                 bool resetSchedule = ResetScheduleCheckBox.IsChecked == true;
                 _installationResult = await InstallationService.ExecuteInstallationAsync(
                     _connectionString,
-                    _sqlFiles,
+                    _scriptProvider,
                     isCleanInstall,
                     resetSchedule,
                     progress,
                     preValidationAction: async () =>
                     {
-                        await _installationService.InstallDependenciesAsync(
+                        await _dependencyInstaller.InstallDependenciesAsync(
                             _connectionString,
                             progress,
                             cancellationToken);
@@ -493,6 +515,8 @@ namespace PerformanceMonitorInstallerGui
 
                 if (_installationResult.Success)
                 {
+                    _installedVersion = AppAssemblyVersion;
+
                     LogMessage("Installation completed successfully!", "Success");
                     LogMessage("", "Info");
                     LogMessage("NEXT STEPS:", "Info");
@@ -657,7 +681,7 @@ namespace PerformanceMonitorInstallerGui
         /// </summary>
         private async void Troubleshoot_Click(object sender, RoutedEventArgs e)
         {
-            if (_connectionString == null || _sqlDirectory == null)
+            if (_connectionString == null || _scriptProvider == null)
             {
                 return;
             }
@@ -680,7 +704,7 @@ namespace PerformanceMonitorInstallerGui
             {
                 bool success = await InstallationService.RunTroubleshootingAsync(
                     _connectionString,
-                    _sqlDirectory,
+                    _scriptProvider,
                     progress,
                     cancellationToken);
 
@@ -745,13 +769,45 @@ namespace PerformanceMonitorInstallerGui
         protected override void OnClosed(EventArgs e)
         {
             _cancellationTokenSource?.Dispose();
-            _installationService?.Dispose();
+            _dependencyInstaller?.Dispose();
             base.OnClosed(e);
         }
 
         /// <summary>
         /// Report progress from installation service
         /// </summary>
+        private async Task CheckForInstallerUpdateAsync()
+        {
+            try
+            {
+                using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                client.DefaultRequestHeaders.Add("User-Agent", "PerformanceMonitor");
+                client.DefaultRequestHeaders.Add("Accept", "application/vnd.github.v3+json");
+
+                var response = await client.GetAsync(
+                    "https://api.github.com/repos/erikdarlingdata/PerformanceMonitor/releases/latest");
+
+                if (!response.IsSuccessStatusCode) return;
+
+                var json = await response.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var tagName = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
+                var versionString = tagName.TrimStart('v', 'V');
+
+                if (!Version.TryParse(versionString, out var latest)) return;
+                if (!Version.TryParse(AppAssemblyVersion, out var current)) return;
+
+                if (latest > current)
+                {
+                    LogMessage($"A newer version ({tagName}) is available at https://github.com/erikdarlingdata/PerformanceMonitor/releases", "Warning");
+                }
+            }
+            catch
+            {
+                /* Best effort — don't block installation if GitHub is unreachable */
+            }
+        }
+
         private void ReportProgress(InstallationProgress progress)
         {
             LogMessage(progress.Message, progress.Status);

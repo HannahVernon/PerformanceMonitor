@@ -8,6 +8,8 @@
         WindowStartupLocation="CenterScreen"
         WindowState="Maximized"
         Icon="EDD.ico"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True"
         Background="{DynamicResource BackgroundBrush}">
     <Window.Resources>
         <ResourceDictionary>
@@ -166,6 +168,27 @@
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#x1F50D;" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <TextBlock Text="Open Plan Viewer" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="ImportDataButton" Click="ImportDataButton_Click" Margin="0,8,0,0"
+                                ToolTip="Import historical data from a previous Lite install">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE8B5;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock x:Name="ImportDataButtonText" Text="Import Data" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="ImportSettingsButton" Click="ImportSettingsButton_Click" Margin="0,8,0,0"
+                                ToolTip="Import server connections and settings from a previous Lite install">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE8FA;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Import Settings" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="ViewLogButton_Click" Margin="0,8,0,0"
+                                ToolTip="Open the current application log file">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="View Log" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
                         <Button x:Name="SettingsButton" Click="SettingsButton_Click" Margin="0,8,0,0">

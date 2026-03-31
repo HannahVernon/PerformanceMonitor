@@ -173,4 +173,231 @@ We are grateful for their contributions to the SQL Server community and their co
 
 ---
 
-*Last Updated: February 19, 2026*
+## NuGet Package Dependencies
+
+The following NuGet packages are used as runtime dependencies. Test-only packages (xUnit, Microsoft.NET.Test.Sdk) are excluded as they are not distributed with the application.
+
+---
+
+### Microsoft.Data.SqlClient
+
+**Version**: 6.1.4
+**Author**: Microsoft
+**License**: MIT
+**Project URL**: https://aka.ms/sqlclientproject
+**Repository**: https://github.com/dotnet/sqlclient
+
+© Microsoft Corporation. All rights reserved.
+
+---
+
+### Microsoft.Extensions.Configuration / Configuration.Json / Hosting / Logging
+
+**Versions**: 10.0.3
+**Author**: Microsoft
+**License**: MIT
+**Repository**: https://github.com/dotnet/runtime
+
+© Microsoft Corporation. All rights reserved.
+
+---
+
+### System.Text.Json
+
+**Version**: 10.0.3
+**Author**: Microsoft
+**License**: MIT
+**Repository**: https://github.com/dotnet/runtime
+
+© Microsoft Corporation. All rights reserved.
+
+---
+
+### Microsoft Packages — MIT License Text
+
+The above Microsoft packages are all licensed under the MIT License:
+
+MIT License
+
+Copyright (c) .NET Foundation and Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### ScottPlot.WPF
+
+**Version**: 5.1.57
+**Author**: Scott Harden
+**License**: MIT
+**Project URL**: https://scottplot.net/
+**Repository**: https://github.com/ScottPlot/ScottPlot
+
+### License Text
+
+MIT License
+
+Copyright (c) Scott Harden / Harden Technologies, LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### DuckDB.NET.Data / DuckDB.NET.Bindings.Full
+
+**Version**: 1.5.0
+**Author**: Giorgi Dalakishvili
+**License**: MIT
+**Repository**: https://github.com/Giorgi/DuckDB.NET
+
+### License Text
+
+MIT License
+
+Copyright © 2020 - 2026 Giorgi Dalakishvili
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### Hardcodet.NotifyIcon.Wpf
+
+**Version**: 2.0.1
+**Authors**: Philipp Sumi, Robin Krom, Jan Karger
+**License**: MIT
+**Repository**: https://github.com/hardcodet/wpf-notifyicon
+
+### License Text
+
+MIT License
+
+Copyright (c) 2009 - 2019 Philipp Sumi, 2019 - 2024 Philipp Sumi, Robin Krom, Jan Karger
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### CredentialManagement
+
+**Version**: 1.0.2
+**Author**: iLya Lozovyy
+**License**: Apache License 2.0
+**Original Project**: http://credentialmanagement.codeplex.com/ (archived)
+
+### License Text
+
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+---
+
+### ModelContextProtocol / ModelContextProtocol.AspNetCore
+
+**Version**: 0.7.0-preview.1
+**Authors**: Anthropic and Contributors
+**License**: Apache License 2.0
+**Project URL**: https://modelcontextprotocol.github.io/csharp-sdk
+**Repository**: https://github.com/modelcontextprotocol/csharp-sdk
+
+© Anthropic and Contributors.
+
+### License Text
+
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Full license: https://github.com/modelcontextprotocol/csharp-sdk/blob/main/LICENSE
+
+---
+
+*Last Updated: March 16, 2026*

@@ -74,6 +74,8 @@ namespace PerformanceMonitorDashboard.Services
                 "Long-Running Query" => ("#D97706", "WARNING"),
                 "TempDB Space" => ("#D97706", "WARNING"),
                 "Long-Running Job" => ("#D97706", "WARNING"),
+                "Server Unreachable" => ("#DC2626", "CRITICAL"),
+                "Server Restored" => ("#16A34A", "RESOLVED"),
                 _ => ("#2eaef1", "INFO")
             };
         }

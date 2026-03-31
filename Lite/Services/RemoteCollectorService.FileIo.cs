@@ -59,10 +59,10 @@ OPTION(RECOMPILE);"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT
-    database_name = ISNULL(d.name, N'Unknown'),
-    file_name = mf.name,
-    file_type = mf.type_desc,
-    physical_name = mf.physical_name,
+    database_name = ISNULL(d.name, DB_NAME(vfs.database_id)),
+    file_name = ISNULL(mf.name, N'File_' + CONVERT(nvarchar(10), vfs.file_id)),
+    file_type = ISNULL(mf.type_desc, N'UNKNOWN'),
+    physical_name = ISNULL(mf.physical_name, N''),
     size_mb = CONVERT(decimal(18,2), vfs.size_on_disk_bytes / 1048576.0),
     num_of_reads = vfs.num_of_reads,
     num_of_writes = vfs.num_of_writes,
@@ -92,11 +92,6 @@ OPTION(RECOMPILE);";
         _lastDuckDbMs = 0;
 
         var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
-
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         /* Collect all rows first */
         var fileStats = new List<(
@@ -105,25 +100,34 @@ OPTION(RECOMPILE);";
             long IoStallReadMs, long IoStallWriteMs, long IoStallQueuedReadMs, long IoStallQueuedWriteMs,
             int DatabaseId, int FileId)>();
 
-        while (await reader.ReadAsync(cancellationToken))
+        if (isAzureSqlDb)
         {
-            fileStats.Add((
-                DatabaseName: reader.IsDBNull(0) ? "Unknown" : reader.GetString(0),
-                FileName: reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
-                FileType: reader.IsDBNull(2) ? "Unknown" : reader.GetString(2),
-                PhysicalName: reader.IsDBNull(3) ? "" : reader.GetString(3),
-                SizeMb: reader.IsDBNull(4) ? 0m : reader.GetDecimal(4),
-                NumOfReads: reader.IsDBNull(5) ? 0L : reader.GetInt64(5),
-                NumOfWrites: reader.IsDBNull(6) ? 0L : reader.GetInt64(6),
-                ReadBytes: reader.IsDBNull(7) ? 0L : reader.GetInt64(7),
-                WriteBytes: reader.IsDBNull(8) ? 0L : reader.GetInt64(8),
-                IoStallReadMs: reader.IsDBNull(9) ? 0L : reader.GetInt64(9),
-                IoStallWriteMs: reader.IsDBNull(10) ? 0L : reader.GetInt64(10),
-                IoStallQueuedReadMs: reader.IsDBNull(11) ? 0L : reader.GetInt64(11),
-                IoStallQueuedWriteMs: reader.IsDBNull(12) ? 0L : reader.GetInt64(12),
-                DatabaseId: reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13)),
-                FileId: reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14))
-            ));
+            // Azure SQL DB: dm_io_virtual_file_stats is scoped to the connected database,
+            // so we must connect to each database individually.
+            var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
+            foreach (var dbName in databases)
+            {
+                try
+                {
+                    using var dbConn = await OpenAzureDatabaseConnectionAsync(server, dbName, cancellationToken);
+                    using var cmd = new SqlCommand(query, dbConn) { CommandTimeout = CommandTimeoutSeconds };
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                        fileStats.Add(ReadFileIoRow(reader));
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug("Skipping database '{Database}' for file I/O: {Error}", dbName, ex.Message);
+                }
+            }
+        }
+        else
+        {
+            using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
+            using var command = new SqlCommand(query, sqlConnection) { CommandTimeout = CommandTimeoutSeconds };
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                fileStats.Add(ReadFileIoRow(reader));
         }
         sqlSw.Stop();
 
@@ -139,14 +143,14 @@ OPTION(RECOMPILE);";
                 foreach (var stat in fileStats)
                 {
                     var deltaKey = $"{stat.DatabaseName}|{stat.FileName}";
-                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "file_io_reads", deltaKey, stat.NumOfReads, baselineOnly: true);
-                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "file_io_writes", deltaKey, stat.NumOfWrites, baselineOnly: true);
-                    var deltaReadBytes = _deltaCalculator.CalculateDelta(serverId, "file_io_read_bytes", deltaKey, stat.ReadBytes, baselineOnly: true);
-                    var deltaWriteBytes = _deltaCalculator.CalculateDelta(serverId, "file_io_write_bytes", deltaKey, stat.WriteBytes, baselineOnly: true);
-                    var deltaStallReadMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_read", deltaKey, stat.IoStallReadMs, baselineOnly: true);
-                    var deltaStallWriteMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_write", deltaKey, stat.IoStallWriteMs, baselineOnly: true);
-                    var deltaStallQueuedReadMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_queued_read", deltaKey, stat.IoStallQueuedReadMs, baselineOnly: true);
-                    var deltaStallQueuedWriteMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_queued_write", deltaKey, stat.IoStallQueuedWriteMs, baselineOnly: true);
+                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "file_io_reads", deltaKey, stat.NumOfReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "file_io_writes", deltaKey, stat.NumOfWrites, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaReadBytes = _deltaCalculator.CalculateDelta(serverId, "file_io_read_bytes", deltaKey, stat.ReadBytes, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWriteBytes = _deltaCalculator.CalculateDelta(serverId, "file_io_write_bytes", deltaKey, stat.WriteBytes, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaStallReadMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_read", deltaKey, stat.IoStallReadMs, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaStallWriteMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_write", deltaKey, stat.IoStallWriteMs, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaStallQueuedReadMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_queued_read", deltaKey, stat.IoStallQueuedReadMs, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaStallQueuedWriteMs = _deltaCalculator.CalculateDelta(serverId, "file_io_stall_queued_write", deltaKey, stat.IoStallQueuedWriteMs, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
 
                     var row = appender.CreateRow();
                     row.AppendValue(GenerateCollectionId())
@@ -187,5 +191,28 @@ OPTION(RECOMPILE);";
 
         _logger?.LogDebug("Collected {RowCount} file I/O stats for server '{Server}'", rowsCollected, server.DisplayName);
         return rowsCollected;
+    }
+
+    private static (string DatabaseName, string FileName, string FileType, string PhysicalName,
+        decimal SizeMb, long NumOfReads, long NumOfWrites, long ReadBytes, long WriteBytes,
+        long IoStallReadMs, long IoStallWriteMs, long IoStallQueuedReadMs, long IoStallQueuedWriteMs,
+        int DatabaseId, int FileId) ReadFileIoRow(SqlDataReader reader)
+    {
+        return (
+            DatabaseName: reader.IsDBNull(0) ? "Unknown" : reader.GetString(0),
+            FileName: reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
+            FileType: reader.IsDBNull(2) ? "Unknown" : reader.GetString(2),
+            PhysicalName: reader.IsDBNull(3) ? "" : reader.GetString(3),
+            SizeMb: reader.IsDBNull(4) ? 0m : reader.GetDecimal(4),
+            NumOfReads: reader.IsDBNull(5) ? 0L : reader.GetInt64(5),
+            NumOfWrites: reader.IsDBNull(6) ? 0L : reader.GetInt64(6),
+            ReadBytes: reader.IsDBNull(7) ? 0L : reader.GetInt64(7),
+            WriteBytes: reader.IsDBNull(8) ? 0L : reader.GetInt64(8),
+            IoStallReadMs: reader.IsDBNull(9) ? 0L : reader.GetInt64(9),
+            IoStallWriteMs: reader.IsDBNull(10) ? 0L : reader.GetInt64(10),
+            IoStallQueuedReadMs: reader.IsDBNull(11) ? 0L : reader.GetInt64(11),
+            IoStallQueuedWriteMs: reader.IsDBNull(12) ? 0L : reader.GetInt64(12),
+            DatabaseId: reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13)),
+            FileId: reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14)));
     }
 }

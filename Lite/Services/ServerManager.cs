@@ -347,7 +347,8 @@ public class ServerManager
                         CONVERT(integer, SERVERPROPERTY('ProductMajorVersion')) AS major_version,
                         DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
                         CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
-                        CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds
+                        CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds,
+                        HAS_DBACCESS(N'msdb') AS has_msdb_access
                     FROM sys.dm_os_sys_info", connection);
                 command.CommandTimeout = ConnectionCheckTimeoutSeconds;
 
@@ -366,6 +367,8 @@ public class ServerManager
                         status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(4));
                     if (!reader.IsDBNull(5))
                         status.IsAwsRds = Convert.ToInt32(reader.GetValue(5)) == 1;
+                    if (!reader.IsDBNull(6))
+                        status.HasMsdbAccess = Convert.ToInt32(reader.GetValue(6)) == 1;
                 }
             }
             catch (SqlException metaEx)
@@ -508,6 +511,60 @@ public class ServerManager
             _servers = new List<ServerConnection>();
             SaveServers();
         }
+    }
+
+    /// <summary>
+    /// Imports server connections from an external servers.json file.
+    /// Upserts by ServerName — existing servers are skipped, new ones are added
+    /// with their original GUIDs so Credential Manager entries still resolve.
+    /// Returns (imported count, skipped count).
+    /// </summary>
+    public (int Imported, int Skipped) ImportServersFromFile(string serversJsonPath)
+    {
+        if (!File.Exists(serversJsonPath))
+            throw new FileNotFoundException("servers.json not found", serversJsonPath);
+
+        var json = File.ReadAllText(serversJsonPath);
+        var config = JsonSerializer.Deserialize<ServersConfig>(json);
+        var importedServers = config?.Servers ?? [];
+
+        int imported = 0;
+        int skipped = 0;
+
+        lock (_serversLock)
+        {
+            foreach (var server in importedServers)
+            {
+                // Skip if we already have a server with the same name
+                var existing = _servers.FirstOrDefault(s =>
+                    string.Equals(s.ServerName, server.ServerName, StringComparison.OrdinalIgnoreCase) &&
+                    s.ReadOnlyIntent == server.ReadOnlyIntent);
+
+                if (existing != null)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                // Also skip if the same GUID already exists (shouldn't happen, but defensive)
+                if (_servers.Any(s => s.Id == server.Id))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                // Add with original GUID so Credential Manager entries still work
+                _servers.Add(server);
+                _connectionStatuses[server.Id] = new ServerConnectionStatus { ServerId = server.Id };
+                imported++;
+            }
+
+            if (imported > 0)
+                SaveServers();
+        }
+
+        _logger?.LogInformation("Imported {Imported} servers, skipped {Skipped} duplicates", imported, skipped);
+        return (imported, skipped);
     }
 
     /// <summary>

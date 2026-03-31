@@ -38,6 +38,12 @@ namespace PerformanceMonitorDashboard.Services
         public string ConnectionString => _connectionString;
 
         /// <summary>
+        /// Server name extracted from the connection string, for use in log messages.
+        /// </summary>
+        private string ServerLabel =>
+            new SqlConnectionStringBuilder(_connectionString).DataSource ?? "(unknown)";
+
+        /// <summary>
         /// Opens a throttled database connection. The semaphore is released when the connection is disposed.
         /// </summary>
         private async Task<ThrottledConnection> OpenThrottledConnectionAsync()
@@ -85,7 +91,8 @@ namespace PerformanceMonitorDashboard.Services
             string? username = null,
             string? password = null,
             string encryptMode = "Mandatory",
-            bool trustServerCertificate = false)
+            bool trustServerCertificate = false,
+            bool readOnlyIntent = false)
         {
             var builder = new SqlConnectionStringBuilder
             {
@@ -93,7 +100,8 @@ namespace PerformanceMonitorDashboard.Services
                 InitialCatalog = "PerformanceMonitor",
                 TrustServerCertificate = trustServerCertificate,
                 IntegratedSecurity = useWindowsAuth,
-                MultipleActiveResultSets = true
+                MultipleActiveResultSets = true,
+                ApplicationIntent = readOnlyIntent ? ApplicationIntent.ReadOnly : ApplicationIntent.ReadWrite
             };
 
             // Set encryption mode
@@ -176,7 +184,7 @@ namespace PerformanceMonitorDashboard.Services
                         FailureRatePercent = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4), CultureInfo.InvariantCulture),
                         TotalRuns7d = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5), CultureInfo.InvariantCulture),
                         FailedRuns7d = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6), CultureInfo.InvariantCulture),
-                        AvgDurationMs = reader.IsDBNull(7) ? 0 : Convert.ToInt32(reader.GetValue(7), CultureInfo.InvariantCulture),
+                        AvgDurationMs = reader.IsDBNull(7) ? 0 : Convert.ToInt64(reader.GetValue(7), CultureInfo.InvariantCulture),
                         TotalRowsCollected7d = reader.IsDBNull(8) ? 0L : Convert.ToInt64(reader.GetValue(8), CultureInfo.InvariantCulture)
                     });
                 }

@@ -4,13 +4,14 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
+    <StartupObject>PerformanceMonitorLite.Program</StartupObject>
     <AssemblyName>PerformanceMonitorLite</AssemblyName>
     <RootNamespace>PerformanceMonitorLite</RootNamespace>
     <Product>SQL Server Performance Monitor Lite</Product>
-    <Version>2.2.0</Version>
-    <AssemblyVersion>2.2.0.0</AssemblyVersion>
-    <FileVersion>2.2.0.0</FileVersion>
-    <InformationalVersion>2.2.0</InformationalVersion>
+    <Version>2.5.0</Version>
+    <AssemblyVersion>2.5.0.0</AssemblyVersion>
+    <FileVersion>2.5.0.0</FileVersion>
+    <InformationalVersion>2.5.0</InformationalVersion>
     <Company>Darling Data, LLC</Company>
     <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
     <Description>Lightweight SQL Server performance monitoring - no installation required on target servers</Description>
@@ -49,20 +50,21 @@
     <PackageReference Include="CredentialManagement" Version="1.0.2" />
 
     <!-- Background service hosting -->
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
 
     <!-- Logging -->
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.5" />
 
     <!-- System tray -->
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
 
     <!-- JSON configuration -->
-    <PackageReference Include="System.Text.Json" Version="10.0.3" />
+    <PackageReference Include="System.Text.Json" Version="10.0.5" />
 
     <!-- MCP server for LLM tool access -->
     <PackageReference Include="ModelContextProtocol" Version="0.7.0-preview.1" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.7.0-preview.1" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
   <ItemGroup>

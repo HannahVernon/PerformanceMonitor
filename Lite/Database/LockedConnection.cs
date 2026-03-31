@@ -13,20 +13,20 @@ using DuckDB.NET.Data;
 namespace PerformanceMonitorLite.Database;
 
 /// <summary>
-/// Wraps a DuckDBConnection with a read lock that is released when the connection is disposed.
-/// Ensures UI reads hold the lock for their entire duration, preventing CHECKPOINT or compaction
-/// from reorganizing the database file while a reader has stale file offsets.
+/// Wraps a DuckDBConnection with a lock (read or write) that is released when the connection is disposed.
+/// Ensures operations hold the lock for their entire duration, preventing CHECKPOINT or compaction
+/// from reorganizing the database file while the connection is active.
 /// </summary>
 public sealed class LockedConnection : IDisposable, IAsyncDisposable
 {
     private readonly DuckDBConnection _connection;
-    private readonly IDisposable _readLock;
+    private readonly IDisposable _lock;
     private bool _disposed;
 
-    public LockedConnection(DuckDBConnection connection, IDisposable readLock)
+    public LockedConnection(DuckDBConnection connection, IDisposable @lock)
     {
         _connection = connection;
-        _readLock = readLock;
+        _lock = @lock;
     }
 
     /// <summary>
@@ -40,7 +40,7 @@ public sealed class LockedConnection : IDisposable, IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         _connection.Dispose();
-        _readLock.Dispose();
+        _lock.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -48,6 +48,6 @@ public sealed class LockedConnection : IDisposable, IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         await _connection.DisposeAsync();
-        _readLock.Dispose();
+        _lock.Dispose();
     }
 }

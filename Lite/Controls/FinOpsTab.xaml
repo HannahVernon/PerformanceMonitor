@@ -39,16 +39,88 @@
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,6,10,0">
             <TextBlock Text="Server:" VerticalAlignment="Center" Margin="0,0,6,0"
                        FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
-            <ComboBox x:Name="ServerSelector" Width="260" DisplayMemberPath="DisplayName"
+            <ComboBox x:Name="ServerSelector" Width="260" DisplayMemberPath="DisplayNameWithIntent"
                       SelectionChanged="ServerSelector_SelectionChanged"/>
         </StackPanel>
 
         <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0">
 
+        <!-- Recommendations Sub-Tab -->
+        <TabItem Header="Recommendations">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                    <TextBlock Text="Cost-Saving Recommendations" VerticalAlignment="Center" Margin="0,0,10,0"
+                               FontWeight="Bold" FontSize="14"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <Button Content="Refresh" Click="RefreshRecommendations_Click"
+                            Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                    <TextBlock x:Name="RecommendationsCountIndicator" VerticalAlignment="Center" Margin="12,0,0,0"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                </StackPanel>
+
+                <!-- No Data Message -->
+                <TextBlock x:Name="RecommendationsNoDataMessage" Grid.Row="1"
+                           Text="No recommendations — all checks passed or insufficient data for analysis."
+                           Margin="10,0" Visibility="Collapsed"
+                           Foreground="{DynamicResource ForegroundMutedBrush}" FontStyle="Italic"/>
+
+                <!-- Recommendations DataGrid -->
+                <DataGrid x:Name="RecommendationsDataGrid" Grid.Row="2" Margin="10,4,10,10"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserSortColumns="True" CanUserResizeColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                          RowStyle="{StaticResource DefaultRowStyle}"
+                          Background="Transparent" BorderThickness="0"
+                          RowBackground="Transparent"
+                          AlternatingRowBackground="{DynamicResource DataGridAlternatingRowBrush}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" MinWidth="120" Width="Auto"/>
+                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" MinWidth="80" Width="Auto">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Severity}" Value="High">
+                                            <Setter Property="Foreground" Value="#E74C3C"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Severity}" Value="Medium">
+                                            <Setter Property="Foreground" Value="#F39C12"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Severity}" Value="Low">
+                                            <Setter Property="Foreground" Value="#27AE60"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" MinWidth="90" Width="Auto"/>
+                        <DataGridTextColumn Header="Finding" Binding="{Binding Finding}" MinWidth="250" Width="Auto"/>
+                        <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" MinWidth="400" Width="*"/>
+                        <DataGridTextColumn Header="Est. Savings ($/mo)" Binding="{Binding EstMonthlySavingsDisplay}" MinWidth="110" Width="Auto" SortMemberPath="EstMonthlySavings">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </TabItem>
+
         <!-- Utilization Sub-Tab -->
         <TabItem Header="Utilization">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
@@ -250,13 +322,36 @@
                     </GroupBox>
                 </Grid>
 
+                <!-- Cost Summary Cards (Increment 4) -->
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="10,8,10,0">
+                    <Border x:Name="HealthScoreBorder" CornerRadius="4" Padding="6,2" Margin="0,0,8,0"
+                            VerticalAlignment="Center" Background="Gray" Visibility="Collapsed">
+                        <TextBlock x:Name="HealthScoreText" Text="" FontWeight="Bold" Foreground="White" FontSize="12"/>
+                    </Border>
+                    <Border Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="10,4" Margin="0,0,8,0"
+                            x:Name="ComputeCostCard" Visibility="Collapsed">
+                        <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12">
+                            <Run Text="Budget: " FontWeight="SemiBold"/>
+                            <Run x:Name="AnnualComputeCostText" Text="$0"/>
+                        </TextBlock>
+                    </Border>
+                    <Border Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="10,4"
+                            x:Name="TotalCostCard" Visibility="Collapsed">
+                        <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12" FontWeight="Bold">
+                            <Run Text="Annual: "/>
+                            <Run x:Name="AnnualTotalCostText" Text="$0"/>
+                        </TextBlock>
+                    </Border>
+                    <Border x:Name="StorageCostCard" Visibility="Collapsed"/>
+                </StackPanel>
+
                 <!-- Classification Explanation -->
-                <TextBlock x:Name="ClassificationExplanation" Grid.Row="2" Margin="12,8,10,4"
+                <TextBlock x:Name="ClassificationExplanation" Grid.Row="3" Margin="12,8,10,4"
                            VerticalAlignment="Top" TextWrapping="Wrap" FontSize="12"
                            Foreground="{DynamicResource ForegroundMutedBrush}"/>
 
                 <!-- Provisioning Trend (7-day) -->
-                <Expander Header="7-Day Provisioning Trend" IsExpanded="False" Grid.Row="3" Margin="10,4,10,0">
+                <Expander Header="7-Day Provisioning Trend" IsExpanded="False" Grid.Row="4" Margin="10,4,10,0">
                     <DataGrid x:Name="ProvisioningTrendGrid"
                               AutoGenerateColumns="False" IsReadOnly="True"
                               CanUserSortColumns="False" HeadersVisibility="Column"
@@ -301,7 +396,7 @@
                 </Expander>
 
                 <!-- Resource Summaries -->
-                <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" Margin="0,0,0,0">
+                <ScrollViewer Grid.Row="5" VerticalScrollBarVisibility="Auto" Margin="0,0,0,0">
                     <Grid x:Name="SummaryContent">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -430,10 +525,11 @@
 
                 <!-- Empty State -->
                 <TextBlock x:Name="NoUtilizationMessage"
-                           Grid.Row="1" Grid.RowSpan="3"
+                           Grid.Row="1" Grid.RowSpan="4"
                            Text="No utilization data collected yet. Select a server above."
                            FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}"
-                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           HorizontalAlignment="Center" VerticalAlignment="Top"
+                           Margin="0,20,0,0"
                            Visibility="Collapsed"/>
             </Grid>
         </TabItem>
@@ -478,71 +574,138 @@
                               SelectionMode="Extended"
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="180"/>
-                            <DataGridTextColumn Header="CPU Time (ms)" Binding="{Binding CpuTimeMs, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding DatabaseName}" Width="180">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding CpuTimeMs, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CpuTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="CPU Time (ms)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="CPU %" Binding="{Binding PctCpuShare, StringFormat='{}{0:N1}'}" Width="70">
+                            <DataGridTextColumn Binding="{Binding PctCpuShare, StringFormat='{}{0:N1}'}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PctCpuShare" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="CPU %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Logical Reads" Binding="{Binding LogicalReads, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding LogicalReads, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LogicalReads" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Logical Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Physical Reads" Binding="{Binding PhysicalReads, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding PhysicalReads, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PhysicalReads" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Physical Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Logical Writes" Binding="{Binding LogicalWrites, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding LogicalWrites, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LogicalWrites" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Logical Writes" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Executions" Binding="{Binding ExecutionCount, StringFormat='{}{0:N0}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding ExecutionCount, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ExecutionCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Executions" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="IO Read MB" Binding="{Binding IoReadMb, StringFormat='{}{0:N2}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding IoReadMb, StringFormat='{}{0:N2}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IoReadMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="IO Read MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="IO Write MB" Binding="{Binding IoWriteMb, StringFormat='{}{0:N2}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding IoWriteMb, StringFormat='{}{0:N2}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IoWriteMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="IO Write MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="IO %" Binding="{Binding PctIoShare, StringFormat='{}{0:N1}'}" Width="70">
+                            <DataGridTextColumn Binding="{Binding PctIoShare, StringFormat='{}{0:N1}'}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PctIoShare" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="IO %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="IO Stall (ms)" Binding="{Binding IoStallMs, StringFormat='{}{0:N0}'}" Width="110">
+                            <DataGridTextColumn Binding="{Binding IoStallMs, StringFormat='{}{0:N0}'}" Width="110">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IoStallMs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="IO Stall (ms)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
@@ -592,50 +755,99 @@
                               SelectionMode="Extended"
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="180"/>
-                            <DataGridTextColumn Header="Current Size MB" Binding="{Binding CurrentSizeMb, StringFormat='{}{0:N2}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding DatabaseName}" Width="180">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding CurrentSizeMb, StringFormat='{}{0:N2}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CurrentSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Current Size MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Size 7d Ago MB" Binding="{Binding Size7dAgoMb, StringFormat='{}{0:N2}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding Size7dAgoMb, StringFormat='{}{0:N2}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Size7dAgoMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Size 7d Ago MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Size 30d Ago MB" Binding="{Binding Size30dAgoMb, StringFormat='{}{0:N2}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding Size30dAgoMb, StringFormat='{}{0:N2}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Size30dAgoMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Size 30d Ago MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Growth 7d MB" Binding="{Binding Growth7dMb, StringFormat='{}{0:N2}'}" Width="110">
+                            <DataGridTextColumn Binding="{Binding Growth7dMb, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Growth7dMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Growth 7d MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Growth 30d MB" Binding="{Binding Growth30dMb, StringFormat='{}{0:N2}'}" Width="110">
+                            <DataGridTextColumn Binding="{Binding Growth30dMb, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Growth30dMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Growth 30d MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Daily Rate MB" Binding="{Binding DailyGrowthRateMb, StringFormat='{}{0:N2}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding DailyGrowthRateMb, StringFormat='{}{0:N2}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DailyGrowthRateMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Daily Rate MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Growth % 30d" Binding="{Binding GrowthPct30d, StringFormat='{}{0:N1}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding GrowthPct30d, StringFormat='{}{0:N1}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="GrowthPct30d" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Growth % 30d" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
@@ -686,53 +898,152 @@
                               SelectionMode="Extended"
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="160"/>
-                            <DataGridTextColumn Header="File Type" Binding="{Binding FileTypeDesc}" Width="80"/>
-                            <DataGridTextColumn Header="File Name" Binding="{Binding FileName}" Width="160"/>
-                            <DataGridTextColumn Header="Total Size MB" Binding="{Binding TotalSizeMb, StringFormat='{}{0:N2}'}" Width="110">
+                            <DataGridTextColumn Binding="{Binding DatabaseName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding FileTypeDesc}" Width="80">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="FileTypeDesc" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="File Type" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding FileName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="FileName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="File Name" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding TotalSizeMb, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Total Size MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Used Size MB" Binding="{Binding UsedSizeMb, StringFormat='{}{0:N2}'}" Width="110">
+                            <DataGridTextColumn Binding="{Binding UsedSizeMb, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="UsedSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Used Size MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Free Space MB" Binding="{Binding FreeSpaceMb, StringFormat='{}{0:N2}'}" Width="110">
+                            <DataGridTextColumn Binding="{Binding FreeSpaceMb, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="FreeSpaceMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Free Space MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Used %" Binding="{Binding UsedPct, StringFormat='{}{0:N1}'}" Width="70">
+                            <DataGridTextColumn Binding="{Binding UsedPct, StringFormat='{}{0:N1}'}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="UsedPct" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Used %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Volume" Binding="{Binding VolumeMountPoint}" Width="80"/>
-                            <DataGridTextColumn Header="Volume Total MB" Binding="{Binding VolumeTotalMb, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding VolumeMountPoint}" Width="80">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="VolumeMountPoint" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Volume" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding VolumeTotalMb, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="VolumeTotalMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Volume Total MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Volume Free MB" Binding="{Binding VolumeFreeMb, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding VolumeFreeMb, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="VolumeFreeMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Volume Free MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Recovery Model" Binding="{Binding RecoveryModel}" Width="120"/>
+                            <DataGridTextColumn Binding="{Binding RecoveryModel}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RecoveryModel" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Recovery Model" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding GrowthDisplay}" Width="110" SortMemberPath="AutoGrowthSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="GrowthDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Auto Growth" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding VlfCountDisplay}" Width="80" SortMemberPath="VlfCountSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="VlfCountDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="VLF Count" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Monthly Cost ($)" Binding="{Binding MonthlyCostShare, StringFormat='{}{0:N2}'}" Width="110">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
 
@@ -771,8 +1082,8 @@
 
                 <Grid Grid.Row="1" Margin="10,0,10,10">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="2*"/>
                     </Grid.RowDefinitions>
 
                     <DataGrid x:Name="IndexAnalysisSummaryGrid" Grid.Row="0"
@@ -786,81 +1097,262 @@
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
                             <!-- Actionable columns first -->
-                            <DataGridTextColumn Header="Level" Binding="{Binding Level}" Width="80"/>
-                            <DataGridTextColumn Header="Database" Binding="{Binding DatabaseInfo}" Width="200"/>
-                            <DataGridTextColumn Header="Space Saved GB" Binding="{Binding SpaceSavedGb}" Width="110">
+                            <DataGridTextColumn Binding="{Binding Level}" Width="80">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Level" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Level" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding DatabaseInfo}" Width="200">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseInfo" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding SpaceSavedGb}" Width="110" SortMemberPath="SpaceSavedGbSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SpaceSavedGb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Space Saved GB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="% Reduction" Binding="{Binding SpaceReductionPercent}" Width="95">
+                            <DataGridTextColumn Binding="{Binding SpaceReductionPercent}" Width="95" SortMemberPath="SpaceReductionPercentSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SpaceReductionPercent" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="% Reduction" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Removable" Binding="{Binding RemovableIndexes}" Width="90">
+                            <DataGridTextColumn Binding="{Binding RemovableIndexes}" Width="90" SortMemberPath="RemovableIndexesSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RemovableIndexes" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Removable" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Current Size GB" Binding="{Binding CurrentSizeGb}" Width="115">
+                            <DataGridTextColumn Binding="{Binding CurrentSizeGb}" Width="115" SortMemberPath="CurrentSizeGbSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CurrentSizeGb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Current Size GB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="After Cleanup GB" Binding="{Binding SizeAfterCleanupGb}" Width="125">
+                            <DataGridTextColumn Binding="{Binding SizeAfterCleanupGb}" Width="125" SortMemberPath="SizeAfterCleanupGbSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SizeAfterCleanupGb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="After Cleanup GB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             <!-- Index counts -->
-                            <DataGridTextColumn Header="Total Indexes" Binding="{Binding TotalIndexes}" Width="100">
+                            <DataGridTextColumn Binding="{Binding TotalIndexes}" Width="100" SortMemberPath="TotalIndexesSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalIndexes" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Total Indexes" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Mergeable" Binding="{Binding MergeableIndexes}" Width="90">
+                            <DataGridTextColumn Binding="{Binding MergeableIndexes}" Width="90" SortMemberPath="MergeableIndexesSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MergeableIndexes" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Mergeable" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Compressable" Binding="{Binding CompressableIndexes}" Width="100">
+                            <DataGridTextColumn Binding="{Binding CompressableIndexes}" Width="100" SortMemberPath="CompressableIndexesSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CompressableIndexes" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Compressable" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="% Removable" Binding="{Binding PercentRemovable}" Width="95">
+                            <DataGridTextColumn Binding="{Binding PercentRemovable}" Width="95" SortMemberPath="PercentRemovableSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PercentRemovable" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="% Removable" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             <!-- Object context -->
-                            <DataGridTextColumn Header="Schema" Binding="{Binding SchemaName}" Width="100"/>
-                            <DataGridTextColumn Header="Table" Binding="{Binding TableName}" Width="160"/>
-                            <DataGridTextColumn Header="Tables" Binding="{Binding TablesAnalyzed}" Width="70">
+                            <DataGridTextColumn Binding="{Binding SchemaName}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SchemaName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Schema" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding TableName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TableName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Table" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding TablesAnalyzed}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TablesAnalyzed" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Tables" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             <!-- Compression -->
-                            <DataGridTextColumn Header="Compression Savings" Binding="{Binding CompressionSavingsPotential}" Width="220"/>
-                            <DataGridTextColumn Header="Compression Total" Binding="{Binding CompressionSavingsPotentialTotal}" Width="240"/>
+                            <DataGridTextColumn Binding="{Binding CompressionSavingsPotential}" Width="220">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CompressionSavingsPotential" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Compression Savings" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding CompressionSavingsPotentialTotal}" Width="240">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CompressionSavingsPotentialTotal" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Compression Total" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
                             <!-- Remaining detail -->
-                            <DataGridTextColumn Header="UDF Computed Cols" Binding="{Binding ComputedColumnsWithUdfs}" Width="130">
+                            <DataGridTextColumn Binding="{Binding ComputedColumnsWithUdfs}" Width="130">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ComputedColumnsWithUdfs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="UDF Computed Cols" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="UDF Check Constraints" Binding="{Binding CheckConstraintsWithUdfs}" Width="150">
+                            <DataGridTextColumn Binding="{Binding CheckConstraintsWithUdfs}" Width="150">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CheckConstraintsWithUdfs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="UDF Check Constraints" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Filtered Idx Missing Incl" Binding="{Binding FilteredIndexesNeedingIncludes}" Width="170">
+                            <DataGridTextColumn Binding="{Binding FilteredIndexesNeedingIncludes}" Width="170">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="FilteredIndexesNeedingIncludes" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Filtered Idx Missing Incl" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Total Rows" Binding="{Binding TotalRows}" Width="100">
+                            <DataGridTextColumn Binding="{Binding TotalRows}" Width="100" SortMemberPath="TotalRowsSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalRows" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Total Rows" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Reads" Binding="{Binding ReadsBreakdown}" Width="220"/>
-                            <DataGridTextColumn Header="Writes" Binding="{Binding Writes}" Width="90">
+                            <DataGridTextColumn Binding="{Binding ReadsBreakdown}" Width="220">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ReadsBreakdown" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding Writes}" Width="90" SortMemberPath="WritesSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Writes" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Writes" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Daily Writes Saved" Binding="{Binding DailyWriteOpsSaved}" Width="130">
+                            <DataGridTextColumn Binding="{Binding DailyWriteOpsSaved}" Width="130" SortMemberPath="DailyWriteOpsSavedSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DailyWriteOpsSaved" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Daily Writes Saved" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Lock Waits" Binding="{Binding LockWaitCount}" Width="95">
+                            <DataGridTextColumn Binding="{Binding LockWaitCount}" Width="95" SortMemberPath="LockWaitCountSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LockWaitCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Lock Waits" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Daily Lock Waits Saved" Binding="{Binding DailyLockWaitsSaved}" Width="150">
+                            <DataGridTextColumn Binding="{Binding DailyLockWaitsSaved}" Width="150" SortMemberPath="DailyLockWaitsSavedSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DailyLockWaitsSaved" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Daily Lock Waits Saved" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Avg Lock Wait ms" Binding="{Binding AvgLockWaitMs}" Width="120">
+                            <DataGridTextColumn Binding="{Binding AvgLockWaitMs}" Width="120" SortMemberPath="AvgLockWaitMsSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgLockWaitMs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Avg Lock Wait ms" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Latch Waits" Binding="{Binding LatchWaitCount}" Width="95">
+                            <DataGridTextColumn Binding="{Binding LatchWaitCount}" Width="95" SortMemberPath="LatchWaitCountSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LatchWaitCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Latch Waits" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Daily Latch Waits Saved" Binding="{Binding DailyLatchWaitsSaved}" Width="155">
+                            <DataGridTextColumn Binding="{Binding DailyLatchWaitsSaved}" Width="155" SortMemberPath="DailyLatchWaitsSavedSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DailyLatchWaitsSaved" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Daily Latch Waits Saved" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Avg Latch Wait ms" Binding="{Binding AvgLatchWaitMs}" Width="130">
+                            <DataGridTextColumn Binding="{Binding AvgLatchWaitMs}" Width="130" SortMemberPath="AvgLatchWaitMsSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgLatchWaitMs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Avg Latch Wait ms" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                         </DataGrid.Columns>
@@ -876,35 +1368,134 @@
                               SelectionMode="Extended"
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Action" Binding="{Binding ScriptType}" Width="100"/>
-                            <DataGridTextColumn Header="Info" Binding="{Binding AdditionalInfo}" Width="160"/>
-                            <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="140"/>
-                            <DataGridTextColumn Header="Schema" Binding="{Binding SchemaName}" Width="80"/>
-                            <DataGridTextColumn Header="Table" Binding="{Binding TableName}" Width="160"/>
-                            <DataGridTextColumn Header="Index" Binding="{Binding IndexName}" Width="200"/>
-                            <DataGridTextColumn Header="Rule" Binding="{Binding ConsolidationRule}" Width="160"/>
-                            <DataGridTextColumn Header="Target Index" Binding="{Binding TargetIndexName}" Width="160"/>
-                            <DataGridTextColumn Header="Superseded By" Binding="{Binding SupersededInfo}" Width="160"/>
-                            <DataGridTextColumn Header="Size GB" Binding="{Binding IndexSizeGb}" Width="80">
+                            <DataGridTextColumn Binding="{Binding ScriptType}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ScriptType" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Action" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding AdditionalInfo}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AdditionalInfo" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Info" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding DatabaseName}" Width="140">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding SchemaName}" Width="80">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SchemaName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Schema" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding TableName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TableName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Table" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding IndexName}" Width="200">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IndexName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Index" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding ConsolidationRule}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ConsolidationRule" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Rule" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding TargetIndexName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TargetIndexName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Target Index" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding SupersededInfo}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SupersededInfo" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Superseded By" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding IndexSizeGb}" Width="80" SortMemberPath="IndexSizeGbSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IndexSizeGb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Size GB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Rows" Binding="{Binding IndexRows}" Width="90">
+                            <DataGridTextColumn Binding="{Binding IndexRows}" Width="90" SortMemberPath="IndexRowsSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IndexRows" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Rows" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Reads" Binding="{Binding IndexReads}" Width="90">
+                            <DataGridTextColumn Binding="{Binding IndexReads}" Width="90" SortMemberPath="IndexReadsSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IndexReads" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Writes" Binding="{Binding IndexWrites}" Width="90">
+                            <DataGridTextColumn Binding="{Binding IndexWrites}" Width="90" SortMemberPath="IndexWritesSort">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IndexWrites" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Writes" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Definition" Binding="{Binding OriginalIndexDefinition}" Width="300">
+                            <DataGridTextColumn Binding="{Binding OriginalIndexDefinition}" Width="300">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="OriginalIndexDefinition" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Definition" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="ToolTip" Value="{Binding OriginalIndexDefinition}"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Script" Binding="{Binding Script}" Width="300">
+                            <DataGridTextColumn Binding="{Binding Script}" Width="300">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Script" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Script" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="ToolTip" Value="{Binding Script}"/>
@@ -965,22 +1556,44 @@
                                       MaxHeight="250"
                                       RowStyle="{StaticResource DefaultRowStyle}">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="180"/>
-                                    <DataGridTextColumn Header="Total Size MB" Binding="{Binding TotalSizeMb, StringFormat='{}{0:N2}'}" Width="120">
+                                    <DataGridTextColumn Binding="{Binding DatabaseName}" Width="180">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding TotalSizeMb, StringFormat='{}{0:N2}'}" Width="120">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Total Size MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
+                                            <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Files" Binding="{Binding FileCount}" Width="60">
+                                    <DataGridTextColumn Binding="{Binding FileCount}" Width="60">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="FileCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Files" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
+                                            <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTime, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="160"/>
+                                    <DataGridTextColumn Binding="{Binding LastExecutionTime, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="160">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LastExecutionTime" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Last Execution" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <TextBlock x:Name="IdleDatabasesNoDataMessage"
@@ -1005,22 +1618,44 @@
                                       MaxHeight="200"
                                       RowStyle="{StaticResource DefaultRowStyle}">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Metric" Binding="{Binding Metric}" Width="180"/>
-                                    <DataGridTextColumn Header="Current MB" Binding="{Binding CurrentMb, StringFormat='{}{0:N2}'}" Width="110">
+                                    <DataGridTextColumn Binding="{Binding Metric}" Width="180">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Metric" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Metric" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding CurrentMb, StringFormat='{}{0:N2}'}" Width="110">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CurrentMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Current MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
+                                            <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Peak 24h MB" Binding="{Binding Peak24hMb, StringFormat='{}{0:N2}'}" Width="110">
+                                    <DataGridTextColumn Binding="{Binding Peak24hMb, StringFormat='{}{0:N2}'}" Width="110">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Peak24hMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Peak 24h MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
+                                            <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
                                         </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Warning" Binding="{Binding Warning}" Width="*"/>
+                                    <DataGridTextColumn Binding="{Binding Warning}" Width="*">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Warning" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Warning" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <TextBlock x:Name="TempdbPressureNoDataMessage"
@@ -1059,35 +1694,32 @@
                                       MaxHeight="250"
                                       RowStyle="{StaticResource DefaultRowStyle}">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="100"/>
-                                    <DataGridTextColumn Header="Total Wait ms" Binding="{Binding TotalWaitTimeMs, StringFormat='{}{0:N0}'}" Width="120">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding Category}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Category" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Category" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Waiting Tasks" Binding="{Binding WaitingTasks, StringFormat='{}{0:N0}'}" Width="110">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding TotalWaitTimeMs, StringFormat='{}{0:N0}'}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalWaitTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total Wait ms" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="% of Total" Binding="{Binding PctOfTotal, StringFormat='{}{0:N1}'}" Width="90">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding WaitingTasks, StringFormat='{}{0:N0}'}" Width="110">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitingTasks" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Waiting Tasks" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Top Wait Type" Binding="{Binding TopWaitType}" Width="200"/>
-                                    <DataGridTextColumn Header="Top Wait ms" Binding="{Binding TopWaitTimeMs, StringFormat='{}{0:N0}'}" Width="110">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding PctOfTotal, StringFormat='{}{0:N1}'}" Width="90">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PctOfTotal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="% of Total" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding TopWaitType}" Width="200">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TopWaitType" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Top Wait Type" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding TopWaitTimeMs, StringFormat='{}{0:N0}'}" Width="110">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TopWaitTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Top Wait ms" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding MonthlyCostShare, StringFormat='{}{0:N2}'}" Width="120"
+                                                        ToolTipService.ToolTip="Proportional share of server budget for this time window, based on wait time fraction.">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MonthlyCostShare" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Est. Cost ($)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
@@ -1131,49 +1763,40 @@
                                       MaxHeight="350"
                                       RowStyle="{StaticResource DefaultRowStyle}">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="140"/>
-                                    <DataGridTextColumn Header="Total CPU ms" Binding="{Binding TotalCpuMs, StringFormat='{}{0:N0}'}" Width="110">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding DatabaseName}" Width="140">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Avg CPU/Exec" Binding="{Binding AvgCpuMsPerExec, StringFormat='{}{0:N2}'}" Width="110">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding TotalCpuMs, StringFormat='{}{0:N0}'}" Width="110">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalCpuMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total CPU ms" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Total Reads" Binding="{Binding TotalReads, StringFormat='{}{0:N0}'}" Width="110">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding AvgCpuMsPerExec, StringFormat='{}{0:N2}'}" Width="110">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgCpuMsPerExec" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg CPU/Exec" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Avg Reads/Exec" Binding="{Binding AvgReadsPerExec, StringFormat='{}{0:N0}'}" Width="120">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding TotalReads, StringFormat='{}{0:N0}'}" Width="110">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalReads" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total Reads" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Executions" Binding="{Binding Executions, StringFormat='{}{0:N0}'}" Width="100">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="HorizontalAlignment" Value="Right"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding AvgReadsPerExec, StringFormat='{}{0:N0}'}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgReadsPerExec" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Reads/Exec" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Query Preview" Binding="{Binding QueryPreview}" Width="400">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="ToolTip" Value="{Binding QueryPreview}"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
+                                    <DataGridTextColumn Binding="{Binding Executions, StringFormat='{}{0:N0}'}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Executions" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Executions" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding MonthlyCostShare, StringFormat='{}{0:N2}'}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MonthlyCostShare" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Est. Cost ($)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Header="Query Preview" Width="400">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding QueryPreview}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2" ToolTip="{Binding FullQueryText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <TextBlock x:Name="ExpensiveQueriesNoDataMessage"
@@ -1198,32 +1821,43 @@
                                       MaxHeight="250"
                                       RowStyle="{StaticResource DefaultRowStyle}">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Day" Binding="{Binding DayDisplay}" Width="100"/>
-                                    <DataGridTextColumn Header="Avg Granted MB" Binding="{Binding AvgGrantedMb, StringFormat='{}{0:N1}'}" Width="120">
+                                    <DataGridTextColumn Binding="{Binding DayDisplay}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DayDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Day" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding AvgGrantedMb, StringFormat='{}{0:N1}'}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgGrantedMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Granted MB" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Avg Used MB" Binding="{Binding AvgUsedMb, StringFormat='{}{0:N1}'}" Width="110">
+                                    <DataGridTextColumn Binding="{Binding AvgUsedMb, StringFormat='{}{0:N1}'}" Width="110">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgUsedMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Used MB" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Efficiency %" Binding="{Binding EfficiencyPct, StringFormat='{}{0:N1}'}" Width="100">
+                                    <DataGridTextColumn Binding="{Binding EfficiencyPct, StringFormat='{}{0:N1}'}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="EfficiencyPct" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Efficiency %" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Peak Grant MB" Binding="{Binding PeakGrantedMb, StringFormat='{}{0:N1}'}" Width="120">
+                                    <DataGridTextColumn Binding="{Binding PeakGrantedMb, StringFormat='{}{0:N1}'}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PeakGrantedMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Peak Grant MB" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Wasted MB" Binding="{Binding WastedMb, StringFormat='{}{0:N1}'}" Width="100">
+                                    <DataGridTextColumn Binding="{Binding WastedMb, StringFormat='{}{0:N1}'}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WastedMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Wasted MB" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Grantees" Binding="{Binding TotalGrantees, StringFormat='{}{0:N0}'}" Width="90">
+                                    <DataGridTextColumn Binding="{Binding TotalGrantees, StringFormat='{}{0:N0}'}" Width="90">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalGrantees" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Grantees" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Waiters" Binding="{Binding TotalWaiters, StringFormat='{}{0:N0}'}" Width="80">
+                                    <DataGridTextColumn Binding="{Binding TotalWaiters, StringFormat='{}{0:N0}'}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalWaiters" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Waiters" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Timeouts" Binding="{Binding TimeoutErrors, StringFormat='{}{0:N0}'}" Width="90">
+                                    <DataGridTextColumn Binding="{Binding TimeoutErrors, StringFormat='{}{0:N0}'}" Width="90">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TimeoutErrors" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Timeouts" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Forced" Binding="{Binding ForcedGrants, StringFormat='{}{0:N0}'}" Width="80">
+                                    <DataGridTextColumn Binding="{Binding ForcedGrants, StringFormat='{}{0:N0}'}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ForcedGrants" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Forced" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                         <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
                                 </DataGrid.Columns>
@@ -1237,6 +1871,202 @@
                     </Expander>
                 </StackPanel>
             </ScrollViewer>
+            </Grid>
+        </TabItem>
+
+        <!-- High Impact Sub-Tab -->
+        <TabItem Header="High Impact">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                    <TextBlock Text="High Impact Queries" VerticalAlignment="Center" Margin="0,0,10,0"
+                               FontWeight="Bold" FontSize="14"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <Button Content="Refresh" Click="RefreshHighImpact_Click"
+                            Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                    <TextBlock Text="Time Range:" VerticalAlignment="Center" Margin="16,0,4,0" FontSize="11"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <ComboBox x:Name="HighImpactTimeRangeCombo" SelectedIndex="3" Width="120" FontSize="11"
+                              SelectionChanged="HighImpactTimeRange_Changed">
+                        <ComboBoxItem Content="Last 1 hour"/>
+                        <ComboBoxItem Content="Last 4 hours"/>
+                        <ComboBoxItem Content="Last 12 hours"/>
+                        <ComboBoxItem Content="Last 24 hours"/>
+                        <ComboBoxItem Content="Last 7 days"/>
+                    </ComboBox>
+                    <TextBlock x:Name="HighImpactCountIndicator" VerticalAlignment="Center" Margin="12,0,0,0"
+                               FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                </StackPanel>
+
+                <!-- No Data Message -->
+                <TextBlock x:Name="HighImpactNoDataMessage" Grid.Row="1"
+                           Text="No high-impact queries found for this time range."
+                           Margin="10,0" Visibility="Collapsed"
+                           Foreground="{DynamicResource ForegroundMutedBrush}" FontStyle="Italic"/>
+
+                <!-- High Impact DataGrid -->
+                <DataGrid x:Name="HighImpactDataGrid" Grid.Row="2" Margin="10,4,10,10"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserSortColumns="True" CanUserResizeColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                          RowStyle="{StaticResource DefaultRowStyle}"
+                          Background="Transparent" BorderThickness="0"
+                          RowBackground="Transparent"
+                          AlternatingRowBackground="{DynamicResource DataGridAlternatingRowBrush}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Binding="{Binding ImpactScore}" Width="60">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ImpactScore" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Score" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ImpactScoreColor}" Value="#E74C3C">
+                                            <Setter Property="Foreground" Value="#E74C3C"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding ImpactScoreColor}" Value="#F39C12">
+                                            <Setter Property="Foreground" Value="#F39C12"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding ImpactScoreColor}" Value="#27AE60">
+                                            <Setter Property="Foreground" Value="#27AE60"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding DatabaseName}" Width="120">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding TotalExecutions, StringFormat='{}{0:N0}'}" Width="100">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalExecutions" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Executions" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding TotalCpuMs, StringFormat='{}{0:N0}'}" Width="100">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalCpuMs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="CPU (ms)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding CpuShare, StringFormat='{}{0:N1}%'}" Width="70">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CpuShare" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="CPU %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding TotalDurationMs, StringFormat='{}{0:N0}'}" Width="110">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalDurationMs" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Duration (ms)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding DurationShare, StringFormat='{}{0:N1}%'}" Width="80">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DurationShare" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Duration %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding TotalReads, StringFormat='{}{0:N0}'}" Width="100">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalReads" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding ReadsShare, StringFormat='{}{0:N1}%'}" Width="70">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ReadsShare" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Reads %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding TotalWrites, StringFormat='{}{0:N0}'}" Width="90">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalWrites" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Writes" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding TotalMemoryMb, StringFormat='{}{0:N1}'}" Width="100">
+                            <DataGridTextColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalMemoryMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Memory (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTextColumn.Header>
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTemplateColumn Width="400">
+                            <DataGridTemplateColumn.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SampleQueryText" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Query Preview" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataGridTemplateColumn.Header>
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding SampleQueryText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2" ToolTip="{Binding FullQueryText}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
             </Grid>
         </TabItem>
 
@@ -1272,30 +2102,69 @@
                               SelectionMode="Extended"
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Application" Binding="{Binding ApplicationName}" Width="300"/>
-                            <DataGridTextColumn Header="Avg Connections" Binding="{Binding AvgConnections, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding ApplicationName}" Width="300">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ApplicationName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Application" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding AvgConnections, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgConnections" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Avg Connections" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Max Connections" Binding="{Binding MaxConnections, StringFormat='{}{0:N0}'}" Width="120">
+                            <DataGridTextColumn Binding="{Binding MaxConnections, StringFormat='{}{0:N0}'}" Width="120">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxConnections" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Max Connections" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Samples" Binding="{Binding SampleCount, StringFormat='{}{0:N0}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding SampleCount, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SampleCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Samples" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeenLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150"/>
-                            <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeenLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150"/>
+                            <DataGridTextColumn Binding="{Binding FirstSeenLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="FirstSeenLocal" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="First Seen" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding LastSeenLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LastSeenLocal" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Last Seen" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
 
@@ -1341,38 +2210,89 @@
                               SelectionMode="Extended"
                               RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Server" Binding="{Binding ServerName}" Width="160"/>
-                            <DataGridTextColumn Header="Edition" Binding="{Binding Edition}" Width="200"/>
-                            <DataGridTextColumn Header="Version" Binding="{Binding ProductVersion}" Width="180"/>
-                            <DataGridTextColumn Header="CPUs" Binding="{Binding CpuCount, StringFormat='{}{0:N0}'}" Width="70">
+                            <DataGridTextColumn Binding="{Binding ServerName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ServerName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Server" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding Edition}" Width="200">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Edition" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Edition" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding ProductVersion}" Width="180">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ProductVersion" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Version" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding CpuCount, StringFormat='{}{0:N0}'}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CpuCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="CPUs" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Memory MB" Binding="{Binding PhysicalMemoryMb, StringFormat='{}{0:N0}'}" Width="100">
+                            <DataGridTextColumn Binding="{Binding PhysicalMemoryMb, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PhysicalMemoryMb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Memory MB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Sockets" Binding="{Binding SocketCount}" Width="70">
+                            <DataGridTextColumn Binding="{Binding SocketCount}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SocketCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Sockets" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Cores/Socket" Binding="{Binding CoresPerSocket}" Width="100">
+                            <DataGridTextColumn Binding="{Binding CoresPerSocket}" Width="100">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CoresPerSocket" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Cores/Socket" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Status" Binding="{Binding ProvisioningDisplay}" Width="130">
+                            <DataGridTextColumn Binding="{Binding ProvisioningDisplay}" Width="130">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ProvisioningDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Status" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Style.Triggers>
@@ -1392,20 +2312,106 @@
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Avg CPU %" Binding="{Binding AvgCpuPct, StringFormat='{}{0:N1}'}" Width="80">
+                            <DataGridTextColumn Binding="{Binding AvgCpuPct, StringFormat='{}{0:N1}'}" Width="80">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgCpuPct" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Avg CPU %" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Storage GB" Binding="{Binding StorageTotalGb, StringFormat='{}{0:N1}'}" Width="95">
+                            <DataGridTextColumn Binding="{Binding StorageTotalGb, StringFormat='{}{0:N1}'}" Width="95">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="StorageTotalGb" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Storage GB" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Idle DBs" Binding="{Binding IdleDbCount}" Width="70">
+                            <DataGridTextColumn Binding="{Binding IdleDbCount}" Width="70">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IdleDbCount" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Idle DBs" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
                                 <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="Uptime" Binding="{Binding UptimeDisplay}" Width="90"/>
-                            <DataGridTextColumn Header="Start Time" Binding="{Binding SqlServerStartTime, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150"/>
-                            <DataGridTextColumn Header="Last Updated" Binding="{Binding LastUpdated, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150"/>
-                            <DataGridTextColumn Header="HADR" Binding="{Binding HadrDisplay}" Width="60"/>
-                            <DataGridTextColumn Header="Clustered" Binding="{Binding ClusteredDisplay}" Width="80"/>
+                            <DataGridTextColumn Binding="{Binding UptimeDisplay}" Width="90">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="UptimeDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Uptime" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding SqlServerStartTime, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SqlServerStartTime" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Start Time" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding LastUpdated, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LastUpdated" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Last Updated" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Monthly ($)" Binding="{Binding MonthlyCost, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Annual ($)" Binding="{Binding AnnualCost, StringFormat='{}{0:N0}'}" Width="100">
+                                <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style></DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Health" Binding="{Binding HealthScore}" Width="60">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HealthScoreColor}" Value="#27AE60">
+                                                <Setter Property="Foreground" Value="#27AE60"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding HealthScoreColor}" Value="#F39C12">
+                                                <Setter Property="Foreground" Value="#F39C12"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding HealthScoreColor}" Value="#E74C3C">
+                                                <Setter Property="Foreground" Value="#E74C3C"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="License Warning" Binding="{Binding LicenseWarning}" Width="250">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="#E74C3C"/>
+                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding HadrDisplay}" Width="60">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="HadrDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="HADR" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding ClusteredDisplay}" Width="80">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ClusteredDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Clustered" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
 

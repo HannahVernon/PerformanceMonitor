@@ -22,7 +22,7 @@
 | **Requires** | SQL Agent running ([see permissions](#permissions)) | `VIEW SERVER STATE` ([see permissions](#permissions)) |
 | **Get started** | Run the installer, open the dashboard | Download, run, add a server, done |
 
-Both editions include real-time alerts (system tray + email), charts and graphs, dark and light themes, CSV export, and a built-in MCP server for AI-powered analysis with tools like Claude.
+Both editions include real-time alerts (system tray + email + webhooks), charts and graphs, dark and light themes, CSV export, and a built-in MCP server for AI-powered analysis with tools like Claude.
 
 All release binaries are digitally signed via [SignPath](https://signpath.io) — no more Windows SmartScreen warnings.
 
@@ -42,13 +42,13 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 🔍 **32 specialized T-SQL collectors** running on configurable schedules with named presets (Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments.
 
-🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications plus styled HTML emails with full XML attachments for offline analysis
+🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications, styled HTML emails with full XML attachments, and webhook notifications for external integrations
 
 📊 **NOC-style dashboard** with green/yellow/red health cards, auto-refresh, configurable time ranges, and dark/light themes
 
 📋 **Graphical plan viewer** with native ShowPlan rendering, 30-rule PlanAnalyzer, operator-level cost breakdown, and a standalone mode for opening `.sqlplan` files without a server connection
 
-🤖 **Built-in MCP server** with 28-32 read-only tools for AI analysis — ask Claude Code or Cursor "what are the top wait types on my server?" and get answers from your actual monitoring data
+🤖 **Built-in MCP server** with 51-63 read-only tools for AI analysis — ask Claude Code or Cursor "what are the top wait types on my server?" and get answers from your actual monitoring data
 
 🧰 **Community tools installed automatically** — sp_WhoIsActive, sp_BlitzLock, sp_HealthParser, sp_HumanEventsBlockViewer
 
@@ -80,6 +80,8 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 4. Double-click the server in the sidebar to connect
 
 Data starts flowing within 1–5 minutes. That's it. No installation on your server, no Agent jobs, no sysadmin required.
+
+**Upgrading from zip?** Click **Import Settings** then **Import Data** in the sidebar and point both at your old Lite folder. Settings imports server connections, alert thresholds, SMTP config, and schedules. Data imports historical DuckDB + Parquet archives. **Auto-update users** (installed via Setup.exe) get updates automatically — no manual import needed.
 
 **Always On AG?** Enable **ReadOnlyIntent** in the connection settings to route Lite's monitoring queries to a readable secondary, keeping the primary clear.
 
@@ -115,6 +117,8 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 
 ### Lite Data Storage
 
+All data is stored in `%LOCALAPPDATA%\PerformanceMonitorLite\` — separate from the executable, so auto-updates don't affect your data.
+
 - **Hot data** in DuckDB 1.5.0 — non-blocking checkpoints, free block reuse, stable file size without periodic resets
 - **Archive** to Parquet with ZSTD compression (~10x reduction) — automatic monthly compaction keeps file count low (~75 files vs thousands)
 - **Retention**: 3-month calendar-month rolling window
@@ -126,7 +130,7 @@ All configuration lives in the `config/` folder:
 
 | File | Purpose |
 |---|---|
-| `servers.json` | Server connections (passwords in Windows Credential Manager) |
+| `servers.json` | Server connections (passwords in Windows Credential Manager). Optional **Utility Database** per server for community procs installed outside master. |
 | `settings.json` | Retention, MCP server, startup behavior, alert thresholds, SMTP configuration |
 | `collection_schedule.json` | Per-collector enable/disable and frequency |
 | `ignored_wait_types.json` | 144 benign wait types excluded by default |
@@ -169,7 +173,7 @@ PerformanceMonitorInstaller.exe YourServerName --uninstall
 PerformanceMonitorInstaller.exe YourServerName sa YourPassword --uninstall
 ```
 
-The installer automatically tests the connection, executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. A GUI installer (`InstallerGui/`) is also available with the same functionality.
+The installer automatically tests the connection, checks the SQL Server version (2016+ required), executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. You can also install directly from the Dashboard's Add Server dialog.
 
 ### CLI Installer Options
 
@@ -197,9 +201,10 @@ The installer automatically tests the connection, executes SQL scripts, download
 | `2` | Connection failed |
 | `3` | Critical file failed (scripts 01–03) |
 | `4` | Partial installation (non-critical failures) |
-| `5` | Version check failed |
+| `5` | Version check failed (SQL Server 2014 or earlier) |
 | `6` | SQL files not found |
 | `7` | Uninstall failed |
+| `8` | Upgrade script failed |
 
 ### Post-Installation
 
@@ -296,11 +301,11 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Graphical plan viewer | Built-in with 30-rule PlanAnalyzer | Built-in with 30-rule PlanAnalyzer |
 | Standalone plan viewer | Open/paste/drag `.sqlplan` files | Open/paste/drag `.sqlplan` files |
 | Community tools (sp_WhoIsActive, sp_BlitzLock) | Installed automatically | Not needed |
-| Alerts (tray + email) | Blocking, deadlocks, CPU | Blocking, deadlocks, CPU |
+| Alerts (tray + email + webhooks) | Blocking, deadlocks, CPU | Blocking, deadlocks, CPU |
 | Dashboard | Separate app | Built-in |
 | Themes | Dark and light | Dark and light |
 | Portability | Server-bound | Single executable |
-| MCP server (LLM integration) | Built into Dashboard (28 tools) | Built-in (32 tools) |
+| MCP server (LLM integration) | Built into Dashboard (63 tools) | Built-in (51 tools) |
 
 ---
 
@@ -311,7 +316,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Tab | Contents |
 |---|---|
 | **Overview** | Resource overview, daily summary, critical issues, server config changes, database config changes, trace flag changes, collection health |
-| **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns |
+| **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns, query heatmap |
 | **Resource Metrics** | Server trends, wait stats, TempDB, file I/O latency, perfmon counters, default trace events, trace analysis, session stats, latch stats, spinlock stats |
 | **Memory** | Memory overview, grants, clerks, plan cache, memory pressure events |
 | **Locking** | Blocking chains, deadlocks, blocking/deadlock trends |
@@ -323,19 +328,20 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 
 | Tab | Contents |
 |---|---|
+| **Overview** | 2x2 resource chart grid (CPU, Memory, Wait Stats, TempDB) with drill-down |
 | **Active Queries** | Running queries with session details, wait types, blocking, DOP, memory grants |
 | **Wait Stats** | Filterable wait statistics chart with delta calculations |
 | **CPU** | SQL Server CPU vs Other Processes over time |
 | **Memory** | Physical memory overview, SQL Server memory trend, memory clerk breakdown |
-| **Queries** | Performance trends, top queries and procedures by duration, Query Store integration |
+| **Queries** | Performance trends, top queries and procedures by duration, Query Store integration, query heatmap |
 | **File I/O** | Read/write I/O trends per database file |
 | **TempDB** | Space usage breakdown and TempDB file I/O |
 | **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history |
 | **Perfmon** | Selectable SQL Server performance counters over time |
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
-| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, application connections, wait/query/TempDB/memory grant optimization |
+| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
 
-Both editions feature auto-refresh, configurable time ranges, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
+Both editions feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
 
 ---
 
@@ -354,7 +360,7 @@ Both editions include a real-time alert engine that monitors for performance iss
 | **TempDB space** | 80% | Fires when TempDB usage exceeds the percentage threshold |
 | **Long-running agent jobs** | 3× average | Fires when a job's current duration exceeds a multiple of its historical average |
 | **High CPU** | 90% (Full), 80% (Lite) | Fires when total CPU (SQL + other) exceeds the threshold |
-| **Connection changes** | N/A | Fires when a monitored server goes offline or comes back online |
+| **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online (tray + email) |
 
 All thresholds are configurable in Settings.
 
@@ -364,8 +370,9 @@ All thresholds are configurable in Settings.
 
 - **System tray** — balloon notifications with a configurable per-metric cooldown (default: 5 minutes)
 - **Email (SMTP)** — styled HTML emails with a configurable per-metric cooldown (default: 15 minutes), plus configurable SMTP settings (server, port, SSL, authentication, recipients)
+- **Webhook** — HTTP POST to a configurable endpoint for integration with external alerting systems (Slack, Teams, PagerDuty, etc.)
 
-Both cooldown periods are independently configurable in Settings under the Performance Alerts section.
+All cooldown periods are independently configurable in Settings under the Performance Alerts section.
 
 ### Email Alerts
 
@@ -428,7 +435,7 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 
 ### Available Tools
 
-Full Edition exposes 28 tools, Lite Edition exposes 32. Core tools are shared across both editions.
+Full Edition exposes 63 tools, Lite Edition exposes 51. Core tools are shared across both editions.
 
 | Category | Tools |
 |---|---|
@@ -437,13 +444,25 @@ Full Edition exposes 28 tools, Lite Edition exposes 32. Core tools are shared ac
 | Alerts | `get_alert_history`, `get_alert_settings`, `get_mute_rules` |
 | Waits | `get_wait_stats`, `get_wait_types`\*, `get_wait_trend`, `get_waiting_tasks`\* |
 | Queries | `get_top_queries_by_cpu`, `get_top_procedures_by_cpu`, `get_query_store_top`, `get_expensive_queries`\*\*, `get_query_duration_trend`\*, `get_query_trend` |
+| Active Queries | `get_active_queries` |
 | CPU | `get_cpu_utilization` |
 | Memory | `get_memory_stats`, `get_memory_trend`, `get_memory_clerks`, `get_memory_grants` |
 | Blocking | `get_blocking`\*\*, `get_deadlocks`, `get_deadlock_detail`, `get_blocked_process_reports`\*, `get_blocked_process_xml`, `get_blocking_deadlock_stats`\*\*, `get_blocking_trend`\*, `get_deadlock_trend`\* |
 | I/O | `get_file_io_stats`, `get_file_io_trend` |
 | TempDB | `get_tempdb_trend` |
 | Perfmon | `get_perfmon_stats`, `get_perfmon_trend` |
-| Jobs | `get_running_jobs`\* |
+| Jobs | `get_running_jobs` |
+| Configuration | `get_server_config`\*, `get_database_config`\*, `get_database_scoped_config`\*, `get_trace_flags`\* |
+| Config History | `get_server_config_changes`\*\*, `get_database_config_changes`\*\*, `get_trace_flag_changes`\*\* |
+| Server Info | `get_server_properties`, `get_database_sizes` |
+| Sessions | `get_session_stats` |
+| Scheduler | `get_cpu_scheduler_pressure`\*\* |
+| Latch/Spinlock | `get_latch_stats`\*\*, `get_spinlock_stats`\*\* |
+| Diagnostics | `get_plan_cache_bloat`\*\*, `get_critical_issues`\*\* |
+| System Events | `get_default_trace_events`\*\*, `get_trace_analysis`\*\*, `get_memory_pressure_events`\*\* |
+| Health Parser | `get_health_parser_system_health`\*\*, `get_health_parser_severe_errors`\*\*, `get_health_parser_io_issues`\*\*, `get_health_parser_scheduler_issues`\*\*, `get_health_parser_memory_conditions`\*\*, `get_health_parser_cpu_tasks`\*\*, `get_health_parser_memory_broker`\*\*, `get_health_parser_memory_node_oom`\*\* |
+| Plan Analysis | `analyze_query_plan`, `analyze_procedure_plan`, `analyze_query_store_plan`, `analyze_plan_xml`, `get_plan_xml` |
+| Diagnostic Analysis | `analyze_server`\*, `get_analysis_facts`\*, `compare_analysis`\*, `audit_config`\*, `get_analysis_findings`\*, `mute_analysis_finding`\* |
 
 \* Lite only | \*\* Full only
 
@@ -582,8 +601,8 @@ Monitor/
 ├── install/          # 58 SQL installation scripts
 ├── upgrades/         # Version-specific upgrade scripts
 ├── Installer/        # CLI installer for Full Edition database (C#)
-├── InstallerGui/     # GUI installer for Full Edition database (WPF)
-├── Dashboard/        # Full Edition dashboard application (WPF)
+├── Installer.Core/   # Shared installation library (CLI + Dashboard)
+├── Dashboard/        # Full Edition dashboard application (WPF, includes installer)
 │
 │   Lite Edition (standalone desktop app, nothing installed on server)
 ├── Lite/             # Lite Edition desktop application (WPF)
@@ -607,9 +626,6 @@ dotnet build Lite/PerformanceMonitorLite.csproj
 
 # CLI Installer (self-contained)
 dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
-
-# GUI Installer
-dotnet publish InstallerGui/InstallerGui.csproj -c Release -r win-x64 --self-contained
 ```
 
 ---

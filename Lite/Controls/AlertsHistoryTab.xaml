@@ -32,6 +32,10 @@
                 <MenuItem Header="Mute Similar Alerts..." Click="MuteSimilarAlerts_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F507;"/></MenuItem.Icon>
                 </MenuItem>
+                <Separator/>
+                <MenuItem Header="Dismiss Selected" Click="DismissSelected_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x2717;"/></MenuItem.Icon>
+                </MenuItem>
             </ContextMenu>
 
             <Style x:Key="DefaultRowStyle" TargetType="DataGridRow">
@@ -52,6 +56,10 @@
                     <DataTrigger Binding="{Binding Muted}" Value="True">
                         <Setter Property="Opacity" Value="0.5"/>
                         <Setter Property="FontStyle" Value="Italic"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsArchived}" Value="True">
+                        <Setter Property="Foreground" Value="#FF888888"/>
+                        <Setter Property="ToolTip" Value="This alert has been archived and cannot be dismissed."/>
                     </DataTrigger>
                 </Style.Triggers>
             </Style>
@@ -90,6 +98,10 @@
                     Margin="4,0,0,0" Padding="10,4" MinWidth="70"/>
             <TextBlock x:Name="AlertCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
                        FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+            <TextBlock x:Name="LastRefreshedIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
+                       FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+            <TextBlock x:Name="ArchivalWarning" Text="" Margin="8,0,0,0" VerticalAlignment="Center"
+                       FontSize="11" Foreground="#FFCC6600" FontWeight="SemiBold" Visibility="Collapsed"/>
         </StackPanel>
 
         <!-- DataGrid -->
