@@ -106,7 +106,11 @@ namespace PerformanceMonitorDashboard.Controls
             SetupChartContextMenus();
             Loaded += OnLoaded;
             Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-            Unloaded += (_, _) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            Unloaded += (_, _) =>
+            {
+                Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+                DisposeChartHelpers();
+            };
 
             // Apply dark theme immediately so charts don't flash white before data loads
             TabHelpers.ApplyThemeToChart(MemoryStatsOverviewChart);
@@ -122,6 +126,16 @@ namespace PerformanceMonitorDashboard.Controls
             _memoryClerksHover = new Helpers.ChartHoverHelper(MemoryClerksChart, "MB");
             _planCacheHover = new Helpers.ChartHoverHelper(PlanCacheChart, "MB");
             _memoryPressureEventsHover = new Helpers.ChartHoverHelper(MemoryPressureEventsChart, "events");
+        }
+
+        public void DisposeChartHelpers()
+        {
+            _memoryStatsOverviewHover?.Dispose();
+            _memoryGrantSizingHover?.Dispose();
+            _memoryGrantActivityHover?.Dispose();
+            _memoryClerksHover?.Dispose();
+            _planCacheHover?.Dispose();
+            _memoryPressureEventsHover?.Dispose();
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)

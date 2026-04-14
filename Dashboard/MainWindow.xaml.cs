@@ -56,6 +56,8 @@ namespace PerformanceMonitorDashboard
         private Controls.FinOpsContent? _finOpsContent;
         private AlertsHistoryContent? _alertsHistoryContent;
 
+        private readonly Dictionary<string, EventHandler> _alertAcknowledgedHandlers = new();
+
         private McpHostService? _mcpHostService;
         private CancellationTokenSource? _mcpCts;
 
@@ -571,12 +573,14 @@ namespace PerformanceMonitorDashboard
                     System.Windows.MessageBoxImage.Error);
                 return;
             }
-            serverTab.AlertAcknowledged += (_, _) =>
+            EventHandler alertHandler = (_, _) =>
             {
                 _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
                 UpdateAlertBadge();
                 _alertsHistoryContent?.RefreshAlerts();
             };
+            serverTab.AlertAcknowledged += alertHandler;
+            _alertAcknowledgedHandlers[server.Id] = alertHandler;
 
             var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
             var headerText = new TextBlock
@@ -875,6 +879,14 @@ namespace PerformanceMonitorDashboard
                 }
                 else if (_openTabs.TryGetValue(tabId, out var tabToClose))
                 {
+                    if (tabToClose.Content is ServerTab serverTab)
+                    {
+                        if (_alertAcknowledgedHandlers.TryGetValue(tabId, out var handler))
+                        {
+                            serverTab.AlertAcknowledged -= handler;
+                            _alertAcknowledgedHandlers.Remove(tabId);
+                        }
+                    }
                     _openTabs.Remove(tabId);
                     _tabBadges.Remove(tabId);
                     ServerTabControl.Items.Remove(tabToClose);

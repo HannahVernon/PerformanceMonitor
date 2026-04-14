@@ -130,7 +130,11 @@ namespace PerformanceMonitorDashboard.Controls
             SetupChartContextMenus();
             Loaded += OnLoaded;
             Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-            Unloaded += (_, _) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            Unloaded += (_, _) =>
+            {
+                Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+                DisposeChartHelpers();
+            };
 
             // Apply dark theme immediately so charts don't flash white before data loads
             TabHelpers.ApplyThemeToChart(LatchStatsChart);
@@ -158,11 +162,23 @@ namespace PerformanceMonitorDashboard.Controls
             _tempDbLatencyHover = new Helpers.ChartHoverHelper(TempDbLatencyChart, "ms");
         }
 
+        public void DisposeChartHelpers()
+        {
+            _sessionStatsHover?.Dispose();
+            _latchStatsHover?.Dispose();
+            _spinlockStatsHover?.Dispose();
+            _fileIoReadHover?.Dispose();
+            _fileIoWriteHover?.Dispose();
+            _fileIoReadThroughputHover?.Dispose();
+            _fileIoWriteThroughputHover?.Dispose();
+            _perfmonHover?.Dispose();
+            _waitStatsHover?.Dispose();
+            _tempdbStatsHover?.Dispose();
+            _tempDbLatencyHover?.Dispose();
+        }
+
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
-            // Apply minimum column widths based on header text
-
-            // Freeze identifier columns
         }
 
         private void OnThemeChanged(string _)
@@ -1025,33 +1041,15 @@ namespace PerformanceMonitorDashboard.Controls
 
         #region Server Trends Tab
 
-        private async void CompareToCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!IsLoaded) return;
-            ComparisonRange = GetComparisonRange();
-            await RefreshServerTrendsAsync();
-        }
-
         private (DateTime From, DateTime To)? ComparisonRange { get; set; }
 
         /// <summary>
-        /// Computes the reference time range for the comparison overlay.
-        /// Returns null if "None" is selected.
+        /// Sets the comparison range from the global Compare dropdown and refreshes Server Trends.
         /// </summary>
-        private (DateTime From, DateTime To)? GetComparisonRange()
+        public async Task SetComparisonRangeAsync((DateTime From, DateTime To)? range)
         {
-            if (CompareToCombo == null || CompareToCombo.SelectedIndex <= 0) return null;
-
-            var currentEnd = _serverTrendsToDate ?? DateTime.UtcNow;
-            var currentStart = _serverTrendsFromDate ?? currentEnd.AddHours(-_serverTrendsHoursBack);
-
-            return CompareToCombo.SelectedIndex switch
-            {
-                1 => (currentStart.AddDays(-1), currentEnd.AddDays(-1)),   // Yesterday
-                2 => (currentStart.AddDays(-7), currentEnd.AddDays(-7)),   // Last week
-                3 => (currentStart.AddDays(-7), currentEnd.AddDays(-7)),   // Same day last week
-                _ => null
-            };
+            ComparisonRange = range;
+            await RefreshServerTrendsAsync();
         }
 
         private async Task RefreshServerTrendsAsync()

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows.Data;
 using System.Text;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -46,7 +47,9 @@ namespace PerformanceMonitorDashboard
 
         private readonly UserPreferencesService _preferencesService;
         private DispatcherTimer? _autoRefreshTimer;
+        private CancellationTokenSource? _autoRefreshCts;
         private bool _isRefreshing;
+        private DateTime _refreshStartedUtc;
         private bool _suppressPickerUpdates;
 
         // Filter state dictionaries for each DataGrid
@@ -68,6 +71,14 @@ namespace PerformanceMonitorDashboard
 
         // Legend panel references for edge-based legends (ScottPlot issue #4717 workaround)
         private Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
+
+        // Stored event handler delegates for cleanup
+        private Action<string, string, string?>? _viewPlanHandler;
+        private Action<string>? _actualPlanStartedHandler;
+        private Action? _actualPlanFinishedHandler;
+        private Action<DateTime, DateTime>? _drillDownTimeRangeHandler;
+        private Action? _subTabChangedHandler;
+        private Analysis.SqlServerBaselineProvider? _baselineProvider;
 
         // Chart hover tooltips
         private Helpers.ChartHoverHelper? _resourceOverviewCpuHover;
@@ -118,7 +129,6 @@ namespace PerformanceMonitorDashboard
 
             InitializeDefaultTimeRanges();
             SetupChartContextMenus();
-            SetupAutoRefresh();
             SetupSubTabContextMenus();
 
             BlockingSlicer.RangeChanged += OnBlockingSlicerChanged;
@@ -140,26 +150,23 @@ namespace PerformanceMonitorDashboard
             MemoryTab.Initialize(_databaseService);
             MemoryTab.ChartDrillDownRequested += OnChildChartDrillDown;
             PerformanceTab.Initialize(_databaseService, s => StatusText.Text = s);
-            PerformanceTab.ViewPlanRequested += (planXml, label, queryText) =>
+            _viewPlanHandler = (planXml, label, queryText) =>
             {
                 OpenPlanTab(planXml, label, queryText);
                 PlanViewerTabItem.IsSelected = true;
             };
-            PerformanceTab.ActualPlanStarted += (label) =>
-            {
-                ShowPlanLoading(label);
-            };
-            PerformanceTab.ActualPlanFinished += () =>
-            {
-                HidePlanLoading();
-            };
-            PerformanceTab.DrillDownTimeRangeRequested += (from, to) =>
-            {
-                SetDrillDownGlobalRange(from, to);
-            };
+            _actualPlanStartedHandler = (label) => ShowPlanLoading(label);
+            _actualPlanFinishedHandler = () => HidePlanLoading();
+            _drillDownTimeRangeHandler = (from, to) => SetDrillDownGlobalRange(from, to);
+            _subTabChangedHandler = () => UpdateCompareDropdownState();
+            PerformanceTab.ViewPlanRequested += _viewPlanHandler;
+            PerformanceTab.ActualPlanStarted += _actualPlanStartedHandler;
+            PerformanceTab.ActualPlanFinished += _actualPlanFinishedHandler;
+            PerformanceTab.DrillDownTimeRangeRequested += _drillDownTimeRangeHandler;
+            PerformanceTab.SubTabChanged += _subTabChangedHandler;
             SystemEventsContent.Initialize(_databaseService);
-            var baselineProvider = new Analysis.SqlServerBaselineProvider(_databaseService.ConnectionString);
-            ResourceMetricsContent.Initialize(_databaseService, baselineProvider);
+            _baselineProvider = new Analysis.SqlServerBaselineProvider(_databaseService.ConnectionString);
+            ResourceMetricsContent.Initialize(_databaseService, _baselineProvider);
             ResourceMetricsContent.ChartDrillDownRequested += OnChildChartDrillDown;
 
             // Set default time range on UserControls based on user preferences
@@ -337,30 +344,7 @@ namespace PerformanceMonitorDashboard
 
             if (prefs.AutoRefreshEnabled)
             {
-                _autoRefreshTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(prefs.AutoRefreshIntervalSeconds)
-                };
-                _autoRefreshTimer.Tick += async (s, e) =>
-                {
-                    if (_isRefreshing) return;
-                    _isRefreshing = true;
-
-                    try
-                    {
-                        await LoadDataAsync(fullRefresh: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error in auto-refresh: {ex.Message}", ex);
-                        StatusText.Text = "Auto-refresh error";
-                    }
-                    finally
-                    {
-                        _isRefreshing = false;
-                    }
-                };
-                _autoRefreshTimer.Start();
+                StartAutoRefreshLoop(prefs.AutoRefreshIntervalSeconds);
                 AutoRefreshToggle.IsChecked = true;
                 AutoRefreshToggle.Content = $"Auto-Refresh: {prefs.AutoRefreshIntervalSeconds}s";
             }
@@ -371,17 +355,103 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        /// <summary>
+        /// Async loop that replaces DispatcherTimer for auto-refresh. Task.Delay is not
+        /// subject to Dispatcher priority starvation under heavy UI load (chart rendering,
+        /// data binding) that can indefinitely defer Background-priority DispatcherTimer ticks.
+        /// </summary>
+        private async void StartAutoRefreshLoop(int intervalSeconds)
+        {
+            if (_autoRefreshCts != null && !_autoRefreshCts.IsCancellationRequested)
+                return;
+
+            _autoRefreshCts?.Cancel();
+            var cts = new CancellationTokenSource();
+            _autoRefreshCts = cts;
+
+            try
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), cts.Token);
+                    if (cts.Token.IsCancellationRequested) break;
+
+                    try
+                    {
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        await RefreshVisibleTabAsync();
+                        StatusText.Text = "Ready";
+                        FooterText.Text = $"Last refresh: {DateTime.Now:yyyy-MM-dd HH:mm:ss} | Server: {_serverConnection.DisplayName}";
+                        Logger.Info($"Auto-refresh completed in {sw.ElapsedMilliseconds}ms for {_serverConnection.DisplayName}");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        Logger.Error($"Auto-refresh error: {ex.Message}", ex);
+                        StatusText.Text = "Auto-refresh error";
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal shutdown
+            }
+        }
+
         private void ServerTab_Unloaded(object sender, RoutedEventArgs e)
         {
-            // Stop the timer when the tab is closed
+            _autoRefreshCts?.Cancel();
             _autoRefreshTimer?.Stop();
             _autoRefreshTimer = null;
 
-            // Unsubscribe event handlers to prevent memory leaks
             Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
             Loaded -= ServerTab_Loaded;
             Unloaded -= ServerTab_Unloaded;
             KeyDown -= ServerTab_KeyDown;
+
+            BlockingSlicer.RangeChanged -= OnBlockingSlicerChanged;
+            DeadlockSlicer.RangeChanged -= OnDeadlockSlicerChanged;
+
+            CriticalIssuesTab.InvestigateRequested -= OnInvestigateCriticalIssue;
+            MemoryTab.ChartDrillDownRequested -= OnChildChartDrillDown;
+            ResourceMetricsContent.ChartDrillDownRequested -= OnChildChartDrillDown;
+
+            if (_viewPlanHandler != null) PerformanceTab.ViewPlanRequested -= _viewPlanHandler;
+            if (_actualPlanStartedHandler != null) PerformanceTab.ActualPlanStarted -= _actualPlanStartedHandler;
+            if (_actualPlanFinishedHandler != null) PerformanceTab.ActualPlanFinished -= _actualPlanFinishedHandler;
+            if (_drillDownTimeRangeHandler != null) PerformanceTab.DrillDownTimeRangeRequested -= _drillDownTimeRangeHandler;
+            if (_subTabChangedHandler != null) PerformanceTab.SubTabChanged -= _subTabChangedHandler;
+
+            DisposeChartHelpers();
+
+            _collectionHealthUnfilteredData = null;
+            _blockingEventsUnfilteredData = null;
+            _deadlocksUnfilteredData = null;
+            _collectionHealthFilters.Clear();
+            _blockingEventsFilters.Clear();
+            _deadlocksFilters.Clear();
+            _legendPanels.Clear();
+
+            _baselineProvider?.ClearCache();
+        }
+
+        public void DisposeChartHelpers()
+        {
+            _resourceOverviewCpuHover?.Dispose();
+            _resourceOverviewMemoryHover?.Dispose();
+            _resourceOverviewIoHover?.Dispose();
+            _resourceOverviewWaitHover?.Dispose();
+            _lockWaitStatsHover?.Dispose();
+            _blockingEventsHover?.Dispose();
+            _blockingDurationHover?.Dispose();
+            _deadlocksHover?.Dispose();
+            _deadlockWaitTimeHover?.Dispose();
+            _collectorDurationHover?.Dispose();
+            _currentWaitsDurationHover?.Dispose();
+            _currentWaitsBlockedHover?.Dispose();
+
+            MemoryTab.DisposeChartHelpers();
+            ResourceMetricsContent.DisposeChartHelpers();
+            PerformanceTab.DisposeChartHelpers();
         }
 
         private void OnThemeChanged(string _)
@@ -399,7 +469,9 @@ namespace PerformanceMonitorDashboard
 
         public void RefreshAutoRefreshSettings()
         {
-            // Stop existing timer
+            // Stop existing loop and timer
+            _autoRefreshCts?.Cancel();
+            _autoRefreshCts = null;
             _autoRefreshTimer?.Stop();
             _autoRefreshTimer = null;
 
@@ -408,30 +480,7 @@ namespace PerformanceMonitorDashboard
 
             if (prefs.AutoRefreshEnabled)
             {
-                _autoRefreshTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(prefs.AutoRefreshIntervalSeconds)
-                };
-                _autoRefreshTimer.Tick += async (s, e) =>
-                {
-                    if (_isRefreshing) return;
-                    _isRefreshing = true;
-
-                    try
-                    {
-                        await LoadDataAsync(fullRefresh: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error in auto-refresh: {ex.Message}", ex);
-                        StatusText.Text = "Auto-refresh error";
-                    }
-                    finally
-                    {
-                        _isRefreshing = false;
-                    }
-                };
-                _autoRefreshTimer.Start();
+                StartAutoRefreshLoop(prefs.AutoRefreshIntervalSeconds);
                 AutoRefreshToggle.IsChecked = true;
                 AutoRefreshToggle.Content = $"Auto-Refresh: {prefs.AutoRefreshIntervalSeconds}s";
             }
@@ -457,30 +506,7 @@ namespace PerformanceMonitorDashboard
                 prefs.AutoRefreshEnabled = true;
                 _preferencesService.SavePreferences(prefs);
 
-                _autoRefreshTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(prefs.AutoRefreshIntervalSeconds)
-                };
-                _autoRefreshTimer.Tick += async (s, args) =>
-                {
-                    if (_isRefreshing) return;
-                    _isRefreshing = true;
-
-                    try
-                    {
-                        await LoadDataAsync(fullRefresh: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error in auto-refresh: {ex.Message}", ex);
-                        StatusText.Text = "Auto-refresh error";
-                    }
-                    finally
-                    {
-                        _isRefreshing = false;
-                    }
-                };
-                _autoRefreshTimer.Start();
+                StartAutoRefreshLoop(prefs.AutoRefreshIntervalSeconds);
                 AutoRefreshToggle.Content = $"Auto-Refresh: {prefs.AutoRefreshIntervalSeconds}s";
             }
             else
@@ -489,8 +515,7 @@ namespace PerformanceMonitorDashboard
                 prefs.AutoRefreshEnabled = false;
                 _preferencesService.SavePreferences(prefs);
 
-                _autoRefreshTimer?.Stop();
-                _autoRefreshTimer = null;
+                _autoRefreshCts?.Cancel();
                 AutoRefreshToggle.Content = "Auto-Refresh: Off";
             }
         }
@@ -594,6 +619,7 @@ namespace PerformanceMonitorDashboard
                 DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
 
                 await LoadDataAsync();
+                SetupAutoRefresh();
             }
             catch (Exception ex)
             {
@@ -1128,6 +1154,15 @@ namespace PerformanceMonitorDashboard
         /// </summary>
         private async Task LoadDataAsync(bool fullRefresh = true)
         {
+            if (_isRefreshing)
+            {
+                // If a previous refresh has been running for over 2 minutes, it's stuck — allow a new one
+                if ((DateTime.UtcNow - _refreshStartedUtc).TotalMinutes < 2) return;
+                Logger.Error($"Previous refresh appears stuck (started {_refreshStartedUtc:HH:mm:ss}), allowing new refresh");
+            }
+            _isRefreshing = true;
+            _refreshStartedUtc = DateTime.UtcNow;
+
             using var _ = Helpers.MethodProfiler.StartTiming("ServerTab");
             try
             {
@@ -1138,12 +1173,19 @@ namespace PerformanceMonitorDashboard
                 if (!connected)
                 {
                     StatusText.Text = $"Failed to connect to {_serverConnection.DisplayName}";
-                    MessageBox.Show(
-                        $"Could not connect to SQL Server: {_serverConnection.ServerName}\n\nCheck connection settings",
-                        "Connection Error",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error
-                    );
+                    if (fullRefresh)
+                    {
+                        MessageBox.Show(
+                            $"Could not connect to SQL Server: {_serverConnection.ServerName}\n\nCheck connection settings",
+                            "Connection Error",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error
+                        );
+                    }
+                    else
+                    {
+                        Logger.Error($"Auto-refresh connection failed for {_serverConnection.DisplayName}");
+                    }
                     return;
                 }
 
@@ -1166,16 +1208,24 @@ namespace PerformanceMonitorDashboard
             catch (Exception ex)
             {
                 StatusText.Text = "Error loading data";
-                MessageBox.Show(
-                    $"Error loading data:\n\n{ex.Message}",
-                    "Error",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error
-                );
+                if (fullRefresh)
+                {
+                    MessageBox.Show(
+                        $"Error loading data:\n\n{ex.Message}",
+                        "Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error
+                    );
+                }
+                else
+                {
+                    Logger.Error($"Auto-refresh error for {_serverConnection.DisplayName}: {ex.Message}", ex);
+                }
             }
             finally
             {
                 RefreshButton.IsEnabled = true;
+                _isRefreshing = false;
             }
         }
 
@@ -1639,10 +1689,14 @@ namespace PerformanceMonitorDashboard
             // Only handle events from the main DataTabControl, not from nested sub-tab controls
             if (e.Source != DataTabControl) return;
 
+            UpdateCompareDropdownState();
+
             // Don't refresh during initial load or if already refreshing
-            if (_isRefreshing || !IsLoaded) return;
+            if (!IsLoaded) return;
+            if (_isRefreshing && (DateTime.UtcNow - _refreshStartedUtc).TotalMinutes < 2) return;
 
             _isRefreshing = true;
+            _refreshStartedUtc = DateTime.UtcNow;
             try
             {
                 await RefreshVisibleTabAsync();
@@ -1677,6 +1731,76 @@ namespace PerformanceMonitorDashboard
             scheduleWindow.Owner = Window.GetWindow(this);
             scheduleWindow.ShowDialog();
         }
+
+        #region Global Compare Dropdown
+
+        private async void CompareToCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!IsLoaded || _isRefreshing) return;
+
+            var comparisonRange = GetComparisonRange();
+
+            try
+            {
+                // Feed comparison to Resource Metrics (Server Trends overlay)
+                await ResourceMetricsContent.SetComparisonRangeAsync(comparisonRange);
+
+                // Feed comparison to Query Performance grids
+                PerformanceTab.SetComparisonRange(comparisonRange);
+                await PerformanceTab.RefreshComparisonAsync();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Comparison refresh failed: {ex.Message}", ex);
+            }
+        }
+
+        private (DateTime From, DateTime To)? GetComparisonRange()
+        {
+            if (CompareToCombo == null || CompareToCombo.SelectedIndex <= 0) return null;
+
+            var currentEnd = _globalToDate ?? DateTime.UtcNow;
+            var currentStart = _globalFromDate ?? currentEnd.AddHours(-_globalHoursBack);
+
+            return CompareToCombo.SelectedIndex switch
+            {
+                1 => (currentStart.AddDays(-1), currentEnd.AddDays(-1)),   // Yesterday
+                2 => (currentStart.AddDays(-7), currentEnd.AddDays(-7)),   // Last week
+                3 => (currentStart.AddDays(-7), currentEnd.AddDays(-7)),   // Same day last week
+                _ => null
+            };
+        }
+
+        private bool IsComparisonSupportedOnCurrentTab()
+        {
+            return DataTabControl.SelectedIndex switch
+            {
+                1 => PerformanceTab.SubTabControl.SelectedIndex is 3 or 4 or 5, // Query Stats / Proc Stats / Query Store
+                3 => true, // Resource Metrics — Server Trends overlay
+                _ => false
+            };
+        }
+
+        private void UpdateCompareDropdownState()
+        {
+            var supported = IsComparisonSupportedOnCurrentTab();
+
+            if (supported)
+            {
+                CompareToCombo.IsEnabled = true;
+                CompareToCombo.Opacity = 1.0;
+                CompareToCombo.ToolTip = "Compare current period against a baseline";
+            }
+            else
+            {
+                CompareToCombo.SelectedIndex = 0;
+                CompareToCombo.IsEnabled = false;
+                CompareToCombo.Opacity = 0.5;
+                CompareToCombo.ToolTip = "Comparison is not available for this tab";
+            }
+        }
+
+        #endregion
 
         private void TimeDisplayMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {

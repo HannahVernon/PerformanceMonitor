@@ -37,8 +37,9 @@ public static class ShowPlanParser
         foreach (var batchEl in batches)
         {
             var batch = new PlanBatch();
-            var statementsEl = batchEl.Element(Ns + "Statements");
-            if (statementsEl != null)
+            // A Batch can contain multiple <Statements> elements (e.g., DECLARE + SELECT).
+            // Use Elements() to iterate all of them, not just the first.
+            foreach (var statementsEl in batchEl.Elements(Ns + "Statements"))
             {
                 foreach (var stmtEl in statementsEl.Elements())
                 {
@@ -204,7 +205,27 @@ public static class ShowPlanParser
             }
         }
 
-        if (queryPlanEl == null) return stmt;
+        if (queryPlanEl == null)
+        {
+            // Statements with no QueryPlan (e.g., DECLARE/ASSIGN) still get a synthetic
+            // root node so they appear in the statement tab list.
+            var stmtType = stmt.StatementType.Length > 0
+                ? stmt.StatementType.ToUpperInvariant()
+                : "STATEMENT";
+            stmt.RootNode = new PlanNode
+            {
+                NodeId = -1,
+                PhysicalOp = stmtType,
+                LogicalOp = stmtType,
+                IconName = stmtType switch
+                {
+                    "ASSIGN" => "assign",
+                    "DECLARE" => "declare",
+                    _ => "language_construct_catch_all"
+                }
+            };
+            return stmt;
+        }
 
         ParseStmtAttributes(stmt, stmtEl);
         ParseQueryPlanElements(stmt, stmtEl, queryPlanEl);
@@ -1632,7 +1653,8 @@ public static class ShowPlanParser
             });
         }
 
-        // Memory grant warning
+        // Memory grant warning (from plan XML) — gate at 1 GB to avoid noise on small grants
+        // All values are in KB, consistent with MemoryGrantInfo element
         var memWarnEl = warningsEl.Element(Ns + "MemoryGrantWarning");
         if (memWarnEl != null)
         {
@@ -1640,12 +1662,17 @@ public static class ShowPlanParser
             var requested = ParseLong(memWarnEl.Attribute("RequestedMemory")?.Value);
             var granted = ParseLong(memWarnEl.Attribute("GrantedMemory")?.Value);
             var maxUsed = ParseLong(memWarnEl.Attribute("MaxUsedMemory")?.Value);
-            result.Add(new PlanWarning
+            if (granted >= 1048576) // 1 GB in KB
             {
-                WarningType = "Memory Grant",
-                Message = $"{kind}: Requested {requested:N0} KB, Granted {granted:N0} KB, Used {maxUsed:N0} KB",
-                Severity = PlanWarningSeverity.Warning
-            });
+                var grantedMB = granted / 1024.0;
+                var usedMB = maxUsed / 1024.0;
+                result.Add(new PlanWarning
+                {
+                    WarningType = "Memory Grant",
+                    Message = $"{kind}: Granted {grantedMB:N0} MB, Used {usedMB:N0} MB",
+                    Severity = PlanWarningSeverity.Warning
+                });
+            }
         }
 
         // Implicit conversions

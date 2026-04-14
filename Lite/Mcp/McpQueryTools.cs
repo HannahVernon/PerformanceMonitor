@@ -33,19 +33,17 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetTopQueriesByCpuAsync(resolved.Value.ServerId, hours_back, top * 5);
+            var rows = await dataService.GetTopQueriesByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
             if (rows.Count == 0)
             {
                 return "No query stats available for the specified time range.";
             }
 
             IEnumerable<QueryStatsRow> filtered = rows;
-            if (!string.IsNullOrEmpty(database_name))
-                filtered = filtered.Where(r => string.Equals(r.DatabaseName, database_name, StringComparison.OrdinalIgnoreCase));
             if (parallel_only || min_dop > 1)
                 filtered = filtered.Where(r => r.MaxDop > 1 && r.MaxDop >= (min_dop > 1 ? min_dop : 2));
 
-            var result = filtered.Take(top).Select(r => new
+            var result = filtered.Select(r => new
             {
                 database_name = r.DatabaseName,
                 query_hash = r.QueryHash,
@@ -109,17 +107,13 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetTopProceduresByCpuAsync(resolved.Value.ServerId, hours_back, top * 5);
+            var rows = await dataService.GetTopProceduresByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
             if (rows.Count == 0)
             {
                 return "No procedure stats available. Delta-based collection requires at least two collection cycles (~30 minutes) to produce non-zero values.";
             }
 
-            IEnumerable<ProcedureStatsRow> filtered = rows;
-            if (!string.IsNullOrEmpty(database_name))
-                filtered = filtered.Where(r => string.Equals(r.DatabaseName, database_name, StringComparison.OrdinalIgnoreCase));
-
-            var result = filtered.Take(top).Select(r => new
+            var result = rows.Select(r => new
             {
                 database_name = r.DatabaseName,
                 full_name = r.FullName,
@@ -178,17 +172,13 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetQueryStoreTopQueriesAsync(resolved.Value.ServerId, hours_back, top * 5);
+            var rows = await dataService.GetQueryStoreTopQueriesAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
             if (rows.Count == 0)
             {
                 return "No Query Store data available. Query Store may not be enabled on target databases.";
             }
 
-            IEnumerable<QueryStoreRow> filtered = rows;
-            if (!string.IsNullOrEmpty(database_name))
-                filtered = filtered.Where(r => string.Equals(r.DatabaseName, database_name, StringComparison.OrdinalIgnoreCase));
-
-            var result = filtered.Take(top).Select(r => new
+            var result = rows.Select(r => new
             {
                 database_name = r.DatabaseName,
                 query_id = r.QueryId,

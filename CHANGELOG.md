@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-04-13
+
+### Added
+
+- **Host OS column** in Server Inventory for both Dashboard and Lite ([#748], [#823])
+- **Offline community script support** via `community/` directory for user-contributed scripts ([#814], [#822])
+- **MultiSubnetFailover connection option** in Dashboard and Lite for Always On availability groups ([#813], [#821])
+
+### Changed
+
+- **PlanAnalyzer and ShowPlanParser** synced from PerformanceStudio with latest improvements ([#816])
+- **MCP query tools** optimized for large databases ([#826])
+- **Add Server dialog UX** improved with inline connection status and full-height window
+- **"CPUs" renamed to "Logical CPUs"** for clarity in Lite ([#825])
+
+### Fixed
+
+- **Dashboard auto-refresh stalling under load** — replaced DispatcherTimer with async Task.Delay loop to prevent priority starvation during heavy chart rendering ([#833], [#834])
+- **Lite auto-refresh silently skipping** every tick ([#824])
+- **Deadlock count not resetting** between collections ([#803], [#820])
+- **Upgrade filter skipping patch versions** during version comparison ([#817], [#819])
+- **Upgrade script executing against master** instead of PerformanceMonitor database ([#828])
+- **Duplicate release builds** triggering on both created and published events
+
+[#748]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/748
+[#803]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/803
+[#813]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/813
+[#814]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/814
+[#816]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/816
+[#817]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/817
+[#819]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/819
+[#820]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/820
+[#821]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/821
+[#822]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/822
+[#823]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/823
+[#824]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/824
+[#825]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/825
+[#826]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/826
+[#828]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/828
+[#833]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/833
+[#834]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/834
+
+## [2.6.0] - 2026-04-08
+
+### Added
+
+- **Correlated timeline lanes** on Lite Overview and Dashboard — synchronized CPU, memory, waits, and TempDB trend lanes for at-a-glance correlation ([#688])
+- **Dynamic baselines and anomaly detection** in Lite and Dashboard — automatic baseline calculation with anomaly highlighting on key metrics ([#692], [#693])
+- **Query grid comparison** — before/after comparison mode for query grids in Lite and Dashboard with global Compare dropdown ([#687])
+- **Nonclustered index count badge** on modification operators in plan viewer ([#788])
+- **Upgrade detection in Edit Server** dialog — see pending upgrades without adding a new server ([#772])
+- **CLI installer interactive mode** prompts for trust-cert and encryption settings ([#784])
+- **SignPath code signing** — release binaries are now digitally signed via the [SignPath FOSS](https://signpath.io) program
+
+### Changed
+
+- **PlanAnalyzer Rule 3 (Serial Plan)** comprehensively refined — severity demotion for TRIVIAL and 0ms plans, `CouldNotGenerateValidParallelPlan` treated as actionable, all 25 `NonParallelPlanReason` values now covered
+- **PlanAnalyzer warning rules** ported from PerformanceStudio improvements
+- **Text readability** — replaced all muted/dim text colors with full foreground colors for readability
+
+### Fixed
+
+- **Embedded resource upgrade discovery** broken — upgrades silently returned zero results for Dashboard installs ([#772])
+- **Archive compaction OOM** on large parquet groups
+- **CLI installer argument parsing** treating flags as positional args ([#786])
+- **Lite long-running query alerts** firing on stale DuckDB snapshots
+- **FinOps Enterprise feature detection** now queries all databases and filters to TDE only ([#780])
+- **Second launch error** — now brings existing window to foreground instead ([#769])
+- **Overview tab Memory Grant** showing 0 for all timestamps ([#776])
+- **Lite FinOps Enterprise features** query error on servers without `database_id` column ([#777])
+- **Collector health status** incorrect for on-load collectors
+- **CSV and clipboard exports** writing `System.Windows.Controls.StackPanel` as column headers instead of actual header text ([#805])
+
+[#687]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/687
+[#688]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/688
+[#692]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/692
+[#693]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/693
+[#769]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/769
+[#772]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/772
+[#776]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/776
+[#777]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/777
+[#780]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/780
+[#784]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/784
+[#786]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/786
+[#788]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/788
+[#805]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/805
+
 ## [2.5.0] - 2026-03-30
 
 ### Important
