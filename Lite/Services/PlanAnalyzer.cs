@@ -38,23 +38,78 @@ public static partial class PlanAnalyzer
     private static void AnalyzeStatement(PlanStatement stmt)
     {
         // Rule 3: Serial plan with reason
-        if (!string.IsNullOrEmpty(stmt.NonParallelPlanReason))
+        // Skip: trivial cost (< 0.01), TRIVIAL optimization (can't go parallel anyway),
+        // and 0ms actual elapsed time (not worth flagging).
+        if (!string.IsNullOrEmpty(stmt.NonParallelPlanReason)
+            && stmt.StatementSubTreeCost >= 0.01
+            && stmt.StatementOptmLevel != "TRIVIAL"
+            && !(stmt.QueryTimeStats != null && stmt.QueryTimeStats.ElapsedTimeMs == 0))
         {
             var reason = stmt.NonParallelPlanReason switch
             {
+                // User/config forced serial
                 "MaxDOPSetToOne" => "MAXDOP is set to 1",
-                "EstimatedDOPIsOne" => "Estimated DOP is 1 (the plan's estimated cost was below the cost threshold for parallelism)",
-                "NoParallelPlansInDesktopOrExpressEdition" => "Express/Desktop edition does not support parallelism",
-                "CouldNotGenerateValidParallelPlan" => "Optimizer could not generate a valid parallel plan. Common causes: scalar UDFs, inserts into table variables, certain system functions, or OPTION (MAXDOP 1) hints",
                 "QueryHintNoParallelSet" => "OPTION (MAXDOP 1) hint forces serial execution",
+                "ParallelismDisabledByTraceFlag" => "Parallelism disabled by trace flag",
+
+                // Passive — optimizer chose serial, nothing wrong
+                "EstimatedDOPIsOne" => "Estimated DOP is 1 (the plan's estimated cost was below the cost threshold for parallelism)",
+
+                // Edition/environment limitations
+                "NoParallelPlansInDesktopOrExpressEdition" => "Express/Desktop edition does not support parallelism",
+                "NoParallelCreateIndexInNonEnterpriseEdition" => "Parallel index creation requires Enterprise edition",
+                "NoParallelPlansDuringUpgrade" => "Parallel plans disabled during upgrade",
+                "NoParallelForPDWCompilation" => "Parallel plans not supported for PDW compilation",
+                "NoParallelForCloudDBReplication" => "Parallel plans not supported during cloud DB replication",
+
+                // Query constructs that block parallelism (actionable)
+                "CouldNotGenerateValidParallelPlan" => "Optimizer could not generate a valid parallel plan. Common causes: scalar UDFs, inserts into table variables, certain system functions, or OPTION (MAXDOP 1) hints",
+                "TSQLUserDefinedFunctionsNotParallelizable" => "T-SQL scalar UDF prevents parallelism. Rewrite as an inline table-valued function, or on SQL Server 2019+ check if the UDF is eligible for automatic inlining",
+                "CLRUserDefinedFunctionRequiresDataAccess" => "CLR UDF with data access prevents parallelism",
+                "NonParallelizableIntrinsicFunction" => "Non-parallelizable intrinsic function in the query",
+                "TableVariableTransactionsDoNotSupportParallelNestedTransaction" => "Table variable transaction prevents parallelism. Consider using a #temp table instead",
+                "UpdatingWritebackVariable" => "Updating a writeback variable prevents parallelism",
+                "DMLQueryReturnsOutputToClient" => "DML with OUTPUT clause returning results to client prevents parallelism",
+                "MixedSerialAndParallelOnlineIndexBuildNotSupported" => "Mixed serial/parallel online index build not supported",
+                "NoRangesResumableCreate" => "Resumable index create cannot use parallelism for this operation",
+
+                // Cursor limitations
+                "NoParallelCursorFetchByBookmark" => "Cursor fetch by bookmark cannot use parallelism",
+                "NoParallelDynamicCursor" => "Dynamic cursors cannot use parallelism",
+                "NoParallelFastForwardCursor" => "Fast-forward cursors cannot use parallelism",
+
+                // Memory-optimized / natively compiled
+                "NoParallelForMemoryOptimizedTables" => "Memory-optimized tables do not support parallel plans",
+                "NoParallelForDmlOnMemoryOptimizedTable" => "DML on memory-optimized tables cannot use parallelism",
+                "NoParallelForNativelyCompiledModule" => "Natively compiled modules do not support parallelism",
+
+                // Remote queries
+                "NoParallelWithRemoteQuery" => "Remote queries cannot use parallelism",
+                "NoRemoteParallelismForMatrix" => "Remote parallelism not available for this query shape",
+
                 _ => stmt.NonParallelPlanReason
             };
+
+            var isActionable = stmt.NonParallelPlanReason is
+                "MaxDOPSetToOne" or "QueryHintNoParallelSet" or "ParallelismDisabledByTraceFlag"
+                or "CouldNotGenerateValidParallelPlan"
+                or "TSQLUserDefinedFunctionsNotParallelizable"
+                or "CLRUserDefinedFunctionRequiresDataAccess"
+                or "NonParallelizableIntrinsicFunction"
+                or "TableVariableTransactionsDoNotSupportParallelNestedTransaction"
+                or "UpdatingWritebackVariable"
+                or "DMLQueryReturnsOutputToClient"
+                or "NoParallelCursorFetchByBookmark"
+                or "NoParallelDynamicCursor"
+                or "NoParallelFastForwardCursor"
+                or "NoParallelWithRemoteQuery"
+                or "NoRemoteParallelismForMatrix";
 
             stmt.PlanWarnings.Add(new PlanWarning
             {
                 WarningType = "Serial Plan",
                 Message = $"Query running serially: {reason}.",
-                Severity = PlanWarningSeverity.Warning
+                Severity = isActionable ? PlanWarningSeverity.Warning : PlanWarningSeverity.Info
             });
         }
 
@@ -140,7 +195,7 @@ public static partial class PlanAnalyzer
             stmt.PlanWarnings.Add(new PlanWarning
             {
                 WarningType = "UDF Execution",
-                Message = $"Scalar UDF cost in this statement: {stmt.QueryUdfElapsedTimeMs:N0}ms elapsed, {stmt.QueryUdfCpuTimeMs:N0}ms CPU. Scalar UDFs run once per row and prevent parallelism. Rewrite as an inline table-valued function, or dump results to a #temp table and apply the UDF only to the final result set.",
+                Message = $"Scalar UDF cost in this statement: {stmt.QueryUdfElapsedTimeMs:N0}ms elapsed, {stmt.QueryUdfCpuTimeMs:N0}ms CPU. Scalar UDFs run once per row and prevent parallelism. Options: rewrite as an inline table-valued function, assign the result to a variable if only one row is needed, dump results to a #temp table and apply the UDF to the final result set, or on SQL Server 2019+ check if the UDF is eligible for automatic scalar UDF inlining.",
                 Severity = stmt.QueryUdfElapsedTimeMs >= 1000 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
             });
         }
@@ -148,7 +203,8 @@ public static partial class PlanAnalyzer
         // Rule 20: Local variables without RECOMPILE
         // Parameters with no CompiledValue are likely local variables — the optimizer
         // cannot sniff their values and uses density-based ("unknown") estimates.
-        if (stmt.Parameters.Count > 0)
+        // Skip trivial statements (simple variable assignments) where estimate quality doesn't matter.
+        if (stmt.Parameters.Count > 0 && stmt.StatementSubTreeCost >= 0.01)
         {
             var unsnifffedParams = stmt.Parameters
                 .Where(p => string.IsNullOrEmpty(p.CompiledValue))
@@ -352,21 +408,42 @@ public static partial class PlanAnalyzer
     {
         // Rule 1: Filter operators — rows survived the tree just to be discarded
         // Quantify the impact by summing child subtree cost (reads, CPU, time).
-        if (node.PhysicalOp == "Filter" && !string.IsNullOrEmpty(node.Predicate))
+        // Suppress when the filter's child subtree is trivial (low I/O, fast, cheap).
+        if (node.PhysicalOp == "Filter" && !string.IsNullOrEmpty(node.Predicate)
+            && node.Children.Count > 0)
         {
-            var impact = QuantifyFilterImpact(node);
-            var predicate = Truncate(node.Predicate, 200);
-            var message = "Filter operator discarding rows late in the plan.";
-            if (!string.IsNullOrEmpty(impact))
-                message += $"\n{impact}";
-            message += $"\nPredicate: {predicate}";
-
-            node.Warnings.Add(new PlanWarning
+            // Gate: skip trivial filters based on actual stats or estimated cost
+            bool isTrivial;
+            if (node.HasActualStats)
             {
-                WarningType = "Filter Operator",
-                Message = message,
-                Severity = PlanWarningSeverity.Warning
-            });
+                long childReads = 0;
+                foreach (var child in node.Children)
+                    childReads += SumSubtreeReads(child);
+                var childElapsed = node.Children.Max(c => c.ActualElapsedMs);
+                isTrivial = childReads < 128 && childElapsed < 10;
+            }
+            else
+            {
+                var childCost = node.Children.Sum(c => c.EstimatedTotalSubtreeCost);
+                isTrivial = childCost < 1.0;
+            }
+
+            if (!isTrivial)
+            {
+                var impact = QuantifyFilterImpact(node);
+                var predicate = Truncate(node.Predicate, 200);
+                var message = "Filter operator discarding rows late in the plan.";
+                if (!string.IsNullOrEmpty(impact))
+                    message += $"\n{impact}";
+                message += $"\nPredicate: {predicate}";
+
+                node.Warnings.Add(new PlanWarning
+                {
+                    WarningType = "Filter Operator",
+                    Message = message,
+                    Severity = PlanWarningSeverity.Warning
+                });
+            }
         }
 
         // Rule 2: Eager Index Spools — optimizer building temporary indexes on the fly
@@ -391,7 +468,7 @@ public static partial class PlanAnalyzer
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "UDF Execution",
-                Message = $"Scalar UDF executing on this operator ({node.UdfElapsedTimeMs:N0}ms elapsed, {node.UdfCpuTimeMs:N0}ms CPU). Scalar UDFs run once per row and prevent parallelism. Rewrite as an inline table-valued function, or dump the query results to a #temp table first and apply the UDF only to the final result set.",
+                Message = $"Scalar UDF executing on this operator ({node.UdfElapsedTimeMs:N0}ms elapsed, {node.UdfCpuTimeMs:N0}ms CPU). Scalar UDFs run once per row and prevent parallelism. Options: rewrite as an inline table-valued function, assign the result to a variable if only one row is needed, dump results to a #temp table and apply the UDF to the final result set, or on SQL Server 2019+ check if the UDF is eligible for automatic scalar UDF inlining.",
                 Severity = node.UdfElapsedTimeMs >= 1000 ? PlanWarningSeverity.Critical : PlanWarningSeverity.Warning
             });
         }
@@ -451,7 +528,7 @@ public static partial class PlanAnalyzer
             node.Warnings.Add(new PlanWarning
             {
                 WarningType = "Scalar UDF",
-                Message = $"Scalar {type} UDF: {udf.FunctionName}. Scalar UDFs run once per row and prevent parallelism. Rewrite as an inline table-valued function, or dump results to a #temp table and apply the UDF only to the final result set.",
+                Message = $"Scalar {type} UDF: {udf.FunctionName}. Scalar UDFs run once per row and prevent parallelism. Options: rewrite as an inline table-valued function, assign the result to a variable if only one row is needed, dump results to a #temp table and apply the UDF to the final result set, or on SQL Server 2019+ check if the UDF is eligible for automatic scalar UDF inlining.",
                 Severity = PlanWarningSeverity.Warning
             });
         }
@@ -829,12 +906,17 @@ public static partial class PlanAnalyzer
             node.EstimateRowsWithoutRowGoal > node.EstimateRows)
         {
             var reduction = node.EstimateRowsWithoutRowGoal / node.EstimateRows;
-            node.Warnings.Add(new PlanWarning
+            // Require at least a 2x reduction to be worth mentioning — "1 to 1" or
+            // tiny floating-point differences that display identically are noise
+            if (reduction >= 2.0)
             {
-                WarningType = "Row Goal",
-                Message = $"Row goal active: estimate reduced from {node.EstimateRowsWithoutRowGoal:N0} to {node.EstimateRows:N0} ({reduction:N0}x reduction) due to TOP, EXISTS, IN, or FAST hint. The optimizer chose this plan shape expecting to stop reading early. If the query reads all rows anyway, the plan choice may be suboptimal.",
-                Severity = PlanWarningSeverity.Info
-            });
+                node.Warnings.Add(new PlanWarning
+                {
+                    WarningType = "Row Goal",
+                    Message = $"Row goal active: estimate reduced from {node.EstimateRowsWithoutRowGoal:N0} to {node.EstimateRows:N0} ({reduction:N0}x reduction) due to TOP, EXISTS, IN, or FAST hint. The optimizer chose this plan shape expecting to stop reading early. If the query reads all rows anyway, the plan choice may be suboptimal.",
+                    Severity = PlanWarningSeverity.Info
+                });
+            }
         }
 
         // Rule 28: Row Count Spool — NOT IN with nullable column
@@ -1064,6 +1146,13 @@ public static partial class PlanAnalyzer
         // Walk up to Nested Loops
         parent = parent.Parent;
         if (parent == null || parent.PhysicalOp != "Nested Loops")
+            return false;
+
+        // If this Nested Loops is inside an Anti/Semi Join, this is a NOT IN/IN
+        // subquery pattern (Merge Interval optimizing range lookups), not an OR expansion
+        var nlParent = parent.Parent;
+        if (nlParent != null && nlParent.LogicalOp != null &&
+            nlParent.LogicalOp.Contains("Semi"))
             return false;
 
         return true;
