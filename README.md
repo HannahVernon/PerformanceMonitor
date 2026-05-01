@@ -56,7 +56,7 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 ## What You Get
 
-🔍 **32 specialized T-SQL collectors** running on configurable schedules with named presets (Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments.
+🔍 **32 specialized T-SQL collectors** running on configurable schedules with named presets (Off, Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments. Switch presets with a pair of SQL Agent jobs to get quiet-hours / overnight windows without writing any code.
 
 🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications, styled HTML emails with full XML attachments, and webhook notifications for external integrations
 
@@ -99,11 +99,11 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 
 **Upgrading from zip?** Click **Import Settings** then **Import Data** in the sidebar and point both at your old Lite folder. Settings imports server connections, alert thresholds, SMTP config, and schedules. Data imports historical DuckDB + Parquet archives. **Auto-update users** (installed via Setup.exe) get updates automatically — no manual import needed.
 
-**Always On AG?** Enable **ReadOnlyIntent** in the connection settings to route Lite's monitoring queries to a readable secondary, keeping the primary clear.
+**Always On AG?** Enable **ReadOnlyIntent** in the connection settings to route Lite's monitoring queries to a readable secondary, keeping the primary clear. Enable **MultiSubnetFailover** for multi-subnet failover scenarios.
 
 ### Lite Collectors
 
-23 collectors run on independent, configurable schedules:
+24 collectors run on independent, configurable schedules:
 
 | Collector | Default | Source |
 |---|---|---|
@@ -122,6 +122,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | deadlocks | 1 min | `system_health` Extended Events session |
 | session_stats | 1 min | `sys.dm_exec_sessions` active session tracking |
 | memory_clerks | 5 min | `sys.dm_os_memory_clerks` |
+| memory_pressure_events | 5 min | `sys.dm_os_ring_buffers` RING_BUFFER_RESOURCE_MONITOR |
 | query_store | 5 min | Query Store DMVs (per database) |
 | running_jobs | 5 min | `msdb` job history with duration vs avg/p95 |
 | database_size_stats | 15 min | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
@@ -135,7 +136,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 
 All data is stored in `%LOCALAPPDATA%\PerformanceMonitorLite\` — separate from the executable, so auto-updates don't affect your data.
 
-- **Hot data** in DuckDB 1.5.0 — non-blocking checkpoints, free block reuse, stable file size without periodic resets
+- **Hot data** in DuckDB 1.5.2 — non-blocking checkpoints, free block reuse, stable file size without periodic resets
 - **Archive** to Parquet with ZSTD compression (~10x reduction) — automatic monthly compaction keeps file count low (~75 files vs thousands)
 - **Retention**: 3-month calendar-month rolling window
 - Typical size: ~50–200 MB per server per week
@@ -190,6 +191,8 @@ PerformanceMonitorInstaller.exe YourServerName sa YourPassword --uninstall
 ```
 
 The installer automatically tests the connection, checks the SQL Server version (2016+ required), executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. You can also install directly from the Dashboard's Add Server dialog.
+
+**Air-gapped environments?** Place pre-downloaded community scripts (`sp_WhoIsActive.sql`, `DarlingData.sql`, `Install-All-Scripts.sql`) in a `community/` directory next to the installer. The installer uses local files when present and falls back to GitHub downloads otherwise.
 
 ### CLI Installer Options
 
@@ -310,7 +313,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | AWS RDS for SQL Server | Supported | Supported |
 | Azure SQL Database | Not supported | Supported |
 | Multi-server from one seat | Per-server install | Built-in |
-| Collectors | 32 | 23 |
+| Collectors | 32 | 24 |
 | Agent job monitoring | Duration vs historical avg/p95 | Duration vs historical avg/p95 |
 | Data storage | SQL Server (on target) | DuckDB + Parquet (local) |
 | Execution plans | Collected and stored (can be disabled per-collector) | Download on demand |
@@ -321,7 +324,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Dashboard | Separate app | Built-in |
 | Themes | Dark and light | Dark and light |
 | Portability | Server-bound | Single executable |
-| MCP server (LLM integration) | Built into Dashboard (63 tools) | Built-in (51 tools) |
+| MCP server (LLM integration) | Built into Dashboard (63 tools) | Built-in (52 tools) |
 
 ---
 
@@ -348,7 +351,7 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Active Queries** | Running queries with session details, wait types, blocking, DOP, memory grants |
 | **Wait Stats** | Filterable wait statistics chart with delta calculations |
 | **CPU** | SQL Server CPU vs Other Processes over time |
-| **Memory** | Physical memory overview, SQL Server memory trend, memory clerk breakdown |
+| **Memory** | Physical memory overview, SQL Server memory trend, memory clerk breakdown, memory pressure events |
 | **Queries** | Performance trends, top queries and procedures by duration, Query Store integration, query heatmap |
 | **File I/O** | Read/write I/O trends per database file |
 | **TempDB** | Space usage breakdown and TempDB file I/O |
@@ -451,7 +454,7 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 
 ### Available Tools
 
-Full Edition exposes 63 tools, Lite Edition exposes 51. Core tools are shared across both editions.
+Full Edition exposes 63 tools, Lite Edition exposes 52. Core tools are shared across both editions.
 
 | Category | Tools |
 |---|---|
@@ -475,7 +478,7 @@ Full Edition exposes 63 tools, Lite Edition exposes 51. Core tools are shared ac
 | Scheduler | `get_cpu_scheduler_pressure`\*\* |
 | Latch/Spinlock | `get_latch_stats`\*\*, `get_spinlock_stats`\*\* |
 | Diagnostics | `get_plan_cache_bloat`\*\*, `get_critical_issues`\*\* |
-| System Events | `get_default_trace_events`\*\*, `get_trace_analysis`\*\*, `get_memory_pressure_events`\*\* |
+| System Events | `get_default_trace_events`\*\*, `get_trace_analysis`\*\*, `get_memory_pressure_events` |
 | Health Parser | `get_health_parser_system_health`\*\*, `get_health_parser_severe_errors`\*\*, `get_health_parser_io_issues`\*\*, `get_health_parser_scheduler_issues`\*\*, `get_health_parser_memory_conditions`\*\*, `get_health_parser_cpu_tasks`\*\*, `get_health_parser_memory_broker`\*\*, `get_health_parser_memory_node_oom`\*\* |
 | Plan Analysis | `analyze_query_plan`, `analyze_procedure_plan`, `analyze_query_store_plan`, `analyze_plan_xml`, `get_plan_xml` |
 | Diagnostic Analysis | `analyze_server`\*, `get_analysis_facts`\*, `compare_analysis`\*, `audit_config`\*, `get_analysis_findings`\*, `mute_analysis_finding`\* |

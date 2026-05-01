@@ -27,12 +27,16 @@ public partial class CorrelatedTimelineLanesControl : UserControl
     private DatabaseService? _dataService;
     private SqlServerBaselineProvider? _baselineProvider;
     private CorrelatedCrosshairManager? _crosshairManager;
-    private bool _isRefreshing;
 
     public CorrelatedTimelineLanesControl()
     {
         InitializeComponent();
-        Unloaded += (_, _) => _crosshairManager?.Dispose();
+        /* No Unloaded → Dispose() handler: WPF fires Unloaded for transient
+           reasons (tab virtualization, layout rebuilds) and Dispose() clears
+           the crosshair manager's lane list, permanently breaking the crosshair
+           until the ServerTab is rebuilt. The manager holds only managed state
+           (a Popup + lane references) — letting GC clean it up with the control
+           is fine. */
     }
 
     /// <summary>
@@ -66,175 +70,180 @@ public partial class CorrelatedTimelineLanesControl : UserControl
     public async Task RefreshAsync(int hoursBack, DateTime? fromDate, DateTime? toDate,
         (DateTime From, DateTime To)? comparisonRange = null)
     {
-        if (_dataService == null || _isRefreshing) return;
-        _isRefreshing = true;
+        if (_dataService == null) return;
+
+        _crosshairManager?.PrepareForRefresh();
 
         try
         {
-            _crosshairManager?.PrepareForRefresh();
 
-            var cpuTask = _dataService.GetCpuUtilizationAsync(hoursBack, fromDate, toDate);
-            var waitTask = _dataService.GetTotalWaitStatsTrendAsync(hoursBack, fromDate, toDate);
-            var blockingTask = _dataService.GetBlockedSessionTrendAsync(hoursBack, fromDate, toDate);
-            var deadlockTask = _dataService.GetDeadlockTrendAsync(hoursBack, fromDate, toDate);
-            var memoryTask = _dataService.GetMemoryStatsAsync(hoursBack, fromDate, toDate);
-            var fileIoTask = _dataService.GetFileIoLatencyTimeSeriesAsync(false, hoursBack, fromDate, toDate);
+        var cpuTask = _dataService.GetCpuUtilizationAsync(hoursBack, fromDate, toDate);
+        var waitTask = _dataService.GetTotalWaitStatsTrendAsync(hoursBack, fromDate, toDate);
+        var blockingTask = _dataService.GetBlockedSessionTrendAsync(hoursBack, fromDate, toDate);
+        var deadlockTask = _dataService.GetDeadlockTrendAsync(hoursBack, fromDate, toDate);
+        var memoryTask = _dataService.GetMemoryStatsAsync(hoursBack, fromDate, toDate);
+        var fileIoTask = _dataService.GetFileIoLatencyTimeSeriesAsync(false, hoursBack, fromDate, toDate);
 
-            // Fetch baselines for band rendering if provider is available
-            var referenceTime = fromDate ?? DateTime.UtcNow.AddHours(-hoursBack);
-            Task<BaselineBucket?>? cpuBaselineTask = null;
-            Task<BaselineBucket?>? waitBaselineTask = null;
-            Task<BaselineBucket?>? ioBaselineTask = null;
-            Task<BaselineBucket?>? blockingBaselineTask = null;
-            Task<BaselineBucket?>? deadlockBaselineTask = null;
+        // Fetch baselines for band rendering if provider is available
+        var referenceTime = fromDate ?? DateTime.UtcNow.AddHours(-hoursBack);
+        Task<BaselineBucket?>? cpuBaselineTask = null;
+        Task<BaselineBucket?>? waitBaselineTask = null;
+        Task<BaselineBucket?>? ioBaselineTask = null;
+        Task<BaselineBucket?>? blockingBaselineTask = null;
+        Task<BaselineBucket?>? deadlockBaselineTask = null;
 
-            if (_baselineProvider != null)
-            {
-                cpuBaselineTask = GetBaselineAsync(SqlServerMetricNames.Cpu, referenceTime);
-                waitBaselineTask = GetBaselineAsync(SqlServerMetricNames.WaitStats, referenceTime);
-                ioBaselineTask = GetBaselineAsync(SqlServerMetricNames.IoLatency, referenceTime);
-                blockingBaselineTask = GetBaselineAsync(SqlServerMetricNames.Blocking, referenceTime);
-                deadlockBaselineTask = GetBaselineAsync(SqlServerMetricNames.Deadlock, referenceTime);
-            }
+        if (_baselineProvider != null)
+        {
+            cpuBaselineTask = GetBaselineAsync(SqlServerMetricNames.Cpu, referenceTime);
+            waitBaselineTask = GetBaselineAsync(SqlServerMetricNames.WaitStats, referenceTime);
+            ioBaselineTask = GetBaselineAsync(SqlServerMetricNames.IoLatency, referenceTime);
+            blockingBaselineTask = GetBaselineAsync(SqlServerMetricNames.Blocking, referenceTime);
+            deadlockBaselineTask = GetBaselineAsync(SqlServerMetricNames.Deadlock, referenceTime);
+        }
 
-            try
-            {
-                var tasks = new List<Task> { cpuTask, waitTask, blockingTask, deadlockTask, memoryTask, fileIoTask };
-                if (cpuBaselineTask != null) tasks.Add(cpuBaselineTask);
-                if (waitBaselineTask != null) tasks.Add(waitBaselineTask);
-                if (ioBaselineTask != null) tasks.Add(ioBaselineTask);
-                if (blockingBaselineTask != null) tasks.Add(blockingBaselineTask);
-                if (deadlockBaselineTask != null) tasks.Add(deadlockBaselineTask);
-                await Task.WhenAll(tasks);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"CorrelatedLanes: Data fetch failed: {ex.Message}");
-            }
+        try
+        {
+            var tasks = new List<Task> { cpuTask, waitTask, blockingTask, deadlockTask, memoryTask, fileIoTask };
+            if (cpuBaselineTask != null) tasks.Add(cpuBaselineTask);
+            if (waitBaselineTask != null) tasks.Add(waitBaselineTask);
+            if (ioBaselineTask != null) tasks.Add(ioBaselineTask);
+            if (blockingBaselineTask != null) tasks.Add(blockingBaselineTask);
+            if (deadlockBaselineTask != null) tasks.Add(deadlockBaselineTask);
+            await Task.WhenAll(tasks);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"CorrelatedLanes: Data fetch failed: {ex.Message}");
+        }
 
-            var cpuBaseline = cpuBaselineTask is { IsCompletedSuccessfully: true } ? cpuBaselineTask.Result : null;
-            var waitBaseline = waitBaselineTask is { IsCompletedSuccessfully: true } ? waitBaselineTask.Result : null;
-            var ioBaseline = ioBaselineTask is { IsCompletedSuccessfully: true } ? ioBaselineTask.Result : null;
-            var blockingBaseline = blockingBaselineTask is { IsCompletedSuccessfully: true } ? blockingBaselineTask.Result : null;
-            var deadlockBaseline = deadlockBaselineTask is { IsCompletedSuccessfully: true } ? deadlockBaselineTask.Result : null;
-            var blockingLaneBaseline = blockingBaseline ?? deadlockBaseline;
+        var cpuBaseline = cpuBaselineTask is { IsCompletedSuccessfully: true } ? cpuBaselineTask.Result : null;
+        var waitBaseline = waitBaselineTask is { IsCompletedSuccessfully: true } ? waitBaselineTask.Result : null;
+        var ioBaseline = ioBaselineTask is { IsCompletedSuccessfully: true } ? ioBaselineTask.Result : null;
+        var blockingBaseline = blockingBaselineTask is { IsCompletedSuccessfully: true } ? blockingBaselineTask.Result : null;
+        var deadlockBaseline = deadlockBaselineTask is { IsCompletedSuccessfully: true } ? deadlockBaselineTask.Result : null;
+        var blockingLaneBaseline = blockingBaseline ?? deadlockBaseline;
 
-            // minAnomalyValue: absolute floor below which dots/arrows are suppressed even if outside band.
-            // Prevents "1% CPU above 0.5% baseline" false alarms on idle servers.
-            if (cpuTask.IsCompletedSuccessfully)
-                UpdateLane(CpuChart, "CPU %",
-                    cpuTask.Result.OrderBy(d => d.SampleTime)
-                        .Select(d => (d.SampleTime.ToOADate(), (double)d.SqlServerCpuUtilization)).ToList(),
-                    "#4FC3F7", 0, 105, cpuBaseline, minAnomalyValue: 10);
-            else
-                ShowEmpty(CpuChart, "CPU %");
+        // minAnomalyValue: absolute floor below which dots/arrows are suppressed even if outside band.
+        // Prevents "1% CPU above 0.5% baseline" false alarms on idle servers.
+        if (cpuTask.IsCompletedSuccessfully)
+            UpdateLane(CpuChart, "CPU %",
+                cpuTask.Result.OrderBy(d => d.SampleTime)
+                    .Select(d => (d.SampleTime.ToOADate(), (double)d.SqlServerCpuUtilization)).ToList(),
+                "#4FC3F7", 0, 105, cpuBaseline, minAnomalyValue: 10);
+        else
+            ShowEmpty(CpuChart, "CPU %");
 
-            if (waitTask.IsCompletedSuccessfully)
-                UpdateLane(WaitStatsChart, "Wait ms/sec",
-                    waitTask.Result.Select(d => (d.CollectionTime.ToOADate(), (double)d.WaitTimeMsPerSecond)).ToList(),
-                    "#FFB74D", baseline: waitBaseline, minAnomalyValue: 100);
-            else
-                ShowEmpty(WaitStatsChart, "Wait ms/sec");
+        if (waitTask.IsCompletedSuccessfully)
+            UpdateLane(WaitStatsChart, "Wait ms/sec",
+                waitTask.Result.Select(d => (d.CollectionTime.ToOADate(), (double)d.WaitTimeMsPerSecond)).ToList(),
+                "#FFB74D", baseline: waitBaseline, minAnomalyValue: 100);
+        else
+            ShowEmpty(WaitStatsChart, "Wait ms/sec");
 
-            try
-            {
-                var blockingData = blockingTask.IsCompletedSuccessfully
-                    ? blockingTask.Result
-                        .GroupBy(d => d.CollectionTime)
-                        .OrderBy(g => g.Key)
-                        .Select(g => (g.Key.ToOADate(), (double)g.Sum(x => x.BlockedCount)))
-                        .ToList()
-                    : new List<(double, double)>();
-                var deadlockData = deadlockTask.IsCompletedSuccessfully
-                    ? deadlockTask.Result
-                        .Select(d => (d.CollectionTime.ToOADate(), (double)d.BlockedCount))
-                        .ToList()
-                    : new List<(double, double)>();
-                UpdateBlockingLane(blockingData, deadlockData, blockingLaneBaseline);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"CorrelatedLanes: Blocking lane failed: {ex}");
-                ShowEmpty(BlockingChart, "Blocking & Deadlocking");
-            }
-
-            if (memoryTask.IsCompletedSuccessfully)
-                UpdateLane(MemoryChart, "Buffer Pool MB",
-                    memoryTask.Result.Select(d => (d.CollectionTime.ToOADate(), (double)d.TotalMemoryMb)).ToList(),
-                    "#CE93D8");
-            else
-                ShowEmpty(MemoryChart, "Buffer Pool MB");
-
-            if (fileIoTask.IsCompletedSuccessfully)
-            {
-                var ioGrouped = fileIoTask.Result
+        try
+        {
+            var blockingData = blockingTask.IsCompletedSuccessfully
+                ? blockingTask.Result
                     .GroupBy(d => d.CollectionTime)
                     .OrderBy(g => g.Key)
-                    .Select(g => (g.Key.ToOADate(), (double)g.Average(x => x.ReadLatencyMs)))
-                    .ToList();
-                UpdateLane(FileIoChart, "I/O ms", ioGrouped, "#81C784", baseline: ioBaseline, minAnomalyValue: 2);
-            }
-            else
-                ShowEmpty(FileIoChart, "I/O ms");
+                    .Select(g => (g.Key.ToOADate(), (double)g.Sum(x => x.BlockedCount)))
+                    .ToList()
+                : new List<(double, double)>();
+            var deadlockData = deadlockTask.IsCompletedSuccessfully
+                ? deadlockTask.Result
+                    .Select(d => (d.CollectionTime.ToOADate(), (double)d.BlockedCount))
+                    .ToList()
+                : new List<(double, double)>();
+            UpdateBlockingLane(blockingData, deadlockData, blockingLaneBaseline);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"CorrelatedLanes: Blocking lane failed: {ex}");
+            ShowEmpty(BlockingChart, "Blocking & Deadlocking");
+        }
 
-            // Comparison overlay — fetch reference period data and render as ghost lines
-            if (comparisonRange.HasValue)
+        if (memoryTask.IsCompletedSuccessfully)
+            UpdateLane(MemoryChart, "Buffer Pool MB",
+                memoryTask.Result.Select(d => (d.CollectionTime.ToOADate(), (double)d.TotalMemoryMb)).ToList(),
+                "#CE93D8");
+        else
+            ShowEmpty(MemoryChart, "Buffer Pool MB");
+
+        if (fileIoTask.IsCompletedSuccessfully)
+        {
+            var ioGrouped = fileIoTask.Result
+                .GroupBy(d => d.CollectionTime)
+                .OrderBy(g => g.Key)
+                .Select(g => (g.Key.ToOADate(), (double)g.Average(x => x.ReadLatencyMs)))
+                .ToList();
+            UpdateLane(FileIoChart, "I/O ms", ioGrouped, "#81C784", baseline: ioBaseline, minAnomalyValue: 2);
+        }
+        else
+            ShowEmpty(FileIoChart, "I/O ms");
+
+        // Comparison overlay — fetch reference period data and render as ghost lines
+        if (comparisonRange.HasValue)
+        {
+            var refFrom = comparisonRange.Value.From;
+            var refTo = comparisonRange.Value.To;
+            var timeShift = (fromDate ?? DateTime.UtcNow.AddHours(-hoursBack)) - refFrom;
+
+            var refCpuTask = _dataService.GetCpuUtilizationAsync(0, refFrom, refTo);
+            var refWaitTask = _dataService.GetTotalWaitStatsTrendAsync(0, refFrom, refTo);
+            var refBlockingTask = _dataService.GetBlockedSessionTrendAsync(0, refFrom, refTo);
+            var refMemoryTask = _dataService.GetMemoryStatsAsync(0, refFrom, refTo);
+            var refIoTask = _dataService.GetFileIoLatencyTimeSeriesAsync(false, 0, refFrom, refTo);
+
+            try { await Task.WhenAll(refCpuTask, refWaitTask, refBlockingTask, refMemoryTask, refIoTask); }
+            catch (Exception ex) { Debug.WriteLine($"CorrelatedLanes: Comparison fetch failed: {ex.Message}"); }
+
+            if (refCpuTask.IsCompletedSuccessfully)
+                AddGhostLine(CpuChart, refCpuTask.Result
+                    .Select(d => (d.SampleTime.Add(timeShift).ToOADate(), (double)d.SqlServerCpuUtilization)).ToList(), "#4FC3F7");
+
+            if (refWaitTask.IsCompletedSuccessfully)
+                AddGhostLine(WaitStatsChart, refWaitTask.Result
+                    .Select(d => (d.CollectionTime.Add(timeShift).ToOADate(), (double)d.WaitTimeMsPerSecond)).ToList(), "#FFB74D");
+
+            if (refBlockingTask.IsCompletedSuccessfully)
             {
-                var refFrom = comparisonRange.Value.From;
-                var refTo = comparisonRange.Value.To;
-                var timeShift = (fromDate ?? DateTime.UtcNow.AddHours(-hoursBack)) - refFrom;
-
-                var refCpuTask = _dataService.GetCpuUtilizationAsync(0, refFrom, refTo);
-                var refWaitTask = _dataService.GetTotalWaitStatsTrendAsync(0, refFrom, refTo);
-                var refBlockingTask = _dataService.GetBlockedSessionTrendAsync(0, refFrom, refTo);
-                var refMemoryTask = _dataService.GetMemoryStatsAsync(0, refFrom, refTo);
-                var refIoTask = _dataService.GetFileIoLatencyTimeSeriesAsync(false, 0, refFrom, refTo);
-
-                try { await Task.WhenAll(refCpuTask, refWaitTask, refBlockingTask, refMemoryTask, refIoTask); }
-                catch (Exception ex) { Debug.WriteLine($"CorrelatedLanes: Comparison fetch failed: {ex.Message}"); }
-
-                if (refCpuTask.IsCompletedSuccessfully)
-                    AddGhostLine(CpuChart, refCpuTask.Result
-                        .Select(d => (d.SampleTime.Add(timeShift).ToOADate(), (double)d.SqlServerCpuUtilization)).ToList(), "#4FC3F7");
-
-                if (refWaitTask.IsCompletedSuccessfully)
-                    AddGhostLine(WaitStatsChart, refWaitTask.Result
-                        .Select(d => (d.CollectionTime.Add(timeShift).ToOADate(), (double)d.WaitTimeMsPerSecond)).ToList(), "#FFB74D");
-
-                if (refBlockingTask.IsCompletedSuccessfully)
-                {
-                    var refBlocking = refBlockingTask.Result
-                        .GroupBy(d => d.CollectionTime)
-                        .OrderBy(g => g.Key)
-                        .Select(g => (g.Key.Add(timeShift).ToOADate(), (double)g.Sum(x => x.BlockedCount)))
-                        .ToList();
-                    if (refBlocking.Count > 0)
-                        AddGhostLine(BlockingChart, refBlocking, "#E57373");
-                }
-
-                if (refMemoryTask.IsCompletedSuccessfully)
-                    AddGhostLine(MemoryChart, refMemoryTask.Result
-                        .Select(d => (d.CollectionTime.Add(timeShift).ToOADate(), (double)d.TotalMemoryMb)).ToList(), "#CE93D8");
-
-                if (refIoTask.IsCompletedSuccessfully)
-                {
-                    var refIo = refIoTask.Result
-                        .GroupBy(d => d.CollectionTime)
-                        .OrderBy(g => g.Key)
-                        .Select(g => (g.Key.Add(timeShift).ToOADate(), (double)g.Average(x => x.ReadLatencyMs)))
-                        .ToList();
-                    AddGhostLine(FileIoChart, refIo, "#81C784");
-                }
-
-                _crosshairManager?.SetComparisonLabel(ComparisonLabel(comparisonRange.Value, fromDate, hoursBack));
+                var refBlocking = refBlockingTask.Result
+                    .GroupBy(d => d.CollectionTime)
+                    .OrderBy(g => g.Key)
+                    .Select(g => (g.Key.Add(timeShift).ToOADate(), (double)g.Sum(x => x.BlockedCount)))
+                    .ToList();
+                if (refBlocking.Count > 0)
+                    AddGhostLine(BlockingChart, refBlocking, "#E57373");
             }
 
-            _crosshairManager?.ReattachVLines();
-            SyncXAxes(hoursBack, fromDate, toDate);
+            if (refMemoryTask.IsCompletedSuccessfully)
+                AddGhostLine(MemoryChart, refMemoryTask.Result
+                    .Select(d => (d.CollectionTime.Add(timeShift).ToOADate(), (double)d.TotalMemoryMb)).ToList(), "#CE93D8");
+
+            if (refIoTask.IsCompletedSuccessfully)
+            {
+                var refIo = refIoTask.Result
+                    .GroupBy(d => d.CollectionTime)
+                    .OrderBy(g => g.Key)
+                    .Select(g => (g.Key.Add(timeShift).ToOADate(), (double)g.Average(x => x.ReadLatencyMs)))
+                    .ToList();
+                AddGhostLine(FileIoChart, refIo, "#81C784");
+            }
+
+            _crosshairManager?.SetComparisonLabel(ComparisonLabel(comparisonRange.Value, fromDate, hoursBack));
+        }
+
+        /* VLines must be re-attached before SyncXAxes so they're part of
+           the render set when the chart refreshes. */
+        _crosshairManager?.ReattachVLines();
+        SyncXAxes(hoursBack, fromDate, toDate);
         }
         finally
         {
-            _isRefreshing = false;
+            /* Safety net: if something threw between PrepareForRefresh() and the
+               ReattachVLines() call above, VLines are still null. EnsureVLinesAttached
+               creates them only for lanes where VLine is null, so it's idempotent. */
+            _crosshairManager?.EnsureVLinesAttached();
         }
     }
 
@@ -329,7 +338,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
             }
         }
 
-        BlockingChart.Plot.Axes.DateTimeTicksBottom();
+        BlockingChart.Plot.Axes.DateTimeTicksBottomDateChange();
         BlockingChart.Plot.Axes.Bottom.TickLabelStyle.IsVisible = false;
         TabHelpers.ReapplyAxisColors(BlockingChart);
 
@@ -403,7 +412,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
         _crosshairManager?.SetLaneData(chart, times, values);
 
-        chart.Plot.Axes.DateTimeTicksBottom();
+        chart.Plot.Axes.DateTimeTicksBottomDateChange();
         if (chart != FileIoChart)
             chart.Plot.Axes.Bottom.TickLabelStyle.IsVisible = false;
 

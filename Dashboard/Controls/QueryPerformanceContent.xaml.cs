@@ -276,7 +276,16 @@ namespace PerformanceMonitorDashboard.Controls
             _qsRegressionsUnfilteredData = null;
             _lrqPatternsUnfilteredData = null;
 
+            DisposeChartHelpers();
             Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        }
+
+        public void DisposeChartHelpers()
+        {
+            _queryDurationHover?.Dispose();
+            _procDurationHover?.Dispose();
+            _qsDurationHover?.Dispose();
+            _execTrendsHover?.Dispose();
         }
 
         private void OnThemeChanged(string _)
@@ -2428,7 +2437,7 @@ namespace PerformanceMonitorDashboard.Controls
                 _legendPanels[chart] = chart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
                 chart.Plot.Legend.FontSize = 12;
 
-                chart.Plot.Axes.DateTimeTicksBottom();
+                chart.Plot.Axes.DateTimeTicksBottomDateChange();
                 chart.Plot.Axes.SetLimitsX(xMin, xMax);
                 chart.Plot.YLabel("Duration (ms/sec)");
                 TabHelpers.LockChartVerticalAxis(chart);
@@ -2483,7 +2492,7 @@ namespace PerformanceMonitorDashboard.Controls
             _legendPanels[QueryPerfTrendsExecChart] = QueryPerfTrendsExecChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
             QueryPerfTrendsExecChart.Plot.Legend.FontSize = 12;
 
-            QueryPerfTrendsExecChart.Plot.Axes.DateTimeTicksBottom();
+            QueryPerfTrendsExecChart.Plot.Axes.DateTimeTicksBottomDateChange();
             QueryPerfTrendsExecChart.Plot.Axes.SetLimitsX(xMin, xMax);
             QueryPerfTrendsExecChart.Plot.YLabel("Executions/sec");
             TabHelpers.LockChartVerticalAxis(QueryPerfTrendsExecChart);

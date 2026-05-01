@@ -83,7 +83,7 @@ ORDER BY bucket";
         return items;
     }
 
-    public async Task<List<QueryStatsRow>> GetTopQueriesByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0)
+    public async Task<List<QueryStatsRow>> GetTopQueriesByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0, string? databaseName = null)
     {
         using var _q = TimeQuery("GetTopQueriesByCpuAsync", "v_query_stats top N by CPU");
         using var connection = await OpenConnectionAsync();
@@ -92,47 +92,65 @@ ORDER BY bucket";
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
         command.CommandText = @"
+WITH ranked AS (
+    SELECT
+        database_name,
+        query_hash,
+        MAX(last_execution_time) AS last_execution_time,
+        MAX(creation_time) AS creation_time,
+        SUM(delta_execution_count) AS total_executions,
+        SUM(delta_worker_time) AS total_cpu_us,
+        SUM(delta_elapsed_time) AS total_elapsed_us,
+        SUM(delta_logical_reads) AS total_reads,
+        SUM(delta_rows) AS total_rows,
+        SUM(delta_logical_writes) AS total_writes,
+        SUM(delta_physical_reads) AS total_physical_reads,
+        SUM(delta_spills) AS total_spills,
+        MIN(min_dop) AS min_dop,
+        MAX(max_dop) AS max_dop,
+        MIN(min_worker_time) AS min_worker_time,
+        MAX(max_worker_time) AS max_worker_time,
+        MIN(min_elapsed_time) AS min_elapsed_time,
+        MAX(max_elapsed_time) AS max_elapsed_time,
+        MIN(min_physical_reads) AS min_physical_reads,
+        MAX(max_physical_reads) AS max_physical_reads,
+        MIN(min_rows) AS min_rows,
+        MAX(max_rows) AS max_rows,
+        MIN(min_grant_kb) AS min_grant_kb,
+        MAX(max_grant_kb) AS max_grant_kb,
+        MIN(min_spills) AS min_spills,
+        MAX(max_spills) AS max_spills,
+        MAX(query_plan_hash) AS query_plan_hash,
+        MAX(sql_handle) AS sql_handle,
+        MAX(plan_handle) AS plan_handle
+    FROM v_query_stats
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE
+    AND   ($6 IS NULL OR database_name = $6)
+    GROUP BY database_name, query_hash
+    HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
+    ORDER BY SUM(delta_elapsed_time) DESC
+    LIMIT $4 + 5
+)
 SELECT
-    database_name,
-    query_hash,
-    MAX(last_execution_time) AS last_execution_time,
-    MAX(creation_time) AS creation_time,
-    SUM(delta_execution_count) AS total_executions,
-    SUM(delta_worker_time) AS total_cpu_us,
-    SUM(delta_elapsed_time) AS total_elapsed_us,
-    SUM(delta_logical_reads) AS total_reads,
-    SUM(delta_rows) AS total_rows,
-    SUM(delta_logical_writes) AS total_writes,
-    SUM(delta_physical_reads) AS total_physical_reads,
-    SUM(delta_spills) AS total_spills,
-    MIN(min_dop) AS min_dop,
-    MAX(max_dop) AS max_dop,
-    MIN(min_worker_time) AS min_worker_time,
-    MAX(max_worker_time) AS max_worker_time,
-    MIN(min_elapsed_time) AS min_elapsed_time,
-    MAX(max_elapsed_time) AS max_elapsed_time,
-    MIN(min_physical_reads) AS min_physical_reads,
-    MAX(max_physical_reads) AS max_physical_reads,
-    MIN(min_rows) AS min_rows,
-    MAX(max_rows) AS max_rows,
-    MIN(min_grant_kb) AS min_grant_kb,
-    MAX(max_grant_kb) AS max_grant_kb,
-    MIN(min_spills) AS min_spills,
-    MAX(max_spills) AS max_spills,
-    MAX(query_plan_hash) AS query_plan_hash,
-    MAX(sql_handle) AS sql_handle,
-    MAX(plan_handle) AS plan_handle,
-    MAX(query_text) AS query_text,
-    MAX(query_plan_xml) AS query_plan
-FROM v_query_stats
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE
-AND   query_text NOT LIKE 'WAITFOR%'
-GROUP BY database_name, query_hash
-HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
-ORDER BY SUM(delta_elapsed_time) DESC
+    r.*,
+    t.query_text,
+    t.query_plan_xml AS query_plan
+FROM ranked r
+LEFT JOIN LATERAL (
+    SELECT query_text, query_plan_xml
+    FROM v_query_stats
+    WHERE server_id = $1
+    AND   query_hash = r.query_hash
+    AND   database_name = r.database_name
+    AND   query_text IS NOT NULL
+    ORDER BY collection_time DESC
+    LIMIT 1
+) t ON TRUE
+WHERE t.query_text IS NULL OR t.query_text NOT LIKE 'WAITFOR%'
+ORDER BY r.total_elapsed_us DESC
 LIMIT $4";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -140,6 +158,7 @@ LIMIT $4";
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = top });
         command.Parameters.Add(new DuckDBParameter { Value = utcOffsetMinutes });
+        command.Parameters.Add(new DuckDBParameter { Value = (object?)databaseName ?? DBNull.Value });
 
         var items = new List<QueryStatsRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -551,6 +570,72 @@ OPTION(RECOMPILE);',
     }
 
     /// <summary>
+    /// Fetches a query plan on-demand by sql_handle + statement offsets.
+    /// Used for Blocked Process Reports, where query_hash is not present in the
+    /// XE event payload — only the sql_handle and offsets from executionStack frames.
+    /// </summary>
+    public static async Task<string?> FetchPlanBySqlHandleAsync(
+        string connectionString,
+        string databaseName,
+        string sqlHandleHex,
+        int statementStartOffset,
+        int statementEndOffset)
+    {
+        if (string.IsNullOrWhiteSpace(sqlHandleHex)) return null;
+        var handleBytes = HexStringToBytes(sqlHandleHex);
+        if (handleBytes == null || handleBytes.Length == 0) return null;
+
+        using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        var quotedDbName = await GetValidatedDatabaseNameAsync(connection, databaseName)
+                           ?? "[master]";
+
+        var query = $@"
+EXECUTE {quotedDbName}.sys.sp_executesql
+    N'
+SELECT TOP (1)
+    query_plan_text = tqp.query_plan
+FROM sys.dm_exec_query_stats AS qs
+OUTER APPLY sys.dm_exec_text_query_plan(qs.plan_handle, qs.statement_start_offset, qs.statement_end_offset) AS tqp
+WHERE qs.sql_handle = @h
+AND   qs.statement_start_offset = @stmt_start
+AND   qs.statement_end_offset = @stmt_end
+AND   tqp.query_plan IS NOT NULL
+ORDER BY
+    qs.last_execution_time DESC
+OPTION(RECOMPILE);',
+    N'@h varbinary(64), @stmt_start int, @stmt_end int',
+    @h, @stmt_start, @stmt_end;";
+
+        using var command = new SqlCommand(query, connection) { CommandTimeout = 30 };
+        command.Parameters.Add(new SqlParameter("@h", SqlDbType.VarBinary, 64) { Value = handleBytes });
+        command.Parameters.Add(new SqlParameter("@stmt_start", SqlDbType.Int) { Value = statementStartOffset });
+        command.Parameters.Add(new SqlParameter("@stmt_end", SqlDbType.Int) { Value = statementEndOffset });
+        var result = await command.ExecuteScalarAsync();
+        return result as string;
+    }
+
+    private static byte[]? HexStringToBytes(string hex)
+    {
+        var start = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+        var len = hex.Length - start;
+        if (len <= 0 || (len % 2) != 0) return null;
+        var bytes = new byte[len / 2];
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (!byte.TryParse(hex.AsSpan(start + i * 2, 2),
+                               System.Globalization.NumberStyles.HexNumber,
+                               System.Globalization.CultureInfo.InvariantCulture,
+                               out bytes[i]))
+            {
+                return null;
+            }
+        }
+        return bytes;
+    }
+
+    /// <summary>
     /// Gets top procedures by CPU for a server.
     /// </summary>
     public async Task<List<Models.TimeSliceBucket>> GetProcStatsSlicerDataAsync(
@@ -599,7 +684,7 @@ ORDER BY bucket";
         return items;
     }
 
-    public async Task<List<ProcedureStatsRow>> GetTopProceduresByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0)
+    public async Task<List<ProcedureStatsRow>> GetTopProceduresByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0, string? databaseName = null)
     {
         using var _q = TimeQuery("GetTopProceduresByCpuAsync", "v_procedure_stats top N by CPU");
         using var connection = await OpenConnectionAsync();
@@ -641,6 +726,7 @@ WHERE server_id = $1
 AND   collection_time >= $2
 AND   collection_time <= $3
 AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE
+AND   ($6 IS NULL OR database_name = $6)
 GROUP BY database_name, schema_name, object_name, object_type
 HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
 ORDER BY SUM(delta_elapsed_time) DESC
@@ -651,6 +737,7 @@ LIMIT $4";
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = top });
         command.Parameters.Add(new DuckDBParameter { Value = utcOffsetMinutes });
+        command.Parameters.Add(new DuckDBParameter { Value = (object?)databaseName ?? DBNull.Value });
 
         var items = new List<ProcedureStatsRow>();
         using var reader = await command.ExecuteReaderAsync();

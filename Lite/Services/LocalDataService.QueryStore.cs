@@ -67,7 +67,7 @@ ORDER BY bucket";
         return items;
     }
 
-    public async Task<List<QueryStoreRow>> GetQueryStoreTopQueriesAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<QueryStoreRow>> GetQueryStoreTopQueriesAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, string? databaseName = null)
     {
         using var _q = TimeQuery("GetQueryStoreTopQueriesAsync", "v_query_store_stats top N");
         using var connection = await OpenConnectionAsync();
@@ -76,49 +76,94 @@ ORDER BY bucket";
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
         command.CommandText = @"
+WITH ranked AS (
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        query_hash,
+        MAX(module_name) AS module_name,
+        SUM(execution_count) AS total_executions,
+        AVG(CAST(avg_duration_us AS DOUBLE)) / 1000.0 AS avg_duration_ms,
+        AVG(CAST(avg_cpu_time_us AS DOUBLE)) / 1000.0 AS avg_cpu_time_ms,
+        AVG(CAST(avg_logical_io_reads AS DOUBLE)) AS avg_logical_reads,
+        AVG(CAST(avg_logical_io_writes AS DOUBLE)) AS avg_logical_writes,
+        AVG(CAST(avg_physical_io_reads AS DOUBLE)) AS avg_physical_reads,
+        AVG(CAST(avg_rowcount AS DOUBLE)) AS avg_rowcount,
+        MIN(min_dop) AS min_dop,
+        MAX(max_dop) AS max_dop,
+        MAX(last_execution_time) AS last_execution_time,
+        MAX(query_plan_hash) AS query_plan_hash,
+        MAX(CASE WHEN is_forced_plan THEN TRUE ELSE FALSE END) AS is_forced_plan,
+        MAX(plan_forcing_type) AS plan_forcing_type,
+        MAX(execution_type_desc) AS execution_type_desc,
+        MIN(first_execution_time) AS first_execution_time,
+        AVG(CAST(avg_clr_time_us AS DOUBLE)) / 1000.0 AS avg_clr_time_ms,
+        AVG(CAST(avg_tempdb_space_used AS DOUBLE)) AS avg_tempdb_space_used,
+        AVG(CAST(avg_log_bytes_used AS DOUBLE)) AS avg_log_bytes_used,
+        MAX(plan_type) AS plan_type,
+        MAX(force_failure_count) AS force_failure_count,
+        MAX(last_force_failure_reason) AS last_force_failure_reason,
+        MAX(compatibility_level) AS compatibility_level
+    FROM v_query_store_stats
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   ($5 IS NULL OR database_name = $5)
+    GROUP BY database_name, query_id, plan_id, query_hash
+    ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS DOUBLE)) DESC
+    LIMIT $4 + 5
+)
 SELECT
-    database_name,
-    query_id,
-    plan_id,
-    query_hash,
-    MAX(query_text) AS query_text,
-    MAX(module_name) AS module_name,
-    SUM(execution_count) AS total_executions,
-    AVG(CAST(avg_duration_us AS DOUBLE)) / 1000.0 AS avg_duration_ms,
-    AVG(CAST(avg_cpu_time_us AS DOUBLE)) / 1000.0 AS avg_cpu_time_ms,
-    AVG(CAST(avg_logical_io_reads AS DOUBLE)) AS avg_logical_reads,
-    AVG(CAST(avg_logical_io_writes AS DOUBLE)) AS avg_logical_writes,
-    AVG(CAST(avg_physical_io_reads AS DOUBLE)) AS avg_physical_reads,
-    AVG(CAST(avg_rowcount AS DOUBLE)) AS avg_rowcount,
-    MIN(min_dop) AS min_dop,
-    MAX(max_dop) AS max_dop,
-    MAX(last_execution_time) AS last_execution_time,
-    MAX(query_plan_hash) AS query_plan_hash,
-    MAX(CASE WHEN is_forced_plan THEN TRUE ELSE FALSE END) AS is_forced_plan,
-    MAX(plan_forcing_type) AS plan_forcing_type,
+    r.database_name,
+    r.query_id,
+    r.plan_id,
+    r.query_hash,
+    t.query_text,
+    r.module_name,
+    r.total_executions,
+    r.avg_duration_ms,
+    r.avg_cpu_time_ms,
+    r.avg_logical_reads,
+    r.avg_logical_writes,
+    r.avg_physical_reads,
+    r.avg_rowcount,
+    r.min_dop,
+    r.max_dop,
+    r.last_execution_time,
+    r.query_plan_hash,
+    r.is_forced_plan,
+    r.plan_forcing_type,
     NULL AS query_plan_text,
-    MAX(execution_type_desc) AS execution_type_desc,
-    MIN(first_execution_time) AS first_execution_time,
-    AVG(CAST(avg_clr_time_us AS DOUBLE)) / 1000.0 AS avg_clr_time_ms,
-    AVG(CAST(avg_tempdb_space_used AS DOUBLE)) AS avg_tempdb_space_used,
-    AVG(CAST(avg_log_bytes_used AS DOUBLE)) AS avg_log_bytes_used,
-    MAX(plan_type) AS plan_type,
-    MAX(force_failure_count) AS force_failure_count,
-    MAX(last_force_failure_reason) AS last_force_failure_reason,
-    MAX(compatibility_level) AS compatibility_level
-FROM v_query_store_stats
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-AND   query_text NOT LIKE 'WAITFOR%'
-GROUP BY database_name, query_id, plan_id, query_hash
-ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS DOUBLE)) DESC
+    r.execution_type_desc,
+    r.first_execution_time,
+    r.avg_clr_time_ms,
+    r.avg_tempdb_space_used,
+    r.avg_log_bytes_used,
+    r.plan_type,
+    r.force_failure_count,
+    r.last_force_failure_reason,
+    r.compatibility_level
+FROM ranked r
+LEFT JOIN LATERAL (
+    SELECT query_text
+    FROM v_query_store_stats
+    WHERE server_id = $1
+    AND   query_id = r.query_id
+    AND   database_name = r.database_name
+    AND   query_text IS NOT NULL
+    ORDER BY collection_time DESC
+    LIMIT 1
+) t ON TRUE
+WHERE t.query_text IS NULL OR t.query_text NOT LIKE 'WAITFOR%'
+ORDER BY r.total_executions * r.avg_duration_ms DESC
 LIMIT $4";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = top });
+        command.Parameters.Add(new DuckDBParameter { Value = (object?)databaseName ?? DBNull.Value });
 
         var items = new List<QueryStoreRow>();
         using var reader = await command.ExecuteReaderAsync();

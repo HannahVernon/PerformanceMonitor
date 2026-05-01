@@ -1,16 +1,19 @@
 using System;
+using System.Data;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows.Data;
 using System.Text;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Data.SqlClient;
 using Microsoft.Win32;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Interfaces;
@@ -46,8 +49,11 @@ namespace PerformanceMonitorDashboard
 
         private readonly UserPreferencesService _preferencesService;
         private DispatcherTimer? _autoRefreshTimer;
+        private CancellationTokenSource? _autoRefreshCts;
         private bool _isRefreshing;
+        private DateTime _refreshStartedUtc;
         private bool _suppressPickerUpdates;
+        private readonly HashSet<string> _initializedTabs = new();
 
         // Filter state dictionaries for each DataGrid
 
@@ -68,6 +74,14 @@ namespace PerformanceMonitorDashboard
 
         // Legend panel references for edge-based legends (ScottPlot issue #4717 workaround)
         private Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
+
+        // Stored event handler delegates for cleanup
+        private Action<string, string, string?>? _viewPlanHandler;
+        private Action<string>? _actualPlanStartedHandler;
+        private Action? _actualPlanFinishedHandler;
+        private Action<DateTime, DateTime>? _drillDownTimeRangeHandler;
+        private Action? _subTabChangedHandler;
+        private Analysis.SqlServerBaselineProvider? _baselineProvider;
 
         // Chart hover tooltips
         private Helpers.ChartHoverHelper? _resourceOverviewCpuHover;
@@ -118,7 +132,6 @@ namespace PerformanceMonitorDashboard
 
             InitializeDefaultTimeRanges();
             SetupChartContextMenus();
-            SetupAutoRefresh();
             SetupSubTabContextMenus();
 
             BlockingSlicer.RangeChanged += OnBlockingSlicerChanged;
@@ -140,27 +153,23 @@ namespace PerformanceMonitorDashboard
             MemoryTab.Initialize(_databaseService);
             MemoryTab.ChartDrillDownRequested += OnChildChartDrillDown;
             PerformanceTab.Initialize(_databaseService, s => StatusText.Text = s);
-            PerformanceTab.ViewPlanRequested += (planXml, label, queryText) =>
+            _viewPlanHandler = (planXml, label, queryText) =>
             {
                 OpenPlanTab(planXml, label, queryText);
                 PlanViewerTabItem.IsSelected = true;
             };
-            PerformanceTab.ActualPlanStarted += (label) =>
-            {
-                ShowPlanLoading(label);
-            };
-            PerformanceTab.ActualPlanFinished += () =>
-            {
-                HidePlanLoading();
-            };
-            PerformanceTab.DrillDownTimeRangeRequested += (from, to) =>
-            {
-                SetDrillDownGlobalRange(from, to);
-            };
-            PerformanceTab.SubTabChanged += () => UpdateCompareDropdownState();
+            _actualPlanStartedHandler = (label) => ShowPlanLoading(label);
+            _actualPlanFinishedHandler = () => HidePlanLoading();
+            _drillDownTimeRangeHandler = (from, to) => SetDrillDownGlobalRange(from, to);
+            _subTabChangedHandler = () => UpdateCompareDropdownState();
+            PerformanceTab.ViewPlanRequested += _viewPlanHandler;
+            PerformanceTab.ActualPlanStarted += _actualPlanStartedHandler;
+            PerformanceTab.ActualPlanFinished += _actualPlanFinishedHandler;
+            PerformanceTab.DrillDownTimeRangeRequested += _drillDownTimeRangeHandler;
+            PerformanceTab.SubTabChanged += _subTabChangedHandler;
             SystemEventsContent.Initialize(_databaseService);
-            var baselineProvider = new Analysis.SqlServerBaselineProvider(_databaseService.ConnectionString);
-            ResourceMetricsContent.Initialize(_databaseService, baselineProvider);
+            _baselineProvider = new Analysis.SqlServerBaselineProvider(_databaseService.ConnectionString);
+            ResourceMetricsContent.Initialize(_databaseService, _baselineProvider);
             ResourceMetricsContent.ChartDrillDownRequested += OnChildChartDrillDown;
 
             // Set default time range on UserControls based on user preferences
@@ -338,30 +347,7 @@ namespace PerformanceMonitorDashboard
 
             if (prefs.AutoRefreshEnabled)
             {
-                _autoRefreshTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(prefs.AutoRefreshIntervalSeconds)
-                };
-                _autoRefreshTimer.Tick += async (s, e) =>
-                {
-                    if (_isRefreshing) return;
-                    _isRefreshing = true;
-
-                    try
-                    {
-                        await LoadDataAsync(fullRefresh: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error in auto-refresh: {ex.Message}", ex);
-                        StatusText.Text = "Auto-refresh error";
-                    }
-                    finally
-                    {
-                        _isRefreshing = false;
-                    }
-                };
-                _autoRefreshTimer.Start();
+                StartAutoRefreshLoop(prefs.AutoRefreshIntervalSeconds);
                 AutoRefreshToggle.IsChecked = true;
                 AutoRefreshToggle.Content = $"Auto-Refresh: {prefs.AutoRefreshIntervalSeconds}s";
             }
@@ -372,17 +358,126 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        /// <summary>
+        /// Async loop that replaces DispatcherTimer for auto-refresh. Task.Delay is not
+        /// subject to Dispatcher priority starvation under heavy UI load (chart rendering,
+        /// data binding) that can indefinitely defer Background-priority DispatcherTimer ticks.
+        /// </summary>
+        private async void StartAutoRefreshLoop(int intervalSeconds)
+        {
+            if (_autoRefreshCts != null && !_autoRefreshCts.IsCancellationRequested)
+                return;
+
+            _autoRefreshCts?.Cancel();
+            var cts = new CancellationTokenSource();
+            _autoRefreshCts = cts;
+
+            try
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), cts.Token);
+                    if (cts.Token.IsCancellationRequested) break;
+                    if (_isRefreshing) continue;
+
+                    _isRefreshing = true;
+                    _refreshStartedUtc = DateTime.UtcNow;
+                    try
+                    {
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        await RefreshVisibleTabAsync();
+                        StatusText.Text = "Ready";
+                        FooterText.Text = $"Last refresh: {DateTime.Now:yyyy-MM-dd HH:mm:ss} | Server: {_serverConnection.DisplayName}";
+                        Logger.Info($"Auto-refresh completed in {sw.ElapsedMilliseconds}ms for {_serverConnection.DisplayName}");
+                    }
+                    catch (OperationCanceledException) when (!cts.Token.IsCancellationRequested)
+                    {
+                        Logger.Error($"Auto-refresh query cancelled for {_serverConnection.DisplayName}, continuing loop");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        Logger.Error($"Auto-refresh error: {ex.Message}", ex);
+                        StatusText.Text = "Auto-refresh error";
+                    }
+                    finally
+                    {
+                        _isRefreshing = false;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.Info($"Auto-refresh loop stopped for {_serverConnection.DisplayName}");
+            }
+        }
+
         private void ServerTab_Unloaded(object sender, RoutedEventArgs e)
         {
-            // Stop the timer when the tab is closed
+            // WPF fires Unloaded on tab switch, not just destruction.
+            // Don't tear down state here — the auto-refresh loop and chart
+            // state must survive tab switches. Cleanup happens when the tab
+            // is actually removed from the TabControl (via CleanupOnClose).
+        }
+
+        /// <summary>
+        /// Full cleanup — call when the server tab is permanently removed, not on tab switch.
+        /// </summary>
+        public void CleanupOnClose()
+        {
+            _autoRefreshCts?.Cancel();
             _autoRefreshTimer?.Stop();
             _autoRefreshTimer = null;
+            _initializedTabs.Clear();
 
-            // Unsubscribe event handlers to prevent memory leaks
             Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
             Loaded -= ServerTab_Loaded;
             Unloaded -= ServerTab_Unloaded;
             KeyDown -= ServerTab_KeyDown;
+
+            BlockingSlicer.RangeChanged -= OnBlockingSlicerChanged;
+            DeadlockSlicer.RangeChanged -= OnDeadlockSlicerChanged;
+
+            CriticalIssuesTab.InvestigateRequested -= OnInvestigateCriticalIssue;
+            MemoryTab.ChartDrillDownRequested -= OnChildChartDrillDown;
+            ResourceMetricsContent.ChartDrillDownRequested -= OnChildChartDrillDown;
+
+            if (_viewPlanHandler != null) PerformanceTab.ViewPlanRequested -= _viewPlanHandler;
+            if (_actualPlanStartedHandler != null) PerformanceTab.ActualPlanStarted -= _actualPlanStartedHandler;
+            if (_actualPlanFinishedHandler != null) PerformanceTab.ActualPlanFinished -= _actualPlanFinishedHandler;
+            if (_drillDownTimeRangeHandler != null) PerformanceTab.DrillDownTimeRangeRequested -= _drillDownTimeRangeHandler;
+            if (_subTabChangedHandler != null) PerformanceTab.SubTabChanged -= _subTabChangedHandler;
+
+            DisposeChartHelpers();
+
+            _collectionHealthUnfilteredData = null;
+            _blockingEventsUnfilteredData = null;
+            _deadlocksUnfilteredData = null;
+            _collectionHealthFilters.Clear();
+            _blockingEventsFilters.Clear();
+            _deadlocksFilters.Clear();
+            _legendPanels.Clear();
+
+            _baselineProvider?.ClearCache();
+        }
+
+        public void DisposeChartHelpers()
+        {
+            _resourceOverviewCpuHover?.Dispose();
+            _resourceOverviewMemoryHover?.Dispose();
+            _resourceOverviewIoHover?.Dispose();
+            _resourceOverviewWaitHover?.Dispose();
+            _lockWaitStatsHover?.Dispose();
+            _blockingEventsHover?.Dispose();
+            _blockingDurationHover?.Dispose();
+            _deadlocksHover?.Dispose();
+            _deadlockWaitTimeHover?.Dispose();
+            _collectorDurationHover?.Dispose();
+            _currentWaitsDurationHover?.Dispose();
+            _currentWaitsBlockedHover?.Dispose();
+
+            MemoryTab.DisposeChartHelpers();
+            ResourceMetricsContent.DisposeChartHelpers();
+            PerformanceTab.DisposeChartHelpers();
         }
 
         private void OnThemeChanged(string _)
@@ -400,7 +495,9 @@ namespace PerformanceMonitorDashboard
 
         public void RefreshAutoRefreshSettings()
         {
-            // Stop existing timer
+            // Stop existing loop and timer
+            _autoRefreshCts?.Cancel();
+            _autoRefreshCts = null;
             _autoRefreshTimer?.Stop();
             _autoRefreshTimer = null;
 
@@ -409,30 +506,7 @@ namespace PerformanceMonitorDashboard
 
             if (prefs.AutoRefreshEnabled)
             {
-                _autoRefreshTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(prefs.AutoRefreshIntervalSeconds)
-                };
-                _autoRefreshTimer.Tick += async (s, e) =>
-                {
-                    if (_isRefreshing) return;
-                    _isRefreshing = true;
-
-                    try
-                    {
-                        await LoadDataAsync(fullRefresh: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error in auto-refresh: {ex.Message}", ex);
-                        StatusText.Text = "Auto-refresh error";
-                    }
-                    finally
-                    {
-                        _isRefreshing = false;
-                    }
-                };
-                _autoRefreshTimer.Start();
+                StartAutoRefreshLoop(prefs.AutoRefreshIntervalSeconds);
                 AutoRefreshToggle.IsChecked = true;
                 AutoRefreshToggle.Content = $"Auto-Refresh: {prefs.AutoRefreshIntervalSeconds}s";
             }
@@ -458,30 +532,7 @@ namespace PerformanceMonitorDashboard
                 prefs.AutoRefreshEnabled = true;
                 _preferencesService.SavePreferences(prefs);
 
-                _autoRefreshTimer = new DispatcherTimer
-                {
-                    Interval = TimeSpan.FromSeconds(prefs.AutoRefreshIntervalSeconds)
-                };
-                _autoRefreshTimer.Tick += async (s, args) =>
-                {
-                    if (_isRefreshing) return;
-                    _isRefreshing = true;
-
-                    try
-                    {
-                        await LoadDataAsync(fullRefresh: false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error in auto-refresh: {ex.Message}", ex);
-                        StatusText.Text = "Auto-refresh error";
-                    }
-                    finally
-                    {
-                        _isRefreshing = false;
-                    }
-                };
-                _autoRefreshTimer.Start();
+                StartAutoRefreshLoop(prefs.AutoRefreshIntervalSeconds);
                 AutoRefreshToggle.Content = $"Auto-Refresh: {prefs.AutoRefreshIntervalSeconds}s";
             }
             else
@@ -490,8 +541,7 @@ namespace PerformanceMonitorDashboard
                 prefs.AutoRefreshEnabled = false;
                 _preferencesService.SavePreferences(prefs);
 
-                _autoRefreshTimer?.Stop();
-                _autoRefreshTimer = null;
+                _autoRefreshCts?.Cancel();
                 AutoRefreshToggle.Content = "Auto-Refresh: Off";
             }
         }
@@ -503,7 +553,8 @@ namespace PerformanceMonitorDashboard
                 if (e.Key == System.Windows.Input.Key.F5)
                 {
                     e.Handled = true;
-                    await LoadDataAsync();
+                    bool fullRefresh = System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control);
+                    await LoadDataAsync(fullRefresh);
                 }
                 else if (e.Key == System.Windows.Input.Key.V &&
                          System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control &&
@@ -594,7 +645,8 @@ namespace PerformanceMonitorDashboard
                 CriticalIssuesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
 
-                await LoadDataAsync();
+                await LoadDataAsync(fullRefresh: false);
+                SetupAutoRefresh();
             }
             catch (Exception ex)
             {
@@ -607,7 +659,8 @@ namespace PerformanceMonitorDashboard
         {
             try
             {
-                await LoadDataAsync();
+                bool fullRefresh = System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control);
+                await LoadDataAsync(fullRefresh);
             }
             catch (Exception ex)
             {
@@ -1129,6 +1182,15 @@ namespace PerformanceMonitorDashboard
         /// </summary>
         private async Task LoadDataAsync(bool fullRefresh = true)
         {
+            if (_isRefreshing)
+            {
+                // If a previous refresh has been running for over 2 minutes, it's stuck — allow a new one
+                if ((DateTime.UtcNow - _refreshStartedUtc).TotalMinutes < 2) return;
+                Logger.Error($"Previous refresh appears stuck (started {_refreshStartedUtc:HH:mm:ss}), allowing new refresh");
+            }
+            _isRefreshing = true;
+            _refreshStartedUtc = DateTime.UtcNow;
+
             using var _ = Helpers.MethodProfiler.StartTiming("ServerTab");
             try
             {
@@ -1139,12 +1201,19 @@ namespace PerformanceMonitorDashboard
                 if (!connected)
                 {
                     StatusText.Text = $"Failed to connect to {_serverConnection.DisplayName}";
-                    MessageBox.Show(
-                        $"Could not connect to SQL Server: {_serverConnection.ServerName}\n\nCheck connection settings",
-                        "Connection Error",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error
-                    );
+                    if (fullRefresh)
+                    {
+                        MessageBox.Show(
+                            $"Could not connect to SQL Server: {_serverConnection.ServerName}\n\nCheck connection settings",
+                            "Connection Error",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error
+                        );
+                    }
+                    else
+                    {
+                        Logger.Error($"Auto-refresh connection failed for {_serverConnection.DisplayName}");
+                    }
                     return;
                 }
 
@@ -1167,16 +1236,24 @@ namespace PerformanceMonitorDashboard
             catch (Exception ex)
             {
                 StatusText.Text = "Error loading data";
-                MessageBox.Show(
-                    $"Error loading data:\n\n{ex.Message}",
-                    "Error",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error
-                );
+                if (fullRefresh)
+                {
+                    MessageBox.Show(
+                        $"Error loading data:\n\n{ex.Message}",
+                        "Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error
+                    );
+                }
+                else
+                {
+                    Logger.Error($"Auto-refresh error for {_serverConnection.DisplayName}: {ex.Message}", ex);
+                }
             }
             finally
             {
                 RefreshButton.IsEnabled = true;
+                _isRefreshing = false;
             }
         }
 
@@ -1200,7 +1277,9 @@ namespace PerformanceMonitorDashboard
         }
 
         /// <summary>
-        /// Refreshes only the currently visible tab — used on auto-refresh timer tick.
+        /// Refreshes only the currently visible tab. On first visit to a tab,
+        /// does a full refresh so all sub-tabs are populated. Subsequent visits
+        /// only refresh the active sub-tab for speed.
         /// </summary>
         private async Task RefreshVisibleTabAsync()
         {
@@ -1208,6 +1287,7 @@ namespace PerformanceMonitorDashboard
             if (selectedTab == null) return;
 
             var tabHeader = GetTabHeaderText(selectedTab);
+            bool firstVisit = _initializedTabs.Add(tabHeader);
 
             switch (tabHeader)
             {
@@ -1215,19 +1295,19 @@ namespace PerformanceMonitorDashboard
                     await RefreshOverviewTabAsync();
                     break;
                 case "Queries":
-                    await RefreshQueriesTabAsync(fullRefresh: false);
+                    await RefreshQueriesTabAsync(fullRefresh: firstVisit);
                     break;
                 case "Resource Metrics":
-                    await RefreshResourceMetricsTabAsync(fullRefresh: false);
+                    await RefreshResourceMetricsTabAsync(fullRefresh: firstVisit);
                     break;
                 case "Memory":
-                    await RefreshMemoryTabAsync(fullRefresh: false);
+                    await RefreshMemoryTabAsync(fullRefresh: firstVisit);
                     break;
                 case "Locking":
                     await RefreshLockingTabAsync();
                     break;
                 case "System Events":
-                    await RefreshSystemEventsTabAsync(fullRefresh: false);
+                    await RefreshSystemEventsTabAsync(fullRefresh: firstVisit);
                     break;
                 // Plan Viewer has no data to refresh
             }
@@ -1643,9 +1723,11 @@ namespace PerformanceMonitorDashboard
             UpdateCompareDropdownState();
 
             // Don't refresh during initial load or if already refreshing
-            if (_isRefreshing || !IsLoaded) return;
+            if (!IsLoaded) return;
+            if (_isRefreshing && (DateTime.UtcNow - _refreshStartedUtc).TotalMinutes < 2) return;
 
             _isRefreshing = true;
+            _refreshStartedUtc = DateTime.UtcNow;
             try
             {
                 await RefreshVisibleTabAsync();
@@ -1964,6 +2046,279 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        // ── Blocked Process Report / Deadlock plan lookup ──
+
+        /* SQL Server writes this 42-byte all-zero handle into executionStack frames
+           for dynamic SQL / system contexts where no persistent sql_handle exists.
+           Filter matches sp_HumanEventsBlockViewer's XPath exclusion. */
+        private static readonly string ZeroSqlHandle = "0x" + new string('0', 84);
+
+        private async void ViewBlockedSidePlan_Click(object sender, RoutedEventArgs e)
+            => await ShowBlockedProcessPlanAsync(sender, blockingSide: false);
+
+        private async void ViewBlockingSidePlan_Click(object sender, RoutedEventArgs e)
+            => await ShowBlockedProcessPlanAsync(sender, blockingSide: true);
+
+        private async Task ShowBlockedProcessPlanAsync(object sender, bool blockingSide)
+        {
+            if (sender is not MenuItem menuItem) return;
+            if (menuItem.Parent is not ContextMenu cm) return;
+            var grid = FindDataGridFromContextMenu(cm);
+            if (grid?.SelectedItem is not BlockingEventItem row) return;
+
+            var sideLabel = blockingSide ? "Blocking" : "Blocked";
+            var label = $"Est Plan - {sideLabel} SPID {row.Spid}";
+
+            var frames = ExtractBlockedProcessFrames(row.BlockedProcessReportXml, blockingSide);
+            if (frames.Count == 0)
+            {
+                MessageBox.Show(
+                    $"The {sideLabel.ToLowerInvariant()} process report has no resolvable sql_handle. " +
+                    "This usually means the query ran as dynamic SQL or a system context — " +
+                    "SQL Server records a zero handle in that case and the plan can't be recovered.",
+                    "No Plan Available", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            string? planXml = null;
+            try
+            {
+                var connStr = _serverConnection.GetConnectionString(_credentialService);
+                foreach (var f in frames)
+                {
+                    planXml = await FetchPlanBySqlHandleAsync(
+                        connStr, row.DatabaseName, f.SqlHandle, f.StmtStart, f.StmtEnd);
+                    if (!string.IsNullOrEmpty(planXml)) break;
+                }
+            }
+            catch { }
+
+            if (!string.IsNullOrEmpty(planXml))
+            {
+                OpenPlanTab(planXml, label, row.QueryText);
+                PlanViewerTabItem.IsSelected = true;
+            }
+            else
+            {
+                MessageBox.Show(
+                    $"The plan for the {sideLabel.ToLowerInvariant()} query is no longer in the plan cache on {_serverConnection.DisplayName}. " +
+                    "Blocked process reports only give us a sql_handle — if that plan has been evicted, we can't recover it.",
+                    "No Plan Available", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        private static IReadOnlyList<(string SqlHandle, int StmtStart, int StmtEnd)> ExtractBlockedProcessFrames(
+            string bprXml, bool blockingSide)
+        {
+            var empty = Array.Empty<(string, int, int)>();
+            if (string.IsNullOrWhiteSpace(bprXml)) return empty;
+            try
+            {
+                var doc = System.Xml.Linq.XElement.Parse(bprXml);
+                var processContainer = blockingSide
+                    ? doc.Element("blocking-process")
+                    : doc.Element("blocked-process");
+                var stack = processContainer?.Element("process")?.Element("executionStack");
+                if (stack == null) return empty;
+
+                var frames = new List<(string, int, int)>();
+                foreach (var frame in stack.Elements("frame"))
+                {
+                    var handle = frame.Attribute("sqlhandle")?.Value;
+                    if (string.IsNullOrWhiteSpace(handle)) continue;
+                    if (string.Equals(handle, ZeroSqlHandle, StringComparison.OrdinalIgnoreCase)) continue;
+
+                    int stmtStart = 0;
+                    int stmtEnd = -1;
+                    int.TryParse(frame.Attribute("stmtstart")?.Value, out stmtStart);
+                    if (int.TryParse(frame.Attribute("stmtend")?.Value, out var se)) stmtEnd = se;
+
+                    frames.Add((handle!, stmtStart, stmtEnd));
+                }
+                return frames;
+            }
+            catch
+            {
+                return empty;
+            }
+        }
+
+        /* Deadlock graph XML puts sqlhandle/stmtstart/stmtend directly on the
+           <process> node, with optional <executionStack><frame sqlhandle=...>
+           children for the call stack. Match by SPID since Dashboard's row
+           model doesn't carry the process graph id. */
+        private async void ViewDeadlockProcessPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem) return;
+            if (menuItem.Parent is not ContextMenu cm) return;
+            var grid = FindDataGridFromContextMenu(cm);
+            if (grid?.SelectedItem is not DeadlockItem row) return;
+
+            var sideLabel = string.IsNullOrWhiteSpace(row.DeadlockType) ? "Process" : row.DeadlockType;
+            var label = $"Est Plan - {sideLabel} SPID {row.Spid}";
+
+            var frames = ExtractDeadlockProcessFrames(row.DeadlockGraph, row.Spid);
+            if (frames.Count == 0)
+            {
+                MessageBox.Show(
+                    "The process has no resolvable sql_handle in the deadlock graph. " +
+                    "This usually means the query ran as dynamic SQL or a system context — " +
+                    "SQL Server records a zero handle in that case and the plan can't be recovered.",
+                    "No Plan Available", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            string? planXml = null;
+            try
+            {
+                var connStr = _serverConnection.GetConnectionString(_credentialService);
+                foreach (var f in frames)
+                {
+                    planXml = await FetchPlanBySqlHandleAsync(
+                        connStr, row.DatabaseName, f.SqlHandle, f.StmtStart, f.StmtEnd);
+                    if (!string.IsNullOrEmpty(planXml)) break;
+                }
+            }
+            catch { }
+
+            if (!string.IsNullOrEmpty(planXml))
+            {
+                OpenPlanTab(planXml, label, row.Query);
+                PlanViewerTabItem.IsSelected = true;
+            }
+            else
+            {
+                MessageBox.Show(
+                    $"The plan for this process is no longer in the plan cache on {_serverConnection.DisplayName}. " +
+                    "Deadlock graphs only give us a sql_handle — if that plan has been evicted, we can't recover it.",
+                    "No Plan Available", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        private static IReadOnlyList<(string SqlHandle, int StmtStart, int StmtEnd)> ExtractDeadlockProcessFrames(
+            string graphXml, short? spid)
+        {
+            var empty = Array.Empty<(string, int, int)>();
+            if (string.IsNullOrWhiteSpace(graphXml) || !spid.HasValue) return empty;
+            try
+            {
+                var doc = System.Xml.Linq.XElement.Parse(graphXml);
+                var spidStr = spid.Value.ToString(CultureInfo.InvariantCulture);
+                var process = doc.Descendants("process")
+                    .FirstOrDefault(p => string.Equals(p.Attribute("spid")?.Value, spidStr, StringComparison.Ordinal));
+                if (process == null) return empty;
+
+                var frames = new List<(string, int, int)>();
+
+                var procHandle = process.Attribute("sqlhandle")?.Value;
+                if (!string.IsNullOrWhiteSpace(procHandle) &&
+                    !string.Equals(procHandle, ZeroSqlHandle, StringComparison.OrdinalIgnoreCase))
+                {
+                    int ps = 0, pe = -1;
+                    int.TryParse(process.Attribute("stmtstart")?.Value, out ps);
+                    if (int.TryParse(process.Attribute("stmtend")?.Value, out var peParsed)) pe = peParsed;
+                    frames.Add((procHandle!, ps, pe));
+                }
+
+                var stack = process.Element("executionStack");
+                if (stack != null)
+                {
+                    foreach (var frame in stack.Elements("frame"))
+                    {
+                        var handle = frame.Attribute("sqlhandle")?.Value;
+                        if (string.IsNullOrWhiteSpace(handle)) continue;
+                        if (string.Equals(handle, ZeroSqlHandle, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        int fs = 0, fe = -1;
+                        int.TryParse(frame.Attribute("stmtstart")?.Value, out fs);
+                        if (int.TryParse(frame.Attribute("stmtend")?.Value, out var feParsed)) fe = feParsed;
+                        frames.Add((handle!, fs, fe));
+                    }
+                }
+
+                return frames;
+            }
+            catch
+            {
+                return empty;
+            }
+        }
+
+        private static async Task<string?> FetchPlanBySqlHandleAsync(
+            string connectionString,
+            string databaseName,
+            string sqlHandleHex,
+            int statementStartOffset,
+            int statementEndOffset)
+        {
+            if (string.IsNullOrWhiteSpace(sqlHandleHex)) return null;
+            var handleBytes = HexStringToBytes(sqlHandleHex);
+            if (handleBytes == null || handleBytes.Length == 0) return null;
+
+            using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            /* Database context is only used to route the execution; sys.dm_exec_query_stats
+               is server-scoped, so if the supplied name isn't valid we fall back to master. */
+            var quotedDbName = QuoteDatabaseName(databaseName) ?? "[master]";
+
+            var query = $@"
+EXECUTE {quotedDbName}.sys.sp_executesql
+    N'
+SELECT TOP (1)
+    query_plan_text = tqp.query_plan
+FROM sys.dm_exec_query_stats AS qs
+OUTER APPLY sys.dm_exec_text_query_plan(qs.plan_handle, qs.statement_start_offset, qs.statement_end_offset) AS tqp
+WHERE qs.sql_handle = @h
+AND   qs.statement_start_offset = @stmt_start
+AND   qs.statement_end_offset = @stmt_end
+AND   tqp.query_plan IS NOT NULL
+ORDER BY
+    qs.last_execution_time DESC
+OPTION(RECOMPILE);',
+    N'@h varbinary(64), @stmt_start int, @stmt_end int',
+    @h, @stmt_start, @stmt_end;";
+
+            using var command = new SqlCommand(query, connection) { CommandTimeout = 30 };
+            command.Parameters.Add(new SqlParameter("@h", SqlDbType.VarBinary, 64) { Value = handleBytes });
+            command.Parameters.Add(new SqlParameter("@stmt_start", SqlDbType.Int) { Value = statementStartOffset });
+            command.Parameters.Add(new SqlParameter("@stmt_end", SqlDbType.Int) { Value = statementEndOffset });
+            var result = await command.ExecuteScalarAsync();
+            return result as string;
+        }
+
+        private static byte[]? HexStringToBytes(string hex)
+        {
+            var start = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+            var len = hex.Length - start;
+            if (len <= 0 || (len % 2) != 0) return null;
+            var bytes = new byte[len / 2];
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                if (!byte.TryParse(hex.AsSpan(start + i * 2, 2),
+                                   NumberStyles.HexNumber,
+                                   CultureInfo.InvariantCulture,
+                                   out bytes[i]))
+                {
+                    return null;
+                }
+            }
+            return bytes;
+        }
+
+        /* Only accept names that are syntactically plain identifiers so we can safely
+           interpolate into the EXEC statement. Unknown / invalid names fall back to master. */
+        private static string? QuoteDatabaseName(string? dbName)
+        {
+            if (string.IsNullOrWhiteSpace(dbName)) return null;
+            foreach (var c in dbName)
+            {
+                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '$' || c == '#' || c == '-' || c == ' '))
+                    return null;
+            }
+            return "[" + dbName.Replace("]", "]]") + "]";
+        }
+
         private void LoadUserPreferences()
         {
             var prefs = _preferencesService.GetPreferences();
@@ -2173,7 +2528,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelFontColor = ScottPlot.Colors.Gray;
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
-            BlockingStatsBlockingEventsChart.Plot.Axes.DateTimeTicksBottom();
+            BlockingStatsBlockingEventsChart.Plot.Axes.DateTimeTicksBottomDateChange();
             BlockingStatsBlockingEventsChart.Plot.Axes.SetLimitsX(xMin, xMax);
             BlockingStatsBlockingEventsChart.Plot.YLabel("Count");
             LockChartVerticalAxis(BlockingStatsBlockingEventsChart);
@@ -2202,7 +2557,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelFontColor = ScottPlot.Colors.Gray;
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
-            BlockingStatsDurationChart.Plot.Axes.DateTimeTicksBottom();
+            BlockingStatsDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
             BlockingStatsDurationChart.Plot.Axes.SetLimitsX(xMin, xMax);
             BlockingStatsDurationChart.Plot.YLabel("Duration (ms)");
             LockChartVerticalAxis(BlockingStatsDurationChart);
@@ -2231,7 +2586,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelFontColor = ScottPlot.Colors.Gray;
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
-            BlockingStatsDeadlocksChart.Plot.Axes.DateTimeTicksBottom();
+            BlockingStatsDeadlocksChart.Plot.Axes.DateTimeTicksBottomDateChange();
             BlockingStatsDeadlocksChart.Plot.Axes.SetLimitsX(xMin, xMax);
             BlockingStatsDeadlocksChart.Plot.YLabel("Count");
             LockChartVerticalAxis(BlockingStatsDeadlocksChart);
@@ -2260,7 +2615,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelFontColor = ScottPlot.Colors.Gray;
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
-            BlockingStatsDeadlockWaitTimeChart.Plot.Axes.DateTimeTicksBottom();
+            BlockingStatsDeadlockWaitTimeChart.Plot.Axes.DateTimeTicksBottomDateChange();
             BlockingStatsDeadlockWaitTimeChart.Plot.Axes.SetLimitsX(xMin, xMax);
             BlockingStatsDeadlockWaitTimeChart.Plot.YLabel("Duration (ms)");
             LockChartVerticalAxis(BlockingStatsDeadlockWaitTimeChart);
@@ -2306,7 +2661,7 @@ namespace PerformanceMonitorDashboard
                 colorIndex++;
             }
 
-            CollectorDurationChart.Plot.Axes.DateTimeTicksBottom();
+            CollectorDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
             TabHelpers.ReapplyAxisColors(CollectorDurationChart);
             CollectorDurationChart.Plot.YLabel("Duration (ms)");
             CollectorDurationChart.Plot.Axes.AutoScale();
@@ -2369,7 +2724,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            LockWaitStatsChart.Plot.Axes.DateTimeTicksBottom();
+            LockWaitStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
             LockWaitStatsChart.Plot.Axes.SetLimitsX(xMin, xMax);
             LockWaitStatsChart.Plot.YLabel("Wait Time (ms/sec)");
             _legendPanels[LockWaitStatsChart] = LockWaitStatsChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
@@ -2426,7 +2781,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            CurrentWaitsDurationChart.Plot.Axes.DateTimeTicksBottom();
+            CurrentWaitsDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
             CurrentWaitsDurationChart.Plot.Axes.SetLimitsX(xMin, xMax);
             CurrentWaitsDurationChart.Plot.YLabel("Total Wait Duration (ms)");
             _legendPanels[CurrentWaitsDurationChart] = CurrentWaitsDurationChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
@@ -2483,7 +2838,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            CurrentWaitsBlockedChart.Plot.Axes.DateTimeTicksBottom();
+            CurrentWaitsBlockedChart.Plot.Axes.DateTimeTicksBottomDateChange();
             CurrentWaitsBlockedChart.Plot.Axes.SetLimitsX(xMin, xMax);
             CurrentWaitsBlockedChart.Plot.YLabel("Blocked Sessions");
             _legendPanels[CurrentWaitsBlockedChart] = CurrentWaitsBlockedChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
@@ -2823,7 +3178,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            ResourceOverviewCpuChart.Plot.Axes.DateTimeTicksBottom();
+            ResourceOverviewCpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
             ResourceOverviewCpuChart.Plot.Axes.SetLimitsX(xMin, xMax);
             ResourceOverviewCpuChart.Plot.Axes.SetLimitsY(0, 100);
             ResourceOverviewCpuChart.Plot.YLabel("CPU %");
@@ -2886,7 +3241,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            ResourceOverviewMemoryChart.Plot.Axes.DateTimeTicksBottom();
+            ResourceOverviewMemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
             ResourceOverviewMemoryChart.Plot.Axes.SetLimitsX(xMin, xMax);
             ResourceOverviewMemoryChart.Plot.YLabel("MB");
             LockChartVerticalAxis(ResourceOverviewMemoryChart);
@@ -2963,7 +3318,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            ResourceOverviewIoChart.Plot.Axes.DateTimeTicksBottom();
+            ResourceOverviewIoChart.Plot.Axes.DateTimeTicksBottomDateChange();
             ResourceOverviewIoChart.Plot.Axes.SetLimitsX(xMin, xMax);
             ResourceOverviewIoChart.Plot.Axes.AutoScaleY();
             ResourceOverviewIoChart.Plot.YLabel("Latency (ms)");
@@ -3035,7 +3390,7 @@ namespace PerformanceMonitorDashboard
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
-            ResourceOverviewWaitChart.Plot.Axes.DateTimeTicksBottom();
+            ResourceOverviewWaitChart.Plot.Axes.DateTimeTicksBottomDateChange();
             ResourceOverviewWaitChart.Plot.Axes.SetLimitsX(xMin, xMax);
             ResourceOverviewWaitChart.Plot.Axes.AutoScaleY();
             ResourceOverviewWaitChart.Plot.YLabel("Wait Time (ms/sec)");

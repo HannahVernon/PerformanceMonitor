@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.ComponentModel;
 using System.Text.Json.Serialization;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitorDashboard.Interfaces;
@@ -14,7 +15,7 @@ using PerformanceMonitorDashboard.Services;
 
 namespace PerformanceMonitorDashboard.Models
 {
-    public class ServerConnection
+    public class ServerConnection : INotifyPropertyChanged
     {
         public string Id { get; set; } = Guid.NewGuid().ToString();
         public string ServerName { get; set; } = string.Empty;
@@ -70,6 +71,12 @@ namespace PerformanceMonitorDashboard.Models
         public bool ReadOnlyIntent { get; set; } = false;
 
         /// <summary>
+        /// When true, sets MultiSubnetFailover=true on the connection string.
+        /// Recommended for AG listeners and FCIs spanning multiple subnets.
+        /// </summary>
+        public bool MultiSubnetFailover { get; set; } = false;
+
+        /// <summary>
         /// Monthly cost of this server in USD, used for FinOps cost attribution.
         /// Set to 0 to hide cost columns. All FinOps costs are proportional to this budget.
         /// </summary>
@@ -81,6 +88,28 @@ namespace PerformanceMonitorDashboard.Models
         /// </summary>
         [JsonIgnore]
         public string DisplayNameWithIntent => ReadOnlyIntent ? $"{DisplayName} (Read-Only)" : DisplayName;
+
+        private string? _installedVersion;
+
+        /// <summary>
+        /// Installed PerformanceMonitor version on this server. Populated asynchronously
+        /// by the Manage Servers window. Not persisted — runtime-only display field.
+        /// Conventional values: null (not yet probed), a 3-part version like "2.9.0",
+        /// "Not installed", or "Unavailable" when the probe fails.
+        /// </summary>
+        [JsonIgnore]
+        public string? InstalledVersion
+        {
+            get => _installedVersion;
+            set
+            {
+                if (_installedVersion == value) return;
+                _installedVersion = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InstalledVersion)));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
 
         /// <summary>
         /// Display-only property for showing authentication type in UI.
@@ -120,6 +149,7 @@ namespace PerformanceMonitorDashboard.Models
                         _ => SqlConnectionEncryptOption.Mandatory
                     },
                     ApplicationIntent = ReadOnlyIntent ? ApplicationIntent.ReadOnly : ApplicationIntent.ReadWrite,
+                    MultiSubnetFailover = MultiSubnetFailover,
                     Authentication = SqlAuthenticationMethod.ActiveDirectoryInteractive
                 };
 
@@ -151,7 +181,8 @@ namespace PerformanceMonitorDashboard.Models
                 password,
                 EncryptMode,
                 TrustServerCertificate,
-                ReadOnlyIntent
+                ReadOnlyIntent,
+                MultiSubnetFailover
             ).ConnectionString;
         }
 

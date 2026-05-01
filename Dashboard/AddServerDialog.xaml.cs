@@ -47,10 +47,12 @@ namespace PerformanceMonitorDashboard
         private InstallationResult? _installResult;
         private string? _reportPath;
         private DialogState _currentState = DialogState.Initial;
+        private string? _serverVersion;
 
         public AddServerDialog()
         {
             InitializeComponent();
+            SizeToWorkArea();
             _isEditMode = false;
             ServerConnection = new ServerConnection();
             Title = "Add SQL Server";
@@ -59,6 +61,7 @@ namespace PerformanceMonitorDashboard
         public AddServerDialog(ServerConnection existingServer)
         {
             InitializeComponent();
+            SizeToWorkArea();
             _isEditMode = true;
             ServerConnection = existingServer;
             Title = "Edit SQL Server";
@@ -78,6 +81,7 @@ namespace PerformanceMonitorDashboard
             };
             TrustServerCertificateCheckBox.IsChecked = existingServer.TrustServerCertificate;
             ReadOnlyIntentCheckBox.IsChecked = existingServer.ReadOnlyIntent;
+            MultiSubnetFailoverCheckBox.IsChecked = existingServer.MultiSubnetFailover;
 
             if (existingServer.AuthenticationType == AuthenticationTypes.EntraMFA)
             {
@@ -106,6 +110,14 @@ namespace PerformanceMonitorDashboard
             {
                 WindowsAuthRadio.IsChecked = true;
             }
+        }
+
+        private void SizeToWorkArea()
+        {
+            var workArea = SystemParameters.WorkArea;
+            Height = workArea.Height;
+            Top = workArea.Top;
+            Left = workArea.Left + (workArea.Width - Width) / 2;
         }
 
         private void AuthType_Changed(object sender, RoutedEventArgs e)
@@ -154,7 +166,8 @@ namespace PerformanceMonitorDashboard
                 Encrypt = ParseEncryptOption(GetSelectedEncryptMode()),
                 ApplicationIntent = ReadOnlyIntentCheckBox.IsChecked == true
                     ? ApplicationIntent.ReadOnly
-                    : ApplicationIntent.ReadWrite
+                    : ApplicationIntent.ReadWrite,
+                MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true
             };
 
             if (WindowsAuthRadio.IsChecked == true)
@@ -339,17 +352,9 @@ namespace PerformanceMonitorDashboard
 
             if (connected)
             {
-                var message = serverVersion != null
-                    ? $"Successfully connected to {ServerNameTextBox.Text}!\n\n{serverVersion}"
-                    : $"Successfully connected to {ServerNameTextBox.Text}!";
-                MessageBox.Show(
-                    message,
-                    "Connection Successful",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information
-                );
+                _serverVersion = serverVersion;
 
-                /* After successful connection, check database status */
+                /* Show connection + database status inline instead of a popup */
                 await DetectDatabaseStatusAsync();
             }
             else if (mfaCancelled)
@@ -400,6 +405,10 @@ namespace PerformanceMonitorDashboard
 
                 if (!_coreServerInfo.IsSupportedVersion)
                 {
+                    string serverName = ServerNameTextBox.Text;
+                    ConnectionInfoText.Text = _serverVersion != null
+                        ? $"Connected to {serverName} ({_serverVersion})"
+                        : $"Connected to {serverName}";
                     DatabaseStatusText.Text = $"Warning: {_coreServerInfo.ProductMajorVersionName} is not supported. SQL Server 2016+ is required.";
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     InstallUpgradeButton.Visibility = Visibility.Collapsed;
@@ -458,13 +467,22 @@ namespace PerformanceMonitorDashboard
             ViewReportButton.Visibility = Visibility.Collapsed;
             StatusText.Text = string.Empty;
             StatusText.Visibility = Visibility.Collapsed;
+            ConnectionInfoText.Text = string.Empty;
             InstallUpgradeButton.Visibility = Visibility.Visible;
             SkipInstallText.Visibility = Visibility.Visible;
+
+            /* Build the connection header shown for all connected states */
+            string serverName = ServerNameTextBox.Text;
+            string connectionHeader = _serverVersion != null
+                ? $"Connected to {serverName} ({_serverVersion})"
+                : $"Connected to {serverName}";
 
             switch (newState)
             {
                 case DialogState.Connected_NoDatabase:
-                    DatabaseStatusText.Text = $"No PerformanceMonitor database found on this server. Install v{appVersion}?";
+                    ConnectionInfoText.Text = connectionHeader;
+                    DatabaseStatusText.Text = "No PerformanceMonitor database found on this server. " +
+                        $"Click Install Now to create the monitoring database, collection jobs, and stored procedures (v{appVersion}).";
                     InstallUpgradeButton.Content = "Install Now";
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     InstallationPanel.Visibility = Visibility.Visible;
@@ -473,7 +491,9 @@ namespace PerformanceMonitorDashboard
 
                 case DialogState.Connected_NeedsUpgrade:
                     string normalizedInstalled = NormalizeVersion(_installedVersion!);
-                    DatabaseStatusText.Text = $"v{normalizedInstalled} installed — v{appVersion} available";
+                    ConnectionInfoText.Text = connectionHeader;
+                    DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedInstalled} is installed. " +
+                        $"v{appVersion} is available — click Upgrade Now to apply the update.";
                     InstallUpgradeButton.Content = "Upgrade Now";
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     InstallationPanel.Visibility = Visibility.Visible;
@@ -482,6 +502,7 @@ namespace PerformanceMonitorDashboard
 
                 case DialogState.Connected_Current:
                     string normalizedCurrent = NormalizeVersion(_installedVersion!);
+                    ConnectionInfoText.Text = connectionHeader;
                     DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedCurrent} is up to date.";
                     InstallUpgradeButton.Visibility = Visibility.Collapsed;
                     SkipInstallText.Visibility = Visibility.Collapsed;
@@ -616,7 +637,8 @@ namespace PerformanceMonitorDashboard
                     preValidationAction = async () =>
                     {
                         AppendInstallLog("Installing community dependencies...", "Info");
-                        using var depInstaller = new DependencyInstaller();
+                        string communityDir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "community");
+                        using var depInstaller = new DependencyInstaller(communityDir);
                         await depInstaller.InstallDependenciesAsync(installerConnStr, progress, cancellationToken);
                     };
                 }
@@ -821,6 +843,7 @@ namespace PerformanceMonitorDashboard
             EncryptModeComboBox.IsEnabled = enabled;
             TrustServerCertificateCheckBox.IsEnabled = enabled;
             ReadOnlyIntentCheckBox.IsEnabled = enabled;
+            MultiSubnetFailoverCheckBox.IsEnabled = enabled;
             IsFavoriteCheckBox.IsEnabled = enabled;
             MonthlyCostTextBox.IsEnabled = enabled;
             DescriptionTextBox.IsEnabled = enabled;
@@ -915,6 +938,7 @@ namespace PerformanceMonitorDashboard
                 ServerConnection.EncryptMode = GetSelectedEncryptMode();
                 ServerConnection.TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true;
                 ServerConnection.ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true;
+                ServerConnection.MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true;
                 if (decimal.TryParse(MonthlyCostTextBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var editCost) && editCost >= 0)
                     ServerConnection.MonthlyCostUsd = editCost;
             }
@@ -936,6 +960,7 @@ namespace PerformanceMonitorDashboard
                     EncryptMode = GetSelectedEncryptMode(),
                     TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true,
                     ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true,
+                    MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true,
                     MonthlyCostUsd = monthlyCost
                 };
             }
