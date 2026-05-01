@@ -17,6 +17,14 @@ using PerformanceMonitorLite.Services;
 
 namespace PerformanceMonitorLite;
 
+public enum CpuAlertMode
+{
+    /// <summary>sql_server_cpu + other_process_cpu — matches OS user+system, "is the box in trouble".</summary>
+    Total,
+    /// <summary>SQL Server scheduler ProcessUtilization only.</summary>
+    SqlOnly
+}
+
 public partial class App : Application
 {
     [DllImport("shell32.dll", SetLastError = true)]
@@ -71,6 +79,8 @@ public partial class App : Application
     public static bool NotifyConnectionChanges { get; set; } = true;
     public static bool AlertCpuEnabled { get; set; } = true;
     public static int AlertCpuThreshold { get; set; } = 80;
+    /// <summary>Which CPU metric the alert evaluates against. Total = sql_server_cpu + other_process_cpu (matches OS user+system). SqlOnly = SQL Server scheduler %.</summary>
+    public static CpuAlertMode AlertCpuMode { get; set; } = CpuAlertMode.Total;
     public static bool AlertBlockingEnabled { get; set; } = true;
     public static int AlertBlockingThreshold { get; set; } = 1;
     public static bool AlertDeadlockEnabled { get; set; } = true;
@@ -127,6 +137,50 @@ public partial class App : Application
     public static bool SlackWebhookEnabled { get; set; } = false;
     public static string SlackWebhookUrl { get; set; } = "";
     public static string SlackProxyAddress { get; set; } = "";
+
+    private const string TeamsWebhookCredentialKey = "TeamsWebhook";
+    private const string SlackWebhookCredentialKey = "SlackWebhook";
+
+    /// <summary>
+    /// Gets a webhook URL from Windows Credential Manager.
+    /// </summary>
+    public static string GetWebhookUrl(string credentialKey)
+    {
+        try
+        {
+            var credService = new Services.CredentialService();
+            var cred = credService.GetCredential(credentialKey);
+            return cred?.Password ?? "";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("App", $"Failed to retrieve webhook URL for {credentialKey}: {ex.Message}");
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Saves a webhook URL to Windows Credential Manager.
+    /// </summary>
+    public static void SaveWebhookUrl(string credentialKey, string url)
+    {
+        try
+        {
+            var credService = new Services.CredentialService();
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                credService.DeleteCredential(credentialKey);
+            }
+            else
+            {
+                credService.SaveCredential(credentialKey, "webhook", url);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("App", $"Failed to save webhook URL for {credentialKey}: {ex.Message}");
+        }
+    }
 
     /* SMTP email alert settings */
     public static bool SmtpEnabled { get; set; } = false;
@@ -279,6 +333,8 @@ public partial class App : Application
             if (root.TryGetProperty("notify_connection_changes", out v)) NotifyConnectionChanges = v.GetBoolean();
             if (root.TryGetProperty("alert_cpu_enabled", out v)) AlertCpuEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_cpu_threshold", out v)) AlertCpuThreshold = v.GetInt32();
+            if (root.TryGetProperty("alert_cpu_mode", out v) && Enum.TryParse<CpuAlertMode>(v.GetString(), out var mode))
+                AlertCpuMode = mode;
             if (root.TryGetProperty("alert_blocking_enabled", out v)) AlertBlockingEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_blocking_threshold", out v)) AlertBlockingThreshold = v.GetInt32();
             if (root.TryGetProperty("alert_deadlock_enabled", out v)) AlertDeadlockEnabled = v.GetBoolean();
@@ -356,13 +412,33 @@ public partial class App : Application
 
             /* Teams webhook settings */
             if (root.TryGetProperty("teams_webhook_enabled", out v)) TeamsWebhookEnabled = v.GetBoolean();
-            if (root.TryGetProperty("teams_webhook_url", out v)) TeamsWebhookUrl = v.GetString() ?? "";
             if (root.TryGetProperty("teams_proxy_address", out v)) TeamsProxyAddress = v.GetString() ?? "";
 
             /* Slack webhook settings */
             if (root.TryGetProperty("slack_webhook_enabled", out v)) SlackWebhookEnabled = v.GetBoolean();
-            if (root.TryGetProperty("slack_webhook_url", out v)) SlackWebhookUrl = v.GetString() ?? "";
             if (root.TryGetProperty("slack_proxy_address", out v)) SlackProxyAddress = v.GetString() ?? "";
+
+            /* Migrate webhook URLs from plaintext settings.json to Credential Manager */
+            if (root.TryGetProperty("teams_webhook_url", out v))
+            {
+                var legacyUrl = v.GetString() ?? "";
+                if (!string.IsNullOrWhiteSpace(legacyUrl))
+                {
+                    SaveWebhookUrl(TeamsWebhookCredentialKey, legacyUrl);
+                }
+            }
+            if (root.TryGetProperty("slack_webhook_url", out v))
+            {
+                var legacyUrl = v.GetString() ?? "";
+                if (!string.IsNullOrWhiteSpace(legacyUrl))
+                {
+                    SaveWebhookUrl(SlackWebhookCredentialKey, legacyUrl);
+                }
+            }
+
+            /* Load webhook URLs from Credential Manager */
+            TeamsWebhookUrl = GetWebhookUrl(TeamsWebhookCredentialKey);
+            SlackWebhookUrl = GetWebhookUrl(SlackWebhookCredentialKey);
 
             /* SMTP settings */
             if (root.TryGetProperty("smtp_enabled", out v)) SmtpEnabled = v.GetBoolean();
@@ -379,6 +455,17 @@ public partial class App : Application
     private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
     {
         var exception = e.ExceptionObject as Exception;
+
+        /* Silently swallow Hardcodet TrayToolTip race condition (issue #422) when it
+           escapes the Dispatcher path — happens during tray-Exit shutdown when the
+           Dispatcher's exception hooks are torn down before the tray library finishes. */
+        if (exception != null && IsTrayToolTipCrash(exception))
+        {
+            AppLogger.Warn("AppDomain", "Suppressed Hardcodet TrayToolTip crash (issue #422)");
+            AppLogger.Flush();
+            return;
+        }
+
         AppLogger.Error("AppDomain", "Unhandled exception (terminating=" + e.IsTerminating + ")", exception);
         AppLogger.Flush();
 
