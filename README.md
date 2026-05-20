@@ -90,10 +90,11 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 ## Quick Start — Lite Edition
 
-1. Download and extract **[PerformanceMonitorLite](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** (requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/8.0))
-2. Run `PerformanceMonitorLite.exe`
-3. Click **+ Add Server**, enter connection details, test, save
-4. Double-click the server in the sidebar to connect
+1. Download **[`PerformanceMonitorLite-win-Setup.exe`](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** (requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0))
+2. Run the installer — it installs to `%LocalAppData%\PerformanceMonitorLite`, adds **Start Menu** and **Desktop** shortcuts, and registers the app under **Apps & Features** so it shows up in Windows search and can be uninstalled normally. Auto-update is wired in.
+3. Launch from the Start Menu or Desktop shortcut.
+4. Click **+ Add Server**, enter connection details, test, save.
+5. Double-click the server in the sidebar to connect.
 
 Data starts flowing within 1–5 minutes. That's it. No installation on your server, no Agent jobs, no sysadmin required.
 
@@ -143,14 +144,14 @@ All data is stored in `%LOCALAPPDATA%\PerformanceMonitorLite\` — separate from
 
 ### Lite Configuration
 
-All configuration lives in the `config/` folder:
+| File | Location | Purpose |
+|---|---|---|
+| `servers.json` | `%ProgramData%\PerformanceMonitorLite\config\` (machine-wide) | Server connections, shared across all Windows users on the machine. Passwords stay per-user in Windows Credential Manager. Optional **Utility Database** per server for community procs installed outside master. |
+| `settings.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | Retention, MCP server, startup behavior, alert thresholds, SMTP configuration |
+| `collection_schedule.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | Per-collector enable/disable and frequency |
+| `ignored_wait_types.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | 144 benign wait types excluded by default |
 
-| File | Purpose |
-|---|---|
-| `servers.json` | Server connections (passwords in Windows Credential Manager). Optional **Utility Database** per server for community procs installed outside master. |
-| `settings.json` | Retention, MCP server, startup behavior, alert thresholds, SMTP configuration |
-| `collection_schedule.json` | Per-collector enable/disable and frequency |
-| `ignored_wait_types.json` | 144 benign wait types excluded by default |
+When a second Windows user on the same machine launches Lite, they see the shared `servers.json` immediately. SQL Auth and Entra MFA passwords are scoped to each user's own Credential Manager, so they'll be prompted once per server; Windows Auth works without any prompt.
 
 ---
 
@@ -238,7 +239,7 @@ FROM PerformanceMonitor.config.collection_log
 ORDER BY collection_time DESC;
 ```
 
-3. Launch the Dashboard (`Dashboard/` folder — build with `dotnet build` or use the release package). The Dashboard is a separate WPF application that runs on your workstation and connects to any SQL Server where the PerformanceMonitor database is installed. Add your server, enter credentials, and data appears immediately.
+3. Install the Dashboard. Download **[`PerformanceMonitorDashboard-win-Setup.exe`](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** (requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)). Setup.exe installs to `%LocalAppData%\PerformanceMonitorDashboard`, adds **Start Menu** and **Desktop** shortcuts, registers the app under **Apps & Features**, and wires up auto-update. Launch from the Start Menu, add your server, enter credentials, and data appears immediately.
 
 ### What Gets Installed
 
@@ -539,6 +540,7 @@ Common issues:
 2. **Query Store tab empty** — Query Store must be enabled on the target database (`ALTER DATABASE [YourDB] SET QUERY_STORE = ON`).
 3. **Blocked process reports empty** — Both editions attempt to auto-configure the blocked process threshold to 5 seconds via `sp_configure`. On **AWS RDS**, `sp_configure` is not available — you must set `blocked process threshold (s)` through an RDS Parameter Group (see "AWS RDS Parameter Group Configuration" above). On **Azure SQL Database**, the threshold is fixed at 20 seconds and cannot be changed. If you still see no data on other platforms, verify the login has `ALTER SETTINGS` permission.
 4. **Connection failures** — Verify network connectivity, firewall rules, and that the login has the required [permissions](#permissions). For Azure SQL Database, use a contained database user with `VIEW DATABASE STATE`.
+5. **FinOps Index Analysis hangs, times out, or returns `Msg 229` on `sql_expression_dependencies`** — `sp_IndexCleanup` runs against each user database under your dashboard/Lite login. If that login has no user mapping in a target database, the procedure can hang at 100% CPU instead of erroring; if it is mapped but missing `SELECT` on `sys.sql_expression_dependencies`, it errors immediately on databases that have UDF-bound computed columns or check constraints. See [FinOps Index Analysis](#finops-index-analysis-per-database-grants) below for the full per-database grant set that fixes both.
 
 ---
 
@@ -589,6 +591,44 @@ CREATE USER [YourLogin] FOR LOGIN [YourLogin];
 ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [YourLogin];
 ```
 
+### FinOps Index Analysis (per-database grants)
+
+Applies to **both editions**. The FinOps Index Analysis tab runs `sp_IndexCleanup` against each user database you ask it to inspect, executing as your dashboard/Lite login. The grants above (`VIEW SERVER STATE`, `db_owner` on `PerformanceMonitor`, `SQLAgentReaderRole` on `msdb`) are *not* sufficient on their own — the login also needs a user mapping in every user database it will analyze, plus `VIEW DATABASE STATE`, `VIEW DEFINITION`, and `SELECT` on `sys.sql_expression_dependencies` in each.
+
+The third grant is the easy one to miss: by default only members of `db_owner` have `SELECT` on `sys.sql_expression_dependencies`, and `VIEW DEFINITION` does not include it. `sp_IndexCleanup` queries that catalog view (via three-part name to the target database) when checking for computed columns and check constraints that reference UDFs, so the failure only surfaces on databases that actually have those — which is why a smoke-test database may pass and a real workload database fails with `Msg 229`.
+
+For each target user database:
+
+```sql
+USE [YourTargetDatabase];
+CREATE USER [SQLServerPerfMon] FOR LOGIN [SQLServerPerfMon];
+GRANT VIEW DATABASE STATE                       TO [SQLServerPerfMon];
+GRANT VIEW DEFINITION                           TO [SQLServerPerfMon];
+GRANT SELECT ON sys.sql_expression_dependencies TO [SQLServerPerfMon];
+```
+
+Or apply broadly with `sp_MSforeachdb`:
+
+```sql
+EXEC sp_MSforeachdb N'
+USE [?];
+IF DB_ID() > 4 AND DATABASEPROPERTYEX(DB_NAME(), ''Updateability'') = ''READ_WRITE''
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''SQLServerPerfMon'')
+        CREATE USER [SQLServerPerfMon] FOR LOGIN [SQLServerPerfMon];
+    GRANT VIEW DATABASE STATE                       TO [SQLServerPerfMon];
+    GRANT VIEW DEFINITION                           TO [SQLServerPerfMon];
+    GRANT SELECT ON sys.sql_expression_dependencies TO [SQLServerPerfMon];
+END';
+```
+
+**Symptoms if missing.** There are two distinct failure modes depending on which grant is absent:
+
+- *No user mapping in the target database* — `sp_IndexCleanup` can hang at 100% CPU with no waits and never return, instead of failing fast with `Msg 916` like every other catalog DMV. The hang isn't a deadlock or a long-running scan; it's a SQL Server engine bug where a permission check at execute time gets misclassified as "this plan needs to be recompiled," producing an infinite recompile loop. Reproduces on SQL Server 2016 SP3 through 2025 CU4.
+- *User is mapped with `VIEW DATABASE STATE` + `VIEW DEFINITION` but no `SELECT` on `sys.sql_expression_dependencies`* — fails fast with `Msg 229, Level 14, State 5: The SELECT permission was denied on the object 'sql_expression_dependencies', database 'mssqlsystemresource', schema 'sys'` the moment a database with a UDF-bound computed column or check constraint is reached.
+
+Adding all three grants above eliminates both. See issue [#915](https://github.com/erikdarlingdata/PerformanceMonitor/issues/915) for the full diagnosis.
+
 ### Azure SQL Database (Lite Only)
 
 Azure SQL Database doesn't support server-level logins. Create a **contained database user** directly on the target database:
@@ -634,7 +674,7 @@ Monitor/
 
 ## Building from Source
 
-All projects target .NET 8.0.
+All projects target .NET 10.0.
 
 ```
 # Full Edition Dashboard
