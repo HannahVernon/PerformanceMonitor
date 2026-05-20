@@ -27,6 +27,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
+:: Portable ZIP for advanced / air-gapped users. README points end users at Setup.exe (Velopack)
+:: because that registers shortcuts + Apps & Features; this is the explicit fallback.
 echo Creating Dashboard ZIP...
 set DASH_ZIP=PerformanceMonitorDashboard-%VERSION%.zip
 if exist "releases\%DASH_ZIP%" del "releases\%DASH_ZIP%"
@@ -36,7 +38,7 @@ echo.
 :: ----------------------------------------
 :: CLI Installer
 :: ----------------------------------------
-echo [2/2] Publishing CLI Installer...
+echo [2/3] Publishing CLI Installer...
 dotnet publish Installer\PerformanceMonitorInstaller.csproj -c Release
 
 if %ERRORLEVEL% neq 0 (
@@ -56,7 +58,7 @@ mkdir "%INST_DIR%"
 mkdir "%INST_DIR%\install"
 mkdir "%INST_DIR%\upgrades"
 
-copy "Installer\bin\Release\net8.0\win-x64\publish\PerformanceMonitorInstaller.exe" "%INST_DIR%\" >nul
+copy "Installer\bin\Release\net10.0\win-x64\publish\PerformanceMonitorInstaller.exe" "%INST_DIR%\" >nul
 copy "install\*.sql" "%INST_DIR%\install\" >nul
 xcopy "upgrades" "%INST_DIR%\upgrades\" /E /I /Q >nul 2>&1
 if exist README.md copy README.md "%INST_DIR%\" >nul
@@ -73,8 +75,8 @@ echo  Build Complete!
 echo ========================================
 echo.
 echo Output:
-echo   releases\%DASH_ZIP%
-echo   releases\%INST_ZIP%
+echo   releases\%DASH_ZIP%       (portable Dashboard ZIP)
+echo   releases\%INST_ZIP%       (CLI installer + SQL scripts)
 echo.
 
 for %%A in ("releases\%DASH_ZIP%") do echo Dashboard size:  %%~zA bytes

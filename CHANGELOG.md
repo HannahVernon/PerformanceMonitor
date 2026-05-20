@@ -5,7 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.10.0] - TBD
+## [2.11.0] - 2026-05-19
+
+### Important
+
+- **.NET 10 upgrade** — Dashboard, Lite, Installer, and Installer.Core now target `net10.0` (Windows projects target `net10.0-windows`). Building from source now requires the .NET 10 SDK; CI is pinned to 10.0.204 via `global.json` for reproducible builds. End users running prebuilt Velopack installers do not need to install anything separately — runtime is bundled ([#958])
+- **Dashboard and Lite ship via Setup.exe only** — portable ZIP artifacts have been dropped from the Dashboard and Lite release pipeline. Velopack `Setup.exe` is the only Dashboard/Lite release artifact and now correctly registers the apps under Apps & Features and creates Start Menu shortcuts. The Installer ZIP (CLI installer + SQL scripts) is unchanged. Users upgrading from a portable ZIP install should uninstall the ZIP version and reinstall via `Setup.exe`
+- **Shared `servers.json` location** — Dashboard and Lite now store `servers.json` under `%ProgramData%\PerformanceMonitor{Dashboard,Lite}\` so every Windows user on the same machine shares one server list. First run migrates an existing per-user `servers.json` to the new location and grants Authenticated Users Modify on the directory. SQL credentials remain per-user in Windows Credential Manager — each DBA re-enters SQL passwords on first connect; Windows Auth works with no re-entry
+
+### Added
+
+- **One-click snooze from the alert tray popup** in Lite — snooze an alert directly from the tray notification balloon without opening the main window ([#944])
+- **Snooze hint in email and Teams/Slack alert payloads** — alert messages now show the snooze duration / scheduled wake time when an alert is fired while a snooze is active ([#944])
+- **Process memory logging per collection cycle** in Lite — the collector now logs working set and private bytes at the end of each cycle, making it easier to track memory growth in long-running sessions
+
+### Changed
+
+- **Lite compaction memory tuning** ([#933]) — multiple changes to make parquet compaction robust on wide-row tables and large datasets:
+    - Cap the main collector connection's `memory_limit` and raise it transiently only for the `COPY` step
+    - Detect compaction `EXCLUDE` columns per merge step instead of once up front
+    - Raise the compaction `memory_limit` floor to 4 GB
+    - Set DuckDB `temp_directory` explicitly so spill files don't blow the OS temp drive
+    - Compact parquet in size-budgeted batches instead of one mega-batch
+- **Trace collectors honor `config.collector_database_exclusions`** ([#887] follow-up) — the trace-file based collectors now filter against the exclusions table, matching the behavior of the eight DMV-based per-database collectors shipped in v2.9.0
+- **InstallerGui project directory removed** — the WPF InstallerGui was retired in v2.9.0 in favor of the Dashboard's integrated Add Server dialog. The project directory has now been deleted from the repo
+- **Build warnings cleaned up** across Lite, Dashboard, and Installer ([#945])
+- **GitHub Actions runners bumped** to Node 24-compatible major versions to silence deprecation warnings
+
+### Fixed
+
+- **Re-run `installation_history` column widening** for servers that crossed v2.4.0 → v2.5.0 before PR #828's fix shipped in v2.7.0. Those servers ran the original widen script as a no-op against `master`, then advanced their installer_version past 2.5, so the now-fixed script never reapplied. Adds an idempotent ALTER under an `IF EXISTS` guard checking `max_length = 510` ([#828])
+- **Mute rules preserved across size-triggered DuckDB reset** in Lite — when the local DuckDB exceeded the configured size budget and was reset, mute rules were being lost. They now survive the reset ([#938])
+- **Chart tooltips break after tab switch** — root-cause fix for the popup-wedge issue first patched in v2.10.0. Both the Memory tab handlers and `CorrelatedCrosshairManager` are now resilient to tab churn ([#916], [#937])
+- **Stale `Monitor_LongQueries_*.trc` files cleaned up** by `config.data_retention` — the trace-file cleanup step previously left old `.trc` files behind on disk ([#951])
+- **Nullability guards** added to the remaining comparison overlay tasks that were producing CS86xx warnings
+
+[#828]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/828
+[#887]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/887
+[#916]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/916
+[#933]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/933
+[#937]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/937
+[#938]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/938
+[#944]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/944
+[#945]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/945
+[#951]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/951
+[#958]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/958
+
+## [2.10.0] - 2026-05-04
 
 ### Fixed
 
@@ -17,7 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-database grants for FinOps Index Analysis** documented in the README — sp_IndexCleanup-backed Index Analysis requires per-database `EXECUTE` grants on each user database you want to analyze ([#915])
 
 [#915]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/915
-[#916]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/916
 [#917]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/917
 
 ## [2.9.0] - 2026-04-29

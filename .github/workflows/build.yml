@@ -18,7 +18,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Detect changed paths
         id: filter
@@ -45,10 +45,10 @@ jobs:
               - 'install/**'
               - 'upgrades/**'
 
-      - name: Setup .NET 8.0
-        uses: actions/setup-dotnet@v4
+      - name: Setup .NET 10.0
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
           cache: true
           cache-dependency-path: '**/packages.lock.json'
 
@@ -108,19 +108,21 @@ jobs:
           $version = "${{ steps.version.outputs.VERSION }}"
           New-Item -ItemType Directory -Force -Path releases
 
-          # Dashboard ZIP
+          # Dashboard ZIP — portable artifact for advanced/air-gapped users.
+          # The README points end users at Setup.exe (Velopack) because it sets up Start Menu
+          # shortcuts and Apps & Features registration; this ZIP is the explicit fallback.
           Compress-Archive -Path 'publish/Dashboard/*' -DestinationPath "releases/PerformanceMonitorDashboard-$version.zip" -Force
 
-          # Lite ZIP
+          # Lite ZIP — same rationale.
           Compress-Archive -Path 'publish/Lite/*' -DestinationPath "releases/PerformanceMonitorLite-$version.zip" -Force
 
-          # Installer ZIP (CLI + SQL scripts)
+          # Installer ZIP (CLI + SQL scripts) — still shipped for server-side install
           $instDir = 'publish/Installer'
           New-Item -ItemType Directory -Force -Path $instDir
           New-Item -ItemType Directory -Force -Path "$instDir/install"
           New-Item -ItemType Directory -Force -Path "$instDir/upgrades"
 
-          Copy-Item 'Installer/bin/Release/net8.0/win-x64/publish/PerformanceMonitorInstaller.exe' $instDir
+          Copy-Item 'Installer/bin/Release/net10.0/win-x64/publish/PerformanceMonitorInstaller.exe' $instDir
           Copy-Item 'install/*.sql' "$instDir/install/"
           if (Test-Path 'upgrades') { Copy-Item 'upgrades/*' "$instDir/upgrades/" -Recurse -ErrorAction SilentlyContinue }
           if (Test-Path 'README.md') { Copy-Item 'README.md' $instDir }
@@ -132,7 +134,7 @@ jobs:
       - name: Upload Dashboard for signing
         if: github.event_name == 'release'
         id: upload-dashboard
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Dashboard-unsigned
           path: publish/Dashboard/
@@ -140,7 +142,7 @@ jobs:
       - name: Upload Lite for signing
         if: github.event_name == 'release'
         id: upload-lite
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Lite-unsigned
           path: publish/Lite/
@@ -148,14 +150,14 @@ jobs:
       - name: Upload Installer for signing
         if: github.event_name == 'release'
         id: upload-installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Installer-unsigned
           path: publish/Installer/
 
       - name: Sign Dashboard
         if: github.event_name == 'release'
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
           organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
@@ -168,7 +170,7 @@ jobs:
 
       - name: Sign Lite
         if: github.event_name == 'release'
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
           organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
@@ -181,7 +183,7 @@ jobs:
 
       - name: Sign Installer
         if: github.event_name == 'release'
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
           organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
