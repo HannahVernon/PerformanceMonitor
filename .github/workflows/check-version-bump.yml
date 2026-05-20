@@ -12,7 +12,22 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v5
 
+      # Documentation-only PRs (e.g. a CHANGELOG correction) do not bump the
+      # version. The workflow still runs so the required check reports a result
+      # — using paths-ignore would skip the run entirely and leave the check
+      # stuck pending. Instead, the version comparison below is gated on whether
+      # any non-*.md file changed.
+      - name: Detect non-documentation changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+
       - name: Get PR version
+        if: steps.changes.outputs.code == 'true'
         id: pr
         shell: pwsh
         run: |
@@ -21,12 +36,14 @@ jobs:
           Write-Host "PR version: $version"
 
       - name: Checkout main
+        if: steps.changes.outputs.code == 'true'
         uses: actions/checkout@v5
         with:
           ref: main
           path: main-branch
 
       - name: Get main version
+        if: steps.changes.outputs.code == 'true'
         id: main
         shell: pwsh
         run: |
@@ -35,6 +52,7 @@ jobs:
           Write-Host "Main version: $version"
 
       - name: Compare versions
+        if: steps.changes.outputs.code == 'true'
         env:
           PR_VERSION: ${{ steps.pr.outputs.VERSION }}
           MAIN_VERSION: ${{ steps.main.outputs.VERSION }}
@@ -46,3 +64,7 @@ jobs:
             exit 1
           fi
           echo "✅ Version bumped: $MAIN_VERSION → $PR_VERSION"
+
+      - name: Skip notice
+        if: steps.changes.outputs.code != 'true'
+        run: echo "Only documentation (*.md) files changed — version bump check skipped."
