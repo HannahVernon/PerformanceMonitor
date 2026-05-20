@@ -44,8 +44,16 @@ jobs:
               - 'Installer.Tests/**'
               - 'install/**'
               - 'upgrades/**'
+            # True when any non-documentation file changed. Documentation-only
+            # changes (e.g. a CHANGELOG or README edit) skip the build/test/
+            # publish steps below — there is nothing to compile. The job still
+            # runs so the required 'build' check reports a result.
+            code:
+              - '**'
+              - '!**/*.md'
 
       - name: Setup .NET 10.0
+        if: steps.filter.outputs.code != 'false'
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
@@ -53,6 +61,7 @@ jobs:
           cache-dependency-path: '**/packages.lock.json'
 
       - name: Restore dependencies
+        if: steps.filter.outputs.code != 'false'
         run: |
           dotnet restore Dashboard/Dashboard.csproj --locked-mode
           dotnet restore Lite/PerformanceMonitorLite.csproj --locked-mode
@@ -61,12 +70,15 @@ jobs:
           dotnet restore Installer.Tests/Installer.Tests.csproj --locked-mode
 
       - name: Build Lite.Tests
+        if: steps.filter.outputs.code != 'false'
         run: dotnet build Lite.Tests/Lite.Tests.csproj -c Release --no-restore
 
       - name: Build Installer.Tests
+        if: steps.filter.outputs.code != 'false'
         run: dotnet build Installer.Tests/Installer.Tests.csproj -c Release --no-restore
 
       - name: Run Lite fast tests
+        if: steps.filter.outputs.code != 'false'
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~AnomalyDetectorTests&FullyQualifiedName!~FactCollectorTests&FullyQualifiedName!~FactCollectorMiseryTests&FullyQualifiedName!~BaselineProviderTests&FullyQualifiedName!~InferenceEngineTests&FullyQualifiedName!~ScenarioTests&FullyQualifiedName!~AnalysisServiceTests"
 
       - name: Run Lite analysis-heavy tests
@@ -78,6 +90,7 @@ jobs:
         run: dotnet test Installer.Tests/Installer.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~VersionDetectionTests&FullyQualifiedName!~IdempotencyTests&FullyQualifiedName!~AdversarialTests"
 
       - name: Get version
+        if: steps.filter.outputs.code != 'false'
         id: version
         shell: pwsh
         run: |
@@ -85,6 +98,7 @@ jobs:
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
       - name: Publish Dashboard
+        if: steps.filter.outputs.code != 'false'
         run: dotnet publish Dashboard/Dashboard.csproj -c Release -o publish/Dashboard
 
       - name: Publish Dashboard (self-contained for Velopack)
@@ -92,6 +106,7 @@ jobs:
         run: dotnet publish Dashboard/Dashboard.csproj -c Release -r win-x64 --self-contained -o publish/Dashboard-velopack
 
       - name: Publish Lite
+        if: steps.filter.outputs.code != 'false'
         run: dotnet publish Lite/PerformanceMonitorLite.csproj -c Release -o publish/Lite
 
       - name: Publish Lite (self-contained for Velopack)
@@ -99,6 +114,7 @@ jobs:
         run: dotnet publish Lite/PerformanceMonitorLite.csproj -c Release -r win-x64 --self-contained -o publish/Lite-velopack
 
       - name: Publish CLI Installer
+        if: steps.filter.outputs.code != 'false'
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
 
       - name: Package release artifacts
