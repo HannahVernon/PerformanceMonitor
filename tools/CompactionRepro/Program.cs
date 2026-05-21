@@ -24,36 +24,48 @@ using PerformanceMonitorLite.Services;
  *                          to run against a reporter's actual archive files.
  *   --synthetic            Generate a query_snapshots-shaped source, then split.
  *
+ * Every run first prints a read-only [profile] of the source data — the
+ * uncompressed (in-memory) size distribution of each column. That profile is
+ * the data shape that decides whether compaction OOMs; synthetic data can't
+ * fake it. Use --profile-only to get just the profile and skip the merge.
+ *
  * Tuning knobs (defaults = current production values from ParquetCompaction):
  *   --memory-limit <str>   DuckDB memory_limit per merge connection. Default: 4GB
  *   --threads <int>        DuckDB threads per merge connection. Default: 2
  *   --row-group-size <int> Output ROW_GROUP_SIZE. Default: 8192
  *   --max-batch-mb <int>   Per-batch on-disk input budget (MB). Default: 200
  *   --table <name>         Table name (drives exclude-column logic). Default: query_snapshots
+ *   --merge-mode <m>       pairwise (current production) | single (one COPY over
+ *                          the whole batch). Default: pairwise
  *
  * Other options:
+ *   --profile-only         Print the source data profile and exit (no merge).
  *   --num-files <int>      Chunks to split --source-file/--synthetic into. Default: 15
  *   --synthetic-rows <int> Synthetic row count. Default: 30000
- *   --synthetic-plan-kb <n> Synthetic plan XML KB per row. Default: 100
+ *   --synthetic-base-ops <n>  RelOps in a normal synthetic plan. Default: 25
+ *   --synthetic-tail-ops <n>  RelOps in a tail (huge) synthetic plan. Default: 6000
+ *   --synthetic-tail-every <n> Every Nth row gets a tail plan. Default: 25
  *   --cycles <int>         Re-run the full compaction N times (memory-release test). Default: 1
  *   --keep                 Don't delete the temp dir after the run.
  *
  * Examples:
- *   # Run against a reporter's actual failing files
- *   dotnet run -c Release -- --merge-files "C:/archive/20260501_query_snapshots.parquet,C:/archive/202605_query_snapshots.parquet"
+ *   # Just profile a reporter's real files — fast, read-only, no merge
+ *   dotnet run -c Release -- --merge-files "C:/archive/a.parquet,C:/archive/b.parquet" --profile-only
  *
- *   # Reproduce the production path on a real monthly file split into 88 chunks
- *   dotnet run -c Release -- --source-file "%LOCALAPPDATA%/PerformanceMonitorLite/archive/202605_query_snapshots.parquet" --num-files 88
+ *   # Run the real compaction against a reporter's actual failing files
+ *   dotnet run -c Release -- --merge-files "C:/archive/a.parquet,C:/archive/b.parquet"
  *
- *   # Sweep the batch budget down to find a value query_snapshots survives
- *   dotnet run -c Release -- --source-file ".../202605_query_snapshots.parquet" --num-files 88 --max-batch-mb 40
+ *   # Compare merge strategies on a real monthly file split into 88 chunks
+ *   dotnet run -c Release -- --source-file ".../202605_query_snapshots.parquet" --num-files 88 --merge-mode single
  */
 
 var sourceFile = GetArg(args, "--source-file", "");
 var mergeFilesArg = GetArg(args, "--merge-files", "");
 var synthetic = args.Contains("--synthetic");
 var syntheticRows = int.Parse(GetArg(args, "--synthetic-rows", "30000"));
-var syntheticPlanKb = int.Parse(GetArg(args, "--synthetic-plan-kb", "100"));
+var syntheticBaseOps = int.Parse(GetArg(args, "--synthetic-base-ops", "25"));
+var syntheticTailOps = int.Parse(GetArg(args, "--synthetic-tail-ops", "6000"));
+var syntheticTailEvery = int.Parse(GetArg(args, "--synthetic-tail-every", "25"));
 if (string.IsNullOrEmpty(sourceFile) && string.IsNullOrEmpty(mergeFilesArg) && !synthetic)
 {
     Console.Error.WriteLine("error: --source-file <path> OR --merge-files <a.parquet,...> OR --synthetic required");
@@ -69,6 +81,12 @@ if (!string.IsNullOrEmpty(sourceFile) && !File.Exists(sourceFile))
 }
 
 var table = GetArg(args, "--table", "query_snapshots");
+var mergeMode = GetArg(args, "--merge-mode", "pairwise").ToLowerInvariant();
+if (mergeMode != "pairwise" && mergeMode != "single")
+{
+    Console.Error.WriteLine($"error: --merge-mode must be 'pairwise' or 'single', got '{mergeMode}'");
+    return 2;
+}
 var memoryLimit = GetArg(args, "--memory-limit", ParquetCompaction.DefaultMemoryLimit);
 var threads = int.Parse(GetArg(args, "--threads", ParquetCompaction.DefaultThreads.ToString()));
 var rowGroupSize = int.Parse(GetArg(args, "--row-group-size", ParquetCompaction.DefaultRowGroupSize.ToString()));
@@ -77,6 +95,7 @@ var maxBatchBytes = maxBatchMb * 1024L * 1024L;
 var numFiles = int.Parse(GetArg(args, "--num-files", "15"));
 var cycles = int.Parse(GetArg(args, "--cycles", "1"));
 var keep = args.Contains("--keep");
+var profileOnly = args.Contains("--profile-only");
 
 var tempDir = Path.Combine(Path.GetTempPath(), $"CompactionRepro_{Guid.NewGuid():N}");
 Directory.CreateDirectory(tempDir);
@@ -97,7 +116,8 @@ if (synthetic)
 {
     sourceFile = Path.Combine(tempDir, "synthetic_query_snapshots.parquet").Replace("\\", "/");
     Console.WriteLine($"Mode:     synthetic+split+merge");
-    Console.WriteLine($"Synthetic: {syntheticRows} rows, ~{syntheticPlanKb} KB plan XML per row");
+    Console.WriteLine($"Synthetic: {syntheticRows} rows, {syntheticBaseOps} base ops/plan, " +
+                      $"{syntheticTailOps} ops on every {syntheticTailEvery}th row (heavy tail)");
     Console.WriteLine($"Source:   {sourceFile} (will be generated)");
 }
 else if (mergeFiles.Count > 0)
@@ -122,6 +142,7 @@ using (var versionCon = new DuckDBConnection("DataSource=:memory:"))
 }
 Console.WriteLine($"Code:     ParquetCompaction (linked from Lite/Services — real production merge)");
 Console.WriteLine($"Table:    {table}");
+Console.WriteLine($"Merge:    {mergeMode} ({(mergeMode == "single" ? "one COPY over the whole batch" : "pairwise accumulator — current production")})");
 Console.WriteLine($"Settings: memory_limit={memoryLimit}, threads={threads}, ROW_GROUP_SIZE={rowGroupSize}, max-batch={maxBatchMb} MB");
 if (mergeFiles.Count == 0)
     Console.WriteLine($"Splitting source into {numFiles} chunks");
@@ -131,9 +152,9 @@ try
 {
     if (synthetic)
     {
-        Console.WriteLine($"[0/3] Generating synthetic source ({syntheticRows} rows, ~{syntheticPlanKb} KB plan/row)...");
+        Console.WriteLine($"[0/3] Generating synthetic source ({syntheticRows} rows, heavy-tailed plan XML)...");
         var sw = Stopwatch.StartNew();
-        GenerateSyntheticSource(sourceFile, syntheticRows, syntheticPlanKb);
+        GenerateSyntheticSource(sourceFile, syntheticRows, syntheticBaseOps, syntheticTailOps, syntheticTailEvery);
         sw.Stop();
         var size = new FileInfo(sourceFile).Length / 1024.0 / 1024.0;
         Console.WriteLine($"      Generated {size:F1} MB in {sw.ElapsedMilliseconds} ms");
@@ -157,6 +178,15 @@ try
     }
     Console.WriteLine();
 
+    ProfileSource(sourcePaths);
+    Console.WriteLine();
+
+    if (profileOnly)
+    {
+        Console.WriteLine("[profile-only] --profile-only set; skipping the merge. Done.");
+        return 0;
+    }
+
     /* Mirror ArchiveService.CompactParquetFiles: sort smallest-first, then bucket
        into size-budgeted batches. This is the exact production sequencing. */
     var sorted = sourcePaths
@@ -171,7 +201,7 @@ try
     }
     Console.WriteLine();
 
-    Console.WriteLine($"[3/3] Running MergeBatchToFile per batch (real production code), {cycles} cycle(s)...");
+    Console.WriteLine($"[3/3] Running {mergeMode} merge per batch (real ParquetCompaction code), {cycles} cycle(s)...");
     var spillDir = Path.Combine(tempDir, "duckdb_tmp").Replace("\\", "/");
     Directory.CreateDirectory(spillDir);
 
@@ -226,17 +256,28 @@ try
                 var outPath = Path.Combine(tempDir, $"c{cycle}_{outName}").Replace("\\", "/");
                 if (File.Exists(outPath)) File.Delete(outPath);
 
+                var batchInMb = batches[i].Sum(p => new FileInfo(p.Replace("/", "\\")).Length) / 1024.0 / 1024.0;
+                Console.WriteLine($"      batch {i + 1}/{batches.Count}: merging {batches[i].Count} files ({batchInMb:F1} MB on disk)...");
+
                 var batchSw = Stopwatch.StartNew();
-                ParquetCompaction.MergeBatchToFile(
-                    table, batches[i], outPath, spillDir,
-                    memoryLimit, threads, rowGroupSize);
+                if (mergeMode == "single")
+                {
+                    ParquetCompaction.MergeBatchSingleCopy(
+                        table, batches[i], outPath, spillDir,
+                        memoryLimit, threads, rowGroupSize);
+                }
+                else
+                {
+                    ParquetCompaction.MergeBatchToFile(
+                        table, batches[i], outPath, spillDir,
+                        memoryLimit, threads, rowGroupSize);
+                }
                 batchSw.Stop();
 
                 process.Refresh();
                 if (process.WorkingSet64 > peakWorkingSet) peakWorkingSet = process.WorkingSet64;
                 var outSize = new FileInfo(outPath).Length / 1024.0 / 1024.0;
-                Console.WriteLine($"      batch {i + 1}/{batches.Count}: {batches[i].Count} files -> {outSize:F1} MB " +
-                                  $"in {batchSw.Elapsed.TotalSeconds:F1}s | peak WS {peakWorkingSet / 1024.0 / 1024.0:F0} MB");
+                Console.WriteLine($"        -> done in {batchSw.Elapsed.TotalSeconds:F1}s, output {outSize:F1} MB | peak WS {peakWorkingSet / 1024.0 / 1024.0:F0} MB");
                 outputPaths.Add(outPath);
             }
 
@@ -371,20 +412,98 @@ static string GetArg(string[] args, string key, string defaultValue)
     return defaultValue;
 }
 
-static void GenerateSyntheticSource(string outputPath, int rows, int planKb)
+/* Read-only scan of the source files: reports the in-memory (uncompressed) size
+   distribution of every VARCHAR column. This is the data shape that decides
+   whether compaction OOMs — a single monster plan-XML cell forces an unspillable
+   allocation no matter how small the file is on disk. Synthetic data can't fake
+   this, so this profile is the thing we actually need from a real archive. */
+static void ProfileSource(List<string> paths)
 {
-    /* Generate query_snapshots-shaped parquet with high-entropy plan XML so
-       ZSTD can't collapse content to a single dictionary entry. We aggregate
-       a list of md5() hashes per row — each hash uses (collection_id, op_index)
-       as a unique seed, defeating both per-row and cross-row compression.
+    Console.WriteLine("[profile] Source data shape (read-only scan — no merge):");
+    var pathSql = string.Join(", ", paths.Select(p => $"'{p.Replace("'", "''").Replace("\\", "/")}'"));
 
-       NOTE: this generates UNIFORM-width plan XML. Real plan XML is heavy-tailed
-       (mostly small, a few multi-MB plans). Uniform synthetic data does not
-       reproduce the row-group memory spikes a fat tail causes — prefer
-       --merge-files against a reporter's real archive when one is available. */
+    using var con = new DuckDBConnection("DataSource=:memory:");
+    con.Open();
+
+    var varcharCols = new List<string>();
+    using (var d = con.CreateCommand())
+    {
+        d.CommandText = $"DESCRIBE SELECT * FROM read_parquet([{pathSql}], union_by_name=true)";
+        using var dr = d.ExecuteReader();
+        while (dr.Read())
+        {
+            if (dr.GetString(1).Contains("VARCHAR", StringComparison.OrdinalIgnoreCase))
+                varcharCols.Add(dr.GetString(0));
+        }
+    }
+    if (varcharCols.Count == 0)
+    {
+        Console.WriteLine("      (no VARCHAR columns)");
+        return;
+    }
+
+    var selects = new List<string> { "count(*) AS row_count" };
+    foreach (var c in varcharCols)
+    {
+        var e = c.Replace("\"", "\"\"");
+        selects.Add($"max(octet_length(\"{e}\"::BLOB)) AS \"{e}__max\"");
+        selects.Add($"quantile_cont(octet_length(\"{e}\"::BLOB), 0.99) AS \"{e}__p99\"");
+        selects.Add($"quantile_cont(octet_length(\"{e}\"::BLOB), 0.50) AS \"{e}__p50\"");
+        selects.Add($"sum(octet_length(\"{e}\"::BLOB))::BIGINT AS \"{e}__sum\"");
+    }
+
+    using var cmd = con.CreateCommand();
+    cmd.CommandText = $"SELECT {string.Join(", ", selects)} FROM read_parquet([{pathSql}], union_by_name=true)";
+    using var r = cmd.ExecuteReader();
+    r.Read();
+
+    var rowCount = r.GetInt64(0);
+    Console.WriteLine($"      rows: {rowCount:N0}   VARCHAR columns: {varcharCols.Count}");
+    Console.WriteLine($"      {"column",-24} {"p50",10} {"p99",12} {"max",14} {"total",12}");
+
+    double Val(int idx) => r.IsDBNull(idx) ? 0 : Convert.ToDouble(r.GetValue(idx));
+    long grandTotal = 0;
+    for (var i = 0; i < varcharCols.Count; i++)
+    {
+        var b = 1 + i * 4;
+        var max = Val(b);
+        var p99 = Val(b + 1);
+        var p50 = Val(b + 2);
+        var sum = Val(b + 3);
+        grandTotal += (long)sum;
+        Console.WriteLine($"      {varcharCols[i],-24} {Human(p50),10} {Human(p99),12} {Human(max),14} {Human(sum),12}");
+    }
+
+    var onDisk = paths.Sum(p => new FileInfo(p.Replace("/", "\\")).Length);
+    Console.WriteLine($"      total uncompressed VARCHAR: {grandTotal / 1024.0 / 1024.0:F1} MB" +
+                      $"   (on disk: {onDisk / 1024.0 / 1024.0:F1} MB, ~{(onDisk > 0 ? grandTotal / (double)onDisk : 0):F1}x expansion)");
+}
+
+static string Human(double bytes)
+{
+    if (bytes >= 1024.0 * 1024.0) return $"{bytes / 1024.0 / 1024.0:F1} MB";
+    if (bytes >= 1024.0) return $"{bytes / 1024.0:F1} KB";
+    return $"{bytes:F0} B";
+}
+
+static void GenerateSyntheticSource(string outputPath, int rows, int baseOps, int tailOps, int tailEvery)
+{
+    /* Generate query_snapshots-shaped parquet with REALISTIC plan XML:
+
+       - Low entropy. Real SQL plan XML is mostly repeated tag/attribute
+         structure, so it compresses ~20-40:1 on disk and expands hard in
+         memory. (The old generator used md5() hashes — high entropy — which
+         compress poorly and barely expand, so it never reproduced the OOM.)
+       - Heavy-tailed. Most rows get a small plan (baseOps RelOps); every
+         tailEvery-th row gets a huge one (tailOps RelOps); rows divisible by 5
+         get a medium plan. A few multi-MB plans clustered into one parquet row
+         group is what drives the in-memory spike — uniform-width data can't.
+
+       The merge cost we care about is in-memory VARCHAR bytes, not on-disk
+       bytes. A small ZSTD parquet file that decompresses to gigabytes of XML
+       is exactly the #933 failure shape. */
     var sourceSql = outputPath.Replace("'", "''").Replace("\\", "/");
-    const int opTagBytes = 46;
-    var opsPerPlan = Math.Max(4, (planKb * 1024) / opTagBytes);
+    var mediumOps = baseOps * 8;
 
     using var con = new DuckDBConnection("DataSource=:memory:");
     con.Open();
@@ -392,6 +511,14 @@ static void GenerateSyntheticSource(string outputPath, int rows, int planKb)
     using var cmd = con.CreateCommand();
     cmd.CommandText = $@"
 COPY (
+    WITH r AS (
+        SELECT
+            i,
+            CASE WHEN (i % {tailEvery}) = 0 THEN {tailOps}
+                 WHEN (i % 5) = 0 THEN {mediumOps}
+                 ELSE {baseOps} END AS ops
+        FROM generate_series(1, {rows}) t(i)
+    )
     SELECT
         i AS collection_id,
         TIMESTAMP '2026-04-01 00:00:00' + INTERVAL (i) MINUTE AS collection_time,
@@ -400,19 +527,19 @@ COPY (
         ((i % 200) + 50)::INTEGER AS session_id,
         ('db_' || ((i % 10) + 1)::VARCHAR) AS database_name,
         '00:00:00' AS elapsed_time_formatted,
-        ('SELECT * FROM t_' || (i % 1000)::VARCHAR || ' WHERE c = ''' || md5(i::VARCHAR) || '''') AS query_text,
-        ('<plan id=""' || i::VARCHAR || '"">' ||
+        ('SELECT * FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerId = o.CustomerId WHERE o.OrderDate > ''2026-01-01'' /* q' || (i % 1000)::VARCHAR || ' */') AS query_text,
+        ('<ShowPlanXML xmlns=""http://schemas.microsoft.com/sqlserver/2004/07/showplan""><BatchSequence><Batch><Statements><StmtSimple><QueryPlan>' ||
          list_aggregate(
-             list_transform(generate_series(1, {opsPerPlan}),
-                            j -> '<op id=""' || md5((i::VARCHAR || ':' || j::VARCHAR)) || '""/>'),
+             list_transform(generate_series(1, ops),
+                 j -> '<RelOp NodeId=""' || j::VARCHAR || '"" PhysicalOp=""Clustered Index Scan"" LogicalOp=""Clustered Index Scan"" EstimateRows=""' || (j * 1.5)::VARCHAR || '"" EstimateIO=""0.003"" EstimateCPU=""0.0001"" AvgRowSize=""' || (40 + (j % 80))::VARCHAR || '"" EstimatedTotalSubtreeCost=""' || (j * 0.017)::VARCHAR || '"" Parallel=""0"" EstimateRebinds=""0"" EstimateRewinds=""0""><OutputList><ColumnReference Database=""[mydb]"" Schema=""[dbo]"" Table=""[Orders]"" Column=""[Col' || (j % 30)::VARCHAR || ']""/></OutputList><IndexScan Ordered=""0"" ForcedIndex=""0""><DefinedValues/><Object Database=""[mydb]"" Schema=""[dbo]"" Table=""[Orders]"" Index=""[PK_Orders_' || (i % 50)::VARCHAR || ']""/></IndexScan></RelOp>'),
              'string_agg', '') ||
-         '</plan>') AS query_plan,
-        ('<liveplan id=""' || i::VARCHAR || '"">' ||
+         '</QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>') AS query_plan,
+        ('<ShowPlanXML xmlns=""http://schemas.microsoft.com/sqlserver/2004/07/showplan""><BatchSequence><Batch><Statements><StmtSimple><QueryPlan>' ||
          list_aggregate(
-             list_transform(generate_series(1, {opsPerPlan}),
-                            j -> '<op id=""' || md5(('L:' || i::VARCHAR || ':' || j::VARCHAR)) || '""/>'),
+             list_transform(generate_series(1, {baseOps}),
+                 j -> '<RelOp NodeId=""' || j::VARCHAR || '"" PhysicalOp=""Hash Match"" LogicalOp=""Aggregate"" Parallel=""1""><OutputList><ColumnReference Database=""[mydb]"" Schema=""[dbo]"" Table=""[Orders]"" Column=""[Col' || (j % 30)::VARCHAR || ']""/></OutputList></RelOp>'),
              'string_agg', '') ||
-         '</liveplan>') AS live_query_plan,
+         '</QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>') AS live_query_plan,
         CASE (i % 5) WHEN 0 THEN 'running' WHEN 1 THEN 'suspended' WHEN 2 THEN 'sleeping' WHEN 3 THEN 'background' ELSE 'rollback' END AS status,
         CASE WHEN i % 7 = 0 THEN ((i % 200) + 1)::INTEGER ELSE NULL END AS blocking_session_id,
         CASE (i % 4) WHEN 0 THEN 'PAGEIOLATCH_SH' WHEN 1 THEN 'CXPACKET' WHEN 2 THEN 'LCK_M_S' ELSE NULL END AS wait_type,
@@ -432,7 +559,7 @@ COPY (
         ('Program_' || (i % 30)::VARCHAR) AS program_name,
         (i % 5)::INTEGER AS open_transaction_count,
         ((i % 100))::DECIMAL(5,2) AS percent_complete
-    FROM generate_series(1, {rows}) t(i)
+    FROM r
 ) TO '{sourceSql}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)";
     cmd.ExecuteNonQuery();
 }

@@ -152,6 +152,36 @@ public static class ParquetCompaction
         }
     }
 
+    /* Single-pass merge: one COPY over the whole batch. Unlike the pairwise path
+       in MergeBatchToFile, this never materializes a growing accumulator and
+       never re-reads re-packed row groups — DuckDB streams the multi-file parquet
+       scan straight into the writer. Under evaluation for #933; tools/CompactionRepro
+       --merge-mode single exercises it. */
+    public static void MergeBatchSingleCopy(
+        string table,
+        List<string> sourcePaths,
+        string outputPath,
+        string spillDirSql,
+        string memoryLimit = DefaultMemoryLimit,
+        int threads = DefaultThreads,
+        int rowGroupSize = DefaultRowGroupSize)
+    {
+        using var con = new DuckDBConnection("DataSource=:memory:");
+        con.Open();
+        using (var pragmaCmd = con.CreateCommand())
+        {
+            pragmaCmd.CommandText = BuildPragma(memoryLimit, threads, spillDirSql);
+            pragmaCmd.ExecuteNonQuery();
+        }
+
+        var selectClause = BuildSelectClause(table, sourcePaths);
+        var pathList = string.Join(", ", sourcePaths.Select(p => $"'{EscapeSqlPath(p)}'"));
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = $"COPY (SELECT {selectClause} FROM read_parquet([{pathList}], union_by_name=true)) " +
+                          $"TO '{EscapeSqlPath(outputPath)}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {rowGroupSize})";
+        cmd.ExecuteNonQuery();
+    }
+
     private static string BuildPragma(string memoryLimit, int threads, string spillDirSql) =>
         $"SET memory_limit = '{memoryLimit}'; SET threads = {threads}; " +
         $"SET preserve_insertion_order = false; SET temp_directory = '{EscapeSqlPath(spillDirSql)}';";
