@@ -178,7 +178,14 @@ try
     }
     Console.WriteLine();
 
-    ProfileSource(sourcePaths);
+    try
+    {
+        ProfileSource(sourcePaths);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[profile] scan failed (non-fatal): {ex.Message}");
+    }
     Console.WriteLine();
 
     if (profileOnly)
@@ -446,10 +453,10 @@ static void ProfileSource(List<string> paths)
     foreach (var c in varcharCols)
     {
         var e = c.Replace("\"", "\"\"");
-        selects.Add($"max(octet_length(\"{e}\"::BLOB)) AS \"{e}__max\"");
-        selects.Add($"quantile_cont(octet_length(\"{e}\"::BLOB), 0.99) AS \"{e}__p99\"");
-        selects.Add($"quantile_cont(octet_length(\"{e}\"::BLOB), 0.50) AS \"{e}__p50\"");
-        selects.Add($"sum(octet_length(\"{e}\"::BLOB))::BIGINT AS \"{e}__sum\"");
+        selects.Add($"max(octet_length(encode(\"{e}\"))) AS \"{e}__max\"");
+        selects.Add($"quantile_cont(octet_length(encode(\"{e}\")), 0.99) AS \"{e}__p99\"");
+        selects.Add($"quantile_cont(octet_length(encode(\"{e}\")), 0.50) AS \"{e}__p50\"");
+        selects.Add($"sum(octet_length(encode(\"{e}\")))::BIGINT AS \"{e}__sum\"");
     }
 
     using var cmd = con.CreateCommand();
@@ -527,7 +534,7 @@ COPY (
         ((i % 200) + 50)::INTEGER AS session_id,
         ('db_' || ((i % 10) + 1)::VARCHAR) AS database_name,
         '00:00:00' AS elapsed_time_formatted,
-        ('SELECT * FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerId = o.CustomerId WHERE o.OrderDate > ''2026-01-01'' /* q' || (i % 1000)::VARCHAR || ' */') AS query_text,
+        ('SELECT * FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerId = o.CustomerId WHERE o.OrderDate > ''2026-01-01'' /* ' || chr(1090) || chr(1077) || chr(1089) || chr(1090) || ' q' || (i % 1000)::VARCHAR || ' */') AS query_text,
         ('<ShowPlanXML xmlns=""http://schemas.microsoft.com/sqlserver/2004/07/showplan""><BatchSequence><Batch><Statements><StmtSimple><QueryPlan>' ||
          list_aggregate(
              list_transform(generate_series(1, ops),
