@@ -40,12 +40,14 @@ using PerformanceMonitorLite.Services;
  *
  * Other options:
  *   --profile-only         Print the source data profile and exit (no merge).
+ *   --sweep                Run a matrix of configs (merge-mode x row-group-size x
+ *                          batch budget x memory limit) against the same files
+ *                          and print which ones survive. Ignores --merge-mode etc.
  *   --num-files <int>      Chunks to split --source-file/--synthetic into. Default: 15
  *   --synthetic-rows <int> Synthetic row count. Default: 30000
- *   --synthetic-base-ops <n>  RelOps in a normal synthetic plan. Default: 25
- *   --synthetic-tail-ops <n>  RelOps in a tail (huge) synthetic plan. Default: 6000
- *   --synthetic-tail-every <n> Every Nth row gets a tail plan. Default: 25
- *   --cycles <int>         Re-run the full compaction N times (memory-release test). Default: 1
+ *   --synthetic-base-ops <n>  RelOps in a normal synthetic plan. Default: 130
+ *   --synthetic-tail-ops <n>  RelOps in a tail (huge) synthetic plan. Default: 75000
+ *   --synthetic-tail-every <n> Every Nth row gets a tail plan. Default: 500
  *   --keep                 Don't delete the temp dir after the run.
  *
  * Examples:
@@ -55,17 +57,19 @@ using PerformanceMonitorLite.Services;
  *   # Run the real compaction against a reporter's actual failing files
  *   dotnet run -c Release -- --merge-files "C:/archive/a.parquet,C:/archive/b.parquet"
  *
- *   # Compare merge strategies on a real monthly file split into 88 chunks
- *   dotnet run -c Release -- --source-file ".../202605_query_snapshots.parquet" --num-files 88 --merge-mode single
+ *   # Sweep configs against a reporter's real files to find one that survives
+ *   dotnet run -c Release -- --merge-files "C:/archive/a.parquet,C:/archive/b.parquet" --sweep
  */
 
 var sourceFile = GetArg(args, "--source-file", "");
 var mergeFilesArg = GetArg(args, "--merge-files", "");
 var synthetic = args.Contains("--synthetic");
 var syntheticRows = int.Parse(GetArg(args, "--synthetic-rows", "30000"));
-var syntheticBaseOps = int.Parse(GetArg(args, "--synthetic-base-ops", "25"));
-var syntheticTailOps = int.Parse(GetArg(args, "--synthetic-tail-ops", "6000"));
-var syntheticTailEvery = int.Parse(GetArg(args, "--synthetic-tail-every", "25"));
+/* Defaults are tuned to the real issue-#933 query_snapshots profile:
+   query_plan p50 ~47 KB, p99 ~1.1 MB, max ~27 MB, mean ~100 KB. */
+var syntheticBaseOps = int.Parse(GetArg(args, "--synthetic-base-ops", "130"));
+var syntheticTailOps = int.Parse(GetArg(args, "--synthetic-tail-ops", "75000"));
+var syntheticTailEvery = int.Parse(GetArg(args, "--synthetic-tail-every", "500"));
 if (string.IsNullOrEmpty(sourceFile) && string.IsNullOrEmpty(mergeFilesArg) && !synthetic)
 {
     Console.Error.WriteLine("error: --source-file <path> OR --merge-files <a.parquet,...> OR --synthetic required");
@@ -93,9 +97,9 @@ var rowGroupSize = int.Parse(GetArg(args, "--row-group-size", ParquetCompaction.
 var maxBatchMb = int.Parse(GetArg(args, "--max-batch-mb", (ParquetCompaction.MaxBatchInputBytes / (1024 * 1024)).ToString()));
 var maxBatchBytes = maxBatchMb * 1024L * 1024L;
 var numFiles = int.Parse(GetArg(args, "--num-files", "15"));
-var cycles = int.Parse(GetArg(args, "--cycles", "1"));
 var keep = args.Contains("--keep");
 var profileOnly = args.Contains("--profile-only");
+var sweep = args.Contains("--sweep");
 
 var tempDir = Path.Combine(Path.GetTempPath(), $"CompactionRepro_{Guid.NewGuid():N}");
 Directory.CreateDirectory(tempDir);
@@ -142,8 +146,15 @@ using (var versionCon = new DuckDBConnection("DataSource=:memory:"))
 }
 Console.WriteLine($"Code:     ParquetCompaction (linked from Lite/Services — real production merge)");
 Console.WriteLine($"Table:    {table}");
-Console.WriteLine($"Merge:    {mergeMode} ({(mergeMode == "single" ? "one COPY over the whole batch" : "pairwise accumulator — current production")})");
-Console.WriteLine($"Settings: memory_limit={memoryLimit}, threads={threads}, ROW_GROUP_SIZE={rowGroupSize}, max-batch={maxBatchMb} MB");
+if (sweep)
+{
+    Console.WriteLine($"Merge:    sweep (matrix of configs — see [sweep] section below)");
+}
+else
+{
+    Console.WriteLine($"Merge:    {mergeMode} ({(mergeMode == "single" ? "one COPY over the whole batch" : "pairwise accumulator — current production")})");
+    Console.WriteLine($"Settings: memory_limit={memoryLimit}, threads={threads}, ROW_GROUP_SIZE={rowGroupSize}, max-batch={maxBatchMb} MB");
+}
 if (mergeFiles.Count == 0)
     Console.WriteLine($"Splitting source into {numFiles} chunks");
 Console.WriteLine();
@@ -194,151 +205,172 @@ try
         return 0;
     }
 
-    /* Mirror ArchiveService.CompactParquetFiles: sort smallest-first, then bucket
-       into size-budgeted batches. This is the exact production sequencing. */
+    /* Sort smallest-first — mirrors ArchiveService.CompactParquetFiles. */
     var sorted = sourcePaths
         .OrderBy(p => new FileInfo(p.Replace("/", "\\")).Length)
         .ToList();
-    var batches = ParquetCompaction.BuildSizeBudgetedBatches(sorted, maxBatchBytes);
-    Console.WriteLine($"[2/3] BuildSizeBudgetedBatches: {sorted.Count} files -> {batches.Count} batch(es) at {maxBatchMb} MB budget");
-    for (var i = 0; i < batches.Count; i++)
-    {
-        var batchBytes = batches[i].Sum(p => new FileInfo(p.Replace("/", "\\")).Length);
-        Console.WriteLine($"      batch {i + 1}: {batches[i].Count} files, {batchBytes / 1024.0 / 1024.0:F1} MB on disk");
-    }
-    Console.WriteLine();
 
-    Console.WriteLine($"[3/3] Running {mergeMode} merge per batch (real ParquetCompaction code), {cycles} cycle(s)...");
     var spillDir = Path.Combine(tempDir, "duckdb_tmp").Replace("\\", "/");
     Directory.CreateDirectory(spillDir);
-
     var process = Process.GetCurrentProcess();
-    process.Refresh();
-    var startWorkingSet = process.WorkingSet64;
-    GC.Collect();
-    GC.WaitForPendingFinalizers();
-    GC.Collect();
-    process.Refresh();
-    startWorkingSet = process.WorkingSet64;
-    Console.WriteLine($"      baseline working set (after GC): {startWorkingSet / 1024.0 / 1024.0:F0} MB");
 
-    /* Background sampler — polls working set during the (opaque) merge calls so
-       the reported peak reflects mid-merge pressure, not just between-batch gaps. */
-    long peakWorkingSet = startWorkingSet;
-    var samplerStop = false;
-    var sampler = new Thread(() =>
+    /* Run one full compaction (size-budget batching + per-batch merge) for a
+       given config. Never throws — a merge OOM is caught and returned as
+       Ok=false so a sweep can carry on to the next config. */
+    (bool Ok, double StartMb, double PeakMb, double Sec, int Batches, string? Fail, List<string> Outputs)
+        RunOneConfig(string mMode, int rgs, long batchBytes, string memLimit, int thr, bool verbose)
     {
-        var p = Process.GetCurrentProcess();
-        while (!Volatile.Read(ref samplerStop))
+        var batches = ParquetCompaction.BuildSizeBudgetedBatches(sorted, batchBytes);
+        if (verbose)
         {
-            p.Refresh();
-            var ws = p.WorkingSet64;
-            if (ws > peakWorkingSet) peakWorkingSet = ws;
-            Thread.Sleep(100);
+            Console.WriteLine($"      {sorted.Count} files -> {batches.Count} batch(es) at {batchBytes / 1024 / 1024} MB budget");
+            for (var i = 0; i < batches.Count; i++)
+            {
+                var bb = batches[i].Sum(p => new FileInfo(p.Replace("/", "\\")).Length);
+                Console.WriteLine($"        batch {i + 1}: {batches[i].Count} files, {bb / 1024.0 / 1024.0:F1} MB on disk");
+            }
         }
-    }) { IsBackground = true };
-    sampler.Start();
 
-    var compactionSw = Stopwatch.StartNew();
-    var perCycleWorkingSet = new List<(long peak, long postGc)>();
-    var success = false;
-    string? failureMessage = null;
-    var outputPaths = new List<string>();
-    long compactedFileBytes = 0;
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        process.Refresh();
+        var startWs = process.WorkingSet64;
 
-    for (var cycle = 1; cycle <= cycles && (cycle == 1 || success); cycle++)
-    {
-        if (cycles > 1) Console.WriteLine($"      --- cycle {cycle}/{cycles} ---");
-        var cycleStartPeak = peakWorkingSet;
-        outputPaths.Clear();
-        success = false;
+        /* Background sampler — polls working set during the (opaque) merge calls
+           so the reported peak reflects mid-merge pressure. */
+        long peakWs = startWs;
+        var stop = false;
+        var sampler = new Thread(() =>
+        {
+            var p = Process.GetCurrentProcess();
+            while (!Volatile.Read(ref stop))
+            {
+                p.Refresh();
+                var ws = p.WorkingSet64;
+                if (ws > peakWs) peakWs = ws;
+                Thread.Sleep(75);
+            }
+        }) { IsBackground = true };
+        sampler.Start();
 
+        var sw = Stopwatch.StartNew();
+        var outputs = new List<string>();
+        var ok = false;
+        string? fail = null;
         try
         {
             for (var i = 0; i < batches.Count; i++)
             {
                 var outName = batches.Count == 1
-                    ? $"{table}.parquet"
-                    : $"{table}_pt{i + 1:D3}.parquet";
-                var outPath = Path.Combine(tempDir, $"c{cycle}_{outName}").Replace("\\", "/");
+                    ? $"out_{table}.parquet"
+                    : $"out_{table}_pt{i + 1:D3}.parquet";
+                var outPath = Path.Combine(tempDir, outName).Replace("\\", "/");
                 if (File.Exists(outPath)) File.Delete(outPath);
 
-                var batchInMb = batches[i].Sum(p => new FileInfo(p.Replace("/", "\\")).Length) / 1024.0 / 1024.0;
-                Console.WriteLine($"      batch {i + 1}/{batches.Count}: merging {batches[i].Count} files ({batchInMb:F1} MB on disk)...");
-
-                var batchSw = Stopwatch.StartNew();
-                if (mergeMode == "single")
-                {
-                    ParquetCompaction.MergeBatchSingleCopy(
-                        table, batches[i], outPath, spillDir,
-                        memoryLimit, threads, rowGroupSize);
-                }
+                var bsw = Stopwatch.StartNew();
+                if (mMode == "single")
+                    ParquetCompaction.MergeBatchSingleCopy(table, batches[i], outPath, spillDir, memLimit, thr, rgs);
                 else
-                {
-                    ParquetCompaction.MergeBatchToFile(
-                        table, batches[i], outPath, spillDir,
-                        memoryLimit, threads, rowGroupSize);
-                }
-                batchSw.Stop();
+                    ParquetCompaction.MergeBatchToFile(table, batches[i], outPath, spillDir, memLimit, thr, rgs);
+                bsw.Stop();
 
                 process.Refresh();
-                if (process.WorkingSet64 > peakWorkingSet) peakWorkingSet = process.WorkingSet64;
-                var outSize = new FileInfo(outPath).Length / 1024.0 / 1024.0;
-                Console.WriteLine($"        -> done in {batchSw.Elapsed.TotalSeconds:F1}s, output {outSize:F1} MB | peak WS {peakWorkingSet / 1024.0 / 1024.0:F0} MB");
-                outputPaths.Add(outPath);
+                if (process.WorkingSet64 > peakWs) peakWs = process.WorkingSet64;
+                outputs.Add(outPath);
+                if (verbose)
+                {
+                    var os = new FileInfo(outPath).Length / 1024.0 / 1024.0;
+                    Console.WriteLine($"        batch {i + 1}/{batches.Count}: {batches[i].Count} files -> {os:F1} MB " +
+                                      $"in {bsw.Elapsed.TotalSeconds:F1}s | peak WS {peakWs / 1024.0 / 1024.0:F0} MB");
+                }
             }
-
-            compactedFileBytes = outputPaths.Sum(p => new FileInfo(p).Length);
-            success = true;
+            ok = true;
         }
         catch (Exception ex)
         {
-            failureMessage = ex.Message;
-            break;
+            fail = ex.Message.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (fail.Length > 200) fail = fail[..200] + "...";
+        }
+        sw.Stop();
+        stop = true;
+        sampler.Join(1000);
+        process.Refresh();
+        if (process.WorkingSet64 > peakWs) peakWs = process.WorkingSet64;
+
+        return (ok, startWs / 1024.0 / 1024.0, peakWs / 1024.0 / 1024.0,
+                sw.Elapsed.TotalSeconds, batches.Count, fail, outputs);
+    }
+
+    void CleanOutputs()
+    {
+        foreach (var f in Directory.GetFiles(tempDir, $"out_{table}*"))
+        {
+            try { File.Delete(f); } catch { /* best effort */ }
+        }
+    }
+
+    if (sweep)
+    {
+        /* Matrix of configs run against the same source files. All single-copy
+           (one streaming pass — fast) except the last, so a real-data run stays
+           reasonable. Current production is pairwise rgs=8192 batch=200 mem=4GB,
+           already known to OOM on this data — see the issue thread. */
+        var configs = new (string Label, string Mode, int Rgs, int BatchMb, string Mem)[]
+        {
+            ("single   rgs=8192 batch=200 mem=4GB", "single",   8192, 200, "4GB"),
+            ("single   rgs=2048 batch=100 mem=4GB", "single",   2048, 100, "4GB"),
+            ("single   rgs=512  batch=50  mem=4GB", "single",    512,  50, "4GB"),
+            ("single   rgs=512  batch=25  mem=4GB", "single",    512,  25, "4GB"),
+            ("single   rgs=256  batch=25  mem=2GB", "single",    256,  25, "2GB"),
+            ("pairwise rgs=512  batch=50  mem=4GB", "pairwise",  512,  50, "4GB"),
+        };
+
+        Console.WriteLine($"[sweep] Running {configs.Length} configs against the same {sorted.Count} source files.");
+        Console.WriteLine();
+
+        var results = new List<(string Label, bool Ok, double PeakDeltaMb, double Sec, int Batches, string? Fail)>();
+        foreach (var c in configs)
+        {
+            Console.WriteLine($"[sweep] {c.Label} ...");
+            var r = RunOneConfig(c.Mode, c.Rgs, c.BatchMb * 1024L * 1024L, c.Mem, threads, verbose: false);
+            CleanOutputs();
+            var peakDelta = r.PeakMb - r.StartMb;
+            results.Add((c.Label, r.Ok, peakDelta, r.Sec, r.Batches, r.Fail));
+            Console.WriteLine($"        {(r.Ok ? "OK  " : "FAIL")}  peak +{peakDelta:F0} MB  {r.Sec:F0}s  {r.Batches} part file(s)");
+            if (!r.Ok) Console.WriteLine($"        {r.Fail}");
+            Console.WriteLine();
         }
 
-        var cyclePeak = peakWorkingSet;
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        Thread.Sleep(500);
-        process.Refresh();
-        var postGc = process.WorkingSet64;
-        perCycleWorkingSet.Add((cyclePeak - cycleStartPeak, postGc));
-        if (cycles > 1)
-            Console.WriteLine($"      cycle {cycle} peak +{(cyclePeak - cycleStartPeak) / 1024.0 / 1024.0:F0} MB | post-GC WS {postGc / 1024.0 / 1024.0:F0} MB");
+        Console.WriteLine("[sweep] SUMMARY");
+        Console.WriteLine($"  {"config",-38} {"status",-6} {"peak",10} {"time",7} {"parts",6}");
+        foreach (var r in results)
+            Console.WriteLine($"  {r.Label,-38} {(r.Ok ? "OK" : "FAIL"),-6} {("+" + r.PeakDeltaMb.ToString("F0") + " MB"),10} {(r.Sec.ToString("F0") + "s"),7} {r.Batches,6}");
+        Console.WriteLine();
+        var firstOk = results.FirstOrDefault(r => r.Ok);
+        Console.WriteLine(firstOk.Label != null
+            ? $"  First config that survives this data: {firstOk.Label}"
+            : "  No config survived — every merge OOM'd. Paste this whole output back.");
+        return results.Any(r => r.Ok) ? 0 : 1;
     }
-    compactionSw.Stop();
 
-    samplerStop = true;
-    sampler.Join(1000);
-    process.Refresh();
-    if (process.WorkingSet64 > peakWorkingSet) peakWorkingSet = process.WorkingSet64;
+    /* Single-config run. */
+    Console.WriteLine($"[3/3] Running {mergeMode} merge (real ParquetCompaction code)...");
+    var single = RunOneConfig(mergeMode, rowGroupSize, maxBatchBytes, memoryLimit, threads, verbose: true);
 
     Console.WriteLine();
     Console.WriteLine("Result:");
-    Console.WriteLine($"      Status:           {(success ? "SUCCESS" : "FAILURE")}");
-    Console.WriteLine($"      Wall time:        {compactionSw.Elapsed.TotalSeconds:F2}s");
-    Console.WriteLine($"      Baseline WS:      {startWorkingSet / 1024.0 / 1024.0:F0} MB");
-    Console.WriteLine($"      Peak WS:          {peakWorkingSet / 1024.0 / 1024.0:F0} MB (+{(peakWorkingSet - startWorkingSet) / 1024.0 / 1024.0:F0} MB)");
-    if (cycles > 1 && perCycleWorkingSet.Count > 0)
+    Console.WriteLine($"      Status:           {(single.Ok ? "SUCCESS" : "FAILURE")}");
+    Console.WriteLine($"      Wall time:        {single.Sec:F2}s");
+    Console.WriteLine($"      Peak WS:          {single.PeakMb:F0} MB (baseline {single.StartMb:F0} MB, +{single.PeakMb - single.StartMb:F0} MB)");
+    if (single.Ok)
     {
-        Console.WriteLine($"      Post-GC WS by cycle:");
-        for (var i = 0; i < perCycleWorkingSet.Count; i++)
-        {
-            var (peak, postGc) = perCycleWorkingSet[i];
-            Console.WriteLine($"        cycle {i + 1}: peak +{peak / 1024.0 / 1024.0:F0} MB, post-GC {postGc / 1024.0 / 1024.0:F0} MB");
-        }
-        var drift = (perCycleWorkingSet[^1].postGc - perCycleWorkingSet[0].postGc) / 1024.0 / 1024.0;
-        Console.WriteLine($"      WS drift (last - first post-GC): {drift:+0;-0;0} MB");
-    }
-    if (success)
-    {
-        Console.WriteLine($"      Output:           {outputPaths.Count} part file(s), {compactedFileBytes / 1024.0 / 1024.0:F1} MB total");
+        var outBytes = single.Outputs.Sum(p => new FileInfo(p).Length);
+        Console.WriteLine($"      Output:           {single.Outputs.Count} part file(s), {outBytes / 1024.0 / 1024.0:F1} MB total");
 
         /* Row-count round-trip: total output rows must equal total source rows. */
         var srcSqlList = string.Join(", ", sourcePaths.Select(p => $"'{p.Replace("'", "''").Replace("\\", "/")}'"));
-        var outSqlList = string.Join(", ", outputPaths.Select(p => $"'{p.Replace("'", "''").Replace("\\", "/")}'"));
+        var outSqlList = string.Join(", ", single.Outputs.Select(p => $"'{p.Replace("'", "''").Replace("\\", "/")}'"));
         using var verifyCon = new DuckDBConnection("DataSource=:memory:");
         verifyCon.Open();
         using var verifyCmd = verifyCon.CreateCommand();
@@ -353,7 +385,7 @@ try
     }
     else
     {
-        Console.WriteLine($"      Failure:          {failureMessage}");
+        Console.WriteLine($"      Failure:          {single.Fail}");
     }
 
     var spillBytes = Directory.Exists(spillDir)
@@ -361,7 +393,7 @@ try
         : 0;
     Console.WriteLine($"      Spill on disk:    {spillBytes / 1024.0 / 1024.0:F1} MB ({(spillBytes > 0 ? "spilled" : "did not spill")})");
 
-    return success ? 0 : 1;
+    return single.Ok ? 0 : 1;
 }
 finally
 {
@@ -510,7 +542,7 @@ static void GenerateSyntheticSource(string outputPath, int rows, int baseOps, in
        bytes. A small ZSTD parquet file that decompresses to gigabytes of XML
        is exactly the #933 failure shape. */
     var sourceSql = outputPath.Replace("'", "''").Replace("\\", "/");
-    var mediumOps = baseOps * 8;
+    var mediumOps = baseOps * 22;
 
     using var con = new DuckDBConnection("DataSource=:memory:");
     con.Open();
@@ -522,7 +554,7 @@ COPY (
         SELECT
             i,
             CASE WHEN (i % {tailEvery}) = 0 THEN {tailOps}
-                 WHEN (i % 5) = 0 THEN {mediumOps}
+                 WHEN (i % 25) = 0 THEN {mediumOps}
                  ELSE {baseOps} END AS ops
         FROM generate_series(1, {rows}) t(i)
     )
