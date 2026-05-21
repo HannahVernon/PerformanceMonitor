@@ -261,7 +261,13 @@ BEGIN
                 END;
                 ELSE IF @collector_name = N'trace_management_collector'
                 BEGIN
-                    EXECUTE collect.trace_management_collector @action = N'RESTART', @debug = @debug;
+                    /*
+                    Issue #972: START, not RESTART. START is idempotent - it
+                    leaves an already-running trace alone. RESTART tore the
+                    trace down and built a fresh timestamped one every cycle,
+                    orphaning the previous trace's .trc files on disk.
+                    */
+                    EXECUTE collect.trace_management_collector @action = N'START', @debug = @debug;
                 END;
                 ELSE IF @collector_name = N'trace_analysis_collector'
                 BEGIN
