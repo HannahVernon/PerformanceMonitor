@@ -428,15 +428,13 @@ COPY (
                     .OrderBy(p => new FileInfo(p.Replace("/", "\\")).Length)
                     .ToList();
 
-                /* Bucket files into size-budgeted batches. Cap each batch's on-disk
-                   parquet bytes so a single COPY doesn't try to merge an unbounded
-                   amount of expanded VARCHAR data. Wide-row tables (query_snapshots'
-                   plan XML) expand ~5-10x in memory on read; a 72-file backlog at
-                   the 4 GB compaction memory_limit OOM'd on real allocation pressure
-                   (not pre-reservation) — see #933 followup. The cap is sized so
-                   that even with ~10x expansion the in-memory load stays well under
-                   4 GB. Narrow tables fit one batch with hundreds of files in it. */
-                var batches = ParquetCompaction.BuildSizeBudgetedBatches(sorted, ParquetCompaction.MaxBatchInputBytes);
+                /* Bucket files into size-budgeted batches so a single COPY never
+                   merges an unbounded amount of expanded VARCHAR data. The budget
+                   and row-group size are per-table: query_snapshots' plan XML
+                   expands ~30x on read and OOMs a 4 GB connection at the defaults,
+                   so it gets a tighter budget (see ParquetCompaction.PerTableCompaction
+                   and #933). Narrow tables fit one batch with hundreds of files. */
+                var batches = ParquetCompaction.BuildSizeBudgetedBatches(sorted, ParquetCompaction.BatchBudgetFor(table));
 
                 /* Plan the output names. With one batch we keep the existing
                    YYYYMM_table.parquet name (backward compatible). With multiple
@@ -457,7 +455,8 @@ COPY (
                    place for next cycle's retry. */
                 for (var i = 0; i < batches.Count; i++)
                 {
-                    ParquetCompaction.MergeBatchToFile(table, batches[i], batchOutputs[i].TempPath, spillDirSql);
+                    ParquetCompaction.MergeBatchToFile(table, batches[i], batchOutputs[i].TempPath, spillDirSql,
+                        rowGroupSize: ParquetCompaction.RowGroupSizeFor(table));
                 }
 
                 /* All batches succeeded — delete originals, promote temps. */

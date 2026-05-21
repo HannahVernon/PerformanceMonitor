@@ -29,20 +29,18 @@ using PerformanceMonitorLite.Services;
  * the data shape that decides whether compaction OOMs; synthetic data can't
  * fake it. Use --profile-only to get just the profile and skip the merge.
  *
- * Tuning knobs (defaults = current production values from ParquetCompaction):
+ * Tuning knobs (defaults = ParquetCompaction's non-table-specific defaults):
  *   --memory-limit <str>   DuckDB memory_limit per merge connection. Default: 4GB
  *   --threads <int>        DuckDB threads per merge connection. Default: 2
  *   --row-group-size <int> Output ROW_GROUP_SIZE. Default: 8192
  *   --max-batch-mb <int>   Per-batch on-disk input budget (MB). Default: 200
  *   --table <name>         Table name (drives exclude-column logic). Default: query_snapshots
- *   --merge-mode <m>       pairwise (current production) | single (one COPY over
- *                          the whole batch). Default: pairwise
  *
  * Other options:
  *   --profile-only         Print the source data profile and exit (no merge).
- *   --sweep                Run a matrix of configs (merge-mode x row-group-size x
- *                          batch budget x memory limit) against the same files
- *                          and print which ones survive. Ignores --merge-mode etc.
+ *   --sweep                Run a matrix of configs (row-group-size x batch budget
+ *                          x memory limit) against the same files and print which
+ *                          ones survive. Ignores --row-group-size / --max-batch-mb.
  *   --num-files <int>      Chunks to split --source-file/--synthetic into. Default: 15
  *   --synthetic-rows <int> Synthetic row count. Default: 30000
  *   --synthetic-base-ops <n>  RelOps in a normal synthetic plan. Default: 130
@@ -85,16 +83,10 @@ if (!string.IsNullOrEmpty(sourceFile) && !File.Exists(sourceFile))
 }
 
 var table = GetArg(args, "--table", "query_snapshots");
-var mergeMode = GetArg(args, "--merge-mode", "pairwise").ToLowerInvariant();
-if (mergeMode != "pairwise" && mergeMode != "single")
-{
-    Console.Error.WriteLine($"error: --merge-mode must be 'pairwise' or 'single', got '{mergeMode}'");
-    return 2;
-}
 var memoryLimit = GetArg(args, "--memory-limit", ParquetCompaction.DefaultMemoryLimit);
 var threads = int.Parse(GetArg(args, "--threads", ParquetCompaction.DefaultThreads.ToString()));
 var rowGroupSize = int.Parse(GetArg(args, "--row-group-size", ParquetCompaction.DefaultRowGroupSize.ToString()));
-var maxBatchMb = int.Parse(GetArg(args, "--max-batch-mb", (ParquetCompaction.MaxBatchInputBytes / (1024 * 1024)).ToString()));
+var maxBatchMb = int.Parse(GetArg(args, "--max-batch-mb", (ParquetCompaction.DefaultBatchInputBytes / (1024 * 1024)).ToString()));
 var maxBatchBytes = maxBatchMb * 1024L * 1024L;
 var numFiles = int.Parse(GetArg(args, "--num-files", "15"));
 var keep = args.Contains("--keep");
@@ -148,11 +140,10 @@ Console.WriteLine($"Code:     ParquetCompaction (linked from Lite/Services — r
 Console.WriteLine($"Table:    {table}");
 if (sweep)
 {
-    Console.WriteLine($"Merge:    sweep (matrix of configs — see [sweep] section below)");
+    Console.WriteLine($"Mode:     sweep (matrix of configs — see [sweep] section below)");
 }
 else
 {
-    Console.WriteLine($"Merge:    {mergeMode} ({(mergeMode == "single" ? "one COPY over the whole batch" : "pairwise accumulator — current production")})");
     Console.WriteLine($"Settings: memory_limit={memoryLimit}, threads={threads}, ROW_GROUP_SIZE={rowGroupSize}, max-batch={maxBatchMb} MB");
 }
 if (mergeFiles.Count == 0)
@@ -218,7 +209,7 @@ try
        given config. Never throws — a merge OOM is caught and returned as
        Ok=false so a sweep can carry on to the next config. */
     (bool Ok, double StartMb, double PeakMb, double Sec, int Batches, string? Fail, List<string> Outputs)
-        RunOneConfig(string mMode, int rgs, long batchBytes, string memLimit, int thr, bool verbose)
+        RunOneConfig(int rgs, long batchBytes, string memLimit, int thr, bool verbose)
     {
         var batches = ParquetCompaction.BuildSizeBudgetedBatches(sorted, batchBytes);
         if (verbose)
@@ -269,10 +260,7 @@ try
                 if (File.Exists(outPath)) File.Delete(outPath);
 
                 var bsw = Stopwatch.StartNew();
-                if (mMode == "single")
-                    ParquetCompaction.MergeBatchSingleCopy(table, batches[i], outPath, spillDir, memLimit, thr, rgs);
-                else
-                    ParquetCompaction.MergeBatchToFile(table, batches[i], outPath, spillDir, memLimit, thr, rgs);
+                ParquetCompaction.MergeBatchToFile(table, batches[i], outPath, spillDir, memLimit, thr, rgs);
                 bsw.Stop();
 
                 process.Refresh();
@@ -312,18 +300,16 @@ try
 
     if (sweep)
     {
-        /* Matrix of configs run against the same source files. All single-copy
-           (one streaming pass — fast) except the last, so a real-data run stays
-           reasonable. Current production is pairwise rgs=8192 batch=200 mem=4GB,
-           already known to OOM on this data — see the issue thread. */
-        var configs = new (string Label, string Mode, int Rgs, int BatchMb, string Mem)[]
+        /* Matrix of merge configs run against the same source files — varies
+           row-group size, batch budget and memory cap to find which combination
+           keeps the merge within the cap on real data. (#933) */
+        var configs = new (string Label, int Rgs, int BatchMb, string Mem)[]
         {
-            ("single   rgs=8192 batch=200 mem=4GB", "single",   8192, 200, "4GB"),
-            ("single   rgs=2048 batch=100 mem=4GB", "single",   2048, 100, "4GB"),
-            ("single   rgs=512  batch=50  mem=4GB", "single",    512,  50, "4GB"),
-            ("single   rgs=512  batch=25  mem=4GB", "single",    512,  25, "4GB"),
-            ("single   rgs=256  batch=25  mem=2GB", "single",    256,  25, "2GB"),
-            ("pairwise rgs=512  batch=50  mem=4GB", "pairwise",  512,  50, "4GB"),
+            ("rgs=8192 batch=200 mem=4GB", 8192, 200, "4GB"),
+            ("rgs=2048 batch=100 mem=4GB", 2048, 100, "4GB"),
+            ("rgs=512  batch=50  mem=4GB",  512,  50, "4GB"),
+            ("rgs=512  batch=25  mem=4GB",  512,  25, "4GB"),
+            ("rgs=256  batch=25  mem=2GB",  256,  25, "2GB"),
         };
 
         Console.WriteLine($"[sweep] Running {configs.Length} configs against the same {sorted.Count} source files.");
@@ -333,7 +319,7 @@ try
         foreach (var c in configs)
         {
             Console.WriteLine($"[sweep] {c.Label} ...");
-            var r = RunOneConfig(c.Mode, c.Rgs, c.BatchMb * 1024L * 1024L, c.Mem, threads, verbose: false);
+            var r = RunOneConfig(c.Rgs, c.BatchMb * 1024L * 1024L, c.Mem, threads, verbose: false);
             CleanOutputs();
             var peakDelta = r.PeakMb - r.StartMb;
             results.Add((c.Label, r.Ok, peakDelta, r.Sec, r.Batches, r.Fail));
@@ -355,8 +341,8 @@ try
     }
 
     /* Single-config run. */
-    Console.WriteLine($"[3/3] Running {mergeMode} merge (real ParquetCompaction code)...");
-    var single = RunOneConfig(mergeMode, rowGroupSize, maxBatchBytes, memoryLimit, threads, verbose: true);
+    Console.WriteLine($"[3/3] Running merge (real ParquetCompaction code)...");
+    var single = RunOneConfig(rowGroupSize, maxBatchBytes, memoryLimit, threads, verbose: true);
 
     Console.WriteLine();
     Console.WriteLine("Result:");

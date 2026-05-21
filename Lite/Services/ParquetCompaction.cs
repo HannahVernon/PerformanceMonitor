@@ -18,20 +18,39 @@ namespace PerformanceMonitorLite.Services;
 
 public static class ParquetCompaction
 {
-    /* Production tuning for the compaction merge connections (#933 followup).
-       The reproducer overrides these to sweep values; ArchiveService uses the
-       defaults so the production knobs live in exactly one place. */
+    /* Production tuning for the compaction merge connections (#933).
+       memoryLimit/threads/rowGroupSize are exposed as MergeBatchToFile parameters
+       so tools/CompactionRepro can sweep them; production callers pass the
+       per-table values from BatchBudgetFor / RowGroupSizeFor below. */
     public const string DefaultMemoryLimit = "4GB";
     public const int DefaultThreads = 2;
     public const int DefaultRowGroupSize = 8192;
 
-    /* Maximum total on-disk parquet bytes per compaction merge batch. Wide-VARCHAR
-       tables (query_snapshots) expand 5-10x on read; this cap keeps the in-memory
-       working set during a COPY well below the 4 GB compaction memory_limit even
-       on the worst data shapes. Groups exceeding this budget produce multiple
-       _ptNNN.parquet output files. See #933 followup — a 72-file query_snapshots
-       backlog at 4 GB OOM'd on real allocation pressure during the final merge. */
-    public const long MaxBatchInputBytes = 200L * 1024 * 1024; /* 200 MB */
+    /* Default on-disk parquet bytes per compaction merge batch. A group whose
+       files exceed this budget is merged in multiple passes, each producing a
+       _ptNNN.parquet output file. */
+    public const long DefaultBatchInputBytes = 200L * 1024 * 1024; /* 200 MB */
+
+    /* Per-table compaction overrides. query_snapshots stores query-plan XML that
+       expands ~30x on read; at the default 200 MB batch / 8192 row-group size the
+       merge OOMs a 4 GB connection (#933). Validated on a real 100-file / 15 GB-
+       uncompressed backlog: 100 MB batches at ROW_GROUP_SIZE 2048 compact it in
+       ~27 s with ~1.8 GB headroom under the cap, producing ~6 monthly part files.
+       Only wide-XML tables need this; numeric tables merge fine at the defaults. */
+    private static readonly Dictionary<string, (long BatchBytes, int RowGroupSize)> PerTableCompaction = new()
+    {
+        ["query_snapshots"] = (100L * 1024 * 1024, 2048)
+    };
+
+    /* On-disk batch budget for <paramref name="table"/> — the per-table override
+       if one exists, otherwise the default. */
+    public static long BatchBudgetFor(string table) =>
+        PerTableCompaction.TryGetValue(table, out var c) ? c.BatchBytes : DefaultBatchInputBytes;
+
+    /* Output ROW_GROUP_SIZE for <paramref name="table"/> — the per-table override
+       if one exists, otherwise the default. */
+    public static int RowGroupSizeFor(string table) =>
+        PerTableCompaction.TryGetValue(table, out var c) ? c.RowGroupSize : DefaultRowGroupSize;
 
     /* Columns to exclude during compaction — dead weight from legacy archives */
     private static readonly Dictionary<string, string[]> CompactionExcludeColumns = new()
@@ -72,92 +91,27 @@ public static class ParquetCompaction
         return batches;
     }
 
-    /* Merge one size-budgeted batch into <paramref name="outputPath"/>. The pragma
-       block matches the compaction tuning from #933:
-         - memory_limit = 4GB: parquet COPY does allocations that bypass the buffer
-           manager and can't be spilled. The cap is a hard ceiling for those, not
-           a spill trigger. 4GB leaves real headroom for wide-VARCHAR data within
-           the batch-size budget. Aligns with DuckDB's OOM guide (50-60% of RAM).
+    /* Merge one size-budgeted batch into <paramref name="outputPath"/> with a
+       single COPY over the whole batch. DuckDB streams the multi-file parquet
+       scan straight into the writer — no growing accumulator, no re-reading
+       re-packed row groups.
+
+       #933 replaced an incremental pairwise merge here: on a real 100-file
+       backlog the pairwise path was ~5x slower (it re-read an ever-larger
+       accumulator file every step) and OOM-prone. A sweep on the reporter's
+       actual data confirmed a single COPY at the per-table row-group size is
+       both faster and stays within the memory cap.
+
+       Pragma tuning:
+         - memory_limit = 4GB: parquet COPY makes allocations that bypass the
+           buffer manager and can't spill; the cap is a hard ceiling, not a
+           spill trigger. Pair it with the per-table batch budget (BatchBudgetFor)
+           and row-group size (RowGroupSizeFor) so the working set stays under it.
          - threads = 2: fewer per-thread row-group buffers in flight.
-         - ROW_GROUP_SIZE 8192: smaller buffered batch per row group.
          - preserve_insertion_order = false: lets DuckDB stream.
-       The memoryLimit/threads/rowGroupSize parameters exist so tools/CompactionRepro
-       can sweep them; production callers omit them and get the defaults above. */
+       The memoryLimit/threads/rowGroupSize parameters let tools/CompactionRepro
+       sweep them; production passes the per-table values. */
     public static void MergeBatchToFile(
-        string table,
-        List<string> sourcePaths,
-        string outputPath,
-        string spillDirSql,
-        string memoryLimit = DefaultMemoryLimit,
-        int threads = DefaultThreads,
-        int rowGroupSize = DefaultRowGroupSize)
-    {
-        var pragma = BuildPragma(memoryLimit, threads, spillDirSql);
-
-        if (sourcePaths.Count <= 2)
-        {
-            /* Small batch — single-pass merge (also covers the degenerate 1-file case). */
-            using var con = new DuckDBConnection("DataSource=:memory:");
-            con.Open();
-            using (var pragmaCmd = con.CreateCommand())
-            {
-                pragmaCmd.CommandText = pragma;
-                pragmaCmd.ExecuteNonQuery();
-            }
-
-            var selectClause = BuildSelectClause(table, sourcePaths);
-            var pathList = string.Join(", ", sourcePaths.Select(p => $"'{EscapeSqlPath(p)}'"));
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = $"COPY (SELECT {selectClause} FROM read_parquet([{pathList}], union_by_name=true)) " +
-                              $"TO '{EscapeSqlPath(outputPath)}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {rowGroupSize})";
-            cmd.ExecuteNonQuery();
-            return;
-        }
-
-        /* Larger batch — incremental pairwise merge. Caller has already sorted
-           smallest-first across the whole group; within a batch we preserve that
-           order so the accumulator grows steadily and small files are folded in
-           early when memory is cheapest. */
-        var currentPath = sourcePaths[0];
-        var intermediateFiles = new List<string>();
-
-        for (var i = 1; i < sourcePaths.Count; i++)
-        {
-            var stepOutput = i < sourcePaths.Count - 1
-                ? outputPath + $".step{i}.tmp"
-                : outputPath;
-
-            using var con = new DuckDBConnection("DataSource=:memory:");
-            con.Open();
-            using (var pragmaCmd = con.CreateCommand())
-            {
-                pragmaCmd.CommandText = pragma;
-                pragmaCmd.ExecuteNonQuery();
-            }
-
-            var selectClause = BuildSelectClause(table, new[] { currentPath, sourcePaths[i] });
-            var pairList = $"'{EscapeSqlPath(currentPath)}', '{EscapeSqlPath(sourcePaths[i])}'";
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = $"COPY (SELECT {selectClause} FROM read_parquet([{pairList}], union_by_name=true)) " +
-                              $"TO '{EscapeSqlPath(stepOutput)}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {rowGroupSize})";
-            cmd.ExecuteNonQuery();
-
-            if (intermediateFiles.Count > 0)
-            {
-                var prev = intermediateFiles[^1];
-                try { File.Delete(prev); } catch { /* best effort */ }
-            }
-            intermediateFiles.Add(stepOutput);
-            currentPath = stepOutput;
-        }
-    }
-
-    /* Single-pass merge: one COPY over the whole batch. Unlike the pairwise path
-       in MergeBatchToFile, this never materializes a growing accumulator and
-       never re-reads re-packed row groups — DuckDB streams the multi-file parquet
-       scan straight into the writer. Under evaluation for #933; tools/CompactionRepro
-       --merge-mode single exercises it. */
-    public static void MergeBatchSingleCopy(
         string table,
         List<string> sourcePaths,
         string outputPath,
