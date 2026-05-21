@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Data Retention job no longer fails with `xp_delete_file` error 22049** ([#972]) — the trace-file cleanup added in v2.11.0 passed a wildcard path to `xp_delete_file`, raising an uncatchable `Msg 22049` that failed the entire `PerformanceMonitor - Data Retention` Agent job on every run once any `Monitor_LongQueries_*.trc` files existed. `xp_delete_file` also cannot delete `.trc` files at all — it only accepts SQL Server backup files and Maintenance Plan report files — so that cleanup step has been removed from `config.data_retention`
+
+### Changed
+
+- **Trace files are now bounded at the source** ([#972]) — `collect.trace_management_collector` creates the long-query trace with a rollover file-count cap (`@filecount`, via the new `@max_files` parameter, default 5), so SQL Server itself deletes the oldest `.trc` file as the trace rolls. The scheduled collector also now issues `START` instead of `RESTART`: it keeps one trace running rather than tearing it down and spawning a fresh timestamped trace — and a fresh batch of orphaned files — every cycle
+
+### Added
+
+- **`tools/Remove-OrphanedTraceFiles.ps1`** ([#972]) — one-time cleanup script for `Monitor_LongQueries_*.trc` files left on disk by versions through 2.11.0. Run it on the SQL Server host; it skips files belonging to a running trace and files that are in use
+
+[#972]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/972
+
 ## [2.11.0] - 2026-05-19
 
 ### Important

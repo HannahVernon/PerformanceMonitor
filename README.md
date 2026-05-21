@@ -530,6 +530,15 @@ WHERE collection_status = 'ERROR'
 ORDER BY collection_time DESC;
 ```
 
+**Orphaned `Monitor_LongQueries_*.trc` files (issue #972)** — versions through 2.11.0 accumulated stale SQL Trace files in the SQL Server error log directory. Newer versions bound the long-query trace with a rollover file-count cap, so SQL Server prunes its own files going forward — but trace files already on disk are not removed automatically (`xp_delete_file` cannot delete `.trc` files). Sweep them once with `tools/Remove-OrphanedTraceFiles.ps1`, run **on the SQL Server host** as a local Administrator or the SQL Server service account:
+
+```powershell
+.\Remove-OrphanedTraceFiles.ps1 -WhatIf    # preview what would be deleted
+.\Remove-OrphanedTraceFiles.ps1            # delete
+```
+
+It skips files belonging to a running trace and files that are in use.
+
 ### Lite Edition
 
 Application logs are written to the `logs/` folder. Collection success/failure is also logged to the `collection_log` table in DuckDB.
