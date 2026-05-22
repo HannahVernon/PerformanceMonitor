@@ -273,6 +273,32 @@
                            Margin="20,0,0,0" TextWrapping="Wrap"/>
                 <CheckBox x:Name="LogAlertDismissalsCheckBox" Content="Log alert dismiss and mute actions"
                           Margin="20,8,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
+
+                <!-- Automated Analysis Notifications -->
+                <TextBlock Text="Automated Analysis Notifications" FontWeight="SemiBold" FontSize="12"
+                           Foreground="{DynamicResource ForegroundBrush}" Margin="20,14,0,4"/>
+                <TextBlock Text="Periodically run the triage engine and send high-severity findings through the channels above."
+                           FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                           Margin="20,0,0,4" TextWrapping="Wrap"/>
+                <CheckBox x:Name="AnalysisNotificationsCheckBox" Content="Enable scheduled analysis notifications"
+                          Margin="20,4,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <TextBlock Text="Run analysis every" VerticalAlignment="Center" Margin="0,0,8,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AnalysisIntervalBox" Width="45" TextAlignment="Center" VerticalAlignment="Center"/>
+                    <TextBlock Text="minutes" VerticalAlignment="Center" Margin="4,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <TextBlock Text="Notify on finding severity at or above" VerticalAlignment="Center" Margin="0,0,8,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AnalysisNotifySeverityBox" Width="45" TextAlignment="Center" VerticalAlignment="Center"/>
+                    <TextBlock Text="(0.0 - 2.0)" VerticalAlignment="Center" Margin="4,0,0,0"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                </StackPanel>
+                <TextBlock Text="Requires SMTP or a webhook configured below for delivery; findings are recorded in the Alerts tab either way."
+                           FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                           Margin="20,4,0,0" TextWrapping="Wrap"/>
             </StackPanel>
         </Border>
 

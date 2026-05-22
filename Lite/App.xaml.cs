@@ -116,6 +116,13 @@ public partial class App : Application
     public static string MuteRuleDefaultExpiration { get; set; } = "24 hours"; // Default expiration for new mute rules
     public static bool LogAlertDismissals { get; set; } = true; // Log alert dismiss/mute actions to file
 
+    /* Automated analysis notifications (scheduled triage) */
+    public static bool AnalysisNotificationsEnabled { get; set; } = false;  // Master switch — also gates the scheduler
+    public static int AnalysisIntervalMinutes { get; set; } = 30;           // How often scheduled analysis runs
+    public static double AnalysisNotifySeverity { get; set; } = 1.5;        // Minimum finding severity (0.0-2.0) to notify on
+    public static int AnalysisNotifyCooldownMinutes { get; set; } = 360;    // Re-notify gap per finding (keyed by StoryPathHash)
+    public static int AnalysisTimeoutSeconds { get; set; } = 120;           // Per-server analysis timeout
+
     /* Connection settings */
     public static int ConnectionTimeoutSeconds { get; set; } = 5;
 
@@ -538,6 +545,12 @@ public partial class App : Application
             if (root.TryGetProperty("smtp_username", out v)) SmtpUsername = v.GetString() ?? "";
             if (root.TryGetProperty("smtp_from_address", out v)) SmtpFromAddress = v.GetString() ?? "";
             if (root.TryGetProperty("smtp_recipients", out v)) SmtpRecipients = v.GetString() ?? "";
+
+            if (root.TryGetProperty("analysis_notifications_enabled", out v)) AnalysisNotificationsEnabled = v.GetBoolean();
+            if (root.TryGetProperty("analysis_interval_minutes", out v)) AnalysisIntervalMinutes = (int)Math.Clamp(v.GetInt64(), 5, 360);
+            if (root.TryGetProperty("analysis_notify_severity", out v)) AnalysisNotifySeverity = Math.Clamp(v.GetDouble(), 0.0, 2.0);
+            if (root.TryGetProperty("analysis_notify_cooldown_minutes", out v)) AnalysisNotifyCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 30, 10080);
+            if (root.TryGetProperty("analysis_timeout_seconds", out v)) AnalysisTimeoutSeconds = (int)Math.Clamp(v.GetInt64(), 30, 600);
         }
         catch { /* Use defaults */ }
     }

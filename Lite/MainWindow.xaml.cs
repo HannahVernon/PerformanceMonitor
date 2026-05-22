@@ -111,8 +111,13 @@ public partial class MainWindow : Window
             var archiveService = new ArchiveService(_databaseInitializer, App.ArchiveDirectory, new AppLoggerAdapter<ArchiveService>());
             var retentionService = new RetentionService(App.ArchiveDirectory, new AppLoggerAdapter<RetentionService>());
 
+            // Routes high-severity analysis findings to email/Slack/Teams; the background
+            // service runs scheduled analysis and hands findings to it.
+            var analysisNotificationService = new AnalysisNotificationService(_emailAlertService);
+
             _backgroundService = new CollectionBackgroundService(
                 _collectorService, _databaseInitializer, archiveService, retentionService, _serverManager,
+                analysisNotificationService,
                 new AppLoggerAdapter<CollectionBackgroundService>());
 
             // Start background collection
