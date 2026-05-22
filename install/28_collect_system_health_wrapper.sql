@@ -241,7 +241,7 @@ BEGIN
         
         IF @debug = 1
         BEGIN
-            RAISERROR(N'sp_HealthParser completed - %d total rows collected across all tables', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'sp_HealthParser completed - %I64d total rows collected across all tables', 0, 1, @rows_collected) WITH NOWAIT;
         END;
         
     END TRY

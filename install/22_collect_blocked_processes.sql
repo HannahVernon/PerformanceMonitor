@@ -312,7 +312,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            RAISERROR(N'Collected %d blocked process events', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'Collected %I64d blocked process events', 0, 1, @rows_collected) WITH NOWAIT;
         END;
 
         COMMIT TRANSACTION;
