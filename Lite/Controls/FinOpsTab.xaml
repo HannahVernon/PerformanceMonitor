@@ -2418,6 +2418,14 @@
                                     </StackPanel>
                                 </DataGridTextColumn.Header>
                             </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding AgReplicaRoleDisplay}" Width="90">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AgReplicaRoleDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="AG Role" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
                             <DataGridTextColumn Binding="{Binding ClusteredDisplay}" Width="80">
                                 <DataGridTextColumn.Header>
                                     <StackPanel Orientation="Horizontal">

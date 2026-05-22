@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Lite UI no longer freezes during archival** ([#979]) — archival held DuckDB's exclusive write lock across the entire export-to-Parquet step, blocking every UI query (tab switches showed the spinning wheel, worse with more monitored servers). Export-to-Parquet only reads the database, so it now runs under a shared read lock concurrently with the UI; only the brief `DELETE` takes the exclusive write lock
+- **Lite FinOps no longer recommends an edition downgrade on an Availability Group secondary** ([#980]) — the licensing recommendations suggested "downgrade to Standard to save $X/mo" for any Enterprise instance, with no AG awareness. On a secondary replica that advice is misleading — every replica in an AG must run the same edition. FinOps now detects the AG replica role and, on a secondary, shows an informational note instead of the downgrade/savings estimate
 - **Data Retention job no longer fails with `xp_delete_file` error 22049** ([#972]) — the trace-file cleanup added in v2.11.0 passed a wildcard path to `xp_delete_file`, raising an uncatchable `Msg 22049` that failed the entire `PerformanceMonitor - Data Retention` Agent job on every run once any `Monitor_LongQueries_*.trc` files existed. `xp_delete_file` also cannot delete `.trc` files at all — it only accepts SQL Server backup files and Maintenance Plan report files — so that cleanup step has been removed from `config.data_retention`
 
 ### Changed
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#972]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/972
 [#979]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/979
+[#980]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/980
 
 ## [2.11.0] - 2026-05-19
 
