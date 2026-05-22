@@ -67,6 +67,20 @@ public class EmailAlertService
                 !string.IsNullOrWhiteSpace(App.SmtpRecipients))
             {
                 var cooldownKey = $"{serverId}:{metricName}";
+
+                /* Seed the in-memory cooldown from config_alert_log the first
+                   time this key is seen, so an alert email sent shortly before
+                   an app restart is not immediately re-sent afterward (#981).
+                   The in-memory dictionary is authoritative once seeded. */
+                if (!_cooldowns.ContainsKey(cooldownKey))
+                {
+                    var lastPersistedSend = await GetLastEmailSentUtcAsync(serverId, metricName);
+                    if (lastPersistedSend.HasValue)
+                    {
+                        _cooldowns.TryAdd(cooldownKey, lastPersistedSend.Value);
+                    }
+                }
+
                 var withinCooldown = _cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
                     DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(App.EmailCooldownMinutes);
 
@@ -137,6 +151,56 @@ public class EmailAlertService
         catch (Exception ex)
         {
             AppLogger.Error("EmailAlert", $"TrySendAlertEmailAsync outer error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Returns the UTC time the most recent alert email was successfully sent
+    /// for this server/metric, read from config_alert_log — or null if none.
+    /// Used to seed the in-memory cooldown after an app restart (#981).
+    /// </summary>
+    private async Task<DateTime?> GetLastEmailSentUtcAsync(int serverId, string metricName)
+    {
+        try
+        {
+            /* Use injected initializer, fall back to creating one from App.DatabasePath */
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return null;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var readLock = duckDb.AcquireReadLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            /* A successful email send is logged with a notification_type of
+               'email' / 'email+webhook' and a null send_error — that mirrors
+               exactly when _cooldowns is updated after SendEmailAsync. */
+            command.CommandText = @"
+SELECT MAX(alert_time)
+FROM config_alert_log
+WHERE server_id = $1
+AND   metric_name = $2
+AND   notification_type IN ('email', 'email+webhook')
+AND   send_error IS NULL";
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
+
+            var result = await command.ExecuteScalarAsync();
+            if (result == null || result == DBNull.Value) return null;
+
+            /* alert_time is written as DateTime.UtcNow; tag it UTC so the kind
+               is explicit (the cooldown subtraction is tick math regardless). */
+            return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("EmailAlert", $"Could not read persisted alert cooldown: {ex.Message}");
+            return null;
         }
     }
 
