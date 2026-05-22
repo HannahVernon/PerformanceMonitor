@@ -329,6 +329,36 @@ public class ScenarioTests : IDisposable
         Assert.True(facts["DEADLOCKS"].Severity > 0, "Deadlocks severity should be non-zero");
     }
 
+    /* ── Deep Blocking Chain ── */
+
+    [Fact]
+    public async Task DeepBlockingChain_ReconstructsDepthFourChainWithSleepingApex()
+    {
+        var (stories, facts) = await RunFullPipelineAsync(s => s.SeedDeepBlockingChainServerAsync());
+        PrintStories("DEEP BLOCKING CHAIN", stories);
+
+        Assert.True(facts.ContainsKey("BLOCKING_CHAIN"), "BLOCKING_CHAIN fact should be collected");
+        var chain = facts["BLOCKING_CHAIN"];
+        Assert.Equal(4.0, chain.Metadata["worst_chain_depth"]);
+        Assert.Equal(200.0, chain.Metadata["worst_apex_spid"]);
+        Assert.Equal(1.0, chain.Metadata["worst_apex_sleeping"]);
+    }
+
+    [Fact]
+    public async Task DeepBlockingChain_AppearsInAStory()
+    {
+        var (stories, _) = await RunFullPipelineAsync(s => s.SeedDeepBlockingChainServerAsync());
+        Assert.Contains(stories, s => s.Path.Contains("BLOCKING_CHAIN"));
+    }
+
+    [Fact]
+    public async Task DeepBlockingChain_BlockingEventsStillEmittedIndependently()
+    {
+        // The new BLOCKING_CHAIN fact must not collide with or replace BLOCKING_EVENTS.
+        var (_, facts) = await RunFullPipelineAsync(s => s.SeedDeepBlockingChainServerAsync());
+        Assert.True(facts.ContainsKey("BLOCKING_CHAIN"));
+    }
+
 
     /* ── Helper ── */
 

@@ -50,6 +50,9 @@ public class DrillDownCollector
                 if (pathKeys.Contains("BLOCKING_EVENTS"))
                     await CollectTopBlockingChains(finding, context);
 
+                if (pathKeys.Contains("BLOCKING_CHAIN"))
+                    await CollectReconstructedBlockingChains(finding, context);
+
                 if (pathKeys.Contains("CPU_SPIKE"))
                     await CollectQueriesAtSpike(finding, context);
 
@@ -169,6 +172,90 @@ LIMIT 5";
 
         if (items.Count > 0)
             finding.DrillDown!["top_blocking_chains"] = items;
+    }
+
+    /// <summary>
+    /// Reconstructs blocking chains (same logic as the collector) and surfaces the top 3
+    /// by magnitude — apex, depth, victim count, and the level-by-level structure that the
+    /// flat top_blocking_chains list cannot show.
+    /// </summary>
+    private async Task CollectReconstructedBlockingChains(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SELECT
+    event_time, database_name,
+    blocked_spid, blocked_last_tran_started,
+    blocking_spid, blocking_last_tran_started,
+    wait_time_ms, lock_mode, blocking_status,
+    LEFT(blocked_sql_text, 500) AS blocked_sql,
+    LEFT(blocking_sql_text, 500) AS blocking_sql
+FROM v_blocked_process_reports
+WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+ORDER BY event_time DESC
+LIMIT 5000";
+
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+        var rows = new List<BlockingPairRow>();
+        using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                rows.Add(new BlockingPairRow
+                {
+                    EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                    DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                    BlockedTranStarted = reader.IsDBNull(3) ? null : reader.GetDateTime(3),
+                    BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                    BlockingTranStarted = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                    WaitTimeMs = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                    LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                    BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                });
+            }
+        }
+
+        if (rows.Count == 0) return;
+
+        var reconstruction = BlockingChainReconstructor.Reconstruct(
+            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
+
+        var items = new List<object>();
+        foreach (var chain in reconstruction.Chains.Take(3))
+        {
+            items.Add(new
+            {
+                apex_spid = chain.ApexSpid,
+                apex_sleeping = chain.ApexSleeping,
+                depth = chain.Depth,
+                // Distinct sessions blocked under this apex over the window — cumulative, not peak-concurrent.
+                victim_count = chain.VictimCount,
+                max_wait_ms = chain.MaxWaitMs,
+                levels = chain.Levels.Select(l => new
+                {
+                    level = l.Level,
+                    blocking_spid = l.BlockingSpid,
+                    blocked_spid = l.BlockedSpid,
+                    lock_mode = l.LockMode,
+                    wait_time_ms = l.WaitTimeMs,
+                    blocking_sql = l.BlockingSqlText,
+                    blocked_sql = l.BlockedSqlText
+                }).ToList()
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["reconstructed_blocking_chains"] = items;
     }
 
     private async Task CollectQueriesAtSpike(AnalysisFinding finding, AnalysisContext context)

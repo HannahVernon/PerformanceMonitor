@@ -182,6 +182,21 @@ public class RelationshipGraph
         AddEdge("PAGEIOLATCH_EX", "IO_READ_LATENCY_MS", "memory_pressure",
             "Read latency elevated — disk confirms buffer pool pressure",
             facts => HasFact(facts, "IO_READ_LATENCY_MS") && facts["IO_READ_LATENCY_MS"].BaseSeverity > 0);
+
+        // RESOURCE_SEMAPHORE_QUERY_COMPILE → SOS_SCHEDULER_YIELD (compilation competing for CPU)
+        AddEdge("RESOURCE_SEMAPHORE_QUERY_COMPILE", "SOS_SCHEDULER_YIELD", "memory_grants",
+            "Scheduler yields elevated — query compilation competing for CPU",
+            facts => HasFact(facts, "SOS_SCHEDULER_YIELD") && facts["SOS_SCHEDULER_YIELD"].Value >= 0.25);
+
+        // RESOURCE_SEMAPHORE_QUERY_COMPILE → CPU_SQL_PERCENT (compilation a share of CPU load)
+        AddEdge("RESOURCE_SEMAPHORE_QUERY_COMPILE", "CPU_SQL_PERCENT", "memory_grants",
+            "SQL Server CPU elevated — compilation is a measurable share of CPU load",
+            facts => HasFact(facts, "CPU_SQL_PERCENT") && facts["CPU_SQL_PERCENT"].Value >= 80);
+
+        // SOS_SCHEDULER_YIELD → RESOURCE_SEMAPHORE_QUERY_COMPILE (CPU pressure traced to compiles)
+        AddEdge("SOS_SCHEDULER_YIELD", "RESOURCE_SEMAPHORE_QUERY_COMPILE", "memory_grants",
+            "Query-compile memory pressure — compilation contributing to CPU pressure",
+            facts => HasFact(facts, "RESOURCE_SEMAPHORE_QUERY_COMPILE") && facts["RESOURCE_SEMAPHORE_QUERY_COMPILE"].BaseSeverity > 0);
     }
 
     /* ── Blocking & Deadlocking ── */
@@ -241,6 +256,41 @@ public class RelationshipGraph
         AddEdge("THREADPOOL", "BLOCKING_EVENTS", "thread_exhaustion",
             "Blocking events present — blocked queries holding worker threads",
             facts => HasFact(facts, "BLOCKING_EVENTS") && facts["BLOCKING_EVENTS"].BaseSeverity > 0);
+
+        // BLOCKING_CHAIN → LCK (chain blocking visible in lock waits)
+        AddEdge("BLOCKING_CHAIN", "LCK", "blocking",
+            "Lock contention waits elevated — chain blocking visible in wait stats",
+            facts => HasFact(facts, "LCK") && facts["LCK"].Severity >= 0.5);
+
+        // BLOCKING_CHAIN → THREADPOOL (chain victims pinning worker threads)
+        AddEdge("BLOCKING_CHAIN", "THREADPOOL", "blocking",
+            "THREADPOOL waits present — chain victims consuming worker threads",
+            facts => HasFact(facts, "THREADPOOL") && facts["THREADPOOL"].Severity > 0);
+
+        // BLOCKING_CHAIN → DEADLOCKS (chain blocking escalating)
+        AddEdge("BLOCKING_CHAIN", "DEADLOCKS", "blocking",
+            "Deadlocks also present — chain blocking escalating to deadlocks",
+            facts => HasFact(facts, "DEADLOCKS") && facts["DEADLOCKS"].BaseSeverity > 0);
+
+        // BLOCKING_CHAIN → BLOCKING_EVENTS (chain confirmed by event volume)
+        AddEdge("BLOCKING_CHAIN", "BLOCKING_EVENTS", "blocking",
+            "Blocking event rate elevated — chain confirmed by event volume",
+            facts => HasFact(facts, "BLOCKING_EVENTS") && facts["BLOCKING_EVENTS"].BaseSeverity > 0);
+
+        // BLOCKING_EVENTS → BLOCKING_CHAIN (event rate has structural depth)
+        AddEdge("BLOCKING_EVENTS", "BLOCKING_CHAIN", "blocking",
+            "Reconstructed blocking chain — the pile-up has structural depth",
+            facts => HasFact(facts, "BLOCKING_CHAIN") && facts["BLOCKING_CHAIN"].BaseSeverity > 0);
+
+        // LCK → BLOCKING_CHAIN (lock waits form a transitive pile-up)
+        AddEdge("LCK", "BLOCKING_CHAIN", "lock_contention",
+            "Reconstructed blocking chain — lock waits form a transitive pile-up",
+            facts => HasFact(facts, "BLOCKING_CHAIN") && facts["BLOCKING_CHAIN"].BaseSeverity > 0);
+
+        // THREADPOOL → BLOCKING_CHAIN (chain victims pinning worker threads)
+        AddEdge("THREADPOOL", "BLOCKING_CHAIN", "thread_exhaustion",
+            "Reconstructed blocking chain — chain victims pinning worker threads",
+            facts => HasFact(facts, "BLOCKING_CHAIN") && facts["BLOCKING_CHAIN"].BaseSeverity > 0);
     }
 
     /* ── I/O Pressure ── */
