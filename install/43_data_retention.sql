@@ -596,7 +596,7 @@ WHERE ' + QUOTENAME(@time_column_name) + N' < @retention_date_param;';
         BEGIN
             DECLARE @duration_ms integer = DATEDIFF(MILLISECOND, @start_time, SYSDATETIME());
             RAISERROR(N'', 0, 1) WITH NOWAIT;
-            RAISERROR(N'Data retention completed: %d total rows deleted from %d tables in %d ms', 0, 1,
+            RAISERROR(N'Data retention completed: %I64d total rows deleted from %d tables in %d ms', 0, 1,
                 @total_deleted,
                 @table_count,
                 @duration_ms

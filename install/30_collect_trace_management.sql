@@ -469,7 +469,7 @@ BEGIN
 
             IF @debug = 1
             BEGIN
-                RAISERROR(N'Started trace ID: %d with filters - Duration >= %d microseconds OR CPU >= %d ms', 0, 1,
+                RAISERROR(N'Started trace ID: %d with filters - Duration >= %I64d microseconds OR CPU >= %d ms', 0, 1,
                          @trace_id, @duration_threshold_ms, @cpu_threshold_ms) WITH NOWAIT;
             END;
         END;

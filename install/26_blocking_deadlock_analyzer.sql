@@ -151,7 +151,7 @@ BEGIN
 
             IF @debug = 1
             BEGIN
-                RAISERROR(N'Aggregated %d database(s) with blocking events', 0, 1, @rows_collected) WITH NOWAIT;
+                RAISERROR(N'Aggregated %I64d database(s) with blocking events', 0, 1, @rows_collected) WITH NOWAIT;
             END;
         END
         ELSE
@@ -425,7 +425,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            RAISERROR(N'Logged %d critical issue(s) for blocking/deadlock events', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'Logged %I64d critical issue(s) for blocking/deadlock events', 0, 1, @rows_collected) WITH NOWAIT;
         END;
 
         /*

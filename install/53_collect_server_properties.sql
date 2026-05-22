@@ -329,7 +329,7 @@ BEGIN
         */
         IF @debug = 1
         BEGIN
-            RAISERROR(N'Collected %d server properties row(s)', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'Collected %I64d server properties row(s)', 0, 1, @rows_collected) WITH NOWAIT;
 
             SELECT TOP (1)
                 sp.server_name,
