@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Lite UI no longer freezes during archival** ([#979]) — archival held DuckDB's exclusive write lock across the entire export-to-Parquet step, blocking every UI query (tab switches showed the spinning wheel, worse with more monitored servers). Export-to-Parquet only reads the database, so it now runs under a shared read lock concurrently with the UI; only the brief `DELETE` takes the exclusive write lock
 - **Data Retention job no longer fails with `xp_delete_file` error 22049** ([#972]) — the trace-file cleanup added in v2.11.0 passed a wildcard path to `xp_delete_file`, raising an uncatchable `Msg 22049` that failed the entire `PerformanceMonitor - Data Retention` Agent job on every run once any `Monitor_LongQueries_*.trc` files existed. `xp_delete_file` also cannot delete `.trc` files at all — it only accepts SQL Server backup files and Maintenance Plan report files — so that cleanup step has been removed from `config.data_retention`
 
 ### Changed
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tools/Remove-OrphanedTraceFiles.ps1`** ([#972]) — one-time cleanup script for `Monitor_LongQueries_*.trc` files left on disk by versions through 2.11.0. Run it on the SQL Server host; it skips files belonging to a running trace and files that are in use
 
 [#972]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/972
+[#979]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/979
 
 ## [2.11.0] - 2026-05-19
 

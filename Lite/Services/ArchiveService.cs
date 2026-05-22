@@ -121,45 +121,65 @@ public class ArchiveService
 
         _logger?.LogInformation("Archiving data older than {CutoffDate} to Parquet (prefix: {Timestamp})", cutoffDate, timestamp);
 
-        /* Write lock covers export + DELETE. The DELETEs modify table data, and the
-           next CHECKPOINT will reorganize the file — readers must not be mid-query
-           when that happens or they get "Reached the end of the file" errors. */
-        using (_duckDb.AcquireWriteLock())
-        {
-            using var connection = _duckDb.CreateConnection();
-            await connection.OpenAsync();
+        /* Archive each table independently. Export-to-Parquet (COPY ... TO)
+           only READS the database, so it runs under a read lock — concurrently
+           with the UI. Only the DELETE modifies the file, so just the DELETE
+           takes the exclusive write lock, and only briefly. This keeps the UI
+           responsive during archival instead of freezing it for the whole
+           export (issue #979).
 
-            foreach (var (table, timeColumn) in ArchivableTables)
+           Exporting and deleting in separate lock scopes is safe here: the
+           DELETE only removes rows older than cutoffDate, and collectors only
+           ever insert rows timestamped "now", so nothing archivable can be
+           written into the gap between the export and the DELETE. */
+        foreach (var (table, timeColumn) in ArchivableTables)
+        {
+            try
             {
-                try
+                /* Uniquely-named parquet file — no merging needed. Each archival
+                   cycle produces a new file with a timestamp prefix; archive
+                   views use glob (*_table.parquet) to pick up all files. */
+                var parquetPath = Path.Combine(_archivePath, $"{timestamp}_{table}.parquet")
+                    .Replace("\\", "/");
+
+                long rowCount;
+
+                /* Export under a read lock — runs alongside UI queries. */
+                using (_duckDb.AcquireReadLock())
                 {
-                    /* Check if there are rows to archive */
-                    var rowCount = await GetRowCountBeforeCutoff(connection, table, timeColumn, cutoffDate);
+                    using var readConnection = _duckDb.CreateConnection();
+                    await readConnection.OpenAsync();
+
+                    rowCount = await GetRowCountBeforeCutoff(readConnection, table, timeColumn, cutoffDate);
                     if (rowCount == 0)
                     {
                         continue;
                     }
 
-                    /* Export to a uniquely-named parquet file — no merging needed.
-                       Each archival cycle produces a new file with a timestamp prefix.
-                       Archive views use glob (*_table.parquet) to pick up all files. */
-                    var parquetPath = Path.Combine(_archivePath, $"{timestamp}_{table}.parquet")
-                        .Replace("\\", "/");
+                    await ExportToParquet(readConnection, table, timeColumn, cutoffDate, parquetPath);
+                }
 
-                    await ExportToParquet(connection, table, timeColumn, cutoffDate, parquetPath);
+                /* Delete the archived rows under the write lock. The DELETE
+                   modifies table data and the next CHECKPOINT reorganizes the
+                   file — readers must not be mid-query when that happens or
+                   they get "Reached the end of the file" errors — but the
+                   DELETE itself is fast, so the UI stall is brief. */
+                using (_duckDb.AcquireWriteLock())
+                {
+                    using var writeConnection = _duckDb.CreateConnection();
+                    await writeConnection.OpenAsync();
 
-                    /* Delete archived rows from hot table */
-                    using var deleteCmd = connection.CreateCommand();
+                    using var deleteCmd = writeConnection.CreateCommand();
                     deleteCmd.CommandText = $"DELETE FROM {table} WHERE {timeColumn} < $1";
                     deleteCmd.Parameters.Add(new DuckDBParameter { Value = cutoffDate });
                     await deleteCmd.ExecuteNonQueryAsync();
+                }
 
-                    _logger?.LogInformation("Archived {Count} rows from {Table} to {Path}", rowCount, table, parquetPath);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "Failed to archive table {Table}", table);
-                }
+                _logger?.LogInformation("Archived {Count} rows from {Table} to {Path}", rowCount, table, parquetPath);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to archive table {Table}", table);
             }
         }
 
