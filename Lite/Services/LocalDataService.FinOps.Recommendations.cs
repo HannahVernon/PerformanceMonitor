@@ -22,6 +22,47 @@ public partial class LocalDataService
     // ============================================
 
     /// <summary>
+    /// Returns the Availability Group role of the connected instance: "Primary",
+    /// "Secondary", or "Standalone". "Standalone" is also returned for non-AG
+    /// instances and any platform where the AG state DMVs are unavailable
+    /// (e.g. Azure SQL Database), so callers can treat it as "not a secondary".
+    /// </summary>
+    private static async Task<string> GetAgReplicaRoleAsync(SqlConnection connection)
+    {
+        /* The DMV is referenced only inside dynamic SQL guarded by an OBJECT_ID
+           check, so the outer batch still compiles on platforms without it. */
+        const string sql = @"
+DECLARE @role nvarchar(20) = N'Standalone';
+IF CONVERT(int, ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0)) = 1
+   AND OBJECT_ID(N'sys.dm_hadr_availability_replica_states') IS NOT NULL
+BEGIN
+    DECLARE @detected nvarchar(20);
+    EXEC sys.sp_executesql N'
+        SELECT @r =
+            CASE
+                WHEN MAX(CASE WHEN ars.role = 1 THEN 1 ELSE 0 END) = 1 THEN N''Primary''
+                WHEN MAX(CASE WHEN ars.role = 2 THEN 1 ELSE 0 END) = 1 THEN N''Secondary''
+                ELSE N''Standalone''
+            END
+        FROM sys.dm_hadr_availability_replica_states AS ars
+        WHERE ars.is_local = 1;',
+        N'@r nvarchar(20) OUTPUT', @r = @detected OUTPUT;
+    SET @role = ISNULL(@detected, N'Standalone');
+END;
+SELECT @role;";
+        try
+        {
+            using var command = new SqlCommand(sql, connection) { CommandTimeout = 30 };
+            return await command.ExecuteScalarAsync() as string ?? "Standalone";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"AG replica role detection failed: {ex.Message}");
+            return "Standalone";
+        }
+    }
+
+    /// <summary>
     /// Runs all Phase 1 recommendation checks and returns a consolidated list.
     /// Uses DuckDB for collected data and live SQL queries for server-specific checks.
     /// </summary>
@@ -50,11 +91,34 @@ public partial class LocalDataService
 
             if (edition.Contains("Enterprise", StringComparison.OrdinalIgnoreCase))
             {
+                var agRole = await GetAgReplicaRoleAsync(sqlConn);
+
+                if (agRole == "Secondary")
+                {
+                    /* On an Availability Group secondary, a "downgrade to Standard
+                       to save money" recommendation is misleading: every replica in
+                       an AG must run the same SQL Server edition, so the decision
+                       belongs to the AG as a whole and must be evaluated on the
+                       primary. Emit an informational note instead and skip the
+                       savings estimates (#980). */
+                    recommendations.Add(new RecommendationRow
+                    {
+                        Category = "Licensing",
+                        Severity = "Low",
+                        Confidence = "High",
+                        Finding = "Enterprise Edition — Availability Group secondary replica",
+                        Detail = "This instance is currently a secondary replica in an Availability Group. " +
+                                 "Every replica in an AG must run the same SQL Server edition, so edition and " +
+                                 "licensing decisions apply to the whole group and should be evaluated on the " +
+                                 "primary replica. A secondary used only for failover may also be covered by " +
+                                 "Software Assurance rather than separately licensed."
+                    });
+                }
                 // SQL Server 2019 (major version 15) moved TDE to Standard Edition.
                 // On 2019+, dm_db_persisted_sku_features won't report TDE since it's
                 // no longer Enterprise-restricted — so we skip the TDE-specific check
                 // and give version-appropriate guidance instead.
-                if (majorVersion >= 15)
+                else if (majorVersion >= 15)
                 {
                     // 2019+: Most features that were Enterprise-only moved to Standard
                     // in 2016 SP1, and TDE moved in 2019. Very few Enterprise-only

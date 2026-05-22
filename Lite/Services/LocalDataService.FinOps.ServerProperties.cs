@@ -35,7 +35,8 @@ DECLARE
             ELSE N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files'
         END,
     @storage_gb decimal(19,2),
-    @host_os nvarchar(256);
+    @host_os nvarchar(256),
+    @ag_role nvarchar(20) = N'Standalone';
 
 EXEC sys.sp_executesql @storage_sql, N'@gb decimal(19,2) OUTPUT', @gb = @storage_gb OUTPUT;
 
@@ -49,6 +50,24 @@ BEGIN
     DECLARE @on_pos int = CHARINDEX(N' on ', @ver);
     IF @on_pos > 0
         SET @host_os = LTRIM(SUBSTRING(@ver, @on_pos + 4, LEN(@ver)));
+END;
+
+/* Availability Group replica role. The DMV is referenced only inside
+   OBJECT_ID-guarded dynamic SQL, so this batch still compiles on Azure SQL
+   Database and non-AG instances — both leave @ag_role at 'Standalone' (#980). */
+IF CONVERT(int, ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0)) = 1
+   AND OBJECT_ID(N'sys.dm_hadr_availability_replica_states') IS NOT NULL
+BEGIN
+    DECLARE @ag_detected nvarchar(20);
+    EXEC sys.sp_executesql N'
+        SELECT @r = CASE
+            WHEN MAX(CASE WHEN ars.role = 1 THEN 1 ELSE 0 END) = 1 THEN N''Primary''
+            WHEN MAX(CASE WHEN ars.role = 2 THEN 1 ELSE 0 END) = 1 THEN N''Secondary''
+            ELSE N''Standalone'' END
+        FROM sys.dm_hadr_availability_replica_states AS ars
+        WHERE ars.is_local = 1;',
+        N'@r nvarchar(20) OUTPUT', @r = @ag_detected OUTPUT;
+    SET @ag_role = ISNULL(@ag_detected, N'Standalone');
 END;
 
 SELECT
@@ -65,7 +84,8 @@ SELECT
     CONVERT(int, SERVERPROPERTY('EngineEdition')),
     CONVERT(int, SERVERPROPERTY('IsHadrEnabled')),
     CONVERT(int, SERVERPROPERTY('IsClustered')),
-    @host_os
+    @host_os,
+    @ag_role
 FROM sys.dm_os_sys_info AS si;";
 
         using var command = new SqlCommand(query, connection) { CommandTimeout = 30 };
@@ -93,6 +113,7 @@ FROM sys.dm_os_sys_info AS si;";
                 IsHadrEnabled = reader.IsDBNull(11) ? null : Convert.ToInt32(reader.GetValue(11)) == 1,
                 IsClustered = reader.IsDBNull(12) ? null : Convert.ToInt32(reader.GetValue(12)) == 1,
                 HostOsVersion = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                AgReplicaRole = reader.IsDBNull(14) ? "Standalone" : reader.GetString(14),
                 LastUpdated = DateTime.Now
             };
         }
