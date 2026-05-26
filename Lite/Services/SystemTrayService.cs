@@ -176,7 +176,8 @@ public class SystemTrayService : IDisposable
         if (_trayIcon == null)
             return;
 
-        var balloon = new SnoozeBalloon(title, message, icon, serverName, metricName, muteRuleService);
+        var trayIcon = _trayIcon;
+        var balloon = new SnoozeBalloon(title, message, icon, serverName, metricName, muteRuleService, () => trayIcon.CloseBalloon());
         _trayIcon.ShowCustomBalloon(balloon, System.Windows.Controls.Primitives.PopupAnimation.Slide, 15000);
     }
 
