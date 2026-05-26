@@ -1106,6 +1106,18 @@ BEGIN
         login_name nvarchar(256) NULL,
         transaction_id bigint NULL,
         blocked_process_report_xml xml NULL,
+        /*
+        Blocker-side fields parsed from blocked_process_report_xml at insert
+        time so the analysis path does not re-parse XML on every BLOCKING_CHAIN
+        fact. Populated only on activity = 'blocked' rows; NULL on activity =
+        'blocking' rows (those rows describe the blocker side via their own
+        spid/status/last_transaction_started columns).
+        */
+        blocking_spid integer NULL,
+        blocking_last_tran_started datetime2(7) NULL,
+        blocking_status nvarchar(10) NULL,
+        blocked_sql_text nvarchar(max) NULL,
+        blocking_sql_text nvarchar(max) NULL,
         CONSTRAINT
             PK_collect_blocking_BlockedProcessReport
         PRIMARY KEY CLUSTERED
