@@ -123,7 +123,9 @@ END;";
                 RootFactValue = story.RootFactValue,
                 LeafFactKey = story.LeafFactKey,
                 LeafFactValue = story.LeafFactValue,
-                FactCount = story.FactCount
+                FactCount = story.FactCount,
+                // Carried in-memory only; no analysis_findings column for it.
+                RootFactMetadata = story.RootFactMetadata
             };
 
             await InsertFindingAsync(finding);

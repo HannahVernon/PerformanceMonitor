@@ -151,6 +151,12 @@ namespace PerformanceMonitorDashboard
             McpPortTextBox.IsEnabled = prefs.McpEnabled;
             UpdateMcpStatus(prefs);
 
+            // Automated analysis notifications (Stage 2). Cooldown and timeout are
+            // intentionally not exposed in the UI — preferences.json only.
+            AnalysisNotificationsEnabledCheckBox.IsChecked = prefs.AnalysisNotificationsEnabled;
+            AnalysisIntervalMinutesTextBox.Text = prefs.AnalysisIntervalMinutes.ToString(CultureInfo.InvariantCulture);
+            AnalysisNotifySeverityTextBox.Text = prefs.AnalysisNotifySeverity.ToString("F1", CultureInfo.InvariantCulture);
+
             // System tray settings
             MinimizeToTrayCheckBox.IsChecked = prefs.MinimizeToTray;
             NotificationsEnabledCheckBox.IsChecked = prefs.NotificationsEnabled;
@@ -750,6 +756,31 @@ namespace PerformanceMonitorDashboard
             }
             else
                 validationErrors.Add($"MCP port must be between 1024 and {IPEndPoint.MaxPort}.\nPorts 0–1023 are well-known privileged ports reserved by the operating system.");
+
+            // Automated analysis notifications (Stage 2). Bounds are also enforced at
+            // consumption (AnalysisScheduler.Configure, AnalysisNotificationService.NotifyAsync),
+            // but validating here catches typos early.
+            prefs.AnalysisNotificationsEnabled = AnalysisNotificationsEnabledCheckBox.IsChecked == true;
+
+            if (int.TryParse(AnalysisIntervalMinutesTextBox.Text?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int analysisInterval)
+                && analysisInterval >= 5 && analysisInterval <= 360)
+            {
+                prefs.AnalysisIntervalMinutes = analysisInterval;
+            }
+            else
+            {
+                validationErrors.Add("Analysis interval must be between 5 and 360 minutes.");
+            }
+
+            if (double.TryParse(AnalysisNotifySeverityTextBox.Text?.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out double analysisSeverity)
+                && analysisSeverity >= 0.0 && analysisSeverity <= 2.0)
+            {
+                prefs.AnalysisNotifySeverity = analysisSeverity;
+            }
+            else
+            {
+                validationErrors.Add("Analysis notify severity must be between 0.0 and 2.0.");
+            }
 
             if (validationErrors.Count > 0)
             {

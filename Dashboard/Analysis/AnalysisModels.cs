@@ -72,6 +72,12 @@ public class AnalysisStory
     public double? LeafFactValue { get; set; }
     public int FactCount { get; set; }
     public bool IsAbsolution { get; set; }
+
+    /// <summary>
+    /// Metadata from the root fact (raw metric values used to assemble the story).
+    /// Ephemeral — copied onto the finding for the notification layer, not persisted.
+    /// </summary>
+    public Dictionary<string, double>? RootFactMetadata { get; set; }
 }
 
 /// <summary>
@@ -104,6 +110,12 @@ public class AnalysisFinding
     /// Contains supporting detail keyed by category (e.g., "top_deadlocks", "queries_at_spike").
     /// </summary>
     public Dictionary<string, object>? DrillDown { get; set; }
+
+    /// <summary>
+    /// Metadata from the root fact carried in from <see cref="AnalysisStory.RootFactMetadata"/>.
+    /// Ephemeral — used by the notification layer for diagnosis context; not persisted.
+    /// </summary>
+    public Dictionary<string, double>? RootFactMetadata { get; set; }
 }
 
 /// <summary>

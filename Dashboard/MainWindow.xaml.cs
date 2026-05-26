@@ -65,6 +65,13 @@ namespace PerformanceMonitorDashboard
         private readonly DispatcherTimer _alertCheckTimer;
         private readonly EmailAlertService _emailAlertService;
         private readonly CredentialService _credentialService;
+
+        // Scheduled analysis-finding notifications — separate cadence and gating from
+        // the threshold-alert engine above. Owns its own DispatcherTimer internally;
+        // re-Configured after every settings save. Field name avoids colliding with
+        // _notificationService (the tray-notification service constructed in Loaded).
+        private readonly AnalysisNotificationService _analysisNotificationService;
+        private readonly AnalysisScheduler _analysisScheduler;
         private readonly ConcurrentDictionary<string, DateTime> _lastBlockingAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastDeadlockAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastHighCpuAlert = new();
@@ -110,6 +117,14 @@ namespace PerformanceMonitorDashboard
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
+
+            /* Scheduled analysis-finding notifications. Constructed alongside the
+               alert engine (all dependencies exist by this point); started by
+               _analysisScheduler.Configure() in MainWindow_Loaded. */
+            _analysisNotificationService = new AnalysisNotificationService(
+                _emailAlertService, _preferencesService, _serverManager);
+            _analysisScheduler = new AnalysisScheduler(
+                _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 
             _displayRefreshTimer = new DispatcherTimer
             {
@@ -169,6 +184,7 @@ namespace PerformanceMonitorDashboard
             LoadSidebarState();
             ConfigureConnectionStatusTimer();
             ConfigureAlertCheckTimer();
+            _analysisScheduler.Configure();
             UpdateAlertBadge();
             StartMcpServerIfEnabled();
 
@@ -317,6 +333,11 @@ namespace PerformanceMonitorDashboard
             // Clean up MCP server
             try { Task.Run(StopMcpServerAsync).Wait(TimeSpan.FromSeconds(10)); }
             catch { /* shutdown best-effort */ }
+
+            // Stop the scheduled-analysis timer + cancel its in-flight cycle so the
+            // per-server Task.Delay timers can drop out cleanly instead of waiting
+            // out their full timeout during shutdown.
+            _analysisScheduler?.Stop();
 
             // Save alert history to disk
             _emailAlertService?.SaveAlertLog();
@@ -1157,6 +1178,7 @@ namespace PerformanceMonitorDashboard
             {
                 ConfigureConnectionStatusTimer();
                 ConfigureAlertCheckTimer();
+                _analysisScheduler.Configure();
                 _landingPage?.RefreshAutoRefreshSettings();
 
                 foreach (TabItem tab in ServerTabControl.Items)
