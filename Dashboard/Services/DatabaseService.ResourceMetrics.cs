@@ -311,10 +311,15 @@ namespace PerformanceMonitorDashboard.Services
                                 ms.total_memory_mb,
                                 granted_memory_mb = ISNULL(
                                     (
-                                        SELECT
+                                        SELECT TOP (1)
                                             SUM(mgs.granted_memory_mb)
                                         FROM collect.memory_grant_stats AS mgs
-                                        WHERE mgs.collection_time = ms.collection_time
+                                        WHERE mgs.collection_time >= DATEADD(MINUTE, -5, ms.collection_time)
+                                        AND   mgs.collection_time <= DATEADD(MINUTE, 5, ms.collection_time)
+                                        GROUP BY
+                                            mgs.collection_time
+                                        ORDER BY
+                                            ABS(DATEDIFF(SECOND, mgs.collection_time, ms.collection_time)) ASC
                                     ), 0)
                             FROM collect.memory_stats AS ms
                             WHERE ms.collection_time >= @from_date
@@ -337,10 +342,15 @@ namespace PerformanceMonitorDashboard.Services
                                 ms.total_memory_mb,
                                 granted_memory_mb = ISNULL(
                                     (
-                                        SELECT
+                                        SELECT TOP (1)
                                             SUM(mgs.granted_memory_mb)
                                         FROM collect.memory_grant_stats AS mgs
-                                        WHERE mgs.collection_time = ms.collection_time
+                                        WHERE mgs.collection_time >= DATEADD(MINUTE, -5, ms.collection_time)
+                                        AND   mgs.collection_time <= DATEADD(MINUTE, 5, ms.collection_time)
+                                        GROUP BY
+                                            mgs.collection_time
+                                        ORDER BY
+                                            ABS(DATEDIFF(SECOND, mgs.collection_time, ms.collection_time)) ASC
                                     ), 0)
                             FROM collect.memory_stats AS ms
                             WHERE ms.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())

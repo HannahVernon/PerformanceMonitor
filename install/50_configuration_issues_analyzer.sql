@@ -128,7 +128,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            RAISERROR(N'Logged %d Query Store disabled issues', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'Logged %I64d Query Store disabled issues', 0, 1, @rows_collected) WITH NOWAIT;
         END;
 
         /*
@@ -994,7 +994,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            RAISERROR(N'Configuration issues analysis complete: %d total issues logged', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'Configuration issues analysis complete: %I64d total issues logged', 0, 1, @rows_collected) WITH NOWAIT;
         END;
 
     END TRY

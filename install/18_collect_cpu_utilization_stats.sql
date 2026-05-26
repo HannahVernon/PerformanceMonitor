@@ -131,16 +131,12 @@ BEGIN
                     @start_time
                 ),
             sqlserver_cpu_utilization =
-                t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'integer'),
+                x.process_utilization,
             other_process_cpu_utilization =
                 CASE
-                    WHEN (100 -
-                          t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'integer') -
-                          t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'integer')) < 0
+                    WHEN (100 - x.system_idle - x.process_utilization) < 0
                     THEN 0
-                    ELSE 100 -
-                         t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'integer') -
-                         t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'integer')
+                    ELSE 100 - x.system_idle - x.process_utilization
                 END
         FROM
         (
@@ -151,12 +147,27 @@ BEGIN
             FROM sys.dm_os_ring_buffers AS dorb
             WHERE dorb.ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR'
         ) AS t
+        CROSS APPLY
+        (
+            SELECT
+                process_utilization =
+                    t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'integer'),
+                system_idle =
+                    t.record.value('(Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'integer')
+        ) AS x
         WHERE DATEADD
         (
             SECOND,
             -((@current_ms_ticks - t.timestamp) / 1000),
             @start_time
         ) > ISNULL(@max_sample_time, DATEADD(DAY, -7, @start_time))
+        /*
+        Skip ring-buffer records that lack a complete SystemHealth block —
+        their XML values extract as NULL and would fail the NOT NULL INSERT,
+        breaking collection until the bad records age out (Issue #989).
+        */
+        AND   x.process_utilization IS NOT NULL
+        AND   x.system_idle IS NOT NULL
         ORDER BY
             t.timestamp DESC
         OPTION(RECOMPILE);
@@ -184,7 +195,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            RAISERROR(N'Collected %d CPU utilization stats rows', 0, 1, @rows_collected) WITH NOWAIT;
+            RAISERROR(N'Collected %I64d CPU utilization stats rows', 0, 1, @rows_collected) WITH NOWAIT;
         END;
 
         COMMIT TRANSACTION;
