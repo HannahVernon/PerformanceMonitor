@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Trace files are now bounded at the source** ([#972]) — `collect.trace_management_collector` creates the long-query trace with a rollover file-count cap (`@filecount`, via the new `@max_files` parameter, default 5), so SQL Server itself deletes the oldest `.trc` file as the trace rolls. The scheduled collector also now issues `START` instead of `RESTART`: it keeps one trace running rather than tearing it down and spawning a fresh timestamped trace — and a fresh batch of orphaned files — every cycle
+- **Blocked-process reports expose blocker-side fields as typed columns** — `collect.blocking_BlockedProcessReport` now carries `blocking_spid`, `blocking_last_tran_started`, `blocking_status`, `blocked_sql_text`, and `blocking_sql_text` populated at insert time from `blocked_process_report_xml`. The Dashboard analysis path will read these typed columns directly instead of re-parsing the report XML on every `BLOCKING_CHAIN` fact (up to 5000 `XElement.Parse` calls per analysis cycle). Existing rows are backfilled idempotently by the 2.11.0 → 2.12.0 upgrade script
 
 ### Added
 
