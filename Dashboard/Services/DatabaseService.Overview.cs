@@ -29,9 +29,9 @@ namespace PerformanceMonitorDashboard.Services
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
-                    // CPU column for the High CPU events count + critical-health check. Matches the alert's metric (PM#1004).
-                    // Note: this only applies on the date-parameterized path. The view at report.daily_summary (hit when
-                    // summaryDate is null) still uses sqlserver_cpu_utilization — see follow-up bug for that.
+                    // CPU column for the High CPU events count + critical-health check (PM#1004).
+                    // The view at report.daily_summary always uses total_cpu_utilization (no per-user prefs available there).
+                    // This date-parameterized path additionally honors the user's CpuAlertMode.
                     string cpuColumn = cpuAlertMode == CpuAlertMode.SqlOnly ? "sqlserver_cpu_utilization" : "total_cpu_utilization";
 
                     // If no date provided, use the view directly (today's summary)
