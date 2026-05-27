@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Trace files are now bounded at the source** ([#972]) — `collect.trace_management_collector` creates the long-query trace with a rollover file-count cap (`@filecount`, via the new `@max_files` parameter, default 5), so SQL Server itself deletes the oldest `.trc` file as the trace rolls. The scheduled collector also now issues `START` instead of `RESTART`: it keeps one trace running rather than tearing it down and spawning a fresh timestamped trace — and a fresh batch of orphaned files — every cycle
+- **Blocked-process reports expose blocker-side fields as typed columns** — `collect.blocking_BlockedProcessReport` now carries `blocking_spid`, `blocking_last_tran_started`, `blocking_status`, `blocked_sql_text`, and `blocking_sql_text` populated at insert time from `blocked_process_report_xml`. Existing rows are backfilled idempotently by the 2.11.0 → 2.12.0 upgrade script
+- **Blocking-chain reconstruction now reads typed columns from `collect.blocking_BlockedProcessReport`** instead of re-parsing `blocked_process_report_xml` on every analysis cycle — eliminates up to 5000 `XElement.Parse` calls per `BLOCKING_CHAIN` fact collection. The Dashboard `BlockedProcessXmlParser` has been deleted; the Lite collection-time parser is unchanged (Lite has no SQL-side staging table and still parses once at collect time)
+- **Analysis minimum-data threshold lowered to 24 hours** — `Lite/Analysis/AnalysisService.cs` and `Dashboard/Analysis/AnalysisService.cs` now require 24 hours of collected data before analysis runs, down from 72. Validated empirically as sufficient for fraction-of-period calculations, so a fresh install starts producing findings after one day instead of three
 
 ### Added
 

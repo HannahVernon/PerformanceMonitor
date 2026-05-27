@@ -51,6 +51,7 @@ BEGIN
         @rows_deleted bigint = 0,
         @rows_marked bigint = 0,
         @rows_parsed bigint = 0,
+        @rows_typed bigint = 0,
         @start_time datetime2(7) = SYSDATETIME(),
         @utc_offset_minutes integer = DATEDIFF(MINUTE, GETUTCDATE(), SYSDATETIME()),
         @start_date_local datetime2(7) = NULL,
@@ -245,6 +246,117 @@ BEGIN
 
             IF @rows_parsed > 0
             BEGIN
+                /*
+                Populate blocker-side typed columns on the rows just parsed by
+                sp_HumanEventsBlockViewer so the Dashboard analysis path can
+                read structured columns instead of re-parsing the XML on every
+                BLOCKING_CHAIN fact. Only activity='blocked' rows carry the
+                full XML; activity='blocking' rows stay NULL on the new
+                columns (they describe the blocker side via their own
+                spid/status columns).
+
+                XQuery uses the descendant axis (//blocked-process-report/...)
+                because the stored XML is <event>-rooted with the report
+                nested two levels deep at
+                /event/data[@name="blocked_process"]/value/blocked-process-report.
+                The descendant axis sidesteps the wrap and was empirically
+                validated; a leading-slash (/blocked-process-report/...)
+                returns NULL on every row.
+
+                LTRIM/RTRIM matches the C# parser's .Trim() for spaces only
+                (not CR/LF/TAB); the reconstructor keys on session pair, not
+                SQL text, so the divergence is cosmetic.
+
+                Runs BEFORE the is_processed=1 mark below so a crash here
+                rolls back inside the surrounding transaction and the raw XML
+                rows stay unmarked - the next run retries them.
+                */
+                UPDATE
+                    b
+                SET
+                    b.blocking_spid =
+                        b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/blocking-process/process/@spid)[1]',
+                            N'integer'
+                        ),
+                    b.blocking_last_tran_started =
+                        b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/blocking-process/process/@lasttranstarted)[1]',
+                            N'datetime2(7)'
+                        ),
+                    b.blocking_status =
+                        b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/blocking-process/process/@status)[1]',
+                            N'nvarchar(10)'
+                        ),
+                    b.blocked_sql_text =
+                        LTRIM(RTRIM(b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/blocked-process/process/inputbuf/text())[1]',
+                            N'nvarchar(max)'
+                        ))),
+                    b.blocking_sql_text =
+                        LTRIM(RTRIM(b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/blocking-process/process/inputbuf/text())[1]',
+                            N'nvarchar(max)'
+                        )))
+                FROM collect.blocking_BlockedProcessReport AS b
+                WHERE b.event_time >= @start_date_local
+                AND   b.event_time <= @end_date_local
+                AND   b.activity = 'blocked'
+                AND   b.blocking_spid IS NULL
+                AND   b.blocked_process_report_xml IS NOT NULL;
+
+                SELECT
+                    @rows_typed = ROWCOUNT_BIG();
+
+                IF @debug = 1
+                BEGIN
+                    RAISERROR(N'Populated blocker-side typed columns for %I64d rows', 0, 1, @rows_typed) WITH NOWAIT;
+                END;
+
+                /*
+                Defense-in-depth: if sp_HumanEventsBlockViewer wrote rows
+                (@rows_parsed > 0) but the typed-column UPDATE populated zero
+                (@rows_typed = 0), the XQuery is silently failing - most
+                likely a future wire-format change in
+                sp_HumanEventsBlockViewer or the upstream XE shape. Log this
+                clearly so it surfaces in config.collection_log instead of
+                only revealing itself when the analysis path returns garbage
+                chains. The condition can't be a hard error because new-row
+                UPDATEs can also legitimately populate 0 if every row had
+                non-NULL blocking_spid already (re-processing same window),
+                so we just record it.
+                */
+                IF @rows_parsed > 0 AND @rows_typed = 0
+                BEGIN
+                    INSERT INTO
+                        config.collection_log
+                    (
+                        collector_name,
+                        collection_status,
+                        rows_collected,
+                        duration_ms,
+                        error_message
+                    )
+                    VALUES
+                    (
+                        N'process_blocked_process_xml',
+                        N'TYPED_COLUMNS_EMPTY',
+                        @rows_parsed,
+                        DATEDIFF(MILLISECOND, @start_time, SYSDATETIME()),
+                        N'sp_HumanEventsBlockViewer wrote '
+                        + CAST(@rows_parsed AS nvarchar(20))
+                        + N' rows but XQuery extraction populated 0 blocker-side typed columns - '
+                        + N'likely a wire-format change in blocked_process_report_xml; '
+                        + N'check //blocked-process-report path against a sample row.'
+                    );
+                END;
+
                 /*
                 Mark raw XML rows as processed
                 Only mark the rows in the date range we just processed

@@ -39,7 +39,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var findings = await analysisService.AnalyzeAsync(serverId, resolved.Value.ServerName, hours_back);
 
             if (analysisService.InsufficientDataMessage != null)
@@ -116,7 +116,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var facts = await analysisService.CollectAndScoreFactsAsync(serverId, resolved.Value.ServerName, hours_back);
 
             if (facts.Count == 0)
@@ -196,7 +196,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
 
             var now = DateTime.UtcNow;
             var comparisonStart = now.AddHours(-hours_back);
@@ -261,7 +261,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var facts = await analysisService.CollectAndScoreFactsAsync(serverId, resolved.Value.ServerName, 1);
 
             var factsByKey = facts.ToDictionary(f => f.Key, f => f);
@@ -331,7 +331,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var findings = await analysisService.GetRecentFindingsAsync(serverId, hours_back);
 
             if (findings.Count == 0)
@@ -372,7 +372,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var finding = new AnalysisFinding { ServerId = serverId, StoryPathHash = story_path_hash, StoryPath = story_path_hash };
             await analysisService.MuteFindingAsync(finding, reason);
 
@@ -458,6 +458,50 @@ internal static class ToolRecommendations
         }
 
         return result;
+    }
+
+    private static readonly string[] DayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    /// <summary>
+    /// Formats baseline context from anomaly fact metadata into a structured dictionary
+    /// (deviation, ratio, baseline mean/stddev, time bucket, tier, samples). Used by MCP
+    /// output and by the analysis notification path's finding formatter.
+    /// </summary>
+    internal static System.Collections.Generic.Dictionary<string, object>? FormatBaselineContext(
+        System.Collections.Generic.Dictionary<string, double> metadata)
+    {
+        var result = new System.Collections.Generic.Dictionary<string, object>();
+
+        if (metadata.TryGetValue("deviation_sigma", out var sigma))
+            result["deviation"] = $"{sigma:F1}σ";
+
+        if (metadata.TryGetValue("ratio", out var ratio))
+            result["ratio"] = $"{ratio:F1}x";
+
+        if (metadata.TryGetValue("baseline_mean", out var mean))
+            result["baseline_mean"] = Math.Round(mean, 2);
+
+        if (metadata.TryGetValue("baseline_mean_ms", out var meanMs))
+            result["baseline_mean"] = Math.Round(meanMs, 2);
+
+        if (metadata.TryGetValue("baseline_stddev", out var stddev))
+            result["baseline_stddev"] = Math.Round(stddev, 2);
+
+        if (metadata.TryGetValue("baseline_hour", out var hour) &&
+            metadata.TryGetValue("baseline_dow", out var dow))
+        {
+            var dowIdx = (int)dow;
+            var dayName = dowIdx >= 0 && dowIdx < DayNames.Length ? DayNames[dowIdx] : "?";
+            result["bucket"] = hour >= 0 ? $"{dayName} {(int)hour:00}:00" : "flat";
+        }
+
+        if (metadata.TryGetValue("baseline_tier", out var tier))
+            result["tier"] = tier switch { 0 => "full", 1 => "hour_only", _ => "flat" };
+
+        if (metadata.TryGetValue("baseline_samples", out var samples))
+            result["baseline_samples"] = (int)samples;
+
+        return result.Count > 0 ? result : null;
     }
 }
 

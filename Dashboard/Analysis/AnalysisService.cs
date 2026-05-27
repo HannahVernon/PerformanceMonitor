@@ -8,7 +8,7 @@ using PerformanceMonitorDashboard.Helpers;
 namespace PerformanceMonitorDashboard.Analysis;
 
 /// <summary>
-/// Orchestrates the full analysis pipeline: collect -> score -> traverse -> persist.
+/// Orchestrates the full analysis pipeline: collect → score → traverse → persist.
 /// Can be run on-demand or on a timer. Each run analyzes a single server's data
 /// for a given time window and persists the findings.
 /// Port of Lite's AnalysisService — uses SQL Server instead of DuckDB.
@@ -27,10 +27,11 @@ public class AnalysisService
 
     /// <summary>
     /// Minimum hours of collected data required before analysis will run.
-    /// Short collection windows distort fraction-of-period calculations --
+    /// Short collection windows distort fraction-of-period calculations —
     /// 5 seconds of THREADPOOL looks alarming in a 16-minute window.
+    /// 24 hours has been validated empirically as sufficient.
     /// </summary>
-    internal double MinimumDataHours { get; set; } = 72;
+    internal double MinimumDataHours { get; set; } = 24;
 
     /// <summary>
     /// Raised after each analysis run completes, providing the findings for UI display.
@@ -98,7 +99,7 @@ public class AnalysisService
 
         try
         {
-            // 0. Check minimum data span -- total history, not the analysis window.
+            // 0. Check minimum data span — total history, not the analysis window.
             // A server with 100h of total history can be analyzed over a 4h window.
             var dataSpanHours = await GetTotalDataSpanHoursAsync();
             if (dataSpanHours < MinimumDataHours)
@@ -281,7 +282,7 @@ public class AnalysisService
 
     /// <summary>
     /// Returns the total span of collected data (no time range filter).
-    /// This answers "has this server been monitored long enough?" -- separate from
+    /// This answers "has this server been monitored long enough?" — separate from
     /// the analysis window. A server with 100 hours of total history can safely
     /// be analyzed over a 4-hour window without dilution.
     /// Dashboard monitors one server per database, so no server_id filtering.

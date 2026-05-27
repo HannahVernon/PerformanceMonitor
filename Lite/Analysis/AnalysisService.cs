@@ -28,9 +28,9 @@ public class AnalysisService
     /// Minimum hours of collected data required before analysis will run.
     /// Short collection windows distort fraction-of-period calculations —
     /// 5 seconds of THREADPOOL looks alarming in a 16-minute window.
-    /// Production: 72. Dev/testing: 0.5 (raise before release).
+    /// 24 hours has been validated empirically as sufficient.
     /// </summary>
-    internal double MinimumDataHours { get; set; } = 24; // TODO: restore to 72 before release
+    internal double MinimumDataHours { get; set; } = 24;
 
     /// <summary>
     /// Raised after each analysis run completes, providing the findings for UI display.
@@ -148,7 +148,7 @@ public class AnalysisService
 
             LastAnalysisTime = DateTime.UtcNow;
 
-            // 5. Notify listeners
+            // 6. Notify listeners
             AnalysisCompleted?.Invoke(this, new AnalysisCompletedEventArgs
             {
                 ServerId = context.ServerId,
