@@ -65,6 +65,13 @@ namespace PerformanceMonitorDashboard
         private readonly DispatcherTimer _alertCheckTimer;
         private readonly EmailAlertService _emailAlertService;
         private readonly CredentialService _credentialService;
+
+        // Scheduled analysis-finding notifications — separate cadence and gating from
+        // the threshold-alert engine above. Owns its own DispatcherTimer internally;
+        // re-Configured after every settings save. Field name avoids colliding with
+        // _notificationService (the tray-notification service constructed in Loaded).
+        private readonly AnalysisNotificationService _analysisNotificationService;
+        private readonly AnalysisScheduler _analysisScheduler;
         private readonly ConcurrentDictionary<string, DateTime> _lastBlockingAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastDeadlockAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastHighCpuAlert = new();
@@ -110,6 +117,14 @@ namespace PerformanceMonitorDashboard
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
+
+            /* Scheduled analysis-finding notifications. Constructed alongside the
+               alert engine (all dependencies exist by this point); started by
+               _analysisScheduler.Configure() in MainWindow_Loaded. */
+            _analysisNotificationService = new AnalysisNotificationService(
+                _emailAlertService, _preferencesService, _serverManager);
+            _analysisScheduler = new AnalysisScheduler(
+                _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 
             _displayRefreshTimer = new DispatcherTimer
             {
@@ -169,6 +184,7 @@ namespace PerformanceMonitorDashboard
             LoadSidebarState();
             ConfigureConnectionStatusTimer();
             ConfigureAlertCheckTimer();
+            _analysisScheduler.Configure();
             UpdateAlertBadge();
             StartMcpServerIfEnabled();
 
@@ -317,6 +333,11 @@ namespace PerformanceMonitorDashboard
             // Clean up MCP server
             try { Task.Run(StopMcpServerAsync).Wait(TimeSpan.FromSeconds(10)); }
             catch { /* shutdown best-effort */ }
+
+            // Stop the scheduled-analysis timer + cancel its in-flight cycle so the
+            // per-server Task.Delay timers can drop out cleanly instead of waiting
+            // out their full timeout during shutdown.
+            _analysisScheduler?.Stop();
 
             // Save alert history to disk
             _emailAlertService?.SaveAlertLog();
@@ -1157,6 +1178,7 @@ namespace PerformanceMonitorDashboard
             {
                 ConfigureConnectionStatusTimer();
                 ConfigureAlertCheckTimer();
+                _analysisScheduler.Configure();
                 _landingPage?.RefreshAutoRefreshSettings();
 
                 foreach (TabItem tab in ServerTabControl.Items)
@@ -1418,10 +1440,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowBlockingNotification(
+                        _notificationService?.ShowSnoozableNotification(
+                            "Blocking Detected",
+                            $"{serverName}: {(int)health.TotalBlocked} blocked session(s), longest {(int)health.LongestBlockedSeconds}s",
+                            NotificationType.Warning,
                             serverName,
-                            (int)health.TotalBlocked,
-                            (int)health.LongestBlockedSeconds);
+                            "Blocking Detected",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Blocking Detected",
@@ -1480,9 +1505,14 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowDeadlockNotification(
+                        var deadlockPlural = effectiveDeadlockDelta == 1 ? "" : "s";
+                        _notificationService?.ShowSnoozableNotification(
+                            "Deadlock Detected",
+                            $"{serverName}: {(int)effectiveDeadlockDelta} deadlock{deadlockPlural} detected",
+                            NotificationType.Error,
                             serverName,
-                            (int)effectiveDeadlockDelta);
+                            "Deadlocks Detected",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Detected",
@@ -1526,9 +1556,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowHighCpuNotification(
+                        _notificationService?.ShowSnoozableNotification(
+                            "High CPU",
+                            $"{serverName}: CPU at {totalCpu}%",
+                            NotificationType.Warning,
                             serverName,
-                            totalCpu);
+                            "High CPU",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "High CPU",
@@ -1581,7 +1615,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowPoisonWaitNotification(serverName, worst.WaitType, worst.AvgMsPerWait);
+                        _notificationService?.ShowSnoozableNotification(
+                            "Poison Wait",
+                            $"{serverName}: {worst.WaitType} avg {worst.AvgMsPerWait:F0}ms/wait",
+                            NotificationType.Error,
+                            serverName,
+                            "Poison Wait",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Poison Wait",
@@ -1643,8 +1683,14 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowLongRunningQueryNotification(
-                            serverName, worst.SessionId, elapsedMinutes, preview);
+                        var lrqPreview = string.IsNullOrEmpty(preview) ? "" : $" — {preview}";
+                        _notificationService?.ShowSnoozableNotification(
+                            "Long-Running Query",
+                            $"{serverName}: Session #{worst.SessionId} running {elapsedMinutes}m{lrqPreview}",
+                            NotificationType.Warning,
+                            serverName,
+                            "Long-Running Query",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Query",
@@ -1690,7 +1736,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowTempDbSpaceNotification(serverName, tempDb.UsedPercent);
+                        _notificationService?.ShowSnoozableNotification(
+                            "TempDB Space",
+                            $"{serverName}: TempDB {tempDb.UsedPercent:F0}% used",
+                            NotificationType.Warning,
+                            serverName,
+                            "TempDB Space",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "TempDB Space",
@@ -1740,8 +1792,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowLongRunningJobNotification(
-                            serverName, worst.JobName, currentMinutes, worst.PercentOfAverage ?? 0);
+                        _notificationService?.ShowSnoozableNotification(
+                            "Long-Running Job",
+                            $"{serverName}: {worst.JobName} at {(worst.PercentOfAverage ?? 0):F0}% of avg ({currentMinutes}m)",
+                            NotificationType.Warning,
+                            serverName,
+                            "Long-Running Job",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Job",

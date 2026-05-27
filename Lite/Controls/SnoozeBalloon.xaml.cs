@@ -20,6 +20,7 @@ public partial class SnoozeBalloon : UserControl
     private readonly MuteRuleService _muteRuleService;
     private readonly string _serverName;
     private readonly string _metricName;
+    private readonly Action _closePopup;
     private bool _closed;
 
     public SnoozeBalloon(
@@ -28,13 +29,15 @@ public partial class SnoozeBalloon : UserControl
         BalloonIcon icon,
         string serverName,
         string metricName,
-        MuteRuleService muteRuleService)
+        MuteRuleService muteRuleService,
+        Action closePopup)
     {
         InitializeComponent();
 
         _muteRuleService = muteRuleService;
         _serverName = serverName;
         _metricName = metricName;
+        _closePopup = closePopup;
 
         TitleText.Text = title;
         MessageText.Text = message;
@@ -98,7 +101,10 @@ public partial class SnoozeBalloon : UserControl
 
     private void CloseBalloon()
     {
-        RaiseEvent(new RoutedEventArgs(TaskbarIcon.BalloonClosingEvent));
+        /* Hardcodet's BalloonClosingEvent is emitted BY the library when it closes; it has no
+           listener that translates a balloon-initiated raise back into a close. To actually
+           tear the popup down we have to call TaskbarIcon.CloseBalloon() directly. */
+        _closePopup();
     }
 
     private static string FormatDuration(TimeSpan d) =>

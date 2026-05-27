@@ -430,6 +430,122 @@ public class TestDataSeeder
     }
 
     /// <summary>
+    /// Parameter-sensitive server: three cached plans whose per-execution worker time
+    /// varies wildly — one plan serving very different parameter values. The worst is a
+    /// ~1000x spread, also diverging on memory grant and on spills.
+    ///
+    /// Expected: a PARAMETER_SENSITIVITY finding. The worst ratio (1000x) drives
+    /// BaseSeverity to 1.0 on its own; offender_count = 3 fires the "systemic" amplifier.
+    /// </summary>
+    public async Task SeedParameterSensitiveServerAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        // Hash, executions, min/max worker time (us), min/max grant (kb), min/max spills.
+        var plans = new (string Hash, long Execs, long MinWorker, long MaxWorker,
+                         long MinGrant, long MaxGrant, long MinSpills, long MaxSpills)[]
+        {
+            ("0xSENS0001", 5_000, 20_000, 20_000_000, 1_024, 1_048_576, 0, 50), // ~1000x — catastrophic
+            ("0xSENS0002", 1_000, 50_000,  2_000_000, 4_096,     8_192, 0,  0), // ~40x
+            ("0xSENS0003",   200, 15_000,    300_000, 2_048,     2_048, 0,  0), // ~20x
+        };
+
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        for (var i = 0; i < plans.Length; i++)
+        {
+            var p = plans[i];
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO query_stats
+    (collection_id, collection_time, server_id, server_name, database_name,
+     query_hash, query_plan_hash, creation_time, execution_count,
+     min_worker_time, max_worker_time, min_grant_kb, max_grant_kb,
+     min_spills, max_spills, query_text, delta_execution_count)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodStart.AddMinutes(30 + i * 20) });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "SensitiveDb" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"0xQH{i:D6}" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.Hash });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodStart.AddDays(-3) }); // compiled before window
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.Execs });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.MinWorker });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.MaxWorker });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.MinGrant });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.MaxGrant });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.MinSpills });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.MaxSpills });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"SELECT * FROM dbo.SensitiveQuery{i} WHERE col = @p" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = 500L }); // delta_execution_count > 0 — active in window
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Plan-regression server: one query (query_id 101) that switched from a fast plan
+    /// to a plan ~12x more expensive per execution. Sourced from Query Store.
+    ///
+    /// Expected: a PLAN_REGRESSION finding. The worst factor (12x) is past the critical
+    /// threshold so BaseSeverity reaches 1.0.
+    /// </summary>
+    public async Task SeedPlanRegressionServerAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        // plan_id, query_plan_hash, avg cpu (us), avg duration (us), last exec, first exec.
+        var plans = new (long PlanId, string Hash, long AvgCpu, long AvgDur,
+                         DateTime LastExec, DateTime FirstExec)[]
+        {
+            (1, "0xGOODPLAN",   100_000,   120_000, TestPeriodStart.AddDays(-5), TestPeriodStart.AddDays(-6)),
+            (2, "0xBADPLAN",  1_200_000, 1_350_000, TestPeriodEnd,               TestPeriodStart.AddDays(-1)),
+        };
+
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        foreach (var p in plans)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO query_store_stats
+    (collection_id, collection_time, server_id, server_name, database_name,
+     query_id, plan_id, execution_type_desc, first_execution_time, last_execution_time,
+     query_text, query_hash, execution_count, avg_cpu_time_us, avg_duration_us,
+     query_plan_hash, is_forced_plan, force_failure_count)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "RegressionDb" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = 101L });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.PlanId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "Regular" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.FirstExec });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.LastExec });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "SELECT * FROM dbo.Orders WHERE CustomerId = @id" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "0xREGRESSQH" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = 100L }); // executions per plan — above the 25 floor
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.AvgCpu });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.AvgDur });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.Hash });
+            cmd.Parameters.Add(new DuckDBParameter { Value = false });
+            cmd.Parameters.Add(new DuckDBParameter { Value = 0L });
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
     /// Everything on fire: multiple high-severity categories competing.
     /// Memory pressure, CPU pressure, parallelism, lock contention, log writes.
     /// Tests that the engine produces multiple stories in priority order.

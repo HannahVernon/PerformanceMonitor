@@ -206,6 +206,11 @@ public class FactScorer
             "QUERY_SPILLS" => ApplyThresholdFormula(fact.Value, 100, 1000),
             // High DOP queries: concerning at 5, critical at 20 in the period
             "QUERY_HIGH_DOP" => ApplyThresholdFormula(fact.Value, 5, 20),
+            // Parameter sensitivity: worst max/min worker-time ratio. Magnitude-driven —
+            // concerning at 10x, critical at 100x — so a lone catastrophic plan still scores high.
+            "PARAMETER_SENSITIVITY" => ApplyThresholdFormula(fact.Value, 10, 100),
+            // Plan regression: worst per-exec cost factor vs the best plan. Concerning 2x, critical 10x.
+            "PLAN_REGRESSION" => ApplyThresholdFormula(fact.Value, 2, 10),
             _ => 0.0
         };
     }
@@ -405,12 +410,84 @@ public class FactScorer
             "IO_WRITE_LATENCY_MS" => IoWriteLatencyAmplifiers(),
             "MEMORY_GRANT_PENDING" => MemoryGrantAmplifiers(),
             "QUERY_SPILLS" => QuerySpillAmplifiers(),
+            "PARAMETER_SENSITIVITY" => ParameterSensitivityAmplifiers(),
+            "PLAN_REGRESSION" => PlanRegressionAmplifiers(),
             "PERFMON_PLE" => PleAmplifiers(),
             "DB_CONFIG" => DbConfigAmplifiers(),
             "DISK_SPACE" => DiskSpaceAmplifiers(),
             _ => []
         };
     }
+
+    /// <summary>
+    /// PARAMETER_SENSITIVITY: a single plan with wildly varying per-execution cost.
+    /// Corroborated by grant/spill divergence and memory-grant pressure.
+    /// </summary>
+    private static List<AmplifierDefinition> ParameterSensitivityAmplifiers() =>
+    [
+        new()
+        {
+            Description = "Three or more sensitive plans — systemic parameter-sniffing problem",
+            Boost = 0.3,
+            Predicate = facts => facts.TryGetValue("PARAMETER_SENSITIVITY", out var f)
+                              && f.Metadata.GetValueOrDefault("offender_count") >= 3
+        },
+        new()
+        {
+            Description = "Memory grant varies with the plan — classic sniffing fingerprint",
+            Boost = 0.3,
+            Predicate = facts => facts.TryGetValue("PARAMETER_SENSITIVITY", out var f)
+                              && f.Metadata.GetValueOrDefault("grant_divergence") > 0
+        },
+        new()
+        {
+            Description = "Worst plan spills on some parameter values but not others",
+            Boost = 0.2,
+            Predicate = facts => facts.TryGetValue("PARAMETER_SENSITIVITY", out var f)
+                              && f.Metadata.GetValueOrDefault("spill_divergence") > 0
+        },
+        new()
+        {
+            Description = "Memory grant pressure present — sensitive plans competing for grants",
+            Boost = 0.2,
+            Predicate = facts => facts.TryGetValue("MEMORY_GRANT_PENDING", out var f) && f.BaseSeverity > 0
+        }
+    ];
+
+    /// <summary>
+    /// PLAN_REGRESSION: a query running a worse plan than one it performed well with.
+    /// Corroborated by a failing forced plan and by CPU pressure.
+    /// </summary>
+    private static List<AmplifierDefinition> PlanRegressionAmplifiers() =>
+    [
+        new()
+        {
+            Description = "Three or more regressed queries — systemic plan-choice instability",
+            Boost = 0.3,
+            Predicate = facts => facts.TryGetValue("PLAN_REGRESSION", out var f)
+                              && f.Metadata.GetValueOrDefault("offender_count") >= 3
+        },
+        new()
+        {
+            Description = "Worst regression is on a forced plan that is failing to apply",
+            Boost = 0.4,
+            Predicate = facts => facts.TryGetValue("PLAN_REGRESSION", out var f)
+                              && f.Metadata.GetValueOrDefault("latest_is_forced") > 0
+                              && f.Metadata.GetValueOrDefault("force_failure_count") > 0
+        },
+        new()
+        {
+            Description = "CPU spike present — regressed plan likely driving it",
+            Boost = 0.25,
+            Predicate = facts => facts.TryGetValue("CPU_SPIKE", out var f) && f.BaseSeverity > 0
+        },
+        new()
+        {
+            Description = "SQL Server CPU elevated — regressed plan contributing",
+            Boost = 0.2,
+            Predicate = facts => facts.TryGetValue("CPU_SQL_PERCENT", out var f) && f.BaseSeverity > 0
+        }
+    ];
 
     /// <summary>
     /// SOS_SCHEDULER_YIELD: CPU starvation confirmed by parallelism waits.

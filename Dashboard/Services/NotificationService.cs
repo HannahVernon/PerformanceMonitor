@@ -142,6 +142,45 @@ namespace PerformanceMonitorDashboard.Services
             }
         }
 
+        /// <summary>
+        /// Shows a custom interactive popup with Snooze 15m / 1h / 4h and Dismiss buttons.
+        /// Snooze buttons create a temporary mute rule scoped to <paramref name="serverName"/> + <paramref name="metricName"/>.
+        /// </summary>
+        public void ShowSnoozableNotification(
+            string title,
+            string message,
+            NotificationType type,
+            string serverName,
+            string metricName,
+            MuteRuleService muteRuleService)
+        {
+            if (_trayIcon == null) return;
+
+            var prefs = _preferencesService.GetPreferences();
+            if (!prefs.NotificationsEnabled) return;
+
+            var icon = type switch
+            {
+                NotificationType.Error => BalloonIcon.Error,
+                NotificationType.Warning => BalloonIcon.Warning,
+                NotificationType.Success => BalloonIcon.Info,
+                _ => BalloonIcon.Info
+            };
+
+            void Show()
+            {
+                var trayIcon = _trayIcon;
+                if (trayIcon == null) return;
+                var balloon = new Controls.SnoozeBalloon(title, message, icon, serverName, metricName, muteRuleService, () => trayIcon.CloseBalloon());
+                trayIcon.ShowCustomBalloon(balloon, System.Windows.Controls.Primitives.PopupAnimation.Slide, 15000);
+            }
+
+            if (_mainWindow.Dispatcher.CheckAccess())
+                Show();
+            else
+                _mainWindow.Dispatcher.Invoke(Show);
+        }
+
         public void ShowServerOnlineNotification(string serverName)
         {
             ShowNotification(
@@ -168,85 +207,6 @@ namespace PerformanceMonitorDashboard.Services
                 "Connection Restored",
                 $"{serverName} connection restored",
                 NotificationType.Success);
-        }
-
-        public void ShowBlockingNotification(string serverName, int blockedSessions, int durationSeconds)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnBlocking) return;
-
-            ShowNotification(
-                "Blocking Detected",
-                $"{serverName}: {blockedSessions} blocked session(s), longest {durationSeconds}s",
-                NotificationType.Warning);
-        }
-
-        public void ShowDeadlockNotification(string serverName, int deadlockCount)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnDeadlock) return;
-
-            var plural = deadlockCount == 1 ? "" : "s";
-            ShowNotification(
-                "Deadlock Detected",
-                $"{serverName}: {deadlockCount} deadlock{plural} detected",
-                NotificationType.Error);
-        }
-
-        public void ShowHighCpuNotification(string serverName, int cpuPercent)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnHighCpu) return;
-
-            ShowNotification(
-                "High CPU",
-                $"{serverName}: CPU at {cpuPercent}%",
-                NotificationType.Warning);
-        }
-
-        public void ShowPoisonWaitNotification(string serverName, string waitType, double avgMs)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnPoisonWaits) return;
-
-            ShowNotification(
-                "Poison Wait",
-                $"{serverName}: {waitType} avg {avgMs:F0}ms/wait",
-                NotificationType.Error);
-        }
-
-        public void ShowLongRunningQueryNotification(string serverName, int sessionId, long elapsedMinutes, string queryPreview)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnLongRunningQueries) return;
-
-            var preview = string.IsNullOrEmpty(queryPreview) ? "" : $" — {queryPreview}";
-            ShowNotification(
-                "Long-Running Query",
-                $"{serverName}: Session #{sessionId} running {elapsedMinutes}m{preview}",
-                NotificationType.Warning);
-        }
-
-        public void ShowTempDbSpaceNotification(string serverName, double usedPercent)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnTempDbSpace) return;
-
-            ShowNotification(
-                "TempDB Space",
-                $"{serverName}: TempDB {usedPercent:F0}% used",
-                NotificationType.Warning);
-        }
-
-        public void ShowLongRunningJobNotification(string serverName, string jobName, long currentMinutes, decimal percentOfAvg)
-        {
-            var prefs = _preferencesService.GetPreferences();
-            if (!prefs.NotifyOnLongRunningJobs) return;
-
-            ShowNotification(
-                "Long-Running Job",
-                $"{serverName}: {jobName} at {percentOfAvg:F0}% of avg ({currentMinutes}m)",
-                NotificationType.Warning);
         }
 
         private void ShowMainWindow()

@@ -53,6 +53,9 @@ public class SqlServerDrillDownCollector
                 if (pathKeys.Contains("BLOCKING_EVENTS"))
                     await CollectTopBlockingChains(finding, context);
 
+                if (pathKeys.Contains("BLOCKING_CHAIN"))
+                    await CollectReconstructedBlockingChains(finding, context);
+
                 if (pathKeys.Contains("CPU_SPIKE"))
                     await CollectQueriesAtSpike(finding, context);
 
@@ -84,6 +87,12 @@ public class SqlServerDrillDownCollector
 
                 if (pathKeys.Any(k => k.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase)))
                     await CollectBadActorDetail(finding, context);
+
+                if (pathKeys.Contains("PARAMETER_SENSITIVITY"))
+                    await CollectParameterSensitiveQueries(finding, context);
+
+                if (pathKeys.Contains("PLAN_REGRESSION"))
+                    await CollectRegressedQueries(finding, context);
 
                 // Plan analysis: for findings with top queries, analyze their cached plans
                 await CollectPlanAnalysis(finding, context);
@@ -774,5 +783,343 @@ GROUP BY database_name, query_hash;";
                 max_dop = reader.IsDBNull(10) ? 0 : Convert.ToInt32(reader.GetValue(10))
             };
         }
+    }
+
+    /// <summary>
+    /// Top parameter-sensitive plans behind a PARAMETER_SENSITIVITY finding.
+    /// Re-runs the detector for the top 5 offenders.
+    /// </summary>
+    private async Task CollectParameterSensitiveQueries(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH latest AS
+(
+    SELECT
+        database_name,
+        query_hash,
+        query_plan_hash,
+        execution_count,
+        creation_time,
+        min_worker_time,
+        max_worker_time,
+        min_grant_kb,
+        max_grant_kb,
+        min_spills,
+        max_spills,
+        query_text,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY database_name, query_hash, query_plan_hash
+            ORDER BY collection_time DESC
+        ) AS rn
+    FROM collect.query_stats
+    WHERE collection_time >= @startTime
+    AND   collection_time <= @endTime
+    AND   execution_count_delta > 0
+)
+SELECT
+    database_name,
+    CONVERT(varchar(18), query_hash, 1) AS query_hash,
+    CONVERT(varchar(18), query_plan_hash, 1) AS query_plan_hash,
+    execution_count,
+    min_worker_time,
+    max_worker_time,
+    CAST(max_worker_time AS float) / NULLIF(min_worker_time, 0) AS worker_ratio,
+    CAST(max_grant_kb AS float) / NULLIF(min_grant_kb, 0) AS grant_ratio,
+    CASE WHEN max_spills > 0 AND min_spills = 0 THEN 1 ELSE 0 END AS spill_divergence,
+    LEFT(CAST(DECOMPRESS(query_text) AS NVARCHAR(MAX)), 500) AS query_text
+FROM latest
+WHERE rn = 1
+AND   min_worker_time >= 10000
+AND   max_worker_time >= 250000
+AND   execution_count >= 20
+AND   creation_time <= @startTime
+AND   CAST(max_worker_time AS float) / NULLIF(min_worker_time, 0) >= 10
+ORDER BY worker_ratio DESC
+OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY";
+
+        cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+        cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new
+            {
+                database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                query_hash = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                query_plan_hash = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                execution_count = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3)),
+                min_worker_time_us = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4)),
+                max_worker_time_us = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5)),
+                worker_ratio = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6)),
+                grant_ratio = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7)),
+                spills_on_some_inputs = !reader.IsDBNull(8) && Convert.ToInt32(reader.GetValue(8)) == 1,
+                query_text = reader.IsDBNull(9) ? "" : reader.GetString(9)
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["parameter_sensitive_queries"] = items;
+    }
+
+    /// <summary>
+    /// Top regressed queries behind a PLAN_REGRESSION finding.
+    /// Uses the same 14-day server_last_execution_time comparison window as the detector
+    /// (NOT the standard analysis window) so the days-old "best plan" baseline is present.
+    /// </summary>
+    private async Task CollectRegressedQueries(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH deduped AS
+(
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        query_plan_hash,
+        count_executions,
+        avg_cpu_time,
+        avg_duration,
+        server_last_execution_time,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY database_name, query_id, plan_id, server_first_execution_time
+            ORDER BY collection_time DESC
+        ) AS rn
+    FROM collect.query_store_data
+    WHERE execution_type_desc = N'Regular'
+    AND   server_last_execution_time >= @windowStart
+),
+plan_agg AS
+(
+    -- query_plan_hash is invariant within a plan_id, so include it in the GROUP BY
+    -- (MS Learn's MAX page does not list binary/varbinary in the accepted types).
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        query_plan_hash,
+        SUM(count_executions) AS execs,
+        CASE WHEN SUM(count_executions) > 0
+             THEN SUM(avg_cpu_time * count_executions) / NULLIF(SUM(count_executions), 0)
+             ELSE 0 END AS cpu_per_exec,
+        CASE WHEN SUM(count_executions) > 0
+             THEN SUM(avg_duration * count_executions) / NULLIF(SUM(count_executions), 0)
+             ELSE 0 END AS dur_per_exec,
+        MAX(server_last_execution_time) AS last_exec
+    FROM deduped
+    WHERE rn = 1
+    GROUP BY database_name, query_id, plan_id, query_plan_hash
+),
+plan_dedup AS
+(
+    SELECT
+        database_name,
+        query_id,
+        query_plan_hash,
+        SUM(execs) AS execs,
+        CASE WHEN SUM(execs) > 0
+             THEN SUM(cpu_per_exec * execs) / NULLIF(SUM(execs), 0)
+             ELSE 0 END AS cpu_per_exec,
+        CASE WHEN SUM(execs) > 0
+             THEN SUM(dur_per_exec * execs) / NULLIF(SUM(execs), 0)
+             ELSE 0 END AS dur_per_exec,
+        MAX(last_exec) AS last_exec
+    FROM plan_agg
+    GROUP BY database_name, query_id, query_plan_hash
+    HAVING SUM(execs) >= 25
+),
+ranked AS
+(
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY last_exec DESC) AS recency,
+        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY cpu_per_exec ASC) AS cheapness
+    FROM plan_dedup
+),
+compared AS
+(
+    SELECT
+        l.database_name,
+        l.query_id,
+        l.query_plan_hash AS latest_plan_hash,
+        l.cpu_per_exec AS latest_cpu,
+        l.dur_per_exec AS latest_dur,
+        b.query_plan_hash AS best_plan_hash,
+        b.cpu_per_exec AS best_cpu,
+        b.dur_per_exec AS best_dur,
+        (SELECT MAX(v)
+         FROM (VALUES
+             (CAST(l.cpu_per_exec AS float) / NULLIF(b.cpu_per_exec, 0)),
+             (CAST(l.dur_per_exec AS float) / NULLIF(b.dur_per_exec, 0))
+         ) AS x(v)) AS regression_factor
+    FROM ranked AS l
+    JOIN ranked AS b
+      ON  b.database_name = l.database_name
+      AND b.query_id = l.query_id
+      AND b.cheapness = 1
+    WHERE l.recency = 1
+    AND   l.query_plan_hash <> b.query_plan_hash
+)
+SELECT
+    c.database_name,
+    c.query_id,
+    CONVERT(varchar(18), c.latest_plan_hash, 1) AS latest_plan_hash,
+    c.latest_cpu,
+    c.latest_dur,
+    CONVERT(varchar(18), c.best_plan_hash, 1) AS best_plan_hash,
+    c.best_cpu,
+    c.best_dur,
+    c.regression_factor,
+    -- query_sql_text is varbinary(max); fetch it via APPLY (MAX() on varbinary(max) is invalid).
+    LEFT(CAST(DECOMPRESS(qt.query_sql_text) AS NVARCHAR(MAX)), 500) AS query_text
+FROM compared AS c
+OUTER APPLY
+(
+    SELECT TOP (1) qs.query_sql_text
+    FROM collect.query_store_data AS qs
+    WHERE qs.database_name = c.database_name
+    AND   qs.query_id = c.query_id
+    AND   qs.query_plan_hash = c.latest_plan_hash
+    AND   qs.server_last_execution_time >= @windowStart
+    ORDER BY qs.server_last_execution_time DESC
+) AS qt
+WHERE c.regression_factor >= 2
+ORDER BY c.regression_factor DESC
+OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY";
+
+        cmd.Parameters.Add(new SqlParameter("@windowStart", context.TimeRangeStart.AddDays(-14)));
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new
+            {
+                database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                query_id = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1)),
+                latest_plan_hash = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                latest_cpu_per_exec_us = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3)),
+                latest_duration_per_exec_us = reader.IsDBNull(4) ? 0.0 : Convert.ToDouble(reader.GetValue(4)),
+                best_plan_hash = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                best_cpu_per_exec_us = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6)),
+                best_duration_per_exec_us = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7)),
+                regression_factor = reader.IsDBNull(8) ? 0.0 : Convert.ToDouble(reader.GetValue(8)),
+                query_text = reader.IsDBNull(9) ? "" : reader.GetString(9)
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["regressed_queries"] = items;
+    }
+
+    /// <summary>
+    /// Reconstructs blocking chains (same logic as the collector) and surfaces the top 3
+    /// by magnitude — apex, depth, victim count, and the level-by-level structure that
+    /// the flat top_blocking_chains list cannot show.
+    /// </summary>
+    private async Task CollectReconstructedBlockingChains(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        // blocking_spid IS NOT NULL filters out rows whose source XML had an empty
+        // <blocking-process><process/></blocking-process> (system task / torn-down session) —
+        // those can't contribute to a reconstructed chain.
+        cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT TOP (5000)
+    event_time,
+    database_name,
+    spid,
+    last_transaction_started,
+    blocking_spid,
+    blocking_last_tran_started,
+    wait_time_ms,
+    lock_mode,
+    blocking_status,
+    blocked_sql_text,
+    blocking_sql_text
+FROM collect.blocking_BlockedProcessReport
+WHERE collection_time >= @collectionWindow
+AND   event_time >= @startTime
+AND   event_time <= @endTime
+AND   activity = 'blocked'
+AND   blocking_spid IS NOT NULL
+ORDER BY collection_time DESC";
+
+        cmd.Parameters.Add(new SqlParameter("@collectionWindow", context.TimeRangeStart.AddHours(-1)));
+        cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+        cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+        var rows = new List<BlockingPairRow>();
+        using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                rows.Add(new BlockingPairRow
+                {
+                    EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                    DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                    BlockedTranStarted = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3),
+                    BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                    BlockingTranStarted = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5),
+                    WaitTimeMs = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                    LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                    BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                });
+            }
+        }
+
+        if (rows.Count == 0) return;
+
+        var reconstruction = BlockingChainReconstructor.Reconstruct(
+            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
+
+        var items = new List<object>();
+        foreach (var chain in reconstruction.Chains.Take(3))
+        {
+            items.Add(new
+            {
+                apex_spid = chain.ApexSpid,
+                apex_sleeping = chain.ApexSleeping,
+                depth = chain.Depth,
+                // Distinct sessions blocked under this apex over the window — cumulative, not peak-concurrent.
+                victim_count = chain.VictimCount,
+                max_wait_ms = chain.MaxWaitMs,
+                levels = chain.Levels.Select(l => new
+                {
+                    level = l.Level,
+                    blocking_spid = l.BlockingSpid,
+                    blocked_spid = l.BlockedSpid,
+                    lock_mode = l.LockMode,
+                    wait_time_ms = l.WaitTimeMs,
+                    blocking_sql = l.BlockingSqlText,
+                    blocked_sql = l.BlockedSqlText
+                }).ToList()
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["reconstructed_blocking_chains"] = items;
     }
 }
