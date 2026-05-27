@@ -94,7 +94,7 @@ namespace PerformanceMonitorDashboard
             Focusable = true;
 
             // Initialize Overview sub-tab UserControls
-            DailySummaryTab.Initialize(_databaseService);
+            DailySummaryTab.Initialize(_databaseService, _preferencesService);
             CriticalIssuesTab.Initialize(_databaseService);
             CriticalIssuesTab.InvestigateRequested += OnInvestigateCriticalIssue;
             DefaultTraceTab.Initialize(_databaseService);

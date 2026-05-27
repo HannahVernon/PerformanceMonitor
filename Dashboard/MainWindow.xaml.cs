@@ -1539,14 +1539,19 @@ namespace PerformanceMonitorDashboard
                     "0", prefs.DeadlockThreshold.ToString(), true, "tray");
             }
 
-            /* High CPU alerts */
+            /* High CPU alerts — evaluator picks Total or SQL based on prefs.CpuAlertMode */
+            int? alertCpuValue = prefs.CpuAlertMode == CpuAlertMode.Total
+                ? health.TotalCpuPercent
+                : health.CpuPercent;
+            string cpuMetricLabel = prefs.CpuAlertMode == CpuAlertMode.Total ? "Total CPU" : "SQL CPU";
+
             bool cpuExceeded = prefs.NotifyOnHighCpu
-                && health.TotalCpuPercent.HasValue
-                && health.TotalCpuPercent.Value >= prefs.CpuThresholdPercent;
+                && alertCpuValue.HasValue
+                && alertCpuValue.Value >= prefs.CpuThresholdPercent;
 
             if (cpuExceeded)
             {
-                var totalCpu = health.TotalCpuPercent!.Value;
+                var cpuValue = alertCpuValue!.Value;
                 _activeHighCpuAlert[serverId] = true;
                 if (!_lastHighCpuAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
                 {
@@ -1558,7 +1563,7 @@ namespace PerformanceMonitorDashboard
                     {
                         _notificationService?.ShowSnoozableNotification(
                             "High CPU",
-                            $"{serverName}: CPU at {totalCpu}%",
+                            $"{serverName}: {cpuMetricLabel} at {cpuValue}% (threshold: {prefs.CpuThresholdPercent}%)",
                             NotificationType.Warning,
                             serverName,
                             "High CPU",
@@ -1566,16 +1571,16 @@ namespace PerformanceMonitorDashboard
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "High CPU",
-                        $"{totalCpu:F0}%",
+                        $"{cpuValue:F0}% ({cpuMetricLabel})",
                         $"{prefs.CpuThresholdPercent}%", !isMuted, isMuted ? "muted" : "tray", muted: isMuted,
-                        detailText: $"  CPU: {totalCpu:F0}%\n  Threshold: {prefs.CpuThresholdPercent}%");
+                        detailText: $"  {cpuMetricLabel}: {cpuValue:F0}%\n  Threshold: {prefs.CpuThresholdPercent}%");
 
                     if (!isMuted)
                     {
                         await _emailAlertService.TrySendAlertEmailAsync(
                             "High CPU",
                             serverName,
-                            $"{totalCpu:F0}%",
+                            $"{cpuValue:F0}% ({cpuMetricLabel})",
                             $"{prefs.CpuThresholdPercent}%",
                             serverId);
                     }
@@ -1583,9 +1588,9 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeHighCpuAlert.TryRemove(serverId, out var wasCpu) && wasCpu)
             {
-                var cpuText = health.TotalCpuPercent.HasValue ? $"{health.TotalCpuPercent.Value:F0}%" : "N/A";
+                var cpuText = alertCpuValue.HasValue ? $"{alertCpuValue.Value:F0}%" : "N/A";
                 _notificationService?.ShowNotification("CPU Resolved",
-                    $"{serverName}: CPU back to {cpuText}");
+                    $"{serverName}: {cpuMetricLabel} back to {cpuText}");
                 _emailAlertService.RecordAlert(serverId, serverName, "CPU Resolved",
                     cpuText, $"{prefs.CpuThresholdPercent}%", true, "tray");
             }

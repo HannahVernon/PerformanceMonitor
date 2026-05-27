@@ -6,9 +6,19 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace PerformanceMonitorDashboard.Models
 {
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public enum CpuAlertMode
+    {
+        /// <summary>sql_server_cpu + other_process_cpu — matches OS user+system, "is the box in trouble".</summary>
+        Total,
+        /// <summary>SQL Server scheduler ProcessUtilization only.</summary>
+        SqlOnly
+    }
+
     public class UserPreferences
     {
         // Time display mode: ServerTime, LocalTime, UTC
@@ -81,6 +91,7 @@ namespace PerformanceMonitorDashboard.Models
         public int DeadlockThreshold { get; set; } = 1; // Alert when deadlocks >= X since last check
         public bool NotifyOnHighCpu { get; set; } = true;
         public int CpuThresholdPercent { get; set; } = 90; // Alert when CPU > X%
+        public CpuAlertMode CpuAlertMode { get; set; } = CpuAlertMode.Total; // Total non-idle CPU (default) or SQL scheduler only
         public bool NotifyOnPoisonWaits { get; set; } = true;
         public int PoisonWaitThresholdMs { get; set; } = 500; // Alert when avg ms per wait > X
         public bool NotifyOnLongRunningQueries { get; set; } = true;

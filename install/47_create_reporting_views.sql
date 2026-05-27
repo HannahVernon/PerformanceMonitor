@@ -350,7 +350,7 @@ SELECT
         SELECT
             COUNT_BIG(*)
         FROM collect.cpu_utilization_stats AS cus
-        WHERE cus.sqlserver_cpu_utilization >= 80
+        WHERE cus.total_cpu_utilization >= 80
         AND   cus.collection_time >= DATEADD(DAY, 0, CONVERT(date, SYSDATETIME()))
     ),
     collectors_failing =
@@ -383,7 +383,7 @@ SELECT
                 SELECT
                     1/0
                 FROM collect.cpu_utilization_stats AS cus
-                WHERE cus.sqlserver_cpu_utilization >= 90
+                WHERE cus.total_cpu_utilization >= 90
                 AND   cus.collection_time >= DATEADD(HOUR, -1, SYSDATETIME())
             )
             THEN N'CPU_CRITICAL'

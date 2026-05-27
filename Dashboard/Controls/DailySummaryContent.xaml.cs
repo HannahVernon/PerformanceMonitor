@@ -29,6 +29,7 @@ namespace PerformanceMonitorDashboard.Controls
     public partial class DailySummaryContent : UserControl
     {
         private DatabaseService? _databaseService;
+        private UserPreferencesService? _preferencesService;
         private DateTime? _dailySummaryDate = null; // null means today
 
         // Daily Summary filter state
@@ -52,10 +53,10 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>
         /// Initializes the control with required dependencies.
         /// </summary>
-        /// <param name="databaseService">The database service for data retrieval.</param>
-        public void Initialize(DatabaseService databaseService)
+        public void Initialize(DatabaseService databaseService, UserPreferencesService preferencesService)
         {
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
+            _preferencesService = preferencesService ?? throw new ArgumentNullException(nameof(preferencesService));
         }
 
         /// <summary>
@@ -86,7 +87,8 @@ namespace PerformanceMonitorDashboard.Controls
                     DailySummaryNoDataMessage.Visibility = Visibility.Collapsed;
                 }
 
-                var data = await _databaseService.GetDailySummaryAsync(_dailySummaryDate);
+                var mode = _preferencesService?.GetPreferences().CpuAlertMode ?? CpuAlertMode.Total;
+                var data = await _databaseService.GetDailySummaryAsync(_dailySummaryDate, mode);
 
                 // Store unfiltered data and reset filters when new data is loaded
                 _dailySummaryUnfilteredData = data;

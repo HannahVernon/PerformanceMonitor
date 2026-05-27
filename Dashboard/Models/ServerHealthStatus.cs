@@ -190,7 +190,15 @@ namespace PerformanceMonitorDashboard.Models
             }
         }
 
-        public string CpuDisplayText => TotalCpuPercent.HasValue ? $"{TotalCpuPercent}%" : "--";
+        public string CpuDisplayText
+        {
+            get
+            {
+                if (!_cpuPercent.HasValue) return "--";
+                if (!_otherCpuPercent.HasValue) return $"{_cpuPercent}%";
+                return $"{TotalCpuPercent}% (SQL {_cpuPercent}%)";
+            }
+        }
 
         public string CpuDetailText
         {
