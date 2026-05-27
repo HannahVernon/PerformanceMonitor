@@ -72,12 +72,17 @@ public class AnalysisStory
     public double? LeafFactValue { get; set; }
     public int FactCount { get; set; }
     public bool IsAbsolution { get; set; }
+
+    /// <summary>
+    /// Metadata from the root fact (raw metric values used to assemble the story).
+    /// Ephemeral — copied onto the finding for the notification layer, not persisted.
+    /// </summary>
     public Dictionary<string, double>? RootFactMetadata { get; set; }
 }
 
 /// <summary>
 /// A persisted finding from a previous analysis run.
-/// Maps to the analysis_findings DuckDB table.
+/// Maps to the analysis_findings table.
 /// </summary>
 public class AnalysisFinding
 {
@@ -101,20 +106,21 @@ public class AnalysisFinding
     public int FactCount { get; set; }
 
     /// <summary>
-    /// Drill-down data collected after graph traversal. Ephemeral — not persisted to DuckDB.
+    /// Drill-down data collected after graph traversal. Ephemeral — not persisted.
     /// Contains supporting detail keyed by category (e.g., "top_deadlocks", "queries_at_spike").
     /// </summary>
     public Dictionary<string, object>? DrillDown { get; set; }
 
     /// <summary>
-    /// Root fact metadata from anomaly detection. Ephemeral — not persisted to DuckDB.
-    /// Contains baseline context (mean, stddev, tier, hour, dow) for anomaly findings.
+    /// Metadata from the root fact carried in from <see cref="AnalysisStory.RootFactMetadata"/>.
+    /// Ephemeral — used by the notification layer for diagnosis context; not persisted.
+    /// In practice this is anomaly-detector baseline context: mean, stddev, tier, hour, dow.
     /// </summary>
     public Dictionary<string, double>? RootFactMetadata { get; set; }
 }
 
 /// <summary>
-/// A muted finding pattern. Maps to the analysis_muted DuckDB table.
+/// A muted finding pattern. Maps to the analysis_muted table.
 /// </summary>
 public class AnalysisMuted
 {
@@ -128,7 +134,7 @@ public class AnalysisMuted
 }
 
 /// <summary>
-/// A user-configured exclusion filter. Maps to the analysis_exclusions DuckDB table.
+/// A user-configured exclusion filter. Maps to the analysis_exclusions table.
 /// </summary>
 public class AnalysisExclusion
 {
@@ -143,7 +149,7 @@ public class AnalysisExclusion
 }
 
 /// <summary>
-/// A severity threshold value. Maps to the analysis_thresholds DuckDB table.
+/// A severity threshold value. Maps to the analysis_thresholds table.
 /// </summary>
 public class AnalysisThreshold
 {
