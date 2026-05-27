@@ -890,17 +890,22 @@ VALUES ($1, $2, $3, true, true)";
             cmd.CommandText = @"
 INSERT INTO blocked_process_reports
     (blocked_report_id, collection_time, server_id, server_name,
-     event_time, blocked_spid, blocking_spid, wait_time_ms,
+     event_time, blocked_spid, blocked_last_tran_started,
+     blocking_spid, blocking_last_tran_started, wait_time_ms,
      lock_mode, blocked_status, blocking_status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
 
             cmd.Parameters.Add(new DuckDBParameter { Value = id });
             cmd.Parameters.Add(new DuckDBParameter { Value = eventTime });
             cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
             cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
             cmd.Parameters.Add(new DuckDBParameter { Value = eventTime });
-            cmd.Parameters.Add(new DuckDBParameter { Value = 100 + i }); // blocked spid
+            cmd.Parameters.Add(new DuckDBParameter { Value = 100 + i }); // blocked spid — distinct per event
+            cmd.Parameters.Add(new DuckDBParameter { Value = eventTime }); // blocked tran — distinct per blocked session
             cmd.Parameters.Add(new DuckDBParameter { Value = blockerSpid });
+            // Blocking tran — stable per blocker SPID, so all events for one blocker map to one
+            // session node (a head blocker with many victims), not many one-victim chains.
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodStart.AddSeconds(blockerSpid) });
             cmd.Parameters.Add(new DuckDBParameter { Value = avgWaitTimeMs });
             cmd.Parameters.Add(new DuckDBParameter { Value = "X" });
             cmd.Parameters.Add(new DuckDBParameter { Value = "suspended" });
@@ -908,6 +913,97 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
 
             await cmd.ExecuteNonQueryAsync();
         }
+    }
+
+    /// <summary>
+    /// Seeds blocked_process_reports with a known, reconstructable set of blocking chains:
+    /// a depth-4 line (sleeping apex 200), a depth-1 / 5-victim fan-out (apex 300), a SPID-reuse
+    /// case (spid 201 with a different transaction start — must NOT splice into the depth-4
+    /// chain), and a 1900-01-01 sentinel transaction start.
+    /// </summary>
+    internal async Task SeedBlockingChainAsync()
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        var baseTran = TestPeriodStart;
+        DateTime Tran(int spid) => baseTran.AddSeconds(spid);
+
+        // blocked spid, blocked tran, blocking spid, blocking tran, blocking status
+        var pairs = new (int BlockedSpid, DateTime BlockedTran, int BlockingSpid, DateTime BlockingTran, string BlockingStatus)[]
+        {
+            // Chain A — depth 4, apex 200 sleeping
+            (201, Tran(201), 200, Tran(200), "sleeping"),
+            (202, Tran(202), 201, Tran(201), "running"),
+            (203, Tran(203), 202, Tran(202), "running"),
+            (204, Tran(204), 203, Tran(203), "running"),
+            // Chain B — depth 1, apex 300, five victims
+            (301, Tran(301), 300, Tran(300), "running"),
+            (302, Tran(302), 300, Tran(300), "running"),
+            (303, Tran(303), 300, Tran(300), "running"),
+            (304, Tran(304), 300, Tran(300), "running"),
+            (305, Tran(305), 300, Tran(300), "running"),
+            // SPID reuse — spid 201 again, a different transaction start; must not join Chain A
+            (201, Tran(201).AddHours(2), 210, Tran(210), "running"),
+            // 1900-01-01 sentinel transaction start on the blocked session
+            (220, new DateTime(1900, 1, 1), 221, Tran(221), "running"),
+        };
+
+        for (var i = 0; i < pairs.Length; i++)
+        {
+            var p = pairs[i];
+            var eventTime = TestPeriodStart.AddMinutes(10 + i);
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO blocked_process_reports
+    (blocked_report_id, collection_time, server_id, server_name,
+     event_time, database_name, blocked_spid, blocked_last_tran_started,
+     blocking_spid, blocking_last_tran_started, wait_time_ms,
+     lock_mode, blocked_status, blocking_status, blocked_sql_text, blocking_sql_text)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = eventTime });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = eventTime });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "ChainDb" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockedSpid });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockedTran });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockingSpid });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockingTran });
+            cmd.Parameters.Add(new DuckDBParameter { Value = 30_000L });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "X" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "suspended" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockingStatus });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"SELECT * FROM dbo.T WHERE id = {p.BlockedSpid}" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = $"UPDATE dbo.T SET v = 1 WHERE id = {p.BlockingSpid}" });
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Deep blocking chain scenario: a depth-4 chain with a sleeping apex, plus corroborating
+    /// lock and thread-exhaustion waits and deadlocks. Expected: a BLOCKING_CHAIN finding
+    /// (depth 4, apex 200) that traverses to LCK / THREADPOOL.
+    /// </summary>
+    public async Task SeedDeepBlockingChainServerAsync()
+    {
+        await ClearTestDataAsync();
+        await SeedTestServerAsync();
+
+        var waits = new Dictionary<string, (long waitTimeMs, long waitingTasks, long signalMs)>
+        {
+            ["THREADPOOL"]          = (5_400_000,     4_000,       0),
+            ["LCK_M_X"]             = (4_000_000,   300_000,  50_000),
+            ["SOS_SCHEDULER_YIELD"] = (  500_000, 2_000_000,       0),
+        };
+
+        await SeedWaitStatsAsync(waits);
+        await SeedBlockingChainAsync();
+        await SeedDeadlocksAsync(15);
     }
 
     /// <summary>

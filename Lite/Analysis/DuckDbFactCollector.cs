@@ -29,6 +29,7 @@ public class DuckDbFactCollector : IFactCollector
         GroupGeneralLockWaits(facts, context);
         GroupParallelismWaits(facts, context);
         await CollectBlockingFactsAsync(context, facts);
+        await CollectBlockingChainFactsAsync(context, facts);
         await CollectDeadlockFactsAsync(context, facts);
         await CollectServerConfigFactsAsync(context, facts);
         await CollectMemoryFactsAsync(context, facts);
@@ -176,6 +177,102 @@ AND   collection_time <= $3";
                 ["period_hours"] = periodHours
             }
         });
+    }
+
+    /// <summary>
+    /// Reconstructs blocking chains from blocked_process_reports (per-pair rows) and emits
+    /// one aggregate BLOCKING_CHAIN fact describing the worst chain — apex head blocker,
+    /// depth, and transitive victim count — structure the BLOCKING_EVENTS rate is blind to.
+    /// </summary>
+    private async Task CollectBlockingChainFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        const int maxPairs = 5000;
+        const int maxDepth = 50;
+        const int stepBudget = 100_000;
+
+        try
+        {
+            using var readLock = _duckDb.AcquireReadLock();
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT
+    event_time,
+    database_name,
+    blocked_spid,
+    blocked_last_tran_started,
+    blocking_spid,
+    blocking_last_tran_started,
+    wait_time_ms,
+    lock_mode,
+    blocking_status,
+    blocked_sql_text,
+    blocking_sql_text
+FROM v_blocked_process_reports
+WHERE server_id = $1
+AND   event_time >= $2
+AND   event_time <= $3
+ORDER BY event_time DESC
+LIMIT 5000";
+
+            command.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+            command.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+            command.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+            var rows = new List<BlockingPairRow>();
+            using (var reader = await command.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    rows.Add(new BlockingPairRow
+                    {
+                        EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                        DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                        BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                        BlockedTranStarted = reader.IsDBNull(3) ? null : reader.GetDateTime(3),
+                        BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                        BlockingTranStarted = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                        WaitTimeMs = reader.IsDBNull(6) ? 0L : ToInt64(reader.GetValue(6)),
+                        LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                        BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                        BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                        BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                    });
+                }
+            }
+
+            if (rows.Count == 0) return;
+
+            var reconstruction = BlockingChainReconstructor.Reconstruct(rows, maxDepth, maxPairs, stepBudget);
+            if (reconstruction.Chains.Count == 0) return;
+
+            var worst = reconstruction.Chains[0];
+
+            facts.Add(new Fact
+            {
+                Source = "blocking",
+                Key = "BLOCKING_CHAIN",
+                Value = worst.Depth,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["worst_chain_depth"] = worst.Depth,
+                    ["worst_chain_victim_count"] = worst.VictimCount,
+                    ["worst_apex_spid"] = worst.ApexSpid,
+                    ["worst_apex_sleeping"] = worst.ApexSleeping ? 1 : 0,
+                    ["worst_chain_max_wait_ms"] = worst.MaxWaitMs,
+                    ["total_reconstructed_chains"] = reconstruction.Chains.Count,
+                    ["deepest_chain_overall"] = reconstruction.Chains.Max(c => c.Depth),
+                    ["max_victim_count_overall"] = reconstruction.Chains.Max(c => c.VictimCount),
+                    ["depth_capped"] = reconstruction.DepthCapped ? 1 : 0,
+                    ["traversal_truncated"] = reconstruction.TraversalTruncated ? 1 : 0,
+                    ["cycle_detected"] = reconstruction.CycleDetected ? 1 : 0
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
     }
 
     /// <summary>

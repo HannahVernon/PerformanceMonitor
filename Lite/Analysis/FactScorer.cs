@@ -117,8 +117,25 @@ public class FactScorer
             "BLOCKING_EVENTS" => ApplyThresholdFormula(value, 10, 50),
             // Deadlocks: concerning >5/hr (no critical — any sustained deadlocking is bad)
             "DEADLOCKS" => ApplyThresholdFormula(value, 5, null),
+            // Blocking chain: scored by structural magnitude. Value = worst-chain depth >= 1
+            // for any emitted chain, so the value<=0 guard above never trips this arm.
+            "BLOCKING_CHAIN" => ScoreBlockingChain(fact),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores a BLOCKING_CHAIN fact by structural magnitude — the worse of chain depth
+    /// and transitive victim count. Max, not average, so one severe dimension scores high
+    /// without being diluted by the other.
+    /// </summary>
+    private static double ScoreBlockingChain(Fact fact)
+    {
+        var depth = fact.Metadata.GetValueOrDefault("worst_chain_depth");
+        var victims = fact.Metadata.GetValueOrDefault("worst_chain_victim_count");
+        return Math.Max(
+            ApplyThresholdFormula(depth, 3, 8),
+            ApplyThresholdFormula(victims, 5, 25));
     }
 
     /// <summary>
@@ -383,6 +400,8 @@ public class FactScorer
             "PAGEIOLATCH_SH" or "PAGEIOLATCH_EX" => PageiolatchAmplifiers(),
             "LATCH_EX" or "LATCH_SH" => LatchAmplifiers(),
             "BLOCKING_EVENTS" => BlockingEventsAmplifiers(),
+            "BLOCKING_CHAIN" => BlockingChainAmplifiers(),
+            "RESOURCE_SEMAPHORE_QUERY_COMPILE" => ResourceSemaphoreQueryCompileAmplifiers(),
             "DEADLOCKS" => DeadlockAmplifiers(),
             "LCK" => LckAmplifiers(),
             "CPU_SQL_PERCENT" => CpuSqlPercentAmplifiers(),
@@ -630,6 +649,59 @@ public class FactScorer
             Description = "Deadlocks also present — blocking escalating to deadlocks",
             Boost = 0.3,
             Predicate = facts => facts.ContainsKey("DEADLOCKS") && facts["DEADLOCKS"].BaseSeverity > 0
+        }
+    ];
+
+    /// <summary>
+    /// BLOCKING_CHAIN: a reconstructed blocking pile-up, amplified by an abandoned apex
+    /// transaction and by the cascade symptoms a deep/wide chain produces.
+    /// </summary>
+    private static List<AmplifierDefinition> BlockingChainAmplifiers() =>
+    [
+        new()
+        {
+            Description = "Apex head blocker is sleeping — abandoned transaction at the top of the chain",
+            Boost = 0.4,
+            Predicate = facts => facts.TryGetValue("BLOCKING_CHAIN", out var f)
+                              && f.Metadata.GetValueOrDefault("worst_apex_sleeping") > 0
+        },
+        new()
+        {
+            Description = "Deadlocks also present — chain blocking escalating to deadlocks",
+            Boost = 0.3,
+            Predicate = facts => facts.ContainsKey("DEADLOCKS") && facts["DEADLOCKS"].BaseSeverity > 0
+        },
+        new()
+        {
+            Description = "THREADPOOL waits present — chain victims pinning worker threads",
+            Boost = 0.3,
+            Predicate = facts => facts.ContainsKey("THREADPOOL") && facts["THREADPOOL"].BaseSeverity > 0
+        }
+    ];
+
+    /// <summary>
+    /// RESOURCE_SEMAPHORE_QUERY_COMPILE: compile-gateway memory pressure. Corroborated by
+    /// CPU signals (compilation is CPU-heavy), not by runtime-grant signals.
+    /// </summary>
+    private static List<AmplifierDefinition> ResourceSemaphoreQueryCompileAmplifiers() =>
+    [
+        new()
+        {
+            Description = "SOS_SCHEDULER_YIELD elevated — compilation competing for CPU",
+            Boost = 0.3,
+            Predicate = facts => HasSignificantWait(facts, "SOS_SCHEDULER_YIELD", 0.25)
+        },
+        new()
+        {
+            Description = "SQL Server CPU > 80% — compilation a measurable share of CPU load",
+            Boost = 0.3,
+            Predicate = facts => facts.TryGetValue("CPU_SQL_PERCENT", out var cpu) && cpu.Value >= 80
+        },
+        new()
+        {
+            Description = "RESOURCE_SEMAPHORE also present — broad memory starvation, not isolated compile pressure",
+            Boost = 0.2,
+            Predicate = facts => facts.ContainsKey("RESOURCE_SEMAPHORE") && facts["RESOURCE_SEMAPHORE"].BaseSeverity > 0
         }
     ];
 
@@ -900,6 +972,9 @@ public class FactScorer
             "PAGEIOLATCH_SH"      => (0.25, null),
             "PAGEIOLATCH_EX"      => (0.25, null),
             "RESOURCE_SEMAPHORE"  => (0.01, null),
+            // Query-compile memory pressure — ramped: healthy servers see some compile-gateway
+            // waits, so 1% of period is concerning but 10% is critical.
+            "RESOURCE_SEMAPHORE_QUERY_COMPILE" => (0.01, 0.10),
 
             // Parallelism (CXCONSUMER is grouped into CXPACKET by collector)
             "CXPACKET"            => (0.25, null),
