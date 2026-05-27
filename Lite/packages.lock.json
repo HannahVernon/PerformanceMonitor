@@ -749,6 +749,9 @@
         "type": "Transitive",
         "resolved": "10.0.1",
         "contentHash": "BZC4mhdL569AXV56ep9YO6ShjhxFXGP7SwVX0Bc/e0dJPWnS6aBEXZJXqh64RVx8HquqWHkJUINBydLRQ1yq0g=="
+      },
+      "performancemonitor.analysis": {
+        "type": "Project"
       }
     }
   }

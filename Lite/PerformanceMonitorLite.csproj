@@ -36,6 +36,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PerformanceMonitor.Analysis\PerformanceMonitor.Analysis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- DuckDB for local data storage -->
     <PackageReference Include="DuckDB.NET.Data" Version="1.5.2" />
     <PackageReference Include="DuckDB.NET.Bindings.Full" Version="1.5.2" />

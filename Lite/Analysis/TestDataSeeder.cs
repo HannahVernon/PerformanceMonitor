@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Analysis;

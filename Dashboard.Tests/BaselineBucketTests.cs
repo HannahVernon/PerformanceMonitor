@@ -1,3 +1,4 @@
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Analysis;
 using Xunit;
 

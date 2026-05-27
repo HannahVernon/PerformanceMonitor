@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace PerformanceMonitorDashboard.Analysis;
+namespace PerformanceMonitor.Analysis;
 
 /// <summary>
 /// Assigns severity to facts using threshold formulas (Layer 1)
@@ -330,14 +330,13 @@ public class FactScorer
     /// </summary>
     private static double ScoreAnomalyFact(Fact fact)
     {
-        if (   fact.Key.StartsWith("ANOMALY_CPU_SPIKE"      , StringComparison.OrdinalIgnoreCase)
-            || fact.Key.StartsWith("ANOMALY_READ_LATENCY"  , StringComparison.OrdinalIgnoreCase)
-            || fact.Key.StartsWith("ANOMALY_WRITE_LATENCY" , StringComparison.OrdinalIgnoreCase)
+        if (fact.Key.StartsWith("ANOMALY_CPU_SPIKE", StringComparison.OrdinalIgnoreCase)
+            || fact.Key.StartsWith("ANOMALY_READ_LATENCY", StringComparison.OrdinalIgnoreCase)
+            || fact.Key.StartsWith("ANOMALY_WRITE_LATENCY", StringComparison.OrdinalIgnoreCase)
             || fact.Key.StartsWith("ANOMALY_BATCH_REQUESTS", StringComparison.OrdinalIgnoreCase)
-            || fact.Key.StartsWith("ANOMALY_SESSION_SPIKE" , StringComparison.OrdinalIgnoreCase)
+            || fact.Key.StartsWith("ANOMALY_SESSION_SPIKE", StringComparison.OrdinalIgnoreCase)
             || fact.Key.StartsWith("ANOMALY_QUERY_DURATION", StringComparison.OrdinalIgnoreCase)
-            || fact.Key.StartsWith("ANOMALY_MEMORY_PRESSURE", StringComparison.OrdinalIgnoreCase)
-            )
+            || fact.Key.StartsWith("ANOMALY_MEMORY_PRESSURE", StringComparison.OrdinalIgnoreCase))
         {
             // Deviation-based scoring: 2σ = 0.5, 4σ = 1.0
             var deviation = fact.Metadata.GetValueOrDefault("deviation_sigma");
@@ -355,9 +354,7 @@ public class FactScorer
             return 0.5 + 0.5 * Math.Min((ratio - 5.0) / 15.0, 1.0);
         }
 
-        if (   fact.Key.StartsWith("ANOMALY_BLOCKING_SPIKE", StringComparison.OrdinalIgnoreCase)
-            || fact.Key.StartsWith("ANOMALY_DEADLOCK_SPIKE", StringComparison.OrdinalIgnoreCase)
-            )
+        if (fact.Key.StartsWith("ANOMALY_BLOCKING_SPIKE", StringComparison.OrdinalIgnoreCase) || fact.Key.StartsWith("ANOMALY_DEADLOCK_SPIKE", StringComparison.OrdinalIgnoreCase))
         {
             // Ratio-based: 3x = 0.5, 10x = 1.0
             var ratio = fact.Metadata.GetValueOrDefault("ratio");

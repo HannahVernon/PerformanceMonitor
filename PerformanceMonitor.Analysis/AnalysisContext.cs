@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 
-namespace PerformanceMonitorLite.Analysis;
+namespace PerformanceMonitor.Analysis;
 
 /// <summary>
 /// Context for an analysis run — what server, what time range.
@@ -19,13 +18,4 @@ public class AnalysisContext
     /// Duration of the examined period in milliseconds.
     /// </summary>
     public double PeriodDurationMs => (TimeRangeEnd - TimeRangeStart).TotalMilliseconds;
-}
-
-/// <summary>
-/// Collects facts from a data source for analysis.
-/// Implementations are per-app: DuckDB for Lite, SQL Server for Dashboard.
-/// </summary>
-public interface IFactCollector
-{
-    Task<List<Fact>> CollectFactsAsync(AnalysisContext context);
 }
