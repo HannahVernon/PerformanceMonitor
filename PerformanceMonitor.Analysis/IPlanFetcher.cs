@@ -1,6 +1,6 @@
 using System.Threading.Tasks;
 
-namespace PerformanceMonitorLite.Analysis;
+namespace PerformanceMonitor.Analysis;
 
 /// <summary>
 /// Fetches execution plan XML from SQL Server on demand.

@@ -4,7 +4,7 @@ using System.Linq;
 using PerformanceMonitor.Analysis;
 using Xunit;
 
-namespace PerformanceMonitorLite.Tests;
+namespace PerformanceMonitorDashboard.Tests;
 
 /// <summary>
 /// Pure unit tests for BlockingChainReconstructor — apex/depth/victim reconstruction,

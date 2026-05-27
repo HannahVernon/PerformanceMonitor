@@ -737,6 +737,9 @@
           "Microsoft.Data.SqlClient": "[7.0.1, )",
           "Microsoft.Data.SqlClient.Extensions.Azure": "[1.0.0, )"
         }
+      },
+      "performancemonitor.analysis": {
+        "type": "Project"
       }
     }
   }

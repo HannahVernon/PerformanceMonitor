@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using PerformanceMonitorLite;
-using PerformanceMonitorLite.Analysis;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Services;
 using Xunit;

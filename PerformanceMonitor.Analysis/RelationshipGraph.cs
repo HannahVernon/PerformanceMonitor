@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace PerformanceMonitorLite.Analysis;
+namespace PerformanceMonitor.Analysis;
 
 /// <summary>
 /// Defines conditional edges between facts. The graph encodes Erik's diagnostic

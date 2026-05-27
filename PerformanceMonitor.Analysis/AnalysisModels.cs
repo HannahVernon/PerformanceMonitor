@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace PerformanceMonitorLite.Analysis;
+namespace PerformanceMonitor.Analysis;
 
 /// <summary>
 /// A scored observation from collected data.

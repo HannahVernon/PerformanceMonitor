@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using PerformanceMonitorDashboard.Analysis;
+using PerformanceMonitor.Analysis;
 using Xunit;
 
 namespace PerformanceMonitorDashboard.Tests;

@@ -52,6 +52,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Installer.Core\Installer.Core.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.Analysis\PerformanceMonitor.Analysis.csproj" />
   </ItemGroup>
 
   <ItemGroup>

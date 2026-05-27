@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Services;
 
 namespace PerformanceMonitorLite.Analysis;

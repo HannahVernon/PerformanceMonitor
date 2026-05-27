@@ -894,6 +894,9 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "performancemonitor.analysis": {
+        "type": "Project"
+      },
       "performancemonitorlite": {
         "type": "Project",
         "dependencies": {
@@ -907,6 +910,7 @@
           "Microsoft.Extensions.Logging": "[10.0.8, )",
           "ModelContextProtocol": "[1.3.0, )",
           "ModelContextProtocol.AspNetCore": "[1.3.0, )",
+          "PerformanceMonitor.Analysis": "[1.0.0, )",
           "ScottPlot.WPF": "[5.1.58, )",
           "Velopack": "[0.0.1298, )"
         }
