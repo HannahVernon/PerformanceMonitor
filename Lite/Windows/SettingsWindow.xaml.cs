@@ -605,6 +605,9 @@ public partial class SettingsWindow : Window
             _ => 3
         };
         LogAlertDismissalsCheckBox.IsChecked = App.LogAlertDismissals;
+        AnalysisNotificationsCheckBox.IsChecked = App.AnalysisNotificationsEnabled;
+        AnalysisIntervalBox.Text = App.AnalysisIntervalMinutes.ToString();
+        AnalysisNotifySeverityBox.Text = App.AnalysisNotifySeverity.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
         UpdateAlertControlStates();
     }
 
@@ -657,6 +660,16 @@ public partial class SettingsWindow : Window
             validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes.");
         App.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         App.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
+        App.AnalysisNotificationsEnabled = AnalysisNotificationsCheckBox.IsChecked == true;
+        if (int.TryParse(AnalysisIntervalBox.Text, out var analysisInterval) && analysisInterval >= 5 && analysisInterval <= 360)
+            App.AnalysisIntervalMinutes = analysisInterval;
+        else
+            validationErrors.Add("Analysis interval must be between 5 and 360 minutes.");
+        if (double.TryParse(AnalysisNotifySeverityBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var analysisSeverity)
+            && analysisSeverity >= 0.0 && analysisSeverity <= 2.0)
+            App.AnalysisNotifySeverity = analysisSeverity;
+        else
+            validationErrors.Add("Analysis notify severity must be between 0.0 and 2.0.");
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
         try
@@ -702,6 +715,9 @@ public partial class SettingsWindow : Window
             root["email_cooldown_minutes"] = App.EmailCooldownMinutes;
             root["mute_rule_default_expiration"] = App.MuteRuleDefaultExpiration;
             root["log_alert_dismissals"] = App.LogAlertDismissals;
+            root["analysis_notifications_enabled"] = App.AnalysisNotificationsEnabled;
+            root["analysis_interval_minutes"] = App.AnalysisIntervalMinutes;
+            root["analysis_notify_severity"] = App.AnalysisNotifySeverity;
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             File.WriteAllText(settingsPath, root.ToJsonString(options));
@@ -740,6 +756,8 @@ public partial class SettingsWindow : Window
         AlertLongRunningJobMultiplierBox.Text = "3";
         AlertCooldownBox.Text = "5";
         EmailCooldownBox.Text = "15";
+        AnalysisIntervalBox.Text = "30";
+        AnalysisNotifySeverityBox.Text = "1.5";
         AlertExcludedDatabasesBox.Text = "";
         MuteRuleDefaultExpirationCombo.SelectedIndex = 1; // 24 hours
         UpdateAlertPreviewText();

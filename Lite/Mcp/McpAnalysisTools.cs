@@ -837,10 +837,11 @@ internal static class ToolRecommendations
     private static readonly string[] DayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
     /// <summary>
-    /// Formats baseline context from anomaly fact metadata into a human-readable object
-    /// for MCP output. Example: "4.1σ above baseline for Tue 14:00, mean 68.2"
+    /// Formats baseline context from anomaly fact metadata into a structured dictionary
+    /// (deviation, ratio, baseline mean/stddev, time bucket, tier, samples). Used by MCP
+    /// output and by AnalysisNotificationService's finding formatter.
     /// </summary>
-    private static Dictionary<string, object>? FormatBaselineContext(Dictionary<string, double> metadata)
+    internal static Dictionary<string, object>? FormatBaselineContext(Dictionary<string, double> metadata)
     {
         var result = new Dictionary<string, object>();
 
