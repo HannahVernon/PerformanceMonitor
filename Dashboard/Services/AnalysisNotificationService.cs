@@ -38,8 +38,10 @@ namespace PerformanceMonitorDashboard.Services
 
         /// <summary>
         /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
-        /// In-memory only — lost on app restart (each active finding then re-notifies once).
-        /// Never evicts; bounded by servers × distinct story patterns.
+        /// Seeded lazily from the alert log on first lookup per key so a finding
+        /// that just fired and entered its cooldown stays suppressed across an
+        /// app restart. Pruned on each notify cycle to entries within
+        /// 2 × AnalysisNotifyCooldownMinutes.
         /// </summary>
         private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
@@ -90,29 +92,57 @@ namespace PerformanceMonitorDashboard.Services
                 (prefs.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(WebhookAlertService.GetTeamsWebhookUrl()))
              || (prefs.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(WebhookAlertService.GetSlackWebhookUrl()));
 
+            /* Drop entries past 2× cooldown so the dict stays bounded — any entry
+               past 1× is already re-fire-eligible, doubling gives clock-skew margin.
+               If a key here also matches a finding in this batch, the per-finding
+               seed below will re-add it from history; that's a wash, not a bug. */
+            var pruneBefore = now - TimeSpan.FromTicks(cooldown.Ticks * 2);
+            foreach (var stale in _cooldowns)
+            {
+                if (stale.Value < pruneBefore)
+                    _cooldowns.TryRemove(stale.Key, out _);
+            }
+
             foreach (var finding in findings)
             {
                 if (finding.Severity < threshold)
                     continue;
 
                 var key = $"{finding.ServerId}:{finding.StoryPathHash}";
+
+                /* Use the matching ServerConnection.Id (GUID string) when we can find
+                   it — keeps alert_history.json keys consistent with the threshold-alert
+                   engine. Fall back to the finding's stable int id (as a string) if the
+                   lookup misses (server removed between cycle start and notify).
+                   Resolved up-front so the seed lookup below uses the same shape as
+                   the EmailAlertService call. */
+                var matchedServer = _serverManager.GetAllServers()
+                    .FirstOrDefault(s => string.Equals(s.ServerName, finding.ServerName, StringComparison.OrdinalIgnoreCase));
+                var serverId = matchedServer?.Id ?? finding.ServerId.ToString();
+                var metricName = FindingMessageFormatter.MetricName(finding);
+
+                /* Seed the in-memory cooldown from alert_history.json on first lookup
+                   per key so an analysis finding that fired shortly before an app
+                   restart is not re-fired afterward. No channel/error filter — the
+                   cooldown is stamped unconditionally below, so the persisted equivalent
+                   is the latest row for that metric_name regardless of channel. */
+                if (!_cooldowns.ContainsKey(key))
+                {
+                    var lastPersisted = _emailAlertService.GetLastAlertTime(serverId, metricName);
+                    if (lastPersisted.HasValue)
+                    {
+                        _cooldowns.TryAdd(key, lastPersisted.Value);
+                    }
+                }
+
                 if (_cooldowns.TryGetValue(key, out var last) && now - last < cooldown)
                     continue;
 
                 try
                 {
-                    var metricName = FindingMessageFormatter.MetricName(finding);
                     var currentValue = FindingMessageFormatter.CurrentValue(finding);
                     var thresholdDisplay = threshold.ToString("F1");
                     var context = FindingMessageFormatter.BuildContext(finding, threshold);
-
-                    /* Use the matching ServerConnection.Id (GUID string) when we can find
-                       it — keeps alert_history.json keys consistent with the threshold-alert
-                       engine. Fall back to the finding's stable int id (as a string) if the
-                       lookup misses (server removed between cycle start and notify). */
-                    var matchedServer = _serverManager.GetAllServers()
-                        .FirstOrDefault(s => string.Equals(s.ServerName, finding.ServerName, StringComparison.OrdinalIgnoreCase));
-                    var serverId = matchedServer?.Id ?? finding.ServerId.ToString();
 
                     /* TrySendAlertEmailAsync fans out to email + Slack + Teams and records
                        an alert log row for each channel that actually fired. Returns no
