@@ -87,6 +87,21 @@ namespace PerformanceMonitorDashboard.Services
                     !string.IsNullOrWhiteSpace(prefs.SmtpRecipients))
                 {
                     var cooldownKey = $"{serverId}:{metricName}";
+
+                    /* Seed the in-memory cooldown from the alert log the first
+                       time this key is seen, so an alert email sent shortly
+                       before an app restart is not immediately re-sent after
+                       (#981 parity for Dashboard). The in-memory dictionary is
+                       authoritative once seeded. */
+                    if (!_cooldowns.ContainsKey(cooldownKey))
+                    {
+                        var lastPersistedSend = GetLastEmailSentUtc(serverId, metricName);
+                        if (lastPersistedSend.HasValue)
+                        {
+                            _cooldowns.TryAdd(cooldownKey, lastPersistedSend.Value);
+                        }
+                    }
+
                     var withinCooldown = _cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
                         DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(prefs.EmailCooldownMinutes);
 
@@ -285,6 +300,35 @@ namespace PerformanceMonitorDashboard.Services
         public (int ConsecutiveFailures, string? LastError) GetEmailHealth()
         {
             return (_consecutiveFailures, _lastFailureError);
+        }
+
+        /// <summary>
+        /// Returns the UTC time the most recent alert email was successfully
+        /// sent for this server/metric, scanned from the in-memory alert log
+        /// (which itself is loaded from alert_history.json on startup) — or
+        /// null if none. Used to seed the in-memory cooldown after an app
+        /// restart (#981 parity for Dashboard).
+        /// </summary>
+        /// <remarks>
+        /// Dashboard records email and webhook deliveries as separate alert-log
+        /// rows, so the filter is just NotificationType == "email" — Lite's
+        /// combined "email+webhook" notification_type never appears here.
+        /// </remarks>
+        private DateTime? GetLastEmailSentUtc(string serverId, string metricName)
+        {
+            lock (_alertLogLock)
+            {
+                DateTime? max = null;
+                foreach (var entry in _alertLog)
+                {
+                    if (entry.ServerId != serverId) continue;
+                    if (entry.MetricName != metricName) continue;
+                    if (entry.NotificationType != "email") continue;
+                    if (!string.IsNullOrEmpty(entry.SendError)) continue;
+                    if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
+                }
+                return max;
+            }
         }
 
         #region Alert Log Persistence
