@@ -200,7 +200,7 @@ namespace PerformanceMonitorDashboard.Services
             /* Separator + heading */
             sb.Append("<tr><td style=\"padding:0 24px;\"><table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\"><tr><td style=\"height:1px;background-color:#404040;font-size:0;line-height:0;\">&nbsp;</td></tr></table></td></tr>");
             sb.Append("<tr><td style=\"padding:12px 24px 4px 24px;\">");
-            sb.Append($"<span style=\"font-family:{FontStack};font-size:13px;font-weight:600;color:#E4E6EB;letter-spacing:0.5px;\">RECENT EVENTS</span>");
+            sb.Append($"<span style=\"font-family:{FontStack};font-size:13px;font-weight:600;color:#E4E6EB;letter-spacing:0.5px;\">DETAILS</span>");
             sb.Append("</td></tr>");
 
             foreach (var item in context.Details)
@@ -266,7 +266,7 @@ namespace PerformanceMonitorDashboard.Services
 
             if (context?.Details?.Count > 0)
             {
-                sb.Append($"\r\n--- Recent Events ---\r\n");
+                sb.Append($"\r\n--- Details ---\r\n");
                 foreach (var item in context.Details)
                 {
                     sb.Append($"\r\n  {item.Heading}\r\n");

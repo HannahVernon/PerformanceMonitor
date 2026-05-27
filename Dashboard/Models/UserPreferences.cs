@@ -131,6 +131,16 @@ namespace PerformanceMonitorDashboard.Models
         public bool McpEnabled { get; set; } = false;
         public int McpPort { get; set; } = 5150;
 
+        // Automated analysis notifications (Stage 2)
+        // Bounds are enforced where these are consumed (the scheduler and the
+        // notification service), not here — keeps the prefs surface simple and
+        // lets clamps be visible at the consumption sites.
+        public bool AnalysisNotificationsEnabled { get; set; } = false;
+        public int AnalysisIntervalMinutes { get; set; } = 30;
+        public double AnalysisNotifySeverity { get; set; } = 1.5;
+        public int AnalysisNotifyCooldownMinutes { get; set; } = 360;
+        public int AnalysisTimeoutSeconds { get; set; } = 120;
+
         // CSV export settings
         public string CsvSeparator { get; set; } = GetDefaultCsvSeparator();
 

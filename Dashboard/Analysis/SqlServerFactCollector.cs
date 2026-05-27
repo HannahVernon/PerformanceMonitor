@@ -39,6 +39,9 @@ public class SqlServerFactCollector : IFactCollector
         await CollectTempDbFactsAsync(context, facts);
         await CollectMemoryGrantFactsAsync(context, facts);
         await CollectQueryStatsFactsAsync(context, facts);
+        await CollectParameterSensitivityFactsAsync(context, facts);
+        await CollectPlanRegressionFactsAsync(context, facts);
+        await CollectBlockingChainFactsAsync(context, facts);
         await CollectBadActorFactsAsync(context, facts);
         await CollectPerfmonFactsAsync(context, facts);
         await CollectMemoryClerkFactsAsync(context, facts);
@@ -795,6 +798,423 @@ AND   execution_count_delta > 0";
         catch (Exception ex)
         {
             Logger.Error("SqlServerFactCollector.CollectQueryStatsFactsAsync failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Detects parameter-sensitive cached plans: a single query_plan_hash whose
+    /// per-execution worker time varies wildly — one plan serving very different
+    /// parameter values. Emits one aggregate PARAMETER_SENSITIVITY fact.
+    /// Note min_*/max_* are cumulative over the plan's cached lifetime, so the
+    /// finding means "this plan, active now, has a history of widely varying cost".
+    /// </summary>
+    private async Task CollectParameterSensitivityFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH latest AS
+(
+    SELECT
+        query_hash,
+        query_plan_hash,
+        database_name,
+        execution_count,
+        creation_time,
+        min_worker_time,
+        max_worker_time,
+        min_grant_kb,
+        max_grant_kb,
+        min_spills,
+        max_spills,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY database_name, query_hash, query_plan_hash
+            ORDER BY collection_time DESC
+        ) AS rn
+    FROM collect.query_stats
+    WHERE collection_time >= @startTime
+    AND   collection_time <= @endTime
+    AND   execution_count_delta > 0
+)
+SELECT
+    min_worker_time,
+    max_worker_time,
+    CAST(max_worker_time AS float) / NULLIF(min_worker_time, 0) AS worker_ratio,
+    CAST(max_grant_kb AS float) / NULLIF(min_grant_kb, 0) AS grant_ratio,
+    CASE WHEN max_spills > 0 AND min_spills = 0 THEN 1 ELSE 0 END AS spill_divergence
+FROM latest
+WHERE rn = 1
+AND   min_worker_time >= 10000
+AND   max_worker_time >= 250000
+AND   execution_count >= 20
+AND   creation_time <= @startTime
+AND   CAST(max_worker_time AS float) / NULLIF(min_worker_time, 0) >= 10
+ORDER BY worker_ratio DESC
+OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY";
+
+            cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+            cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+            var offenderCount = 0;
+            var worstRatio = 0.0;
+            var worstMinWorker = 0L;
+            var worstMaxWorker = 0L;
+            var worstGrantRatio = 0.0;
+            var worstSpillDivergence = 0;
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                // Rows arrive ordered by worker_ratio DESC — the first row is the worst offender.
+                if (offenderCount == 0)
+                {
+                    worstMinWorker = reader.IsDBNull(0) ? 0L : Convert.ToInt64(reader.GetValue(0));
+                    worstMaxWorker = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1));
+                    worstRatio = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2));
+                    worstGrantRatio = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3));
+                    worstSpillDivergence = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
+                }
+                offenderCount++;
+            }
+
+            if (offenderCount == 0) return;
+
+            facts.Add(new Fact
+            {
+                Source = "queries",
+                Key = "PARAMETER_SENSITIVITY",
+                Value = worstRatio,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["offender_count"] = offenderCount,
+                    ["worst_ratio"] = worstRatio,
+                    ["worst_min_worker_us"] = worstMinWorker,
+                    ["worst_max_worker_us"] = worstMaxWorker,
+                    ["worst_grant_ratio"] = worstGrantRatio,
+                    ["grant_divergence"] = worstGrantRatio >= 5 ? 1 : 0,
+                    ["spill_divergence"] = worstSpillDivergence
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SqlServerFactCollector.CollectParameterSensitivityFactsAsync failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Detects plan regressions: a query whose currently-active plan has per-execution
+    /// cost >= 2x the best plan that query is known to perform well with. Emits one
+    /// aggregate PLAN_REGRESSION fact. Sourced from Query Store (collect.query_store_data);
+    /// no fact when Query Store is not enabled on the monitored databases.
+    /// Unlike other collectors this windows on server_last_execution_time (14-day
+    /// comparison window), NOT collection_time.
+    /// </summary>
+    private async Task CollectPlanRegressionFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH deduped AS
+(
+    -- Collapse incremental re-collections of the same open runtime-stats interval:
+    -- keep only the latest collection_time row per logical interval.
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        query_plan_hash,
+        count_executions,
+        avg_cpu_time,
+        avg_duration,
+        server_last_execution_time,
+        is_forced_plan,
+        force_failure_count,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY database_name, query_id, plan_id, server_first_execution_time
+            ORDER BY collection_time DESC
+        ) AS rn
+    FROM collect.query_store_data
+    WHERE execution_type_desc = N'Regular'
+    AND   server_last_execution_time >= @windowStart
+),
+plan_agg AS
+(
+    -- Execution-weighted per-exec cost per plan_id. query_plan_hash is invariant
+    -- within a plan_id, so include it in the GROUP BY rather than aggregating it
+    -- (MS Learn's MAX page does not list binary/varbinary in the accepted types).
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        query_plan_hash,
+        SUM(count_executions) AS execs,
+        CASE WHEN SUM(count_executions) > 0
+             THEN SUM(avg_cpu_time * count_executions) / NULLIF(SUM(count_executions), 0)
+             ELSE 0 END AS cpu_per_exec,
+        CASE WHEN SUM(count_executions) > 0
+             THEN SUM(avg_duration * count_executions) / NULLIF(SUM(count_executions), 0)
+             ELSE 0 END AS dur_per_exec,
+        MAX(server_last_execution_time) AS last_exec,
+        MAX(CAST(is_forced_plan AS tinyint)) AS is_forced_plan,
+        MAX(force_failure_count) AS force_failure_count
+    FROM deduped
+    WHERE rn = 1
+    GROUP BY database_name, query_id, plan_id, query_plan_hash
+),
+plan_dedup AS
+(
+    -- Collapse plan_ids that share a query_plan_hash (a recompile can produce an
+    -- identical plan under a new plan_id); keep only plans with enough executions.
+    SELECT
+        database_name,
+        query_id,
+        query_plan_hash,
+        SUM(execs) AS execs,
+        CASE WHEN SUM(execs) > 0
+             THEN SUM(cpu_per_exec * execs) / NULLIF(SUM(execs), 0)
+             ELSE 0 END AS cpu_per_exec,
+        CASE WHEN SUM(execs) > 0
+             THEN SUM(dur_per_exec * execs) / NULLIF(SUM(execs), 0)
+             ELSE 0 END AS dur_per_exec,
+        MAX(last_exec) AS last_exec,
+        MAX(is_forced_plan) AS is_forced_plan,
+        MAX(force_failure_count) AS force_failure_count
+    FROM plan_agg
+    GROUP BY database_name, query_id, query_plan_hash
+    HAVING SUM(execs) >= 25
+),
+ranked AS
+(
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY last_exec DESC) AS recency,
+        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY cpu_per_exec ASC) AS cheapness
+    FROM plan_dedup
+),
+compared AS
+(
+    -- Latest active plan vs the best-performing plan for the same query.
+    SELECT
+        l.query_id,
+        l.cpu_per_exec AS latest_cpu,
+        l.dur_per_exec AS latest_dur,
+        l.is_forced_plan AS latest_is_forced,
+        l.force_failure_count AS force_failure_count,
+        b.cpu_per_exec AS best_cpu,
+        b.dur_per_exec AS best_dur,
+        (SELECT MAX(v)
+         FROM (VALUES
+             (CAST(l.cpu_per_exec AS float) / NULLIF(b.cpu_per_exec, 0)),
+             (CAST(l.dur_per_exec AS float) / NULLIF(b.dur_per_exec, 0))
+         ) AS x(v)) AS regression_factor
+    FROM ranked AS l
+    JOIN ranked AS b
+      ON  b.database_name = l.database_name
+      AND b.query_id = l.query_id
+      AND b.cheapness = 1
+    WHERE l.recency = 1
+    AND   l.query_plan_hash <> b.query_plan_hash
+)
+SELECT
+    query_id,
+    latest_cpu,
+    latest_dur,
+    latest_is_forced,
+    force_failure_count,
+    best_cpu,
+    best_dur,
+    regression_factor
+FROM compared
+WHERE regression_factor >= 2
+ORDER BY regression_factor DESC
+OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY";
+
+            cmd.Parameters.Add(new SqlParameter("@windowStart", context.TimeRangeStart.AddDays(-14)));
+
+            var offenderCount = 0;
+            var worstFactor = 0.0;
+            var worstQueryId = 0L;
+            var worstLatestCpu = 0.0;
+            var worstBestCpu = 0.0;
+            var worstDimension = 1;
+            var worstLatestForced = 0;
+            var worstForceFailures = 0L;
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                // Rows arrive ordered by regression_factor DESC — the first row is the worst offender.
+                if (offenderCount == 0)
+                {
+                    worstQueryId = reader.IsDBNull(0) ? 0L : Convert.ToInt64(reader.GetValue(0));
+                    var latestCpu = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+                    var latestDur = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2));
+                    worstLatestForced = (!reader.IsDBNull(3) && Convert.ToInt32(reader.GetValue(3)) > 0) ? 1 : 0;
+                    worstForceFailures = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4));
+                    var bestCpu = reader.IsDBNull(5) ? 0.0 : Convert.ToDouble(reader.GetValue(5));
+                    var bestDur = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6));
+                    worstFactor = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7));
+
+                    worstLatestCpu = latestCpu;
+                    worstBestCpu = bestCpu;
+                    var cpuRatio = bestCpu > 0 ? latestCpu / bestCpu : 0.0;
+                    var durRatio = bestDur > 0 ? latestDur / bestDur : 0.0;
+                    worstDimension = cpuRatio >= durRatio ? 1 : 2; // 1 = cpu, 2 = duration
+                }
+                offenderCount++;
+            }
+
+            if (offenderCount == 0) return;
+
+            facts.Add(new Fact
+            {
+                Source = "queries",
+                Key = "PLAN_REGRESSION",
+                Value = worstFactor,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["offender_count"] = offenderCount,
+                    ["worst_regression_factor"] = worstFactor,
+                    ["worst_query_id"] = worstQueryId,
+                    ["latest_cpu_per_exec_us"] = worstLatestCpu,
+                    ["best_cpu_per_exec_us"] = worstBestCpu,
+                    ["regressed_dimension"] = worstDimension,
+                    ["latest_is_forced"] = worstLatestForced,
+                    ["force_failure_count"] = worstForceFailures
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SqlServerFactCollector.CollectPlanRegressionFactsAsync failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Reconstructs blocking chains from collect.blocking_BlockedProcessReport (one row
+    /// per side of each blocking event, dedup'd to <c>activity = 'blocked'</c>) and emits
+    /// one aggregate BLOCKING_CHAIN fact describing the worst chain — apex head blocker,
+    /// depth, transitive victim count. Structure the BLOCKING_EVENTS rate is blind to.
+    /// Reads typed blocker-side columns populated by collect.process_blocked_process_xml,
+    /// so no XML re-parse on the analysis hot path.
+    /// </summary>
+    private async Task CollectBlockingChainFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        const int maxPairs = 5000;
+        const int maxDepth = 50;
+        const int stepBudget = 100_000;
+
+        try
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            // ORDER BY collection_time DESC is a backward CIX scan (sort-free); event_time
+            // is a residual predicate. activity='blocked' picks the canonical per-event side.
+            // blocking_spid IS NOT NULL filters out rows whose source XML had an empty
+            // <blocking-process><process/></blocking-process> (system task / torn-down session) —
+            // those can't contribute to a reconstructed chain.
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT TOP (5000)
+    event_time,
+    database_name,
+    spid,
+    last_transaction_started,
+    blocking_spid,
+    blocking_last_tran_started,
+    wait_time_ms,
+    lock_mode,
+    blocking_status,
+    blocked_sql_text,
+    blocking_sql_text
+FROM collect.blocking_BlockedProcessReport
+WHERE collection_time >= @collectionWindow
+AND   event_time >= @startTime
+AND   event_time <= @endTime
+AND   activity = 'blocked'
+AND   blocking_spid IS NOT NULL
+ORDER BY collection_time DESC";
+
+            // Generous bound — analysis window plus an hour — to catch rows whose
+            // event_time is inside the window but whose collection_time may lag slightly.
+            cmd.Parameters.Add(new SqlParameter("@collectionWindow", context.TimeRangeStart.AddHours(-1)));
+            cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+            cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+            var rows = new List<BlockingPairRow>();
+            using (var reader = await cmd.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    rows.Add(new BlockingPairRow
+                    {
+                        EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                        DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                        BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                        BlockedTranStarted = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3),
+                        BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                        BlockingTranStarted = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5),
+                        WaitTimeMs = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                        LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                        BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                        BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                        BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                    });
+                }
+            }
+
+            if (rows.Count == 0) return;
+
+            var reconstruction = BlockingChainReconstructor.Reconstruct(rows, maxDepth, maxPairs, stepBudget);
+            if (reconstruction.Chains.Count == 0) return;
+
+            var worst = reconstruction.Chains[0];
+
+            facts.Add(new Fact
+            {
+                Source = "blocking",
+                Key = "BLOCKING_CHAIN",
+                Value = worst.Depth,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["worst_chain_depth"] = worst.Depth,
+                    ["worst_chain_victim_count"] = worst.VictimCount,
+                    ["worst_apex_spid"] = worst.ApexSpid,
+                    ["worst_apex_sleeping"] = worst.ApexSleeping ? 1 : 0,
+                    ["worst_chain_max_wait_ms"] = worst.MaxWaitMs,
+                    ["total_reconstructed_chains"] = reconstruction.Chains.Count,
+                    ["deepest_chain_overall"] = reconstruction.Chains.Max(c => c.Depth),
+                    ["max_victim_count_overall"] = reconstruction.Chains.Max(c => c.VictimCount),
+                    ["depth_capped"] = reconstruction.DepthCapped ? 1 : 0,
+                    ["traversal_truncated"] = reconstruction.TraversalTruncated ? 1 : 0,
+                    ["cycle_detected"] = reconstruction.CycleDetected ? 1 : 0
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SqlServerFactCollector.CollectBlockingChainFactsAsync failed", ex);
         }
     }
 
