@@ -155,6 +155,58 @@ public class EmailAlertService
     }
 
     /// <summary>
+    /// Returns the UTC time of the most recent alert_log row for this
+    /// (serverId, metricName), regardless of notification channel or
+    /// delivery result. Used by <see cref="AnalysisNotificationService"/>
+    /// to seed its per-finding cooldown across restarts — unlike the
+    /// email cooldown (which filters to successful sends), the analysis
+    /// cooldown is stamped unconditionally, so the persisted equivalent
+    /// is the latest row for that metric_name, period.
+    /// </summary>
+    public async Task<DateTime?> GetLastAlertTimeAsync(int serverId, string metricName)
+    {
+        try
+        {
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return null;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var readLock = duckDb.AcquireReadLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            /* metric_name embeds the first 8 chars of StoryPathHash via
+               FindingMessageFormatter.MetricName, so a short-hash collision
+               between two findings could seed one from the other's history.
+               Acceptable: collision rate is ~sqrt(2^32) ≈ 65k unique patterns
+               per server before a 50% chance, and the failure mode is suppress
+               (not over-notify). */
+            command.CommandText = @"
+SELECT MAX(alert_time)
+FROM config_alert_log
+WHERE server_id = $1
+AND   metric_name = $2";
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
+
+            var result = await command.ExecuteScalarAsync();
+            if (result == null || result == DBNull.Value) return null;
+
+            return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("AnalysisNotify", $"Could not read persisted analysis cooldown: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Returns the UTC time the most recent alert email was successfully sent
     /// for this server/metric, read from config_alert_log — or null if none.
     /// Used to seed the in-memory cooldown after an app restart (#981).

@@ -196,10 +196,16 @@ public class AnalysisNotificationTests : IDisposable
 
         var notifier = new AnalysisNotificationService(new EmailAlertService(_duckDb));
 
+        /* Use distinct first-8-char prefixes — FindingMessageFormatter.MetricName
+           embeds only the first 8 chars of StoryPathHash, and the persistence
+           seed (PR plan 4 PR (b)) keys on metric_name, so two findings sharing
+           a shortHash would seed from each other's alert_log row. Documented
+           and accepted as a collision risk in the plan; the test exercises the
+           non-collision case. */
         await notifier.NotifyAsync(new[]
         {
-            MakeFinding("hash000000000001", severity: 2.0),
-            MakeFinding("hash000000000002", severity: 2.0)
+            MakeFinding("aaaa000000000001", severity: 2.0),
+            MakeFinding("bbbb000000000002", severity: 2.0)
         });
 
         Assert.Equal(2, await CountAlertLogRowsAsync());

@@ -201,6 +201,30 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
+        /// Returns the AlertTime of the most recent log entry for the given
+        /// (serverId, metricName), regardless of notification channel or send
+        /// result. Used by <see cref="AnalysisNotificationService"/> to seed
+        /// its per-finding cooldown across restarts. The analysis cooldown is
+        /// stamped unconditionally, so the persisted equivalent ignores
+        /// NotificationType (which can be "email", "webhook", or "tray" on
+        /// Dashboard) and SendError. Returns null if no matching entry.
+        /// </summary>
+        public DateTime? GetLastAlertTime(string serverId, string metricName)
+        {
+            lock (_alertLogLock)
+            {
+                DateTime? max = null;
+                foreach (var entry in _alertLog)
+                {
+                    if (entry.ServerId != serverId) continue;
+                    if (entry.MetricName != metricName) continue;
+                    if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
+                }
+                return max;
+            }
+        }
+
+        /// <summary>
         /// Gets alert history from the log (excludes hidden alerts).
         /// </summary>
         public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50)

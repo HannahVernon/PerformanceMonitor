@@ -34,8 +34,10 @@ public sealed class AnalysisNotificationService
 
     /// <summary>
     /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
-    /// In-memory only — lost on app restart (each active finding then re-notifies once).
-    /// Never evicts; bounded by servers x distinct story patterns.
+    /// Seeded lazily from the alert log on first lookup per key so a finding
+    /// that just fired and entered its cooldown stays suppressed across an
+    /// app restart. Pruned on each notify cycle to entries within
+    /// 2 × AnalysisNotifyCooldownMinutes.
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
@@ -57,12 +59,39 @@ public sealed class AnalysisNotificationService
         var cooldown = TimeSpan.FromMinutes(App.AnalysisNotifyCooldownMinutes);
         var now = DateTime.UtcNow;
 
+        /* Drop entries past 2× cooldown so the dict stays bounded — any entry
+           past 1× is already re-fire-eligible, doubling gives clock-skew margin.
+           If a key here also matches a finding in this batch, the per-finding
+           seed below will re-add it from history; that's a wash, not a bug. */
+        var pruneBefore = now - TimeSpan.FromTicks(cooldown.Ticks * 2);
+        foreach (var stale in _cooldowns)
+        {
+            if (stale.Value < pruneBefore)
+                _cooldowns.TryRemove(stale.Key, out _);
+        }
+
         foreach (var finding in findings)
         {
             if (finding.Severity < threshold)
                 continue;
 
             var key = $"{finding.ServerId}:{finding.StoryPathHash}";
+
+            /* Seed the in-memory cooldown from config_alert_log on first lookup
+               per key so an analysis finding that fired shortly before an app
+               restart is not re-fired afterward. Same lazy-seed pattern as
+               EmailAlertService (#981), but with no channel/error filter — the
+               cooldown is stamped unconditionally below. */
+            if (!_cooldowns.ContainsKey(key))
+            {
+                var metricName = FindingMessageFormatter.MetricName(finding);
+                var lastPersisted = await _emailAlertService.GetLastAlertTimeAsync(finding.ServerId, metricName);
+                if (lastPersisted.HasValue)
+                {
+                    _cooldowns.TryAdd(key, lastPersisted.Value);
+                }
+            }
+
             if (_cooldowns.TryGetValue(key, out var last) && now - last < cooldown)
                 continue;
 
