@@ -336,6 +336,7 @@ public class FactScorer
             || fact.Key.StartsWith("ANOMALY_BATCH_REQUESTS", StringComparison.OrdinalIgnoreCase)
             || fact.Key.StartsWith("ANOMALY_SESSION_SPIKE" , StringComparison.OrdinalIgnoreCase)
             || fact.Key.StartsWith("ANOMALY_QUERY_DURATION", StringComparison.OrdinalIgnoreCase)
+            || fact.Key.StartsWith("ANOMALY_MEMORY_PRESSURE", StringComparison.OrdinalIgnoreCase)
             )
         {
             // Deviation-based scoring: 2σ = 0.5, 4σ = 1.0
