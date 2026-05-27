@@ -1112,7 +1112,8 @@ OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY";
     /// per side of each blocking event, dedup'd to <c>activity = 'blocked'</c>) and emits
     /// one aggregate BLOCKING_CHAIN fact describing the worst chain — apex head blocker,
     /// depth, transitive victim count. Structure the BLOCKING_EVENTS rate is blind to.
-    /// XML parsing happens at analysis time; a malformed row is skipped silently.
+    /// Reads typed blocker-side columns populated by collect.process_blocked_process_xml,
+    /// so no XML re-parse on the analysis hot path.
     /// </summary>
     private async Task CollectBlockingChainFactsAsync(AnalysisContext context, List<Fact> facts)
     {
@@ -1128,22 +1129,30 @@ OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY";
             using var cmd = connection.CreateCommand();
             // ORDER BY collection_time DESC is a backward CIX scan (sort-free); event_time
             // is a residual predicate. activity='blocked' picks the canonical per-event side.
+            // blocking_spid IS NOT NULL filters out rows whose source XML had an empty
+            // <blocking-process><process/></blocking-process> (system task / torn-down session) —
+            // those can't contribute to a reconstructed chain.
             cmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT TOP (5000)
     event_time,
     database_name,
-    blocked_process_report_xml,
+    spid,
+    last_transaction_started,
+    blocking_spid,
+    blocking_last_tran_started,
     wait_time_ms,
     lock_mode,
-    last_transaction_started,
-    spid
+    blocking_status,
+    blocked_sql_text,
+    blocking_sql_text
 FROM collect.blocking_BlockedProcessReport
 WHERE collection_time >= @collectionWindow
 AND   event_time >= @startTime
 AND   event_time <= @endTime
 AND   activity = 'blocked'
+AND   blocking_spid IS NOT NULL
 ORDER BY collection_time DESC";
 
             // Generous bound — analysis window plus an hour — to catch rows whose
@@ -1157,17 +1166,20 @@ ORDER BY collection_time DESC";
             {
                 while (await reader.ReadAsync())
                 {
-                    var eventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0);
-                    var dbName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-                    var xml = reader.IsDBNull(2) ? string.Empty : reader.GetSqlXml(2).Value;
-                    var waitMs = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3));
-                    var lockMode = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
-                    var tranStarted = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5);
-                    var spid = reader.IsDBNull(6) ? 0 : Convert.ToInt32(reader.GetValue(6));
-
-                    var pair = BlockedProcessXmlParser.Parse(xml, eventTime, dbName, waitMs, lockMode, tranStarted, spid);
-                    if (pair != null)
-                        rows.Add(pair);
+                    rows.Add(new BlockingPairRow
+                    {
+                        EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                        DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                        BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                        BlockedTranStarted = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3),
+                        BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                        BlockingTranStarted = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5),
+                        WaitTimeMs = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                        LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                        BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                        BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                        BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                    });
                 }
             }
 

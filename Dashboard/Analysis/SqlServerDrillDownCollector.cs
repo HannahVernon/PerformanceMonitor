@@ -1038,22 +1038,30 @@ OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY";
         await connection.OpenAsync();
 
         using var cmd = connection.CreateCommand();
+        // blocking_spid IS NOT NULL filters out rows whose source XML had an empty
+        // <blocking-process><process/></blocking-process> (system task / torn-down session) —
+        // those can't contribute to a reconstructed chain.
         cmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT TOP (5000)
     event_time,
     database_name,
-    blocked_process_report_xml,
+    spid,
+    last_transaction_started,
+    blocking_spid,
+    blocking_last_tran_started,
     wait_time_ms,
     lock_mode,
-    last_transaction_started,
-    spid
+    blocking_status,
+    blocked_sql_text,
+    blocking_sql_text
 FROM collect.blocking_BlockedProcessReport
 WHERE collection_time >= @collectionWindow
 AND   event_time >= @startTime
 AND   event_time <= @endTime
 AND   activity = 'blocked'
+AND   blocking_spid IS NOT NULL
 ORDER BY collection_time DESC";
 
         cmd.Parameters.Add(new SqlParameter("@collectionWindow", context.TimeRangeStart.AddHours(-1)));
@@ -1065,17 +1073,20 @@ ORDER BY collection_time DESC";
         {
             while (await reader.ReadAsync())
             {
-                var eventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0);
-                var dbName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-                var xml = reader.IsDBNull(2) ? string.Empty : reader.GetSqlXml(2).Value;
-                var waitMs = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3));
-                var lockMode = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
-                var tranStarted = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5);
-                var spid = reader.IsDBNull(6) ? 0 : Convert.ToInt32(reader.GetValue(6));
-
-                var pair = BlockedProcessXmlParser.Parse(xml, eventTime, dbName, waitMs, lockMode, tranStarted, spid);
-                if (pair != null)
-                    rows.Add(pair);
+                rows.Add(new BlockingPairRow
+                {
+                    EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                    DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                    BlockedTranStarted = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3),
+                    BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                    BlockingTranStarted = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5),
+                    WaitTimeMs = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                    LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                    BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                });
             }
         }
 
