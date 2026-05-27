@@ -28,8 +28,9 @@ public class AnalysisService
     /// Minimum hours of collected data required before analysis will run.
     /// Short collection windows distort fraction-of-period calculations —
     /// 5 seconds of THREADPOOL looks alarming in a 16-minute window.
+    /// 24 hours has been validated empirically as sufficient.
     /// </summary>
-    internal double MinimumDataHours { get; set; } = 72;
+    internal double MinimumDataHours { get; set; } = 24;
 
     /// <summary>
     /// Raised after each analysis run completes, providing the findings for UI display.
