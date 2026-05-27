@@ -1325,7 +1325,7 @@ public partial class MainWindow : Window
                 await _emailAlertService.TrySendAlertEmailAsync(
                     "High CPU",
                     summary.DisplayName,
-                    $"{alertCpuValue:F0}%",
+                    $"{alertCpuValue:F0}% ({cpuMetricLabel})",
                     $"{App.AlertCpuThreshold}%",
                     summary.ServerId,
                     muted: isMuted,
