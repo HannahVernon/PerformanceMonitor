@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using System.Windows.Navigation;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Interfaces;
+using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 
 namespace PerformanceMonitorDashboard
@@ -170,6 +171,7 @@ namespace PerformanceMonitorDashboard
             DeadlockThresholdTextBox.Text = prefs.DeadlockThreshold.ToString(CultureInfo.InvariantCulture);
             NotifyOnHighCpuCheckBox.IsChecked = prefs.NotifyOnHighCpu;
             CpuThresholdTextBox.Text = prefs.CpuThresholdPercent.ToString(CultureInfo.InvariantCulture);
+            CpuAlertModeBox.SelectedIndex = prefs.CpuAlertMode == CpuAlertMode.SqlOnly ? 1 : 0;
             NotifyOnPoisonWaitsCheckBox.IsChecked = prefs.NotifyOnPoisonWaits;
             PoisonWaitThresholdTextBox.Text = prefs.PoisonWaitThresholdMs.ToString(CultureInfo.InvariantCulture);
             NotifyOnLongRunningQueriesCheckBox.IsChecked = prefs.NotifyOnLongRunningQueries;
@@ -408,6 +410,7 @@ namespace PerformanceMonitorDashboard
             DeadlockThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnDeadlockCheckBox.IsChecked == true;
             NotifyOnHighCpuCheckBox.IsEnabled = notificationsEnabled;
             CpuThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnHighCpuCheckBox.IsChecked == true;
+            CpuAlertModeBox.IsEnabled = notificationsEnabled && NotifyOnHighCpuCheckBox.IsChecked == true;
             NotifyOnPoisonWaitsCheckBox.IsEnabled = notificationsEnabled;
             PoisonWaitThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnPoisonWaitsCheckBox.IsChecked == true;
             NotifyOnLongRunningQueriesCheckBox.IsEnabled = notificationsEnabled;
@@ -648,6 +651,7 @@ namespace PerformanceMonitorDashboard
                 prefs.CpuThresholdPercent = cpuThreshold;
             else if (prefs.NotifyOnHighCpu)
                 validationErrors.Add("CPU threshold must be between 1 and 100");
+            prefs.CpuAlertMode = CpuAlertModeBox.SelectedIndex == 1 ? CpuAlertMode.SqlOnly : CpuAlertMode.Total;
 
             prefs.NotifyOnPoisonWaits = NotifyOnPoisonWaitsCheckBox.IsChecked == true;
             if (int.TryParse(PoisonWaitThresholdTextBox.Text, out int poisonWaitThreshold) && poisonWaitThreshold > 0)

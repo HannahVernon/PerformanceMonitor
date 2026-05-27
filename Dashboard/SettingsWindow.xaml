@@ -193,6 +193,13 @@
                                          VerticalAlignment="Center"
                                          TextAlignment="Center"/>
                                 <TextBlock Text="%" VerticalAlignment="Center"/>
+                                <TextBlock Text="measured as" VerticalAlignment="Center" Margin="8,0,4,0"/>
+                                <ComboBox x:Name="CpuAlertModeBox"
+                                          Width="240"
+                                          VerticalAlignment="Center">
+                                    <ComboBoxItem Content="Total non-idle CPU (SQL + other processes)" Tag="Total"/>
+                                    <ComboBoxItem Content="SQL Server only (scheduler %)" Tag="SqlOnly"/>
+                                </ComboBox>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <CheckBox x:Name="NotifyOnPoisonWaitsCheckBox"
