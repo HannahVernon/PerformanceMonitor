@@ -132,6 +132,21 @@ public class RelationshipGraph
         AddEdge("CPU_SPIKE", "CXPACKET", "cpu_spike",
             "Parallelism waits — parallel queries contributing to CPU spike",
             facts => HasFact(facts, "CXPACKET") && facts["CXPACKET"].Severity >= 0.3);
+
+        // CPU_SPIKE → PLAN_REGRESSION (spike explained by a regressed plan)
+        AddEdge("CPU_SPIKE", "PLAN_REGRESSION", "cpu_spike",
+            "Plan regression present — a query is running a worse plan than before",
+            facts => HasFact(facts, "PLAN_REGRESSION") && facts["PLAN_REGRESSION"].BaseSeverity > 0);
+
+        // CPU_SQL_PERCENT → PLAN_REGRESSION (sustained CPU explained by a regressed plan)
+        AddEdge("CPU_SQL_PERCENT", "PLAN_REGRESSION", "cpu_pressure",
+            "Plan regression present — a query is running a worse plan than before",
+            facts => HasFact(facts, "PLAN_REGRESSION") && facts["PLAN_REGRESSION"].BaseSeverity > 0);
+
+        // CPU_SPIKE → PARAMETER_SENSITIVITY (spike explained by a parameter-sensitive plan)
+        AddEdge("CPU_SPIKE", "PARAMETER_SENSITIVITY", "cpu_spike",
+            "Parameter-sensitive plan present — one plan running expensively for some inputs",
+            facts => HasFact(facts, "PARAMETER_SENSITIVITY") && facts["PARAMETER_SENSITIVITY"].BaseSeverity > 0);
     }
 
     /* ── Memory Pressure ── */
@@ -182,6 +197,11 @@ public class RelationshipGraph
         AddEdge("PAGEIOLATCH_EX", "IO_READ_LATENCY_MS", "memory_pressure",
             "Read latency elevated — disk confirms buffer pool pressure",
             facts => HasFact(facts, "IO_READ_LATENCY_MS") && facts["IO_READ_LATENCY_MS"].BaseSeverity > 0);
+
+        // MEMORY_GRANT_PENDING → PARAMETER_SENSITIVITY (grant pressure traced to a sensitive plan)
+        AddEdge("MEMORY_GRANT_PENDING", "PARAMETER_SENSITIVITY", "memory_grants",
+            "Parameter-sensitive plan present — its grant varies wildly with its inputs",
+            facts => HasFact(facts, "PARAMETER_SENSITIVITY") && facts["PARAMETER_SENSITIVITY"].BaseSeverity > 0);
     }
 
     /* ── Blocking & Deadlocking ── */
@@ -316,6 +336,30 @@ public class RelationshipGraph
         AddEdge("QUERY_HIGH_DOP", "SOS_SCHEDULER_YIELD", "query_performance",
             "Scheduler yields — high-DOP queries saturating CPU",
             facts => HasFact(facts, "SOS_SCHEDULER_YIELD") && facts["SOS_SCHEDULER_YIELD"].Severity >= 0.5);
+
+        // PARAMETER_SENSITIVITY → MEMORY_GRANT_PENDING (sensitive plan's grant varies — grant pressure)
+        AddEdge("PARAMETER_SENSITIVITY", "MEMORY_GRANT_PENDING", "query_performance",
+            "Memory grant waiters — a parameter-sensitive plan's grant varies with its inputs",
+            facts => HasFact(facts, "MEMORY_GRANT_PENDING") && facts["MEMORY_GRANT_PENDING"].BaseSeverity > 0
+                  && facts.TryGetValue("PARAMETER_SENSITIVITY", out var ps)
+                  && ps.Metadata.GetValueOrDefault("grant_divergence") > 0);
+
+        // PARAMETER_SENSITIVITY → QUERY_SPILLS (sensitive plan spills on some parameter values)
+        AddEdge("PARAMETER_SENSITIVITY", "QUERY_SPILLS", "query_performance",
+            "Query spills — a parameter-sensitive plan spills on some parameter values",
+            facts => HasFact(facts, "QUERY_SPILLS") && facts["QUERY_SPILLS"].BaseSeverity > 0
+                  && facts.TryGetValue("PARAMETER_SENSITIVITY", out var ps)
+                  && ps.Metadata.GetValueOrDefault("spill_divergence") > 0);
+
+        // PLAN_REGRESSION → CPU_SQL_PERCENT (regressed plan driving CPU load)
+        AddEdge("PLAN_REGRESSION", "CPU_SQL_PERCENT", "query_performance",
+            "SQL Server CPU elevated — the regressed plan is burning CPU",
+            facts => HasFact(facts, "CPU_SQL_PERCENT") && facts["CPU_SQL_PERCENT"].BaseSeverity > 0);
+
+        // PLAN_REGRESSION → CPU_SPIKE (regressed plan caused a CPU spike)
+        AddEdge("PLAN_REGRESSION", "CPU_SPIKE", "query_performance",
+            "CPU spike — the regressed plan is burning CPU",
+            facts => HasFact(facts, "CPU_SPIKE") && facts["CPU_SPIKE"].BaseSeverity > 0);
     }
 
     private static bool HasFact(IReadOnlyDictionary<string, Fact> facts, string key)
