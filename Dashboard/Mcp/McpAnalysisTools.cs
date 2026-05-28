@@ -398,11 +398,12 @@ internal static class ToolRecommendations
         ["CXPACKET"] = [new("get_top_queries_by_cpu", "Find parallel queries", new() { ["parallel_only"] = "true" }), new("audit_config", "Check CTFP and MAXDOP")],
         ["THREADPOOL"] = [new("get_top_queries_by_cpu", "Find resource-consuming queries"), new("get_blocking", "Check if blocking is holding threads")],
         ["PAGEIOLATCH_SH"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
-        ["PAGEIOLATCH_EX"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
+        ["PAGEIOLATCH_EX"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool"), new("get_tempdb_trend", "Check whether tempdb I/O is driving EX-mode waits")],
         ["RESOURCE_SEMAPHORE"] = [new("get_resource_semaphore", "Check memory grants")],
-        ["WRITELOG"] = [new("get_file_io_stats", "Check log file latency")],
+        ["WRITELOG"] = [new("get_file_io_stats", "Check log file latency"), new("get_perfmon_trend", "Check Transactions/sec commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })],
         ["LCK"] = [new("get_blocking", "Get blocking details"), new("get_deadlocks", "Check for deadlocks")],
         ["LCK_M_S"] = [new("get_blocking", "Get reader/writer blocking details")],
+        ["SCH_M"] = [new("get_blocking", "Check if DDL is causing blocking"), new("get_running_jobs", "See if maintenance jobs are taking schema-modification locks")],
         ["BLOCKING_EVENTS"] = [new("get_blocking", "Get detailed blocking reports"), new("get_deadlocks", "Check for deadlocks")],
         ["DEADLOCKS"] = [new("get_deadlocks", "Get deadlock events"), new("get_deadlock_detail", "Get full deadlock XML")],
         ["CPU_SQL_PERCENT"] = [new("get_cpu_utilization", "See CPU trend"), new("get_top_queries_by_cpu", "Find CPU queries")],
@@ -413,6 +414,8 @@ internal static class ToolRecommendations
         ["MEMORY_GRANT_PENDING"] = [new("get_resource_semaphore", "Check memory grants")],
         ["QUERY_SPILLS"] = [new("get_top_queries_by_cpu", "Find queries with spills")],
         ["QUERY_HIGH_DOP"] = [new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" })],
+        ["PARAMETER_SENSITIVITY"] = [new("get_top_queries_by_cpu", "Find the sensitive query and see its cached parameters"), new("analyze_query_plan", "Examine the plan for operators driving the runtime variance"), new("get_query_trend", "Confirm the bimodal duration pattern over time"), new("get_resource_semaphore", "Check whether bad-parameter executions blow up memory grants")],
+        ["PLAN_REGRESSION"] = [new("analyze_query_store_plan", "Compare the regressed plan against the prior plan"), new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"), new("get_query_store_top", "Pull the full Query Store entry and forced-plan history before forcing")],
         ["PERFMON_PLE"] = [new("get_memory_stats", "Check buffer pool"), new("get_memory_clerks", "See memory allocation")],
         ["DB_CONFIG"] = [new("audit_config", "Check configuration")],
         ["DISK_SPACE"] = [new("get_file_io_stats", "Check per-file sizes")],
@@ -421,7 +424,11 @@ internal static class ToolRecommendations
         ["ANOMALY_CPU"] = [new("get_cpu_utilization", "See CPU trend"), new("get_active_queries", "Find what ran during spike")],
         ["ANOMALY_WAIT"] = [new("get_wait_stats", "See wait breakdown"), new("compare_analysis", "Compare current vs baseline")],
         ["ANOMALY_BLOCKING"] = [new("get_blocking", "Get blocking details"), new("get_deadlocks", "Get deadlock events")],
-        ["ANOMALY_IO"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")]
+        ["ANOMALY_IO"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
+        ["ANOMALY_SESSION_SPIKE"] = [new("get_session_stats", "See which application is driving the session-count spike"), new("get_active_queries", "Find what those sessions were doing at the spike")],
+        ["ANOMALY_QUERY_DURATION"] = [new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"), new("analyze_query_plan", "Examine the plan for the queries that slowed down"), new("get_query_trend", "Track the regressed query across executions")],
+        ["ANOMALY_MEMORY_PRESSURE"] = [new("get_memory_stats", "See current memory allocation"), new("get_memory_clerks", "Find which clerks are growing"), new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"), new("get_resource_semaphore", "Check whether query grants are competing with buffer pool")],
+        ["ANOMALY_BATCH_REQUESTS"] = [new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }), new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"), new("get_active_queries", "See what's actually running at the elevated rate")]
     };
 
     public static System.Collections.Generic.List<object> GetForStoryPath(string storyPath)
