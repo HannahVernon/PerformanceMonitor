@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Dashboard time labels are now consistently 24-hour** ([#1012]) — the time-range header at the top of each tab (e.g. *"Original: May 28, 11:30 PM – May 29, 1:30 AM (PST)"*) and the Query Performance heatmap x-axis tick labels used `h:mm tt`, while every other timestamp in the app (footer "Last refresh", DataGrid columns, slicer, tooltips, logs) already used 24-hour `HH:mm`/`HH:mm:ss`. The AM/PM marker was also being truncated in the column shown by the reporter. Normalized the four outliers to `HH:mm` to match the rest of the app. The Lite heatmap had the same `h:mm tt` straggler — fixed alongside
 - **Lite UI no longer freezes during archival** ([#979]) — archival held DuckDB's exclusive write lock across the entire export-to-Parquet step, blocking every UI query (tab switches showed the spinning wheel, worse with more monitored servers). Export-to-Parquet only reads the database, so it now runs under a shared read lock concurrently with the UI; only the brief `DELETE` takes the exclusive write lock
 - **Lite FinOps no longer recommends an edition downgrade on an Availability Group secondary** ([#980]) — the licensing recommendations suggested "downgrade to Standard to save $X/mo" for any Enterprise instance, with no AG awareness. On a secondary replica that advice is misleading — every replica in an AG must run the same edition. FinOps now detects the AG replica role and, on a secondary, shows an informational note instead of the downgrade/savings estimate
 - **Lite alert emails no longer re-fire after an app restart** ([#981]) — the per-metric email cooldown lived only in memory, so restarting Lite cleared it and an alert sent minutes earlier could be sent again immediately. The cooldown is now seeded from `config_alert_log` (the most recent successful send for that server/metric) the first time each alert is evaluated, so it survives restarts
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#979]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/979
 [#980]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/980
 [#981]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/981
+[#1012]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1012
 
 ## [2.11.0] - 2026-05-19
 
