@@ -14,6 +14,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -33,11 +34,17 @@ public class WebhookAlertService
     private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
 
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
+    private readonly IAlertSettings _settings;
 
     private int _consecutiveTeamsFailures;
     private string? _lastTeamsError;
     private int _consecutiveSlackFailures;
     private string? _lastSlackError;
+
+    public WebhookAlertService(IAlertSettings settings)
+    {
+        _settings = settings;
+    }
 
     /// <summary>
     /// Sends webhook alerts to all configured channels (Teams and/or Slack).
@@ -55,19 +62,19 @@ public class WebhookAlertService
         {
             var cooldownKey = $"webhook:{serverId}:{metricName}";
             if (_cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(App.EmailCooldownMinutes))
+                DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes))
             {
                 return false;
             }
 
             bool sent = false;
 
-            if (App.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(App.TeamsWebhookUrl))
+            if (_settings.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.TeamsWebhookUrl))
             {
                 sent |= await TrySendTeamsAlertAsync(metricName, serverName, currentValue, thresholdValue, context);
             }
 
-            if (App.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(App.SlackWebhookUrl))
+            if (_settings.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.SlackWebhookUrl))
             {
                 sent |= await TrySendSlackAlertAsync(metricName, serverName, currentValue, thresholdValue, context);
             }
@@ -136,7 +143,7 @@ public class WebhookAlertService
         try
         {
             var payload = BuildTeamsPayload(metricName, serverName, currentValue, thresholdValue, context: context);
-            var error = await PostWebhookAsync(App.TeamsWebhookUrl, payload, App.TeamsProxyAddress);
+            var error = await PostWebhookAsync(_settings.TeamsWebhookUrl, payload, _settings.TeamsProxyAddress);
 
             if (error != null)
             {
@@ -279,7 +286,7 @@ public class WebhookAlertService
         try
         {
             var payload = BuildSlackPayload(metricName, serverName, currentValue, thresholdValue, context: context);
-            var error = await PostWebhookAsync(App.SlackWebhookUrl, payload, App.SlackProxyAddress);
+            var error = await PostWebhookAsync(_settings.SlackWebhookUrl, payload, _settings.SlackProxyAddress);
 
             if (error != null)
             {

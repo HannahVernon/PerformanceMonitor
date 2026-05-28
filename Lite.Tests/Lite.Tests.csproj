@@ -19,5 +19,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Lite\PerformanceMonitorLite.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.Notifications\PerformanceMonitor.Notifications.csproj" />
   </ItemGroup>
 </Project>

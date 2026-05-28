@@ -897,6 +897,9 @@
       "performancemonitor.analysis": {
         "type": "Project"
       },
+      "performancemonitor.notifications": {
+        "type": "Project"
+      },
       "performancemonitor.plananalysis": {
         "type": "Project"
       },
@@ -914,6 +917,7 @@
           "ModelContextProtocol": "[1.3.0, )",
           "ModelContextProtocol.AspNetCore": "[1.3.0, )",
           "PerformanceMonitor.Analysis": "[1.0.0, )",
+          "PerformanceMonitor.Notifications": "[1.0.0, )",
           "PerformanceMonitor.PlanAnalysis": "[1.0.0, )",
           "ScottPlot.WPF": "[5.1.58, )",
           "Velopack": "[0.0.1298, )"
