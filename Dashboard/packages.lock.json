@@ -740,6 +740,9 @@
       },
       "performancemonitor.analysis": {
         "type": "Project"
+      },
+      "performancemonitor.plananalysis": {
+        "type": "Project"
       }
     }
   }

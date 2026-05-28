@@ -2,9 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
-using PerformanceMonitorDashboard.Models;
 
-namespace PerformanceMonitorDashboard.Services;
+namespace PerformanceMonitor.PlanAnalysis;
 
 /// <summary>
 /// Post-parse analysis pass that walks a parsed plan tree and adds warnings

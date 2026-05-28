@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using Microsoft.Win32;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 

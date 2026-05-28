@@ -1,7 +1,6 @@
 using System;
-using PerformanceMonitorDashboard.Models;
 
-namespace PerformanceMonitorDashboard.Services;
+namespace PerformanceMonitor.PlanAnalysis;
 
 public static class PlanLayoutEngine
 {

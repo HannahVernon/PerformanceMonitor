@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 

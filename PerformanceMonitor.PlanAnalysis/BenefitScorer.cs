@@ -1,9 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using PerformanceMonitorLite.Models;
 
-namespace PerformanceMonitorLite.Services;
+namespace PerformanceMonitor.PlanAnalysis;
 
 /// <summary>
 /// Second-pass analysis that calculates MaxBenefitPercent for each PlanWarning.
