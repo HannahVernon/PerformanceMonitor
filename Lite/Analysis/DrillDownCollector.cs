@@ -406,10 +406,14 @@ plan_agg AS
 ),
 plan_dedup AS
 (
+    -- MAX(plan_id) carries the most recently observed plan_id in the hash partition
+    -- forward — newer plans are less likely evicted by Query Store retention.
+    -- Functionally any plan_id sharing the hash forces the same execution shape.
     SELECT
         database_name,
         query_id,
         query_plan_hash,
+        MAX(plan_id) AS plan_id,
         any_value(query_text) AS query_text,
         SUM(execs) AS execs,
         SUM(cpu_per_exec * execs) / NULLIF(SUM(execs), 0) AS cpu_per_exec,
@@ -436,6 +440,7 @@ compared AS
         l.cpu_per_exec AS latest_cpu,
         l.dur_per_exec AS latest_dur,
         b.query_plan_hash AS best_plan_hash,
+        b.plan_id AS best_plan_id,
         b.cpu_per_exec AS best_cpu,
         b.dur_per_exec AS best_dur,
         l.query_text,
@@ -459,6 +464,7 @@ SELECT
     latest_cpu,
     latest_dur,
     best_plan_hash,
+    best_plan_id,
     best_cpu,
     best_dur,
     regression_factor,
@@ -483,10 +489,11 @@ LIMIT 5";
                 latest_cpu_per_exec_us = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3)),
                 latest_duration_per_exec_us = reader.IsDBNull(4) ? 0.0 : Convert.ToDouble(reader.GetValue(4)),
                 best_plan_hash = reader.IsDBNull(5) ? "" : reader.GetString(5),
-                best_cpu_per_exec_us = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6)),
-                best_duration_per_exec_us = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7)),
-                regression_factor = reader.IsDBNull(8) ? 0.0 : Convert.ToDouble(reader.GetValue(8)),
-                query_text = reader.IsDBNull(9) ? "" : reader.GetString(9)
+                best_plan_id = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                best_cpu_per_exec_us = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7)),
+                best_duration_per_exec_us = reader.IsDBNull(8) ? 0.0 : Convert.ToDouble(reader.GetValue(8)),
+                regression_factor = reader.IsDBNull(9) ? 0.0 : Convert.ToDouble(reader.GetValue(9)),
+                query_text = reader.IsDBNull(10) ? "" : reader.GetString(10)
             });
         }
 

@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`tools/Remove-OrphanedTraceFiles.ps1`** ([#972]) — one-time cleanup script for `Monitor_LongQueries_*.trc` files left on disk by versions through 2.11.0. Run it on the SQL Server host; it skips files belonging to a running trace and files that are in use
+- **`FactAdvice` and `FactRemediation` in `PerformanceMonitor.Analysis`** — new shared-library data layer that maps every scorable fact-key to a Headline / Investigation / Remediation advice block, plus a copy-paste-ready `sp_query_store_force_plan` T-SQL generator for `PLAN_REGRESSION` findings (gated to that single fact-key in v1; `PARAMETER_SENSITIVITY` deliberately does not generate plan-force T-SQL because forcing locks in the wrong plan for some parameter values). Drill-down collectors now also project `best_plan_id` (via `MAX(plan_id)` in the plan-dedup CTE) so the generated EXEC carries the integer ID `sp_query_store_force_plan` actually accepts, not just the hash. Lite's `BuildContext` now mirrors Dashboard's — both apps emit a Diagnosis card at `Details[0]` carrying Story / Severity / Notify threshold / Confidence / Facts / Database / Window before the drill-down items. The rendering surfaces that consume this data (email HTML, plain-text email, Teams + Slack webhook payloads, in-app Alert Details window) ship in a separate follow-up PR
 
 [#972]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/972
 [#979]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/979

@@ -108,11 +108,11 @@ public sealed class AnalysisNotificationService
                     FindingMessageFormatter.CurrentValue(finding),
                     threshold.ToString("F1"),
                     finding.ServerId,
-                    FindingMessageFormatter.BuildContext(finding),
+                    FindingMessageFormatter.BuildContext(finding, threshold),
                     numericCurrentValue: finding.Severity,
                     numericThresholdValue: threshold,
                     muted: false,
-                    detailText: FindingMessageFormatter.DetailText(finding));
+                    detailText: FindingMessageFormatter.DetailText(finding, threshold));
 
                 _cooldowns[key] = now;
             }
@@ -175,12 +175,14 @@ internal static class FindingMessageFormatter
 
     /// <summary>
     /// Plain-text detail block — the causal chain and supporting metadata.
+    /// Threshold is threaded through from NotifyAsync rather than read from App
+    /// inline, so the formatter is consistent with BuildContext's threading.
     /// </summary>
-    public static string DetailText(AnalysisFinding finding)
+    public static string DetailText(AnalysisFinding finding, double notifyThreshold)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"  Story: {finding.StoryPath}");
-        sb.AppendLine($"  Severity: {finding.Severity:F2} (notify threshold {App.AnalysisNotifySeverity:F1})");
+        sb.AppendLine($"  Severity: {finding.Severity:F2} (notify threshold {notifyThreshold:F1})");
         sb.AppendLine($"  Confidence: {finding.Confidence:F2}");
         sb.AppendLine($"  Facts in chain: {finding.FactCount}");
 
@@ -194,35 +196,52 @@ internal static class FindingMessageFormatter
     }
 
     /// <summary>
-    /// Maps the finding's ephemeral <see cref="AnalysisFinding.DrillDown"/> detail into an
-    /// <see cref="AlertContext"/>. DrillDown values are anonymous types behind object
-    /// (a bare object, or a List&lt;object&gt; of them), so they are round-tripped through
-    /// System.Text.Json and walked as JsonElement — robust to any shape DrillDownCollector emits.
+    /// Builds the structured <see cref="AlertContext"/> for the alert template.
+    /// First detail item is the Diagnosis summary; subsequent items are the
+    /// finding's drill-down detail flattened into label/value pairs.
+    /// Mirrors Dashboard's shape so both apps render the same finding structure.
     /// </summary>
-    public static AlertContext BuildContext(AnalysisFinding finding)
+    public static AlertContext BuildContext(AnalysisFinding finding, double notifyThreshold)
     {
         var context = new AlertContext();
-        if (finding.DrillDown is null || finding.DrillDown.Count == 0)
-            return context;
 
-        foreach (var (key, value) in finding.DrillDown)
+        /* Diagnosis summary — fits inside the 600px email template (label column 120px, value column ~480px). */
+        var diagnosis = new AlertDetailItem { Heading = "Diagnosis" };
+        diagnosis.Fields.Add(("Story", finding.StoryPath ?? string.Empty));
+        diagnosis.Fields.Add(("Severity", finding.Severity.ToString("F2")));
+        diagnosis.Fields.Add(("Notify threshold", notifyThreshold.ToString("F1")));
+        diagnosis.Fields.Add(("Confidence", finding.Confidence.ToString("F2")));
+        diagnosis.Fields.Add(("Facts", finding.FactCount.ToString()));
+        if (!string.IsNullOrEmpty(finding.DatabaseName))
+            diagnosis.Fields.Add(("Database", finding.DatabaseName));
+        if (finding.TimeRangeStart.HasValue && finding.TimeRangeEnd.HasValue)
+            diagnosis.Fields.Add(("Window", $"{finding.TimeRangeStart.Value:u} → {finding.TimeRangeEnd.Value:u}"));
+        context.Details.Add(diagnosis);
+
+        /* Drill-down values are anonymous types behind object (a bare object, or a
+           List<object> of them). Round-trip through System.Text.Json and walk as
+           JsonElement — robust to any shape DrillDownCollector emits. */
+        if (finding.DrillDown is { Count: > 0 })
         {
-            if (value is null)
-                continue;
-
-            var item = new AlertDetailItem { Heading = Humanize(key) };
-            try
+            foreach (var (key, value) in finding.DrillDown)
             {
-                FlattenInto(item.Fields, JsonSerializer.SerializeToElement(value));
-            }
-            catch
-            {
-                /* Unexpected value shape — skip this drill-down entry, keep the rest. */
-                continue;
-            }
+                if (value is null)
+                    continue;
 
-            if (item.Fields.Count > 0)
-                context.Details.Add(item);
+                var item = new AlertDetailItem { Heading = Humanize(key) };
+                try
+                {
+                    FlattenInto(item.Fields, JsonSerializer.SerializeToElement(value));
+                }
+                catch
+                {
+                    /* Unexpected value shape — skip this drill-down entry, keep the rest. */
+                    continue;
+                }
+
+                if (item.Fields.Count > 0)
+                    context.Details.Add(item);
+            }
         }
 
         return context;
