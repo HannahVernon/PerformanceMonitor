@@ -119,9 +119,11 @@ public class AnalysisNotificationTests : IDisposable
             ["spike_peak"] = new { peak_time = "2026-05-22T10:00:00Z", cpu_percent = 99 }
         });
 
-        var context = FindingMessageFormatter.BuildContext(finding);
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
 
-        Assert.Equal(2, context.Details.Count);
+        // Details[0] is now the Diagnosis card; the two drill-downs follow.
+        Assert.Equal(3, context.Details.Count);
+        Assert.Equal("Diagnosis", context.Details[0].Heading);
 
         var queries = context.Details.Single(d => d.Heading == "Top Cpu Queries");
         Assert.Contains(queries.Fields, f => f.Label.StartsWith("#1") && f.Value == "0x1");
@@ -141,25 +143,38 @@ public class AnalysisNotificationTests : IDisposable
             }
         });
 
-        var context = FindingMessageFormatter.BuildContext(finding);
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
 
-        // 3 items kept x 1 property each = 3 fields; #4 and #5 dropped.
-        var item = Assert.Single(context.Details);
+        // Diagnosis at [0], drill-down "Items" at [1]. 3 items kept x 1 property each = 3 fields; #4 and #5 dropped.
+        Assert.Equal(2, context.Details.Count);
+        var item = context.Details.Single(d => d.Heading == "Items");
         Assert.Equal(3, item.Fields.Count);
         Assert.DoesNotContain(item.Fields, f => f.Label.StartsWith("#4"));
     }
 
     [Fact]
-    public void BuildContext_NoDrillDown_ReturnsEmptyContext()
+    public void BuildContext_NoDrillDown_StillEmitsDiagnosis()
     {
-        var context = FindingMessageFormatter.BuildContext(MakeFinding("h"));
-        Assert.Empty(context.Details);
+        var context = FindingMessageFormatter.BuildContext(MakeFinding("h"), notifyThreshold: 1.5);
+        // After the §7.0 precursor, BuildContext always emits a Diagnosis card even with no DrillDown.
+        var only = Assert.Single(context.Details);
+        Assert.Equal("Diagnosis", only.Heading);
+    }
+
+    [Fact]
+    public void BuildContext_DiagnosisCarriesNotifyThreshold()
+    {
+        var context = FindingMessageFormatter.BuildContext(MakeFinding("h"), notifyThreshold: 1.7);
+        var diagnosis = context.Details[0];
+        Assert.Equal("Diagnosis", diagnosis.Heading);
+        Assert.Contains(diagnosis.Fields, f => f.Label == "Notify threshold" && f.Value == "1.7");
+        Assert.Contains(diagnosis.Fields, f => f.Label == "Story" && f.Value == "CPU_SPIKE → PLAN_REGRESSION");
     }
 
     [Fact]
     public void DetailText_CarriesStoryPathAndChainMetadata()
     {
-        var text = FindingMessageFormatter.DetailText(MakeFinding("h"));
+        var text = FindingMessageFormatter.DetailText(MakeFinding("h"), notifyThreshold: 1.5);
 
         Assert.Contains("CPU_SPIKE → PLAN_REGRESSION", text);
         Assert.Contains("Severity", text);

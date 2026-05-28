@@ -1,0 +1,514 @@
+using System;
+using System.Collections.Generic;
+
+namespace PerformanceMonitor.Analysis;
+
+/// <summary>
+/// A single block of operator-facing advice for a fact-key.
+/// <para>
+/// <see cref="Headline"/> is the one-line summary used as a section heading.
+/// <see cref="Investigation"/> tells the operator where to look first.
+/// <see cref="Remediation"/> tells them what to consider doing.
+/// <see cref="RemediationTsql"/> is populated by <see cref="FactRemediation"/>
+/// when a finding's drill-down carries the IDs needed to generate a
+/// copy-paste-ready statement.
+/// </para>
+/// </summary>
+public sealed record AdviceBlock(
+    string Headline,
+    string Investigation,
+    string Remediation,
+    string? RemediationTsql = null);
+
+/// <summary>
+/// Static lookup mapping fact-keys (the same constants emitted by
+/// <see cref="FactScorer"/>) to operator-facing advice prose. Both Lite and
+/// Dashboard render the same content from this table so the user reads the
+/// same diagnosis regardless of which app surfaced the finding.
+///
+/// <para>
+/// Dynamic keys (BAD_ACTOR_{hash}, ANOMALY_WAIT_{type}) are resolved by
+/// prefix in <see cref="GetForFactKey"/>. The wait-anomaly composer reuses
+/// the inner wait's prose with an anomaly-framing prelude.
+/// </para>
+/// </summary>
+public static class FactAdvice
+{
+    /// <summary>
+    /// Looks up advice for a fact-key. Returns null if the key is unknown.
+    /// </summary>
+    public static AdviceBlock? GetForFactKey(string? factKey)
+    {
+        if (string.IsNullOrEmpty(factKey))
+            return null;
+
+        if (_byKey.TryGetValue(factKey, out var direct))
+            return direct;
+
+        if (factKey.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase))
+            return _byKey.GetValueOrDefault("BAD_ACTOR");
+
+        if (factKey.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
+        {
+            var inner = factKey.Substring("ANOMALY_WAIT_".Length);
+            if (string.IsNullOrEmpty(inner))
+                return null;
+            return ComposeAnomalyWaitAdvice(inner);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Convenience: looks up the advice for a finding's root fact and composes
+    /// it with any generated remediation T-SQL. Returns null if no advice
+    /// matches the root fact key.
+    /// </summary>
+    public static AdviceBlock? GetForFinding(AnalysisFinding finding)
+    {
+        if (finding is null)
+            return null;
+
+        var advice = GetForFactKey(finding.RootFactKey);
+        if (advice is null)
+            return null;
+
+        var tsql = FactRemediation.GenerateForFinding(finding);
+        return tsql is null ? advice : advice with { RemediationTsql = tsql };
+    }
+
+    /// <summary>
+    /// Wraps the inner wait-type's advice with an anomaly-framing prelude so
+    /// an ANOMALY_WAIT_THREADPOOL finding reads as "this wait is anomalously
+    /// elevated vs. baseline" rather than "this wait crossed a static
+    /// threshold". Falls back to the bare anomaly framing if the inner wait
+    /// has no first-class advice.
+    /// </summary>
+    private static AdviceBlock ComposeAnomalyWaitAdvice(string innerWaitType)
+    {
+        const string prelude =
+            "This wait is anomalously elevated compared to its own baseline for this " +
+            "time bucket — it is a deviation from normal, not necessarily a sustained " +
+            "problem. Check whether the elevation coincides with a workload change, a " +
+            "deploy, or an external event before treating it as a chronic issue.";
+
+        if (_byKey.TryGetValue(innerWaitType, out var inner))
+        {
+            return new AdviceBlock(
+                Headline: $"Anomalous spike in {innerWaitType} vs. baseline",
+                Investigation: prelude + " " + inner.Investigation,
+                Remediation: inner.Remediation);
+        }
+
+        return new AdviceBlock(
+            Headline: $"Anomalous spike in {innerWaitType} vs. baseline",
+            Investigation:
+                prelude + " Open the Wait Stats tab and zoom to the analysis window to see " +
+                "the wait type's series against the rest of the breakdown. Call `get_wait_trend` " +
+                "with this wait type for the longer-window trajectory, and `compare_analysis` " +
+                "to see what other facts changed between the comparison window and the baseline.",
+            Remediation:
+                "Resolve the underlying wait the way you would normally — the anomaly framing " +
+                "only tells you the wait is unusual for this bucket, not what to do about it. " +
+                "If the wait persists across multiple analysis windows, the threshold-based " +
+                "finding for that wait type will fire and the standard playbook applies.");
+    }
+
+    private static readonly Dictionary<string, AdviceBlock> _byKey = BuildAdviceTable();
+
+    private static Dictionary<string, AdviceBlock> BuildAdviceTable()
+    {
+        var t = new Dictionary<string, AdviceBlock>(StringComparer.OrdinalIgnoreCase);
+
+        // ─────────────────────────────────────────────────────────────────
+        // CPU pressure
+        // ─────────────────────────────────────────────────────────────────
+
+        t["SOS_SCHEDULER_YIELD"] = new AdviceBlock(
+            Headline:
+                "Scheduler yields are dominating waits — workers are giving up the CPU because there is more demand than capacity",
+            Investigation:
+                "Open the CPU tab to see the SQL vs. other-process split over the analysis window — the SOS_SCHEDULER_YIELD line on the Wait Stats tab should climb with the SQL-CPU line. The drill-down `top_cpu_queries` is already attached to this finding: those five queries account for the workload that's saturating schedulers. Call `get_cpu_utilization` for the per-minute trend and `get_top_queries_by_cpu` for the cached-plan view of the offenders. If CXPACKET is co-elevated on the same chart, parallel queries are consuming schedulers; if THREADPOOL is climbing, the workload is already over the edge.",
+            Remediation:
+                "Tune the queries in `top_cpu_queries` before sizing more hardware — scheduler yield means CPU demand exceeds supply, and demand is almost always the cheaper variable. Fix the missing indexes, scans, and parameter sniffing the plan analysis surfaces. If CXPACKET is co-elevated, run `audit_config`: a default `cost threshold for parallelism` of 5 with `MAXDOP` 0 is the usual cause, and the recommendation engine will tell you what to set them to.");
+
+        t["THREADPOOL"] = new AdviceBlock(
+            Headline:
+                "THREADPOOL waits — SQL Server has run out of worker threads and new sessions are queuing for one",
+            Investigation:
+                "Any time on THREADPOOL means sessions cannot start until a worker frees up — treat this as severe by default. The engine's THREADPOOL amplifiers (in `FactScorer.ThreadpoolAmplifiers`) score BLOCKING and CXPACKET co-elevation as peer causes, not blocking-first. Look at the BLOCKING_CHAIN drill-down `reconstructed_blocking_chains` for the `apex_spid`, `apex_sleeping`, `depth`, and `victim_count` — every blocked victim is also holding a worker. In parallel, check the CXPACKET line on the Wait Stats tab for the same window: each parallel query consumes one worker per scheduler it touches, so a moderate-concurrency workload at high DOP can exhaust the pool with zero blocking. Call `get_waiting_tasks` (Lite) or `get_cpu_scheduler_pressure` (Dashboard) to see what's queued or under scheduler pressure right now, and `get_top_queries_by_cpu` with `parallel_only=true` to find the parallel offenders.",
+            Remediation:
+                "Two independent levers: collapse the blocking chain and lower parallelism. If `apex_sleeping` is true on the top reconstructed chain, kill that session — the entire chain unblocks and the workers free. For the parallelism half, `audit_config` will tell you whether `cost threshold for parallelism` and `MAXDOP` are at the defaults that drive this; raising CTFP to 50 and capping MAXDOP at half a NUMA node (≤ 8) is the typical starting point. Do not raise `max worker threads` to mask either cause — it trades thread exhaustion for memory pressure without fixing the underlying contention.");
+
+        t["CXPACKET"] = new AdviceBlock(
+            Headline:
+                "Parallelism waits — queries are spending real time waiting for their parallel workers to synchronize",
+            Investigation:
+                "The collector groups every CX* wait (CXPACKET, CXCONSUMER, CXSYNC_PORT, CXSYNC_CONSUMER) into one CXPACKET fact (`DuckDbFactCollector.GroupParallelismWaits` in Lite, `SqlServerFactCollector.GroupParallelismWaits` in Dashboard). That grouping hides producer/consumer skew — CXCONSUMER on its own specifically means one branch is doing the work while siblings stall waiting for rows. If the per-execution duration of the offending queries is closer to their CPU time than CPU÷DOP would predict, parallelism is mostly contending with itself, not paying for itself. Open the Wait Stats tab to see the breakdown over the analysis window, and call `audit_config` to check CTFP and MAXDOP. The QUERY_HIGH_DOP amplifier flags queries running at DOP > 8 — `get_top_queries_by_cpu` with `parallel_only=true` ranks them.",
+            Remediation:
+                "Most OLTP queries should not go parallel — `audit_config` will tell you to raise `cost threshold for parallelism` to 50 and cap `MAXDOP` at half a NUMA node (≤ 8). When that's already done and CXPACKET persists, the problem is the underlying plan: a parallel scan of a large table, a hash join with bad row estimates, or a skewed plan where one branch does everything. Pull the plan via `analyze_query_plan` for the offending `query_hash` and look for missing indexes or operator-level row-count divergence — fix the plan and the wait disappears.");
+
+        t["CPU_SQL_PERCENT"] = new AdviceBlock(
+            Headline:
+                "SQL Server process CPU is sustained above the threshold — the workload is eating real CPU, not waiting on something else",
+            Investigation:
+                "Open the CPU tab to see the SQL vs. other-process split over the analysis window — that confirms SQL is the consumer rather than antivirus, a runaway agent job, or another tenant on the VM. The drill-down `top_cpu_queries` is already attached: five queries ranked by total CPU over the window, with `query_text`, `execution_count`, `max_dop`, and `spills`. SOS_SCHEDULER_YIELD co-elevation on the Wait Stats tab means schedulers are saturated; a CPU_SPIKE corroborator means the load is bursty rather than steady. Call `get_cpu_utilization` for the per-minute trend and `get_top_queries_by_cpu` for the live cached-plan view of the same queries.",
+            Remediation:
+                "Tune the queries in `top_cpu_queries` — that's almost always cheaper than buying cores. The PARAMETER_SENSITIVITY and PLAN_REGRESSION findings (if they fired alongside this one) point at specific root causes: a plan that was good for one parameter value being reused for a bad one, or a plan that's worse than what the same query used to run. For PLAN_REGRESSION specifically, the generated EXEC `sp_query_store_force_plan` in the remediation block forces the historical-better plan as a fast fix while you address why the worse plan was chosen.");
+
+        t["CPU_SPIKE"] = new AdviceBlock(
+            Headline:
+                "CPU spike detected — peak usage is well above the period average, not sustained saturation",
+            Investigation:
+                "Spikes differ from steady saturation: the box has headroom most of the time but something briefly burns it all. The drill-down `spike_peak` carries the exact peak time and CPU %, and `queries_at_spike` lists the five sessions active within ±2 minutes of that peak — `session_id`, `database`, `cpu_time_ms`, `dop`, `wait_type`, and `query_text`. Open the CPU tab and zoom to that timestamp, then cross-check the Wait Stats tab for what waits dominated in the same window. Co-elevated PLAN_REGRESSION, PARAMETER_SENSITIVITY, or CXPACKET tells you which of the three usual suspects you're dealing with.",
+            Remediation:
+                "If PLAN_REGRESSION co-fired, the historical-better plan is identified by `best_plan_id` in `regressed_queries` and the `sp_query_store_force_plan` EXEC is generated in the remediation block below. If PARAMETER_SENSITIVITY co-fired, do NOT force a plan — that locks in the wrong plan for the other parameter values that the engine already detected diverging. Use `OPTION (RECOMPILE)` on the affected statement, or branch the procedure by parameter value. For ad-hoc reporting spikes that don't match either pattern, Resource Governor or moving the report off-peak is the durable fix.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Memory pressure
+        // ─────────────────────────────────────────────────────────────────
+
+        t["PAGEIOLATCH_SH"] = new AdviceBlock(
+            Headline:
+                "PAGEIOLATCH_SH waits — SQL is reading data pages from disk into the buffer pool faster than it can serve them",
+            Investigation:
+                "The classic buffer-pool-too-small or scan-too-large signal. Open the Memory tab to see Page Life Expectancy over the window — a PLE that crashes alongside this wait means the pool is being churned by eviction. Open File I/O → File I/O Latency to separate workload-driven pressure from underlying storage: high PAGEIOLATCH_SH with sub-20ms read latency means the workload is reading too much, not that disk is slow. The PAGEIOLATCH amplifiers (in `FactScorer.PageiolatchAmplifiers`) boost severity when IO_READ_LATENCY_MS ≥ 20 and when memory grant waiters are present. Call `get_memory_stats` for the buffer-pool size, `get_memory_grants` if grants are competing with the pool, and `get_top_queries_by_cpu` to find the readers — high `logical_reads` per execution is the marker.",
+            Remediation:
+                "Find the scan and add a covering nonclustered index — one missing index can drop gigabytes of reads per execution and the wait collapses with it. The `plan_analysis` drill-down on BAD_ACTOR findings surfaces the missing-index suggestions the optimizer already generated. If indexing is genuinely right and the wait persists, the buffer pool is too small for the working set: `audit_config` will check whether `max server memory` is at the default 2147483647 and recommend a value that leaves headroom for the OS.");
+
+        t["PAGEIOLATCH_EX"] = new AdviceBlock(
+            Headline:
+                "PAGEIOLATCH_EX waits — SQL is waiting to write data pages, usually under heavy modification workload",
+            Investigation:
+                "Shows up under heavy bulk inserts, large updates, or tempdb workspace writes. Open File I/O → File I/O Latency for the write column to separate workload-driven pressure from underlying disk pressure; the drill-down `file_latency_breakdown` already attached carries `avg_write_latency_ms` per database and file type, ranked. If TEMPDB_USAGE co-fired, the writes are workspace (hash/sort spills) — the QUERY_SPILLS drill-down `top_spilling_queries` names the offenders by `query_hash` and `total_spills`. Open the TempDB Stats sub-tab under Resource Metrics to see whether the version store or internal objects drove the growth.",
+            Remediation:
+                "For tempdb-driven PAGEIOLATCH_EX, fix the queries in `top_spilling_queries` — update statistics with FULLSCAN to correct the cardinality estimates that produced too-small grants, or rewrite the operator that spills. For modification-workload pressure, batch large operations into smaller chunks so the buffer pool can flush between batches. If `file_latency_breakdown` shows the storage itself is slow (write latency consistently above 10ms on data, 2ms on log), no amount of query tuning will recover it — the storage is the bottleneck and needs hardware-side investigation.");
+
+        t["RESOURCE_SEMAPHORE"] = new AdviceBlock(
+            Headline:
+                "RESOURCE_SEMAPHORE waits — queries are queueing for memory grants because the workspace pool is exhausted",
+            Investigation:
+                "Memory grants are reserved up front for sorts, hashes, and parallel operators. When the workspace pool fills, large queries queue behind it and small ones can starve. Open the Memory Grants sub-tab under Memory to see grant pressure over the analysis window, and the Memory Pressure Events sub-tab for the corresponding ring-buffer notifications. The MEMORY_GRANT_PENDING fact carries the live waiter count; if it co-fired the drill-down `pending_grants` is attached with `waiter_count`, `granted_memory_mb`, and `used_memory_mb` for each snapshot. Call `get_memory_grants` for the per-pool semaphore state and `get_resource_semaphore` (Dashboard) for the breakdown of granted vs. available workspace.",
+            Remediation:
+                "The usual cause is over-granting: a query gets a grant much larger than it actually uses because cardinality estimation was wrong. Look at the `top_cpu_queries` drill-down for the offenders, then `analyze_query_plan` for each `query_hash` to see the operator-level row-count estimates vs. actuals. Update statistics with FULLSCAN on the affected tables, or add filtered indexes if a subset of the data drives the bad estimate. Per-query stopgaps: `OPTION (MAX_GRANT_PERCENT = X)` caps a single offender's grant without affecting others. Resource Governor workload-group caps are the durable answer if one workload chronically starves the others.");
+
+        t["RESOURCE_SEMAPHORE_QUERY_COMPILE"] = new AdviceBlock(
+            Headline:
+                "Query compile gateway waits — too many concurrent compilations of expensive queries",
+            Investigation:
+                "SQL Server gates expensive plan compilations through a semaphore (the big-plan gateway). When too many big plans need compiling at once, sessions wait at the gateway instead of running. The cause is almost always poor parameterisation: ad-hoc queries with literal values, or RPC calls without proper parameter typing, each producing a unique plan that has to be compiled from scratch. Open Memory → Plan Cache to see the single-use plan ratio; `get_plan_cache_bloat` (Dashboard) gives the same view as a numeric breakdown. `get_top_queries_by_cpu` will show the compile-heavy queries — high `execution_count` against high per-compile cost is the signature.",
+            Remediation:
+                "Fix the app to parameterise its calls — that's the only durable cure. As a server-side stopgap, `ALTER DATABASE ... SET PARAMETERIZATION FORCED` makes the optimizer parameterise more aggressively, but test it on a workload copy first because it changes plan-selection behaviour in ways that can hurt other queries. Enabling `optimize for ad hoc workloads` reduces plan-cache bloat from one-off queries but does nothing for the compile cost of any individual large plan. Plan guides on the worst-offender patterns are a per-query escape hatch.");
+
+        t["MEMORY_GRANT_PENDING"] = new AdviceBlock(
+            Headline:
+                "Queries are queued waiting for memory grants — the workspace pool is full",
+            Investigation:
+                "The drill-down `pending_grants` is already attached to this finding: each row shows `waiter_count`, `granted_memory_mb`, `used_memory_mb`, `timeout_errors`, and `forced_grants` for the snapshots where waiters were present. One sustained waiter is concerning, five is critical, forced grants or timeouts are emergency. Open the Memory Grants sub-tab under Memory for the trend over the window. RESOURCE_SEMAPHORE co-elevation confirms pool exhaustion is the cause; QUERY_SPILLS co-elevation means queries are running with grants smaller than they needed and spilling to tempdb. Call `get_memory_grants` for the per-pool semaphore state.",
+            Remediation:
+                "Same playbook as RESOURCE_SEMAPHORE: the offenders are over-granting because of bad cardinality estimates. Look at `top_cpu_queries` (attached when CPU is co-elevated) for the heavy hitters, then `analyze_query_plan` for the specific `query_hash` to see where the estimate diverged from actuals. Update statistics with FULLSCAN, add the right indexes, and the grants shrink. `OPTION (MAX_GRANT_PERCENT = X)` is a per-query stopgap that caps the worst offender without affecting others.");
+
+        t["PERFMON_PLE"] = new AdviceBlock(
+            Headline:
+                "Page Life Expectancy is low — the buffer pool is being churned faster than data can stay resident",
+            Investigation:
+                "Forget the old `PLE > 300` rule — what matters is the trend. Open the Perfmon tab and add the `Page life expectancy` counter, then zoom to the analysis window: a PLE that crashes from steady-state to single digits means active eviction, almost always from one query scanning a table larger than the pool. PAGEIOLATCH_SH co-elevation confirms the disk reads filling the pages back in. Open Memory → Overview and Memory → Memory Clerks to see where the pool's bytes are going. Call `get_perfmon_trend` with `counter_name=Page life expectancy` for the time-series and `get_memory_clerks` for the allocation breakdown.",
+            Remediation:
+                "Find the scan and fix it — almost every low-PLE incident traces to one or two queries reading more data than the pool can hold. Look at `top_cpu_queries` (attached when CPU is also a factor) ordered by `logical_reads` per execution, then `analyze_query_plan` for the missing-index suggestions. Adding RAM only helps if the working set genuinely exceeds memory; before going that route, confirm with `audit_config` that `max server memory` isn't at the default 2147483647 MB — SQL fighting the OS for RAM looks like memory pressure and isn't.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Blocking / lock contention
+        // ─────────────────────────────────────────────────────────────────
+
+        t["BLOCKING_EVENTS"] = new AdviceBlock(
+            Headline:
+                "Blocked process reports are firing above the per-hour threshold — sessions are waiting on locks held by other sessions",
+            Investigation:
+                "Open Blocking → Blocked Process Reports and zoom to the analysis window — that's the same source the engine just analyzed, with the XML available per row. The drill-down `top_blocking_chains` is already attached: five entries ranked by `wait_time_ms`, each carrying `database`, `blocked_spid`, `blocking_spid`, `lock_mode`, and truncated SQL for both sides. Call `get_blocked_process_reports` for the full parsed reports (Lite) or `get_blocking` (Dashboard), and `get_blocking_trend` (Lite) or `get_blocking_deadlock_stats` (Dashboard) to see whether the rate is climbing across the window or a single spike.",
+            Remediation:
+                "Look at the locks involved in `top_blocking_chains`: shared/exclusive mismatch (LCK_M_S blocked by writers) is RCSI territory — `audit_config` will flag any database where RCSI is off and surface the ALTER. Writer/writer contention (X/U/IX modes) is not helped by RCSI; the answer is shorter transactions, indexes that let the writer find rows faster instead of locking a range while scanning, and consistent object access order between procedures. For chronic blocking driven by one slow operation, fix that one query — the lock-hold duration is usually proportional to query duration.");
+
+        t["DEADLOCKS"] = new AdviceBlock(
+            Headline:
+                "Deadlocks are firing above the per-hour threshold — at least one transaction is being killed every few minutes",
+            Investigation:
+                "Open Blocking → Deadlocks and zoom to the window — every row carries the deadlock graph XML, viewable in-app. The drill-down `top_deadlocks` is already attached with the three most recent victims by collection time, including truncated victim SQL. Call `get_deadlocks` for the parsed event stream and `get_deadlock_detail` for the full graph XML on a specific event. SQL Server's deadlock detector runs every 5 seconds, so any sustained rate above the threshold means active recurring contention — not transient. If the graph shows LCK_M_S victims (readers being killed for writers), `audit_config` will tell you whether RCSI is off on the database.",
+            Remediation:
+                "Most deadlocks are caused by inconsistent object access order between two procedures (proc A locks table X then Y; proc B locks Y then X). Read the graph, identify the two paths, and pick one access order for both. For reader/writer deadlocks specifically, enabling READ_COMMITTED_SNAPSHOT on the database eliminates the entire class — readers stop taking shared locks and read row versions instead. Raising deadlock priority on the loser does not prevent the deadlock; it only changes which side dies. Shortening transactions (moving non-transactional work outside `BEGIN TRAN`) shrinks the window in which the deadlock can occur.");
+
+        t["BLOCKING_CHAIN"] = new AdviceBlock(
+            Headline:
+                "Multi-level blocking chain reconstructed — a session is blocking blockers, fanning out into a pile-up",
+            Investigation:
+                "The drill-down `reconstructed_blocking_chains` is already attached: up to three chains, each carrying `apex_spid`, `apex_sleeping`, `depth`, `victim_count`, `max_wait_ms`, and a per-level breakdown with `blocking_spid`, `blocked_spid`, `lock_mode`, `wait_time_ms`, and the SQL on both sides. `apex_sleeping = true` is the abandoned-transaction signature — an application started a BEGIN TRAN and never reached COMMIT/ROLLBACK on the error path. THREADPOOL co-elevation means every blocked victim is also holding a worker thread, and the server is at risk of thread exhaustion. Open Blocking → Blocked Process Reports to walk the same chain in the UI; `get_blocked_process_reports` (Lite) or `get_blocked_process_xml` (Dashboard) returns the parsed event stream.",
+            Remediation:
+                "If `apex_sleeping = true` on the top chain, kill the apex session — that single `KILL` collapses the entire pile-up because all victims downstream were waiting on that one transaction. For non-sleeping apex chains, look at the level-0 entry: there's one slow operation everyone else is queued behind. Common shapes: a missing index forcing a scan under a held lock, an UPDATE without a useful WHERE-clause index, or an unindexed foreign key forcing Sch-S during a parent-row update. Fix that one query and the chain dissolves.");
+
+        t["LCK"] = new AdviceBlock(
+            Headline:
+                "General lock contention is significant in wait stats — writer/writer or update/exclusive lock conflicts dominating",
+            Investigation:
+                "LCK groups X (exclusive), U (update), IX (intent exclusive), SIX, and BU waits — the writer/writer side of lock contention. Unlike LCK_M_S/LCK_M_IS (readers blocked by writers, fixable with RCSI), these are real serialization points: two writers genuinely cannot proceed at the same time. The drill-down `lock_mode_breakdown` is already attached: every LCK% wait type ranked by `total_wait_ms` and `waiting_tasks` over the analysis window — that tells you exactly which lock modes are dominating. Open the Wait Stats tab to see the LCK family on the chart. `get_waiting_tasks` (Lite) or `get_blocking` (Dashboard) returns the live waiting list with lock details.",
+            Remediation:
+                "RCSI does NOT help writer/writer contention — it only addresses readers blocked by writers. The fixes are mechanical: shorten transactions so locks are held briefly, fix the queries causing long lock holds (a missing index turning a seek into a scan extends every lock the scan takes), and partition hot tables so independent parts of the workload do not collide on the same rows. An UPDATE without a useful WHERE-clause index is by itself frequently the entire problem — `analyze_query_plan` on the offender will show the scan and the missing-index suggestion.");
+
+        t["LCK_M_S"] = new AdviceBlock(
+            Headline:
+                "LCK_M_S waits — readers are being blocked by writers, classic shared/exclusive lock contention",
+            Investigation:
+                "SELECT queries are queueing behind UPDATE/INSERT/DELETE transactions on the same rows or pages. The drill-down `lock_mode_breakdown` shows LCK_M_S ranked against the other lock modes for the window; `config_issues` (attached when DB_CONFIG co-fired) lists the databases where RCSI is off — those are the candidates for the fix. Open Configuration → Database Configuration in-app to see the full per-database RCSI/auto-shrink/auto-close/page-verify state. Reader/writer deadlocks are the same pattern escalated — if DEADLOCKS co-fired, the graph will show LCK_M_S victims.",
+            Remediation:
+                "Enable READ_COMMITTED_SNAPSHOT on the affected database: `ALTER DATABASE <db> SET READ_COMMITTED_SNAPSHOT ON;`. Readers stop taking shared locks and instead read the previous-committed row version, which eliminates the entire wait class for everything running at READ COMMITTED or below. The ALTER needs a brief exclusive lock on the database, so do it at a quiet moment. If the application uses NOLOCK / READUNCOMMITTED hints to work around this same problem today, RCSI is strictly better — it returns committed data instead of dirty reads — but test on a copy first if any code relies on dirty-read behaviour.");
+
+        t["LCK_M_IS"] = new AdviceBlock(
+            Headline:
+                "LCK_M_IS waits — intent-shared locks are being blocked, usually shared locks waiting for exclusive operations to finish",
+            Investigation:
+                "Intent-shared locks are the page/table-level locks SELECT takes to declare 'I will be reading rows on this page'. Waiting on IS means the page or table is held in an incompatible mode by a writer — same reader-blocked-by-writer pattern as LCK_M_S, one level up the lock hierarchy. The drill-down `lock_mode_breakdown` shows LCK_M_IS ranked against the other lock modes for the window. `config_issues` (when DB_CONFIG co-fired) lists databases with RCSI off — those are the candidates. Open Configuration → Database Configuration to see the full per-database state.",
+            Remediation:
+                "Enable READ_COMMITTED_SNAPSHOT on the affected database: `ALTER DATABASE <db> SET READ_COMMITTED_SNAPSHOT ON;`. This eliminates reader/writer blocking for everything at or below READ COMMITTED — the most common isolation level by far. If the application currently uses READ UNCOMMITTED with NOLOCK hints to avoid these waits, RCSI is the strictly better mechanism: it returns committed data rather than dirty reads, and you can remove the hints once it's enabled.");
+
+        t["SCH_M"] = new AdviceBlock(
+            Headline:
+                "Schema modification lock waits — DDL or index operations are blocking everything else on the affected object",
+            Investigation:
+                "SCH-M is the most exclusive lock SQL Server takes — it's incompatible with everything, including the IS lock SELECT requires. A query holding SCH-M on a hot table blocks the entire workload against that table. Sources: `ALTER TABLE`, `CREATE/DROP INDEX`, partition operations, and certain statistics updates. Open the Running Jobs tab to see whether a scheduled maintenance job is running during the wrong window — if RUNNING_JOBS also fired, the drill-down will name the job. Call `get_waiting_tasks` for the live SCH-M waiters (Lite) and `get_blocking` (Dashboard) to confirm the DDL session is the apex.",
+            Remediation:
+                "Move the DDL operation to an actual maintenance window — that's the cure for the scheduled-job case. For ongoing index maintenance on hot tables, `ONLINE = ON` rebuilds take SCH-M only briefly at the start and end of the operation instead of holding it for the whole rebuild; on Enterprise Edition, `WAIT_AT_LOW_PRIORITY` lets the rebuild yield to user queries when there's contention. Statistics updates with `WITH FULLSCAN` on huge tables can also drive SCH-M — schedule them, or use sampled updates instead.");
+
+        t["LCK_RANGE"] = new AdviceBlock(
+            Headline:
+                "Range-lock waits — SERIALIZABLE isolation is escalating to row-range locks, blocking other readers and writers",
+            Investigation:
+                "Range locks (LCK_M_RS_*, LCK_M_RIn_*, LCK_M_RX_*) only appear under SERIALIZABLE or REPEATABLE READ — they prevent phantom reads by locking ranges of an index rather than just the rows being read. Either the application is explicitly requesting SERIALIZABLE, or a `BEGIN TRANSACTION` somewhere is defaulting to it. The most common silent source is .NET's `System.Transactions.TransactionScope`, which defaults to SERIALIZABLE if you do not pass `TransactionOptions`. The drill-down `lock_mode_breakdown` shows which range lock types are dominating; `get_waiting_tasks` (Lite) or `get_blocking` (Dashboard) returns the live waiters with their session program names — the apex is often a specific application name.",
+            Remediation:
+                "Fix the source of the SERIALIZABLE request. For .NET callers, pass `new TransactionOptions { IsolationLevel = IsolationLevel.ReadCommitted }` to `TransactionScope` — this is the single most common fix. For explicit `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE` in T-SQL, ask whether phantom prevention is genuinely required; in most cases it isn't. RCSI does NOT help here — RCSI is a READ COMMITTED feature; SERIALIZABLE callers would need SNAPSHOT isolation enabled separately and opt into it explicitly. If SERIALIZABLE is truly required, shorter transactions and tighter range predicates are the only knobs that reduce the lock footprint.");
+
+        // The range-lock family all share one advice block — every LCK_M_R* key
+        // in FactScorer.GetWaitThresholds maps to the same LCK_RANGE entry.
+        var rangeLock = t["LCK_RANGE"];
+        t["LCK_M_RS_S"]  = rangeLock;
+        t["LCK_M_RS_U"]  = rangeLock;
+        t["LCK_M_RIn_NL"] = rangeLock;
+        t["LCK_M_RIn_S"] = rangeLock;
+        t["LCK_M_RIn_U"] = rangeLock;
+        t["LCK_M_RIn_X"] = rangeLock;
+        t["LCK_M_RX_S"]  = rangeLock;
+        t["LCK_M_RX_U"]  = rangeLock;
+        t["LCK_M_RX_X"]  = rangeLock;
+
+        // ─────────────────────────────────────────────────────────────────
+        // I/O
+        // ─────────────────────────────────────────────────────────────────
+
+        t["IO_READ_LATENCY_MS"] = new AdviceBlock(
+            Headline:
+                "Average read latency is above the storage-health threshold — disk reads are slow",
+            Investigation:
+                "The drill-down `file_latency_breakdown` is already attached: per-database, per-file-type breakdown of `avg_read_latency_ms` and `avg_write_latency_ms` over the window, ranked. That tells you which files are slow — data, log, or tempdb. Above 20ms is concerning, 50ms is critical for OLTP storage. Open File I/O → File I/O Latency in-app to see the same data graphed over time. PAGEIOLATCH_SH co-elevation means the workload is read-heavy enough to expose the latency; PAGEIOLATCH_SH near zero with high latency means storage is slow but the workload isn't hitting it hard. Call `get_file_io_stats` for the latest snapshot and `get_file_io_trend` for the trajectory.",
+            Remediation:
+                "Check the workload first — a missing index forcing scans drives enormous read I/O that exposes any storage as slow. Look at `top_cpu_queries` ordered by `logical_reads` per execution, run `analyze_query_plan` on the worst, and fix the indexes the plan analysis recommends. The latency often disappears without any storage change. If indexing is right and latency persists, the storage layer is the bottleneck and needs hardware-side action: IOPS, queue depth, whether data files are on appropriate-tier storage, whether another tenant on the SAN is contending. Latency that varies by time of day is almost always shared-infrastructure contention.");
+
+        t["IO_WRITE_LATENCY_MS"] = new AdviceBlock(
+            Headline:
+                "Average write latency is above the storage-health threshold — disk writes are slow",
+            Investigation:
+                "The drill-down `file_latency_breakdown` is already attached: `avg_write_latency_ms` per database and file type, ranked. The transaction log is the usual suspect — every commit blocks on WRITELOG, so even modest log latency directly hurts throughput. Above 10ms on data files is concerning, 2ms on log is the OLTP target. Open File I/O → File I/O Latency for the write series over time. WRITELOG co-elevation confirms log is the bottleneck; PAGEIOLATCH_EX co-elevation means data file writes are slow under modification load. `get_file_io_stats` and `get_file_io_trend` return the same data programmatically.",
+            Remediation:
+                "Move the transaction log to its own low-latency device (NVMe, log-tier SAN), and never share that device with non-database workloads. For data-file write pressure, look at the modification workload — bulk inserts and large updates are the usual drivers, and batching them so the buffer pool can flush between batches helps. Missing indexes drive over-writing too: every UPDATE touches every nonclustered index on the table, so a too-wide index set inflates write I/O. The plan-analysis output and `analyze_query_plan` on the modification queries will surface specific opportunities.");
+
+        t["WRITELOG"] = new AdviceBlock(
+            Headline:
+                "WRITELOG waits — transactions are waiting for the log to flush before they can commit",
+            Investigation:
+                "WRITELOG is the wait at COMMIT: every transaction blocks until its log records are durably written to disk. Two independent causes — slow log storage, or too many small commits. The drill-down `file_latency_breakdown` (attached when an I/O finding co-fired) carries `avg_write_latency_ms` for the log file. Open File I/O → File I/O Latency to see the log series over the window. If log latency is low but WRITELOG is still high, the workload is committing too frequently — chatty client code with one tiny transaction per call. Open the Perfmon tab and add `Transactions/sec` to see commit rate; `get_perfmon_trend` returns it programmatically.",
+            Remediation:
+                "Storage fix: log file on its own low-latency device (NVMe, dedicated log-tier SAN), with no contention from data files or tempdb. Workload fix: batch many small writes into fewer larger transactions where the consistency model allows — turning 1000 single-row inserts per second into ten 100-row batches collapses WRITELOG dramatically. `ALTER DATABASE ... SET DELAYED_DURABILITY = FORCED` trades durability for latency and is appropriate when losing the last few committed transactions on a crash is acceptable; not appropriate for financial or audit workloads.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Latch contention
+        // ─────────────────────────────────────────────────────────────────
+
+        t["LATCH_EX"] = new AdviceBlock(
+            Headline:
+                "Exclusive page-latch contention — in-memory contention on hot pages, often tempdb allocation or last-page insert hotspots",
+            Investigation:
+                "Page latches are short-term synchronization on individual buffer-pool pages. EX latch waits usually mean parallel inserts into a heap or narrow index (every session contending for the same allocation page), tempdb allocation contention on GAM/SGAM/PFS pages (the `2:1:1` family of resource waits), or insert hotspots on tables with monotonically increasing keys. The LATCH amplifiers (in `FactScorer.LatchAmplifiers`) co-elevate with TEMPDB_USAGE, CXPACKET, and SOS_SCHEDULER_YIELD — those tell you which shape this is. Open the Latch Stats sub-tab under Resource Metrics for the per-latch-class breakdown over the window. Call `get_latch_stats` (Dashboard) for the live `sys.dm_os_latch_stats` view; `get_tempdb_trend` confirms or rules out the tempdb-allocation shape.",
+            Remediation:
+                "For tempdb allocation contention, confirm at least 4 tempdb data files of equal size (8 if cores >= 8) and that `MIXED_PAGE_ALLOCATION` is `OFF` (the default since 2016). For insert hotspots on user tables, partition the table, switch to a non-sequential clustered key, or move the workload to in-memory OLTP if the table fits. For heap inserts contending on the last-page latch, add a clustered index — parallel inserts to heaps will always contend, and there's no setting that fixes it.");
+
+        t["LATCH_SH"] = new AdviceBlock(
+            Headline:
+                "Shared page-latch contention — concurrent readers contending for the same hot pages",
+            Investigation:
+                "Less common than EX, but shows up when many parallel readers hit the same small set of pages — root pages of busy indexes, single-page tables that everyone reads. Open the Latch Stats sub-tab under Resource Metrics for the breakdown by latch class. PAGE class points at the buffer pool; ACCESS_METHODS_HOBT_VIRTUAL_ROOT is the famously hot root-page latch on heavily-read indexes. Call `get_latch_stats` (Dashboard) for the live `sys.dm_os_latch_stats` view. CXPACKET co-elevation (the LATCH amplifier flags this at ≥ 10%) means parallel operations are amplifying the contention.",
+            Remediation:
+                "Architectural problem, not a configuration one. If a single hot page is being thrashed by small lookups, partition the index so the hot data spans multiple pages, denormalize the lookup into a wider structure, or cache at the application layer. There's no `sp_configure` setting that fixes this — the schema or workload has to change. If the contention is on a queue-table or status-flag pattern that everyone polls, switching that hot pattern to a service broker queue or an event-driven design is usually the durable answer.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // TempDB
+        // ─────────────────────────────────────────────────────────────────
+
+        t["TEMPDB_USAGE"] = new AdviceBlock(
+            Headline:
+                "TempDB usage is above the configured threshold — workspace allocation or version store growth is heavy",
+            Investigation:
+                "The drill-down `tempdb_breakdown` is already attached: per-snapshot `user_objects_mb`, `internal_objects_mb`, `version_store_mb`, and `unallocated_mb` ranked by total usage. That immediately tells you which of the three drivers is the problem. User objects = explicit `#temp` tables and table variables from application code. Internal objects = spills from hash joins, sorts, and hash aggregates running with too-small grants. Version store = RCSI/SI row versions held by a long-running reader transaction. Open the TempDB tab in-app to see the same series graphed. `get_tempdb_trend` returns it programmatically. QUERY_SPILLS co-elevation confirms the spill shape; the drill-down `top_spilling_queries` names the offenders.",
+            Remediation:
+                "Match the fix to the driver. Spill-driven: update statistics on the offending tables (the cardinality estimate fed the too-small grant), add the missing index the plan analysis surfaces, or use `OPTION (MIN_GRANT_PERCENT = X)` as a per-query stopgap. User-object-driven: look at the worst-offender procedures and ask whether every `#temp` is needed; chains of `SELECT INTO #x FROM #y` are often a single CTE in disguise. Version-store growth: find the long-running transaction holding the oldest version (no transaction over 5 minutes is normal for OLTP) and shorten or kill it. Tempdb file count: one per core up to 8, sized identically, autogrowth disabled.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Query-level
+        // ─────────────────────────────────────────────────────────────────
+
+        t["QUERY_SPILLS"] = new AdviceBlock(
+            Headline:
+                "Query spills — operators are running out of granted memory and spilling intermediate results to tempdb",
+            Investigation:
+                "A hash join, sort, or hash aggregate gets a grant smaller than it needs and falls back to writing to tempdb — usually 10-100x slower than the in-memory operator. Root cause is almost always a bad cardinality estimate: the optimizer guessed 1,000 rows and the operator actually saw 1,000,000. The drill-down `top_spilling_queries` is already attached: five queries ranked by `total_spills` with `database`, `query_hash`, `execution_count`, and truncated `query_text`. Open Queries → Top Queries by Duration in-app and sort by spill columns, or call `get_top_queries_by_cpu` to pull the same view by `query_hash`. `analyze_query_plan` on the hash will surface the operator-level estimate-vs-actual divergence.",
+            Remediation:
+                "Update statistics with FULLSCAN on the tables that drive the bad estimate — stale statistics are the single most common cause. Add filtered indexes if a subset of the data is the hot spot, or rewrite the operator (a hash join over a sorted input that should have been a merge join is a classic). Per-query stopgaps: `OPTION (RECOMPILE)` re-estimates at each execution against current statistics; `OPTION (MIN_GRANT_PERCENT = X)` forces a larger grant. If many queries spill consistently and grant pressure is high, the workspace pool may simply need more memory available — `audit_config` will tell you whether `max server memory` is constraining it.");
+
+        t["QUERY_HIGH_DOP"] = new AdviceBlock(
+            Headline:
+                "Queries are running with high degree of parallelism — DOP above 8 is unusual outside of warehousing workloads",
+            Investigation:
+                "Queries at DOP > 8 consume disproportionate scheduler and thread-pool resources for what's usually a small per-query benefit, and they amplify CXPACKET and THREADPOOL pressure. The drill-down `top_cpu_queries` (attached when CPU also flagged) carries `max_dop` per query — that's the direct signal. Open Queries → Top Queries by Duration to see DOP alongside other per-query metrics; sort by `max_dop` descending. Look at per-execution CPU vs. duration: if duration is roughly CPU÷DOP, parallelism is paying for itself; if duration is close to CPU, the workers are mostly contending with each other. Call `get_top_queries_by_cpu` with `parallel_only=true` for the same view programmatically.",
+            Remediation:
+                "Cap `MAXDOP` at the instance level — `audit_config` will recommend a value (typically half a NUMA node's cores, ≤ 8), and raise `cost threshold for parallelism` to 50 so trivial queries stop going parallel at all. For specific queries that genuinely benefit from higher DOP (analytics, reporting), use `OPTION (MAXDOP X)` as a per-query override rather than raising the instance default. After the change, watch CXPACKET on the Wait Stats tab — if it drops without total CPU regressing, the change was correct.");
+
+        t["PARAMETER_SENSITIVITY"] = new AdviceBlock(
+            Headline:
+                "Parameter-sensitive plan — one cached plan is wildly different in cost across different parameter values",
+            Investigation:
+                "The drill-down `parameter_sensitive_queries` is already attached: up to five queries with `worker_ratio` (max/min per-execution CPU for the same plan), `grant_ratio` (grant divergence), and `spills_on_some_inputs` (the plan spills on some parameter values but not others). A `worker_ratio` above 10x — the detector threshold — means the plan is catastrophic for some inputs: usually a plan compiled for a selective value being reused for an unselective one, or vice versa. The query text and hashes are in the drill-down; open Queries → Top Queries by Duration in-app and look up the `query_hash` for the full plan history. `analyze_query_plan` on the hash shows the plan shape, and running the query with the extreme parameter values shows the two divergent shapes.",
+            Remediation:
+                "**Do not force a plan.** Forcing locks in a plan that is bad for some parameter values — the whole point of detecting parameter sensitivity is that no single plan works for every input. The correct fixes: `OPTION (RECOMPILE)` for a fresh plan per execution (good when values vary widely and the query is not called thousands of times per minute, since compile cost matters), `OPTION (OPTIMIZE FOR ...)` to deliberately compile for the worst-case value, plan guides for specific branches, or splitting the query into two procedures by parameter shape. On SQL Server 2022, Parameter Sensitive Plan optimization (PSP) handles some plan shapes automatically — check the database compatibility level and consider raising it if the workload is on the supported shape list.");
+
+        t["PLAN_REGRESSION"] = new AdviceBlock(
+            Headline:
+                "Plan regression — a query is running a worse plan than one it has performed well with in the past",
+            Investigation:
+                "The drill-down `regressed_queries` is already attached: up to five queries with `regression_factor` (latest cost ÷ historical-best cost per execution), `latest_plan_hash`, `best_plan_hash`, `best_plan_id` (the integer ID `sp_query_store_force_plan` requires), and the per-execution CPU and duration numbers for both plans. The 14-day window means the historical best plan may not be in plan cache anymore — Query Store has it. Open Queries → Query Store by Duration in-app to walk the plan history for the `query_id` and visualize the regression. `analyze_query_store_plan` returns the plan analysis for the regressed `query_id` and `plan_id`. If the engine flagged `latest_is_forced > 0` and `force_failure_count > 0`, SQL is already failing to apply a force — examine `sys.query_store_plan` for the `force_failure_reason` because another `sp_query_store_force_plan` call against the same plan will not help.",
+            Remediation:
+                "Forcing the historical-better plan is the fast fix while you investigate why the worse plan was chosen — the generated EXEC `sp_query_store_force_plan` is in the remediation block below with the IDs filled in. **Confirm the better plan is still better against current data before forcing** — schema changes, data growth, or statistics updates may have made the old plan stale. Run both plans against representative parameter values first. Forcing is reversible: the snippet includes a commented `sp_query_store_unforce_plan` line for back-out. For the durable fix, address the root cause — stale statistics, parameter sniffing on a new value, or a recently-dropped index are the usual culprits.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // DB config
+        // ─────────────────────────────────────────────────────────────────
+
+        t["DB_CONFIG"] = new AdviceBlock(
+            Headline:
+                "Database-level configuration issues detected — one or more databases have settings that cause measurable harm",
+            Investigation:
+                "The drill-down `config_issues` is already attached: per-database breakdown with `recovery_model`, `rcsi`, `query_store`, and an `issues` list naming the specific problems (`auto_shrink ON`, `auto_close ON`, `RCSI OFF`, `page_verify=...`). Each issue has a different cost: AUTO_SHRINK causes catastrophic fragmentation by repeatedly shrinking and re-growing; AUTO_CLOSE adds connection-time overhead on every first query against an idle database; page_verify below CHECKSUM weakens torn-page detection on modern storage; RCSI off makes reader/writer blocking unavoidable. Open Configuration → Database Configuration in-app for the full per-database state. `get_database_config` (Lite) returns it programmatically.",
+            Remediation:
+                "Mechanical fixes for the unambiguous ones: `ALTER DATABASE <db> SET AUTO_SHRINK OFF` — always. `ALTER DATABASE <db> SET AUTO_CLOSE OFF` — always for any database with real workload. `ALTER DATABASE <db> SET PAGE_VERIFY CHECKSUM` — always on modern storage. RCSI is the only nuanced one: enabling it eliminates reader/writer blocking but adds version-store overhead to writes — test on a copy first if the application uses NOLOCK hints or relies on default isolation semantics in surprising ways. The amplifier on this finding boosts severity when LCK_M_S/LCK_M_IS are also high; that combination is the strong signal RCSI would actually help.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Jobs / disk / bad actors
+        // ─────────────────────────────────────────────────────────────────
+
+        t["RUNNING_JOBS"] = new AdviceBlock(
+            Headline:
+                "Long-running SQL Agent jobs detected — one or more jobs have been running past their normal duration",
+            Investigation:
+                "Open the Running Jobs tab in-app: the engine shows each currently-running job with its current duration alongside historical average and p95, with jobs above their normal duration flagged. Call `get_running_jobs` for the same view programmatically. Common patterns: a maintenance job (CHECKDB, index rebuild) that overlapped into business hours, a job stuck on a blocked spid (BLOCKING_EVENTS will co-fire), or a job whose data volume grew beyond what its design assumed. SCH_M co-elevation usually means a long index-maintenance job is now blocking the regular workload. For long-window history, `msdb.dbo.sysjobs` and `sysjobhistory` carry job-history detail beyond the engine's analysis window.",
+            Remediation:
+                "Decide kill-vs-wait for the runaway. Killing mid-CHECKDB or mid-rebuild is safe — both unwind cleanly, you just need to redo the work in a real maintenance window. For chronically-long jobs, the workload has often outgrown the implementation: CHECKDB on a 10 TB database isn't a job, it's a project. Partial substitutes: `WITH PHYSICAL_ONLY` for the daily check plus a less-frequent full check, partitioning so maintenance runs on one partition at a time, incremental statistics so updates touch one partition. For jobs blocked behind blocking, the blocking is the real problem — work the BLOCKING_EVENTS playbook.");
+
+        t["DISK_SPACE"] = new AdviceBlock(
+            Headline:
+                "Disk free space is below the healthy-headroom threshold — risk of database growth being denied",
+            Investigation:
+                "Below 10% free is concerning, below 5% is critical. Open File I/O → File I/O Latency or the TempDB tab to see per-file growth over the analysis window. Call `get_database_sizes` (Lite) for per-file totals, auto-growth settings, and the volume free-space numbers. Common shapes: tempdb growth from a runaway spilling query (QUERY_SPILLS will co-fire and `top_spilling_queries` will name it), a log file that has not been backed up (FULL recovery without log backups means the log cannot truncate and grows indefinitely), or a data file with overly-aggressive auto-growth that filled the volume.",
+            Remediation:
+                "Free space first, root cause second. For FULL-recovery databases with bloated logs, take a log backup — that's the only way to truncate. For tempdb that grew from a one-time spill event, `DBCC SHRINKFILE` is one of the few legitimate uses of shrink (do it after the spilling query is fixed, or it'll just regrow). For data files, expand the volume if business-as-usual growth filled it. Going forward: set fixed-MB auto-growth (not percentage), pre-size based on observed growth, and confirm Instant File Initialization is granted to the service account so growths don't block writes while the file is zeroed.");
+
+        t["BAD_ACTOR"] = new AdviceBlock(
+            Headline:
+                "One query is dominating workload cost — its frequency × per-execution impact rank it as the top offender",
+            Investigation:
+                "The drill-down `bad_actor_query` is already attached: `database`, `query_hash`, `query_text`, `execution_count`, `avg_cpu_ms`, `avg_elapsed_ms`, `avg_reads`, `total_cpu_ms`, `total_reads`, `total_spills`, `max_dop`. The drill-down also fetches the live plan for this hash and attaches `plan_analysis` with the warnings and missing-index suggestions the optimizer generated. Shape matters: a query running 100,000 times at 5ms is a parameterisation or caching opportunity; one running once at 30 seconds is a single-query tuning project. Open Queries → Top Queries by Duration in-app and search for the `query_hash` for the full plan history; `get_query_trend` returns the time-series for this hash; `analyze_query_plan` returns the full plan analysis on demand.",
+            Remediation:
+                "Match the fix to the shape. High-frequency lightweight: does the WHERE clause have a covering index? Can the application cache results so it doesn't ask 100,000 times per minute? Is parameterisation working, or is every execution compiling? Low-frequency heavyweight: this is a tuning project — apply the missing-index suggestions from `plan_analysis`, rewrite subqueries to joins (or back), update statistics on the driving tables. The `plan_analysis` field already lists the optimizer's own missing-index suggestions with `impact` and `create_statement`; treat those as the starting point, not the answer.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Anomaly facts (first-class)
+        // ─────────────────────────────────────────────────────────────────
+
+        t["ANOMALY_CPU_SPIKE"] = new AdviceBlock(
+            Headline:
+                "CPU is anomalously elevated compared to its baseline for this time bucket",
+            Investigation:
+                "The anomaly detector compares this window's CPU to the same hour-of-week historical baseline over 30 days; 2σ trips the warning, 4σ trips critical. The baseline context (deviation, ratio, baseline mean, sample count) is in the finding's metadata. The drill-down `spike_peak` and `queries_at_spike` are attached: the exact peak timestamp and the five sessions active within ±2 minutes of it. Open the CPU tab and zoom to `spike_peak.time` to see the SQL vs. other-process split. Call `get_cpu_utilization` for the per-minute trend and `get_active_queries` for the wider list of sessions active across the window. Common drivers: a recently-cached bad plan (check whether PLAN_REGRESSION also fired), a one-off workload (marketing campaign, backfill job), or another process on the host.",
+            Remediation:
+                "Confirm one-time vs. sustained. Transient (a deploy, an ad-hoc report) needs no action beyond noting it — the anomaly framing means 'unusual right now', not 'automatically bad'. If the elevation persists, the threshold-based CPU_SQL_PERCENT finding will fire on the next analysis window and the standard CPU-pressure playbook applies (tune the queries in `top_cpu_queries`, address parallelism via `audit_config`, force regressed plans via the PLAN_REGRESSION remediation).");
+
+        t["ANOMALY_BLOCKING_SPIKE"] = new AdviceBlock(
+            Headline:
+                "Blocking events are anomalously elevated compared to baseline — a ratio above 3x normal rate",
+            Investigation:
+                "Ratio-based scoring: 3x baseline = 0.5 score, 10x = 1.0, so this finding means blocking rate is well above the workload's normal pattern for this hour-of-week bucket. The drill-down `top_blocking_chains` is attached when BLOCKING_EVENTS scoring also surfaced data; `reconstructed_blocking_chains` carries the apex with `apex_sleeping` for the abandoned-transaction signature. Open Blocking → Blocked Process Reports and zoom to the window. Call `get_blocking_trend` (Lite) or `get_blocking_deadlock_stats` (Dashboard) to see whether the rate is climbing or a one-shot spike, and `get_blocked_process_reports` (Lite) or `get_blocked_process_xml` (Dashboard) for the full parsed events. A sudden ratio spike often points to a recent deploy, schema change, or new query pattern that introduced fresh contention.",
+            Remediation:
+                "First question: what changed? Recent deploy, schema migration, new query pattern, job running outside its normal window. If a specific abandoned head blocker is at the apex (`apex_sleeping = true`), kill it — that single action collapses the chain. For systemic increases without an obvious change, the BLOCKING_EVENTS standard playbook applies: RCSI for reader/writer waits, shorter transactions for writer/writer, index tuning to reduce lock-hold duration on the slow operations everyone is queueing behind.");
+
+        t["ANOMALY_DEADLOCK_SPIKE"] = new AdviceBlock(
+            Headline:
+                "Deadlock rate is anomalously elevated — a sudden jump in deadlocks compared to normal",
+            Investigation:
+                "Deadlocks normally run at a low steady-state rate determined by the workload's transaction patterns; a ratio spike against the hour-of-week baseline means a new deadlock-prone interaction was just introduced. The drill-down `top_deadlocks` is attached with the three most recent victims by collection time. Open Blocking → Deadlocks and zoom to the window — the new pattern will dominate the list, and each row has the full graph XML viewable in-app. Call `get_deadlock_detail` to extract the graph XML for the dominant pattern. `get_deadlock_trend` (Lite) or `get_blocking_deadlock_stats` (Dashboard) shows whether the rate is still climbing.",
+            Remediation:
+                "Find the new pattern in the graphs and fix the interaction — almost always by enforcing consistent object access order between the two procedures involved, or by shortening the transaction so the window for the deadlock is smaller. If a recent deploy correlates with the spike, the new code is the prime suspect — review the latest changes to the procedures named in the deadlock graphs. For reader/writer deadlocks specifically (LCK_M_S victims in the graph), RCSI on the affected database eliminates the entire class.");
+
+        t["ANOMALY_READ_LATENCY"] = new AdviceBlock(
+            Headline:
+                "Read latency is anomalously elevated compared to its baseline — storage is slower than normal right now",
+            Investigation:
+                "Hour-of-week baseline comparison: reads are slower than they usually are at this specific time bucket. The drill-down `file_latency_breakdown` (attached when scoring also surfaced data) names which files are affected — data, log, or tempdb. Open File I/O → File I/O Latency and zoom to the window for the trend. `get_file_io_stats` and `get_file_io_trend` return the same data programmatically. Two shapes: storage-tier anomalies (another tenant on the SAN, a backup job that overlapped) usually resolve on their own; workload-tier anomalies (a new scan-heavy query, a missing-index regression) persist until the workload is fixed.",
+            Remediation:
+                "Check `top_cpu_queries` (attached when CPU is co-elevated) for queries with unusually high `logical_reads` per execution — if one stands out, that's the workload-tier cause and fixing the index or the query catches the storage back up. If the queries all look normal but latency is up, it's a storage-layer issue: check with the storage team about other tenants, scheduled jobs (backups, replication, snapshots) on the same infrastructure. Transient storage-side anomalies need only monitoring; sustained ones become an IO_READ_LATENCY_MS threshold finding on the next window and the standard playbook applies.");
+
+        t["ANOMALY_WRITE_LATENCY"] = new AdviceBlock(
+            Headline:
+                "Write latency is anomalously elevated compared to its baseline — disk writes are slower than normal right now",
+            Investigation:
+                "Same shape as the read-latency anomaly, for writes. Log file write latency is usually the most consequential — every commit blocks on WRITELOG, so even a brief elevation hurts throughput. The drill-down `file_latency_breakdown` (when scoring surfaced it) names the slow files; open File I/O → File I/O Latency for the trend. `get_file_io_stats` returns the latest snapshot. WRITELOG co-elevation means the workload is committing through the slow log right now. Storage-side events — a SAN snapshot, a failover, a backup that overlapped — often correlate with anomalous write latency.",
+            Remediation:
+                "If a specific external event correlates (overlapping backup, SAN maintenance window), let it pass — that's expected behaviour with no SQL-side fix. If the elevation is sustained without an obvious external cause, the storage layer needs investigation: the log file should live on its own low-latency device. Workload-side, a sudden burst of large writes (bulk insert, big update) can drive transient write latency anomalies — if the burst recurs, the WRITELOG playbook applies (batch writes, separate log storage, delayed durability for non-financial workloads).");
+
+        t["ANOMALY_BATCH_REQUESTS"] = new AdviceBlock(
+            Headline:
+                "Batch requests per second are anomalously elevated — the server is fielding far more queries than usual",
+            Investigation:
+                "Batch rate is the rawest measure of workload, so a sigma spike means traffic surged for this hour-of-week bucket. Open the Perfmon tab and add `Batch Requests/sec` for the trend; call `get_perfmon_trend` with `counter_name=Batch Requests/sec` programmatically. The drill-down `queries_at_spike` (when CPU also spiked) shows what was active at the peak. `get_active_queries` returns the active-session snapshots across the window; `get_top_queries_by_cpu` ordered by `execution_count` ranks the high-frequency queries. Common drivers: an application loop that broke (chatty retries, polling that should be event-driven), a new caller hitting the database directly, or a legitimate burst (marketing event, batch import).",
+            Remediation:
+                "Confirm intentional vs. broken. Misbehaving application — uncached lookups, retry storms, polling instead of subscribing — is fixed at the source; no amount of SQL tuning will help a server hit with 100,000 unnecessary requests per second. Legitimate burst that's the new normal: scale the workload through app-layer caching, connection pooling, or splitting reads to a replica. If the new load level persists going forward, it'll appear as a new BAD_ACTOR or CPU finding on subsequent analysis windows and the standard playbooks apply.");
+
+        t["ANOMALY_SESSION_SPIKE"] = new AdviceBlock(
+            Headline:
+                "Active session count is anomalously elevated — far more connections than normal for this time bucket",
+            Investigation:
+                "Session-count spikes usually mean clients are holding connections open longer than expected. Open the Session Stats sub-tab under Resource Metrics (Dashboard) to see the trend with the top application and host names already aggregated; `get_session_stats` returns the same view grouped by application. Typical causes: a long-blocked workload (BLOCKING_EVENTS or BLOCKING_CHAIN co-elevation confirms it), connection-pool exhaustion in the app, or a runaway client opening connections without closing them. Call `get_active_queries` to see what those sessions were actually doing.",
+            Remediation:
+                "If the count climbed because workers are blocked, blocking is the real problem — sessions free themselves as blocking resolves and the BLOCKING_EVENTS playbook applies. If a specific application is accumulating connections without releasing (the Session Stats top-app text will name it), the connection-pool configuration there is wrong: pool size, idle timeout, or an outright leak. Watch for sustained session counts approaching `max user connections` or the worker-thread limit — at that point the spike is an availability problem, not just a workload anomaly.");
+
+        t["ANOMALY_QUERY_DURATION"] = new AdviceBlock(
+            Headline:
+                "Query duration is anomalously elevated — the median or P95 query is slower than baseline for this time bucket",
+            Investigation:
+                "Duration anomalies are workload-shape signals: either the same queries are running slower, or a different mix is running than usual. Open Queries → Top Queries by Duration and zoom to the window; `get_query_duration_trend` (Lite) returns the average-duration time-series. Compare against `get_top_queries_by_cpu` ordered by `avg_elapsed_ms` for the elapsed-time leaders. If one specific query's duration jumped, PLAN_REGRESSION and PARAMETER_SENSITIVITY are the right places to look — both will surface the root cause cleanly with the drill-down already populated.",
+            Remediation:
+                "Track down the slow query through the standard channels: plan analysis (`analyze_query_plan` on the `query_hash`), statistics, indexes. If multiple queries got slower at once, the host itself is slower — co-elevated CPU, I/O, or memory findings should pinpoint which resource. Duration anomalies without any other resource finding almost always mean blocking; check the Blocking → Blocked Process Reports view and the BLOCKING_EVENTS fact even if it didn't score above its own threshold this window.");
+
+        t["ANOMALY_MEMORY_PRESSURE"] = new AdviceBlock(
+            Headline:
+                "Memory pressure metrics are anomalously elevated — PLE, memory-grant queue, or working-set size out of baseline range",
+            Investigation:
+                "Open Memory → Overview to see the buffer pool, working set, and PLE across the window; Memory → Memory Grants for the grant pressure; Memory → Memory Pressure Events for the ring-buffer notifications. The PERFMON_PLE and MEMORY_GRANT_PENDING facts are the two finest indicators here — if either co-fired, their drill-downs (`pending_grants` etc.) are attached. Call `get_memory_stats` for the latest snapshot, `get_memory_trend` for the time-series, `get_memory_clerks` for the allocation breakdown, and `get_memory_pressure_events` (Lite) for the ring-buffer notifications. QUERY_SPILLS co-elevation confirms grant exhaustion is hurting queries; a sudden PLE drop means a new query is scanning something large.",
+            Remediation:
+                "Match the fix to the shape. Buffer-pool-driven (PLE crash): find the scan and add the missing index — the PERFMON_PLE playbook applies, `top_cpu_queries` ordered by `logical_reads` per execution names the candidates. Grant-driven: the offender is consuming a too-large grant because of a bad cardinality estimate — `analyze_query_plan` on the worst `query_hash` shows the estimate-vs-actual divergence, FULLSCAN statistics or a filtered index fixes it. Anomalies that resolve on their own are typically one-time reporting queries; sustained ones become standard PERFMON_PLE or RESOURCE_SEMAPHORE findings on the next window.");
+
+        return t;
+    }
+}
