@@ -14,6 +14,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Mcp;
 
@@ -32,6 +33,7 @@ namespace PerformanceMonitorLite.Services;
 public sealed class AnalysisNotificationService
 {
     private readonly EmailAlertService _emailAlertService;
+    private readonly IAlertSettings _settings;
 
     /// <summary>
     /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
@@ -42,9 +44,10 @@ public sealed class AnalysisNotificationService
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
-    public AnalysisNotificationService(EmailAlertService emailAlertService)
+    public AnalysisNotificationService(EmailAlertService emailAlertService, IAlertSettings settings)
     {
         _emailAlertService = emailAlertService;
+        _settings = settings;
     }
 
     /// <summary>
@@ -56,8 +59,8 @@ public sealed class AnalysisNotificationService
         if (findings is null || findings.Count == 0)
             return;
 
-        var threshold = App.AnalysisNotifySeverity;
-        var cooldown = TimeSpan.FromMinutes(App.AnalysisNotifyCooldownMinutes);
+        var threshold = _settings.AnalysisNotifySeverity;
+        var cooldown = TimeSpan.FromMinutes(_settings.AnalysisNotifyCooldownMinutes);
         var now = DateTime.UtcNow;
 
         /* Drop entries past 2× cooldown so the dict stays bounded — any entry

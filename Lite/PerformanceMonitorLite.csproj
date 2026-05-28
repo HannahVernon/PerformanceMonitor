@@ -38,6 +38,7 @@
   <ItemGroup>
     <ProjectReference Include="..\PerformanceMonitor.Analysis\PerformanceMonitor.Analysis.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.Notifications\PerformanceMonitor.Notifications.csproj" />
   </ItemGroup>
 
   <ItemGroup>

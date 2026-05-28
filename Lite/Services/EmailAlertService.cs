@@ -14,6 +14,7 @@ using System.Net.Mail;
 using System.Net.Mime;
 using System.Text;
 using System.Threading.Tasks;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
@@ -25,17 +26,20 @@ namespace PerformanceMonitorLite.Services;
 public class EmailAlertService
 {
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
+    private readonly IAlertSettings _settings;
     private readonly DuckDbInitializer? _duckDb;
-    private readonly WebhookAlertService _webhookAlertService = new();
+    private readonly WebhookAlertService _webhookAlertService;
 
     /* Failure tracking for louder logging */
     private int _consecutiveSmtpFailures;
     private string? _lastSmtpError;
     private int _consecutiveLogFailures;
 
-    public EmailAlertService(DuckDbInitializer? duckDb = null)
+    public EmailAlertService(IAlertSettings settings, DuckDbInitializer? duckDb = null)
     {
+        _settings = settings;
         _duckDb = duckDb;
+        _webhookAlertService = new WebhookAlertService(settings);
     }
 
     /// <summary>
@@ -61,10 +65,10 @@ public class EmailAlertService
             var notificationType = muted ? "muted" : "tray";
 
             /* Attempt email delivery if SMTP is fully configured and alert is not muted */
-            if (!muted && App.SmtpEnabled &&
-                !string.IsNullOrWhiteSpace(App.SmtpServer) &&
-                !string.IsNullOrWhiteSpace(App.SmtpFromAddress) &&
-                !string.IsNullOrWhiteSpace(App.SmtpRecipients))
+            if (!muted && _settings.SmtpEnabled &&
+                !string.IsNullOrWhiteSpace(_settings.SmtpServer) &&
+                !string.IsNullOrWhiteSpace(_settings.SmtpFromAddress) &&
+                !string.IsNullOrWhiteSpace(_settings.SmtpRecipients))
             {
                 var cooldownKey = $"{serverId}:{metricName}";
 
@@ -82,7 +86,7 @@ public class EmailAlertService
                 }
 
                 var withinCooldown = _cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                    DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(App.EmailCooldownMinutes);
+                    DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes);
 
                 if (!withinCooldown)
                 {
@@ -90,11 +94,11 @@ public class EmailAlertService
 
                     var subject = $"[SQL Monitor Alert] {metricName} on {serverName}";
                     var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildAlertEmail(
-                        metricName, serverName, currentValue, thresholdValue, App.EmailCooldownMinutes, context);
+                        metricName, serverName, currentValue, thresholdValue, _settings.EmailCooldownMinutes, context);
 
                     try
                     {
-                        await SendEmailAsync(subject, htmlBody, plainTextBody, context);
+                        await SendEmailAsync(_settings, subject, htmlBody, plainTextBody, context);
                         sent = true;
                         _cooldowns[cooldownKey] = DateTime.UtcNow;
 
@@ -278,7 +282,7 @@ AND   send_error IS NULL";
                 return "No recipients configured.";
 
             var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildTestEmail();
-            await SendEmailAsync("[SQL Monitor] Test Email", htmlBody, plainTextBody);
+            await SendEmailAsync(new AppAlertSettings(), "[SQL Monitor] Test Email", htmlBody, plainTextBody);
             return null;
         }
         catch (Exception ex)
@@ -290,24 +294,24 @@ AND   send_error IS NULL";
     /// <summary>
     /// Shared SMTP send helper with multipart/alternative (HTML + plain text).
     /// </summary>
-    private static async Task SendEmailAsync(string subject, string htmlBody, string plainTextBody, AlertContext? context = null)
+    private static async Task SendEmailAsync(IAlertSettings settings, string subject, string htmlBody, string plainTextBody, AlertContext? context = null)
     {
-        using var smtpClient = new SmtpClient(App.SmtpServer, App.SmtpPort)
+        using var smtpClient = new SmtpClient(settings.SmtpServer, settings.SmtpPort)
         {
-            EnableSsl = App.SmtpUseSsl,
+            EnableSsl = settings.SmtpUseSsl,
             DeliveryMethod = SmtpDeliveryMethod.Network,
             Timeout = 30000
         };
 
-        if (!string.IsNullOrWhiteSpace(App.SmtpUsername))
+        if (!string.IsNullOrWhiteSpace(settings.SmtpUsername))
         {
-            var password = App.GetSmtpPassword();
-            smtpClient.Credentials = new NetworkCredential(App.SmtpUsername, password ?? "");
+            var password = settings.GetSmtpPassword();
+            smtpClient.Credentials = new NetworkCredential(settings.SmtpUsername, password ?? "");
         }
 
         using var message = new MailMessage
         {
-            From = new MailAddress(App.SmtpFromAddress),
+            From = new MailAddress(settings.SmtpFromAddress),
             Subject = subject
         };
 
@@ -325,7 +329,7 @@ AND   send_error IS NULL";
             message.Attachments.Add(new Attachment(stream, context.AttachmentFileName, "application/xml"));
         }
 
-        foreach (var recipient in App.SmtpRecipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var recipient in settings.SmtpRecipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             message.To.Add(recipient);
         }

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using PerformanceMonitorLite;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Services;
 using Xunit;
@@ -20,6 +21,7 @@ public class AnalysisNotificationTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly DuckDbInitializer _duckDb;
+    private readonly IAlertSettings _settings = new AppAlertSettings();
 
     public AnalysisNotificationTests()
     {
@@ -301,7 +303,7 @@ public class AnalysisNotificationTests : IDisposable
         App.AnalysisNotifySeverity = 1.5;
         App.AnalysisNotifyCooldownMinutes = 360;
 
-        var notifier = new AnalysisNotificationService(new EmailAlertService(_duckDb));
+        var notifier = new AnalysisNotificationService(new EmailAlertService(_settings, _duckDb), _settings);
         var finding = MakeFinding("samehash00000001", severity: 2.0);
 
         await notifier.NotifyAsync(new[] { finding });
@@ -317,7 +319,7 @@ public class AnalysisNotificationTests : IDisposable
         App.AnalysisNotifySeverity = 1.5;
         App.AnalysisNotifyCooldownMinutes = 360;
 
-        var notifier = new AnalysisNotificationService(new EmailAlertService(_duckDb));
+        var notifier = new AnalysisNotificationService(new EmailAlertService(_settings, _duckDb), _settings);
 
         /* Use distinct first-8-char prefixes — FindingMessageFormatter.MetricName
            embeds only the first 8 chars of StoryPathHash, and the persistence
@@ -340,7 +342,7 @@ public class AnalysisNotificationTests : IDisposable
         await _duckDb.InitializeAsync();
         App.AnalysisNotifySeverity = 1.5;
 
-        var notifier = new AnalysisNotificationService(new EmailAlertService(_duckDb));
+        var notifier = new AnalysisNotificationService(new EmailAlertService(_settings, _duckDb), _settings);
         await notifier.NotifyAsync(new[] { MakeFinding("lowsev0000000001", severity: 1.0) });
 
         Assert.Equal(0, await CountAlertLogRowsAsync());

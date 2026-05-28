@@ -17,6 +17,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Mcp;
@@ -50,6 +51,7 @@ public partial class MainWindow : Window
     private LocalDataService? _dataService;
     private McpHostService? _mcpService;
     private readonly AlertStateService _alertStateService = new();
+    private readonly IAlertSettings _alertSettings = new AppAlertSettings();
     private readonly MuteRuleService _muteRuleService;
     private EmailAlertService _emailAlertService;
 
@@ -68,7 +70,7 @@ public partial class MainWindow : Window
 
         // Initialize services (with loggers wired to AppLogger)
         _databaseInitializer = new DuckDbInitializer(App.DatabasePath, new AppLoggerAdapter<DuckDbInitializer>());
-        _emailAlertService = new EmailAlertService(_databaseInitializer);
+        _emailAlertService = new EmailAlertService(_alertSettings, _databaseInitializer);
         _muteRuleService = new MuteRuleService(_databaseInitializer);
         _serverManager = new ServerManager(App.SharedConfigDirectory, logger: new AppLoggerAdapter<ServerManager>());
         _scheduleManager = new ScheduleManager(App.ConfigDirectory);
@@ -113,7 +115,7 @@ public partial class MainWindow : Window
 
             // Routes high-severity analysis findings to email/Slack/Teams; the background
             // service runs scheduled analysis and hands findings to it.
-            var analysisNotificationService = new AnalysisNotificationService(_emailAlertService);
+            var analysisNotificationService = new AnalysisNotificationService(_emailAlertService, _alertSettings);
 
             _backgroundService = new CollectionBackgroundService(
                 _collectorService, _databaseInitializer, archiveService, retentionService, _serverManager,

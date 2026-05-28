@@ -753,6 +753,9 @@
       "performancemonitor.analysis": {
         "type": "Project"
       },
+      "performancemonitor.notifications": {
+        "type": "Project"
+      },
       "performancemonitor.plananalysis": {
         "type": "Project"
       }
