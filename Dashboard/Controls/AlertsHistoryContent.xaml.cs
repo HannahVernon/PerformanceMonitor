@@ -81,7 +81,8 @@ namespace PerformanceMonitorDashboard.Controls
                 IsWarning = !e.MetricName.Contains("Cleared") && !e.MetricName.Contains("Resolved")
                             && !e.MetricName.Contains("Deadlock") && !e.MetricName.Contains("Poison"),
                 Muted = e.Muted,
-                DetailText = e.DetailText
+                DetailText = e.DetailText,
+                ContextJson = e.ContextJson
             }).ToList();
 
             _lastRefreshed = DateTime.UtcNow;
@@ -568,5 +569,6 @@ namespace PerformanceMonitorDashboard.Controls
         public bool IsWarning { get; set; }
         public bool Muted { get; set; }
         public string? DetailText { get; set; }
+        public string? ContextJson { get; set; }
     }
 }

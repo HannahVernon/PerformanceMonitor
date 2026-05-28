@@ -145,8 +145,12 @@ public class EmailAlertService
                 ?? (double.TryParse(currentValue.TrimEnd('%'), out var cv) ? cv : 0);
             var logThreshold = numericThresholdValue
                 ?? (double.TryParse(thresholdValue.TrimEnd('%'), out var tv) ? tv : 0);
+            /* Persist the structured context as JSON alongside the flat detail_text so the
+               in-app dialog can render the same advice / T-SQL / drill-down shape that
+               email and webhooks already show (and survive purge of the source findings). */
+            string? contextJson = context is not null ? AlertContextSerializer.Serialize(context) : null;
             await LogAlertAsync(serverId, serverName, metricName,
-                logCurrent, logThreshold, sent, notificationType, sendError, muted, detailText);
+                logCurrent, logThreshold, sent, notificationType, sendError, muted, detailText, contextJson);
         }
         catch (Exception ex)
         {
@@ -334,7 +338,7 @@ AND   send_error IS NULL";
     /// Reuses the injected DuckDbInitializer instead of creating a new one each time.
     /// </summary>
     private async Task LogAlertAsync(int serverId, string serverName, string metricName,
-        double currentValue, double thresholdValue, bool alertSent, string notificationType, string? sendError, bool muted = false, string? detailText = null)
+        double currentValue, double thresholdValue, bool alertSent, string notificationType, string? sendError, bool muted = false, string? detailText = null, string? contextJson = null)
     {
         try
         {
@@ -353,8 +357,8 @@ AND   send_error IS NULL";
 
             using var command = connection.CreateCommand();
             command.CommandText = @"
-INSERT INTO config_alert_log (alert_time, server_id, server_name, metric_name, current_value, threshold_value, alert_sent, notification_type, send_error, muted, detail_text)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+INSERT INTO config_alert_log (alert_time, server_id, server_name, metric_name, current_value, threshold_value, alert_sent, notification_type, send_error, muted, detail_text, context_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
 
             command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = DateTime.UtcNow });
             command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
@@ -367,6 +371,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
             command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = sendError ?? (object)DBNull.Value });
             command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = muted });
             command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = detailText ?? (object)DBNull.Value });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = contextJson ?? (object)DBNull.Value });
 
             await command.ExecuteNonQueryAsync();
 

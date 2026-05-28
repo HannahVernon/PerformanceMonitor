@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 25;
+    internal const int CurrentSchemaVersion = 26;
 
     private readonly string _archivePath;
 
@@ -702,6 +702,19 @@ public class DuckDbInitializer
             /* v25: Added memory_pressure_events table for RING_BUFFER_RESOURCE_MONITOR notifications.
                     New table only — created by GetAllTableStatements(). */
             _logger?.LogInformation("Running migration to v25: adding memory_pressure_events table");
+        }
+
+        if (fromVersion < 26)
+        {
+            _logger?.LogInformation("Running migration to v26: adding context_json column to alert log");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE config_alert_log ADD COLUMN IF NOT EXISTS context_json VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v26 encountered an error (non-fatal): {Error}", ex.Message);
+            }
         }
     }
 

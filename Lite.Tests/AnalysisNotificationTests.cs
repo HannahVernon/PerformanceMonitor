@@ -45,7 +45,8 @@ public class AnalysisNotificationTests : IDisposable
         int serverId = 1,
         double? rootValue = 92.5,
         Dictionary<string, double>? metadata = null,
-        Dictionary<string, object>? drillDown = null)
+        Dictionary<string, object>? drillDown = null,
+        string rootFactKey = "CPU_SPIKE")
     {
         return new AnalysisFinding
         {
@@ -57,7 +58,7 @@ public class AnalysisNotificationTests : IDisposable
             Severity = severity,
             Confidence = 0.67,
             FactCount = 2,
-            RootFactKey = "CPU_SPIKE",
+            RootFactKey = rootFactKey,
             RootFactValue = rootValue,
             TimeRangeStart = DateTime.UtcNow.AddHours(-4),
             TimeRangeEnd = DateTime.UtcNow,
@@ -121,9 +122,11 @@ public class AnalysisNotificationTests : IDisposable
 
         var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
 
-        // Details[0] is now the Diagnosis card; the two drill-downs follow.
-        Assert.Equal(3, context.Details.Count);
+        // Details[0] = Diagnosis, [1] = Advice (CPU_SPIKE has an advice block), then the two drill-downs.
+        Assert.Equal(4, context.Details.Count);
         Assert.Equal("Diagnosis", context.Details[0].Heading);
+        Assert.NotNull(context.Details[1].Body);
+        Assert.False(context.Details[1].IsCodeBlock);
 
         var queries = context.Details.Single(d => d.Heading == "Top Cpu Queries");
         Assert.Contains(queries.Fields, f => f.Label.StartsWith("#1") && f.Value == "0x1");
@@ -145,8 +148,8 @@ public class AnalysisNotificationTests : IDisposable
 
         var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
 
-        // Diagnosis at [0], drill-down "Items" at [1]. 3 items kept x 1 property each = 3 fields; #4 and #5 dropped.
-        Assert.Equal(2, context.Details.Count);
+        // Diagnosis at [0], Advice at [1], drill-down "Items" at [2]. 3 items kept x 1 property each = 3 fields; #4 and #5 dropped.
+        Assert.Equal(3, context.Details.Count);
         var item = context.Details.Single(d => d.Heading == "Items");
         Assert.Equal(3, item.Fields.Count);
         Assert.DoesNotContain(item.Fields, f => f.Label.StartsWith("#4"));
@@ -156,9 +159,10 @@ public class AnalysisNotificationTests : IDisposable
     public void BuildContext_NoDrillDown_StillEmitsDiagnosis()
     {
         var context = FindingMessageFormatter.BuildContext(MakeFinding("h"), notifyThreshold: 1.5);
-        // After the §7.0 precursor, BuildContext always emits a Diagnosis card even with no DrillDown.
-        var only = Assert.Single(context.Details);
-        Assert.Equal("Diagnosis", only.Heading);
+        // Diagnosis card + the CPU_SPIKE advice block, even with no DrillDown.
+        Assert.Equal(2, context.Details.Count);
+        Assert.Equal("Diagnosis", context.Details[0].Heading);
+        Assert.NotNull(context.Details[1].Body);
     }
 
     [Fact]
@@ -179,6 +183,110 @@ public class AnalysisNotificationTests : IDisposable
         Assert.Contains("CPU_SPIKE → PLAN_REGRESSION", text);
         Assert.Contains("Severity", text);
         Assert.Contains("Confidence", text);
+    }
+
+    /* ── Advice + remediation T-SQL rendering (triage v1 PR (b)) ── */
+
+    private static Dictionary<string, object> RegressedQueriesDrillDown() => new()
+    {
+        ["regressed_queries"] = new List<object>
+        {
+            new
+            {
+                database = "AdventureWorks",
+                query_id = 4242L,
+                best_plan_id = 17L,
+                latest_plan_hash = "0xDEAD",
+                best_plan_hash = "0xBEEF",
+                latest_cpu_per_exec_us = 9000.0,
+                best_cpu_per_exec_us = 1200.0,
+                regression_factor = 7.5
+            }
+        }
+    };
+
+    [Fact]
+    public void BuildContext_RenderingOrder_DiagnosisAdviceTsqlDrillDown()
+    {
+        var finding = MakeFinding("planreg000000001", rootFactKey: "PLAN_REGRESSION",
+            drillDown: RegressedQueriesDrillDown());
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        // [0] Diagnosis, [1] Advice prose, [2] Remediation T-SQL, [3] regressed_queries drill-down.
+        Assert.Equal(4, context.Details.Count);
+        Assert.Equal("Diagnosis", context.Details[0].Heading);
+
+        Assert.NotNull(context.Details[1].Body);
+        Assert.False(context.Details[1].IsCodeBlock);
+        Assert.Contains("Investigation:", context.Details[1].Body);
+        Assert.Contains("Remediation:", context.Details[1].Body);
+
+        Assert.Equal("Remediation T-SQL", context.Details[2].Heading);
+        Assert.True(context.Details[2].IsCodeBlock);
+        Assert.NotNull(context.Details[2].Body);
+        Assert.Contains("sp_query_store_force_plan", context.Details[2].Body);
+
+        Assert.Equal("Regressed Queries", context.Details[3].Heading);
+    }
+
+    [Fact]
+    public void BuildContext_UnknownFactKey_OmitsAdviceAndTsql()
+    {
+        var finding = MakeFinding("unknown000000001", rootFactKey: "ZZZ_TEST");
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        // Diagnosis only — no advice block for an unknown fact key, and no T-SQL.
+        var only = Assert.Single(context.Details);
+        Assert.Equal("Diagnosis", only.Heading);
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Remediation T-SQL");
+    }
+
+    [Fact]
+    public void BuildContext_NonPlanRegression_OmitsTsqlOnly()
+    {
+        // CPU_SPIKE has advice but is not PLAN_REGRESSION, so advice renders but no T-SQL.
+        var context = FindingMessageFormatter.BuildContext(MakeFinding("cpuonly000000001"), notifyThreshold: 1.5);
+
+        Assert.Contains(context.Details, d => d.Body is not null && !d.IsCodeBlock);
+        Assert.DoesNotContain(context.Details, d => d.IsCodeBlock);
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Remediation T-SQL");
+    }
+
+    [Fact]
+    public void AlertContext_SerializesAndDeserializes_PreservingFieldsBodyAndCodeBlock()
+    {
+        // MINOR-3: round-trip the real BuildContext output for a PLAN_REGRESSION finding (generated
+        // T-SQL with newlines/brackets/semicolons/-- comments + drill-down Fields), not a hand-built
+        // context, through the production AlertContextSerializer / DTO.
+        var finding = MakeFinding("roundtrip0000001", rootFactKey: "PLAN_REGRESSION",
+            drillDown: RegressedQueriesDrillDown());
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        Assert.Equal(context.Details.Count, restored.Details.Count);
+        for (int i = 0; i < context.Details.Count; i++)
+        {
+            var expected = context.Details[i];
+            var actual = restored.Details[i];
+
+            Assert.Equal(expected.Heading, actual.Heading);
+            Assert.Equal(expected.Body, actual.Body);
+            Assert.Equal(expected.IsCodeBlock, actual.IsCodeBlock);
+            Assert.Equal(expected.Fields.Count, actual.Fields.Count);
+            for (int j = 0; j < expected.Fields.Count; j++)
+            {
+                Assert.Equal(expected.Fields[j].Label, actual.Fields[j].Label);
+                Assert.Equal(expected.Fields[j].Value, actual.Fields[j].Value);
+            }
+        }
+
+        // The T-SQL code block in particular must survive intact.
+        var tsql = restored.Details.Single(d => d.IsCodeBlock);
+        Assert.Contains("sp_query_store_force_plan", tsql.Body);
     }
 
     /* ── AnalysisNotificationService: severity filter + cooldown ── */
