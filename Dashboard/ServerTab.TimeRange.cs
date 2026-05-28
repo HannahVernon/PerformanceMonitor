@@ -291,20 +291,20 @@ namespace PerformanceMonitorDashboard
             var displayFrom = Helpers.ServerTimeHelper.ConvertForDisplay(from, Helpers.ServerTimeHelper.CurrentDisplayMode);
             var displayTo = Helpers.ServerTimeHelper.ConvertForDisplay(to, Helpers.ServerTimeHelper.CurrentDisplayMode);
 
-            // Same day: "Feb 7, 2:15 PM – 3:15 PM (PST)"
+            // Same day: "Feb 7, 14:15 – 15:15 (PST)"
             if (displayFrom.Date == displayTo.Date)
             {
-                return $"{prefix}: {displayFrom:MMM d, h:mm tt} – {displayTo:h:mm tt} ({tz})";
+                return $"{prefix}: {displayFrom:MMM d, HH:mm} – {displayTo:HH:mm} ({tz})";
             }
 
-            // Same year, different days: "Feb 6, 3:15 PM – Feb 7, 3:15 PM (PST)"
+            // Same year, different days: "Feb 6, 15:15 – Feb 7, 15:15 (PST)"
             if (displayFrom.Year == displayTo.Year)
             {
-                return $"{prefix}: {displayFrom:MMM d, h:mm tt} – {displayTo:MMM d, h:mm tt} ({tz})";
+                return $"{prefix}: {displayFrom:MMM d, HH:mm} – {displayTo:MMM d, HH:mm} ({tz})";
             }
 
-            // Different years: "Dec 31, 2025, 11:00 PM – Jan 1, 2026, 11:00 PM (PST)"
-            return $"{prefix}: {displayFrom:MMM d, yyyy, h:mm tt} – {displayTo:MMM d, yyyy, h:mm tt} ({tz})";
+            // Different years: "Dec 31, 2025, 23:00 – Jan 1, 2026, 23:00 (PST)"
+            return $"{prefix}: {displayFrom:MMM d, yyyy, HH:mm} – {displayTo:MMM d, yyyy, HH:mm} ({tz})";
         }
 
         private void StoreOriginalRangeIfNeeded()

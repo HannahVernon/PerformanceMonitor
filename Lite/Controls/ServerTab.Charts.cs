@@ -1093,7 +1093,7 @@ public partial class ServerTab : UserControl
         for (int i = 0; i < numCols; i += xStep)
         {
             var t = result.TimeBuckets[i].AddMinutes(UtcOffsetMinutes);
-            xTicks.AddMajor(i, t.ToString("M/d\nh:mm tt"));
+            xTicks.AddMajor(i, t.ToString("M/d\nHH:mm"));
         }
         QueryHeatmapChart.Plot.Axes.Bottom.TickGenerator = xTicks;
         QueryHeatmapChart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = QueryHeatmapChart.Plot.Axes.Left.TickLabelStyle.ForeColor;
