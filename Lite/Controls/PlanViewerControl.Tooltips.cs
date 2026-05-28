@@ -12,6 +12,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 

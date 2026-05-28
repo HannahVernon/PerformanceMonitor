@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace PerformanceMonitorLite.Models;
+namespace PerformanceMonitor.PlanAnalysis;
 
 public class ParsedPlan
 {

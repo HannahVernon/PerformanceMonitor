@@ -3,9 +3,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Xml.Linq;
-using PerformanceMonitorLite.Models;
 
-namespace PerformanceMonitorLite.Services;
+namespace PerformanceMonitor.PlanAnalysis;
 
 public static class ShowPlanParser
 {
@@ -1370,7 +1369,7 @@ public static class ShowPlanParser
         // Map to icon — done here so columnstore scans (Clustered/Index Scan
         // with Storage="ColumnStore") and Parallelism subtypes (which depend on
         // LogicalOp) can be routed to their specific icons.
-        node.IconName = PlanIconMapper.GetIconName(node.PhysicalOp, node.StorageType, node.LogicalOp);
+        node.IconName = IconNameMapper.GetIconName(node.PhysicalOp, node.StorageType, node.LogicalOp);
 
         // Recurse into child RelOps
         foreach (var childRelOp in FindChildRelOps(relOpEl))
