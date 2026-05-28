@@ -625,7 +625,8 @@ internal static class ToolRecommendations
         [
             new("get_file_io_stats", "Check I/O latency per database file"),
             new("get_file_io_trend", "Track I/O latency trend"),
-            new("get_memory_stats", "Check buffer pool and memory pressure")
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_tempdb_trend", "Check whether tempdb I/O is driving the EX-mode waits")
         ],
         ["RESOURCE_SEMAPHORE"] =
         [
@@ -636,7 +637,8 @@ internal static class ToolRecommendations
         ["WRITELOG"] =
         [
             new("get_file_io_stats", "Check transaction log file latency"),
-            new("get_file_io_trend", "Track log I/O latency over time")
+            new("get_file_io_trend", "Track log I/O latency over time"),
+            new("get_perfmon_trend", "Check Transactions/sec to see commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })
         ],
         ["LCK"] =
         [
@@ -669,7 +671,8 @@ internal static class ToolRecommendations
         ["SCH_M"] =
         [
             new("get_waiting_tasks", "See what's waiting on schema locks"),
-            new("get_blocked_process_reports", "Check if DDL operations are causing blocking")
+            new("get_blocked_process_reports", "Check if DDL operations are causing blocking"),
+            new("get_running_jobs", "See whether maintenance jobs (index rebuilds, stats updates) are taking schema-modification locks")
         ],
         ["CPU_SQL_PERCENT"] =
         [
@@ -715,6 +718,19 @@ internal static class ToolRecommendations
         [
             new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" }),
             new("audit_config", "Check CTFP and MAXDOP settings")
+        ],
+        ["PARAMETER_SENSITIVITY"] =
+        [
+            new("get_top_queries_by_cpu", "Find the sensitive query in the plan cache and see its current cached parameters"),
+            new("analyze_query_plan", "Examine the plan for the operators driving the runtime variance (seek vs scan, grant size, join type)"),
+            new("get_query_trend", "Confirm the bimodal duration pattern across executions over time"),
+            new("get_memory_grants", "Check whether the bad-parameter executions are also blowing up memory grants")
+        ],
+        ["PLAN_REGRESSION"] =
+        [
+            new("analyze_query_store_plan", "Compare the regressed plan against the prior plan to see what the optimizer changed"),
+            new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
+            new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
         ],
         ["PERFMON_PLE"] =
         [
@@ -766,6 +782,31 @@ internal static class ToolRecommendations
             new("get_file_io_stats", "Check per-file I/O latency"),
             new("get_file_io_trend", "Track I/O latency over time"),
             new("get_memory_stats", "Check if buffer pool is undersized")
+        ],
+        ["ANOMALY_SESSION_SPIKE"] =
+        [
+            new("get_session_stats", "See which application is driving the session-count spike"),
+            new("get_active_queries", "Find what those sessions were doing at the spike"),
+            new("get_waiting_tasks", "Check whether the new sessions are piling up on a shared wait")
+        ],
+        ["ANOMALY_QUERY_DURATION"] =
+        [
+            new("get_query_duration_trend", "Confirm the duration shift across the analysis window"),
+            new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"),
+            new("analyze_query_plan", "Examine the plan for the queries that slowed down")
+        ],
+        ["ANOMALY_MEMORY_PRESSURE"] =
+        [
+            new("get_memory_stats", "See current memory allocation and target vs total"),
+            new("get_memory_clerks", "Find which clerks are growing"),
+            new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"),
+            new("get_memory_grants", "Check whether query grants are competing with buffer pool")
+        ],
+        ["ANOMALY_BATCH_REQUESTS"] =
+        [
+            new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }),
+            new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"),
+            new("get_active_queries", "See what's actually running at the elevated rate")
         ],
         ["BAD_ACTOR"] =
         [
