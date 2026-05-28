@@ -171,7 +171,8 @@ namespace PerformanceMonitorDashboard.Services
                             alertSent: false,
                             notificationType: "tray",
                             muted: false,
-                            detailText: FindingMessageFormatter.PlainTextDiagnosis(finding, threshold));
+                            detailText: FindingMessageFormatter.PlainTextDiagnosis(finding, threshold),
+                            contextJson: AlertContextSerializer.Serialize(context));
                     }
 
                     _cooldowns[key] = now;
@@ -282,6 +283,30 @@ namespace PerformanceMonitorDashboard.Services
             if (finding.TimeRangeStart.HasValue && finding.TimeRangeEnd.HasValue)
                 diagnosis.Fields.Add(("Window", $"{finding.TimeRangeStart.Value:u} → {finding.TimeRangeEnd.Value:u}"));
             context.Details.Add(diagnosis);
+
+            /* Advice (Investigation/Remediation prose) + generated remediation T-SQL, when the
+               shared analysis library has a block for this finding's root fact-key. Inserted
+               after Diagnosis and before the drill-down so every surface renders the same order:
+               Diagnosis → Advice → Remediation T-SQL → drill-down. */
+            var advice = FactAdvice.GetForFinding(finding);
+            if (advice is not null)
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = advice.Headline,
+                    Body = $"Investigation: {advice.Investigation}\n\nRemediation: {advice.Remediation}"
+                });
+
+                if (!string.IsNullOrEmpty(advice.RemediationTsql))
+                {
+                    context.Details.Add(new AlertDetailItem
+                    {
+                        Heading = "Remediation T-SQL",
+                        Body = advice.RemediationTsql,
+                        IsCodeBlock = true
+                    });
+                }
+            }
 
             /* Drill-down values are anonymous types behind object (a bare object, or a
                List<object> of them). Round-trip through System.Text.Json and walk as

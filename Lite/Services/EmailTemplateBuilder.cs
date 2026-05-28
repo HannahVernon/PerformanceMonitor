@@ -205,7 +205,7 @@ internal static class EmailTemplateBuilder
         /* Separator + heading */
         sb.Append("<tr><td style=\"padding:0 24px;\"><table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\"><tr><td style=\"height:1px;background-color:#404040;font-size:0;line-height:0;\">&nbsp;</td></tr></table></td></tr>");
         sb.Append("<tr><td style=\"padding:12px 24px 4px 24px;\">");
-        sb.Append($"<span style=\"font-family:{FontStack};font-size:13px;font-weight:600;color:#E4E6EB;letter-spacing:0.5px;\">RECENT EVENTS</span>");
+        sb.Append($"<span style=\"font-family:{FontStack};font-size:13px;font-weight:600;color:#E4E6EB;letter-spacing:0.5px;\">DETAILS</span>");
         sb.Append("</td></tr>");
 
         foreach (var item in context.Details)
@@ -215,28 +215,50 @@ internal static class EmailTemplateBuilder
             sb.Append($"<span style=\"font-family:{FontStack};font-size:14px;font-weight:600;color:#E0E0E0;\">{WebUtility.HtmlEncode(item.Heading)}</span>");
             sb.Append("</td></tr>");
 
-            /* Detail item fields */
-            sb.Append("<tr><td style=\"padding:2px 24px 8px 24px;\">");
-            sb.Append($"<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"background-color:#333333;border-radius:4px;\">");
-
-            for (int i = 0; i < item.Fields.Count; i++)
+            if (item.IsCodeBlock && !string.IsNullOrEmpty(item.Body))
             {
-                var (label, value) = item.Fields[i];
-                bool isLast = i == item.Fields.Count - 1;
-                bool isQuery = label.Contains("Query") || label.Contains("SQL");
-
-                if (isQuery && !string.IsNullOrEmpty(value))
-                {
-                    AppendQueryRow(sb, label, value, isLast);
-                }
-                else
-                {
-                    AppendDataRow(sb, label, value, isLast);
-                }
+                /* Copy-paste code block (remediation T-SQL) — monospace, matches AppendQueryRow style. */
+                sb.Append("<tr><td style=\"padding:2px 24px 8px 24px;\">");
+                sb.Append("<div style=\"background-color:#333333;border-radius:4px;padding:10px 16px;\">");
+                sb.Append($"<pre style=\"margin:0;font-family:'Courier New',Consolas,monospace;font-size:12px;color:#E0E0E0;white-space:pre-wrap;word-break:break-all;\">{WebUtility.HtmlEncode(item.Body)}</pre>");
+                sb.Append("</div>");
+                sb.Append("</td></tr>");
             }
+            else if (!string.IsNullOrEmpty(item.Body))
+            {
+                /* Prose paragraphs (advice Investigation / Remediation), one <p> per blank-line chunk. */
+                sb.Append("<tr><td style=\"padding:2px 24px 8px 24px;\">");
+                foreach (var para in item.Body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+                {
+                    sb.Append($"<p style=\"margin:0 0 8px 0;font-family:{FontStack};font-size:13px;color:#E0E0E0;line-height:1.5;\">{WebUtility.HtmlEncode(para)}</p>");
+                }
+                sb.Append("</td></tr>");
+            }
+            else
+            {
+                /* Detail item fields */
+                sb.Append("<tr><td style=\"padding:2px 24px 8px 24px;\">");
+                sb.Append($"<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"background-color:#333333;border-radius:4px;\">");
 
-            sb.Append("</table>");
-            sb.Append("</td></tr>");
+                for (int i = 0; i < item.Fields.Count; i++)
+                {
+                    var (label, value) = item.Fields[i];
+                    bool isLast = i == item.Fields.Count - 1;
+                    bool isQuery = label.Contains("Query") || label.Contains("SQL");
+
+                    if (isQuery && !string.IsNullOrEmpty(value))
+                    {
+                        AppendQueryRow(sb, label, value, isLast);
+                    }
+                    else
+                    {
+                        AppendDataRow(sb, label, value, isLast);
+                    }
+                }
+
+                sb.Append("</table>");
+                sb.Append("</td></tr>");
+            }
         }
     }
 
@@ -271,13 +293,35 @@ internal static class EmailTemplateBuilder
 
         if (context?.Details?.Count > 0)
         {
-            sb.Append($"\r\n--- Recent Events ---\r\n");
+            sb.Append($"\r\n--- Details ---\r\n");
             foreach (var item in context.Details)
             {
                 sb.Append($"\r\n  {item.Heading}\r\n");
-                foreach (var (label, value) in item.Fields)
+
+                if (item.IsCodeBlock && !string.IsNullOrEmpty(item.Body))
                 {
-                    sb.Append($"  {label}: {value}\r\n");
+                    /* Fenced block for the copy-paste remediation T-SQL. */
+                    sb.Append("  ```\r\n");
+                    foreach (var line in item.Body.Replace("\r\n", "\n").Split('\n'))
+                    {
+                        sb.Append($"  {line}\r\n");
+                    }
+                    sb.Append("  ```\r\n");
+                }
+                else if (!string.IsNullOrEmpty(item.Body))
+                {
+                    /* Prose paragraphs (advice), one indented chunk per blank-line break. */
+                    foreach (var para in item.Body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        sb.Append($"  {para}\r\n");
+                    }
+                }
+                else
+                {
+                    foreach (var (label, value) in item.Fields)
+                    {
+                        sb.Append($"  {label}: {value}\r\n");
+                    }
                 }
             }
         }

@@ -25,6 +25,11 @@ public class WebhookAlertService
 {
     private const string EditionName = "Performance Monitor Lite";
     private const string SnoozeHint = "To silence this alert: open Performance Monitor Lite → Settings → Manage Mute Rules";
+
+    /* Webhooks do not deliver the copy-paste T-SQL (too large, wrong channel) — they point
+       at the email / in-app dialog instead. This string must stay byte-identical to the
+       Dashboard copy (plan §5.4). */
+    private const string TsqlWebhookHint = "See email or in-app Alert Details for the copy-paste T-SQL.";
     private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
 
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
@@ -200,6 +205,25 @@ public class WebhookAlertService
         {
             foreach (var detail in context.Details)
             {
+                if (detail.IsCodeBlock)
+                {
+                    /* Remediation T-SQL: point at the email / in-app dialog, never inline it. */
+                    facts.Add(new { name = detail.Heading, value = TsqlWebhookHint });
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(detail.Body))
+                {
+                    /* Advice prose: one "Advice" fact for the headline, then a fact per
+                       Investigation/Remediation paragraph (split on the blank line). */
+                    facts.Add(new { name = "Advice", value = detail.Heading });
+                    foreach (var para in detail.Body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var (label, text) = SplitProseLabel(para);
+                        facts.Add(new { name = label, value = text });
+                    }
+                }
+
                 foreach (var (label, value) in detail.Fields)
                 {
                     facts.Add(new { name = label, value });
@@ -340,6 +364,21 @@ public class WebhookAlertService
             {
                 blocks.Add(new { type = "divider" });
 
+                if (detail.IsCodeBlock)
+                {
+                    /* Remediation T-SQL: point at the email / in-app dialog, never inline it. */
+                    blocks.Add(new { type = "section", text = new { type = "mrkdwn", text = $"*{detail.Heading}*\n{TsqlWebhookHint}" } });
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(detail.Body))
+                {
+                    /* Advice prose flows as a single mrkdwn section; the synthesized Body is
+                       "Investigation: ...\n\nRemediation: ..." which Slack renders verbatim. */
+                    blocks.Add(new { type = "section", text = new { type = "mrkdwn", text = $"*{detail.Heading}*\n{detail.Body}" } });
+                    continue;
+                }
+
                 var detailFields = new List<object>();
                 detailFields.Add(new { type = "mrkdwn", text = $"*{detail.Heading}*" });
 
@@ -395,6 +434,24 @@ public class WebhookAlertService
         "Server Restored" => ("#16A34A", "RESOLVED", "\U0001F7E2"),
         _ => ("#2eaef1", "INFO", "\U0001F535")
     };
+
+    /// <summary>
+    /// Splits a synthesized advice paragraph ("Investigation: ..." / "Remediation: ...") into a
+    /// (label, value) pair on the first ": ". Falls back to ("Detail", paragraph) when there is no
+    /// leading label. Depends on advice prose containing no interior blank-line break so each
+    /// Body chunk is a single labelled paragraph (audited safe for the current FactAdvice blocks);
+    /// a future block with a paragraph break degrades to the "Detail" fallback rather than breaking.
+    /// Must stay byte-identical to the Dashboard copy (plan §5.4).
+    /// </summary>
+    private static (string Label, string Value) SplitProseLabel(string paragraph)
+    {
+        var idx = paragraph.IndexOf(": ", StringComparison.Ordinal);
+        if (idx > 0)
+        {
+            return (paragraph.Substring(0, idx), paragraph.Substring(idx + 2));
+        }
+        return ("Detail", paragraph);
+    }
 
     /// <summary>
     /// Posts a JSON payload to a webhook URL. Returns null on success, error message on failure.

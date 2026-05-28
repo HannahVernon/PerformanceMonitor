@@ -144,7 +144,8 @@ namespace PerformanceMonitorDashboard.Services
                             }
                         }
 
-                        RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, sent, "email", sendError);
+                        var emailContextJson = context is not null ? AlertContextSerializer.Serialize(context) : null;
+                        RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, sent, "email", sendError, contextJson: emailContextJson);
                     }
                 }
 
@@ -156,7 +157,8 @@ namespace PerformanceMonitorDashboard.Services
                         metricName, serverName, currentValue, thresholdValue, serverId, context);
                     if (webhookSent)
                     {
-                        RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, true, "webhook");
+                        var webhookContextJson = context is not null ? AlertContextSerializer.Serialize(context) : null;
+                        RecordAlert(serverId, serverName, metricName, currentValue, thresholdValue, true, "webhook", contextJson: webhookContextJson);
                     }
                 }
             }
@@ -171,7 +173,8 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         public void RecordAlert(string serverId, string serverName, string metricName,
             string currentValue, string thresholdValue, bool alertSent,
-            string notificationType, string? sendError = null, bool muted = false, string? detailText = null)
+            string notificationType, string? sendError = null, bool muted = false, string? detailText = null,
+            string? contextJson = null)
         {
             var entry = new AlertLogEntry
             {
@@ -185,7 +188,8 @@ namespace PerformanceMonitorDashboard.Services
                 NotificationType = notificationType,
                 SendError = sendError,
                 Muted = muted,
-                DetailText = detailText
+                DetailText = detailText,
+                ContextJson = contextJson
             };
 
             lock (_alertLogLock)
@@ -502,5 +506,6 @@ namespace PerformanceMonitorDashboard.Services
         public bool Hidden { get; set; }
         public bool Muted { get; set; }
         public string? DetailText { get; set; }
+        public string? ContextJson { get; set; }
     }
 }
