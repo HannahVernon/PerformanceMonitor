@@ -105,6 +105,10 @@ namespace PerformanceMonitorDashboard
             _preferencesService = new UserPreferencesService();
             _alertStateService = new AlertStateService();
             _muteRuleService = new MuteRuleService(new JsonMuteRuleStore(), new LoggerAdapter<MuteRuleService>());
+            /* Shared MuteRuleService no longer loads in its ctor (Plan E E3b). The store
+               sync-loads its file in its own ctor, so this LoadAsync completes synchronously
+               here — preserving Dashboard's prior load-then-purge-in-ctor startup timing. */
+            _muteRuleService.LoadAsync().GetAwaiter().GetResult();
             _serverListItems = new ObservableCollection<ServerListItem>();
             _previousConnectionStates = new Dictionary<string, bool>();
             _tabBadges = new Dictionary<string, Border>();

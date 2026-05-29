@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -66,11 +67,11 @@ namespace PerformanceMonitorDashboard.Controls
             }
         }
 
-        private void Snooze15Button_Click(object sender, RoutedEventArgs e) => Snooze(TimeSpan.FromMinutes(15));
-        private void Snooze1hButton_Click(object sender, RoutedEventArgs e) => Snooze(TimeSpan.FromHours(1));
-        private void Snooze4hButton_Click(object sender, RoutedEventArgs e) => Snooze(TimeSpan.FromHours(4));
+        private async void Snooze15Button_Click(object sender, RoutedEventArgs e) => await Snooze(TimeSpan.FromMinutes(15));
+        private async void Snooze1hButton_Click(object sender, RoutedEventArgs e) => await Snooze(TimeSpan.FromHours(1));
+        private async void Snooze4hButton_Click(object sender, RoutedEventArgs e) => await Snooze(TimeSpan.FromHours(4));
 
-        private void Snooze(TimeSpan duration)
+        private async Task Snooze(TimeSpan duration)
         {
             if (_closed) return;
             _closed = true;
@@ -85,7 +86,7 @@ namespace PerformanceMonitorDashboard.Controls
 
             try
             {
-                _muteRuleService.AddRule(rule);
+                await _muteRuleService.AddRuleAsync(rule);
             }
             catch (Exception ex)
             {
