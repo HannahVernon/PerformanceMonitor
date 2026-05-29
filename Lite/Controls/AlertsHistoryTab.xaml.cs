@@ -23,6 +23,7 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
 

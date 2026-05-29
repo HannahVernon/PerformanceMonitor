@@ -15,6 +15,7 @@ using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Ui;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Services
 {
@@ -185,10 +186,10 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetBlockingSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetBlockingSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -219,7 +220,7 @@ ORDER BY bucket_hour;";
                     while (await reader.ReadAsync())
                     {
                         var eventCount = Convert.ToInt64(reader.GetValue(1));
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = eventCount,
@@ -233,10 +234,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetDeadlockSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetDeadlockSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -264,7 +265,7 @@ ORDER BY bucket_hour;";
                     while (await reader.ReadAsync())
                     {
                         var count = Convert.ToInt64(reader.GetValue(1));
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = count,
@@ -275,10 +276,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -311,7 +312,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -326,10 +327,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -362,7 +363,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -377,10 +378,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetProcStatsSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetProcStatsSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -413,7 +414,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -428,10 +429,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -464,7 +465,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),

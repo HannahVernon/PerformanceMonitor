@@ -20,6 +20,7 @@ using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard
 {

@@ -9,7 +9,7 @@
 using System;
 using System.Text.Json;
 
-namespace PerformanceMonitorLite.Mcp;
+namespace PerformanceMonitor.Common;
 
 /// <summary>
 /// Shared helpers for MCP tools.

@@ -24,6 +24,7 @@ using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitorLite.Windows;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite;
 

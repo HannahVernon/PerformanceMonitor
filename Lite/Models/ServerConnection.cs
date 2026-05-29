@@ -11,6 +11,7 @@ using System.ComponentModel;
 using System.Text.Json.Serialization;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Models;
 

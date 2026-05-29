@@ -15,6 +15,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using PerformanceMonitorLite.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 

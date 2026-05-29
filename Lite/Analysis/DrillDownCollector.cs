@@ -9,6 +9,7 @@ using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Analysis;
 

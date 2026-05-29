@@ -23,6 +23,7 @@ using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Windows;
 

@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -640,7 +641,7 @@ public partial class ServerTab : UserControl
     // ── Blocking Slicer ──
 
     private string _blockingSlicerMetric = "Events";
-    private List<Models.TimeSliceBucket>? _blockingSlicerData;
+    private List<TimeSliceBucket>? _blockingSlicerData;
 
     private async System.Threading.Tasks.Task LoadBlockingSlicerAsync()
     {
@@ -674,7 +675,7 @@ public partial class ServerTab : UserControl
 
     // ── Deadlock Slicer ──
 
-    private List<Models.TimeSliceBucket>? _deadlockSlicerData;
+    private List<TimeSliceBucket>? _deadlockSlicerData;
 
     private async System.Threading.Tasks.Task LoadDeadlockSlicerAsync()
     {

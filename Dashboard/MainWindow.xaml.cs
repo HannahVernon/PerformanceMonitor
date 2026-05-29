@@ -31,6 +31,7 @@ using System.ComponentModel;
 using System.Windows.Data;
 using System.Xml.Linq;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard
 {
@@ -980,7 +981,7 @@ namespace PerformanceMonitorDashboard
 
                     MessageBox.Show(
                         $"Server '{server.DisplayNameWithIntent}' added successfully!\n\n" +
-                        (server.AuthenticationType == Models.AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {server.AuthenticationDisplay} — credentials saved securely to Windows Credential Manager"),
+                        (server.AuthenticationType == AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {server.AuthenticationDisplay} — credentials saved securely to Windows Credential Manager"),
                         "Server Added",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information
@@ -1026,7 +1027,7 @@ namespace PerformanceMonitorDashboard
 
                         MessageBox.Show(
                             $"Server '{updatedServer.DisplayNameWithIntent}' updated successfully!\n\n" +
-                            (updatedServer.AuthenticationType == Models.AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {updatedServer.AuthenticationDisplay} — credentials updated securely in Windows Credential Manager"),
+                            (updatedServer.AuthenticationType == AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {updatedServer.AuthenticationDisplay} — credentials updated securely in Windows Credential Manager"),
                             "Server Updated",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information

@@ -4,6 +4,7 @@ using ModelContextProtocol.Server;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
