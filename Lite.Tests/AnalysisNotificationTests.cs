@@ -40,6 +40,18 @@ public class AnalysisNotificationTests : IDisposable
         catch { /* Best-effort cleanup */ }
     }
 
+    /// <summary>
+    /// Builds the shared AnalysisNotificationService wired to a real Lite EmailAlertService
+    /// (its IFindingAlertSender) over the test DuckDB store, with Lite's serverId resolver.
+    /// </summary>
+    private AnalysisNotificationService MakeNotifier()
+    {
+        var webhook = new WebhookAlertService(_settings, EmailAlertService.Branding, new AppLoggerAdapter<WebhookAlertService>());
+        var email = new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), webhook, new AppLoggerAdapter<EmailAlertService>());
+        return new AnalysisNotificationService(
+            email, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>());
+    }
+
     private static AnalysisFinding MakeFinding(
         string hash,
         double severity = 1.8,
@@ -303,9 +315,7 @@ public class AnalysisNotificationTests : IDisposable
         App.AnalysisNotifySeverity = 1.5;
         App.AnalysisNotifyCooldownMinutes = 360;
 
-        var notifier = new AnalysisNotificationService(
-            new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), new AppLoggerAdapter<EmailAlertService>()),
-            _settings);
+        var notifier = MakeNotifier();
         var finding = MakeFinding("samehash00000001", severity: 2.0);
 
         await notifier.NotifyAsync(new[] { finding });
@@ -321,9 +331,7 @@ public class AnalysisNotificationTests : IDisposable
         App.AnalysisNotifySeverity = 1.5;
         App.AnalysisNotifyCooldownMinutes = 360;
 
-        var notifier = new AnalysisNotificationService(
-            new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), new AppLoggerAdapter<EmailAlertService>()),
-            _settings);
+        var notifier = MakeNotifier();
 
         /* Use distinct first-8-char prefixes — FindingMessageFormatter.MetricName
            embeds only the first 8 chars of StoryPathHash, and the persistence
@@ -346,9 +354,7 @@ public class AnalysisNotificationTests : IDisposable
         await _duckDb.InitializeAsync();
         App.AnalysisNotifySeverity = 1.5;
 
-        var notifier = new AnalysisNotificationService(
-            new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), new AppLoggerAdapter<EmailAlertService>()),
-            _settings);
+        var notifier = MakeNotifier();
         await notifier.NotifyAsync(new[] { MakeFinding("lowsev0000000001", severity: 1.0) });
 
         Assert.Equal(0, await CountAlertLogRowsAsync());
