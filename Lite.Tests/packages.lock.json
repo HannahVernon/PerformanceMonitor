@@ -898,7 +898,10 @@
         "type": "Project"
       },
       "performancemonitor.notifications": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "[10.0.8, )"
+        }
       },
       "performancemonitor.plananalysis": {
         "type": "Project"

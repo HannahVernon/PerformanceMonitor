@@ -14,8 +14,8 @@ using System.Net.Mail;
 using System.Net.Mime;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Notifications;
-using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -34,24 +34,25 @@ public class EmailAlertService
 
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
     private readonly IAlertSettings _settings;
-    private readonly DuckDbInitializer? _duckDb;
+    private readonly IAlertHistoryStore _historyStore;
+    private readonly ILogger<EmailAlertService> _logger;
     private readonly WebhookAlertService _webhookAlertService;
 
     /* Failure tracking for louder logging */
     private int _consecutiveSmtpFailures;
     private string? _lastSmtpError;
-    private int _consecutiveLogFailures;
 
-    public EmailAlertService(IAlertSettings settings, DuckDbInitializer? duckDb = null)
+    public EmailAlertService(IAlertSettings settings, IAlertHistoryStore historyStore, ILogger<EmailAlertService> logger)
     {
         _settings = settings;
-        _duckDb = duckDb;
+        _historyStore = historyStore;
+        _logger = logger;
         _webhookAlertService = new WebhookAlertService(settings);
     }
 
     /// <summary>
     /// Attempts to send an alert email if SMTP is enabled and cooldown has elapsed.
-    /// Never throws — logs errors via AppLogger.
+    /// Never throws — logs errors via the injected ILogger.
     /// </summary>
     public async Task TrySendAlertEmailAsync(
         string metricName,
@@ -85,7 +86,7 @@ public class EmailAlertService
                    The in-memory dictionary is authoritative once seeded. */
                 if (!_cooldowns.ContainsKey(cooldownKey))
                 {
-                    var lastPersistedSend = await GetLastEmailSentUtcAsync(serverId, metricName);
+                    var lastPersistedSend = await _historyStore.GetLastEmailSentUtcAsync(serverId.ToString(), metricName);
                     if (lastPersistedSend.HasValue)
                     {
                         _cooldowns.TryAdd(cooldownKey, lastPersistedSend.Value);
@@ -111,12 +112,12 @@ public class EmailAlertService
 
                         if (_consecutiveSmtpFailures > 0)
                         {
-                            AppLogger.Info("EmailAlert", $"Email delivery recovered after {_consecutiveSmtpFailures} failure(s)");
+                            _logger.LogInformation($"Email delivery recovered after {_consecutiveSmtpFailures} failure(s)");
                         }
                         _consecutiveSmtpFailures = 0;
                         _lastSmtpError = null;
 
-                        AppLogger.Info("EmailAlert", $"Alert email sent for {metricName} on {serverName}");
+                        _logger.LogInformation($"Alert email sent for {metricName} on {serverName}");
                     }
                     catch (Exception ex)
                     {
@@ -126,11 +127,11 @@ public class EmailAlertService
 
                         if (_consecutiveSmtpFailures <= 3)
                         {
-                            AppLogger.Error("EmailAlert", $"ALERT EMAIL FAILED ({_consecutiveSmtpFailures}x): {ex.GetType().Name}: {ex.Message}");
+                            _logger.LogError($"ALERT EMAIL FAILED ({_consecutiveSmtpFailures}x): {ex.GetType().Name}: {ex.Message}");
                         }
                         else if (_consecutiveSmtpFailures % 50 == 0)
                         {
-                            AppLogger.Error("EmailAlert", $"ALERT EMAIL STILL FAILING: {_consecutiveSmtpFailures} consecutive failures. Last error: {ex.Message}");
+                            _logger.LogError($"ALERT EMAIL STILL FAILING: {_consecutiveSmtpFailures} consecutive failures. Last error: {ex.Message}");
                         }
                     }
                 }
@@ -151,21 +152,24 @@ public class EmailAlertService
                 sent = true;
             }
 
-            /* Always log the alert to DuckDB, regardless of email status */
-            var logCurrent = numericCurrentValue
-                ?? (double.TryParse(currentValue.TrimEnd('%'), out var cv) ? cv : 0);
-            var logThreshold = numericThresholdValue
-                ?? (double.TryParse(thresholdValue.TrimEnd('%'), out var tv) ? tv : 0);
+            /* Always log the alert, regardless of email status. The numeric
+               current/threshold resolution happens in the store (it owns the
+               DuckDB DOUBLE columns); the record carries both the display text
+               and the optional numerics so no data is lost. */
             /* Persist the structured context as JSON alongside the flat detail_text so the
                in-app dialog can render the same advice / T-SQL / drill-down shape that
                email and webhooks already show (and survive purge of the source findings). */
             string? contextJson = context is not null ? AlertContextSerializer.Serialize(context) : null;
-            await LogAlertAsync(serverId, serverName, metricName,
-                logCurrent, logThreshold, sent, notificationType, sendError, muted, detailText, contextJson);
+            await _historyStore.RecordAlertAsync(new AlertHistoryRecord(
+                serverId.ToString(), serverName, metricName,
+                currentValue, thresholdValue,
+                numericCurrentValue, numericThresholdValue,
+                sent, notificationType, sendError,
+                muted, detailText, contextJson));
         }
         catch (Exception ex)
         {
-            AppLogger.Error("EmailAlert", $"TrySendAlertEmailAsync outer error: {ex.Message}");
+            _logger.LogError($"TrySendAlertEmailAsync outer error: {ex.Message}");
         }
     }
 
@@ -177,99 +181,11 @@ public class EmailAlertService
     /// email cooldown (which filters to successful sends), the analysis
     /// cooldown is stamped unconditionally, so the persisted equivalent
     /// is the latest row for that metric_name, period.
+    /// Delegates to the injected <see cref="IAlertHistoryStore"/> (the int
+    /// serverId is bridged to the store's string serverId).
     /// </summary>
-    public async Task<DateTime?> GetLastAlertTimeAsync(int serverId, string metricName)
-    {
-        try
-        {
-            var duckDb = _duckDb;
-            if (duckDb == null)
-            {
-                var dbPath = App.DatabasePath;
-                if (string.IsNullOrEmpty(dbPath)) return null;
-                duckDb = new DuckDbInitializer(dbPath);
-            }
-
-            using var readLock = duckDb.AcquireReadLock();
-            using var connection = duckDb.CreateConnection();
-            await connection.OpenAsync();
-
-            using var command = connection.CreateCommand();
-            /* metric_name embeds the first 8 chars of StoryPathHash via
-               FindingMessageFormatter.MetricName, so a short-hash collision
-               between two findings could seed one from the other's history.
-               Acceptable: collision rate is ~sqrt(2^32) ≈ 65k unique patterns
-               per server before a 50% chance, and the failure mode is suppress
-               (not over-notify). */
-            command.CommandText = @"
-SELECT MAX(alert_time)
-FROM config_alert_log
-WHERE server_id = $1
-AND   metric_name = $2";
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
-
-            var result = await command.ExecuteScalarAsync();
-            if (result == null || result == DBNull.Value) return null;
-
-            return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("AnalysisNotify", $"Could not read persisted analysis cooldown: {ex.Message}");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Returns the UTC time the most recent alert email was successfully sent
-    /// for this server/metric, read from config_alert_log — or null if none.
-    /// Used to seed the in-memory cooldown after an app restart (#981).
-    /// </summary>
-    private async Task<DateTime?> GetLastEmailSentUtcAsync(int serverId, string metricName)
-    {
-        try
-        {
-            /* Use injected initializer, fall back to creating one from App.DatabasePath */
-            var duckDb = _duckDb;
-            if (duckDb == null)
-            {
-                var dbPath = App.DatabasePath;
-                if (string.IsNullOrEmpty(dbPath)) return null;
-                duckDb = new DuckDbInitializer(dbPath);
-            }
-
-            using var readLock = duckDb.AcquireReadLock();
-            using var connection = duckDb.CreateConnection();
-            await connection.OpenAsync();
-
-            using var command = connection.CreateCommand();
-            /* A successful email send is logged with a notification_type of
-               'email' / 'email+webhook' and a null send_error — that mirrors
-               exactly when _cooldowns is updated after SendEmailAsync. */
-            command.CommandText = @"
-SELECT MAX(alert_time)
-FROM config_alert_log
-WHERE server_id = $1
-AND   metric_name = $2
-AND   notification_type IN ('email', 'email+webhook')
-AND   send_error IS NULL";
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
-
-            var result = await command.ExecuteScalarAsync();
-            if (result == null || result == DBNull.Value) return null;
-
-            /* alert_time is written as DateTime.UtcNow; tag it UTC so the kind
-               is explicit (the cooldown subtraction is tick math regardless). */
-            return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("EmailAlert", $"Could not read persisted alert cooldown: {ex.Message}");
-            return null;
-        }
-    }
+    public Task<DateTime?> GetLastAlertTimeAsync(int serverId, string metricName)
+        => _historyStore.GetLastAlertTimeAsync(serverId.ToString(), metricName);
 
     /// <summary>
     /// Sends a test email to verify SMTP configuration.
@@ -342,68 +258,5 @@ AND   send_error IS NULL";
         }
 
         await smtpClient.SendMailAsync(message);
-    }
-
-    /// <summary>
-    /// Logs an alert to the config_alert_log table in DuckDB.
-    /// Reuses the injected DuckDbInitializer instead of creating a new one each time.
-    /// </summary>
-    private async Task LogAlertAsync(int serverId, string serverName, string metricName,
-        double currentValue, double thresholdValue, bool alertSent, string notificationType, string? sendError, bool muted = false, string? detailText = null, string? contextJson = null)
-    {
-        try
-        {
-            /* Use injected initializer, fall back to creating one from App.DatabasePath */
-            var duckDb = _duckDb;
-            if (duckDb == null)
-            {
-                var dbPath = App.DatabasePath;
-                if (string.IsNullOrEmpty(dbPath)) return;
-                duckDb = new DuckDbInitializer(dbPath);
-            }
-
-            using var writeLock = duckDb.AcquireWriteLock();
-            using var connection = duckDb.CreateConnection();
-            await connection.OpenAsync();
-
-            using var command = connection.CreateCommand();
-            command.CommandText = @"
-INSERT INTO config_alert_log (alert_time, server_id, server_name, metric_name, current_value, threshold_value, alert_sent, notification_type, send_error, muted, detail_text, context_json)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
-
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = DateTime.UtcNow });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverName });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = currentValue });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = thresholdValue });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = alertSent });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = notificationType });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = sendError ?? (object)DBNull.Value });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = muted });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = detailText ?? (object)DBNull.Value });
-            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = contextJson ?? (object)DBNull.Value });
-
-            await command.ExecuteNonQueryAsync();
-
-            /* Reset log failure counter on success */
-            if (_consecutiveLogFailures > 0)
-            {
-                AppLogger.Info("EmailAlert", $"Alert logging recovered after {_consecutiveLogFailures} failure(s)");
-            }
-            _consecutiveLogFailures = 0;
-        }
-        catch (Exception ex)
-        {
-            _consecutiveLogFailures++;
-            if (_consecutiveLogFailures <= 3)
-            {
-                AppLogger.Error("EmailAlert", $"Failed to log alert ({_consecutiveLogFailures}x): {ex.Message}");
-            }
-            else if (_consecutiveLogFailures % 50 == 0)
-            {
-                AppLogger.Error("EmailAlert", $"Alert logging STILL broken: {_consecutiveLogFailures} failures. Last: {ex.Message}");
-            }
-        }
     }
 }

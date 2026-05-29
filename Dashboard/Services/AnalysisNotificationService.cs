@@ -11,6 +11,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Helpers;
@@ -37,6 +38,7 @@ namespace PerformanceMonitorDashboard.Services
         private readonly EmailAlertService _emailAlertService;
         private readonly IAlertSettings _settings;
         private readonly IServerManager _serverManager;
+        private readonly ILogger<AnalysisNotificationService> _logger;
 
         /// <summary>
         /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
@@ -50,11 +52,13 @@ namespace PerformanceMonitorDashboard.Services
         public AnalysisNotificationService(
             EmailAlertService emailAlertService,
             IAlertSettings settings,
-            IServerManager serverManager)
+            IServerManager serverManager,
+            ILogger<AnalysisNotificationService> logger)
         {
             _emailAlertService = emailAlertService;
             _settings = settings;
             _serverManager = serverManager;
+            _logger = logger;
         }
 
         /// <summary>
@@ -183,7 +187,7 @@ namespace PerformanceMonitorDashboard.Services
                 {
                     /* TrySendAlertEmailAsync is documented never to throw; this guards a
                        formatter defect so one bad finding cannot abort the rest. */
-                    Logger.Error(
+                    _logger.LogError(
                         $"AnalysisNotificationService: failed to notify on finding {finding.StoryPathHash}: {ex.GetType().Name}: {ex.Message}");
                 }
             }
