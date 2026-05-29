@@ -57,7 +57,7 @@ public sealed class McpAlertTools
                     username = prefs.SmtpUsername,
                     from_address = prefs.SmtpFromAddress,
                     recipients = prefs.SmtpRecipients,
-                    password_configured = !string.IsNullOrEmpty(EmailAlertService.GetSmtpPassword()),
+                    password_configured = !string.IsNullOrEmpty(DashboardAlertCredentials.GetSmtpPassword()),
                     consecutive_failures = emailHealth?.ConsecutiveFailures ?? 0,
                     last_error = emailHealth?.LastError
                 }

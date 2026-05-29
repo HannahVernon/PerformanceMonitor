@@ -22,7 +22,8 @@ namespace PerformanceMonitorDashboard.Services
     /// <para>
     /// The SMTP password still comes from Credential Manager: the test path saves the typed
     /// password to the credential store first, then the send reads it back, so
-    /// <see cref="GetSmtpPassword"/> routes to the same credential static as the saved adapter.
+    /// <see cref="GetSmtpPassword"/> routes to <see cref="DashboardAlertCredentials"/>, the
+    /// same credential helper as the saved adapter.
     /// </para>
     /// </summary>
     public sealed class UserPreferencesAlertSettings : IAlertSettings
@@ -41,16 +42,16 @@ namespace PerformanceMonitorDashboard.Services
         public string SmtpUsername    => _prefs.SmtpUsername;
         public string SmtpFromAddress => _prefs.SmtpFromAddress;
         public string SmtpRecipients  => _prefs.SmtpRecipients;
-        public string? GetSmtpPassword() => EmailAlertService.GetSmtpPassword();
+        public string? GetSmtpPassword() => DashboardAlertCredentials.GetSmtpPassword();
 
         public int EmailCooldownMinutes => _prefs.EmailCooldownMinutes;
 
         public bool   TeamsWebhookEnabled => _prefs.TeamsWebhookEnabled;
-        public string TeamsWebhookUrl     => WebhookAlertService.GetTeamsWebhookUrl();
+        public string TeamsWebhookUrl     => DashboardAlertCredentials.GetTeamsWebhookUrl();
         public string TeamsProxyAddress   => _prefs.TeamsProxyAddress;
 
         public bool   SlackWebhookEnabled => _prefs.SlackWebhookEnabled;
-        public string SlackWebhookUrl     => WebhookAlertService.GetSlackWebhookUrl();
+        public string SlackWebhookUrl     => DashboardAlertCredentials.GetSlackWebhookUrl();
         public string SlackProxyAddress   => _prefs.SlackProxyAddress;
 
         public double AnalysisNotifySeverity        => Math.Clamp(_prefs.AnalysisNotifySeverity, 0.0, 2.0);

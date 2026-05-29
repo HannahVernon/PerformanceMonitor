@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PerformanceMonitor.Analysis\PerformanceMonitor.Analysis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="PerformanceMonitorLite" />
     <InternalsVisibleTo Include="PerformanceMonitorDashboard" />
     <InternalsVisibleTo Include="Lite.Tests" />

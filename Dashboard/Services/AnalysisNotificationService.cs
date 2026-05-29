@@ -235,7 +235,7 @@ namespace PerformanceMonitorDashboard.Services
 
             if (finding.RootFactMetadata is { Count: > 0 })
             {
-                var baseline = ToolRecommendations.FormatBaselineContext(finding.RootFactMetadata);
+                var baseline = BaselineContextFormatter.FormatBaselineContext(finding.RootFactMetadata);
                 if (baseline is { Count: > 0 })
                 {
                     var parts = baseline.Select(kv => $"{Humanize(kv.Key)} {kv.Value}");

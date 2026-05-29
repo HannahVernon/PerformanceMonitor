@@ -25,15 +25,12 @@ namespace PerformanceMonitorDashboard.Services
     public class WebhookAlertService
     {
         private const string EditionName = "Performance Monitor Dashboard";
-        private const string TeamsWebhookCredentialKey = "TeamsWebhook";
-        private const string SlackWebhookCredentialKey = "SlackWebhook";
 
         /* Webhooks do not deliver the copy-paste T-SQL (too large, wrong channel) — they point
            at the email / in-app dialog instead. This string must stay byte-identical to the
            Lite copy (plan §5.4). */
         private const string TsqlWebhookHint = "See email or in-app Alert Details for the copy-paste T-SQL.";
         private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
-        private static readonly CredentialService s_credentialService = new();
 
         private readonly IAlertSettings _settings;
         private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
@@ -50,50 +47,6 @@ namespace PerformanceMonitorDashboard.Services
             _settings = settings;
             Current = this;
         }
-
-        /// <summary>
-        /// Gets a webhook URL from Windows Credential Manager.
-        /// </summary>
-        public static string GetWebhookUrl(string credentialKey)
-        {
-            try
-            {
-                var cred = s_credentialService.GetCredential(credentialKey);
-                return cred?.Password ?? "";
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Failed to retrieve webhook URL for {credentialKey}: {ex.Message}");
-                return "";
-            }
-        }
-
-        /// <summary>
-        /// Saves a webhook URL to Windows Credential Manager.
-        /// </summary>
-        public static void SaveWebhookUrl(string credentialKey, string url)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(url))
-                {
-                    s_credentialService.DeleteCredential(credentialKey);
-                }
-                else
-                {
-                    s_credentialService.SaveCredential(credentialKey, "webhook", url);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Failed to save webhook URL for {credentialKey}: {ex.Message}");
-            }
-        }
-
-        public static string GetTeamsWebhookUrl() => GetWebhookUrl(TeamsWebhookCredentialKey);
-        public static string GetSlackWebhookUrl() => GetWebhookUrl(SlackWebhookCredentialKey);
-        public static void SaveTeamsWebhookUrl(string url) => SaveWebhookUrl(TeamsWebhookCredentialKey, url);
-        public static void SaveSlackWebhookUrl(string url) => SaveWebhookUrl(SlackWebhookCredentialKey, url);
 
         /// <summary>
         /// Sends webhook alerts to all configured channels (Teams and/or Slack).

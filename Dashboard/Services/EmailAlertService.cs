@@ -33,12 +33,10 @@ namespace PerformanceMonitorDashboard.Services
     /// </summary>
     public class EmailAlertService
     {
-        private const string SmtpCredentialKey = "PerformanceMonitorDashboard_SMTP";
         private static readonly AlertBranding s_branding = new("Performance Monitor Dashboard", null);
 
         /// <summary>Test seam: the branding this app feeds the shared email/template renderer.</summary>
         internal static AlertBranding Branding => s_branding;
-        private static readonly CredentialService s_credentialService = new();
 
         private readonly IAlertSettings _settings;
         private readonly JsonAlertHistoryStore _historyStore;
@@ -255,38 +253,6 @@ namespace PerformanceMonitorDashboard.Services
             catch (Exception ex)
             {
                 return ex.Message;
-            }
-        }
-
-        /// <summary>
-        /// Gets the stored SMTP password from the credential manager.
-        /// </summary>
-        public static string? GetSmtpPassword()
-        {
-            try
-            {
-                var credential = s_credentialService.GetCredential(SmtpCredentialKey);
-                return credential?.Password;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Failed to retrieve SMTP password: {ex.Message}");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Saves the SMTP password to the credential manager.
-        /// </summary>
-        public static void SaveSmtpPassword(string password, string username)
-        {
-            try
-            {
-                s_credentialService.SaveCredential(SmtpCredentialKey, string.IsNullOrEmpty(username) ? "smtp" : username, password);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Failed to save SMTP password: {ex.Message}");
             }
         }
 
