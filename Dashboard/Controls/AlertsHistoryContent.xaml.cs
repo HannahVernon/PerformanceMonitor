@@ -506,7 +506,7 @@ namespace PerformanceMonitorDashboard.Controls
             detailWindow.ShowDialog();
         }
 
-        private void MuteThisAlert_Click(object sender, RoutedEventArgs e)
+        private async void MuteThisAlert_Click(object sender, RoutedEventArgs e)
         {
             if (MuteRuleService == null) return;
             if (sender is not MenuItem menuItem) return;
@@ -525,12 +525,12 @@ namespace PerformanceMonitorDashboard.Controls
             var dialog = new MuteRuleDialog(context) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() == true)
             {
-                MuteRuleService.AddRule(dialog.Rule);
+                await MuteRuleService.AddRuleAsync(dialog.Rule);
                 LoadAlerts();
             }
         }
 
-        private void MuteSimilarAlerts_Click(object sender, RoutedEventArgs e)
+        private async void MuteSimilarAlerts_Click(object sender, RoutedEventArgs e)
         {
             if (MuteRuleService == null) return;
             if (sender is not MenuItem menuItem) return;
@@ -547,7 +547,7 @@ namespace PerformanceMonitorDashboard.Controls
             var dialog = new MuteRuleDialog(context) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() == true)
             {
-                MuteRuleService.AddRule(dialog.Rule);
+                await MuteRuleService.AddRuleAsync(dialog.Rule);
                 LoadAlerts();
             }
         }

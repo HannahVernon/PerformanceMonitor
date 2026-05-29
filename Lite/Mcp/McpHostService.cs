@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.AspNetCore;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Services;
