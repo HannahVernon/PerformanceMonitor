@@ -7,6 +7,7 @@ using ModelContextProtocol.Server;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 

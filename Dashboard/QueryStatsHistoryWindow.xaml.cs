@@ -22,6 +22,7 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard
 {

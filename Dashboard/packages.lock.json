@@ -741,6 +741,9 @@
       "performancemonitor.analysis": {
         "type": "Project"
       },
+      "performancemonitor.common": {
+        "type": "Project"
+      },
       "performancemonitor.notifications": {
         "type": "Project",
         "dependencies": {

@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
@@ -12,7 +12,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-namespace PerformanceMonitorLite.Services;
+namespace PerformanceMonitor.Common;
 
 public record UpdateInfo(
     bool IsUpdateAvailable,
@@ -85,7 +85,12 @@ public static class UpdateCheckService
 
     private static Version? GetCurrentVersion()
     {
-        return Assembly.GetExecutingAssembly().GetName().Version;
+        // Use the entry assembly (the app .exe) rather than the executing assembly.
+        // This service lives in PerformanceMonitor.Common.dll, which carries no
+        // <Version> and defaults to 1.0.0.0. GetExecutingAssembly() would therefore
+        // report 1.0.0.0 and make every real release look like an available update.
+        // GetEntryAssembly() returns the host app's real version (e.g. 2.11.0.0).
+        return Assembly.GetEntryAssembly()?.GetName().Version;
     }
 
     private static Version? ParseVersion(string tagName)

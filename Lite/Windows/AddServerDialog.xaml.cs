@@ -12,6 +12,7 @@ using Microsoft.Data.SqlClient;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Windows;
 

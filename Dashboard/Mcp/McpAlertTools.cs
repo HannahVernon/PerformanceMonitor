@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 

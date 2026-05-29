@@ -29,6 +29,7 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -1077,7 +1078,7 @@ public partial class ServerTab : UserControl
     }
 
     private string _activeQueriesSlicerMetric = "Sessions";
-    private List<Models.TimeSliceBucket>? _activeQueriesSlicerData;
+    private List<TimeSliceBucket>? _activeQueriesSlicerData;
 
     private void QuerySnapshotsGrid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -1140,7 +1141,7 @@ public partial class ServerTab : UserControl
     // ── Query Stats Slicer ──
 
     private string _queryStatsSlicerMetric = "TotalCpu";
-    private List<Models.TimeSliceBucket>? _queryStatsSlicerData;
+    private List<TimeSliceBucket>? _queryStatsSlicerData;
 
     private async System.Threading.Tasks.Task LoadQueryStatsSlicerAsync()
     {
@@ -1239,7 +1240,7 @@ public partial class ServerTab : UserControl
     // ── Query Store Slicer ──
 
     private string _queryStoreSlicerMetric = "TotalCpu";
-    private List<Models.TimeSliceBucket>? _queryStoreSlicerData;
+    private List<TimeSliceBucket>? _queryStoreSlicerData;
 
     private async System.Threading.Tasks.Task LoadQueryStoreSlicerAsync()
     {
@@ -1336,7 +1337,7 @@ public partial class ServerTab : UserControl
     // ── Procedure Stats Slicer ──
 
     private string _procStatsSlicerMetric = "TotalCpu";
-    private List<Models.TimeSliceBucket>? _procStatsSlicerData;
+    private List<TimeSliceBucket>? _procStatsSlicerData;
 
     private async System.Threading.Tasks.Task LoadProcStatsSlicerAsync()
     {

@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -22,7 +23,7 @@ public partial class LocalDataService
     /// Gets the latest Query Store snapshot for a server, aggregated across all databases.
     /// Shows top queries by total duration (execution_count * avg_duration).
     /// </summary>
-    public async Task<List<Models.TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
+    public async Task<List<TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
         int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
@@ -49,13 +50,13 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
-        var items = new List<Models.TimeSliceBucket>();
+        var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.TimeSliceBucket
+            items.Add(new TimeSliceBucket
             {
-                BucketTimeUtc = reader.GetDateTime(0),
+                BucketTime = reader.GetDateTime(0),
                 SessionCount = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
                 TotalCpu = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2)),
                 TotalElapsed = reader.IsDBNull(3) ? 0 : ToDouble(reader.GetValue(3)),

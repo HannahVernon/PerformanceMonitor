@@ -21,6 +21,7 @@ using Installer.Core;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Services
 {

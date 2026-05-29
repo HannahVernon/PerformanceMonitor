@@ -17,6 +17,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 

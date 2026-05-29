@@ -12,6 +12,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -146,7 +147,7 @@ LIMIT 50";
     /// Gets hourly-bucketed metrics from query snapshots for the time-range slicer.
     /// The metric column is determined by the caller's sort preference.
     /// </summary>
-    public async Task<List<Models.TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
+    public async Task<List<TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
         int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
@@ -174,13 +175,13 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
-        var items = new List<Models.TimeSliceBucket>();
+        var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.TimeSliceBucket
+            items.Add(new TimeSliceBucket
             {
-                BucketTimeUtc = reader.GetDateTime(0),
+                BucketTime = reader.GetDateTime(0),
                 SessionCount = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
                 TotalCpu = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2)),
                 TotalElapsed = reader.IsDBNull(3) ? 0 : ToDouble(reader.GetValue(3)),
@@ -430,7 +431,7 @@ LIMIT 200";
     /// <summary>
     /// Gets hourly-bucketed metrics from blocked process reports for the time-range slicer.
     /// </summary>
-    public async Task<List<Models.TimeSliceBucket>> GetBlockingSlicerDataAsync(
+    public async Task<List<TimeSliceBucket>> GetBlockingSlicerDataAsync(
         int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
@@ -456,14 +457,14 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
-        var items = new List<Models.TimeSliceBucket>();
+        var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
             var eventCount = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1));
-            items.Add(new Models.TimeSliceBucket
+            items.Add(new TimeSliceBucket
             {
-                BucketTimeUtc = reader.GetDateTime(0),
+                BucketTime = reader.GetDateTime(0),
                 SessionCount = eventCount,
                 TotalCpu = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2)),
                 TotalElapsed = reader.IsDBNull(3) ? 0 : ToDouble(reader.GetValue(3)),
@@ -479,7 +480,7 @@ ORDER BY bucket";
     /// <summary>
     /// Gets hourly-bucketed metrics from deadlocks for the time-range slicer.
     /// </summary>
-    public async Task<List<Models.TimeSliceBucket>> GetDeadlockSlicerDataAsync(
+    public async Task<List<TimeSliceBucket>> GetDeadlockSlicerDataAsync(
         int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
@@ -501,14 +502,14 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
-        var items = new List<Models.TimeSliceBucket>();
+        var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
             var count = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1));
-            items.Add(new Models.TimeSliceBucket
+            items.Add(new TimeSliceBucket
             {
-                BucketTimeUtc = reader.GetDateTime(0),
+                BucketTime = reader.GetDateTime(0),
                 SessionCount = count,
                 Value = count,
             });

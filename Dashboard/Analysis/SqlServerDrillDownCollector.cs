@@ -9,6 +9,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Mcp;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Analysis;
 

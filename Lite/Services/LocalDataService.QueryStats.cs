@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -38,7 +39,7 @@ WHERE d.name = @database_name;", connection);
     /// <summary>
     /// Gets top queries by CPU for a server over a time period.
     /// </summary>
-    public async Task<List<Models.TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
+    public async Task<List<TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
         int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
@@ -65,13 +66,13 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
-        var items = new List<Models.TimeSliceBucket>();
+        var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.TimeSliceBucket
+            items.Add(new TimeSliceBucket
             {
-                BucketTimeUtc = reader.GetDateTime(0),
+                BucketTime = reader.GetDateTime(0),
                 SessionCount = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
                 TotalCpu = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2)),
                 TotalElapsed = reader.IsDBNull(3) ? 0 : ToDouble(reader.GetValue(3)),
@@ -639,7 +640,7 @@ OPTION(RECOMPILE);',
     /// <summary>
     /// Gets top procedures by CPU for a server.
     /// </summary>
-    public async Task<List<Models.TimeSliceBucket>> GetProcStatsSlicerDataAsync(
+    public async Task<List<TimeSliceBucket>> GetProcStatsSlicerDataAsync(
         int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
@@ -666,13 +667,13 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
-        var items = new List<Models.TimeSliceBucket>();
+        var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.TimeSliceBucket
+            items.Add(new TimeSliceBucket
             {
-                BucketTimeUtc = reader.GetDateTime(0),
+                BucketTime = reader.GetDateTime(0),
                 SessionCount = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
                 TotalCpu = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2)),
                 TotalElapsed = reader.IsDBNull(3) ? 0 : ToDouble(reader.GetValue(3)),
