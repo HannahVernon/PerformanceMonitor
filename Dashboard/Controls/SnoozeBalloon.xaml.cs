@@ -67,7 +67,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
         }
 
-        private void Snooze15Button_Click(object sender, RoutedEventArgs e) => Snooze(TimeSpan.FromMinutes(15));
+        private async void Snooze15Button_Click(object sender, RoutedEventArgs e) => await Snooze(TimeSpan.FromMinutes(15));
         private async void Snooze1hButton_Click(object sender, RoutedEventArgs e) => await Snooze(TimeSpan.FromHours(1));
         private async void Snooze4hButton_Click(object sender, RoutedEventArgs e) => await Snooze(TimeSpan.FromHours(4));
 
