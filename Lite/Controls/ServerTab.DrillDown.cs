@@ -10,6 +10,7 @@ using System;
 using System.Windows;
 using System.Windows.Controls;
 using PerformanceMonitorLite.Helpers;
+using PerformanceMonitor.Ui;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 
@@ -63,7 +64,7 @@ public partial class ServerTab : UserControl
 
     private void AddChartDrillDownMenuItem(
         ScottPlot.WPF.WpfPlot chart, ContextMenu contextMenu,
-        Helpers.ChartHoverHelper? hover, string label, Action<DateTime> handler)
+        ChartHoverHelper? hover, string label, Action<DateTime> handler)
     {
         contextMenu.Items.Insert(0, new Separator());
         var item = new MenuItem { Header = label };

@@ -38,7 +38,7 @@ namespace PerformanceMonitorDashboard.Controls
         public event Action<string, DateTime>? ChartDrillDownRequested;
 
         private void AddDrillDown(ScottPlot.WPF.WpfPlot chart, ContextMenu menu,
-            Func<Helpers.ChartHoverHelper?> hoverGetter, string label, string chartType)
+            Func<ChartHoverHelper?> hoverGetter, string label, string chartType)
         {
             menu.Items.Insert(0, new Separator());
             var item = new MenuItem { Header = label };
@@ -108,17 +108,17 @@ namespace PerformanceMonitorDashboard.Controls
         private List<WaitStatsDataPoint>? _allWaitStatsDetailData;
         private List<WaitTypeSelectionItem>? _waitTypeItems;
         private bool _isUpdatingWaitTypeSelection = false;
-        private Helpers.ChartHoverHelper? _sessionStatsHover;
-        private Helpers.ChartHoverHelper? _latchStatsHover;
-        private Helpers.ChartHoverHelper? _spinlockStatsHover;
-        private Helpers.ChartHoverHelper? _fileIoReadHover;
-        private Helpers.ChartHoverHelper? _fileIoWriteHover;
-        private Helpers.ChartHoverHelper? _fileIoReadThroughputHover;
-        private Helpers.ChartHoverHelper? _fileIoWriteThroughputHover;
-        private Helpers.ChartHoverHelper? _perfmonHover;
-        private Helpers.ChartHoverHelper? _waitStatsHover;
-        private Helpers.ChartHoverHelper? _tempdbStatsHover;
-        private Helpers.ChartHoverHelper? _tempDbLatencyHover;
+        private ChartHoverHelper? _sessionStatsHover;
+        private ChartHoverHelper? _latchStatsHover;
+        private ChartHoverHelper? _spinlockStatsHover;
+        private ChartHoverHelper? _fileIoReadHover;
+        private ChartHoverHelper? _fileIoWriteHover;
+        private ChartHoverHelper? _fileIoReadThroughputHover;
+        private ChartHoverHelper? _fileIoWriteThroughputHover;
+        private ChartHoverHelper? _perfmonHover;
+        private ChartHoverHelper? _waitStatsHover;
+        private ChartHoverHelper? _tempdbStatsHover;
+        private ChartHoverHelper? _tempDbLatencyHover;
         // Filter state dictionaries for each DataGrid
         // Legend panel references for edge-based legends (ScottPlot issue #4717 workaround)
         // Must store and remove these by reference before creating new ones
@@ -149,17 +149,17 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.ApplyThemeToChart(PerfmonCountersChart);
             TabHelpers.ApplyThemeToChart(WaitStatsDetailChart);
 
-            _sessionStatsHover = new Helpers.ChartHoverHelper(SessionStatsChart, "sessions");
-            _latchStatsHover = new Helpers.ChartHoverHelper(LatchStatsChart, "ms/sec");
-            _spinlockStatsHover = new Helpers.ChartHoverHelper(SpinlockStatsChart, "collisions/sec");
-            _fileIoReadHover = new Helpers.ChartHoverHelper(UserDbReadLatencyChart, "ms");
-            _fileIoWriteHover = new Helpers.ChartHoverHelper(UserDbWriteLatencyChart, "ms");
-            _fileIoReadThroughputHover = new Helpers.ChartHoverHelper(FileIoReadThroughputChart, "MB/s");
-            _fileIoWriteThroughputHover = new Helpers.ChartHoverHelper(FileIoWriteThroughputChart, "MB/s");
-            _perfmonHover = new Helpers.ChartHoverHelper(PerfmonCountersChart, "");
-            _waitStatsHover = new Helpers.ChartHoverHelper(WaitStatsDetailChart, "ms/sec");
-            _tempdbStatsHover = new Helpers.ChartHoverHelper(TempdbStatsChart, "MB");
-            _tempDbLatencyHover = new Helpers.ChartHoverHelper(TempDbLatencyChart, "ms");
+            _sessionStatsHover = new ChartHoverHelper(SessionStatsChart, "sessions");
+            _latchStatsHover = new ChartHoverHelper(LatchStatsChart, "ms/sec");
+            _spinlockStatsHover = new ChartHoverHelper(SpinlockStatsChart, "collisions/sec");
+            _fileIoReadHover = new ChartHoverHelper(UserDbReadLatencyChart, "ms");
+            _fileIoWriteHover = new ChartHoverHelper(UserDbWriteLatencyChart, "ms");
+            _fileIoReadThroughputHover = new ChartHoverHelper(FileIoReadThroughputChart, "MB/s");
+            _fileIoWriteThroughputHover = new ChartHoverHelper(FileIoWriteThroughputChart, "MB/s");
+            _perfmonHover = new ChartHoverHelper(PerfmonCountersChart, "");
+            _waitStatsHover = new ChartHoverHelper(WaitStatsDetailChart, "ms/sec");
+            _tempdbStatsHover = new ChartHoverHelper(TempdbStatsChart, "MB");
+            _tempDbLatencyHover = new ChartHoverHelper(TempDbLatencyChart, "ms");
         }
 
         public void DisposeChartHelpers()

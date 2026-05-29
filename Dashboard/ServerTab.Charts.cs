@@ -20,18 +20,18 @@ namespace PerformanceMonitorDashboard
     public partial class ServerTab : UserControl
     {
         // Chart hover tooltips
-        private Helpers.ChartHoverHelper? _resourceOverviewCpuHover;
-        private Helpers.ChartHoverHelper? _resourceOverviewMemoryHover;
-        private Helpers.ChartHoverHelper? _resourceOverviewIoHover;
-        private Helpers.ChartHoverHelper? _resourceOverviewWaitHover;
-        private Helpers.ChartHoverHelper? _lockWaitStatsHover;
-        private Helpers.ChartHoverHelper? _blockingEventsHover;
-        private Helpers.ChartHoverHelper? _blockingDurationHover;
-        private Helpers.ChartHoverHelper? _deadlocksHover;
-        private Helpers.ChartHoverHelper? _deadlockWaitTimeHover;
-        private Helpers.ChartHoverHelper? _collectorDurationHover;
-        private Helpers.ChartHoverHelper? _currentWaitsDurationHover;
-        private Helpers.ChartHoverHelper? _currentWaitsBlockedHover;
+        private ChartHoverHelper? _resourceOverviewCpuHover;
+        private ChartHoverHelper? _resourceOverviewMemoryHover;
+        private ChartHoverHelper? _resourceOverviewIoHover;
+        private ChartHoverHelper? _resourceOverviewWaitHover;
+        private ChartHoverHelper? _lockWaitStatsHover;
+        private ChartHoverHelper? _blockingEventsHover;
+        private ChartHoverHelper? _blockingDurationHover;
+        private ChartHoverHelper? _deadlocksHover;
+        private ChartHoverHelper? _deadlockWaitTimeHover;
+        private ChartHoverHelper? _collectorDurationHover;
+        private ChartHoverHelper? _currentWaitsDurationHover;
+        private ChartHoverHelper? _currentWaitsBlockedHover;
 
         private void OnThemeChanged(string _)
         {

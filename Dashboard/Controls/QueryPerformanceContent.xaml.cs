@@ -105,10 +105,10 @@ namespace PerformanceMonitorDashboard.Controls
         private Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
 
         // Chart hover tooltips
-        private Helpers.ChartHoverHelper? _queryDurationHover;
-        private Helpers.ChartHoverHelper? _procDurationHover;
-        private Helpers.ChartHoverHelper? _qsDurationHover;
-        private Helpers.ChartHoverHelper? _execTrendsHover;
+        private ChartHoverHelper? _queryDurationHover;
+        private ChartHoverHelper? _procDurationHover;
+        private ChartHoverHelper? _qsDurationHover;
+        private ChartHoverHelper? _execTrendsHover;
 
         // Query heatmap
         private HeatmapResult? _lastHeatmapResult;
@@ -136,10 +136,10 @@ namespace PerformanceMonitorDashboard.Controls
             };
             ThemeManager.ThemeChanged += OnThemeChanged;
 
-            _queryDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsQueryChart, "ms/sec");
-            _procDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsProcChart, "ms/sec");
-            _qsDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsQsChart, "ms/sec");
-            _execTrendsHover = new Helpers.ChartHoverHelper(QueryPerfTrendsExecChart, "/sec");
+            _queryDurationHover = new ChartHoverHelper(QueryPerfTrendsQueryChart, "ms/sec");
+            _procDurationHover = new ChartHoverHelper(QueryPerfTrendsProcChart, "ms/sec");
+            _qsDurationHover = new ChartHoverHelper(QueryPerfTrendsQsChart, "ms/sec");
+            _execTrendsHover = new ChartHoverHelper(QueryPerfTrendsExecChart, "/sec");
 
             // Heatmap popup tooltip
             _heatmapPopupText = new System.Windows.Controls.TextBlock
@@ -1157,7 +1157,7 @@ namespace PerformanceMonitorDashboard.Controls
         /// Renders a duration trend chart from time-series data (per-collection_time aggregation).
         /// Replaces the old per-query-summary approach that produced too few data points.
         /// </summary>
-        private void LoadDurationChart(WpfPlot chart, IEnumerable<DurationTrendItem> trendData, int hoursBack, DateTime? fromDate, DateTime? toDate, string legendText, ScottPlot.Color color, Helpers.ChartHoverHelper? hover = null)
+        private void LoadDurationChart(WpfPlot chart, IEnumerable<DurationTrendItem> trendData, int hoursBack, DateTime? fromDate, DateTime? toDate, string legendText, ScottPlot.Color color, ChartHoverHelper? hover = null)
         {
             try
             {

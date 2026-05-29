@@ -34,7 +34,7 @@ namespace PerformanceMonitorDashboard.Controls
         public event Action<string, DateTime>? ChartDrillDownRequested;
 
         private void AddDrillDown(ScottPlot.WPF.WpfPlot chart, ContextMenu menu,
-            Func<Helpers.ChartHoverHelper?> hoverGetter, string label, string chartType)
+            Func<ChartHoverHelper?> hoverGetter, string label, string chartType)
         {
             menu.Items.Insert(0, new Separator());
             var item = new MenuItem { Header = label };
@@ -92,12 +92,12 @@ namespace PerformanceMonitorDashboard.Controls
         private bool _isUpdatingMemoryClerkSelection;
 
         // Chart hover tooltips
-        private Helpers.ChartHoverHelper? _memoryStatsOverviewHover;
-        private Helpers.ChartHoverHelper? _memoryGrantSizingHover;
-        private Helpers.ChartHoverHelper? _memoryGrantActivityHover;
-        private Helpers.ChartHoverHelper? _memoryClerksHover;
-        private Helpers.ChartHoverHelper? _planCacheHover;
-        private Helpers.ChartHoverHelper? _memoryPressureEventsHover;
+        private ChartHoverHelper? _memoryStatsOverviewHover;
+        private ChartHoverHelper? _memoryGrantSizingHover;
+        private ChartHoverHelper? _memoryGrantActivityHover;
+        private ChartHoverHelper? _memoryClerksHover;
+        private ChartHoverHelper? _planCacheHover;
+        private ChartHoverHelper? _memoryPressureEventsHover;
 
         // No DataGrids with filters - all tabs are chart-only
 
@@ -120,12 +120,12 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.ApplyThemeToChart(PlanCacheChart);
             TabHelpers.ApplyThemeToChart(MemoryPressureEventsChart);
 
-            _memoryStatsOverviewHover = new Helpers.ChartHoverHelper(MemoryStatsOverviewChart, "MB");
-            _memoryGrantSizingHover = new Helpers.ChartHoverHelper(MemoryGrantSizingChart, "MB");
-            _memoryGrantActivityHover = new Helpers.ChartHoverHelper(MemoryGrantActivityChart, "count");
-            _memoryClerksHover = new Helpers.ChartHoverHelper(MemoryClerksChart, "MB");
-            _planCacheHover = new Helpers.ChartHoverHelper(PlanCacheChart, "MB");
-            _memoryPressureEventsHover = new Helpers.ChartHoverHelper(MemoryPressureEventsChart, "events");
+            _memoryStatsOverviewHover = new ChartHoverHelper(MemoryStatsOverviewChart, "MB");
+            _memoryGrantSizingHover = new ChartHoverHelper(MemoryGrantSizingChart, "MB");
+            _memoryGrantActivityHover = new ChartHoverHelper(MemoryGrantActivityChart, "count");
+            _memoryClerksHover = new ChartHoverHelper(MemoryClerksChart, "MB");
+            _planCacheHover = new ChartHoverHelper(PlanCacheChart, "MB");
+            _memoryPressureEventsHover = new ChartHoverHelper(MemoryPressureEventsChart, "events");
         }
 
         public void DisposeChartHelpers()
