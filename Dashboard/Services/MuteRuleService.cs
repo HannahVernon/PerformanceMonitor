@@ -1,32 +1,38 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text.Json;
-using PerformanceMonitorDashboard.Models;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorDashboard.Services
 {
     /// <summary>
-    /// Manages alert mute rules with JSON persistence.
-    /// Thread-safe: all operations are protected by _lock.
+    /// Manages alert mute rules with JSON persistence behind <see cref="IMuteRuleStore"/>.
+    /// Thread-safe: all in-memory operations are protected by _lock.
+    /// <para>
+    /// E2 keeps Dashboard's cache-then-save ordering (mutate the in-memory cache,
+    /// then persist) and its synchronous public API — the store does synchronous
+    /// I/O and returns completed tasks, and the constructor's load is synchronous so
+    /// no startup-ordering change is needed. Converging to persist-then-cache /
+    /// async is deferred to E3b.
+    /// </para>
     /// </summary>
     public class MuteRuleService
     {
-        private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
-
-        private readonly string _filePath;
+        private readonly IMuteRuleStore _store;
+        private readonly ILogger<MuteRuleService> _logger;
         private readonly object _lock = new object();
         private List<MuteRule> _rules = new();
 
-        public MuteRuleService()
+        public MuteRuleService(IMuteRuleStore store, ILogger<MuteRuleService> logger)
         {
-            var appDataDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "PerformanceMonitorDashboard");
-            Directory.CreateDirectory(appDataDir);
-            _filePath = Path.Combine(appDataDir, "alert_mute_rules.json");
-            Load();
+            _store = store;
+            _logger = logger;
+
+            /* The store loads its set synchronously in its own constructor; LoadAllAsync
+               returns that already-loaded set (completes synchronously). */
+            _rules = _store.LoadAllAsync().GetAwaiter().GetResult().ToList();
             PurgeExpiredRules();
         }
 
@@ -59,7 +65,7 @@ namespace PerformanceMonitorDashboard.Services
             lock (_lock)
             {
                 _rules.Add(rule);
-                Save();
+                _store.InsertAsync(rule).GetAwaiter().GetResult();
             }
         }
 
@@ -68,7 +74,7 @@ namespace PerformanceMonitorDashboard.Services
             lock (_lock)
             {
                 _rules.RemoveAll(r => r.Id == ruleId);
-                Save();
+                _store.DeleteAsync(ruleId).GetAwaiter().GetResult();
             }
         }
 
@@ -80,7 +86,7 @@ namespace PerformanceMonitorDashboard.Services
                 if (index >= 0)
                 {
                     _rules[index] = updated;
-                    Save();
+                    _store.UpdateAsync(updated).GetAwaiter().GetResult();
                 }
             }
         }
@@ -93,7 +99,7 @@ namespace PerformanceMonitorDashboard.Services
                 if (rule != null)
                 {
                     rule.Enabled = enabled;
-                    Save();
+                    _store.SetEnabledAsync(ruleId, enabled).GetAwaiter().GetResult();
                 }
             }
         }
@@ -105,41 +111,10 @@ namespace PerformanceMonitorDashboard.Services
         {
             lock (_lock)
             {
+                var expiredIds = _rules.Where(r => r.IsExpired).Select(r => r.Id).ToList();
                 int removed = _rules.RemoveAll(r => r.IsExpired);
-                if (removed > 0) Save();
+                if (removed > 0) _store.DeleteExpiredAsync(expiredIds).GetAwaiter().GetResult();
                 return removed;
-            }
-        }
-
-        private void Load()
-        {
-            lock (_lock)
-            {
-                try
-                {
-                    if (File.Exists(_filePath))
-                    {
-                        var json = File.ReadAllText(_filePath);
-                        _rules = JsonSerializer.Deserialize<List<MuteRule>>(json) ?? new();
-                    }
-                }
-                catch
-                {
-                    _rules = new();
-                }
-            }
-        }
-
-        private void Save()
-        {
-            try
-            {
-                var json = JsonSerializer.Serialize(_rules, s_jsonOptions);
-                File.WriteAllText(_filePath, json);
-            }
-            catch (Exception ex)
-            {
-                Helpers.Logger.Error("MuteRuleService: Failed to save mute rules", ex);
             }
         }
     }

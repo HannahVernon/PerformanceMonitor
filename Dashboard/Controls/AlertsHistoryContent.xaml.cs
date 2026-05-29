@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;

@@ -303,7 +303,9 @@ public class AnalysisNotificationTests : IDisposable
         App.AnalysisNotifySeverity = 1.5;
         App.AnalysisNotifyCooldownMinutes = 360;
 
-        var notifier = new AnalysisNotificationService(new EmailAlertService(_settings, _duckDb), _settings);
+        var notifier = new AnalysisNotificationService(
+            new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), new AppLoggerAdapter<EmailAlertService>()),
+            _settings);
         var finding = MakeFinding("samehash00000001", severity: 2.0);
 
         await notifier.NotifyAsync(new[] { finding });
@@ -319,7 +321,9 @@ public class AnalysisNotificationTests : IDisposable
         App.AnalysisNotifySeverity = 1.5;
         App.AnalysisNotifyCooldownMinutes = 360;
 
-        var notifier = new AnalysisNotificationService(new EmailAlertService(_settings, _duckDb), _settings);
+        var notifier = new AnalysisNotificationService(
+            new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), new AppLoggerAdapter<EmailAlertService>()),
+            _settings);
 
         /* Use distinct first-8-char prefixes — FindingMessageFormatter.MetricName
            embeds only the first 8 chars of StoryPathHash, and the persistence
@@ -342,7 +346,9 @@ public class AnalysisNotificationTests : IDisposable
         await _duckDb.InitializeAsync();
         App.AnalysisNotifySeverity = 1.5;
 
-        var notifier = new AnalysisNotificationService(new EmailAlertService(_settings, _duckDb), _settings);
+        var notifier = new AnalysisNotificationService(
+            new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), new AppLoggerAdapter<EmailAlertService>()),
+            _settings);
         await notifier.NotifyAsync(new[] { MakeFinding("lowsev0000000001", severity: 1.0) });
 
         Assert.Equal(0, await CountAlertLogRowsAsync());

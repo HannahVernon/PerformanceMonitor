@@ -104,7 +104,7 @@ namespace PerformanceMonitorDashboard
             _openTabs = new Dictionary<string, TabItem>();
             _preferencesService = new UserPreferencesService();
             _alertStateService = new AlertStateService();
-            _muteRuleService = new MuteRuleService();
+            _muteRuleService = new MuteRuleService(new JsonMuteRuleStore(), new LoggerAdapter<MuteRuleService>());
             _serverListItems = new ObservableCollection<ServerListItem>();
             _previousConnectionStates = new Dictionary<string, bool>();
             _tabBadges = new Dictionary<string, Border>();
@@ -115,7 +115,9 @@ namespace PerformanceMonitorDashboard
             _credentialService = new CredentialService();
             /* Saved-prefs settings adapter shared by the three alert services (Plan E E1). */
             var alertSettings = new DashboardAlertSettings(_preferencesService);
-            _emailAlertService = new EmailAlertService(alertSettings, _preferencesService);
+            /* Alert-history store owns the alert_history.json list + management API (Plan E E2). */
+            var alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
+            _emailAlertService = new EmailAlertService(alertSettings, alertHistoryStore, new LoggerAdapter<EmailAlertService>());
             _ = new WebhookAlertService(alertSettings);
 
             _alertCheckTimer = new DispatcherTimer();
@@ -125,7 +127,7 @@ namespace PerformanceMonitorDashboard
                alert engine (all dependencies exist by this point); started by
                _analysisScheduler.Configure() in MainWindow_Loaded. */
             _analysisNotificationService = new AnalysisNotificationService(
-                _emailAlertService, alertSettings, _serverManager);
+                _emailAlertService, alertSettings, _serverManager, new LoggerAdapter<AnalysisNotificationService>());
             _analysisScheduler = new AnalysisScheduler(
                 _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 

@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using Hardcodet.Wpf.TaskbarNotification;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 

@@ -70,8 +70,13 @@ public partial class MainWindow : Window
 
         // Initialize services (with loggers wired to AppLogger)
         _databaseInitializer = new DuckDbInitializer(App.DatabasePath, new AppLoggerAdapter<DuckDbInitializer>());
-        _emailAlertService = new EmailAlertService(_alertSettings, _databaseInitializer);
-        _muteRuleService = new MuteRuleService(_databaseInitializer);
+        _emailAlertService = new EmailAlertService(
+            _alertSettings,
+            new DuckDbAlertHistoryStore(_databaseInitializer),
+            new AppLoggerAdapter<EmailAlertService>());
+        _muteRuleService = new MuteRuleService(
+            new DuckDbMuteRuleStore(_databaseInitializer),
+            new AppLoggerAdapter<MuteRuleService>());
         _serverManager = new ServerManager(App.SharedConfigDirectory, logger: new AppLoggerAdapter<ServerManager>());
         _scheduleManager = new ScheduleManager(App.ConfigDirectory);
 
