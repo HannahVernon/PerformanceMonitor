@@ -23,7 +23,7 @@ namespace PerformanceMonitorLite.Services;
 /// SMTP email sending service with per-metric cooldown.
 /// Uses System.Net.Mail.SmtpClient (no new NuGet packages needed).
 /// </summary>
-public class EmailAlertService
+public class EmailAlertService : IFindingAlertSender
 {
     private static readonly AlertBranding s_branding = new(
         "Performance Monitor Lite",
@@ -177,15 +177,36 @@ public class EmailAlertService
     /// Returns the UTC time of the most recent alert_log row for this
     /// (serverId, metricName), regardless of notification channel or
     /// delivery result. Used by <see cref="AnalysisNotificationService"/>
-    /// to seed its per-finding cooldown across restarts — unlike the
-    /// email cooldown (which filters to successful sends), the analysis
-    /// cooldown is stamped unconditionally, so the persisted equivalent
-    /// is the latest row for that metric_name, period.
-    /// Delegates to the injected <see cref="IAlertHistoryStore"/> (the int
-    /// serverId is bridged to the store's string serverId).
+    /// (via <see cref="IFindingAlertSender"/>) to seed its per-finding cooldown
+    /// across restarts — unlike the email cooldown (which filters to successful
+    /// sends), the analysis cooldown is stamped unconditionally, so the persisted
+    /// equivalent is the latest row for that metric_name, period.
+    /// Delegates to the injected <see cref="IAlertHistoryStore"/>.
     /// </summary>
-    public Task<DateTime?> GetLastAlertTimeAsync(int serverId, string metricName)
-        => _historyStore.GetLastAlertTimeAsync(serverId.ToString(), metricName);
+    public Task<DateTime?> GetLastAlertTimeAsync(string serverId, string metricName)
+        => _historyStore.GetLastAlertTimeAsync(serverId, metricName);
+
+    /// <summary>
+    /// <see cref="IFindingAlertSender"/>: dispatches a composed analysis-finding alert.
+    /// Lite's cadence — one combined <c>config_alert_log</c> row written unconditionally by
+    /// <see cref="TrySendAlertEmailAsync"/>, which already carries the muted/detailText/numeric
+    /// params — so no separate fallback row is needed.
+    /// </summary>
+    public Task SendFindingAlertAsync(FindingAlert alert)
+    {
+        var serverId = int.TryParse(alert.ServerId, out var sid) ? sid : 0;
+        return TrySendAlertEmailAsync(
+            alert.MetricName,
+            alert.ServerName,
+            alert.CurrentValue,
+            alert.ThresholdValue,
+            serverId,
+            alert.Context,
+            numericCurrentValue: alert.Severity,
+            numericThresholdValue: alert.NotifyThreshold,
+            muted: false,
+            detailText: alert.DetailText);
+    }
 
     /// <summary>
     /// Sends a test email to verify SMTP configuration.

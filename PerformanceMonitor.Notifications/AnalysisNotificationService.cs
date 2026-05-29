@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
@@ -13,27 +13,33 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Analysis;
-using PerformanceMonitor.Notifications;
-using PerformanceMonitorLite.Analysis;
-using PerformanceMonitorLite.Mcp;
 
-namespace PerformanceMonitorLite.Services;
+namespace PerformanceMonitor.Notifications;
 
 /// <summary>
 /// Routes high-severity analysis findings into the notification channels.
 /// Filters by severity, dedups per finding (so a recurring finding does not
 /// re-notify every analysis cycle), composes a readable message, and hands off
-/// to <see cref="EmailAlertService"/> — which fans out to email + Slack + Teams
-/// and logs to config_alert_log.
+/// to an <see cref="IFindingAlertSender"/> — each app's <c>EmailAlertService</c> —
+/// which fans out to email + Slack + Teams and records the alert per that app's
+/// history cadence.
 ///
-/// Called by the scheduled-analysis loop in CollectionBackgroundService with the
-/// findings returned by each completed AnalysisService.AnalyzeAsync.
+/// <para>
+/// Shared between Lite and Dashboard (Plan E E3c). The per-app divergences are absorbed
+/// by two injected dependencies: a <c>serverId</c> resolver (Lite uses the finding's int
+/// id as a string; Dashboard resolves the matching <c>ServerConnection</c> GUID and falls
+/// back to the int id) and the <see cref="IFindingAlertSender"/> (which owns the per-app
+/// record cadence — Approach B, plan §4.6).
+/// </para>
 /// </summary>
 public sealed class AnalysisNotificationService
 {
-    private readonly EmailAlertService _emailAlertService;
+    private readonly IFindingAlertSender _sender;
     private readonly IAlertSettings _settings;
+    private readonly Func<AnalysisFinding, string> _resolveServerId;
+    private readonly ILogger<AnalysisNotificationService> _logger;
 
     /// <summary>
     /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
@@ -44,10 +50,23 @@ public sealed class AnalysisNotificationService
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
-    public AnalysisNotificationService(EmailAlertService emailAlertService, IAlertSettings settings)
+    /// <param name="sender">The per-app alert dispatcher (its <c>EmailAlertService</c>).</param>
+    /// <param name="settings">Alert settings (severity threshold + cooldown; clamped per app).</param>
+    /// <param name="serverIdResolver">
+    /// Resolves the persistence <c>serverId</c> for a finding. Lite: <c>f =&gt; f.ServerId.ToString()</c>;
+    /// Dashboard: the <c>IServerManager</c> GUID lookup with the int-id fallback.
+    /// </param>
+    /// <param name="logger">Diagnostic logger.</param>
+    public AnalysisNotificationService(
+        IFindingAlertSender sender,
+        IAlertSettings settings,
+        Func<AnalysisFinding, string> serverIdResolver,
+        ILogger<AnalysisNotificationService> logger)
     {
-        _emailAlertService = emailAlertService;
+        _sender = sender;
         _settings = settings;
+        _resolveServerId = serverIdResolver;
+        _logger = logger;
     }
 
     /// <summary>
@@ -59,6 +78,9 @@ public sealed class AnalysisNotificationService
         if (findings is null || findings.Count == 0)
             return;
 
+        // Bounds are enforced in the settings adapter (Dashboard clamps AnalysisNotifySeverity
+        // to [0, 2] and AnalysisNotifyCooldownMinutes to [30, 10080]; Lite passes through);
+        // the service consumes the already-clamped values.
         var threshold = _settings.AnalysisNotifySeverity;
         var cooldown = TimeSpan.FromMinutes(_settings.AnalysisNotifyCooldownMinutes);
         var now = DateTime.UtcNow;
@@ -79,17 +101,19 @@ public sealed class AnalysisNotificationService
             if (finding.Severity < threshold)
                 continue;
 
+            /* Cooldown key uses the finding's stable int id (matches both apps' prior
+               behaviour); the resolved serverId below is only the persistence shape. */
             var key = $"{finding.ServerId}:{finding.StoryPathHash}";
+            var serverId = _resolveServerId(finding);
+            var metricName = FindingMessageFormatter.MetricName(finding);
 
-            /* Seed the in-memory cooldown from config_alert_log on first lookup
-               per key so an analysis finding that fired shortly before an app
-               restart is not re-fired afterward. Same lazy-seed pattern as
-               EmailAlertService (#981), but with no channel/error filter — the
-               cooldown is stamped unconditionally below. */
+            /* Seed the in-memory cooldown from the alert log on first lookup per key so an
+               analysis finding that fired shortly before an app restart is not re-fired
+               afterward. No channel/error filter — the cooldown is stamped unconditionally
+               below, so the persisted equivalent is the latest row for that metric_name. */
             if (!_cooldowns.ContainsKey(key))
             {
-                var metricName = FindingMessageFormatter.MetricName(finding);
-                var lastPersisted = await _emailAlertService.GetLastAlertTimeAsync(finding.ServerId, metricName);
+                var lastPersisted = await _sender.GetLastAlertTimeAsync(serverId, metricName);
                 if (lastPersisted.HasValue)
                 {
                     _cooldowns.TryAdd(key, lastPersisted.Value);
@@ -101,30 +125,29 @@ public sealed class AnalysisNotificationService
 
             try
             {
-                /* TrySendAlertEmailAsync fans out to email + Slack + Teams and logs a
-                   config_alert_log row. It returns no success/failure signal, so the
+                /* SendFindingAlertAsync fans out to email + Slack + Teams and records the
+                   alert per this app's cadence. It returns no success/failure signal, so the
                    cooldown is stamped regardless — a finding whose delivery failed is
                    suppressed for the full cooldown (accepted best-effort behavior). */
-                await _emailAlertService.TrySendAlertEmailAsync(
-                    FindingMessageFormatter.MetricName(finding),
+                await _sender.SendFindingAlertAsync(new FindingAlert(
+                    metricName,
                     finding.ServerName,
                     FindingMessageFormatter.CurrentValue(finding),
                     threshold.ToString("F1"),
-                    finding.ServerId,
+                    serverId,
                     FindingMessageFormatter.BuildContext(finding, threshold),
-                    numericCurrentValue: finding.Severity,
-                    numericThresholdValue: threshold,
-                    muted: false,
-                    detailText: FindingMessageFormatter.DetailText(finding, threshold));
+                    finding.Severity,
+                    threshold,
+                    FindingMessageFormatter.DetailText(finding, threshold)));
 
                 _cooldowns[key] = now;
             }
             catch (Exception ex)
             {
-                /* TrySendAlertEmailAsync is documented never to throw; this guards a
+                /* SendFindingAlertAsync is documented never to throw; this guards a
                    formatter defect so one bad finding cannot abort the rest. */
-                AppLogger.Error("AnalysisNotify",
-                    $"Failed to notify on finding {finding.StoryPathHash}: {ex.Message}", ex);
+                _logger.LogError(
+                    $"AnalysisNotificationService: failed to notify on finding {finding.StoryPathHash}: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
@@ -141,8 +164,8 @@ internal static class FindingMessageFormatter
 
     /// <summary>
     /// Alert metric name. The "Analysis: " prefix groups these in the Alerts tab; the
-    /// short hash suffix makes each distinct finding unique, so EmailAlertService's own
-    /// {serverId}:{metricName} cooldown cannot collapse two findings sharing a Category.
+    /// short hash suffix makes each distinct finding unique, so the {serverId}:{metricName}
+    /// cooldown cannot collapse two findings sharing a Category.
     /// </summary>
     public static string MetricName(AnalysisFinding finding)
     {
@@ -177,9 +200,9 @@ internal static class FindingMessageFormatter
     }
 
     /// <summary>
-    /// Plain-text detail block — the causal chain and supporting metadata.
-    /// Threshold is threaded through from NotifyAsync rather than read from App
-    /// inline, so the formatter is consistent with BuildContext's threading.
+    /// Plain-text detail block — the causal chain and supporting metadata. Used as the
+    /// alert's <c>detailText</c> (Lite persists it on every analysis row; Dashboard uses it
+    /// on the no-channel "tray" fallback row). Threshold is threaded through as a parameter.
     /// </summary>
     public static string DetailText(AnalysisFinding finding, double notifyThreshold)
     {
@@ -200,9 +223,9 @@ internal static class FindingMessageFormatter
 
     /// <summary>
     /// Builds the structured <see cref="AlertContext"/> for the alert template.
-    /// First detail item is the Diagnosis summary; subsequent items are the
-    /// finding's drill-down detail flattened into label/value pairs.
-    /// Mirrors Dashboard's shape so both apps render the same finding structure.
+    /// First detail item is the Diagnosis summary; then the Advice/Remediation block
+    /// (when the shared analysis library has one for the finding's root fact-key); then
+    /// the finding's drill-down detail flattened into label/value pairs.
     /// </summary>
     public static AlertContext BuildContext(AnalysisFinding finding, double notifyThreshold)
     {

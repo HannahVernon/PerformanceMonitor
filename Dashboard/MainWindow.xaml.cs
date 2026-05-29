@@ -134,8 +134,16 @@ namespace PerformanceMonitorDashboard
             /* Scheduled analysis-finding notifications. Constructed alongside the
                alert engine (all dependencies exist by this point); started by
                _analysisScheduler.Configure() in MainWindow_Loaded. */
+            /* serverId resolver (Plan E E3c): use the matching ServerConnection.Id (GUID string)
+               so alert_history.json keys stay consistent with the threshold-alert engine; fall
+               back to the finding's stable int id if the lookup misses (server removed mid-cycle). */
             _analysisNotificationService = new AnalysisNotificationService(
-                _emailAlertService, alertSettings, _serverManager, new LoggerAdapter<AnalysisNotificationService>());
+                _emailAlertService,
+                alertSettings,
+                finding => _serverManager.GetAllServers()
+                    .FirstOrDefault(s => string.Equals(s.ServerName, finding.ServerName, StringComparison.OrdinalIgnoreCase))
+                    ?.Id ?? finding.ServerId.ToString(),
+                new LoggerAdapter<AnalysisNotificationService>());
             _analysisScheduler = new AnalysisScheduler(
                 _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 

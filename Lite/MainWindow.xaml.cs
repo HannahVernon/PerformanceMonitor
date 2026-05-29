@@ -120,7 +120,9 @@ public partial class MainWindow : Window
 
             // Routes high-severity analysis findings to email/Slack/Teams; the background
             // service runs scheduled analysis and hands findings to it.
-            var analysisNotificationService = new AnalysisNotificationService(_emailAlertService, _alertSettings);
+            /* serverId resolver: Lite uses the finding's stable int id as a string (Plan E E3c). */
+            var analysisNotificationService = new AnalysisNotificationService(
+                _emailAlertService, _alertSettings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>());
 
             _backgroundService = new CollectionBackgroundService(
                 _collectorService, _databaseInitializer, archiveService, retentionService, _serverManager,

@@ -31,7 +31,7 @@ namespace PerformanceMonitorDashboard.Services
     /// repointing them to the store is E3c.
     /// </para>
     /// </summary>
-    public class EmailAlertService
+    public class EmailAlertService : IFindingAlertSender
     {
         private static readonly AlertBranding s_branding = new("Performance Monitor Dashboard", null);
 
@@ -185,12 +185,57 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
-        /// Returns the AlertTime of the most recent log entry for the given
-        /// (serverId, metricName). Thin forwarder over the store; transitional
-        /// until E3c. Used by <see cref="AnalysisNotificationService"/>.
+        /// <see cref="IFindingAlertSender"/>: latest alert_log time for (serverId, metricName),
+        /// any channel/result — seeds the shared AnalysisNotificationService cooldown across
+        /// restarts. Thin forwarder over the store.
         /// </summary>
-        public DateTime? GetLastAlertTime(string serverId, string metricName)
-            => _historyStore.GetLastAlertTimeAsync(serverId, metricName).GetAwaiter().GetResult();
+        public Task<DateTime?> GetLastAlertTimeAsync(string serverId, string metricName)
+            => _historyStore.GetLastAlertTimeAsync(serverId, metricName);
+
+        /// <summary>
+        /// <see cref="IFindingAlertSender"/>: dispatches a composed analysis-finding alert.
+        /// Dashboard's cadence — per-channel email/webhook rows from
+        /// <see cref="TrySendAlertEmailAsync"/>, plus a "tray" fallback row when no channel is
+        /// configured to log (so the Alerts history tab still shows the finding). The fallback
+        /// lives here, not in <see cref="TrySendAlertEmailAsync"/>, because the threshold-alert
+        /// path records its own "tray" row separately — this fallback is analysis-path only.
+        /// </summary>
+        public async Task SendFindingAlertAsync(FindingAlert alert)
+        {
+            await TrySendAlertEmailAsync(
+                alert.MetricName,
+                alert.ServerName,
+                alert.CurrentValue,
+                alert.ThresholdValue,
+                alert.ServerId,
+                alert.Context);
+
+            // Round-2/3 review carry-over: require both the enable flag AND the URL for a
+            // channel to count as "attempted", so the fallback fires when no channel can send.
+            var emailWouldLog =
+                _settings.SmtpEnabled
+                && !string.IsNullOrWhiteSpace(_settings.SmtpServer)
+                && !string.IsNullOrWhiteSpace(_settings.SmtpFromAddress)
+                && !string.IsNullOrWhiteSpace(_settings.SmtpRecipients);
+            var webhooksAttempted =
+                (_settings.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.TeamsWebhookUrl))
+             || (_settings.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.SlackWebhookUrl));
+
+            if (!emailWouldLog && !webhooksAttempted)
+            {
+                RecordAlert(
+                    alert.ServerId,
+                    alert.ServerName,
+                    alert.MetricName,
+                    alert.CurrentValue,
+                    alert.ThresholdValue,
+                    alertSent: false,
+                    notificationType: "tray",
+                    muted: false,
+                    detailText: alert.DetailText,
+                    contextJson: AlertContextSerializer.Serialize(alert.Context));
+            }
+        }
 
         /// <summary>
         /// Gets alert history from the log (excludes hidden alerts).
