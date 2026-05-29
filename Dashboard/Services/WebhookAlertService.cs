@@ -12,6 +12,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 
@@ -34,7 +35,7 @@ namespace PerformanceMonitorDashboard.Services
         private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
         private static readonly CredentialService s_credentialService = new();
 
-        private readonly UserPreferencesService _preferencesService;
+        private readonly IAlertSettings _settings;
         private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
         private int _consecutiveTeamsFailures;
@@ -44,9 +45,9 @@ namespace PerformanceMonitorDashboard.Services
 
         public static WebhookAlertService? Current { get; private set; }
 
-        public WebhookAlertService(UserPreferencesService preferencesService)
+        public WebhookAlertService(IAlertSettings settings)
         {
-            _preferencesService = preferencesService;
+            _settings = settings;
             Current = this;
         }
 
@@ -108,27 +109,25 @@ namespace PerformanceMonitorDashboard.Services
         {
             try
             {
-                var prefs = _preferencesService.GetPreferences();
-
                 var cooldownKey = $"webhook:{serverId}:{metricName}";
                 if (_cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                    DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(prefs.EmailCooldownMinutes))
+                    DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes))
                 {
                     return false;
                 }
 
                 bool sent = false;
 
-                var teamsUrl = GetTeamsWebhookUrl();
-                if (prefs.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(teamsUrl))
+                var teamsUrl = _settings.TeamsWebhookUrl;
+                if (_settings.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(teamsUrl))
                 {
-                    sent |= await TrySendTeamsAlertAsync(prefs, metricName, serverName, currentValue, thresholdValue, context);
+                    sent |= await TrySendTeamsAlertAsync(metricName, serverName, currentValue, thresholdValue, context);
                 }
 
-                var slackUrl = GetSlackWebhookUrl();
-                if (prefs.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(slackUrl))
+                var slackUrl = _settings.SlackWebhookUrl;
+                if (_settings.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(slackUrl))
                 {
-                    sent |= await TrySendSlackAlertAsync(prefs, metricName, serverName, currentValue, thresholdValue, context);
+                    sent |= await TrySendSlackAlertAsync(metricName, serverName, currentValue, thresholdValue, context);
                 }
 
                 if (sent)
@@ -192,7 +191,6 @@ namespace PerformanceMonitorDashboard.Services
         #region Teams
 
         private async Task<bool> TrySendTeamsAlertAsync(
-            UserPreferences prefs,
             string metricName,
             string serverName,
             string currentValue,
@@ -202,7 +200,7 @@ namespace PerformanceMonitorDashboard.Services
             try
             {
                 var payload = BuildTeamsPayload(metricName, serverName, currentValue, thresholdValue, context: context);
-                var error = await PostWebhookAsync(GetTeamsWebhookUrl(), payload, prefs.TeamsProxyAddress);
+                var error = await PostWebhookAsync(_settings.TeamsWebhookUrl, payload, _settings.TeamsProxyAddress);
 
                 if (error != null)
                 {
@@ -331,7 +329,6 @@ namespace PerformanceMonitorDashboard.Services
         #region Slack
 
         private async Task<bool> TrySendSlackAlertAsync(
-            UserPreferences prefs,
             string metricName,
             string serverName,
             string currentValue,
@@ -341,7 +338,7 @@ namespace PerformanceMonitorDashboard.Services
             try
             {
                 var payload = BuildSlackPayload(metricName, serverName, currentValue, thresholdValue, context: context);
-                var error = await PostWebhookAsync(GetSlackWebhookUrl(), payload, prefs.SlackProxyAddress);
+                var error = await PostWebhookAsync(_settings.SlackWebhookUrl, payload, _settings.SlackProxyAddress);
 
                 if (error != null)
                 {

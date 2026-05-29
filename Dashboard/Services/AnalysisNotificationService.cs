@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Helpers;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Mcp;
 
@@ -34,7 +35,7 @@ namespace PerformanceMonitorDashboard.Services
     public sealed class AnalysisNotificationService
     {
         private readonly EmailAlertService _emailAlertService;
-        private readonly IUserPreferencesService _preferencesService;
+        private readonly IAlertSettings _settings;
         private readonly IServerManager _serverManager;
 
         /// <summary>
@@ -48,11 +49,11 @@ namespace PerformanceMonitorDashboard.Services
 
         public AnalysisNotificationService(
             EmailAlertService emailAlertService,
-            IUserPreferencesService preferencesService,
+            IAlertSettings settings,
             IServerManager serverManager)
         {
             _emailAlertService = emailAlertService;
-            _preferencesService = preferencesService;
+            _settings = settings;
             _serverManager = serverManager;
         }
 
@@ -65,10 +66,11 @@ namespace PerformanceMonitorDashboard.Services
             if (findings is null || findings.Count == 0)
                 return;
 
-            var prefs = _preferencesService.GetPreferences();
-            // Bounds enforced at consumption — keeps the prefs surface simple.
-            var threshold = Math.Clamp(prefs.AnalysisNotifySeverity, 0.0, 2.0);
-            var cooldownMinutes = Math.Clamp(prefs.AnalysisNotifyCooldownMinutes, 30, 10080);
+            // Bounds are enforced in the settings adapter (DashboardAlertSettings clamps
+            // AnalysisNotifySeverity to [0, 2] and AnalysisNotifyCooldownMinutes to
+            // [30, 10080]); the service consumes the already-clamped values.
+            var threshold = _settings.AnalysisNotifySeverity;
+            var cooldownMinutes = _settings.AnalysisNotifyCooldownMinutes;
             var cooldown = TimeSpan.FromMinutes(cooldownMinutes);
             var now = DateTime.UtcNow;
 
@@ -85,13 +87,13 @@ namespace PerformanceMonitorDashboard.Services
             // A user who lowers AnalysisNotifyCooldownMinutes below EmailCooldownMinutes
             // can lose alert-history rows during the SMTP cooldown window; accepted.
             var emailWouldLog =
-                prefs.SmtpEnabled
-                && !string.IsNullOrWhiteSpace(prefs.SmtpServer)
-                && !string.IsNullOrWhiteSpace(prefs.SmtpFromAddress)
-                && !string.IsNullOrWhiteSpace(prefs.SmtpRecipients);
+                _settings.SmtpEnabled
+                && !string.IsNullOrWhiteSpace(_settings.SmtpServer)
+                && !string.IsNullOrWhiteSpace(_settings.SmtpFromAddress)
+                && !string.IsNullOrWhiteSpace(_settings.SmtpRecipients);
             var webhooksAttempted =
-                (prefs.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(WebhookAlertService.GetTeamsWebhookUrl()))
-             || (prefs.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(WebhookAlertService.GetSlackWebhookUrl()));
+                (_settings.TeamsWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.TeamsWebhookUrl))
+             || (_settings.SlackWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.SlackWebhookUrl));
 
             /* Drop entries past 2× cooldown so the dict stays bounded — any entry
                past 1× is already re-fire-eligible, doubling gives clock-skew margin.

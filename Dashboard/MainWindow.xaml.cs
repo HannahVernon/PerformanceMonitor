@@ -112,8 +112,10 @@ namespace PerformanceMonitorDashboard
             ServerListView.ItemsSource = _serverListItems;
 
             _credentialService = new CredentialService();
-            _emailAlertService = new EmailAlertService(_preferencesService);
-            _ = new WebhookAlertService(_preferencesService);
+            /* Saved-prefs settings adapter shared by the three alert services (Plan E E1). */
+            var alertSettings = new DashboardAlertSettings(_preferencesService);
+            _emailAlertService = new EmailAlertService(alertSettings, _preferencesService);
+            _ = new WebhookAlertService(alertSettings);
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
@@ -122,7 +124,7 @@ namespace PerformanceMonitorDashboard
                alert engine (all dependencies exist by this point); started by
                _analysisScheduler.Configure() in MainWindow_Loaded. */
             _analysisNotificationService = new AnalysisNotificationService(
-                _emailAlertService, _preferencesService, _serverManager);
+                _emailAlertService, alertSettings, _serverManager);
             _analysisScheduler = new AnalysisScheduler(
                 _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 

@@ -1005,8 +1005,10 @@ namespace PerformanceMonitorDashboard
 
             try
             {
-                var emailService = EmailAlertService.Current ?? new EmailAlertService((UserPreferencesService)_preferencesService);
-                var error = await emailService.SendTestEmailAsync(testPrefs);
+                var emailService = EmailAlertService.Current ?? new EmailAlertService(new DashboardAlertSettings(_preferencesService), _preferencesService);
+                /* Test before save: send with the values the user just typed (transient,
+                   form-values adapter), NOT the saved-prefs DashboardAlertSettings (MOD-1). */
+                var error = await emailService.SendTestEmailAsync(new UserPreferencesAlertSettings(testPrefs));
 
                 if (error == null)
                 {
