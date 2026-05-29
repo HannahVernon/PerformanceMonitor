@@ -15,7 +15,9 @@ using System.Net.Mime;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
+using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Models;
 
 namespace PerformanceMonitorDashboard.Services
@@ -31,7 +33,11 @@ namespace PerformanceMonitorDashboard.Services
         private static readonly CredentialService s_credentialService = new();
         private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
-        private readonly UserPreferencesService _preferencesService;
+        private readonly IAlertSettings _settings;
+        /* Retained for the LogAlertDismissals toggle in HideAlerts/HideAllAlerts, which is a
+           history-management concern (not an alert setting) and so is not on IAlertSettings.
+           Those methods move to JsonAlertHistoryStore in E3c; this field goes with them. */
+        private readonly IUserPreferencesService _preferencesService;
         private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
         /* Alert log — loaded from JSON on startup, saved on exit, new alerts added in-memory */
@@ -49,8 +55,9 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         public static EmailAlertService? Current { get; private set; }
 
-        public EmailAlertService(UserPreferencesService preferencesService)
+        public EmailAlertService(IAlertSettings settings, IUserPreferencesService preferencesService)
         {
+            _settings = settings;
             _preferencesService = preferencesService;
             Current = this;
 
@@ -78,13 +85,11 @@ namespace PerformanceMonitorDashboard.Services
         {
             try
             {
-                var prefs = _preferencesService.GetPreferences();
-
                 /* Attempt email delivery if SMTP is fully configured */
-                if (prefs.SmtpEnabled &&
-                    !string.IsNullOrWhiteSpace(prefs.SmtpServer) &&
-                    !string.IsNullOrWhiteSpace(prefs.SmtpFromAddress) &&
-                    !string.IsNullOrWhiteSpace(prefs.SmtpRecipients))
+                if (_settings.SmtpEnabled &&
+                    !string.IsNullOrWhiteSpace(_settings.SmtpServer) &&
+                    !string.IsNullOrWhiteSpace(_settings.SmtpFromAddress) &&
+                    !string.IsNullOrWhiteSpace(_settings.SmtpRecipients))
                 {
                     var cooldownKey = $"{serverId}:{metricName}";
 
@@ -103,7 +108,7 @@ namespace PerformanceMonitorDashboard.Services
                     }
 
                     var withinCooldown = _cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                        DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(prefs.EmailCooldownMinutes);
+                        DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes);
 
                     if (!withinCooldown)
                     {
@@ -111,11 +116,11 @@ namespace PerformanceMonitorDashboard.Services
                         string? sendError = null;
                         var subject = $"[SQL Monitor Alert] {metricName} on {serverName}";
                         var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildAlertEmail(
-                            metricName, serverName, currentValue, thresholdValue, prefs.EmailCooldownMinutes, context);
+                            metricName, serverName, currentValue, thresholdValue, _settings.EmailCooldownMinutes, context);
 
                         try
                         {
-                            await SendEmailAsync(prefs, subject, htmlBody, plainTextBody, context);
+                            await SendEmailAsync(_settings, subject, htmlBody, plainTextBody, context);
                             sent = true;
                             _cooldowns[cooldownKey] = DateTime.UtcNow;
 
@@ -388,23 +393,23 @@ namespace PerformanceMonitorDashboard.Services
         /// Sends a test email to verify SMTP configuration.
         /// Returns null on success, or the error message on failure.
         /// </summary>
-        public async Task<string?> SendTestEmailAsync(UserPreferences prefs)
+        public async Task<string?> SendTestEmailAsync(IAlertSettings settings)
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(prefs.SmtpServer))
+                if (string.IsNullOrWhiteSpace(settings.SmtpServer))
                     return "SMTP server is not configured.";
 
-                if (string.IsNullOrWhiteSpace(prefs.SmtpFromAddress))
+                if (string.IsNullOrWhiteSpace(settings.SmtpFromAddress))
                     return "From address is not configured.";
 
-                if (string.IsNullOrWhiteSpace(prefs.SmtpRecipients))
+                if (string.IsNullOrWhiteSpace(settings.SmtpRecipients))
                     return "No recipients configured.";
 
                 var subject = "[SQL Monitor] Test Email";
                 var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildTestEmail();
 
-                await SendEmailAsync(prefs, subject, htmlBody, plainTextBody);
+                await SendEmailAsync(settings, subject, htmlBody, plainTextBody);
                 return null;
             }
             catch (Exception ex)
@@ -445,24 +450,24 @@ namespace PerformanceMonitorDashboard.Services
             }
         }
 
-        private static async Task SendEmailAsync(UserPreferences prefs, string subject, string htmlBody, string plainTextBody, AlertContext? context = null)
+        private static async Task SendEmailAsync(IAlertSettings settings, string subject, string htmlBody, string plainTextBody, AlertContext? context = null)
         {
-            using var smtpClient = new SmtpClient(prefs.SmtpServer, prefs.SmtpPort)
+            using var smtpClient = new SmtpClient(settings.SmtpServer, settings.SmtpPort)
             {
-                EnableSsl = prefs.SmtpUseSsl,
+                EnableSsl = settings.SmtpUseSsl,
                 DeliveryMethod = SmtpDeliveryMethod.Network,
                 Timeout = 30000
             };
 
-            if (!string.IsNullOrWhiteSpace(prefs.SmtpUsername))
+            if (!string.IsNullOrWhiteSpace(settings.SmtpUsername))
             {
-                var password = GetSmtpPassword();
-                smtpClient.Credentials = new NetworkCredential(prefs.SmtpUsername, password ?? "");
+                var password = settings.GetSmtpPassword();
+                smtpClient.Credentials = new NetworkCredential(settings.SmtpUsername, password ?? "");
             }
 
             using var message = new MailMessage
             {
-                From = new MailAddress(prefs.SmtpFromAddress),
+                From = new MailAddress(settings.SmtpFromAddress),
                 Subject = subject
             };
 
@@ -480,7 +485,7 @@ namespace PerformanceMonitorDashboard.Services
                 message.Attachments.Add(new Attachment(stream, context.AttachmentFileName, "application/xml"));
             }
 
-            foreach (var recipient in prefs.SmtpRecipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            foreach (var recipient in settings.SmtpRecipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 message.To.Add(recipient);
             }
