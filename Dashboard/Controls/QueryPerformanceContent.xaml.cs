@@ -21,6 +21,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -133,7 +134,7 @@ namespace PerformanceMonitorDashboard.Controls
                     SubTabChanged?.Invoke();
                 }
             };
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
 
             _queryDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsQueryChart, "ms/sec");
             _procDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsProcChart, "ms/sec");
@@ -253,7 +254,7 @@ namespace PerformanceMonitorDashboard.Controls
             _procDurationHover?.Dispose();
             _qsDurationHover?.Dispose();
             _execTrendsHover?.Dispose();
-            Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void OnThemeChanged(string _)

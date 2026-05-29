@@ -2,7 +2,7 @@ using System;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-namespace PerformanceMonitorDashboard.Helpers;
+namespace PerformanceMonitor.Ui;
 
 internal static class AxesExtensions
 {

@@ -17,7 +17,8 @@ using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
-using static PerformanceMonitorLite.Helpers.WaitDrillDownHelper;
+using static PerformanceMonitor.Ui.WaitDrillDownHelper;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Windows;
 

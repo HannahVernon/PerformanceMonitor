@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Models
 {

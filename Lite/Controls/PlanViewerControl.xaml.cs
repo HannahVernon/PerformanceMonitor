@@ -17,6 +17,7 @@ using Microsoft.Win32;
 using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -67,8 +68,8 @@ public partial class PlanViewerControl : UserControl
     public PlanViewerControl()
     {
         InitializeComponent();
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+        Unloaded += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private void OnThemeChanged(string _)

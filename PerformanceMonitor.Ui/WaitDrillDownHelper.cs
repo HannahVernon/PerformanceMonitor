@@ -10,7 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace PerformanceMonitorDashboard.Helpers;
+namespace PerformanceMonitor.Ui;
 
 /// <summary>
 /// Classifies wait types for drill-down behavior and walks blocking chains

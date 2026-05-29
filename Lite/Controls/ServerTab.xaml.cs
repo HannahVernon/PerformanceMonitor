@@ -28,6 +28,7 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -177,7 +178,7 @@ public partial class ServerTab : UserControl
             ServerConfigGrid, DatabaseConfigGrid, DatabaseScopedConfigGrid, TraceFlagsGrid,
             CollectionHealthGrid, CollectionLogGrid })
         {
-            grid.CopyingRowClipboardContent += Helpers.DataGridClipboardBehavior.FixHeaderCopy;
+            grid.CopyingRowClipboardContent += DataGridClipboardBehavior.FixHeaderCopy;
         }
 
         /* Apply theme immediately so charts don't flash white before data loads */
@@ -322,8 +323,8 @@ public partial class ServerTab : UserControl
         Helpers.ContextMenuHelper.SetupChartContextMenu(PerfmonChart, "Perfmon_Counters");
         Helpers.ContextMenuHelper.SetupChartContextMenu(CollectorDurationChart, "Collector_Duration");
 
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+        Unloaded += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
 
         ActiveQueriesSlicer.RangeChanged += OnActiveQueriesSlicerChanged;
         QueryStatsSlicer.RangeChanged += OnQueryStatsSlicerChanged;
@@ -641,13 +642,13 @@ public partial class ServerTab : UserControl
     {
         SolidColorBrush primaryBg, fg, borderBrush;
 
-        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
+        if (ThemeManager.CurrentTheme == "CoolBreeze")
         {
             primaryBg   = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#EEF4FA")!);
             fg          = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#1A2A3A")!);
             borderBrush = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#A8BDD0")!);
         }
-        else if (Helpers.ThemeManager.HasLightBackground)
+        else if (ThemeManager.HasLightBackground)
         {
             primaryBg   = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF));
             fg          = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1A, 0x1D, 0x23));
@@ -669,7 +670,7 @@ public partial class ServerTab : UserControl
 
     private void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush fg)
     {
-        bool HasLightBackground = Helpers.ThemeManager.HasLightBackground;
+        bool HasLightBackground = ThemeManager.HasLightBackground;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
         {
             var child = VisualTreeHelper.GetChild(parent, i);

@@ -16,6 +16,7 @@ using Microsoft.Win32;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -112,7 +113,7 @@ public partial class ServerTab : UserControl
         /* Header */
         foreach (var col in grid.Columns)
         {
-            sb.Append(Helpers.DataGridClipboardBehavior.GetHeaderText(col));
+            sb.Append(DataGridClipboardBehavior.GetHeaderText(col));
             sb.Append('\t');
         }
         sb.AppendLine();

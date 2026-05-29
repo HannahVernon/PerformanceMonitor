@@ -10,7 +10,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 
-namespace PerformanceMonitorDashboard.Helpers;
+namespace PerformanceMonitor.Ui;
 
 /// <summary>
 /// Attached behavior that fixes DataGrid clipboard copy when column headers

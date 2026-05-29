@@ -13,7 +13,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 
-namespace PerformanceMonitorDashboard.Helpers;
+namespace PerformanceMonitor.Ui;
 
 /// <summary>
 /// Enables middle-mouse drag panning for scrollable controls such as DataGrid and ListView.

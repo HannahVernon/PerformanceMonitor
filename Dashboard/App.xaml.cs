@@ -15,6 +15,7 @@ using System.Windows.Markup;
 using System.Windows.Threading;
 using PerformanceMonitorDashboard.Helpers;
 using Velopack;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {

@@ -14,6 +14,7 @@ using System.Windows.Media.Imaging;
 using Hardcodet.Wpf.TaskbarNotification;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Controls;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -33,7 +34,7 @@ public class SystemTrayService : IDisposable
     {
         _mainWindow = mainWindow;
         _backgroundService = backgroundService;
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
     }
 
     /// <summary>
@@ -45,7 +46,7 @@ public class SystemTrayService : IDisposable
 
         _trayIcon = new TaskbarIcon();
 
-        bool HasLightBackground = Helpers.ThemeManager.HasLightBackground;
+        bool HasLightBackground = ThemeManager.HasLightBackground;
 
         /* Custom tooltip styled to match current theme.
            Note: Hardcodet TrayToolTip can rarely trigger a race condition in Popup.CreateWindow
@@ -194,7 +195,7 @@ public class SystemTrayService : IDisposable
 
         if (disposing && _trayIcon != null)
         {
-            Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged -= OnThemeChanged;
             _mainWindow.StateChanged -= MainWindow_StateChanged;
             _trayIcon.Visibility = Visibility.Collapsed;
             _trayIcon.Dispose();

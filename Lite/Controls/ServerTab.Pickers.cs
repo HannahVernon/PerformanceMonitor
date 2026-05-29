@@ -17,13 +17,14 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
 public partial class ServerTab : UserControl
 {
     private static readonly HashSet<string> _defaultPerfmonCounters = new(
-        Helpers.PerfmonPacks.Packs["General Throughput"],
+        PerfmonPacks.Packs["General Throughput"],
         StringComparer.OrdinalIgnoreCase);
 
     /* ========== Wait Stats Picker ========== */
@@ -384,7 +385,7 @@ public partial class ServerTab : UserControl
         /* Initialize pack ComboBox once */
         if (PerfmonPackCombo.Items.Count == 0)
         {
-            PerfmonPackCombo.ItemsSource = Helpers.PerfmonPacks.PackNames;
+            PerfmonPackCombo.ItemsSource = PerfmonPacks.PackNames;
             PerfmonPackCombo.SelectedItem = "General Throughput";
         }
 
@@ -413,7 +414,7 @@ public partial class ServerTab : UserControl
         foreach (var item in _perfmonCounterItems)
             item.IsSelected = false;
 
-        if (pack == Helpers.PerfmonPacks.AllCounters)
+        if (pack == PerfmonPacks.AllCounters)
         {
             /* "All Counters" selects the General Throughput defaults */
             foreach (var item in _perfmonCounterItems)
@@ -422,7 +423,7 @@ public partial class ServerTab : UserControl
                     item.IsSelected = true;
             }
         }
-        else if (Helpers.PerfmonPacks.Packs.TryGetValue(pack, out var packCounters))
+        else if (PerfmonPacks.Packs.TryGetValue(pack, out var packCounters))
         {
             var packSet = new HashSet<string>(packCounters, StringComparer.OrdinalIgnoreCase);
             int count = 0;
