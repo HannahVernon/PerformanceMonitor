@@ -18,7 +18,8 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
-using static PerformanceMonitorDashboard.Helpers.WaitDrillDownHelper;
+using static PerformanceMonitor.Ui.WaitDrillDownHelper;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard;
 

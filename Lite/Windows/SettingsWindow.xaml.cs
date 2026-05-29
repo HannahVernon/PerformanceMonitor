@@ -22,6 +22,7 @@ using System.Windows.Navigation;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -462,7 +463,7 @@ public partial class SettingsWindow : Window
     }
 
     private bool _isLoadingTheme;
-    private readonly string _originalTheme = Helpers.ThemeManager.CurrentTheme;
+    private readonly string _originalTheme = ThemeManager.CurrentTheme;
     private bool _saved;
     public bool McpSettingsChanged { get; private set; }
 
@@ -470,7 +471,7 @@ public partial class SettingsWindow : Window
     {
         if (_isLoadingTheme) return;
         if (ColorThemeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string theme)
-            Helpers.ThemeManager.Apply(theme);
+            ThemeManager.Apply(theme);
     }
 
     private void LoadColorTheme()
@@ -494,7 +495,7 @@ public partial class SettingsWindow : Window
         if (ColorThemeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string theme)
         {
             App.ColorTheme = theme;
-            Helpers.ThemeManager.Apply(theme);
+            ThemeManager.Apply(theme);
         }
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
@@ -541,7 +542,7 @@ public partial class SettingsWindow : Window
         if (TimeDisplayModeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string mode)
         {
             App.TimeDisplayMode = mode;
-            if (System.Enum.TryParse<Helpers.TimeDisplayMode>(mode, out var tdm))
+            if (System.Enum.TryParse<TimeDisplayMode>(mode, out var tdm))
                 ServerTimeHelper.CurrentDisplayMode = tdm;
         }
 
@@ -1157,14 +1158,14 @@ public partial class SettingsWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         if (!_saved)
-            Helpers.ThemeManager.Apply(_originalTheme);
+            ThemeManager.Apply(_originalTheme);
         Close();
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!_saved)
-            Helpers.ThemeManager.Apply(_originalTheme);
+            ThemeManager.Apply(_originalTheme);
         base.OnClosing(e);
     }
 }

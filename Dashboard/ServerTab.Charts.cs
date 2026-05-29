@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {

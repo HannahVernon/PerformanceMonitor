@@ -20,6 +20,7 @@ using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -413,7 +414,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var sb = new StringBuilder();
                     var headers = dataGrid.Columns
                         .OfType<DataGridBoundColumn>()
-                        .Select(c => Helpers.DataGridClipboardBehavior.GetHeaderText(c))
+                        .Select(c => DataGridClipboardBehavior.GetHeaderText(c))
                         .ToList();
                     sb.AppendLine(string.Join("\t", headers));
 
@@ -447,7 +448,7 @@ namespace PerformanceMonitorDashboard.Controls
                             var sep = TabHelpers.CsvSeparator;
                             var headers = dataGrid.Columns
                                 .OfType<DataGridBoundColumn>()
-                                .Select(c => TabHelpers.EscapeCsvField(Helpers.DataGridClipboardBehavior.GetHeaderText(c), sep))
+                                .Select(c => TabHelpers.EscapeCsvField(DataGridClipboardBehavior.GetHeaderText(c), sep))
                                 .ToList();
                             sb.AppendLine(string.Join(sep, headers));
 

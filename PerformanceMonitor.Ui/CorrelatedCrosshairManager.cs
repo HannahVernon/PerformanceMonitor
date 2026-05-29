@@ -1,12 +1,9 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
- *
- * SYNC WARNING: Dashboard has a matching copy at Dashboard/Helpers/CorrelatedCrosshairManager.cs.
- * Changes here must be mirrored there.
  */
 
 using System;
@@ -18,9 +15,8 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
-using PerformanceMonitorLite.Services;
 
-namespace PerformanceMonitorLite.Helpers;
+namespace PerformanceMonitor.Ui;
 
 /// <summary>
 /// Synchronizes vertical crosshair lines across multiple ScottPlot charts.
@@ -244,7 +240,7 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
 
         _tooltipText.Inlines.Clear();
         var time = DateTime.FromOADate(xValue);
-        var displayTime = ServerTimeHelper.ConvertForDisplay(time, ServerTimeHelper.CurrentDisplayMode);
+        var displayTime = UiTimeContext.ConvertForDisplay(time);
         _tooltipText.Inlines.Add(new Run(displayTime.ToString("yyyy-MM-dd HH:mm:ss")));
         if (_comparisonLabel != null)
             _tooltipText.Inlines.Add(new Run($"  (dashed = {_comparisonLabel})") { Foreground = DimBrush });
@@ -406,7 +402,7 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         _lanes.Clear();
     }
 
-    private class DataSeries
+    private sealed class DataSeries
     {
         public string Name { get; set; } = "";
         public string? Unit { get; set; }
@@ -415,7 +411,7 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         public bool IsEventBased { get; set; }
     }
 
-    private class LaneInfo
+    private sealed class LaneInfo
     {
         public ScottPlot.WPF.WpfPlot Chart { get; set; } = null!;
         public string Label { get; set; } = "";

@@ -750,6 +750,12 @@
       },
       "performancemonitor.plananalysis": {
         "type": "Project"
+      },
+      "performancemonitor.ui": {
+        "type": "Project",
+        "dependencies": {
+          "ScottPlot.WPF": "[5.1.58, )"
+        }
       }
     }
   }

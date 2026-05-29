@@ -14,6 +14,7 @@ using System.Windows.Media.Imaging;
 using Hardcodet.Wpf.TaskbarNotification;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Interfaces;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Services
 {
@@ -28,7 +29,7 @@ namespace PerformanceMonitorDashboard.Services
         {
             _mainWindow = mainWindow;
             _preferencesService = preferencesService ?? new UserPreferencesService();
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
         }
 
         public void Initialize()
@@ -43,7 +44,7 @@ namespace PerformanceMonitorDashboard.Services
 
             _trayIcon = new TaskbarIcon();
 
-            bool HasLightBackground = Helpers.ThemeManager.HasLightBackground;
+            bool HasLightBackground = ThemeManager.HasLightBackground;
 
             /* Custom tooltip styled to match current theme.
                Note: Hardcodet TrayToolTip can rarely trigger a race condition in Popup.CreateWindow
@@ -252,7 +253,7 @@ namespace PerformanceMonitorDashboard.Services
 
             if (disposing)
             {
-                Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+                ThemeManager.ThemeChanged -= OnThemeChanged;
 
                 if (_trayIcon != null)
                 {

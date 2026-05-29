@@ -30,6 +30,7 @@ using PerformanceMonitorDashboard.Services;
 using System.ComponentModel;
 using System.Windows.Data;
 using System.Xml.Linq;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -198,7 +199,13 @@ namespace PerformanceMonitorDashboard
             MuteRuleDialog.DefaultExpiration = startupPrefs.MuteRuleDefaultExpiration;
             // Charts always render in server time; force the dropdown to match on startup
             // so the display isn't misleading. The preference is still saved when changed.
-            Helpers.ServerTimeHelper.CurrentDisplayMode = Helpers.TimeDisplayMode.ServerTime;
+            Helpers.ServerTimeHelper.CurrentDisplayMode = TimeDisplayMode.ServerTime;
+
+            // Wire the shared-UI time conversion hook before any chart/crosshair can
+            // render (ahead of the tab-opening awaits below). The lambda reads
+            // CurrentDisplayMode at call time, so later display-mode switches are honored.
+            PerformanceMonitor.Ui.UiTimeContext.ConvertForDisplay =
+                t => Helpers.ServerTimeHelper.ConvertForDisplay(t, Helpers.ServerTimeHelper.CurrentDisplayMode);
 
             await LoadServerListAsync();
             InitializeNotificationService();

@@ -9,6 +9,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -90,7 +91,7 @@ namespace PerformanceMonitorDashboard
             Loaded += ServerTab_Loaded;
             Unloaded += ServerTab_Unloaded;
             KeyDown += ServerTab_KeyDown;
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
             Focusable = true;
 
             // Initialize Overview sub-tab UserControls
@@ -226,7 +227,7 @@ namespace PerformanceMonitorDashboard
             _autoRefreshTimer = null;
             _initializedTabs.Clear();
 
-            Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged -= OnThemeChanged;
             Loaded -= ServerTab_Loaded;
             Unloaded -= ServerTab_Unloaded;
             KeyDown -= ServerTab_KeyDown;

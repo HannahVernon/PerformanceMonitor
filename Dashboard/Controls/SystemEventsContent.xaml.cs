@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -129,7 +130,7 @@ namespace PerformanceMonitorDashboard.Controls
             SetupChartContextMenus();
             Loaded += OnLoaded;
             Unloaded += OnUnloaded;
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
 
             // Apply dark theme immediately so charts don't flash white before data loads
             TabHelpers.ApplyThemeToChart(BadPagesChart);
@@ -209,7 +210,7 @@ namespace PerformanceMonitorDashboard.Controls
                 _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
             }
 
-            Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void OnThemeChanged(string _)

@@ -23,6 +23,7 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitorDashboard.Helpers;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -129,7 +130,7 @@ namespace PerformanceMonitorDashboard.Controls
             InitializeComponent();
             SetupChartContextMenus();
             Loaded += OnLoaded;
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
             /* WPF fires Unloaded on every TabControl tab switch, not just on destruction.
                Tearing down chart hover helpers here unsubscribes their MouseMove handlers
                and they are never re-registered when the user returns — this is the
@@ -174,7 +175,7 @@ namespace PerformanceMonitorDashboard.Controls
             _waitStatsHover?.Dispose();
             _tempdbStatsHover?.Dispose();
             _tempDbLatencyHover?.Dispose();
-            Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)

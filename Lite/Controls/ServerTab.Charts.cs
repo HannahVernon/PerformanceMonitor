@@ -16,6 +16,7 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -1302,7 +1303,7 @@ public partial class ServerTab : UserControl
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor, legendBg, legendFg, legendOutline;
 
-        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
+        if (ThemeManager.CurrentTheme == "CoolBreeze")
         {
             figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
             dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
@@ -1312,7 +1313,7 @@ public partial class ServerTab : UserControl
             legendFg         = ScottPlot.Color.FromHex("#1A2A3A");
             legendOutline    = ScottPlot.Color.FromHex("#A8BDD0");
         }
-        else if (Helpers.ThemeManager.HasLightBackground)
+        else if (ThemeManager.HasLightBackground)
         {
             figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
             dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
@@ -1398,9 +1399,9 @@ public partial class ServerTab : UserControl
     /// </summary>
     private static void ReapplyAxisColors(ScottPlot.WPF.WpfPlot chart)
     {
-        var textColor = Helpers.ThemeManager.CurrentTheme == "CoolBreeze"
+        var textColor = ThemeManager.CurrentTheme == "CoolBreeze"
             ? ScottPlot.Color.FromHex("#1A2A3A")
-            : Helpers.ThemeManager.HasLightBackground
+            : ThemeManager.HasLightBackground
                 ? ScottPlot.Color.FromHex("#1A1D23")
                 : ScottPlot.Color.FromHex("#E4E6EB");
         chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;

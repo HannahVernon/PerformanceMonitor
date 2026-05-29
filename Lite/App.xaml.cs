@@ -16,6 +16,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite;
 
@@ -287,8 +288,14 @@ public partial class App : Application
         LoadDefaultTimeRange();
         LoadAlertSettings();
 
+        // Wire the shared-UI time conversion hook before any chart/crosshair can
+        // render. The lambda reads CurrentDisplayMode at call time, so later
+        // display-mode switches are honored. Must precede the first window/chart.
+        PerformanceMonitor.Ui.UiTimeContext.ConvertForDisplay =
+            t => Services.ServerTimeHelper.ConvertForDisplay(t, Services.ServerTimeHelper.CurrentDisplayMode);
+
         // Apply saved color theme before the main window is shown
-        Helpers.ThemeManager.Apply(ColorTheme);
+        ThemeManager.Apply(ColorTheme);
 
         // Initialize logging
         var logDirectory = Path.Combine(appDataRoot, "logs");
@@ -492,7 +499,7 @@ public partial class App : Application
                 if (t == "ServerTime" || t == "LocalTime" || t == "UTC")
                 {
                     TimeDisplayMode = t;
-                    if (Enum.TryParse<Helpers.TimeDisplayMode>(t, out var tdm))
+                    if (Enum.TryParse<TimeDisplayMode>(t, out var tdm))
                         Services.ServerTimeHelper.CurrentDisplayMode = tdm;
                 }
             }

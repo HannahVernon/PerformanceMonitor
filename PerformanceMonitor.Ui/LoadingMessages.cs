@@ -1,6 +1,6 @@
 using System;
 
-namespace PerformanceMonitorDashboard.Helpers
+namespace PerformanceMonitor.Ui
 {
     /// <summary>
     /// Randomized loading messages displayed while data is being fetched.

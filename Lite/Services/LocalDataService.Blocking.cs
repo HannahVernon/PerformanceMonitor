@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -55,35 +56,35 @@ public static class ServerTimeHelper
     /// <summary>
     /// The current display mode preference. Read from App settings at startup.
     /// </summary>
-    public static Helpers.TimeDisplayMode CurrentDisplayMode { get; set; } = Helpers.TimeDisplayMode.ServerTime;
+    public static TimeDisplayMode CurrentDisplayMode { get; set; } = TimeDisplayMode.ServerTime;
 
     /// <summary>
     /// Converts a server DateTime for display based on the selected display mode.
     /// </summary>
-    public static DateTime ConvertForDisplay(DateTime serverTime, Helpers.TimeDisplayMode mode) => mode switch
+    public static DateTime ConvertForDisplay(DateTime serverTime, TimeDisplayMode mode) => mode switch
     {
-        Helpers.TimeDisplayMode.LocalTime => ToLocalTime(serverTime),
-        Helpers.TimeDisplayMode.UTC => serverTime.AddMinutes(-_utcOffsetMinutes),
+        TimeDisplayMode.LocalTime => ToLocalTime(serverTime),
+        TimeDisplayMode.UTC => serverTime.AddMinutes(-_utcOffsetMinutes),
         _ => serverTime
     };
 
     /// <summary>
     /// Converts a display-mode DateTime back to server time. Reverse of ConvertForDisplay.
     /// </summary>
-    public static DateTime DisplayTimeToServerTime(DateTime displayTime, Helpers.TimeDisplayMode mode) => mode switch
+    public static DateTime DisplayTimeToServerTime(DateTime displayTime, TimeDisplayMode mode) => mode switch
     {
-        Helpers.TimeDisplayMode.LocalTime => LocalToServerTime(displayTime),
-        Helpers.TimeDisplayMode.UTC => displayTime.AddMinutes(_utcOffsetMinutes),
+        TimeDisplayMode.LocalTime => LocalToServerTime(displayTime),
+        TimeDisplayMode.UTC => displayTime.AddMinutes(_utcOffsetMinutes),
         _ => displayTime
     };
 
     /// <summary>
     /// Returns a short timezone label for the current display mode.
     /// </summary>
-    public static string GetTimezoneLabel(Helpers.TimeDisplayMode mode) => mode switch
+    public static string GetTimezoneLabel(TimeDisplayMode mode) => mode switch
     {
-        Helpers.TimeDisplayMode.LocalTime => TimeZoneInfo.Local.StandardName,
-        Helpers.TimeDisplayMode.UTC => "UTC",
+        TimeDisplayMode.LocalTime => TimeZoneInfo.Local.StandardName,
+        TimeDisplayMode.UTC => "UTC",
         _ => $"UTC{(_utcOffsetMinutes >= 0 ? "+" : "")}{_utcOffsetMinutes / 60}:{Math.Abs(_utcOffsetMinutes % 60):D2}"
     };
 

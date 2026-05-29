@@ -21,6 +21,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -66,8 +67,8 @@ namespace PerformanceMonitorDashboard
 
             ApplyThemeToChart();
             Loaded += QueryExecutionHistoryWindow_Loaded;
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-            Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
+            Closed += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void ApplyThemeToChart()
@@ -452,7 +453,7 @@ namespace PerformanceMonitorDashboard
                     foreach (var column in dataGrid.Columns)
                     {
                         if (column is DataGridBoundColumn)
-                            headers.Add(Helpers.DataGridClipboardBehavior.GetHeaderText(column));
+                            headers.Add(DataGridClipboardBehavior.GetHeaderText(column));
                     }
                     sb.AppendLine(string.Join("\t", headers));
                     foreach (var item in dataGrid.Items)
@@ -485,7 +486,7 @@ namespace PerformanceMonitorDashboard
                             foreach (var column in dataGrid.Columns)
                             {
                                 if (column is DataGridBoundColumn)
-                                    headers.Add(TabHelpers.EscapeCsvField(Helpers.DataGridClipboardBehavior.GetHeaderText(column)));
+                                    headers.Add(TabHelpers.EscapeCsvField(DataGridClipboardBehavior.GetHeaderText(column)));
                             }
                             sb.AppendLine(string.Join(",", headers));
                             foreach (var item in dataGrid.Items)
