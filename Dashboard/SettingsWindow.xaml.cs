@@ -1006,14 +1006,11 @@ namespace PerformanceMonitorDashboard
 
             try
             {
-                var emailService = EmailAlertService.Current ?? new EmailAlertService(
-                    new DashboardAlertSettings(_preferencesService),
-                    new JsonAlertHistoryStore(_preferencesService),
-                    new WebhookAlertService(new DashboardAlertSettings(_preferencesService), EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>()),
-                    new LoggerAdapter<EmailAlertService>());
                 /* Test before save: send with the values the user just typed (transient,
-                   form-values adapter), NOT the saved-prefs DashboardAlertSettings (MOD-1). */
-                var error = await emailService.SendTestEmailAsync(new UserPreferencesAlertSettings(testPrefs));
+                   form-values adapter), NOT the saved-prefs DashboardAlertSettings (MOD-1).
+                   Converged shared static — no EmailAlertService instance needed (Plan E E3c). */
+                var error = await EmailSendCore.SendTestEmailAsync(
+                    new UserPreferencesAlertSettings(testPrefs), EmailAlertService.Branding);
 
                 if (error == null)
                 {

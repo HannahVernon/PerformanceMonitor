@@ -960,7 +960,9 @@ public partial class SettingsWindow : Window
             App.SmtpFromAddress = SmtpFromBox.Text?.Trim() ?? "";
             App.SmtpRecipients = SmtpRecipientsBox.Text?.Trim() ?? "";
 
-            var error = await Services.EmailAlertService.SendTestEmailAsync();
+            /* "Test before save": App.* statics were just set from the live UI above, so
+               new AppAlertSettings() reflects what the user typed (Plan E E3c, MOD-1). */
+            var error = await EmailSendCore.SendTestEmailAsync(new AppAlertSettings(), Services.EmailAlertService.Branding);
             if (error == null)
             {
                 MessageBox.Show("Test email sent successfully!", "Test Email", MessageBoxButton.OK, MessageBoxImage.Information);
