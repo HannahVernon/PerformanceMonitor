@@ -13,6 +13,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -207,7 +208,7 @@ LIMIT $4";
     /// Gets query stats comparison between a current time range and a baseline range.
     /// Returns delta percentages for duration, CPU, reads, and execution count.
     /// </summary>
-    public async Task<List<Models.QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
+    public async Task<List<QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
         int serverId,
         DateTime currentStart, DateTime currentEnd,
         DateTime baselineStart, DateTime baselineEnd)
@@ -296,11 +297,11 @@ FULL OUTER JOIN baseline_period b
         command.Parameters.Add(new DuckDBParameter { Value = baselineStart });
         command.Parameters.Add(new DuckDBParameter { Value = baselineEnd });
 
-        var items = new List<Models.QueryStatsComparisonItem>();
+        var items = new List<QueryStatsComparisonItem>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.QueryStatsComparisonItem
+            items.Add(new QueryStatsComparisonItem
             {
                 DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                 QueryHash = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -781,7 +782,7 @@ LIMIT $4";
     /// <summary>
     /// Gets procedure stats comparison between a current time range and a baseline range.
     /// </summary>
-    public async Task<List<Models.ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
+    public async Task<List<ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
         int serverId,
         DateTime currentStart, DateTime currentEnd,
         DateTime baselineStart, DateTime baselineEnd)
@@ -871,11 +872,11 @@ FULL OUTER JOIN baseline_period b
         command.Parameters.Add(new DuckDBParameter { Value = baselineStart });
         command.Parameters.Add(new DuckDBParameter { Value = baselineEnd });
 
-        var items = new List<Models.ProcedureStatsComparisonItem>();
+        var items = new List<ProcedureStatsComparisonItem>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.ProcedureStatsComparisonItem
+            items.Add(new ProcedureStatsComparisonItem
             {
                 DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                 SchemaName = reader.IsDBNull(1) ? "" : reader.GetString(1),
