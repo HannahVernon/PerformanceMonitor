@@ -125,12 +125,11 @@ namespace PerformanceMonitorDashboard
                Held as a field so SaveAlertLog (and the Alerts UI / MCP via its Current static)
                reach it directly rather than forwarding through EmailAlertService (E3c Phase 6). */
             _alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
-            var alertHistoryStore = _alertHistoryStore;
             /* Webhook service is constructed first and injected into the email service
                (Plan E E3c): the shared lib service carries no Current static, so Dashboard
                keeps this handle for the email fan-out and any MCP/health consumers. */
             _webhookAlertService = new WebhookAlertService(alertSettings, EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>());
-            _emailAlertService = new EmailAlertService(alertSettings, alertHistoryStore, _webhookAlertService, new LoggerAdapter<EmailAlertService>());
+            _emailAlertService = new EmailAlertService(alertSettings, _alertHistoryStore, _webhookAlertService, new LoggerAdapter<EmailAlertService>());
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
