@@ -84,7 +84,7 @@ public sealed class McpAlertTools
             var limitError = McpHelpers.ValidateTop(limit);
             if (limitError != null) return Task.FromResult(limitError);
 
-            var service = EmailAlertService.Current;
+            var service = JsonAlertHistoryStore.Current;
             if (service == null)
             {
                 return Task.FromResult("Alert service not initialized. Connect to a server first.");

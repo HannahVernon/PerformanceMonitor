@@ -56,7 +56,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private void LoadAlerts()
         {
-            var service = EmailAlertService.Current;
+            var service = JsonAlertHistoryStore.Current;
             if (service == null)
             {
                 AlertsDataGrid.ItemsSource = null;
@@ -242,7 +242,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private void DismissSelected_Click(object sender, RoutedEventArgs e)
         {
-            var service = EmailAlertService.Current;
+            var service = JsonAlertHistoryStore.Current;
             if (service == null) return;
 
             var selected = AlertsDataGrid.SelectedItems
@@ -264,7 +264,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private void DismissAll_Click(object sender, RoutedEventArgs e)
         {
-            var service = EmailAlertService.Current;
+            var service = JsonAlertHistoryStore.Current;
             if (service == null) return;
 
             var displayCount = AlertsDataGrid.ItemsSource is ICollection<AlertHistoryDisplayItem> coll ? coll.Count : 0;

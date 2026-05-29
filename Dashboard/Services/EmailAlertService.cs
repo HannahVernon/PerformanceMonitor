@@ -5,7 +5,6 @@
  */
 
 using System;
-using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Notifications;
@@ -19,9 +18,9 @@ namespace PerformanceMonitorDashboard.Services
     /// <c>webhook</c> row written via <see cref="JsonAlertHistoryStore"/>, plus the analysis-path
     /// no-channel "tray" fallback (in <see cref="SendFindingAlertAsync"/>).
     /// <para>
-    /// The Dashboard-only history-management API (GetAlertHistory / Hide* / SaveAlertLog) is
-    /// kept here only as thin forwarders for <see cref="Current"/> consumers; E3c Phase 6
-    /// repoints those consumers directly to <see cref="JsonAlertHistoryStore"/>.
+    /// The Dashboard-only history-management API (GetAlertHistory / Hide* / SaveAlertLog) lives
+    /// on <see cref="JsonAlertHistoryStore"/>; its consumers (AlertsHistoryContent, McpAlertTools,
+    /// MainWindow) reach it directly via the store's <c>Current</c> (E3c Phase 6).
     /// </para>
     /// </summary>
     public class EmailAlertService : IFindingAlertSender
@@ -159,33 +158,6 @@ namespace PerformanceMonitorDashboard.Services
                     contextJson: AlertContextSerializer.Serialize(alert.Context));
             }
         }
-
-        /// <summary>
-        /// Gets alert history from the log (excludes hidden alerts).
-        /// Thin forwarder over the store; transitional until E3c Phase 6 repoints consumers.
-        /// </summary>
-        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50)
-            => _historyStore.GetAlertHistory(hoursBack, limit);
-
-        /// <summary>
-        /// Hides specific alerts matching the given keys.
-        /// Thin forwarder over the store; transitional until E3c Phase 6 repoints consumers.
-        /// </summary>
-        public void HideAlerts(List<(DateTime AlertTime, string ServerName, string MetricName)> keys)
-            => _historyStore.HideAlerts(keys);
-
-        /// <summary>
-        /// Hides all non-hidden alerts matching the time/server filter.
-        /// Thin forwarder over the store; transitional until E3c Phase 6 repoints consumers.
-        /// </summary>
-        public void HideAllAlerts(int hoursBack, string? serverName = null)
-            => _historyStore.HideAllAlerts(hoursBack, serverName);
-
-        /// <summary>
-        /// Saves the alert log to a JSON file. Call on application exit.
-        /// Thin forwarder over the store; transitional until E3c Phase 6 repoints consumers.
-        /// </summary>
-        public void SaveAlertLog() => _historyStore.SaveAlertLog();
 
         /// <summary>
         /// Gets email delivery health summary (from the shared send core).
