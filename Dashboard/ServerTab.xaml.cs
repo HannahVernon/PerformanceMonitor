@@ -62,18 +62,18 @@ namespace PerformanceMonitorDashboard
                     Helpers.TabHelpers.ApplyThemeToChart(chart);
             }
 
-            _resourceOverviewCpuHover = new Helpers.ChartHoverHelper(ResourceOverviewCpuChart, "%");
-            _resourceOverviewMemoryHover = new Helpers.ChartHoverHelper(ResourceOverviewMemoryChart, "MB");
-            _resourceOverviewIoHover = new Helpers.ChartHoverHelper(ResourceOverviewIoChart, "ms");
-            _resourceOverviewWaitHover = new Helpers.ChartHoverHelper(ResourceOverviewWaitChart, "ms/sec");
-            _lockWaitStatsHover = new Helpers.ChartHoverHelper(LockWaitStatsChart, "ms/sec");
-            _blockingEventsHover = new Helpers.ChartHoverHelper(BlockingStatsBlockingEventsChart, "events");
-            _blockingDurationHover = new Helpers.ChartHoverHelper(BlockingStatsDurationChart, "ms");
-            _deadlocksHover = new Helpers.ChartHoverHelper(BlockingStatsDeadlocksChart, "events");
-            _deadlockWaitTimeHover = new Helpers.ChartHoverHelper(BlockingStatsDeadlockWaitTimeChart, "ms");
-            _collectorDurationHover = new Helpers.ChartHoverHelper(CollectorDurationChart, "ms");
-            _currentWaitsDurationHover = new Helpers.ChartHoverHelper(CurrentWaitsDurationChart, "ms");
-            _currentWaitsBlockedHover = new Helpers.ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
+            _resourceOverviewCpuHover = new ChartHoverHelper(ResourceOverviewCpuChart, "%");
+            _resourceOverviewMemoryHover = new ChartHoverHelper(ResourceOverviewMemoryChart, "MB");
+            _resourceOverviewIoHover = new ChartHoverHelper(ResourceOverviewIoChart, "ms");
+            _resourceOverviewWaitHover = new ChartHoverHelper(ResourceOverviewWaitChart, "ms/sec");
+            _lockWaitStatsHover = new ChartHoverHelper(LockWaitStatsChart, "ms/sec");
+            _blockingEventsHover = new ChartHoverHelper(BlockingStatsBlockingEventsChart, "events");
+            _blockingDurationHover = new ChartHoverHelper(BlockingStatsDurationChart, "ms");
+            _deadlocksHover = new ChartHoverHelper(BlockingStatsDeadlocksChart, "events");
+            _deadlockWaitTimeHover = new ChartHoverHelper(BlockingStatsDeadlockWaitTimeChart, "ms");
+            _collectorDurationHover = new ChartHoverHelper(CollectorDurationChart, "ms");
+            _currentWaitsDurationHover = new ChartHoverHelper(CurrentWaitsDurationChart, "ms");
+            _currentWaitsBlockedHover = new ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
 
             _serverConnection = serverConnection;
             UtcOffsetMinutes = utcOffsetMinutes;

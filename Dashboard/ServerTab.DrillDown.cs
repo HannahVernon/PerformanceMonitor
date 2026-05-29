@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using PerformanceMonitorDashboard.Helpers;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -156,7 +157,7 @@ namespace PerformanceMonitorDashboard
 
         private void AddChartDrillDownMenuItem(
             ScottPlot.WPF.WpfPlot chart, ContextMenu contextMenu,
-            Helpers.ChartHoverHelper? hover, string label, Action<DateTime> handler)
+            ChartHoverHelper? hover, string label, Action<DateTime> handler)
         {
             contextMenu.Items.Insert(0, new Separator());
             var item = new MenuItem { Header = label };
