@@ -617,7 +617,7 @@ namespace PerformanceMonitorDashboard.Controls
         {
             try
             {
-                using var _ = Helpers.MethodProfiler.StartTiming("QueryPerformance");
+                using var profiler = Helpers.MethodProfiler.StartTiming("QueryPerformance");
 
                 if (_databaseService == null) return;
 
@@ -682,7 +682,7 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     PopulateQueryStatsGrid(await queryStatsTask);
                 }
-                LoadQueryStatsSlicerAsync().ConfigureAwait(false);
+                _ = LoadQueryStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
                 if (ProcStatsSlicer.HasNarrowedSelection)
                 {
                     var slicerProcData = await _databaseService.GetProcedureStatsAsync(0, ProcStatsSlicer.SelectionStart, ProcStatsSlicer.SelectionEnd, fromSlicer: true);
@@ -692,7 +692,7 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     PopulateProcStatsGrid(await procStatsTask);
                 }
-                LoadProcStatsSlicerAsync().ConfigureAwait(false);
+                _ = LoadProcStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
                 if (QueryStoreSlicer.HasNarrowedSelection)
                 {
                     var slicerQsData = await _databaseService.GetQueryStoreDataAsync(0, QueryStoreSlicer.SelectionStart, QueryStoreSlicer.SelectionEnd, fromSlicer: true);
@@ -702,7 +702,7 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     PopulateQueryStoreGrid(await queryStoreTask);
                 }
-                LoadQueryStoreSlicerAsync().ConfigureAwait(false);
+                _ = LoadQueryStoreSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
 
                 // Populate charts from time-series data
                 LoadDurationChart(QueryPerfTrendsQueryChart, await queryDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[0], _queryDurationHover);
@@ -749,7 +749,7 @@ namespace PerformanceMonitorDashboard.Controls
             else
                 data = await _databaseService.GetQueryStatsAsync(_queryStatsHoursBack, _queryStatsFromDate, _queryStatsToDate);
             PopulateQueryStatsGrid(data);
-            LoadQueryStatsSlicerAsync().ConfigureAwait(false);
+            _ = LoadQueryStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
 
         private async Task RefreshProcStatsGridAsync()
@@ -761,7 +761,7 @@ namespace PerformanceMonitorDashboard.Controls
             else
                 data = await _databaseService.GetProcedureStatsAsync(_procStatsHoursBack, _procStatsFromDate, _procStatsToDate);
             PopulateProcStatsGrid(data);
-            LoadProcStatsSlicerAsync().ConfigureAwait(false);
+            _ = LoadProcStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
 
         private async Task RefreshQueryStoreGridAsync()
@@ -773,7 +773,7 @@ namespace PerformanceMonitorDashboard.Controls
             else
                 data = await _databaseService.GetQueryStoreDataAsync(_queryStoreHoursBack, _queryStoreFromDate, _queryStoreToDate);
             PopulateQueryStoreGrid(data);
-            LoadQueryStoreSlicerAsync().ConfigureAwait(false);
+            _ = LoadQueryStoreSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
 
         private void PopulateQueryStatsGrid(List<QueryStatsItem> data)
@@ -851,7 +851,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private async Task RefreshActiveQueriesAsync()
         {
-            using var _ = Helpers.MethodProfiler.StartTiming("QueryPerf-ActiveQueries");
+            using var profiler = Helpers.MethodProfiler.StartTiming("QueryPerf-ActiveQueries");
             if (_databaseService == null) return;
             if (_isDrillDownActive) return;
 
@@ -879,7 +879,7 @@ namespace PerformanceMonitorDashboard.Controls
                 SetItemsSourcePreservingSort(ActiveQueriesDataGrid, data);
                 ActiveQueriesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 SetStatus($"Loaded {data.Count} query snapshots");
-                LoadActiveQueriesSlicerAsync().ConfigureAwait(false);
+                _ = LoadActiveQueriesSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
             }
             catch (Exception ex)
             {
@@ -1276,7 +1276,7 @@ namespace PerformanceMonitorDashboard.Controls
             var snapshots = await _databaseService.GetQuerySnapshotsAsync(0, from, to);
             SetItemsSourcePreservingSort(ActiveQueriesDataGrid, snapshots);
             ActiveQueriesNoDataMessage.Visibility = snapshots.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            LoadActiveQueriesSlicerAsync().ConfigureAwait(false);
+            _ = LoadActiveQueriesSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
     }
 }
