@@ -65,6 +65,7 @@ namespace PerformanceMonitorDashboard
         // Independent alert engine - runs regardless of which tab is active
         private readonly DispatcherTimer _alertCheckTimer;
         private readonly EmailAlertService _emailAlertService;
+        private readonly WebhookAlertService _webhookAlertService;
         private readonly CredentialService _credentialService;
 
         // Scheduled analysis-finding notifications — separate cadence and gating from
@@ -121,8 +122,11 @@ namespace PerformanceMonitorDashboard
             var alertSettings = new DashboardAlertSettings(_preferencesService);
             /* Alert-history store owns the alert_history.json list + management API (Plan E E2). */
             var alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
-            _emailAlertService = new EmailAlertService(alertSettings, alertHistoryStore, new LoggerAdapter<EmailAlertService>());
-            _ = new WebhookAlertService(alertSettings);
+            /* Webhook service is constructed first and injected into the email service
+               (Plan E E3c): the shared lib service carries no Current static, so Dashboard
+               keeps this handle for the email fan-out and any MCP/health consumers. */
+            _webhookAlertService = new WebhookAlertService(alertSettings, EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>());
+            _emailAlertService = new EmailAlertService(alertSettings, alertHistoryStore, _webhookAlertService, new LoggerAdapter<EmailAlertService>());
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;

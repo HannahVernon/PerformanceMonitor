@@ -40,6 +40,7 @@ namespace PerformanceMonitorDashboard.Services
 
         private readonly IAlertSettings _settings;
         private readonly JsonAlertHistoryStore _historyStore;
+        private readonly WebhookAlertService _webhookAlertService;
         private readonly ILogger<EmailAlertService> _logger;
         private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
@@ -53,10 +54,11 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         public static EmailAlertService? Current { get; private set; }
 
-        public EmailAlertService(IAlertSettings settings, JsonAlertHistoryStore historyStore, ILogger<EmailAlertService> logger)
+        public EmailAlertService(IAlertSettings settings, JsonAlertHistoryStore historyStore, WebhookAlertService webhookAlertService, ILogger<EmailAlertService> logger)
         {
             _settings = settings;
             _historyStore = historyStore;
+            _webhookAlertService = webhookAlertService;
             _logger = logger;
             Current = this;
         }
@@ -146,10 +148,8 @@ namespace PerformanceMonitorDashboard.Services
                 }
 
                 /* Send webhook notifications (Teams / Slack) — independent of email */
-                var webhookService = WebhookAlertService.Current;
-                if (webhookService != null)
                 {
-                    var webhookSent = await webhookService.TrySendWebhookAlertsAsync(
+                    var webhookSent = await _webhookAlertService.TrySendWebhookAlertsAsync(
                         metricName, serverName, currentValue, thresholdValue, serverId, context);
                     if (webhookSent)
                     {

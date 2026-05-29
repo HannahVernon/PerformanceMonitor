@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
@@ -14,36 +14,44 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using PerformanceMonitor.Notifications;
+using Microsoft.Extensions.Logging;
 
-namespace PerformanceMonitorLite.Services;
+namespace PerformanceMonitor.Notifications;
 
 /// <summary>
 /// Sends alert notifications to Microsoft Teams and/or Slack via incoming webhooks.
 /// Color-coded accent bars match the existing email alert severity mapping.
+/// <para>
+/// Shared between Lite and Dashboard (Plan E E3c). Per-app branding (edition label +
+/// optional snooze hint) arrives via <see cref="AlertBranding"/>; credentials live in
+/// each app's settings adapter (<see cref="IAlertSettings"/>) — this service carries no
+/// credential storage of its own. The Dashboard-only <c>Current</c> handle and the
+/// MCP/health surfaces stay app-side: Dashboard keeps a reference to the injected
+/// instance.
+/// </para>
 /// </summary>
 public class WebhookAlertService
 {
-    private const string EditionName = "Performance Monitor Lite";
-    private const string SnoozeHint = "To silence this alert: open Performance Monitor Lite → Settings → Manage Mute Rules";
-
     /* Webhooks do not deliver the copy-paste T-SQL (too large, wrong channel) — they point
-       at the email / in-app dialog instead. This string must stay byte-identical to the
-       Dashboard copy (plan §5.4). */
+       at the email / in-app dialog instead. */
     private const string TsqlWebhookHint = "See email or in-app Alert Details for the copy-paste T-SQL.";
     private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
 
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
     private readonly IAlertSettings _settings;
+    private readonly AlertBranding _branding;
+    private readonly ILogger<WebhookAlertService> _logger;
 
     private int _consecutiveTeamsFailures;
     private string? _lastTeamsError;
     private int _consecutiveSlackFailures;
     private string? _lastSlackError;
 
-    public WebhookAlertService(IAlertSettings settings)
+    public WebhookAlertService(IAlertSettings settings, AlertBranding branding, ILogger<WebhookAlertService> logger)
     {
         _settings = settings;
+        _branding = branding;
+        _logger = logger;
     }
 
     /// <summary>
@@ -55,7 +63,7 @@ public class WebhookAlertService
         string serverName,
         string currentValue,
         string thresholdValue,
-        int serverId = 0,
+        string serverId = "",
         AlertContext? context = null)
     {
         try
@@ -88,7 +96,7 @@ public class WebhookAlertService
         }
         catch (Exception ex)
         {
-            AppLogger.Error("Webhook", $"TrySendWebhookAlertsAsync outer error: {ex.Message}");
+            _logger.LogError($"TrySendWebhookAlertsAsync outer error: {ex.Message}");
             return false;
         }
     }
@@ -96,14 +104,14 @@ public class WebhookAlertService
     /// <summary>
     /// Sends a test notification to Microsoft Teams. Returns null on success, error message on failure.
     /// </summary>
-    public static async Task<string?> SendTestTeamsAsync(string webhookUrl, string? proxyAddress)
+    public static async Task<string?> SendTestTeamsAsync(string webhookUrl, string? proxyAddress, AlertBranding branding)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(webhookUrl))
                 return "Teams webhook URL is not configured.";
 
-            var payload = BuildTeamsPayload("Test Notification", "", "Webhook configuration verified", "", isTest: true);
+            var payload = BuildTeamsPayload("Test Notification", "", "Webhook configuration verified", "", branding, isTest: true);
             return await PostWebhookAsync(webhookUrl, payload, proxyAddress);
         }
         catch (Exception ex)
@@ -115,14 +123,14 @@ public class WebhookAlertService
     /// <summary>
     /// Sends a test notification to Slack. Returns null on success, error message on failure.
     /// </summary>
-    public static async Task<string?> SendTestSlackAsync(string webhookUrl, string? proxyAddress)
+    public static async Task<string?> SendTestSlackAsync(string webhookUrl, string? proxyAddress, AlertBranding branding)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(webhookUrl))
                 return "Slack webhook URL is not configured.";
 
-            var payload = BuildSlackPayload("Test Notification", "", "Webhook configuration verified", "", isTest: true);
+            var payload = BuildSlackPayload("Test Notification", "", "Webhook configuration verified", "", branding, isTest: true);
             return await PostWebhookAsync(webhookUrl, payload, proxyAddress);
         }
         catch (Exception ex)
@@ -130,6 +138,12 @@ public class WebhookAlertService
             return ex.Message;
         }
     }
+
+    public (int ConsecutiveFailures, string? LastError) GetTeamsHealth() =>
+        (_consecutiveTeamsFailures, _lastTeamsError);
+
+    public (int ConsecutiveFailures, string? LastError) GetSlackHealth() =>
+        (_consecutiveSlackFailures, _lastSlackError);
 
     #region Teams
 
@@ -142,7 +156,7 @@ public class WebhookAlertService
     {
         try
         {
-            var payload = BuildTeamsPayload(metricName, serverName, currentValue, thresholdValue, context: context);
+            var payload = BuildTeamsPayload(metricName, serverName, currentValue, thresholdValue, _branding, context: context);
             var error = await PostWebhookAsync(_settings.TeamsWebhookUrl, payload, _settings.TeamsProxyAddress);
 
             if (error != null)
@@ -151,26 +165,26 @@ public class WebhookAlertService
                 _lastTeamsError = error;
 
                 if (_consecutiveTeamsFailures <= 3)
-                    AppLogger.Error("Webhook", $"TEAMS WEBHOOK FAILED ({_consecutiveTeamsFailures}x): {error}");
+                    _logger.LogError($"TEAMS WEBHOOK FAILED ({_consecutiveTeamsFailures}x): {error}");
                 else if (_consecutiveTeamsFailures % 50 == 0)
-                    AppLogger.Error("Webhook", $"TEAMS WEBHOOK STILL FAILING: {_consecutiveTeamsFailures} failures. Last: {error}");
+                    _logger.LogError($"TEAMS WEBHOOK STILL FAILING: {_consecutiveTeamsFailures} failures. Last: {error}");
 
                 return false;
             }
 
             if (_consecutiveTeamsFailures > 0)
-                AppLogger.Info("Webhook", $"Teams webhook recovered after {_consecutiveTeamsFailures} failure(s)");
+                _logger.LogInformation($"Teams webhook recovered after {_consecutiveTeamsFailures} failure(s)");
 
             _consecutiveTeamsFailures = 0;
             _lastTeamsError = null;
-            AppLogger.Info("Webhook", $"Teams webhook sent for {metricName} on {serverName}");
+            _logger.LogInformation($"Teams webhook sent for {metricName} on {serverName}");
             return true;
         }
         catch (Exception ex)
         {
             _consecutiveTeamsFailures++;
             _lastTeamsError = ex.Message;
-            AppLogger.Error("Webhook", $"Teams webhook error: {ex.Message}");
+            _logger.LogError($"Teams webhook error: {ex.Message}");
             return false;
         }
     }
@@ -184,6 +198,7 @@ public class WebhookAlertService
         string serverName,
         string currentValue,
         string thresholdValue,
+        AlertBranding branding,
         bool isTest = false,
         AlertContext? context = null)
     {
@@ -239,23 +254,23 @@ public class WebhookAlertService
         }
 
         var title = isTest
-            ? $"{emoji} TEST \u2014 {metricName}"
-            : $"{emoji} {badgeText} \u2014 {metricName}";
+            ? $"{emoji} TEST — {metricName}"
+            : $"{emoji} {badgeText} — {metricName}";
 
         var sections = new List<object>
         {
             new
             {
                 activityTitle = title,
-                activitySubtitle = isTest ? EditionName : $"{EditionName} \u2014 {serverName}",
+                activitySubtitle = isTest ? branding.EditionName : $"{branding.EditionName} — {serverName}",
                 facts,
                 markdown = true
             }
         };
 
-        if (!isTest)
+        if (!isTest && branding.SnoozeHint is not null)
         {
-            sections.Add(new { text = SnoozeHint });
+            sections.Add(new { text = branding.SnoozeHint });
         }
 
         var card = new
@@ -285,7 +300,7 @@ public class WebhookAlertService
     {
         try
         {
-            var payload = BuildSlackPayload(metricName, serverName, currentValue, thresholdValue, context: context);
+            var payload = BuildSlackPayload(metricName, serverName, currentValue, thresholdValue, _branding, context: context);
             var error = await PostWebhookAsync(_settings.SlackWebhookUrl, payload, _settings.SlackProxyAddress);
 
             if (error != null)
@@ -294,26 +309,26 @@ public class WebhookAlertService
                 _lastSlackError = error;
 
                 if (_consecutiveSlackFailures <= 3)
-                    AppLogger.Error("Webhook", $"SLACK WEBHOOK FAILED ({_consecutiveSlackFailures}x): {error}");
+                    _logger.LogError($"SLACK WEBHOOK FAILED ({_consecutiveSlackFailures}x): {error}");
                 else if (_consecutiveSlackFailures % 50 == 0)
-                    AppLogger.Error("Webhook", $"SLACK WEBHOOK STILL FAILING: {_consecutiveSlackFailures} failures. Last: {error}");
+                    _logger.LogError($"SLACK WEBHOOK STILL FAILING: {_consecutiveSlackFailures} failures. Last: {error}");
 
                 return false;
             }
 
             if (_consecutiveSlackFailures > 0)
-                AppLogger.Info("Webhook", $"Slack webhook recovered after {_consecutiveSlackFailures} failure(s)");
+                _logger.LogInformation($"Slack webhook recovered after {_consecutiveSlackFailures} failure(s)");
 
             _consecutiveSlackFailures = 0;
             _lastSlackError = null;
-            AppLogger.Info("Webhook", $"Slack webhook sent for {metricName} on {serverName}");
+            _logger.LogInformation($"Slack webhook sent for {metricName} on {serverName}");
             return true;
         }
         catch (Exception ex)
         {
             _consecutiveSlackFailures++;
             _lastSlackError = ex.Message;
-            AppLogger.Error("Webhook", $"Slack webhook error: {ex.Message}");
+            _logger.LogError($"Slack webhook error: {ex.Message}");
             return false;
         }
     }
@@ -327,6 +342,7 @@ public class WebhookAlertService
         string serverName,
         string currentValue,
         string thresholdValue,
+        AlertBranding branding,
         bool isTest = false,
         AlertContext? context = null)
     {
@@ -335,8 +351,8 @@ public class WebhookAlertService
         var localNow = DateTime.Now;
 
         var title = isTest
-            ? $"{emoji} TEST \u2014 {metricName}"
-            : $"{emoji} {badgeText} \u2014 {metricName}";
+            ? $"{emoji} TEST — {metricName}"
+            : $"{emoji} {badgeText} — {metricName}";
 
         var blocks = new List<object>
         {
@@ -400,11 +416,11 @@ public class WebhookAlertService
 
         var contextElements = new List<object>
         {
-            new { type = "mrkdwn", text = $"Sent by {EditionName}" }
+            new { type = "mrkdwn", text = $"Sent by {branding.EditionName}" }
         };
-        if (!isTest)
+        if (!isTest && branding.SnoozeHint is not null)
         {
-            contextElements.Add(new { type = "mrkdwn", text = SnoozeHint });
+            contextElements.Add(new { type = "mrkdwn", text = branding.SnoozeHint });
         }
 
         blocks.Add(new
@@ -448,7 +464,6 @@ public class WebhookAlertService
     /// leading label. Depends on advice prose containing no interior blank-line break so each
     /// Body chunk is a single labelled paragraph (audited safe for the current FactAdvice blocks);
     /// a future block with a paragraph break degrades to the "Detail" fallback rather than breaking.
-    /// Must stay byte-identical to the Dashboard copy (plan §5.4).
     /// </summary>
     private static (string Label, string Value) SplitProseLabel(string paragraph)
     {

@@ -910,7 +910,7 @@ namespace PerformanceMonitorDashboard
             {
                 var url = TeamsWebhookUrlTextBox.Text?.Trim() ?? "";
                 var proxy = TeamsProxyAddressTextBox.Text?.Trim();
-                var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy);
+                var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy, EmailAlertService.Branding);
 
                 if (error == null)
                 {
@@ -945,7 +945,7 @@ namespace PerformanceMonitorDashboard
             {
                 var url = SlackWebhookUrlTextBox.Text?.Trim() ?? "";
                 var proxy = SlackProxyAddressTextBox.Text?.Trim();
-                var error = await WebhookAlertService.SendTestSlackAsync(url, proxy);
+                var error = await WebhookAlertService.SendTestSlackAsync(url, proxy, EmailAlertService.Branding);
 
                 if (error == null)
                 {
@@ -1006,7 +1006,11 @@ namespace PerformanceMonitorDashboard
 
             try
             {
-                var emailService = EmailAlertService.Current ?? new EmailAlertService(new DashboardAlertSettings(_preferencesService), new JsonAlertHistoryStore(_preferencesService), new LoggerAdapter<EmailAlertService>());
+                var emailService = EmailAlertService.Current ?? new EmailAlertService(
+                    new DashboardAlertSettings(_preferencesService),
+                    new JsonAlertHistoryStore(_preferencesService),
+                    new WebhookAlertService(new DashboardAlertSettings(_preferencesService), EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>()),
+                    new LoggerAdapter<EmailAlertService>());
                 /* Test before save: send with the values the user just typed (transient,
                    form-values adapter), NOT the saved-prefs DashboardAlertSettings (MOD-1). */
                 var error = await emailService.SendTestEmailAsync(new UserPreferencesAlertSettings(testPrefs));

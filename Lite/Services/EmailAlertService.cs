@@ -47,7 +47,7 @@ public class EmailAlertService
         _settings = settings;
         _historyStore = historyStore;
         _logger = logger;
-        _webhookAlertService = new WebhookAlertService(settings);
+        _webhookAlertService = new WebhookAlertService(settings, s_branding, new AppLoggerAdapter<WebhookAlertService>());
     }
 
     /// <summary>
@@ -142,7 +142,7 @@ public class EmailAlertService
             if (!muted)
             {
                 webhookSent = await _webhookAlertService.TrySendWebhookAlertsAsync(
-                    metricName, serverName, currentValue, thresholdValue, serverId, context);
+                    metricName, serverName, currentValue, thresholdValue, serverId.ToString(), context);
             }
 
             /* Reflect webhook delivery in notification type */
