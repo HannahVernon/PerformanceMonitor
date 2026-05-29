@@ -6,6 +6,7 @@
 
 using System.Collections.Generic;
 using System.Windows;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Controls;
 using PerformanceMonitorDashboard.Services;
 
