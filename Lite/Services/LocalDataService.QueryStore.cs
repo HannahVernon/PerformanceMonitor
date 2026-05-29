@@ -12,6 +12,7 @@ using System.Data;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -210,7 +211,7 @@ LIMIT $4";
     /// Gets query store comparison between a current time range and a baseline range.
     /// Uses weighted averages (execution_count * avg_metric) for accurate aggregation.
     /// </summary>
-    public async Task<List<Models.QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
+    public async Task<List<QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
         int serverId,
         DateTime currentStart, DateTime currentEnd,
         DateTime baselineStart, DateTime baselineEnd)
@@ -299,11 +300,11 @@ FULL OUTER JOIN baseline_period b
         command.Parameters.Add(new DuckDBParameter { Value = baselineStart });
         command.Parameters.Add(new DuckDBParameter { Value = baselineEnd });
 
-        var items = new List<Models.QueryStatsComparisonItem>();
+        var items = new List<QueryStatsComparisonItem>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new Models.QueryStatsComparisonItem
+            items.Add(new QueryStatsComparisonItem
             {
                 DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                 QueryHash = reader.IsDBNull(1) ? "" : reader.GetString(1),

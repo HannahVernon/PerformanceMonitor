@@ -12,6 +12,7 @@ using System.Data;
 using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Ui;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 
@@ -864,11 +865,11 @@ ORDER BY
         /// Gets query stats comparison between a current time range and a baseline range.
         /// Uses delta columns for accurate period-level aggregation.
         /// </summary>
-        public async Task<List<Models.QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
+        public async Task<List<QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
             DateTime currentStart, DateTime currentEnd,
             DateTime baselineStart, DateTime baselineEnd)
         {
-            var items = new List<Models.QueryStatsComparisonItem>();
+            var items = new List<QueryStatsComparisonItem>();
 
             await using var tc = await OpenThrottledConnectionAsync();
             var connection = tc.Connection;
@@ -959,7 +960,7 @@ FULL OUTER JOIN baseline_period b
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                items.Add(new Models.QueryStatsComparisonItem
+                items.Add(new QueryStatsComparisonItem
                 {
                     DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     QueryHash = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -984,11 +985,11 @@ FULL OUTER JOIN baseline_period b
         /// <summary>
         /// Gets procedure stats comparison between a current time range and a baseline range.
         /// </summary>
-        public async Task<List<Models.ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
+        public async Task<List<ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
             DateTime currentStart, DateTime currentEnd,
             DateTime baselineStart, DateTime baselineEnd)
         {
-            var items = new List<Models.ProcedureStatsComparisonItem>();
+            var items = new List<ProcedureStatsComparisonItem>();
 
             await using var tc = await OpenThrottledConnectionAsync();
             var connection = tc.Connection;
@@ -1068,7 +1069,7 @@ FULL OUTER JOIN baseline_period b
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                items.Add(new Models.ProcedureStatsComparisonItem
+                items.Add(new ProcedureStatsComparisonItem
                 {
                     DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     SchemaName = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -1091,11 +1092,11 @@ FULL OUTER JOIN baseline_period b
         /// Gets query store comparison between a current time range and a baseline range.
         /// Reuses QueryStatsComparisonItem model (same identity: database + query_hash).
         /// </summary>
-        public async Task<List<Models.QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
+        public async Task<List<QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
             DateTime currentStart, DateTime currentEnd,
             DateTime baselineStart, DateTime baselineEnd)
         {
-            var items = new List<Models.QueryStatsComparisonItem>();
+            var items = new List<QueryStatsComparisonItem>();
 
             await using var tc = await OpenThrottledConnectionAsync();
             var connection = tc.Connection;
@@ -1176,7 +1177,7 @@ FULL OUTER JOIN baseline_period b
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                items.Add(new Models.QueryStatsComparisonItem
+                items.Add(new QueryStatsComparisonItem
                 {
                     DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     QueryHash = reader.IsDBNull(1) ? "" : reader.GetString(1),
