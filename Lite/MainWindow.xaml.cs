@@ -70,9 +70,14 @@ public partial class MainWindow : Window
 
         // Initialize services (with loggers wired to AppLogger)
         _databaseInitializer = new DuckDbInitializer(App.DatabasePath, new AppLoggerAdapter<DuckDbInitializer>());
+        /* Webhook service is constructed first and injected into the email service
+           (Plan E E3c): the shared send core fans out to it. */
+        var webhookAlertService = new WebhookAlertService(
+            _alertSettings, EmailAlertService.Branding, new AppLoggerAdapter<WebhookAlertService>());
         _emailAlertService = new EmailAlertService(
             _alertSettings,
             new DuckDbAlertHistoryStore(_databaseInitializer),
+            webhookAlertService,
             new AppLoggerAdapter<EmailAlertService>());
         _muteRuleService = new MuteRuleService(
             new DuckDbMuteRuleStore(_databaseInitializer),
@@ -120,7 +125,9 @@ public partial class MainWindow : Window
 
             // Routes high-severity analysis findings to email/Slack/Teams; the background
             // service runs scheduled analysis and hands findings to it.
-            var analysisNotificationService = new AnalysisNotificationService(_emailAlertService, _alertSettings);
+            /* serverId resolver: Lite uses the finding's stable int id as a string (Plan E E3c). */
+            var analysisNotificationService = new AnalysisNotificationService(
+                _emailAlertService, _alertSettings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>());
 
             _backgroundService = new CollectionBackgroundService(
                 _collectorService, _databaseInitializer, archiveService, retentionService, _serverManager,

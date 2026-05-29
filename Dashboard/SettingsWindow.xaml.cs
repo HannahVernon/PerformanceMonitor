@@ -209,7 +209,7 @@ namespace PerformanceMonitorDashboard
             SmtpFromTextBox.Text = prefs.SmtpFromAddress;
             SmtpRecipientsTextBox.Text = prefs.SmtpRecipients;
 
-            var password = EmailAlertService.GetSmtpPassword();
+            var password = DashboardAlertCredentials.GetSmtpPassword();
             if (!string.IsNullOrEmpty(password))
             {
                 SmtpPasswordBox.Password = password;
@@ -226,20 +226,20 @@ namespace PerformanceMonitorDashboard
             /* Migrate legacy plaintext webhook URLs to Credential Manager */
             if (!string.IsNullOrWhiteSpace(prefs.TeamsWebhookUrl))
             {
-                WebhookAlertService.SaveTeamsWebhookUrl(prefs.TeamsWebhookUrl);
+                DashboardAlertCredentials.SaveTeamsWebhookUrl(prefs.TeamsWebhookUrl);
                 prefs.TeamsWebhookUrl = "";
                 _preferencesService.SavePreferences(prefs);
             }
             if (!string.IsNullOrWhiteSpace(prefs.SlackWebhookUrl))
             {
-                WebhookAlertService.SaveSlackWebhookUrl(prefs.SlackWebhookUrl);
+                DashboardAlertCredentials.SaveSlackWebhookUrl(prefs.SlackWebhookUrl);
                 prefs.SlackWebhookUrl = "";
                 _preferencesService.SavePreferences(prefs);
             }
 
             /* Load webhook URLs from Credential Manager */
-            TeamsWebhookUrlTextBox.Text = WebhookAlertService.GetTeamsWebhookUrl();
-            SlackWebhookUrlTextBox.Text = WebhookAlertService.GetSlackWebhookUrl();
+            TeamsWebhookUrlTextBox.Text = DashboardAlertCredentials.GetTeamsWebhookUrl();
+            SlackWebhookUrlTextBox.Text = DashboardAlertCredentials.GetSlackWebhookUrl();
             UpdateTeamsControlStates();
             UpdateSlackControlStates();
 
@@ -727,7 +727,7 @@ namespace PerformanceMonitorDashboard
 
             if (!string.IsNullOrEmpty(SmtpPasswordBox.Password))
             {
-                EmailAlertService.SaveSmtpPassword(SmtpPasswordBox.Password, prefs.SmtpUsername);
+                DashboardAlertCredentials.SaveSmtpPassword(SmtpPasswordBox.Password, prefs.SmtpUsername);
             }
 
             // Save webhook settings (Teams / Slack)
@@ -739,8 +739,8 @@ namespace PerformanceMonitorDashboard
             prefs.SlackProxyAddress = SlackProxyAddressTextBox.Text?.Trim() ?? "";
 
             /* Save webhook URLs to Credential Manager */
-            WebhookAlertService.SaveTeamsWebhookUrl(TeamsWebhookUrlTextBox.Text?.Trim() ?? "");
-            WebhookAlertService.SaveSlackWebhookUrl(SlackWebhookUrlTextBox.Text?.Trim() ?? "");
+            DashboardAlertCredentials.SaveTeamsWebhookUrl(TeamsWebhookUrlTextBox.Text?.Trim() ?? "");
+            DashboardAlertCredentials.SaveSlackWebhookUrl(SlackWebhookUrlTextBox.Text?.Trim() ?? "");
 
             // Save MCP server settings
             bool mcpWasEnabled = prefs.McpEnabled;
@@ -910,7 +910,7 @@ namespace PerformanceMonitorDashboard
             {
                 var url = TeamsWebhookUrlTextBox.Text?.Trim() ?? "";
                 var proxy = TeamsProxyAddressTextBox.Text?.Trim();
-                var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy);
+                var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy, EmailAlertService.Branding);
 
                 if (error == null)
                 {
@@ -945,7 +945,7 @@ namespace PerformanceMonitorDashboard
             {
                 var url = SlackWebhookUrlTextBox.Text?.Trim() ?? "";
                 var proxy = SlackProxyAddressTextBox.Text?.Trim();
-                var error = await WebhookAlertService.SendTestSlackAsync(url, proxy);
+                var error = await WebhookAlertService.SendTestSlackAsync(url, proxy, EmailAlertService.Branding);
 
                 if (error == null)
                 {
@@ -997,7 +997,7 @@ namespace PerformanceMonitorDashboard
             // Save password to credential store so SendEmailAsync can read it
             if (!string.IsNullOrEmpty(SmtpPasswordBox.Password))
             {
-                EmailAlertService.SaveSmtpPassword(SmtpPasswordBox.Password, testPrefs.SmtpUsername);
+                DashboardAlertCredentials.SaveSmtpPassword(SmtpPasswordBox.Password, testPrefs.SmtpUsername);
             }
 
             TestEmailButton.IsEnabled = false;
@@ -1006,10 +1006,11 @@ namespace PerformanceMonitorDashboard
 
             try
             {
-                var emailService = EmailAlertService.Current ?? new EmailAlertService(new DashboardAlertSettings(_preferencesService), new JsonAlertHistoryStore(_preferencesService), new LoggerAdapter<EmailAlertService>());
                 /* Test before save: send with the values the user just typed (transient,
-                   form-values adapter), NOT the saved-prefs DashboardAlertSettings (MOD-1). */
-                var error = await emailService.SendTestEmailAsync(new UserPreferencesAlertSettings(testPrefs));
+                   form-values adapter), NOT the saved-prefs DashboardAlertSettings (MOD-1).
+                   Converged shared static — no EmailAlertService instance needed (Plan E E3c). */
+                var error = await EmailSendCore.SendTestEmailAsync(
+                    new UserPreferencesAlertSettings(testPrefs), EmailAlertService.Branding);
 
                 if (error == null)
                 {

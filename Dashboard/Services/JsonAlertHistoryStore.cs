@@ -38,9 +38,18 @@ namespace PerformanceMonitorDashboard.Services
         private readonly object _alertLogLock = new();
         private readonly string _alertLogFilePath;
 
+        /// <summary>
+        /// The current instance, set when MainWindow creates the store. Used by the Alerts
+        /// history UI and MCP tools to reach the history-management API (GetAlertHistory /
+        /// Hide*) directly, instead of forwarding through <see cref="EmailAlertService"/>
+        /// (Plan E E3c Phase 6).
+        /// </summary>
+        public static JsonAlertHistoryStore? Current { get; private set; }
+
         public JsonAlertHistoryStore(IUserPreferencesService preferencesService)
         {
             _preferencesService = preferencesService;
+            Current = this;
 
             var appDataPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

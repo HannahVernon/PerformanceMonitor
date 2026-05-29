@@ -65,6 +65,8 @@ namespace PerformanceMonitorDashboard
         // Independent alert engine - runs regardless of which tab is active
         private readonly DispatcherTimer _alertCheckTimer;
         private readonly EmailAlertService _emailAlertService;
+        private readonly WebhookAlertService _webhookAlertService;
+        private readonly JsonAlertHistoryStore _alertHistoryStore;
         private readonly CredentialService _credentialService;
 
         // Scheduled analysis-finding notifications — separate cadence and gating from
@@ -119,10 +121,15 @@ namespace PerformanceMonitorDashboard
             _credentialService = new CredentialService();
             /* Saved-prefs settings adapter shared by the three alert services (Plan E E1). */
             var alertSettings = new DashboardAlertSettings(_preferencesService);
-            /* Alert-history store owns the alert_history.json list + management API (Plan E E2). */
-            var alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
-            _emailAlertService = new EmailAlertService(alertSettings, alertHistoryStore, new LoggerAdapter<EmailAlertService>());
-            _ = new WebhookAlertService(alertSettings);
+            /* Alert-history store owns the alert_history.json list + management API (Plan E E2).
+               Held as a field so SaveAlertLog (and the Alerts UI / MCP via its Current static)
+               reach it directly rather than forwarding through EmailAlertService (E3c Phase 6). */
+            _alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
+            /* Webhook service is constructed first and injected into the email service
+               (Plan E E3c): the shared lib service carries no Current static, so Dashboard
+               keeps this handle for the email fan-out and any MCP/health consumers. */
+            _webhookAlertService = new WebhookAlertService(alertSettings, EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>());
+            _emailAlertService = new EmailAlertService(alertSettings, _alertHistoryStore, _webhookAlertService, new LoggerAdapter<EmailAlertService>());
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
@@ -130,8 +137,16 @@ namespace PerformanceMonitorDashboard
             /* Scheduled analysis-finding notifications. Constructed alongside the
                alert engine (all dependencies exist by this point); started by
                _analysisScheduler.Configure() in MainWindow_Loaded. */
+            /* serverId resolver (Plan E E3c): use the matching ServerConnection.Id (GUID string)
+               so alert_history.json keys stay consistent with the threshold-alert engine; fall
+               back to the finding's stable int id if the lookup misses (server removed mid-cycle). */
             _analysisNotificationService = new AnalysisNotificationService(
-                _emailAlertService, alertSettings, _serverManager, new LoggerAdapter<AnalysisNotificationService>());
+                _emailAlertService,
+                alertSettings,
+                finding => _serverManager.GetAllServers()
+                    .FirstOrDefault(s => string.Equals(s.ServerName, finding.ServerName, StringComparison.OrdinalIgnoreCase))
+                    ?.Id ?? finding.ServerId.ToString(),
+                new LoggerAdapter<AnalysisNotificationService>());
             _analysisScheduler = new AnalysisScheduler(
                 _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 
@@ -349,7 +364,7 @@ namespace PerformanceMonitorDashboard
             _analysisScheduler?.Stop();
 
             // Save alert history to disk
-            _emailAlertService?.SaveAlertLog();
+            _alertHistoryStore?.SaveAlertLog();
 
             // Clean up notification service
             _notificationService?.Dispose();
@@ -605,7 +620,7 @@ namespace PerformanceMonitorDashboard
             }
             EventHandler alertHandler = (_, _) =>
             {
-                _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
+                _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);
                 UpdateAlertBadge();
                 _alertsHistoryContent?.RefreshAlerts();
             };
@@ -1356,7 +1371,7 @@ namespace PerformanceMonitorDashboard
 
         private void UpdateAlertBadge()
         {
-            var alerts = _emailAlertService.GetAlertHistory(hoursBack: 24, limit: 100);
+            var alerts = _alertHistoryStore.GetAlertHistory(hoursBack: 24, limit: 100);
             var count = alerts.Count;
 
             if (count > 0)
@@ -2142,7 +2157,7 @@ namespace PerformanceMonitorDashboard
                 var server = _serverManager.GetAllServers().FirstOrDefault(s => s.Id == serverId);
                 if (server != null)
                 {
-                    _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
+                    _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);
                     UpdateAlertBadge();
                     _alertsHistoryContent?.RefreshAlerts();
                 }

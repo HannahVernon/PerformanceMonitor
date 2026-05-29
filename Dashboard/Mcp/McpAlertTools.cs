@@ -57,7 +57,7 @@ public sealed class McpAlertTools
                     username = prefs.SmtpUsername,
                     from_address = prefs.SmtpFromAddress,
                     recipients = prefs.SmtpRecipients,
-                    password_configured = !string.IsNullOrEmpty(EmailAlertService.GetSmtpPassword()),
+                    password_configured = !string.IsNullOrEmpty(DashboardAlertCredentials.GetSmtpPassword()),
                     consecutive_failures = emailHealth?.ConsecutiveFailures ?? 0,
                     last_error = emailHealth?.LastError
                 }
@@ -84,7 +84,7 @@ public sealed class McpAlertTools
             var limitError = McpHelpers.ValidateTop(limit);
             if (limitError != null) return Task.FromResult(limitError);
 
-            var service = EmailAlertService.Current;
+            var service = JsonAlertHistoryStore.Current;
             if (service == null)
             {
                 return Task.FromResult("Alert service not initialized. Connect to a server first.");

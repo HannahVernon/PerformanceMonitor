@@ -960,7 +960,9 @@ public partial class SettingsWindow : Window
             App.SmtpFromAddress = SmtpFromBox.Text?.Trim() ?? "";
             App.SmtpRecipients = SmtpRecipientsBox.Text?.Trim() ?? "";
 
-            var error = await Services.EmailAlertService.SendTestEmailAsync();
+            /* "Test before save": App.* statics were just set from the live UI above, so
+               new AppAlertSettings() reflects what the user typed (Plan E E3c, MOD-1). */
+            var error = await EmailSendCore.SendTestEmailAsync(new AppAlertSettings(), Services.EmailAlertService.Branding);
             if (error == null)
             {
                 MessageBox.Show("Test email sent successfully!", "Test Email", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1084,7 +1086,7 @@ public partial class SettingsWindow : Window
         {
             var url = TeamsWebhookUrlBox.Text?.Trim() ?? "";
             var proxy = TeamsProxyAddressBox.Text?.Trim();
-            var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy);
+            var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy, EmailAlertService.Branding);
 
             if (error == null)
             {
@@ -1115,7 +1117,7 @@ public partial class SettingsWindow : Window
         {
             var url = SlackWebhookUrlBox.Text?.Trim() ?? "";
             var proxy = SlackProxyAddressBox.Text?.Trim();
-            var error = await WebhookAlertService.SendTestSlackAsync(url, proxy);
+            var error = await WebhookAlertService.SendTestSlackAsync(url, proxy, EmailAlertService.Branding);
 
             if (error == null)
             {
