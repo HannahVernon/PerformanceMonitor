@@ -25,6 +25,13 @@ namespace PerformanceMonitorLite.Services;
 /// </summary>
 public class EmailAlertService
 {
+    private static readonly AlertBranding s_branding = new(
+        "Performance Monitor Lite",
+        "To silence this alert: open Performance Monitor Lite → Settings → Manage Mute Rules");
+
+    /// <summary>Test seam: the branding this app feeds the shared email/template renderer.</summary>
+    internal static AlertBranding Branding => s_branding;
+
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
     private readonly IAlertSettings _settings;
     private readonly DuckDbInitializer? _duckDb;
@@ -94,7 +101,7 @@ public class EmailAlertService
 
                     var subject = $"[SQL Monitor Alert] {metricName} on {serverName}";
                     var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildAlertEmail(
-                        metricName, serverName, currentValue, thresholdValue, _settings.EmailCooldownMinutes, context);
+                        metricName, serverName, currentValue, thresholdValue, _settings.EmailCooldownMinutes, s_branding, context);
 
                     try
                     {
@@ -281,7 +288,7 @@ AND   send_error IS NULL";
             if (string.IsNullOrWhiteSpace(App.SmtpRecipients))
                 return "No recipients configured.";
 
-            var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildTestEmail();
+            var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildTestEmail(s_branding);
             await SendEmailAsync(new AppAlertSettings(), "[SQL Monitor] Test Email", htmlBody, plainTextBody);
             return null;
         }

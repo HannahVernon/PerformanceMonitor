@@ -20,6 +20,7 @@ using System.Windows.Threading;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Mcp;
 using PerformanceMonitorDashboard.Models;
 using System.Reflection;

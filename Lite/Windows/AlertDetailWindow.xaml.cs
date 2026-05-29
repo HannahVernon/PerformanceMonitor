@@ -8,6 +8,7 @@
 
 using System.Collections.Generic;
 using System.Windows;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Services;
 
 namespace PerformanceMonitorLite.Windows;

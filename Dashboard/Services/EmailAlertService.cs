@@ -30,6 +30,10 @@ namespace PerformanceMonitorDashboard.Services
     {
         private const string SmtpCredentialKey = "PerformanceMonitorDashboard_SMTP";
         private const int MaxAlertLogEntries = 1000;
+        private static readonly AlertBranding s_branding = new("Performance Monitor Dashboard", null);
+
+        /// <summary>Test seam: the branding this app feeds the shared email/template renderer.</summary>
+        internal static AlertBranding Branding => s_branding;
         private static readonly CredentialService s_credentialService = new();
         private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
@@ -116,7 +120,7 @@ namespace PerformanceMonitorDashboard.Services
                         string? sendError = null;
                         var subject = $"[SQL Monitor Alert] {metricName} on {serverName}";
                         var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildAlertEmail(
-                            metricName, serverName, currentValue, thresholdValue, _settings.EmailCooldownMinutes, context);
+                            metricName, serverName, currentValue, thresholdValue, _settings.EmailCooldownMinutes, s_branding, context);
 
                         try
                         {
@@ -407,7 +411,7 @@ namespace PerformanceMonitorDashboard.Services
                     return "No recipients configured.";
 
                 var subject = "[SQL Monitor] Test Email";
-                var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildTestEmail();
+                var (htmlBody, plainTextBody) = EmailTemplateBuilder.BuildTestEmail(s_branding);
 
                 await SendEmailAsync(settings, subject, htmlBody, plainTextBody);
                 return null;
