@@ -64,20 +64,31 @@ public sealed class McpAnalysisTools
                     start = findings[0].TimeRangeStart?.ToString("o"),
                     end = findings[0].TimeRangeEnd?.ToString("o")
                 },
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    drill_down = f.DrillDown,
-                    next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath)
+                    var advice = FactAdvice.GetForFinding(f);
+                    return new
+                    {
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        drill_down = f.DrillDown,
+                        next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        },
+                        suggested_remediation_sql = advice?.RemediationTsql
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
