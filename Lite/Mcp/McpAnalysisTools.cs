@@ -527,25 +527,40 @@ public sealed class McpAnalysisTools
             {
                 server = resolved.Value.ServerName,
                 finding_count = findings.Count,
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    finding_id = f.FindingId,
-                    analysis_time = f.AnalysisTime.ToString("o"),
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    time_range = new
+                    // Persisted findings carry no drill-down (it is ephemeral —
+                    // see AnalysisModels.cs), so generate advice prose only.
+                    // suggested_remediation_sql is intentionally omitted: it
+                    // would always be null here. The operator re-runs
+                    // analyze_server when they need the copy-paste T-SQL.
+                    var advice = FactAdvice.GetForFactKey(f.RootFactKey);
+                    return new
                     {
-                        start = f.TimeRangeStart?.ToString("o"),
-                        end = f.TimeRangeEnd?.ToString("o")
-                    }
+                        finding_id = f.FindingId,
+                        analysis_time = f.AnalysisTime.ToString("o"),
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        time_range = new
+                        {
+                            start = f.TimeRangeStart?.ToString("o"),
+                            end = f.TimeRangeEnd?.ToString("o")
+                        },
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }

@@ -354,13 +354,28 @@ public sealed class McpAnalysisTools
             {
                 server = resolved.Value.ServerName,
                 finding_count = findings.Count,
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    severity = Math.Round(f.Severity, 2),
-                    category = f.Category,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    analysis_time = f.AnalysisTime.ToString("o")
+                    // Persisted findings carry no drill-down (it is ephemeral —
+                    // see AnalysisModels.cs), so generate advice prose only.
+                    // suggested_remediation_sql is intentionally omitted: it
+                    // would always be null here. The operator re-runs
+                    // analyze_server when they need the copy-paste T-SQL.
+                    var advice = FactAdvice.GetForFactKey(f.RootFactKey);
+                    return new
+                    {
+                        severity = Math.Round(f.Severity, 2),
+                        category = f.Category,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        analysis_time = f.AnalysisTime.ToString("o"),
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
