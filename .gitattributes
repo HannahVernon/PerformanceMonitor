@@ -1,0 +1,15 @@
+* text=auto eol=crlf
+
+# Explicit binary markers (prevent text mis-detection / corruption):
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.snk binary
+*.parquet binary
+*.zip binary
+*.duckdb binary
