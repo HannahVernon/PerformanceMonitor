@@ -146,4 +146,61 @@ public class AnalysisNotificationTests
         var tsql = restored.Details.Single(d => d.IsCodeBlock);
         Assert.Contains("sp_query_store_force_plan", tsql.Body);
     }
+
+    [Fact]
+    public void BuildContext_PlanRegression_AttachesStructuredRemediationToCodeBlock()
+    {
+        var finding = MakeFinding("remstruct0000001", rootFactKey: "PLAN_REGRESSION",
+            drillDown: RegressedQueriesDrillDown());
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        var tsql = context.Details.Single(d => d.IsCodeBlock);
+        Assert.NotNull(tsql.Remediation);
+        Assert.Equal("PLAN_REGRESSION", tsql.Remediation!.FactKey);
+        Assert.Equal("force", tsql.Remediation.Action);
+        var target = Assert.Single(tsql.Remediation.Targets);
+        Assert.Equal("AdventureWorks", target.Database);
+        Assert.Equal(4242, target.QueryId);
+        Assert.Equal(17, target.PlanId);
+    }
+
+    [Fact]
+    public void AlertContext_RemediationAction_SurvivesRoundTrip()
+    {
+        var finding = MakeFinding("remround00000001", rootFactKey: "PLAN_REGRESSION",
+            drillDown: RegressedQueriesDrillDown());
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        var rem = restored.Details.Single(d => d.IsCodeBlock).Remediation;
+        Assert.NotNull(rem);
+        Assert.Equal("PLAN_REGRESSION", rem!.FactKey);
+        Assert.Equal("force", rem.Action);
+        var t = Assert.Single(rem.Targets);
+        Assert.Equal("AdventureWorks", t.Database);
+        Assert.Equal(4242, t.QueryId);
+        Assert.Equal(17, t.PlanId);
+        Assert.Equal("0xBEEF", t.BestPlanHash);
+        Assert.Equal(7.5, t.RegressionFactor);
+    }
+
+    [Fact]
+    public void AlertContext_LegacyJsonWithoutRemediation_DeserializesToNull()
+    {
+        // A persisted context written before the Remediation field existed: a code
+        // block with no "Remediation" property. It must deserialize cleanly with
+        // Remediation == null (no Apply button, no crash) — backward compatibility.
+        const string legacyJson =
+            "{\"Details\":[{\"Heading\":\"Remediation T-SQL\",\"Fields\":[]," +
+            "\"Body\":\"EXEC sys.sp_query_store_force_plan @query_id = 1, @plan_id = 2;\",\"IsCodeBlock\":true}]}";
+
+        Assert.True(AlertContextSerializer.TryDeserialize(legacyJson, out var restored));
+        var item = Assert.Single(restored.Details);
+        Assert.True(item.IsCodeBlock);
+        Assert.Null(item.Remediation);
+        Assert.Contains("sp_query_store_force_plan", item.Body);
+    }
 }
