@@ -13,7 +13,7 @@ namespace PerformanceMonitorDashboard.Analysis;
 ///
 /// Two detection patterns:
 /// - Z-score: (observed - mean) / stddev — used for continuous metrics
-///   (CPU, batch requests, I/O latency, session counts, query duration)
+///   (CPU, batch requests, I/O latency, session counts, query duration, memory)
 /// - Ratio: currentRate / baselineRate — used for rate/event metrics
 ///   (wait stats, blocking, deadlocks)
 ///
@@ -21,7 +21,6 @@ namespace PerformanceMonitorDashboard.Analysis;
 ///
 /// Port of Lite's AnomalyDetector — uses SQL Server collect.* tables instead of DuckDB views.
 /// No server_id filtering — Dashboard monitors one server per database.
-/// No memory metric — Dashboard doesn't collect memory stats.
 /// </summary>
 public class SqlServerAnomalyDetector
 {
@@ -101,6 +100,7 @@ public class SqlServerAnomalyDetector
         await DetectBatchRequestAnomalies(context, anomalies);
         await DetectSessionAnomalies(context, anomalies);
         await DetectQueryDurationAnomalies(context, anomalies);
+        await DetectMemoryAnomalies(context, anomalies);
 
         return anomalies;
     }
@@ -704,6 +704,79 @@ FROM per_collection;";
         catch (Exception ex)
         {
             Logger.Error($"[SqlServerAnomalyDetector] Query duration anomaly detection failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Detects memory utilization anomalies using z-score against time-bucketed baseline.
+    /// Measures total_memory_mb / committed_target_memory_mb as memory pressure %
+    /// (the SQL Server analog of Lite's total_server_memory_mb / target_server_memory_mb).
+    /// </summary>
+    private async Task DetectMemoryAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                SqlServerMetricNames.Memory, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return;
+
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    AVG(CAST(total_memory_mb AS FLOAT) / NULLIF(committed_target_memory_mb, 0) * 100) AS avg_pressure,
+    MAX(CAST(total_memory_mb AS FLOAT) / NULLIF(committed_target_memory_mb, 0) * 100) AS peak_pressure,
+    COUNT(*) AS sample_count
+FROM collect.memory_stats
+WHERE collection_time >= @windowStart AND collection_time <= @windowEnd
+AND   committed_target_memory_mb > 0;";
+
+            cmd.Parameters.Add(new SqlParameter("@windowStart", context.TimeRangeStart));
+            cmd.Parameters.Add(new SqlParameter("@windowEnd", context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var avgPressure = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var peakPressure = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var windowSamples = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+
+            if (windowSamples == 0) return;
+
+            var deviation = (peakPressure - baseline.Mean) / effectiveStdDev;
+            if (deviation < GetDeviationThreshold(SqlServerMetricNames.Memory)) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["peak_memory_pressure_pct"] = peakPressure,
+                ["avg_memory_pressure_pct"] = avgPressure,
+                ["baseline_mean"] = baseline.Mean,
+                ["baseline_stddev"] = effectiveStdDev,
+                ["deviation_sigma"] = deviation,
+                ["baseline_samples"] = baseline.SampleCount,
+                ["window_samples"] = windowSamples
+            };
+            AddBaselineContext(metadata, baseline);
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_MEMORY_PRESSURE",
+                Value = peakPressure,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[SqlServerAnomalyDetector] Memory anomaly detection failed: {ex.Message}");
         }
     }
 }
