@@ -235,11 +235,18 @@ SET NUMERIC_ROUNDABORT OFF;";
         {
             using var command = connection.CreateCommand();
             command.CommandTimeout = RemediationCommandTimeoutSeconds;
+            // HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'ALTER') is the DB-scoped form:
+            // it returns 1 for a principal holding ALTER on the connected database
+            // (incl. sysadmin / db_owner) and 0 otherwise. The (NULL, NULL, 'ALTER')
+            // server-scoped form the plan's O5 specified returns NULL even for
+            // sysadmin — verified against sql2022 — so it would fail closed for every
+            // login. DB_NAME() (not a literal) keeps it correct after the catalog
+            // retarget. This is the permission sp_query_store_force_plan actually needs.
             command.CommandText = @"
 SELECT
     current_db = DB_NAME(),
     executing_login = SUSER_SNAME(),
-    has_alter = HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER'),
+    has_alter = CONVERT(int, ISNULL(HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'ALTER'), 0)),
     spid = @@SPID;";
 
             using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
