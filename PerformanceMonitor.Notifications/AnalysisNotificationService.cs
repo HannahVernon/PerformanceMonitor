@@ -263,7 +263,12 @@ internal static class FindingMessageFormatter
                 {
                     Heading = "Remediation T-SQL",
                     Body = advice.RemediationTsql,
-                    IsCodeBlock = true
+                    IsCodeBlock = true,
+                    /* Structured, typed payload for an in-app Apply (PR-B). Rides in the
+                       persisted contextJson; may be null (e.g. PARAMETER_SENSITIVITY has
+                       advice + prose but no force action), in which case no Apply affordance
+                       is offered. Built from the same drill-down the preview rendered. */
+                    Remediation = FactRemediation.BuildAction(finding)
                 });
             }
         }

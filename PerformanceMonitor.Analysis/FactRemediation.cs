@@ -42,10 +42,49 @@ public static class FactRemediation
         };
     }
 
-    private static string? GenerateForPlanRegression(AnalysisFinding finding)
+    /// <summary>
+    /// Builds the structured, typed remediation action for the finding, or null
+    /// if no execution shape applies. Mirrors <see cref="GenerateForFinding"/>'s
+    /// switch on <see cref="AnalysisFinding.RootFactKey"/>: PLAN_REGRESSION yields
+    /// a "force" action over the extracted targets (when any are valid); every
+    /// other fact key — including PARAMETER_SENSITIVITY — yields null (no handler,
+    /// no Apply affordance), consistent with the "do not force" advice.
+    /// </summary>
+    public static RemediationAction? BuildAction(AnalysisFinding finding)
     {
-        if (finding.DrillDown is null || !finding.DrillDown.TryGetValue("regressed_queries", out var raw) || raw is null)
+        if (finding is null || string.IsNullOrEmpty(finding.RootFactKey))
             return null;
+
+        switch (finding.RootFactKey)
+        {
+            case "PLAN_REGRESSION":
+                var targets = ExtractPlanRegressionTargets(finding);
+                return targets.Count == 0
+                    ? null
+                    : new RemediationAction("PLAN_REGRESSION", "force", targets);
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Extracts the typed force-plan targets from a PLAN_REGRESSION finding's
+    /// drill-down. This is the single parse: the preview renderer
+    /// (<see cref="GenerateForPlanRegression"/>) renders entirely from this list,
+    /// and <see cref="BuildAction"/> persists it. Applies the same guards as the
+    /// renderer always has — database non-empty, query_id &gt; 0, best_plan_id
+    /// &gt; 0 — and the same cap of 5 targets. Reads every value the preview
+    /// renders (including the two cpu/exec numbers) so the renderer needs no
+    /// second drill-down read.
+    /// </summary>
+    public static IReadOnlyList<ForcePlanTarget> ExtractPlanRegressionTargets(AnalysisFinding finding)
+    {
+        var targets = new List<ForcePlanTarget>();
+
+        if (finding?.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("regressed_queries", out var raw) ||
+            raw is null)
+            return targets;
 
         JsonElement element;
         try
@@ -54,18 +93,15 @@ public static class FactRemediation
         }
         catch
         {
-            return null;
+            return targets;
         }
 
         if (element.ValueKind != JsonValueKind.Array)
-            return null;
-
-        var sb = new StringBuilder();
-        var emitted = 0;
+            return targets;
 
         foreach (var row in element.EnumerateArray())
         {
-            if (emitted >= 5) break;
+            if (targets.Count >= 5) break;
             if (row.ValueKind != JsonValueKind.Object) continue;
 
             var database = GetString(row, "database");
@@ -74,33 +110,55 @@ public static class FactRemediation
             if (string.IsNullOrEmpty(database) || queryId <= 0 || bestPlanId <= 0)
                 continue;
 
-            var latestHash = GetString(row, "latest_plan_hash");
-            var bestHash = GetString(row, "best_plan_hash");
-            var latestCpu = GetDouble(row, "latest_cpu_per_exec_us");
-            var bestCpu = GetDouble(row, "best_cpu_per_exec_us");
-            var regressionFactor = GetDouble(row, "regression_factor");
+            targets.Add(new ForcePlanTarget(
+                Database: database,
+                QueryId: queryId,
+                PlanId: bestPlanId,
+                BestPlanHash: GetString(row, "best_plan_hash"),
+                LatestPlanHash: GetString(row, "latest_plan_hash"),
+                LatestCpuPerExecUs: GetDouble(row, "latest_cpu_per_exec_us"),
+                BestCpuPerExecUs: GetDouble(row, "best_cpu_per_exec_us"),
+                RegressionFactor: GetDouble(row, "regression_factor")));
+        }
 
+        return targets;
+    }
+
+    /// <summary>
+    /// Thin renderer over <see cref="ExtractPlanRegressionTargets"/>. The output
+    /// is byte-for-byte the same preview the inline parse produced before the
+    /// extract-once refactor (guarded by the render-stability golden test),
+    /// including the two "(cpu/exec ... us)" comment lines.
+    /// </summary>
+    private static string? GenerateForPlanRegression(AnalysisFinding finding)
+    {
+        var targets = ExtractPlanRegressionTargets(finding);
+        if (targets.Count == 0)
+            return null;
+
+        var sb = new StringBuilder();
+        var emitted = 0;
+
+        foreach (var target in targets)
+        {
             if (emitted > 0)
                 sb.AppendLine();
 
-            sb.AppendLine($"-- Database: {database}");
-            sb.AppendLine($"-- query_id = {queryId}, forcing plan_id = {bestPlanId}");
-            if (!string.IsNullOrEmpty(latestHash))
-                sb.AppendLine($"--   latest plan hash: {latestHash} (cpu/exec {latestCpu:F0} us)");
-            if (!string.IsNullOrEmpty(bestHash))
-                sb.AppendLine($"--   best plan hash:   {bestHash}   (cpu/exec {bestCpu:F0} us)");
-            sb.AppendLine($"--   regression factor: {regressionFactor:F1}x");
-            sb.AppendLine($"USE {QuoteName(database)};");
-            sb.AppendLine($"EXEC sys.sp_query_store_force_plan @query_id = {queryId}, @plan_id = {bestPlanId};");
+            sb.AppendLine($"-- Database: {target.Database}");
+            sb.AppendLine($"-- query_id = {target.QueryId}, forcing plan_id = {target.PlanId}");
+            if (!string.IsNullOrEmpty(target.LatestPlanHash))
+                sb.AppendLine($"--   latest plan hash: {target.LatestPlanHash} (cpu/exec {target.LatestCpuPerExecUs:F0} us)");
+            if (!string.IsNullOrEmpty(target.BestPlanHash))
+                sb.AppendLine($"--   best plan hash:   {target.BestPlanHash}   (cpu/exec {target.BestCpuPerExecUs:F0} us)");
+            sb.AppendLine($"--   regression factor: {target.RegressionFactor:F1}x");
+            sb.AppendLine($"USE {QuoteName(target.Database)};");
+            sb.AppendLine($"EXEC sys.sp_query_store_force_plan @query_id = {target.QueryId}, @plan_id = {target.PlanId};");
             sb.AppendLine();
             sb.AppendLine($"-- To back out:");
-            sb.AppendLine($"-- EXEC sys.sp_query_store_unforce_plan @query_id = {queryId}, @plan_id = {bestPlanId};");
+            sb.AppendLine($"-- EXEC sys.sp_query_store_unforce_plan @query_id = {target.QueryId}, @plan_id = {target.PlanId};");
 
             emitted++;
         }
-
-        if (emitted == 0)
-            return null;
 
         return sb.ToString().TrimEnd();
     }

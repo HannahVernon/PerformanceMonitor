@@ -1,0 +1,70 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace PerformanceMonitorDashboard.Services.Remediation
+{
+    /// <summary>
+    /// The narrow, purpose-built seam between a remediation handler and the
+    /// privileged server access. There is deliberately NO general
+    /// <c>Execute(sql)</c> method: every member is a single, typed operation.
+    ///
+    /// <para>
+    /// The authoritative gate lives inside <see cref="ForcePlanAsync"/> /
+    /// <see cref="UnforcePlanAsync"/>: each opens ONE retargeted connection, runs
+    /// the correct-database assert, the ALTER permission check, and the freshness
+    /// probe on that same open connection, and only then issues the EXEC — no
+    /// re-open between gate and mutation (R2-MOD-1). A handler cannot hand these
+    /// methods a forged "all-clear"; the gate is re-derived internally every call.
+    /// <see cref="PreflightForcePlanAsync"/> is the DISPLAY driver only.
+    /// </para>
+    /// </summary>
+    public interface IRemediationExecutor
+    {
+        /// <summary>
+        /// Read-only display probe for one target (permission, Query Store state,
+        /// freshness, executing login, connected database). Advisory only — does
+        /// NOT authorise a mutation.
+        /// </summary>
+        Task<TargetPreflight> PreflightForcePlanAsync(string database, long queryId, long planId, CancellationToken ct);
+
+        /// <summary>
+        /// Whether <c>config.remediation_action_log</c> exists on the MONITORING
+        /// connection (PerformanceMonitor DB). When false, apply is hard-blocked
+        /// before any mutation (R2-MOD-2).
+        /// </summary>
+        Task<bool> AuditTableExistsAsync(CancellationToken ct);
+
+        /// <summary>
+        /// Whether a prior successful <c>force</c> for this target was recorded and
+        /// not since unforced — used to restrict un-apply to actions B3 itself
+        /// applied. Queried on the MONITORING connection.
+        /// </summary>
+        Task<bool> HasPriorForceAsync(string database, long queryId, long planId, CancellationToken ct);
+
+        /// <summary>
+        /// Self-gating force. Opens one retargeted connection, runs the gate
+        /// (DB_NAME assert + HAS_PERMS_BY_NAME(ALTER) + freshness) and — only if it
+        /// passes — the <c>sp_query_store_force_plan</c> EXEC, on that same open
+        /// connection.
+        /// </summary>
+        Task<ForcePlanOutcome> ForcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct);
+
+        /// <summary>Self-gating inverse of <see cref="ForcePlanAsync"/> (sp_query_store_unforce_plan).</summary>
+        Task<ForcePlanOutcome> UnforcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct);
+
+        /// <summary>
+        /// Writes one audit row on the MONITORING connection. Returns false if the
+        /// INSERT failed against a present table (the O3 applied-but-unlogged case);
+        /// the absent-table case never reaches here (hard-blocked earlier).
+        /// </summary>
+        Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct);
+    }
+}
