@@ -71,7 +71,15 @@ SET NUMERIC_ROUNDABORT OFF;";
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
 
-            var gate = await ReadGateAsync(connection, queryId, planId, ct).ConfigureAwait(false);
+            // Identity + permission first, using only always-accessible intrinsics
+            // (DB_NAME/SUSER_SNAME/HAS_PERMS_BY_NAME). The Query Store catalog read is
+            // attempted only when ALTER is held and the DB matches — a least-privilege
+            // login lacks VIEW DATABASE STATE and would error reading those views, and
+            // for the display path the disposition is already decided by DB/ALTER.
+            var gate = await ReadGateIdentityAsync(connection, ct).ConfigureAwait(false);
+            if (gate.HasAlter && string.Equals(gate.CurrentDatabase, database, StringComparison.Ordinal))
+                await ReadQueryStoreStateAsync(connection, queryId, planId, gate, ct).ConfigureAwait(false);
+
             return new TargetPreflight
             {
                 Database = database,
@@ -112,7 +120,8 @@ SET NUMERIC_ROUNDABORT OFF;";
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
 
-            var gate = await ReadGateAsync(connection, queryId, planId, ct).ConfigureAwait(false);
+            // Gate part 1 — identity + permission, intrinsics only (always accessible).
+            var gate = await ReadGateIdentityAsync(connection, ct).ConfigureAwait(false);
 
             // (1) Correct-database assert (A5). Open with InitialCatalog normally
             // fails closed before here; this makes the wrong-DB boundary explicit.
@@ -123,12 +132,19 @@ SET NUMERIC_ROUNDABORT OFF;";
             }
 
             // (2) ALTER permission — fail closed with grant guidance, no elevation.
+            // Checked BEFORE any Query Store catalog read: a login lacking ALTER also
+            // typically lacks VIEW DATABASE STATE, so reading the QS views would throw
+            // before we could report this clean, actionable result.
             if (!gate.HasAlter)
             {
                 return Outcome(database, queryId, planId, RemediationStatus.PermissionDenied, forced: false, gate,
                     $"The monitoring login '{gate.ExecutingLogin}' lacks ALTER on '{database}'. " +
                     $"Map it into '{database}' (CREATE USER ... FOR LOGIN) and GRANT ALTER, or connect with a login that has it.");
             }
+
+            // Gate part 2 — Query Store state, on the SAME open connection (R2-MOD-1),
+            // only now that ALTER is confirmed.
+            await ReadQueryStoreStateAsync(connection, queryId, planId, gate, ct).ConfigureAwait(false);
 
             // (3) Freshness — plan present, Query Store forceable, current force state.
             if (!gate.PlanPresent)
@@ -211,10 +227,11 @@ SET NUMERIC_ROUNDABORT OFF;";
         };
 
         /// <summary>
-        /// One round-trip read of the per-target gate state on the supplied open
-        /// connection. The IDs are typed BigInt parameters; nothing is concatenated.
+        /// Gate part 1: identity + permission, using only always-accessible intrinsics
+        /// (DB_NAME / SUSER_SNAME / HAS_PERMS_BY_NAME / @@SPID). Safe for a
+        /// least-privilege login that cannot read the Query Store catalog views.
         /// </summary>
-        private static async Task<GateReading> ReadGateAsync(SqlConnection connection, long queryId, long planId, CancellationToken ct)
+        private static async Task<GateReading> ReadGateIdentityAsync(SqlConnection connection, CancellationToken ct)
         {
             using var command = connection.CreateCommand();
             command.CommandTimeout = RemediationCommandTimeoutSeconds;
@@ -223,13 +240,7 @@ SELECT
     current_db = DB_NAME(),
     executing_login = SUSER_SNAME(),
     has_alter = HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER'),
-    qs_state = (SELECT TOP (1) dqso.actual_state_desc FROM sys.database_query_store_options AS dqso),
-    plan_present = CASE WHEN EXISTS (SELECT 1 FROM sys.query_store_plan AS qsp WHERE qsp.query_id = @query_id AND qsp.plan_id = @plan_id) THEN 1 ELSE 0 END,
-    is_forced = ISNULL((SELECT TOP (1) CONVERT(int, qsp.is_forced_plan) FROM sys.query_store_plan AS qsp WHERE qsp.query_id = @query_id AND qsp.plan_id = @plan_id), 0),
-    force_failure_count = ISNULL((SELECT TOP (1) qsp.force_failure_count FROM sys.query_store_plan AS qsp WHERE qsp.query_id = @query_id AND qsp.plan_id = @plan_id), 0),
     spid = @@SPID;";
-            command.Parameters.Add(new SqlParameter("@query_id", SqlDbType.BigInt) { Value = queryId });
-            command.Parameters.Add(new SqlParameter("@plan_id", SqlDbType.BigInt) { Value = planId });
 
             using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             if (!await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -240,24 +251,53 @@ SELECT
                 CurrentDatabase = reader.IsDBNull(0) ? null : reader.GetString(0),
                 ExecutingLogin = reader.IsDBNull(1) ? null : reader.GetString(1),
                 HasAlter = !reader.IsDBNull(2) && reader.GetInt32(2) == 1,
-                QueryStoreState = reader.IsDBNull(3) ? null : reader.GetString(3),
-                PlanPresent = !reader.IsDBNull(4) && reader.GetInt32(4) == 1,
-                IsForcedPlan = !reader.IsDBNull(5) && reader.GetInt32(5) == 1,
-                ForceFailureCount = reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
-                Spid = reader.IsDBNull(7) ? (int?)null : Convert.ToInt32(reader.GetInt16(7))
+                Spid = reader.IsDBNull(3) ? (int?)null : Convert.ToInt32(reader.GetInt16(3))
             };
+        }
+
+        /// <summary>
+        /// Gate part 2: Query Store freshness/state for the target, on the SAME open
+        /// connection. Reads sys.database_query_store_options / sys.query_store_plan
+        /// (requires VIEW DATABASE STATE), so it must only run after the ALTER check
+        /// has passed. Mutates <paramref name="gate"/> in place. The IDs are typed
+        /// BigInt parameters; nothing is concatenated.
+        /// </summary>
+        private static async Task ReadQueryStoreStateAsync(SqlConnection connection, long queryId, long planId, GateReading gate, CancellationToken ct)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = RemediationCommandTimeoutSeconds;
+            command.CommandText = @"
+SELECT
+    qs_state = (SELECT TOP (1) dqso.actual_state_desc FROM sys.database_query_store_options AS dqso),
+    plan_present = CASE WHEN EXISTS (SELECT 1 FROM sys.query_store_plan AS qsp WHERE qsp.query_id = @query_id AND qsp.plan_id = @plan_id) THEN 1 ELSE 0 END,
+    is_forced = ISNULL((SELECT TOP (1) CONVERT(int, qsp.is_forced_plan) FROM sys.query_store_plan AS qsp WHERE qsp.query_id = @query_id AND qsp.plan_id = @plan_id), 0),
+    force_failure_count = ISNULL((SELECT TOP (1) qsp.force_failure_count FROM sys.query_store_plan AS qsp WHERE qsp.query_id = @query_id AND qsp.plan_id = @plan_id), 0);";
+            command.Parameters.Add(new SqlParameter("@query_id", SqlDbType.BigInt) { Value = queryId });
+            command.Parameters.Add(new SqlParameter("@plan_id", SqlDbType.BigInt) { Value = planId });
+
+            using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                return;
+
+            gate.QueryStoreState = reader.IsDBNull(0) ? null : reader.GetString(0);
+            gate.PlanPresent = !reader.IsDBNull(1) && reader.GetInt32(1) == 1;
+            gate.IsForcedPlan = !reader.IsDBNull(2) && reader.GetInt32(2) == 1;
+            gate.ForceFailureCount = reader.IsDBNull(3) ? 0 : reader.GetInt64(3);
         }
 
         private sealed class GateReading
         {
+            // Part 1 (identity) — init-set at construction.
             public string? CurrentDatabase { get; init; }
             public string? ExecutingLogin { get; init; }
             public bool HasAlter { get; init; }
-            public string? QueryStoreState { get; init; }
-            public bool PlanPresent { get; init; }
-            public bool IsForcedPlan { get; init; }
-            public long ForceFailureCount { get; init; }
             public int? Spid { get; init; }
+
+            // Part 2 (Query Store state) — populated only after the ALTER check passes.
+            public string? QueryStoreState { get; set; }
+            public bool PlanPresent { get; set; }
+            public bool IsForcedPlan { get; set; }
+            public long ForceFailureCount { get; set; }
         }
     }
 }
