@@ -357,8 +357,32 @@ public class RemediationTests
         Assert.Equal("unforce", Assert.Single(exec.AuditRecords).Action);
     }
 
+    // ── Reachability-with-gate guard (replaces PR-A's no-caller guard) ──────────
+    //
+    // PR-A asserted the privileged machinery had NO non-core caller. PR-B adds a
+    // legitimate caller (the Apply Fix UI), so "no caller" can no longer hold. The
+    // invariant becomes "reachable ONLY through the gate," proven in two parts:
+    //
+    //   A. The core machinery TYPES + force/unforce methods (handler, registry,
+    //      executor, ForcePlanAsync/UnforcePlanAsync) are still referenced ONLY
+    //      inside the remediation core — the UI never touches them directly.
+    //   B. The single gated entry point (RemediationApplyService) is referenced
+    //      outside the core ONLY by the sanctioned Apply Fix UI files. That facade
+    //      runs the operator confirm before any handler.ApplyAsync (proven
+    //      behaviourally by Gate_* in RemediationApplyServiceTests).
+    //
+    // Together: the UI reaches the privileged executor only via RemediationApplyService,
+    // and RemediationApplyService reaches the handler only after confirm() == true.
+
+    private static readonly string[] CoreMachineryMarkers =
+    {
+        "ForcePlanAsync", "UnforcePlanAsync",
+        "RemediationHandlerRegistry", "DatabaseServiceRemediationExecutor",
+        "ForcePlanHandler", "IRemediationExecutor", "IRemediationHandler",
+    };
+
     [Fact]
-    public void NoCaller_ForceUnforce_OnlyReferencedInRemediationCore()
+    public void CoreMachinery_OnlyReferencedInRemediationCore()
     {
         var dashboardDir = FindDashboardSourceDir();
 
@@ -376,25 +400,51 @@ public class RemediationTests
                 continue;
 
             var text = File.ReadAllText(file);
-            // Reachability is not only via the executor's own method names: a future
-            // surface (PR-B UI) would reach the privileged force/unforce through the
-            // handler/registry/executor TYPES (e.g. registry.TryGet(...).ApplyAsync()),
-            // never typing "ForcePlanAsync". Guard the whole machinery, not just the
-            // leaf method names, so PR-A's "not UI-reachable" invariant is actually
-            // protected when PR-B adds callers (LOW-1 from the security review).
-            string[] markers =
-            {
-                "ForcePlanAsync", "UnforcePlanAsync",
-                "RemediationHandlerRegistry", "DatabaseServiceRemediationExecutor",
-                "ForcePlanHandler", "IRemediationExecutor", "IRemediationHandler",
-            };
-            if (markers.Any(text.Contains))
+            if (CoreMachineryMarkers.Any(text.Contains))
                 offenders.Add(rel);
         }
 
         Assert.True(offenders.Count == 0,
-            "No MCP/menu/command surface may reach the remediation-execution machinery " +
-            "(force/unforce, handler, registry, or executor) in PR-A. Offending files: " +
+            "The privileged remediation machinery (force/unforce, handler, registry, executor) " +
+            "must be reached ONLY through RemediationApplyService — no UI/MCP/menu/command file " +
+            "may reference the machinery types directly. Offending files: " + string.Join(", ", offenders));
+    }
+
+    [Fact]
+    public void GatedEntry_ReferencedOnlyBySanctionedUiPath()
+    {
+        var dashboardDir = FindDashboardSourceDir();
+
+        // The ONLY files outside the remediation core allowed to reach the gated
+        // facade. Any other file gaining a reference to RemediationApplyService is a
+        // new, unreviewed path to the privileged executor and must fail the build.
+        var sanctioned = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "MainWindow.xaml.cs",                    // constructs + injects the service
+            "Controls/AlertsHistoryContent.xaml.cs", // threads it into the alert detail dialog
+            "AlertDetailWindow.xaml.cs",             // invokes Apply/Un-apply via the service
+            "RemediationConfirmWindow.xaml.cs",      // the confirm modal (gate UI)
+        };
+
+        var offenders = new List<string>();
+        foreach (var file in Directory.EnumerateFiles(dashboardDir, "*.cs", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(dashboardDir, file).Replace('\\', '/');
+            if (rel.StartsWith("bin/") || rel.StartsWith("obj/"))
+                continue;
+            if (rel.StartsWith("Services/Remediation/"))
+                continue;
+            if (sanctioned.Contains(rel))
+                continue;
+
+            var text = File.ReadAllText(file);
+            if (text.Contains("RemediationApplyService"))
+                offenders.Add(rel);
+        }
+
+        Assert.True(offenders.Count == 0,
+            "Only the sanctioned Apply Fix UI path may reference RemediationApplyService. " +
+            "A new reference is an unreviewed path to the privileged executor. Offending files: " +
             string.Join(", ", offenders));
     }
 

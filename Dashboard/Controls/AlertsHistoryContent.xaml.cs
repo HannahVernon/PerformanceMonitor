@@ -20,6 +20,7 @@ using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitorDashboard.Services.Remediation;
 using PerformanceMonitor.Ui;
 using PerformanceMonitor.Common;
 
@@ -30,6 +31,13 @@ namespace PerformanceMonitorDashboard.Controls
         public event EventHandler? AlertsDismissed;
 
         public MuteRuleService? MuteRuleService { get; set; }
+
+        /// <summary>
+        /// Gated orchestrator for Apply Fix. Injected from MainWindow; when null the
+        /// alert detail dialog shows no Apply affordance. The UI touches only this
+        /// facade — never the remediation handler/registry/executor directly.
+        /// </summary>
+        public RemediationApplyService? RemediationApplyService { get; set; }
 
         private List<AlertHistoryDisplayItem> _allAlerts = new();
         private DateTime? _lastRefreshed;
@@ -73,6 +81,7 @@ namespace PerformanceMonitorDashboard.Controls
             _allAlerts = entries.Select(e => new AlertHistoryDisplayItem
             {
                 AlertTime = e.AlertTime,
+                ServerId = e.ServerId,
                 ServerName = e.ServerName,
                 MetricName = e.MetricName,
                 CurrentValue = e.CurrentValue,
@@ -491,7 +500,7 @@ namespace PerformanceMonitorDashboard.Controls
             if (row.DataContext is not AlertHistoryDisplayItem item) return;
 
             var owner = Window.GetWindow(this);
-            var detailWindow = new AlertDetailWindow(item);
+            var detailWindow = new AlertDetailWindow(item, RemediationApplyService);
             if (owner != null) detailWindow.Owner = owner;
             detailWindow.ShowDialog();
         }
@@ -504,7 +513,7 @@ namespace PerformanceMonitorDashboard.Controls
             var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
             if (dataGrid?.SelectedItem is not AlertHistoryDisplayItem item) return;
 
-            var detailWindow = new AlertDetailWindow(item) { Owner = Window.GetWindow(this) };
+            var detailWindow = new AlertDetailWindow(item, RemediationApplyService) { Owner = Window.GetWindow(this) };
             detailWindow.ShowDialog();
         }
 
@@ -561,6 +570,14 @@ namespace PerformanceMonitorDashboard.Controls
     {
         public DateTime AlertTime { get; set; }
         public string TimeLocal => AlertTime.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+        /// <summary>
+        /// Source server identity carried from <c>AlertLogEntry.ServerId</c>. Usually
+        /// a <c>ServerConnection.Id</c> GUID, but can be the finding's stable int id
+        /// (the notify-time resolver's fallback) — which is why Apply Fix resolution
+        /// is fail-closed (M3).
+        /// </summary>
+        public string ServerId { get; set; } = "";
         public string ServerName { get; set; } = "";
         public string MetricName { get; set; } = "";
         public string CurrentValue { get; set; } = "";
