@@ -91,6 +91,35 @@ namespace PerformanceMonitorDashboard
                     ? $"Un-apply on {request.ServerDisplayName}"
                     : $"Apply to {request.ServerDisplayName}";
             }
+
+            // LOW-2 (wrong-server boundary): when the source server was resolved by
+            // NAME (the alert lacked a stable id and a unique name matched), a server
+            // renamed/replaced since the alert could be a *different* target. Remove
+            // the Enter-key click-through, and — only if Apply would otherwise be
+            // enabled — require an explicit acknowledgement checkbox before enabling
+            // it, so a by-name target can never be applied by a reflexive click/Enter.
+            if (resolvedByName)
+            {
+                ConfirmButton.IsDefault = false;
+                if (ConfirmButton.IsEnabled)
+                {
+                    ByNameAckCheck.Visibility = Visibility.Visible;
+                    ByNameAckCheck.IsChecked = false;
+                    ConfirmButton.IsEnabled = false;
+                    ConfirmButton.ToolTip = "Confirm the target server (checkbox above) to enable.";
+                }
+            }
+        }
+
+        // Gates Apply on the explicit by-name acknowledgement (LOW-2). Only reachable
+        // when ByNameAckCheck is visible — i.e. resolved-by-name AND otherwise-applyable;
+        // the audit-absent / not-actionable hard-blocks leave the checkbox collapsed, so
+        // the button stays disabled there regardless.
+        private void ByNameAck_Changed(object sender, RoutedEventArgs e)
+        {
+            ConfirmButton.IsEnabled = ByNameAckCheck.IsChecked == true;
+            if (ConfirmButton.IsEnabled)
+                ConfirmButton.ClearValue(ToolTipProperty);
         }
 
         private void ConfirmButton_Click(object sender, RoutedEventArgs e)
