@@ -376,12 +376,25 @@ public class RemediationTests
                 continue;
 
             var text = File.ReadAllText(file);
-            if (text.Contains("ForcePlanAsync") || text.Contains("UnforcePlanAsync"))
+            // Reachability is not only via the executor's own method names: a future
+            // surface (PR-B UI) would reach the privileged force/unforce through the
+            // handler/registry/executor TYPES (e.g. registry.TryGet(...).ApplyAsync()),
+            // never typing "ForcePlanAsync". Guard the whole machinery, not just the
+            // leaf method names, so PR-A's "not UI-reachable" invariant is actually
+            // protected when PR-B adds callers (LOW-1 from the security review).
+            string[] markers =
+            {
+                "ForcePlanAsync", "UnforcePlanAsync",
+                "RemediationHandlerRegistry", "DatabaseServiceRemediationExecutor",
+                "ForcePlanHandler", "IRemediationExecutor", "IRemediationHandler",
+            };
+            if (markers.Any(text.Contains))
                 offenders.Add(rel);
         }
 
         Assert.True(offenders.Count == 0,
-            "No MCP/menu/command surface may reach ForcePlanAsync/UnforcePlanAsync in PR-A. Offending files: " +
+            "No MCP/menu/command surface may reach the remediation-execution machinery " +
+            "(force/unforce, handler, registry, or executor) in PR-A. Offending files: " +
             string.Join(", ", offenders));
     }
 
