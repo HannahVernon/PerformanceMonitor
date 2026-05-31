@@ -71,6 +71,13 @@ namespace PerformanceMonitorDashboard
         private readonly JsonAlertHistoryStore _alertHistoryStore;
         private readonly CredentialService _credentialService;
 
+        /// <summary>
+        /// Gated Apply Fix orchestrator (PR-B). The only non-core holder of the
+        /// remediation machinery; threaded into the Alerts history UI so the alert
+        /// detail dialog can drive a confirmed, audited apply/un-apply.
+        /// </summary>
+        private readonly Services.Remediation.RemediationApplyService _remediationApplyService;
+
         // Scheduled analysis-finding notifications — separate cadence and gating from
         // the threshold-alert engine above. Owns its own DispatcherTimer internally;
         // re-Configured after every settings save. Field name avoids colliding with
@@ -121,6 +128,10 @@ namespace PerformanceMonitorDashboard
             ServerListView.ItemsSource = _serverListItems;
 
             _credentialService = new CredentialService();
+            /* Gated Apply Fix orchestrator (PR-B): registry + executor + audit over the
+               existing per-server monitoring connection. No elevation — reuses the
+               same credentials the rest of the Dashboard already holds. */
+            _remediationApplyService = new Services.Remediation.RemediationApplyService(_serverManager, _credentialService);
             /* Saved-prefs settings adapter shared by the three alert services (Plan E E1). */
             var alertSettings = new DashboardAlertSettings(_preferencesService);
             /* Alert-history store owns the alert_history.json list + management API (Plan E E2).
@@ -801,6 +812,7 @@ namespace PerformanceMonitorDashboard
 
             _alertsHistoryContent = new AlertsHistoryContent();
             _alertsHistoryContent.MuteRuleService = _muteRuleService;
+            _alertsHistoryContent.RemediationApplyService = _remediationApplyService;
             _alertsHistoryContent.AlertsDismissed += (_, _) => UpdateAlertBadge();
 
             var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };

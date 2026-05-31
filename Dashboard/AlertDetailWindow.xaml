@@ -116,6 +116,32 @@
                                                  Background="Transparent"
                                                  Foreground="{DynamicResource ForegroundBrush}"
                                                  BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"/>
+
+                                        <!-- Apply Fix: only present when this block carries a structured,
+                                             known-fix-type RemediationAction. Hard-disabled (with a tooltip)
+                                             when the source server cannot be unambiguously resolved (M3). -->
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                    Margin="0,6,0,0"
+                                                    Visibility="{Binding ShowApply, Converter={StaticResource BoolToVis}}">
+                                            <Button x:Name="ApplyButton" Content="Apply Fix…"
+                                                    Padding="10,3" Margin="0,0,8,0"
+                                                    IsEnabled="{Binding CanApply}"
+                                                    ToolTip="{Binding ApplyDisabledReason}"
+                                                    Click="ApplyButton_Click"/>
+                                            <Button x:Name="UnapplyButton" Content="Un-apply"
+                                                    Padding="10,3"
+                                                    IsEnabled="{Binding CanApply}"
+                                                    ToolTip="{Binding ApplyDisabledReason}"
+                                                    Click="UnapplyButton_Click"/>
+                                        </StackPanel>
+
+                                        <!-- Per-run result / warnings (success / skipped / blocked /
+                                             permission-denied / applied-but-unlogged). -->
+                                        <TextBlock Text="{Binding ResultText}" TextWrapping="Wrap"
+                                                   Margin="0,6,0,0"
+                                                   FontWeight="{Binding ResultBold}"
+                                                   Foreground="{Binding ResultBrush}"
+                                                   Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}"/>
                                     </StackPanel>
 
                                     <!-- Advice prose. -->
