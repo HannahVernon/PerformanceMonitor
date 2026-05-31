@@ -57,8 +57,17 @@
                 <Border.Background>
                     <SolidColorBrush Color="{StaticResource WarningColor}" Opacity="0.15"/>
                 </Border.Background>
-                <TextBlock x:Name="ByNameText" Foreground="{DynamicResource ForegroundBrush}"
-                           FontStyle="Italic" TextWrapping="Wrap"/>
+                <StackPanel>
+                    <TextBlock x:Name="ByNameText" Foreground="{DynamicResource ForegroundBrush}"
+                               FontStyle="Italic" TextWrapping="Wrap"/>
+                    <!-- LOW-2: a by-name-resolved server may be the wrong target if it was
+                         renamed/replaced since the alert. Require explicit acknowledgement
+                         (and no Enter click-through) before Apply is enabled. -->
+                    <CheckBox x:Name="ByNameAckCheck" Visibility="Collapsed" Margin="0,8,0,0"
+                              Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold"
+                              Content="I confirm this is the correct target server."
+                              Checked="ByNameAck_Changed" Unchecked="ByNameAck_Changed"/>
+                </StackPanel>
             </Border>
 
             <Border x:Name="AuditAbsentBanner" Visibility="Collapsed"
