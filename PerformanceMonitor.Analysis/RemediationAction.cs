@@ -26,10 +26,33 @@ namespace PerformanceMonitor.Analysis;
 /// </para>
 /// </summary>
 public sealed record RemediationAction(
-    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" — handler-registry key
+    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" | "RCSI" — handler-registry key
     string Action,                              // "force" (plan regression) | "set" (db config). Un-apply derives "unforce".
     IReadOnlyList<ForcePlanTarget> Targets,      // force-plan targets (empty list for DB_CONFIG)
-    IReadOnlyList<DbConfigTarget>? DbConfigTargets = null);  // DB-config targets (null for force-plan)
+    IReadOnlyList<DbConfigTarget>? DbConfigTargets = null,  // DB-config targets (null for force-plan)
+    RcsiInactionFigures? RcsiFigures = null);    // B3 Phase 3: RCSI risk-of-not-changing figures carried on the persisted action
+
+/// <summary>
+/// The risk-of-NOT-changing monitoring figures for a destructive RCSI action
+/// (B3 Phase 3), captured at <see cref="FactRemediation.BuildRcsiAction"/> time when
+/// the finding (and its drill-down enrichment) IS available, and CARRIED on the
+/// persisted <see cref="RemediationAction"/> so the informed-consent dialog renders
+/// the REAL figures at apply time — when only the persisted action survives (the UI
+/// apply call site has no finding). <see cref="FactRiskDisclosure.GetForAction"/>
+/// reads these in preference to the (often-null at apply time) finding, falling back
+/// to the weak-case baseline only when they are genuinely absent.
+///
+/// <para>
+/// These are DISPLAY/disclosure values only — never an execution input. The mirror
+/// the §3.3 drill-down enrichment fields: per-database blocked-process event count,
+/// deadlock count, and reader-vs-writer share (0–100, null when no reader/writer
+/// blocked-process rows were captured).
+/// </para>
+/// </summary>
+public sealed record RcsiInactionFigures(
+    int BlockingEvents,
+    int Deadlocks,
+    int? ReaderWriterPct);
 
 /// <summary>
 /// The fixed, hardcoded set of database settings B3 can apply. This enum — NOT any

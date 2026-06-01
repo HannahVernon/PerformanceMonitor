@@ -99,7 +99,15 @@ public sealed class McpAnalysisTools
                             investigation = advice.Investigation,
                             remediation = advice.Remediation
                         },
-                        suggested_remediation_sql = advice?.RemediationTsql
+                        suggested_remediation_sql = advice?.RemediationTsql,
+                        // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
+                        // remediation — read-only here (no consent gate off-app; consent
+                        // is enforced only by the in-app acknowledge-each-risk dialog).
+                        destructive_risk_disclosure = advice?.Risks is null ? null : new
+                        {
+                            risks_of_changing = advice.Risks.RisksOfChanging.Select(r => r.Text).ToArray(),
+                            risks_of_not_changing = advice.Risks.RisksOfNotChanging.Select(r => r.Text).ToArray()
+                        }
                     };
                 })
             }, McpHelpers.JsonOptions);

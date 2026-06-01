@@ -289,6 +289,44 @@ internal static class FindingMessageFormatter
             }
         }
 
+        /* B3 Phase 3 (PR-B): the DESTRUCTIVE "Enable RCSI (advanced)" affordance is a
+           SEPARATE detail item from the always-safe DB-config Apply — a distinct view
+           with its own singular Remediation (FactKey "RCSI"), so the two Apply buttons
+           live on two views and can never cross. Emitted on ANY config_issues-bearing
+           finding where RCSI is OFF + the §3.3 enrichment is present (BuildRcsiAction
+           returns non-null); it is NOT gated behind the always-safe block's
+           advice.RemediationTsql condition (a finding can offer RCSI even when no
+           always-safe setting is wrong). The risk-of-not-changing figures are captured
+           HERE (the finding is in hand) onto the action so the in-app dialog renders the
+           REAL numbers at apply time; the in-app consent gate is what makes it live. */
+        var rcsiAction = FactRemediation.BuildRcsiAction(finding);
+        if (rcsiAction is not null)
+        {
+            context.Details.Add(new AlertDetailItem
+            {
+                Heading = "Enable RCSI (advanced)",
+                Body = FactRemediation.GenerateRcsiPreview(finding),
+                IsCodeBlock = true,
+                Remediation = rcsiAction
+            });
+
+            /* Cross-surface disclosure (§6): the two-sided risk renders as READ-ONLY
+               prose on email (both bodies) / webhook (all flow from context.Details) —
+               you cannot consent through an email, so there is NO checkbox gate off-app.
+               The in-app dialog renders the SAME RiskDisclosure as acknowledge-each-risk
+               checkboxes (the only surface that ENFORCES consent). Built from advice.Risks
+               (FactAdvice.GetForFinding), which the MCP findings output also reads. */
+            var risksBody = RenderRiskDisclosureBody(advice?.Risks);
+            if (risksBody is not null)
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = "RCSI — risks of changing / not changing",
+                    Body = risksBody
+                });
+            }
+        }
+
         /* Drill-down values are anonymous types behind object (a bare object, or a
            List<object> of them). Round-trip through System.Text.Json and walk as
            JsonElement — robust to any shape DrillDownCollector emits. */
@@ -316,6 +354,28 @@ internal static class FindingMessageFormatter
         }
 
         return context;
+    }
+
+    /// <summary>
+    /// Renders the two-sided <see cref="RiskDisclosure"/> as read-only prose for the
+    /// cross-surface (email / webhook) disclosure item (B3 Phase 3, §6). Sections are
+    /// separated by blank lines so the email/webhook prose renderer emits one paragraph
+    /// per chunk. Returns null when there is nothing to disclose.
+    /// </summary>
+    private static string? RenderRiskDisclosureBody(RiskDisclosure? risks)
+    {
+        if (risks is null ||
+            (risks.RisksOfChanging.Count == 0 && risks.RisksOfNotChanging.Count == 0))
+            return null;
+
+        var sb = new StringBuilder();
+        sb.Append("Risks of CHANGING:");
+        foreach (var r in risks.RisksOfChanging)
+            sb.Append("\n\n• ").Append(r.Text);
+        sb.Append("\n\nRisks of NOT changing:");
+        foreach (var r in risks.RisksOfNotChanging)
+            sb.Append("\n\n• ").Append(r.Text);
+        return sb.ToString();
     }
 
     /// <summary>

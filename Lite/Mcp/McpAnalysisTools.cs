@@ -87,7 +87,15 @@ public sealed class McpAnalysisTools
                             investigation = advice.Investigation,
                             remediation = advice.Remediation
                         },
-                        suggested_remediation_sql = advice?.RemediationTsql
+                        suggested_remediation_sql = advice?.RemediationTsql,
+                        // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
+                        // remediation, read-only (Lite has no Apply path; its RCSI fields
+                        // are null/0 so the inaction side shows the weak-case baseline).
+                        destructive_risk_disclosure = advice?.Risks is null ? null : new
+                        {
+                            risks_of_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfChanging, r => r.Text)),
+                            risks_of_not_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfNotChanging, r => r.Text))
+                        }
                     };
                 })
             }, McpHelpers.JsonOptions);

@@ -22,18 +22,34 @@ namespace PerformanceMonitorDashboard
     /// </summary>
     public partial class RemediationConfirmWindow : Window
     {
+        // ── B3 Phase 3: informed-consent gate state ──────────────────────────────
+        // The dialog IS the trust boundary. For a destructive (RequiresInformedConsent)
+        // request, ConfirmButton is enabled ONLY when every risk checkbox is ticked AND
+        // the base apply-ability holds AND (if resolved-by-name) the by-name ack is ticked.
+        private readonly bool _requiresConsent;
+        private readonly bool _resolvedByName;
+        private bool _baseActionable;                 // audit present + at least one actionable target
+        private readonly List<RiskRow> _changingRisks = new();
+        private readonly List<RiskRow> _notChangingRisks = new();
+
         public RemediationConfirmWindow(RemediationConfirmRequest request, bool resolvedByName, string? resolvedByNameReason)
         {
             InitializeComponent();
 
+            _requiresConsent = request.RequiresInformedConsent;
+            _resolvedByName = resolvedByName;
+
             var verb = request.IsUnapply ? "Un-apply Fix" : "Apply Fix";
             Title = $"Confirm {verb}";
             var isDbConfig = string.Equals(request.FactKey, "DB_CONFIG", System.StringComparison.Ordinal);
-            HeaderText.Text = isDbConfig
-                ? $"Apply the always-safe database setting change(s) on {request.ServerDisplayName}?"
-                : request.IsUnapply
-                    ? $"Un-apply (unforce) the forced plan on {request.ServerDisplayName}?"
-                    : $"Force the historical-better plan on {request.ServerDisplayName}?";
+            var isRcsi = string.Equals(request.FactKey, "RCSI", System.StringComparison.Ordinal);
+            HeaderText.Text = isRcsi
+                ? $"Enable READ_COMMITTED_SNAPSHOT (RCSI) — a database-wide concurrency change — on {request.ServerDisplayName}?"
+                : isDbConfig
+                    ? $"Apply the always-safe database setting change(s) on {request.ServerDisplayName}?"
+                    : request.IsUnapply
+                        ? $"Un-apply (unforce) the forced plan on {request.ServerDisplayName}?"
+                        : $"Force the historical-better plan on {request.ServerDisplayName}?";
 
             ServerText.Text = request.ServerDisplayName;
             ExecutingText.Text = string.IsNullOrEmpty(request.ExecutingLogin)
@@ -55,10 +71,15 @@ namespace PerformanceMonitorDashboard
                 rows.Add(TargetRow.From(t, request.IsUnapply));
             TargetsList.ItemsSource = rows;
 
-            // Fact-key-specific caveat. DB_CONFIG: the always-safe note (RCSI excluded).
-            // PLAN_REGRESSION: the M2 still-better caveat (apply-time judgment; hidden
-            // on un-apply where there is no "still better" decision).
-            if (isDbConfig)
+            // Fact-key-specific caveat. RCSI: the always-safe caveat does NOT apply (the
+            // two-sided risk sections below carry the framing). DB_CONFIG: the always-safe
+            // note (RCSI excluded). PLAN_REGRESSION: the M2 still-better caveat (apply-time
+            // judgment; hidden on un-apply where there is no "still better" decision).
+            if (isRcsi)
+            {
+                CaveatBanner.Visibility = Visibility.Collapsed;
+            }
+            else if (isDbConfig)
             {
                 CaveatText.Text =
                     "These three settings are always-safe to change on a live database (online, no blocking). "
@@ -73,10 +94,30 @@ namespace PerformanceMonitorDashboard
                 CaveatText.Text = RemediationConfirmRequest.StillBetterCaveat;
             }
 
+            // B3 Phase 3: render the two-sided acknowledge-each-risk sections for a
+            // destructive request. ALWAYS render both sections (RCSI has >= 1 each).
+            if (_requiresConsent && request.Risks is not null)
+            {
+                ConsentSection.Visibility = Visibility.Visible;
+                ConsentBannerText.Text = isRcsi
+                    ? "RCSI is a database-wide concurrency change. Read both risk lists; every box must be checked to enable Apply."
+                    : "This is a possibly-destructive change. Read both risk lists; every box must be checked to enable Apply.";
+
+                foreach (var r in request.Risks.RisksOfChanging)
+                    _changingRisks.Add(new RiskRow(r.Text));
+                foreach (var r in request.Risks.RisksOfNotChanging)
+                    _notChangingRisks.Add(new RiskRow(r.Text));
+
+                ChangingRisksList.ItemsSource = _changingRisks;
+                NotChangingRisksList.ItemsSource = _notChangingRisks;
+            }
+
             SqlPreview.Text = request.PreviewSql;
 
             // Audit-table-absent hard block: the privileged core would block every
             // target with no mutation, so disable the confirm button and say why.
+            // _baseActionable is the audit-present + actionable predicate the consent /
+            // by-name gates further restrict — never loosen.
             if (!request.AuditTableExists)
             {
                 AuditAbsentBanner.Visibility = Visibility.Visible;
@@ -85,14 +126,14 @@ namespace PerformanceMonitorDashboard
                     + "Apply Fix is hard-blocked here — no change will be made. Upgrade this server to "
                     + "2.12.0 to enable audited Apply Fix.";
                 ConfirmButton.Content = request.IsUnapply ? "Un-apply" : "Apply";
-                ConfirmButton.IsEnabled = false;
+                _baseActionable = false;
                 ConfirmButton.ToolTip = AuditAbsentText.Text;
             }
             else if (!request.IsUnapply && !request.AnyActionable)
             {
                 // Nothing applyable (already forced / stale / QS off / no ALTER / wrong DB).
                 ConfirmButton.Content = $"Apply to {request.ServerDisplayName}";
-                ConfirmButton.IsEnabled = false;
+                _baseActionable = false;
                 ConfirmButton.ToolTip = "No target is in an applyable state — see the per-target notes above.";
             }
             else
@@ -100,37 +141,93 @@ namespace PerformanceMonitorDashboard
                 ConfirmButton.Content = request.IsUnapply
                     ? $"Un-apply on {request.ServerDisplayName}"
                     : $"Apply to {request.ServerDisplayName}";
+                _baseActionable = true;
             }
 
             // LOW-2 (wrong-server boundary): when the source server was resolved by
             // NAME (the alert lacked a stable id and a unique name matched), a server
             // renamed/replaced since the alert could be a *different* target. Remove
             // the Enter-key click-through, and — only if Apply would otherwise be
-            // enabled — require an explicit acknowledgement checkbox before enabling
-            // it, so a by-name target can never be applied by a reflexive click/Enter.
-            if (resolvedByName)
-            {
+            // enabled — require an explicit acknowledgement checkbox before enabling it.
+            // The destructive-consent risk boxes ALSO suppress the default-Enter and add
+            // their own N-checkbox gate; both combine in RecomputeConfirmEnabled.
+            if (resolvedByName || _requiresConsent)
                 ConfirmButton.IsDefault = false;
-                if (ConfirmButton.IsEnabled)
-                {
-                    ByNameAckCheck.Visibility = Visibility.Visible;
-                    ByNameAckCheck.IsChecked = false;
-                    ConfirmButton.IsEnabled = false;
-                    ConfirmButton.ToolTip = "Confirm the target server (checkbox above) to enable.";
-                }
+
+            if (resolvedByName && _baseActionable)
+            {
+                ByNameAckCheck.Visibility = Visibility.Visible;
+                ByNameAckCheck.IsChecked = false;
+            }
+
+            RecomputeConfirmEnabled();
+        }
+
+        /// <summary>
+        /// The single enablement predicate (generalizes the LOW-2 by-name ack to N risk
+        /// boxes). Apply is enabled ONLY when the base apply-ability holds AND, for a
+        /// destructive request, EVERY risk checkbox is ticked, AND, for a by-name-resolved
+        /// server, the by-name ack is ticked. A destructive RCSI on a by-name target
+        /// therefore requires BOTH all risk boxes AND the by-name ack.
+        /// </summary>
+        private void RecomputeConfirmEnabled()
+        {
+            var allRiskBoxesChecked = _changingRisks.TrueForAll(r => r.IsChecked)
+                && _notChangingRisks.TrueForAll(r => r.IsChecked);
+            var byNameAck = ByNameAckCheck.IsChecked == true;
+
+            var enabled = ComputeConfirmEnabled(
+                _baseActionable, _requiresConsent, allRiskBoxesChecked, _resolvedByName, byNameAck);
+            ConfirmButton.IsEnabled = enabled;
+
+            if (enabled)
+            {
+                ConfirmButton.ClearValue(ToolTipProperty);
+            }
+            else if (!_baseActionable)
+            {
+                // Keep the audit-absent / not-actionable tooltip already set above.
+            }
+            else if (_requiresConsent && !allRiskBoxesChecked)
+            {
+                ConfirmButton.ToolTip = "Acknowledge every risk (all checkboxes above) to enable.";
+            }
+            else if (_resolvedByName && !byNameAck)
+            {
+                ConfirmButton.ToolTip = "Confirm the target server (checkbox above) to enable.";
             }
         }
 
-        // Gates Apply on the explicit by-name acknowledgement (LOW-2). Only reachable
-        // when ByNameAckCheck is visible — i.e. resolved-by-name AND otherwise-applyable;
-        // the audit-absent / not-actionable hard-blocks leave the checkbox collapsed, so
-        // the button stays disabled there regardless.
-        private void ByNameAck_Changed(object sender, RoutedEventArgs e)
+        /// <summary>
+        /// PURE enablement predicate — the whole consent gate (B-1). Apply is enabled ONLY
+        /// when the base apply-ability holds AND, for a destructive request, EVERY risk
+        /// checkbox is ticked, AND, for a by-name-resolved server, the by-name ack is
+        /// ticked. A destructive RCSI on a by-name target requires BOTH all risk boxes AND
+        /// the by-name ack. Extracted as internal static so the HARD gate-enforcement test
+        /// (Dashboard.Tests) verifies the exact predicate the dialog uses, without WPF.
+        /// </summary>
+        internal static bool ComputeConfirmEnabled(
+            bool baseActionable,
+            bool requiresConsent,
+            bool allRiskBoxesChecked,
+            bool resolvedByName,
+            bool byNameAck)
         {
-            ConfirmButton.IsEnabled = ByNameAckCheck.IsChecked == true;
-            if (ConfirmButton.IsEnabled)
-                ConfirmButton.ClearValue(ToolTipProperty);
+            if (!baseActionable)
+                return false;
+            if (requiresConsent && !allRiskBoxesChecked)
+                return false;
+            if (resolvedByName && !byNameAck)
+                return false;
+            return true;
         }
+
+        // Re-evaluates the full enablement predicate when any risk checkbox toggles.
+        private void RiskBox_Changed(object sender, RoutedEventArgs e) => RecomputeConfirmEnabled();
+
+        // Gates Apply on the explicit by-name acknowledgement (LOW-2), combined with the
+        // destructive-consent risk boxes via the unified RecomputeConfirmEnabled.
+        private void ByNameAck_Changed(object sender, RoutedEventArgs e) => RecomputeConfirmEnabled();
 
         private void ConfirmButton_Click(object sender, RoutedEventArgs e)
         {
@@ -142,6 +239,19 @@ namespace PerformanceMonitorDashboard
         {
             DialogResult = false;
             Close();
+        }
+
+        /// <summary>
+        /// One acknowledge-each-risk checkbox row (B3 Phase 3). <see cref="IsChecked"/>
+        /// is two-way bound to the CheckBox; the unified RecomputeConfirmEnabled reads it.
+        /// The CheckBox Checked/Unchecked events also fire RiskBox_Changed so the gate
+        /// re-evaluates on every toggle. Text is read-only/wrap-enabled (display only).
+        /// </summary>
+        private sealed class RiskRow
+        {
+            public RiskRow(string text) => Text = text;
+            public string Text { get; }
+            public bool IsChecked { get; set; }
         }
 
         /// <summary>Bindable projection of one confirm target.</summary>

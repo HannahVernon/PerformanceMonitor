@@ -244,6 +244,153 @@ public class AnalysisNotificationTests
         Assert.Null(rem!.DbConfigTargets);
     }
 
+    // ── B3 Phase 3 (PR-B): second "Enable RCSI (advanced)" detail item + cross-surface ──
+
+    private static AnalysisFinding DbConfigRcsiFinding(
+        bool rcsiOff = true, bool enrichment = true, bool alsoAutoShrink = false,
+        int blocking = 12, int deadlocks = 3, int? rwPct = 80, string hash = "dbconfig00000099")
+    {
+        var row = new Dictionary<string, object?>
+        {
+            ["database"] = "Foo",
+            ["recovery_model"] = "FULL",
+            ["rcsi"] = !rcsiOff,                  // rcsi == true means RCSI is ON
+            ["query_store"] = true,
+            ["issues"] = rcsiOff ? new[] { "RCSI OFF" } : System.Array.Empty<string>(),
+            ["auto_shrink"] = alsoAutoShrink,
+            ["auto_close"] = false,
+            ["page_verify"] = "CHECKSUM",
+        };
+        if (enrichment)
+        {
+            row["rcsi_blocking_events"] = blocking;
+            row["rcsi_deadlocks"] = deadlocks;
+            row["rcsi_reader_writer_pct"] = rwPct;
+        }
+        return MakeFinding(hash, rootFactKey: "DB_CONFIG", category: "config_issues",
+            drillDown: new Dictionary<string, object> { ["config_issues"] = new List<object> { row } });
+    }
+
+    [Fact]
+    public void BuildContext_RcsiOffWithEnrichment_EmitsSecondEnableRcsiItem()
+    {
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(), notifyThreshold: 1.5);
+
+        var rcsiItem = Assert.Single(context.Details, d => d.Heading == "Enable RCSI (advanced)");
+        Assert.True(rcsiItem.IsCodeBlock);
+        Assert.NotNull(rcsiItem.Remediation);
+        Assert.Equal("RCSI", rcsiItem.Remediation!.FactKey);
+        Assert.Contains("SET READ_COMMITTED_SNAPSHOT ON", rcsiItem.Body);
+        // The figures rode the action (captured while the finding was in hand).
+        Assert.NotNull(rcsiItem.Remediation.RcsiFigures);
+        Assert.Equal(12, rcsiItem.Remediation.RcsiFigures!.BlockingEvents);
+
+        // The cross-surface disclosure item is also present (read-only, both email bodies + webhook).
+        var disclosure = Assert.Single(context.Details, d => d.Heading == "RCSI — risks of changing / not changing");
+        Assert.False(disclosure.IsCodeBlock);
+        Assert.Contains("Risks of CHANGING", disclosure.Body);
+        Assert.Contains("Risks of NOT changing", disclosure.Body);
+        Assert.Contains("RCSI eliminates", disclosure.Body);   // 80% reader/writer
+    }
+
+    [Fact]
+    public void BuildContext_RcsiOn_EmitsNoEnableRcsiItem()
+    {
+        // RCSI already ON -> the affordance must NOT appear (M2-1 polarity).
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(rcsiOff: false), notifyThreshold: 1.5);
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Enable RCSI (advanced)");
+        Assert.DoesNotContain(context.Details, d => d.Heading == "RCSI — risks of changing / not changing");
+    }
+
+    [Fact]
+    public void BuildContext_RcsiOffNoEnrichment_EmitsNoEnableRcsiItem()
+    {
+        // Legacy alert: RCSI off but no §3.3 enrichment -> no affordance.
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(enrichment: false), notifyThreshold: 1.5);
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Enable RCSI (advanced)");
+    }
+
+    [Fact]
+    public void BuildContext_RcsiItem_NotGatedBehindAlwaysSafeRemediationTsql()
+    {
+        // The residual round-2 note: emit the RCSI item on ANY config_issues-bearing
+        // finding, NOT only when the always-safe block emitted a Remediation T-SQL item.
+        // Here ONLY RCSI is wrong (no auto_shrink/auto_close/page_verify issue), so the
+        // always-safe BuildAction yields null and NO "Remediation T-SQL" item is emitted —
+        // yet the RCSI item must still appear.
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(alsoAutoShrink: false), notifyThreshold: 1.5);
+
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Remediation T-SQL");
+        Assert.Contains(context.Details, d => d.Heading == "Enable RCSI (advanced)");
+    }
+
+    [Fact]
+    public void BuildContext_BothItems_WhenAlsoAlwaysSafeIssue()
+    {
+        // RCSI off + an always-safe issue (auto_shrink ON): BOTH the always-safe
+        // "Remediation T-SQL" item AND the separate "Enable RCSI (advanced)" item appear,
+        // each with its own singular Remediation. The always-safe one never carries RCSI.
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(alsoAutoShrink: true), notifyThreshold: 1.5);
+
+        var safe = Assert.Single(context.Details, d => d.Heading == "Remediation T-SQL");
+        Assert.Equal("DB_CONFIG", safe.Remediation!.FactKey);
+        Assert.All(safe.Remediation.DbConfigTargets!, t => Assert.NotEqual(DbConfigSetting.ReadCommittedSnapshotOn, t.Setting));
+
+        var rcsi = Assert.Single(context.Details, d => d.Heading == "Enable RCSI (advanced)");
+        Assert.Equal("RCSI", rcsi.Remediation!.FactKey);
+    }
+
+    [Fact]
+    public void BuildContext_RcsiItem_RemediationActionAndFigures_SurviveRoundTrip()
+    {
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(), notifyThreshold: 1.5);
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        var rcsi = Assert.Single(restored.Details, d => d.Heading == "Enable RCSI (advanced)");
+        Assert.NotNull(rcsi.Remediation);
+        Assert.Equal("RCSI", rcsi.Remediation!.FactKey);
+        var t = Assert.Single(rcsi.Remediation.DbConfigTargets!);
+        Assert.Equal(DbConfigSetting.ReadCommittedSnapshotOn, t.Setting);
+        // The real figures survive the persistence round-trip.
+        Assert.NotNull(rcsi.Remediation.RcsiFigures);
+        Assert.Equal(12, rcsi.Remediation.RcsiFigures!.BlockingEvents);
+        Assert.Equal(3, rcsi.Remediation.RcsiFigures.Deadlocks);
+        Assert.Equal(80, rcsi.Remediation.RcsiFigures.ReaderWriterPct);
+    }
+
+    [Fact]
+    public void CrossSurface_RiskDisclosure_RendersInBothEmailBodiesAndWebhook()
+    {
+        var context = FindingMessageFormatter.BuildContext(DbConfigRcsiFinding(), notifyThreshold: 1.5);
+        var branding = EmailAlertService.Branding;
+
+        // Both email bodies flow from context.Details — the disclosure must render in EACH
+        // (feedback_emailtemplatebuilder_two_bodies: HTML + plain-text are separate bodies).
+        var (html, plain) = EmailTemplateBuilder.BuildAlertEmail(
+            "High CPU", "TestServer", "n/a", "n/a", 15, branding, context);
+
+        foreach (var body in new[] { html, plain })
+        {
+            Assert.Contains("RCSI — risks of changing / not changing", body);
+            Assert.Contains("Risks of CHANGING", body);
+            Assert.Contains("Risks of NOT changing", body);
+            Assert.Contains("RCSI eliminates", body);
+        }
+
+        // Webhook payloads (Teams + Slack) also flow from context.Details.
+        var teams = WebhookAlertService.BuildTeamsPayload(
+            "High CPU", "TestServer", "n/a", "n/a", branding, context: context);
+        var slack = WebhookAlertService.BuildSlackPayload(
+            "High CPU", "TestServer", "n/a", "n/a", branding, context: context);
+
+        foreach (var payload in new[] { teams, slack })
+        {
+            Assert.Contains("Risks of NOT changing", payload);
+            Assert.Contains("RCSI eliminates", payload);
+        }
+    }
+
     [Fact]
     public void AlertContext_LegacyJsonWithoutRemediation_DeserializesToNull()
     {

@@ -80,7 +80,21 @@ public record RemediationActionDto(
     string FactKey,
     string Action,
     List<ForcePlanTargetDto> Targets,
-    List<DbConfigTargetDto>? DbConfigTargets = null);
+    List<DbConfigTargetDto>? DbConfigTargets = null,
+    RcsiInactionFiguresDto? RcsiFigures = null);
+
+/// <summary>
+/// JSON mirror of <see cref="RcsiInactionFigures"/> (B3 Phase 3). Carried on the
+/// persisted RCSI action so the informed-consent dialog shows the REAL blocking/
+/// deadlock/reader-writer figures at apply time (the UI apply call site has no
+/// finding). The trailing optional member on <see cref="RemediationActionDto"/>
+/// keeps the round-trip backward-compatible: legacy/non-RCSI contextJson without it
+/// deserializes to null.
+/// </summary>
+public record RcsiInactionFiguresDto(
+    int BlockingEvents,
+    int Deadlocks,
+    int? ReaderWriterPct);
 public record ForcePlanTargetDto(
     string Database,
     long QueryId,
@@ -184,7 +198,11 @@ public static class AlertContextSerializer
                 dbConfigTargets.Add(new DbConfigTargetDto(t.Database, (int)t.Setting, t.CurrentValue));
         }
 
-        return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets);
+        var rcsiFigures = action.RcsiFigures is { } f
+            ? new RcsiInactionFiguresDto(f.BlockingEvents, f.Deadlocks, f.ReaderWriterPct)
+            : null;
+
+        return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets, rcsiFigures);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -223,6 +241,13 @@ public static class AlertContextSerializer
                 dbConfigTargets.Add(new DbConfigTarget(t.Database, (DbConfigSetting)t.Setting, t.CurrentValue));
         }
 
-        return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets);
+        // B3 Phase 3: the RCSI risk figures must survive the round-trip so the dialog
+        // shows the REAL numbers at apply time. Legacy/non-RCSI JSON without the field
+        // deserializes to null -> the disclosure falls back to the finding/weak-case.
+        var rcsiFigures = dto.RcsiFigures is { } f
+            ? new RcsiInactionFigures(f.BlockingEvents, f.Deadlocks, f.ReaderWriterPct)
+            : null;
+
+        return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures);
     }
 }

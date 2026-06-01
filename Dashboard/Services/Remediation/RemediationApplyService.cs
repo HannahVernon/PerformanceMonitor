@@ -52,7 +52,11 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             _serverManager = serverManager ?? throw new ArgumentNullException(nameof(serverManager));
             if (credentialService is null) throw new ArgumentNullException(nameof(credentialService));
 
-            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler() });
+            // B3 Phase 3 (PR-B): RcsiHandler is now LIVE. It is the only IsDestructive
+            // handler; reaching it requires the informed-consent (acknowledge-each-risk)
+            // confirm dialog returning true. Routed via the distinct "RCSI" fact key so
+            // it can never be reached through the always-safe DbConfigHandler.
+            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler() });
             _executorFactory = server =>
                 new DatabaseServiceRemediationExecutor(new DatabaseService(server.GetConnectionString(credentialService)));
             _auditFailureClassifier = (server, ct) =>

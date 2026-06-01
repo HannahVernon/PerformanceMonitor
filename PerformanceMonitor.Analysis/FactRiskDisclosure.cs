@@ -81,7 +81,7 @@ public static class FactRiskDisclosure
                 "tested on a copy first."),
         };
 
-        var figures = ReadInactionFigures(finding, database);
+        var figures = ReadInactionFigures(action, finding, database);
         var notChanging = BuildInactionRisks(db, figures);
 
         return new RiskDisclosure(changing, notChanging);
@@ -139,13 +139,30 @@ public static class FactRiskDisclosure
     }
 
     /// <summary>
-    /// Reads the three enrichment fields for the action's target database from the
-    /// finding's <c>config_issues</c> drill-down. Degrades to the weak-case baseline
-    /// (null/zero) when the finding, drill-down, or fields are absent. Reads the
-    /// analysis window length from the finding when available.
+    /// Resolves the three inaction figures, REAL-figures-first: the figures captured on
+    /// the persisted <see cref="RemediationAction"/> at BuildRcsiAction time take
+    /// precedence (this is what survives to apply time — the UI apply call site has no
+    /// finding). Only when the action carries none do we fall back to the finding's
+    /// <c>config_issues</c> drill-down (the analysis-time path: email/webhook/MCP build
+    /// the disclosure while the finding is still in hand). Degrades to the weak-case
+    /// baseline (null/zero) when neither source has the data.
     /// </summary>
-    private static InactionFigures ReadInactionFigures(AnalysisFinding? finding, string database)
+    private static InactionFigures ReadInactionFigures(RemediationAction action, AnalysisFinding? finding, string database)
     {
+        // Real-figures path: the action carries the figures captured when the finding
+        // WAS available, so the dialog shows the true blocking/deadlock/reader-writer
+        // numbers even though the apply call site passes no finding.
+        if (action.RcsiFigures is { } carried)
+        {
+            return new InactionFigures
+            {
+                HoursBack = HoursBack(finding),
+                BlockingEvents = carried.BlockingEvents,
+                Deadlocks = carried.Deadlocks,
+                ReaderWriterPct = carried.ReaderWriterPct
+            };
+        }
+
         var figures = new InactionFigures { HoursBack = HoursBack(finding) };
 
         if (finding?.DrillDown is null ||
