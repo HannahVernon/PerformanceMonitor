@@ -159,7 +159,10 @@ namespace PerformanceMonitorDashboard
                 finding => _serverManager.GetAllServers()
                     .FirstOrDefault(s => string.Equals(s.ServerName, finding.ServerName, StringComparison.OrdinalIgnoreCase))
                     ?.Id ?? finding.ServerId.ToString(),
-                new LoggerAdapter<AnalysisNotificationService>());
+                new LoggerAdapter<AnalysisNotificationService>(),
+                /* Suppress analysis-finding emails for servers the user silenced via
+                   "Silence All Alerts" — matches the threshold-alert guard. */
+                _alertStateService.IsAnySilencingActive);
             _analysisScheduler = new AnalysisScheduler(
                 _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 
@@ -514,7 +517,13 @@ namespace PerformanceMonitorDashboard
                     // Send notifications on status changes (skip first check)
                     if (_previousConnectionStates.ContainsKey(item.Id))
                     {
-                        if (wasOnline && !isOnline && prefs.NotifyOnConnectionLost)
+                        /* "Silence All Alerts" suppresses connection up/down notifications too —
+                           match the threshold-alert guard so a silenced server produces no tray,
+                           email, or history row. State tracking below still runs unconditionally,
+                           so unsilencing resumes from the correct baseline. */
+                        bool silenced = _alertStateService.IsAnySilencingActive(item.Id);
+
+                        if (!silenced && wasOnline && !isOnline && prefs.NotifyOnConnectionLost)
                         {
                             _notificationService?.ShowServerOfflineNotification(
                                 item.DisplayName,
@@ -530,7 +539,7 @@ namespace PerformanceMonitorDashboard
                                 "Online",
                                 item.Id);
                         }
-                        else if (!wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
+                        else if (!silenced && !wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
                         {
                             _notificationService?.ShowConnectionRestoredNotification(item.DisplayName);
 
