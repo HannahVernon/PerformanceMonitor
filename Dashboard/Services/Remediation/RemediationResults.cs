@@ -220,6 +220,16 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public string? GeneratedSql { get; init; }
         public string Result { get; init; } = "";          // "success" | "skipped" | "error" | "aborted"
         public string? ErrorMessage { get; init; }
+
+        /// <summary>
+        /// B3 Phase 3 (B-3 / M-3): true only when this row records a DESTRUCTIVE apply
+        /// that passed the informed-consent (acknowledge-each-risk) gate (RcsiHandler).
+        /// Always false for the always-safe DB-config rows and the force-plan rows.
+        /// Persisted to the queryable <c>consent_acknowledged</c> bit so a destructive
+        /// apply is distinguishable in the log from an always-safe one.
+        /// </summary>
+        public bool ConsentAcknowledged { get; init; }
+
         public string? SourceAlertRef { get; init; }
     }
 }

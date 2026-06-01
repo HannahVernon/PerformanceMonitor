@@ -741,6 +741,408 @@ public class RemediationTests
         Assert.IsType<ForcePlanHandler>(registry.TryGet("PLAN_REGRESSION"));
     }
 
+    [Fact]
+    public void Rcsi_Handler_IsUnregistered_DeadCodeSafe()
+    {
+        // PR-A is dead-code-safe: a registry without RcsiHandler (the production shape:
+        // ForcePlanHandler + DbConfigHandler) does not route "RCSI" to anything, so no
+        // Apply affordance can reach the destructive handler. PR-B adds the registration.
+        var productionRegistry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler() });
+        Assert.Null(productionRegistry.TryGet("RCSI"));
+
+        // And the PRODUCTION wiring must NOT yet construct an RcsiHandler — assert at the
+        // source level that RemediationApplyService.cs does not register it in PR-A.
+        var dir = FindDashboardSourceDir();
+        var serviceSrc = File.ReadAllText(Path.Combine(dir, "Services", "Remediation", "RemediationApplyService.cs"));
+        Assert.DoesNotContain("new RcsiHandler()", serviceSrc);
+    }
+
+    [Fact]
+    public void CoreMachineryMarkers_Include_RcsiHandler()
+    {
+        // m-3: the destructive handler must be in the reachability guard.
+        Assert.Contains("RcsiHandler", CoreMachineryMarkers);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // B3 PHASE 3 — RCSI destructive-consent privileged core (PR-A; UNREGISTERED)
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>A DB_CONFIG finding with RCSI OFF + the §3.3 enrichment present.</summary>
+    private static AnalysisFinding RcsiOffFinding(int blocking = 12, int deadlocks = 3, int? rwPct = 80, string db = "Foo") => new()
+    {
+        ServerId = 1,
+        ServerName = "TestServer",
+        Category = "config_issues",
+        StoryPath = "DB_CONFIG",
+        StoryPathHash = "dbconfig00000099",
+        RootFactKey = "DB_CONFIG",
+        DrillDown = new Dictionary<string, object>
+        {
+            ["config_issues"] = new List<object>
+            {
+                new { database = db, recovery_model = "FULL", rcsi = false, query_store = true,
+                      issues = new[] { "RCSI OFF" },
+                      auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                      rcsi_blocking_events = blocking, rcsi_deadlocks = deadlocks,
+                      rcsi_reader_writer_pct = rwPct }
+            }
+        }
+    };
+
+    private static RemediationAction RcsiAction(string db = "Foo") =>
+        new("RCSI", "set", Array.Empty<ForcePlanTarget>(), new[] { new DbConfigTarget(db, DbConfigSetting.ReadCommittedSnapshotOn, "OFF") });
+
+    // ── RcsiHandler invariants ───────────────────────────────────────────────────
+
+    [Fact]
+    public void Rcsi_Handler_IsDestructive_And_ApplyOnly()
+    {
+        var handler = new RcsiHandler();
+        Assert.Equal("RCSI", handler.FactKey);
+        Assert.True(handler.IsDestructive);     // the first (and only) true in the codebase
+        Assert.False(handler.SupportsUnapply);
+    }
+
+    [Fact]
+    public async Task Rcsi_UnapplyAsync_Throws()
+    {
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            new RcsiHandler().UnapplyAsync(RcsiAction(), new FakeExecutor(), Identity, CancellationToken.None));
+    }
+
+    // ── Executor RCSI arm: own builder, no-injection, same-string (against the
+    //    executor's OWN BuildAlterStatement — not the display renderer) ───────────
+
+    [Fact]
+    public void Rcsi_Build_SetClause_IsHardcodedLiteral_RegardlessOfName()
+    {
+        foreach (var name in new[] { "Db", "Db]; DROP TABLE x--", "[weird]", "Ünîçödé" })
+        {
+            var stmt = DatabaseService.BuildAlterStatement(name, DbConfigSetting.ReadCommittedSnapshotOn);
+            Assert.EndsWith("SET READ_COMMITTED_SNAPSHOT ON;", stmt);
+        }
+    }
+
+    [Theory]
+    [InlineData("normal")]
+    [InlineData("has]bracket")]
+    [InlineData("has]]double")]
+    [InlineData("ev;il-- GO DROP")]
+    [InlineData("'; ALTER DATABASE master SET")]
+    public void Rcsi_Build_BracketsIdentifierInert_NoInjection(string name)
+    {
+        var stmt = DatabaseService.BuildAlterStatement(name, DbConfigSetting.ReadCommittedSnapshotOn);
+        var expectedToken = "[" + name.Replace("]", "]]") + "]";
+        Assert.Equal($"ALTER DATABASE {expectedToken} SET READ_COMMITTED_SNAPSHOT ON;", stmt);
+    }
+
+    [Fact]
+    public void Rcsi_Build_SameString_ValidatedNameIsBracketedExactly()
+    {
+        const string validated = "  Padded Name  ";
+        var stmt = DatabaseService.BuildAlterStatement(validated, DbConfigSetting.ReadCommittedSnapshotOn);
+        Assert.Equal("ALTER DATABASE [  Padded Name  ] SET READ_COMMITTED_SNAPSHOT ON;", stmt);
+        Assert.NotEqual(stmt, DatabaseService.BuildAlterStatement(validated.TrimEnd(), DbConfigSetting.ReadCommittedSnapshotOn));
+    }
+
+    [Fact]
+    public void Rcsi_SetClause_ExecutorAndService_AreReadCommittedSnapshotOn()
+    {
+        // m-1: all clause-builder copies render the RCSI arm (executor's own builder).
+        Assert.EndsWith("SET READ_COMMITTED_SNAPSHOT ON;",
+            DatabaseService.BuildAlterStatement("X", DbConfigSetting.ReadCommittedSnapshotOn));
+    }
+
+    [Fact]
+    public void Rcsi_SettingTitle_IsFriendly_NotRawEnumName()
+    {
+        // m-2: a RCSI confirm row must not render "ReadCommittedSnapshotOn".
+        Assert.Equal("Read Committed Snapshot Isolation",
+            DbConfigHandler.SettingTitle(DbConfigSetting.ReadCommittedSnapshotOn));
+    }
+
+    // ── RcsiHandler apply behaviours against the faked executor ──────────────────
+
+    [Fact]
+    public async Task Rcsi_AuditTableAbsent_HardBlocks_NoMutation_NoAudit()
+    {
+        var exec = new FakeExecutor { AuditTableExists = false };
+        var result = await new RcsiHandler().ApplyAsync(RcsiAction(), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Blocked, o.Status);
+        Assert.False(o.AuditWritten);
+        Assert.Equal(0, exec.SetDbCalls);
+        Assert.Empty(exec.AuditRecords);
+    }
+
+    [Fact]
+    public async Task Rcsi_PermissionDenied_FailsClosed_NoElevation()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.PermissionDenied, Applied = false,
+                Message = "lacks ALTER", PriorValue = "OFF"
+            }
+        };
+        var result = await new RcsiHandler().ApplyAsync(RcsiAction(), exec, Identity, CancellationToken.None);
+
+        Assert.Equal(RemediationStatus.PermissionDenied, Assert.Single(result.Outcomes).Status);
+        Assert.Equal(1, exec.SetDbCalls);
+    }
+
+    [Fact]
+    public async Task Rcsi_AlreadyOn_Skips_ConsentAcknowledgedStillTrue()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.Skipped, Applied = false,
+                Message = "already on", PriorValue = "ON", GateSpid = 7, ExecSpid = 7
+            }
+        };
+        var result = await new RcsiHandler().ApplyAsync(RcsiAction(), exec, Identity, CancellationToken.None);
+
+        Assert.Equal(RemediationStatus.Skipped, Assert.Single(result.Outcomes).Status);
+        var rec = Assert.Single(exec.AuditRecords);
+        Assert.Equal("skipped", rec.Result);
+        Assert.True(rec.ConsentAcknowledged);     // gate was satisfied to reach apply
+        Assert.Equal("RCSI", rec.FactKey);
+        Assert.Equal("set_rcsi_on", rec.Action);
+    }
+
+    [Fact]
+    public async Task Rcsi_Success_WritesAudit_ConsentAcknowledgedTrue_PriorValueOff()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.Success, Applied = true,
+                ExecutingLogin = "sa", PriorValue = "OFF",
+                GeneratedSql = "ALTER DATABASE [Foo] SET READ_COMMITTED_SNAPSHOT ON;", GateSpid = 9, ExecSpid = 9
+            }
+        };
+        var result = await new RcsiHandler().ApplyAsync(RcsiAction(), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Success, o.Status);
+        Assert.True(o.AuditWritten);
+        var rec = Assert.Single(exec.AuditRecords);
+        Assert.True(rec.ConsentAcknowledged);
+        Assert.Equal("OFF", rec.PriorValue);
+        Assert.Equal("success", rec.Result);
+    }
+
+    [Fact]
+    public async Task DbConfig_And_ForcePlan_WriteConsentAcknowledgedFalse()
+    {
+        // Regression-guard: the non-destructive paths must persist consent_acknowledged = 0.
+        var exec = new FakeExecutor();
+        await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), exec, Identity, CancellationToken.None);
+        Assert.All(exec.AuditRecords, r => Assert.False(r.ConsentAcknowledged));
+
+        var exec2 = new FakeExecutor();
+        await new ForcePlanHandler().ApplyAsync(
+            new RemediationAction("PLAN_REGRESSION", "force", new List<ForcePlanTarget> { Target() }),
+            exec2, Identity, CancellationToken.None);
+        Assert.All(exec2.AuditRecords, r => Assert.False(r.ConsentAcknowledged));
+    }
+
+    // ── BuildRcsiAction (M2-1 boolean polarity) + BuildAction regression-guard ───
+
+    [Fact]
+    public void BuildRcsiAction_EmitsOnRcsiOff_WithEnrichment()
+    {
+        var action = FactRemediation.BuildRcsiAction(RcsiOffFinding());
+        Assert.NotNull(action);
+        Assert.Equal("RCSI", action!.FactKey);
+        Assert.Equal("set", action.Action);
+        Assert.Empty(action.Targets);
+        var t = Assert.Single(action.DbConfigTargets!);
+        Assert.Equal(DbConfigSetting.ReadCommittedSnapshotOn, t.Setting);
+        Assert.Equal("OFF", t.CurrentValue);
+        Assert.Equal("Foo", t.Database);
+    }
+
+    [Fact]
+    public void BuildRcsiAction_ReturnsNull_WhenRcsiOn()
+    {
+        // M2-1: rcsi == true means RCSI is ON — the affordance must NOT appear.
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "Foo", rcsi = true, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new string[0],
+                  rcsi_blocking_events = 99, rcsi_deadlocks = 9, rcsi_reader_writer_pct = 90 }
+        });
+        Assert.Null(FactRemediation.BuildRcsiAction(finding));
+    }
+
+    [Fact]
+    public void BuildRcsiAction_ReturnsNull_WhenEnrichmentAbsent()
+    {
+        // RCSI off but no §3.3 enrichment (legacy alert) → no affordance.
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "Foo", rcsi = false, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "RCSI OFF" } }
+        });
+        Assert.Null(FactRemediation.BuildRcsiAction(finding));
+    }
+
+    [Fact]
+    public void BuildAction_Unchanged_NeverEmitsRcsi_Phase2RegressionGuard()
+    {
+        // The always-safe BuildAction must STILL never emit RCSI, even on the enriched
+        // RCSI-off finding — the destructive arm rides BuildRcsiAction only.
+        Assert.Null(FactRemediation.BuildAction(RcsiOffFinding()));
+
+        // And a mixed finding (RCSI off + a safe setting) yields only the safe target.
+        var mixed = DbConfigFinding(new List<object>
+        {
+            new { database = "Foo", rcsi = false, query_store = true,
+                  auto_shrink = true, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "auto_shrink ON", "RCSI OFF" },
+                  rcsi_blocking_events = 1, rcsi_deadlocks = 0, rcsi_reader_writer_pct = 50 }
+        });
+        var safe = FactRemediation.BuildAction(mixed);
+        Assert.NotNull(safe);
+        Assert.Equal("DB_CONFIG", safe!.FactKey);
+        Assert.All(safe.DbConfigTargets!, t => Assert.NotEqual(DbConfigSetting.ReadCommittedSnapshotOn, t.Setting));
+    }
+
+    // ── FactRiskDisclosure: two-sided, honest-both-directions, golden prose ──────
+
+    [Fact]
+    public void RiskDisclosure_Null_ForNonDestructiveFactKey()
+    {
+        Assert.Null(FactRiskDisclosure.GetForAction(DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), DbConfigFinding()));
+        Assert.Null(FactRiskDisclosure.GetForAction(new RemediationAction("PLAN_REGRESSION", "force", new List<ForcePlanTarget> { Target() }), null));
+    }
+
+    [Fact]
+    public void RiskDisclosure_Rcsi_HasAtLeastOneOfEachSide()
+    {
+        var d = FactRiskDisclosure.GetForAction(RcsiAction(), RcsiOffFinding());
+        Assert.NotNull(d);
+        Assert.NotEmpty(d!.RisksOfChanging);
+        Assert.NotEmpty(d.RisksOfNotChanging);
+        // The validated identifier is substituted, bracketed.
+        Assert.Contains(d.RisksOfChanging, r => r.Text.Contains("[Foo]"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_HighReaderWriterPct_SaysRcsiEliminates()
+    {
+        var d = FactRiskDisclosure.GetForAction(RcsiAction(), RcsiOffFinding(blocking: 50, deadlocks: 4, rwPct: 85))!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("85%") && r.Text.Contains("RCSI eliminates"));
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("50") && r.Text.Contains("blocked-process events") && r.Text.Contains("4 deadlocks"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_LowReaderWriterPct_SaysRcsiWontResolveThis()
+    {
+        // Writer/writer-dominant: the honest-both-directions safety feature.
+        var d = FactRiskDisclosure.GetForAction(RcsiAction(), RcsiOffFinding(blocking: 40, deadlocks: 2, rwPct: 10))!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("10%") && r.Text.Contains("RCSI does NOT resolve"));
+        Assert.DoesNotContain(d.RisksOfNotChanging, r => r.Text.Contains("RCSI eliminates"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_NoData_ShowsWeakCaseBaseline()
+    {
+        var d = FactRiskDisclosure.GetForAction(RcsiAction(), RcsiOffFinding(blocking: 0, deadlocks: 0, rwPct: null))!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("Little or no reader/writer blocking"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_NullFinding_DegradesToWeakCaseBaseline()
+    {
+        var d = FactRiskDisclosure.GetForAction(RcsiAction(), null)!;
+        Assert.NotEmpty(d.RisksOfChanging);
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("Little or no reader/writer blocking"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_Rcsi_GoldenProse_ChangingSide()
+    {
+        var d = FactRiskDisclosure.GetForAction(RcsiAction(), RcsiOffFinding())!;
+        Assert.Equal(3, d.RisksOfChanging.Count);
+        Assert.StartsWith("Enabling RCSI on [Foo] takes a brief exclusive database lock", d.RisksOfChanging[0].Text);
+        Assert.Contains("row-version load to tempdb", d.RisksOfChanging[1].Text);
+        Assert.Contains("Reader/writer concurrency semantics change", d.RisksOfChanging[2].Text);
+    }
+
+    // ── Full lock-mode vocabulary classifier (M-1) ───────────────────────────────
+
+    [Theory]
+    [InlineData("S", RcsiLockClass.Reader)]
+    [InlineData("IS", RcsiLockClass.Reader)]
+    [InlineData("RangeS-S", RcsiLockClass.Reader)]
+    [InlineData("RangeS-U", RcsiLockClass.Reader)]
+    [InlineData("X", RcsiLockClass.Writer)]
+    [InlineData("IX", RcsiLockClass.Writer)]
+    [InlineData("U", RcsiLockClass.Writer)]
+    [InlineData("UIX", RcsiLockClass.Writer)]
+    [InlineData("RangeX-X", RcsiLockClass.Writer)]
+    [InlineData("RangeI-N", RcsiLockClass.Writer)]
+    [InlineData("Sch-S", RcsiLockClass.Excluded)]
+    [InlineData("Sch-M", RcsiLockClass.Excluded)]
+    [InlineData("BU", RcsiLockClass.Excluded)]
+    [InlineData("IU", RcsiLockClass.Excluded)]
+    [InlineData("SIU", RcsiLockClass.Excluded)]
+    [InlineData("SIX", RcsiLockClass.Excluded)]
+    [InlineData("", RcsiLockClass.Excluded)]
+    [InlineData(null, RcsiLockClass.Excluded)]
+    public void LockModeClassifier_FullVocabulary(string? lockMode, RcsiLockClass expected)
+    {
+        Assert.Equal(expected, RcsiLockModeClassifier.Classify(lockMode));
+    }
+
+    // ── Drill-down enrichment parity (types only, per M-2) ───────────────────────
+
+    [Fact]
+    public void DrillDownEnrichment_RcsiFields_TypeParity_DashboardVsLite()
+    {
+        // The Dashboard shape carries real ints + a nullable int; the Lite shape carries
+        // 0/0/null. The shared extractor (FactRiskDisclosure) must read BOTH shapes with
+        // identical field NAMES and TYPES (int / int / nullable-int). Round-trip via JSON
+        // (mirrors how the collectors serialize the anonymous objects).
+        var dashboardRow = new
+        {
+            database = "Foo", recovery_model = "FULL", rcsi = false, query_store = true,
+            issues = new[] { "RCSI OFF" }, auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+            rcsi_blocking_events = 12, rcsi_deadlocks = 3, rcsi_reader_writer_pct = (int?)80
+        };
+        var liteRow = new
+        {
+            database = "Foo", recovery_model = "FULL", rcsi = false, query_store = true,
+            issues = new[] { "RCSI OFF" }, auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+            rcsi_blocking_events = 0, rcsi_deadlocks = 0, rcsi_reader_writer_pct = (int?)null
+        };
+
+        var dash = System.Text.Json.JsonSerializer.SerializeToElement((object)dashboardRow);
+        var lite = System.Text.Json.JsonSerializer.SerializeToElement((object)liteRow);
+        foreach (var field in new[] { "rcsi_blocking_events", "rcsi_deadlocks", "rcsi_reader_writer_pct" })
+        {
+            Assert.True(dash.TryGetProperty(field, out var dv), $"Dashboard shape missing {field}");
+            Assert.True(lite.TryGetProperty(field, out var lv), $"Lite shape missing {field}");
+            // counts are Number on both; pct is Number on Dashboard and Null on Lite (nullable int)
+            Assert.Equal(System.Text.Json.JsonValueKind.Number, dv.ValueKind);
+            if (field == "rcsi_reader_writer_pct")
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, lv.ValueKind);
+            else
+                Assert.Equal(System.Text.Json.JsonValueKind.Number, lv.ValueKind);
+        }
+    }
+
     // ── §1 identifier safety: no-injection / QUOTENAME / same-string (M-1) ───────
     //
     // These run against the EXECUTOR's OWN statement builder (DatabaseService.
@@ -834,6 +1236,10 @@ public class RemediationTests
         // B3 Phase 2 privileged surface (M-2): the new handler + executor methods
         // must be reachable ONLY through the gate, exactly like the force-plan ones.
         "DbConfigHandler", "SetDatabaseOptionAsync", "PreflightDbConfigAsync",
+        // B3 Phase 3 (m-3): the destructive RCSI handler must be reachable ONLY through
+        // the gate. It is UNREGISTERED in PR-A (dead-code-safe), but the marker still
+        // guards against any UI/MCP/menu file referencing it directly.
+        "RcsiHandler",
     };
 
     [Fact]

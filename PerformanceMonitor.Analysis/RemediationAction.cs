@@ -32,10 +32,13 @@ public sealed record RemediationAction(
     IReadOnlyList<DbConfigTarget>? DbConfigTargets = null);  // DB-config targets (null for force-plan)
 
 /// <summary>
-/// The fixed, hardcoded set of always-safe database settings B3 Phase 2 can apply.
-/// This enum — NOT any data/operator-supplied string — selects the SET clause
-/// literal in the executor (see DatabaseService.Remediation DB-config arm). RCSI
-/// (READ_COMMITTED_SNAPSHOT) is deliberately absent: it is destructive and excluded.
+/// The fixed, hardcoded set of database settings B3 can apply. This enum — NOT any
+/// data/operator-supplied string — selects the SET clause literal in the executor
+/// (see DatabaseService.Remediation DB-config arm). The first three are ALWAYS-SAFE
+/// online metadata changes (Phase 2). <see cref="ReadCommittedSnapshotOn"/> (Phase 3)
+/// is DESTRUCTIVE — it is routed through the distinct "RCSI" fact key + RcsiHandler
+/// (IsDestructive == true) behind the informed-consent gate, NEVER through the
+/// always-safe DbConfigHandler.
 /// </summary>
 public enum DbConfigSetting
 {
@@ -46,7 +49,15 @@ public enum DbConfigSetting
     AutoCloseOff,
 
     /// <summary>ALTER DATABASE [db] SET PAGE_VERIFY CHECKSUM;</summary>
-    PageVerifyChecksum
+    PageVerifyChecksum,
+
+    /// <summary>
+    /// ALTER DATABASE [db] SET READ_COMMITTED_SNAPSHOT ON; — DESTRUCTIVE (B3 Phase 3).
+    /// Takes a brief exclusive DB lock to enable, adds tempdb version-store load, and
+    /// changes reader/writer concurrency semantics. Routed only through the "RCSI"
+    /// fact key + RcsiHandler behind the informed-consent gate.
+    /// </summary>
+    ReadCommittedSnapshotOn
 }
 
 /// <summary>

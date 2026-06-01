@@ -125,6 +125,7 @@ INSERT INTO
     generated_sql,
     result,
     error_message,
+    consent_acknowledged,
     source_alert_ref
 )
 VALUES
@@ -142,6 +143,7 @@ VALUES
     @generated_sql,
     @result,
     @error_message,
+    @consent_acknowledged,
     @source_alert_ref
 );";
                 command.Parameters.Add(new SqlParameter("@operator_identity", SqlDbType.NVarChar, 256) { Value = (object?)record.OperatorIdentity ?? DBNull.Value });
@@ -161,6 +163,9 @@ VALUES
                 command.Parameters.Add(new SqlParameter("@generated_sql", SqlDbType.NVarChar, -1) { Value = (object?)record.GeneratedSql ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@result", SqlDbType.VarChar, 16) { Value = record.Result });
                 command.Parameters.Add(new SqlParameter("@error_message", SqlDbType.NVarChar, -1) { Value = (object?)record.ErrorMessage ?? DBNull.Value });
+                // M-3: a REAL bound Bit param (it varies per row) — NOT the inline-`0`
+                // pattern used for used_elevated_cred above (which is always 0).
+                command.Parameters.Add(new SqlParameter("@consent_acknowledged", SqlDbType.Bit) { Value = record.ConsentAcknowledged });
                 command.Parameters.Add(new SqlParameter("@source_alert_ref", SqlDbType.NVarChar, 256) { Value = (object?)record.SourceAlertRef ?? DBNull.Value });
 
                 var rows = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);

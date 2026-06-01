@@ -336,6 +336,91 @@ public class RemediationApplyServiceTests
         Assert.False(busy.CanApply);
     }
 
+    // ── B3 Phase 3: informed-consent request threading (B-1) ─────────────────────
+    //
+    // The confirm dialog IS the trust boundary; the service trusts the callback. PR-A
+    // populates the request: RequiresInformedConsent = handler.IsDestructive and, when
+    // destructive, the two-sided Risks (FactRiskDisclosure). The XAML acknowledge-each-
+    // risk RENDERING/gating is PR-B. These tests verify the request is populated
+    // correctly so the PR-B dialog has what it needs.
+
+    private static RemediationAction RcsiAction() =>
+        new("RCSI", "set", Array.Empty<ForcePlanTarget>(),
+            new List<DbConfigTarget> { new("Foo", DbConfigSetting.ReadCommittedSnapshotOn, "OFF") });
+
+    private static AnalysisFinding RcsiFinding(int? rwPct = 80) => new()
+    {
+        ServerId = 1, ServerName = "SQL2022", Category = "config_issues",
+        StoryPath = "DB_CONFIG", StoryPathHash = "dbconfig00000099", RootFactKey = "DB_CONFIG",
+        DrillDown = new Dictionary<string, object>
+        {
+            ["config_issues"] = new List<object>
+            {
+                new { database = "Foo", rcsi = false, query_store = true, auto_shrink = false,
+                      auto_close = false, page_verify = "CHECKSUM", issues = new[] { "RCSI OFF" },
+                      rcsi_blocking_events = 12, rcsi_deadlocks = 3, rcsi_reader_writer_pct = rwPct }
+            }
+        }
+    };
+
+    [Fact]
+    public async Task Apply_Destructive_Request_RequiresInformedConsent_CarriesRisks()
+    {
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new RcsiHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        await service.ApplyAsync(RcsiAction(), Server, previewSql: "ALTER DATABASE [Foo] SET READ_COMMITTED_SNAPSHOT ON;",
+            "DOM\\op", "ref", confirm: req => { captured = req; return Task.FromResult(false); },
+            CancellationToken.None, finding: RcsiFinding());
+
+        Assert.NotNull(captured);
+        Assert.Equal("RCSI", captured!.FactKey);
+        Assert.True(captured.RequiresInformedConsent);
+        Assert.NotNull(captured.Risks);
+        Assert.NotEmpty(captured.Risks!.RisksOfChanging);
+        Assert.NotEmpty(captured.Risks.RisksOfNotChanging);
+        // The RCSI confirm row title is the friendly one (m-2), not the raw enum name.
+        Assert.Contains("Read Committed Snapshot Isolation", Assert.Single(captured.Targets).StatusTitle);
+    }
+
+    [Fact]
+    public async Task Apply_NonDestructive_Request_NoConsent_NoRisks()
+    {
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new DbConfigHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        var action = new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            new List<DbConfigTarget> { new("Foo", DbConfigSetting.AutoShrinkOff, "ON") });
+
+        await service.ApplyAsync(action, Server, previewSql: null, "DOM\\op", "ref",
+            confirm: req => { captured = req; return Task.FromResult(false); }, CancellationToken.None);
+
+        Assert.NotNull(captured);
+        Assert.False(captured!.RequiresInformedConsent);
+        Assert.Null(captured.Risks);
+    }
+
+    [Fact]
+    public async Task Apply_Destructive_WriterWriter_Risks_SayRcsiWontResolve()
+    {
+        // The honest-both-directions property survives the service threading: a low
+        // reader/writer pct yields the "RCSI does NOT resolve this" inaction line.
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new RcsiHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        await service.ApplyAsync(RcsiAction(), Server, previewSql: "preview", "DOM\\op", "ref",
+            confirm: req => { captured = req; return Task.FromResult(false); },
+            CancellationToken.None, finding: RcsiFinding(rwPct: 8));
+
+        Assert.Contains(captured!.Risks!.RisksOfNotChanging, r => r.Text.Contains("RCSI does NOT resolve"));
+    }
+
     // ── Fake executor (PR-B-local) ───────────────────────────────────────────────
 
     private sealed class FakeExecutor : IRemediationExecutor
