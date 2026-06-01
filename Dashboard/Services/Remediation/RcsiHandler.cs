@@ -15,33 +15,47 @@ using PerformanceMonitor.Analysis;
 namespace PerformanceMonitorDashboard.Services.Remediation
 {
     /// <summary>
-    /// Handler for DB_CONFIG findings: applies the three ALWAYS-SAFE database
-    /// settings — AUTO_SHRINK OFF, AUTO_CLOSE OFF, PAGE_VERIFY CHECKSUM — one
-    /// (database, setting) target at a time via <c>ALTER DATABASE … SET …</c>.
-    /// RCSI is intentionally NOT in scope (destructive). This is APPLY-ONLY: there
-    /// is no sensible reverse for these settings (<see cref="SupportsUnapply"/> is
-    /// false; <see cref="UnapplyAsync"/> throws), and the prior value is recorded in
-    /// the audit row for any manual reversal.
+    /// Handler for the DESTRUCTIVE RCSI fix (B3 Phase 3): enables
+    /// <c>READ_COMMITTED_SNAPSHOT</c> on one target database via
+    /// <c>ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON</c>. This is the FIRST
+    /// handler in the codebase to flip <see cref="IsDestructive"/> to true; it is
+    /// gated behind the informed-consent (acknowledge-each-risk) dialog — the consent
+    /// gate lives in <em>what makes the confirm callback return true</em>
+    /// (RemediationApplyService is the trust boundary; the dialog enforces it).
     ///
     /// <para>
-    /// Structurally self-gating, exactly like <see cref="ForcePlanHandler"/>:
-    /// <see cref="ApplyAsync"/> takes no preflight disposition and trusts none. It
-    /// hard-blocks every target when the audit table is absent (no mutation), then
-    /// delegates each target to <c>exec.SetDatabaseOptionAsync</c>, which re-derives
+    /// Routed via the distinct fact key "RCSI" so it is never reachable through the
+    /// always-safe <see cref="DbConfigHandler"/> (which keeps IsDestructive == false).
+    /// It reuses the Phase-2 <c>DbConfigTarget</c> machinery (a single target with
+    /// <see cref="DbConfigSetting.ReadCommittedSnapshotOn"/>) and the Phase-2
+    /// self-gating executor unchanged: <c>exec.SetDatabaseOptionAsync</c> re-derives
     /// the authoritative gate (parameterized sys.databases existence + ALTER
-    /// permission + live freshness) and the ALTER on ONE connection. One audit row
-    /// is written per attempt.
+    /// permission + live <c>is_read_committed_snapshot_on</c> freshness) and runs the
+    /// ALTER on ONE monitoring connection. The handler cannot hand it a forged
+    /// all-clear.
+    /// </para>
+    ///
+    /// <para>
+    /// APPLY-ONLY: <see cref="SupportsUnapply"/> is false (turning RCSI back OFF is
+    /// itself destructive and would need its own symmetric gate);
+    /// <see cref="UnapplyAsync"/> throws, and RemediationApplyService short-circuits
+    /// any un-apply to a clean UnapplyNotSupported report before reaching it (m-C).
+    /// One audit row is written per attempt with <c>consent_acknowledged = true</c>
+    /// (the gate was satisfied to reach apply).
     /// </para>
     /// </summary>
-    public sealed class DbConfigHandler : IRemediationHandler
+    public sealed class RcsiHandler : IRemediationHandler
     {
-        public string FactKey => "DB_CONFIG";
+        public string FactKey => "RCSI";
 
-        // The three settings are always-safe online metadata changes — not destructive.
-        public bool IsDestructive => false;
+        // DESTRUCTIVE: enabling RCSI takes a brief exclusive DB lock, adds tempdb
+        // version-store load, and changes reader/writer concurrency semantics. This
+        // is the first true in the codebase; it requests the informed-consent gate.
+        public bool IsDestructive => true;
 
-        // Apply-only: these settings have no sensible reverse (you would never
-        // re-enable AUTO_SHRINK/AUTO_CLOSE nor downgrade PAGE_VERIFY below CHECKSUM).
+        // Apply-only for v1: turning RCSI OFF is itself a destructive change (blocking
+        // returns) and would need its own two-sided gate. prior_value is recorded for
+        // manual reversal.
         public bool SupportsUnapply => false;
 
         public async Task<PreflightResult> PreflightAsync(RemediationAction action, IRemediationExecutor exec, CancellationToken ct)
@@ -96,11 +110,12 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             return RunApplyAsync(action, exec, identity, ct);
         }
 
-        // Apply-only. Defensive: the UI gates Un-apply on SupportsUnapply==false, and
+        // Apply-only. The UI gates Un-apply on SupportsUnapply==false, and
         // RemediationApplyService short-circuits an un-apply for a non-supporting
-        // handler to a clean report (m-C), so this is never reached in practice.
+        // handler to a clean report (m-C) BEFORE any confirm or handler call, so this
+        // is never reached in practice.
         public Task<ApplyResult> UnapplyAsync(RemediationAction action, IRemediationExecutor exec, RemediationIdentity identity, CancellationToken ct)
-            => throw new NotSupportedException("DB-config fixes are apply-only; there is no un-apply for AUTO_SHRINK/AUTO_CLOSE/PAGE_VERIFY.");
+            => throw new NotSupportedException("RCSI is apply-only; turning READ_COMMITTED_SNAPSHOT back OFF is itself destructive and is not auto-reversed (the prior value is recorded for manual reversal).");
 
         private static async Task<ApplyResult> RunApplyAsync(RemediationAction action, IRemediationExecutor exec, RemediationIdentity identity, CancellationToken ct)
         {
@@ -132,7 +147,8 @@ namespace PerformanceMonitorDashboard.Services.Remediation
 
                 try
                 {
-                    // The executor re-derives the authoritative gate and runs the ALTER
+                    // The executor re-derives the authoritative gate (existence + ALTER
+                    // + live is_read_committed_snapshot_on freshness) and runs the ALTER
                     // on one connection — the handler cannot hand it a forged all-clear.
                     var outcome = await exec.SetDatabaseOptionAsync(t.Database, t.Setting, identity, ct).ConfigureAwait(false);
 
@@ -196,28 +212,19 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                 OperatorIdentity = identity.OperatorIdentity,
                 ExecutingLogin = executingLogin,
                 TargetDatabase = target.Database,
-                FactKey = "DB_CONFIG",
-                QueryId = null,                 // DB_CONFIG rows have no query_id/plan_id (B-1)
+                FactKey = "RCSI",
+                QueryId = null,                 // RCSI rows have no query_id/plan_id
                 PlanId = null,
-                Action = AuditAction(target.Setting),
+                Action = "set_rcsi_on",
                 PriorValue = priorValue ?? target.CurrentValue,
                 GeneratedSql = generatedSql,
                 Result = RemediationAuditHelpers.AuditResult(status),
                 ErrorMessage = RemediationAuditHelpers.IsErrorish(status) ? message : null,
-                // The always-safe DB-config fixes are not destructive — never went
-                // through the informed-consent gate (M-3 regression-guard: explicit false).
-                ConsentAcknowledged = false,
+                // The informed-consent gate was satisfied to reach apply (B-3 / M-3):
+                // a destructive RCSI attempt that got here passed every risk checkbox.
+                ConsentAcknowledged = true,
                 SourceAlertRef = identity.SourceAlertRef
             };
-
-        /// <summary>The precise audit <c>action</c> taxonomy value per setting (fits varchar(32)).</summary>
-        private static string AuditAction(DbConfigSetting setting) => setting switch
-        {
-            DbConfigSetting.AutoShrinkOff => "set_auto_shrink_off",
-            DbConfigSetting.AutoCloseOff => "set_auto_close_off",
-            DbConfigSetting.PageVerifyChecksum => "set_page_verify_checksum",
-            _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting")
-        };
 
         private static TargetPreflight ToTargetPreflight(DbConfigTarget t, DbConfigPreflight probe)
         {
@@ -243,24 +250,12 @@ namespace PerformanceMonitorDashboard.Services.Remediation
 
         private static string DispositionMessage(RemediationDisposition d, DbConfigTarget t, DbConfigPreflight probe) => d switch
         {
-            RemediationDisposition.Ok => $"Ready to apply {SettingTitle(t.Setting)} on [{t.Database}] (currently {probe.CurrentValue}).",
-            RemediationDisposition.AlreadyInDesiredState => "Already in the desired state — will be skipped.",
+            RemediationDisposition.Ok => $"Ready to enable {DbConfigHandler.SettingTitle(t.Setting)} on [{t.Database}] (currently {probe.CurrentValue}).",
+            RemediationDisposition.AlreadyInDesiredState => "RCSI is already enabled — will be skipped.",
             RemediationDisposition.BlockDatabaseNotFound => "Database not found on the server — will not proceed.",
             RemediationDisposition.BlockNoAlter => $"The monitoring login lacks ALTER on {t.Database} — will fail closed (no change).",
             RemediationDisposition.BlockAuditTableAbsent => AuditAbsentMessage,
             _ => "Unable to determine target state."
-        };
-
-        /// <summary>Short human title for a setting (display only).</summary>
-        public static string SettingTitle(DbConfigSetting setting) => setting switch
-        {
-            DbConfigSetting.AutoShrinkOff => "AUTO_SHRINK OFF",
-            DbConfigSetting.AutoCloseOff => "AUTO_CLOSE OFF",
-            DbConfigSetting.PageVerifyChecksum => "PAGE_VERIFY CHECKSUM",
-            // m-2: an RCSI confirm row reuses DbConfigTargets, so without this arm the
-            // status title would render the raw enum name "ReadCommittedSnapshotOn".
-            DbConfigSetting.ReadCommittedSnapshotOn => "Read Committed Snapshot Isolation",
-            _ => setting.ToString()
         };
 
         private static IReadOnlyList<DbConfigTarget> DbTargets(RemediationAction action) =>

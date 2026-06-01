@@ -137,8 +137,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             string operatorIdentity,
             string? sourceAlertRef,
             Func<RemediationConfirmRequest, Task<bool>> confirm,
-            CancellationToken ct)
-            => RunAsync(action, server, previewSql, operatorIdentity, sourceAlertRef, confirm, isUnapply: false, ct);
+            CancellationToken ct,
+            AnalysisFinding? finding = null)
+            => RunAsync(action, server, previewSql, operatorIdentity, sourceAlertRef, confirm, isUnapply: false, ct, finding);
 
         /// <summary>Un-apply (unforce) a previously applied remediation. Same gated shape as Apply.</summary>
         public Task<RemediationRunReport> UnapplyAsync(
@@ -147,8 +148,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             string operatorIdentity,
             string? sourceAlertRef,
             Func<RemediationConfirmRequest, Task<bool>> confirm,
-            CancellationToken ct)
-            => RunAsync(action, server, previewSql: null, operatorIdentity, sourceAlertRef, confirm, isUnapply: true, ct);
+            CancellationToken ct,
+            AnalysisFinding? finding = null)
+            => RunAsync(action, server, previewSql: null, operatorIdentity, sourceAlertRef, confirm, isUnapply: true, ct, finding);
 
         private async Task<RemediationRunReport> RunAsync(
             RemediationAction action,
@@ -158,7 +160,8 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             string? sourceAlertRef,
             Func<RemediationConfirmRequest, Task<bool>> confirm,
             bool isUnapply,
-            CancellationToken ct)
+            CancellationToken ct,
+            AnalysisFinding? finding = null)
         {
             if (action is null) throw new ArgumentNullException(nameof(action));
             if (server is null) throw new ArgumentNullException(nameof(server));
@@ -188,7 +191,10 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                 ? RenderPreview(action, isUnapply)
                 : previewSql!;
 
-            var request = BuildConfirmRequest(action, server, preview, operatorIdentity, isUnapply, preflight);
+            // B-1: thread the resolved handler (and the finding) in so the request can
+            // set RequiresInformedConsent = handler.IsDestructive and, when destructive,
+            // the two-sided Risks. This is a signature change, not a one-liner.
+            var request = BuildConfirmRequest(action, server, preview, operatorIdentity, isUnapply, preflight, handler, finding);
 
             // ── THE GATE ──────────────────────────────────────────────────────────
             // The privileged handler.ApplyAsync/UnapplyAsync below is reached ONLY
@@ -240,7 +246,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             string preview,
             string operatorIdentity,
             bool isUnapply,
-            PreflightResult preflight)
+            PreflightResult preflight,
+            IRemediationHandler handler,
+            AnalysisFinding? finding)
         {
             // Preflight targets align 1:1 with action targets (each handler builds them
             // in order). Match by index; tolerate a short preflight list defensively.
@@ -286,6 +294,14 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                 .Select(p => p.ExecutingLogin)
                 .FirstOrDefault(l => !string.IsNullOrEmpty(l));
 
+            // B-1: the consent gate is keyed on the resolved handler's IsDestructive.
+            // For a destructive action, attach the two-sided risk disclosure (the
+            // dialog renders the acknowledge-each-risk checkboxes in PR-B). For a
+            // non-destructive action both stay default (false / null) — single-confirm
+            // path unchanged.
+            var requiresConsent = handler.IsDestructive;
+            var risks = requiresConsent ? FactRiskDisclosure.GetForAction(action, finding) : null;
+
             return new RemediationConfirmRequest
             {
                 ServerDisplayName = string.IsNullOrEmpty(server.DisplayName) ? server.ServerName : server.DisplayName,
@@ -295,7 +311,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                 OperatorIdentity = operatorIdentity,
                 ExecutingLogin = executingLogin,
                 Targets = confirmTargets,
-                AuditTableExists = preflight.AuditTableExists
+                AuditTableExists = preflight.AuditTableExists,
+                RequiresInformedConsent = requiresConsent,
+                Risks = risks
             };
         }
 
@@ -344,6 +362,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
             DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
             DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
+            DbConfigSetting.ReadCommittedSnapshotOn => "SET READ_COMMITTED_SNAPSHOT ON",
             _ => "SET /* unknown */"
         };
     }

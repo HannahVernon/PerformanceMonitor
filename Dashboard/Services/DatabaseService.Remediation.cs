@@ -265,6 +265,10 @@ SET NUMERIC_ROUNDABORT OFF;";
             DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
             DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
             DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
+            // B3 Phase 3: DESTRUCTIVE — routed only via the RcsiHandler behind the
+            // informed-consent gate. The SET clause is still a hardcoded compile-time
+            // literal selected by the enum; the identifier is the only variable token.
+            DbConfigSetting.ReadCommittedSnapshotOn => "SET READ_COMMITTED_SNAPSHOT ON",
             _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting")
         };
 
@@ -433,6 +437,13 @@ SET NUMERIC_ROUNDABORT OFF;";
                 case DbConfigSetting.PageVerifyChecksum:
                     currentValueExpr = "d.page_verify_option_desc";
                     desiredExpr = "CASE WHEN d.page_verify_option_desc = N'CHECKSUM' THEN 1 ELSE 0 END";
+                    break;
+                case DbConfigSetting.ReadCommittedSnapshotOn:
+                    // B3 Phase 3 (R2-MOD-1): the live freshness column is
+                    // is_read_committed_snapshot_on. Desired state = on (= 1) → Skip if
+                    // already on. The current value (ON/OFF) is captured for prior_value.
+                    currentValueExpr = "CASE WHEN d.is_read_committed_snapshot_on = 1 THEN N'ON' ELSE N'OFF' END";
+                    desiredExpr = "CASE WHEN d.is_read_committed_snapshot_on = 1 THEN 1 ELSE 0 END";
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting");

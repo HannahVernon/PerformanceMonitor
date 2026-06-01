@@ -507,40 +507,210 @@ WHERE is_auto_shrink_on = '1' OR is_auto_close_on = '1'
    OR is_rcsi_on = '0' OR page_verify_option != 'CHECKSUM'
 ORDER BY database_name;";
 
+        // Read the pivoted rows first into a typed buffer so we can determine the
+        // RCSI-OFF set BEFORE building the emitted items — the §3.3 enrichment is
+        // computed only for RCSI-off databases and injected into those rows.
+        var rows = new List<ConfigIssueRow>();
+        using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                rows.Add(new ConfigIssueRow
+                {
+                    Database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                    RecoveryModel = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    AutoShrink = (reader.IsDBNull(2) ? "" : reader.GetString(2)) == "1",
+                    AutoClose = (reader.IsDBNull(3) ? "" : reader.GetString(3)) == "1",
+                    Rcsi = (reader.IsDBNull(4) ? "" : reader.GetString(4)) == "1",
+                    PageVerify = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                    QueryStore = (reader.IsDBNull(6) ? "" : reader.GetString(6)) == "1"
+                });
+            }
+        }
+
+        // §3.3 enrichment: per-DB blocking/deadlock counts + reader/writer split, ONLY
+        // for RCSI-off databases, over the analysis window, from already-collected
+        // monitoring tables (no fresh probe of the target server).
+        var rcsiOff = rows.Where(r => !r.Rcsi && !string.IsNullOrEmpty(r.Database))
+                          .Select(r => r.Database)
+                          .ToList();
+        var enrichment = rcsiOff.Count > 0
+            ? await CollectRcsiInactionFigures(connection, rcsiOff, context)
+            : new Dictionary<string, RcsiInactionFigures>(StringComparer.Ordinal);
+
         var items = new List<object>();
-        using var reader = await cmd.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        foreach (var r in rows)
         {
             var issues = new List<string>();
-            var autoShrink = reader.IsDBNull(2) ? "" : reader.GetString(2);
-            var autoClose = reader.IsDBNull(3) ? "" : reader.GetString(3);
-            var rcsi = reader.IsDBNull(4) ? "" : reader.GetString(4);
-            var pageVerify = reader.IsDBNull(5) ? "" : reader.GetString(5);
-            var queryStore = reader.IsDBNull(6) ? "" : reader.GetString(6);
+            if (r.AutoShrink) issues.Add("auto_shrink ON");
+            if (r.AutoClose) issues.Add("auto_close ON");
+            if (!r.Rcsi) issues.Add("RCSI OFF");
+            if (!string.IsNullOrEmpty(r.PageVerify) && r.PageVerify != "CHECKSUM") issues.Add($"page_verify={r.PageVerify}");
 
-            if (autoShrink == "1") issues.Add("auto_shrink ON");
-            if (autoClose == "1") issues.Add("auto_close ON");
-            if (rcsi == "0") issues.Add("RCSI OFF");
-            if (!string.IsNullOrEmpty(pageVerify) && pageVerify != "CHECKSUM") issues.Add($"page_verify={pageVerify}");
-
-            items.Add(new
+            // RCSI-off rows carry the three structured inaction-risk fields (M-2:
+            // identical JSON names + types to Lite, which emits them null/0). RCSI-on
+            // rows omit them entirely (the affordance never applies there).
+            if (!r.Rcsi)
             {
-                database = reader.IsDBNull(0) ? "" : reader.GetString(0),
-                recovery_model = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                rcsi = rcsi == "1",
-                query_store = queryStore == "1",
-                issues,
-                // §4.1: structured, wording-independent fields the shared extractor
-                // (FactRemediation.ExtractDbConfigTargets) reads. Identical JSON names
-                // and types to the Lite collector (bool / bool / string).
-                auto_shrink = autoShrink == "1",
-                auto_close = autoClose == "1",
-                page_verify = pageVerify
-            });
+                enrichment.TryGetValue(r.Database, out var fig);
+                items.Add(new
+                {
+                    database = r.Database,
+                    recovery_model = r.RecoveryModel,
+                    rcsi = r.Rcsi,
+                    query_store = r.QueryStore,
+                    issues,
+                    auto_shrink = r.AutoShrink,
+                    auto_close = r.AutoClose,
+                    page_verify = r.PageVerify,
+                    // §3.3: int / int / nullable-int. Counts from blocking_deadlock_stats
+                    // (O-P3-F — NOT a blocking_BlockedProcessReport row count); the split
+                    // is a separate pass over blocking_BlockedProcessReport.
+                    rcsi_blocking_events = fig?.BlockingEvents ?? 0,
+                    rcsi_deadlocks = fig?.Deadlocks ?? 0,
+                    rcsi_reader_writer_pct = fig?.ReaderWriterPct
+                });
+            }
+            else
+            {
+                items.Add(new
+                {
+                    database = r.Database,
+                    recovery_model = r.RecoveryModel,
+                    rcsi = r.Rcsi,
+                    query_store = r.QueryStore,
+                    issues,
+                    // §4.1: structured, wording-independent fields the shared extractor
+                    // (FactRemediation.ExtractDbConfigTargets) reads. Identical JSON names
+                    // and types to the Lite collector (bool / bool / string).
+                    auto_shrink = r.AutoShrink,
+                    auto_close = r.AutoClose,
+                    page_verify = r.PageVerify
+                });
+            }
         }
 
         if (items.Count > 0)
             finding.DrillDown!["config_issues"] = items;
+    }
+
+    private sealed class ConfigIssueRow
+    {
+        public string Database = "";
+        public string RecoveryModel = "";
+        public bool AutoShrink;
+        public bool AutoClose;
+        public bool Rcsi;
+        public string PageVerify = "";
+        public bool QueryStore;
+    }
+
+    private sealed class RcsiInactionFigures
+    {
+        public int BlockingEvents;
+        public int Deadlocks;
+        public int? ReaderWriterPct;
+    }
+
+    /// <summary>
+    /// Computes, per RCSI-off database, the §3.3 inaction-risk figures over the
+    /// analysis window: blocking/deadlock counts from the PRE-AGGREGATED
+    /// collect.blocking_deadlock_stats (O-P3-F — never a blocking_BlockedProcessReport
+    /// row count), and the reader-vs-writer share from a SEPARATE pass over
+    /// collect.blocking_BlockedProcessReport classified against the FULL lock_mode
+    /// vocabulary (M-1). All reads are parameterized on the time window; database names
+    /// are bound as a parameterized TVP-free IN list (literal-free).
+    /// </summary>
+    private static async Task<Dictionary<string, RcsiInactionFigures>> CollectRcsiInactionFigures(
+        SqlConnection connection, List<string> databases, AnalysisContext context)
+    {
+        var result = new Dictionary<string, RcsiInactionFigures>(StringComparer.Ordinal);
+        foreach (var d in databases)
+            result[d] = new RcsiInactionFigures();
+
+        // Pass 1 — counts from the pre-aggregated stats table (per-DB, per-window).
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    bds.database_name,
+    blocking_events = SUM(bds.blocking_event_count),
+    deadlocks = SUM(bds.deadlock_count)
+FROM collect.blocking_deadlock_stats AS bds
+WHERE bds.collection_time >= @startTime
+AND   bds.collection_time <= @endTime
+GROUP BY bds.database_name;";
+            cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+            cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var db = reader.IsDBNull(0) ? "" : reader.GetString(0);
+                if (!result.TryGetValue(db, out var fig)) continue;
+                fig.BlockingEvents = reader.IsDBNull(1) ? 0 : (int)Math.Min(int.MaxValue, Convert.ToInt64(reader.GetValue(1)));
+                fig.Deadlocks = reader.IsDBNull(2) ? 0 : (int)Math.Min(int.MaxValue, Convert.ToInt64(reader.GetValue(2)));
+            }
+        }
+
+        // Pass 2 — reader-vs-writer split over the blocked-process reports, classified
+        // against the FULL lock_mode vocabulary (M-1). Reader-side = S/IS/RangeS-*;
+        // writer-side = X/IX/U/UIX/RangeX-*/RangeI-*; Sch-S/Sch-M/BU EXCLUDED from the
+        // denominator (RCSI-irrelevant). pct = 100 * reader / NULLIF(reader+writer, 0).
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH classified AS
+(
+    SELECT
+        bpr.database_name,
+        is_reader =
+            CASE
+                WHEN bpr.lock_mode IN (N'S', N'IS') THEN 1
+                WHEN bpr.lock_mode LIKE N'RangeS-%' THEN 1
+                ELSE 0
+            END,
+        is_writer =
+            CASE
+                WHEN bpr.lock_mode IN (N'X', N'IX', N'U', N'UIX') THEN 1
+                WHEN bpr.lock_mode LIKE N'RangeX-%' THEN 1
+                WHEN bpr.lock_mode LIKE N'RangeI-%' THEN 1
+                ELSE 0
+            END
+    FROM collect.blocking_BlockedProcessReport AS bpr
+    WHERE bpr.event_time >= @startTime
+    AND   bpr.event_time <= @endTime
+    AND   bpr.database_name IS NOT NULL
+    /* EXCLUDE Sch-S / Sch-M / BU from the denominator (RCSI-irrelevant). */
+    AND   bpr.lock_mode NOT IN (N'Sch-S', N'Sch-M', N'BU')
+)
+SELECT
+    c.database_name,
+    reader_count = SUM(CONVERT(bigint, c.is_reader)),
+    writer_count = SUM(CONVERT(bigint, c.is_writer))
+FROM classified AS c
+WHERE c.is_reader = 1 OR c.is_writer = 1
+GROUP BY c.database_name;";
+            cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+            cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var db = reader.IsDBNull(0) ? "" : reader.GetString(0);
+                if (!result.TryGetValue(db, out var fig)) continue;
+                var readerCount = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1));
+                var writerCount = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+                var denom = readerCount + writerCount;
+                fig.ReaderWriterPct = denom > 0 ? (int)(100 * readerCount / denom) : (int?)null;
+            }
+        }
+
+        return result;
     }
 
     private async Task CollectTempDbBreakdown(AnalysisFinding finding, AnalysisContext context)

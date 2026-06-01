@@ -30,8 +30,12 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         string FactKey { get; }
 
         /// <summary>
-        /// Whether the action destroys/loses state (gates the typed-confirm UI in
-        /// PR-B). The v1 force-plan is reversible, so this is false.
+        /// Whether the action is DESTRUCTIVE (B3 Phase 3): true gates the
+        /// informed-consent (acknowledge-each-risk) confirm UI. Force-plan and the
+        /// always-safe DB-config fixes are not destructive (false); RcsiHandler is the
+        /// first (and only) handler to flip this true. Read per-handler by
+        /// RemediationApplyService.BuildConfirmRequest, which is exactly why RCSI needs
+        /// a distinct handler rather than a per-target flag on DbConfigHandler.
         /// </summary>
         bool IsDestructive { get; }
 

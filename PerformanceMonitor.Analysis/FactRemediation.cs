@@ -74,6 +74,82 @@ public static class FactRemediation
     }
 
     /// <summary>
+    /// Builds the DESTRUCTIVE RCSI remediation action for a DB_CONFIG finding, or null
+    /// when it does not apply (B3 Phase 3). Parallel to <see cref="BuildAction"/>, which
+    /// stays EXACTLY as-is — this is a SEPARATE entry point so the singular-Remediation
+    /// pipeline (one RemediationAction per detail item) is unchanged; the caller emits
+    /// the RCSI action on a SECOND "Enable RCSI (advanced)" detail item (PR-B).
+    ///
+    /// <para>
+    /// Emits ONLY when a <c>config_issues</c> row is RCSI-OFF (the JSON <c>rcsi</c> value
+    /// is <c>false</c> — M2-1 boolean polarity, mirroring the rcsiOffDatabases scan in
+    /// <see cref="GenerateForDbConfig"/>) AND the §3.3 enrichment is present (the
+    /// <c>rcsi_blocking_events</c>/<c>rcsi_deadlocks</c>/<c>rcsi_reader_writer_pct</c>
+    /// fields exist on that row). The action carries FactKey "RCSI" (a distinct handler)
+    /// and reuses a single <see cref="DbConfigTarget"/> with
+    /// <see cref="DbConfigSetting.ReadCommittedSnapshotOn"/> and CurrentValue "OFF".
+    /// </para>
+    /// </summary>
+    public static RemediationAction? BuildRcsiAction(AnalysisFinding finding)
+    {
+        if (finding is null || !string.Equals(finding.RootFactKey, "DB_CONFIG", StringComparison.Ordinal))
+            return null;
+
+        if (finding.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("config_issues", out var raw) ||
+            raw is null)
+            return null;
+
+        JsonElement element;
+        try
+        {
+            element = JsonSerializer.SerializeToElement(raw);
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return null;
+
+        foreach (var row in element.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Object) continue;
+
+            var database = GetString(row, "database");
+            if (string.IsNullOrEmpty(database))
+                continue;
+
+            // M2-1: rcsi == true means RCSI is ON. Emit ONLY when RCSI is OFF
+            // (JsonValueKind.False) — mirrors the rcsiOffDatabases scan exactly.
+            if (!row.TryGetProperty("rcsi", out var r) || r.ValueKind != JsonValueKind.False)
+                continue;
+
+            // The §3.3 enrichment must be present (these fields are emitted only for
+            // RCSI-off databases). Without it the inaction side cannot be quantified
+            // and no RCSI affordance should appear.
+            if (!HasRcsiEnrichment(row))
+                continue;
+
+            var target = new DbConfigTarget(database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF");
+            return new RemediationAction("RCSI", "set", Array.Empty<ForcePlanTarget>(), new[] { target });
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when the RCSI inaction-risk enrichment fields are present on the row (the
+    /// collector emits them only for RCSI-off databases). At least one of the three
+    /// structured fields must exist.
+    /// </summary>
+    private static bool HasRcsiEnrichment(JsonElement row) =>
+        row.TryGetProperty("rcsi_blocking_events", out _) ||
+        row.TryGetProperty("rcsi_deadlocks", out _) ||
+        row.TryGetProperty("rcsi_reader_writer_pct", out _);
+
+    /// <summary>
     /// Extracts the typed force-plan targets from a PLAN_REGRESSION finding's
     /// drill-down. This is the single parse: the preview renderer
     /// (<see cref="GenerateForPlanRegression"/>) renders entirely from this list,
@@ -318,6 +394,7 @@ public static class FactRemediation
             DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
             DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
             DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
+            DbConfigSetting.ReadCommittedSnapshotOn => "SET READ_COMMITTED_SNAPSHOT ON",
             _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting")
         };
         return $"ALTER DATABASE {QuoteName(database)} {setClause};";

@@ -8,6 +8,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Models;
 
 namespace PerformanceMonitorDashboard.Services.Remediation
@@ -124,7 +125,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public string ServerDisplayName { get; init; } = "";
         public bool IsUnapply { get; init; }
 
-        /// <summary>The action's fact key ("PLAN_REGRESSION" | "DB_CONFIG"), so the modal can show a fact-key-specific header/banner.</summary>
+        /// <summary>The action's fact key ("PLAN_REGRESSION" | "DB_CONFIG" | "RCSI"), so the modal can show a fact-key-specific header/banner.</summary>
         public string FactKey { get; init; } = "";
 
         /// <summary>Exact SQL preview shown verbatim (the code-block T-SQL for apply; the unforce statements for un-apply).</summary>
@@ -140,6 +141,24 @@ namespace PerformanceMonitorDashboard.Services.Remediation
 
         /// <summary>False when the target server is pre-2.12.0 schema — apply will hard-block.</summary>
         public bool AuditTableExists { get; init; }
+
+        /// <summary>
+        /// B3 Phase 3: true iff the resolved handler's <c>IsDestructive</c> is true.
+        /// When true, the confirm dialog renders the two-sided <see cref="Risks"/> as
+        /// acknowledge-each-risk checkboxes and keeps Apply disabled until ALL are
+        /// checked (in addition to <see cref="AnyActionable"/>). Always false for the
+        /// always-safe and force-plan actions (their single-confirm is unchanged).
+        /// The DIALOG is the trust boundary; this bool is the input to that UI gate.
+        /// </summary>
+        public bool RequiresInformedConsent { get; init; }
+
+        /// <summary>
+        /// B3 Phase 3: the two-sided informed-consent risk content (risks of changing +
+        /// risks of NOT changing, the latter quantified from this server's monitoring
+        /// data). Null for non-destructive actions. Rendered as checkboxes in-app (PR-B)
+        /// and as read-only disclosure on email/webhook/MCP surfaces.
+        /// </summary>
+        public RiskDisclosure? Risks { get; init; }
 
         /// <summary>
         /// True when at least one target is in a state where applying can do something.

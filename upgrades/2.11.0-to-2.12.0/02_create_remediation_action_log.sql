@@ -70,3 +70,30 @@ BEGIN
     PRINT 'config.remediation_action_log already exists — no action taken';
 END;
 GO
+
+/*
+B3 Phase 3 (consent_acknowledged): idempotent guarded ALTER, NOT a create-body amend.
+The CREATE above is guarded by IF OBJECT_ID(...) IS NULL, so adding the column inside
+that block would only land on servers where the table does not yet exist; servers that
+already ran an earlier 2.11.0-to-2.12.0/02_ (incl. multi-machine test servers) would
+keep the column-less table and turn EVERY audit INSERT into "invalid column name".
+This COL_LENGTH-guarded ALTER is correct on BOTH fresh and pre-existing tables.
+
+consent_acknowledged records that a DESTRUCTIVE apply (RCSI) passed the informed-consent
+(acknowledge-each-risk) gate. Always 0 for the always-safe DB-config and force-plan rows.
+*/
+IF COL_LENGTH(N'config.remediation_action_log', N'consent_acknowledged') IS NULL
+BEGIN
+    ALTER TABLE
+        config.remediation_action_log
+    ADD consent_acknowledged bit NOT NULL
+        CONSTRAINT df_remediation_action_log_consent_acknowledged
+        DEFAULT (0);
+
+    PRINT 'Added config.remediation_action_log.consent_acknowledged';
+END;
+ELSE
+BEGIN
+    PRINT 'config.remediation_action_log.consent_acknowledged already exists — no action taken';
+END;
+GO

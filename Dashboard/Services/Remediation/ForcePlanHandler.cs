@@ -219,6 +219,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                 GeneratedSql = GeneratedSql(actionVerb, target.QueryId, target.PlanId),
                 Result = AuditResult(status),
                 ErrorMessage = status is RemediationStatus.Error or RemediationStatus.PermissionDenied or RemediationStatus.Blocked ? message : null,
+                // Force-plan is reversible (not destructive) — never went through the
+                // informed-consent gate (M-3 regression-guard: explicit false).
+                ConsentAcknowledged = false,
                 SourceAlertRef = identity.SourceAlertRef
             };
 
