@@ -39,6 +39,7 @@ public sealed class AnalysisNotificationService
     private readonly IFindingAlertSender _sender;
     private readonly IAlertSettings _settings;
     private readonly Func<AnalysisFinding, string> _resolveServerId;
+    private readonly Func<string, bool>? _isServerSilenced;
     private readonly ILogger<AnalysisNotificationService> _logger;
 
     /// <summary>
@@ -57,16 +58,24 @@ public sealed class AnalysisNotificationService
     /// Dashboard: the <c>IServerManager</c> GUID lookup with the int-id fallback.
     /// </param>
     /// <param name="logger">Diagnostic logger.</param>
+    /// <param name="isServerSilenced">
+    /// Optional predicate (keyed by resolved <c>serverId</c>) that suppresses notifications
+    /// for a silenced server. Dashboard passes its <c>AlertStateService.IsAnySilencingActive</c>
+    /// so "Silence All Alerts" also stops analysis-finding emails; Lite has no silencing
+    /// feature and leaves this null (never silenced).
+    /// </param>
     public AnalysisNotificationService(
         IFindingAlertSender sender,
         IAlertSettings settings,
         Func<AnalysisFinding, string> serverIdResolver,
-        ILogger<AnalysisNotificationService> logger)
+        ILogger<AnalysisNotificationService> logger,
+        Func<string, bool>? isServerSilenced = null)
     {
         _sender = sender;
         _settings = settings;
         _resolveServerId = serverIdResolver;
         _logger = logger;
+        _isServerSilenced = isServerSilenced;
     }
 
     /// <summary>
@@ -105,6 +114,13 @@ public sealed class AnalysisNotificationService
                behaviour); the resolved serverId below is only the persistence shape. */
             var key = $"{finding.ServerId}:{finding.StoryPathHash}";
             var serverId = _resolveServerId(finding);
+
+            /* Honor per-server silencing (Dashboard "Silence All Alerts"). Checked after
+               resolving serverId but before the cooldown seed/stamp, so a silenced server
+               neither notifies nor consumes its cooldown — unsilencing resumes immediately. */
+            if (_isServerSilenced is not null && _isServerSilenced(serverId))
+                continue;
+
             var metricName = FindingMessageFormatter.MetricName(finding);
 
             /* Seed the in-memory cooldown from the alert log on first lookup per key so an

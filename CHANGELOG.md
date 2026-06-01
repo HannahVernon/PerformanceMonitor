@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"Silence All Alerts" now suppresses email too** ([#1035]) — right-clicking a monitored instance and choosing *Silence All Alerts* hid tray notifications and Alerts-tab badges, but two email paths ignored the silenced state and kept sending: connection up/down emails (*Server Unreachable* / *Server Restored*) and analysis-finding emails (the narrative findings from the analysis engine, which include CPU/memory/blocking stories). Only the threshold-alert path (High CPU, blocking, deadlocks, etc.) honored silencing. Both gaps are closed — a silenced server now produces no tray, email, or alert-history row from any path. The analysis path was the likely source of the reporter's "High CPU" email, since the threshold-based High CPU alert was already suppressed. The shared `AnalysisNotificationService` (used by Lite too) gains an optional per-server silence predicate; Lite has no silencing feature and passes none
 - **Dashboard time labels are now consistently 24-hour** ([#1012]) — the time-range header at the top of each tab (e.g. *"Original: May 28, 11:30 PM – May 29, 1:30 AM (PST)"*) and the Query Performance heatmap x-axis tick labels used `h:mm tt`, while every other timestamp in the app (footer "Last refresh", DataGrid columns, slicer, tooltips, logs) already used 24-hour `HH:mm`/`HH:mm:ss`. The AM/PM marker was also being truncated in the column shown by the reporter. Normalized the four outliers to `HH:mm` to match the rest of the app. The Lite heatmap had the same `h:mm tt` straggler — fixed alongside
 - **Lite UI no longer freezes during archival** ([#979]) — archival held DuckDB's exclusive write lock across the entire export-to-Parquet step, blocking every UI query (tab switches showed the spinning wheel, worse with more monitored servers). Export-to-Parquet only reads the database, so it now runs under a shared read lock concurrently with the UI; only the brief `DELETE` takes the exclusive write lock
 - **Lite FinOps no longer recommends an edition downgrade on an Availability Group secondary** ([#980]) — the licensing recommendations suggested "downgrade to Standard to save $X/mo" for any Enterprise instance, with no AG awareness. On a secondary replica that advice is misleading — every replica in an AG must run the same edition. FinOps now detects the AG replica role and, on a secondary, shows an informational note instead of the downgrade/savings estimate
@@ -37,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#980]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/980
 [#981]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/981
 [#1012]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1012
+[#1035]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1035
 
 ## [2.11.0] - 2026-05-19
 

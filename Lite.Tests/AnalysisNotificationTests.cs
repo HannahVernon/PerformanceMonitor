@@ -44,12 +44,12 @@ public class AnalysisNotificationTests : IDisposable
     /// Builds the shared AnalysisNotificationService wired to a real Lite EmailAlertService
     /// (its IFindingAlertSender) over the test DuckDB store, with Lite's serverId resolver.
     /// </summary>
-    private AnalysisNotificationService MakeNotifier()
+    private AnalysisNotificationService MakeNotifier(Func<string, bool>? isServerSilenced = null)
     {
         var webhook = new WebhookAlertService(_settings, EmailAlertService.Branding, new AppLoggerAdapter<WebhookAlertService>());
         var email = new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), webhook, new AppLoggerAdapter<EmailAlertService>());
         return new AnalysisNotificationService(
-            email, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>());
+            email, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>(), isServerSilenced);
     }
 
     private static AnalysisFinding MakeFinding(
@@ -358,6 +358,41 @@ public class AnalysisNotificationTests : IDisposable
         await notifier.NotifyAsync(new[] { MakeFinding("lowsev0000000001", severity: 1.0) });
 
         Assert.Equal(0, await CountAlertLogRowsAsync());
+    }
+
+    [Fact]
+    public async Task NotifyAsync_SilencedServer_DoesNotNotify()
+    {
+        // Issue #1035: a server silenced via "Silence All Alerts" must not produce
+        // analysis-finding emails. The predicate is keyed by resolved serverId ("1").
+        await _duckDb.InitializeAsync();
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+
+        var notifier = MakeNotifier(serverId => serverId == "1");
+        await notifier.NotifyAsync(new[] { MakeFinding("silenced00000001", severity: 2.0, serverId: 1) });
+
+        Assert.Equal(0, await CountAlertLogRowsAsync());
+    }
+
+    [Fact]
+    public async Task NotifyAsync_SilencePredicate_OnlySuppressesMatchingServer()
+    {
+        // The predicate is per-server: a finding for an unsilenced server still notifies
+        // even while another server is silenced, and a silenced server consuming no
+        // cooldown means unsilencing resumes immediately on the next cycle.
+        await _duckDb.InitializeAsync();
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+
+        var notifier = MakeNotifier(serverId => serverId == "1");
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 2.0, serverId: 1), // silenced — suppressed
+            MakeFinding("bbbb000000000002", severity: 2.0, serverId: 2)  // not silenced — notifies
+        });
+
+        Assert.Equal(1, await CountAlertLogRowsAsync());
     }
 
     private async Task<long> CountAlertLogRowsAsync()
