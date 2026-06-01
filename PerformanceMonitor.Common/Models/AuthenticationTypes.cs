@@ -27,4 +27,17 @@ public static class AuthenticationTypes
     /// Microsoft Entra MFA (Azure AD) interactive authentication.
     /// </summary>
     public const string EntraMFA = "EntraMFA";
+
+    /// <summary>
+    /// Microsoft Entra service principal (client id + secret) — non-interactive.
+    /// Maps to SqlAuthenticationMethod.ActiveDirectoryServicePrincipal.
+    /// </summary>
+    public const string ServicePrincipal = "ServicePrincipal";
+
+    /// <summary>
+    /// Azure managed identity (system- or user-assigned) — non-interactive.
+    /// Maps to SqlAuthenticationMethod.ActiveDirectoryManagedIdentity.
+    /// Only works when the app runs on an Azure resource with a managed identity.
+    /// </summary>
+    public const string ManagedIdentity = "ManagedIdentity";
 }
