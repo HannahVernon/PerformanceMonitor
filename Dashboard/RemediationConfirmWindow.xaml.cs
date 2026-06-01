@@ -174,10 +174,11 @@ namespace PerformanceMonitorDashboard
         {
             var allRiskBoxesChecked = _changingRisks.TrueForAll(r => r.IsChecked)
                 && _notChangingRisks.TrueForAll(r => r.IsChecked);
+            var riskBoxCount = _changingRisks.Count + _notChangingRisks.Count;
             var byNameAck = ByNameAckCheck.IsChecked == true;
 
             var enabled = ComputeConfirmEnabled(
-                _baseActionable, _requiresConsent, allRiskBoxesChecked, _resolvedByName, byNameAck);
+                _baseActionable, _requiresConsent, allRiskBoxesChecked, _resolvedByName, byNameAck, riskBoxCount);
             ConfirmButton.IsEnabled = enabled;
 
             if (enabled)
@@ -211,11 +212,17 @@ namespace PerformanceMonitorDashboard
             bool requiresConsent,
             bool allRiskBoxesChecked,
             bool resolvedByName,
-            bool byNameAck)
+            bool byNameAck,
+            int riskBoxCount)
         {
             if (!baseActionable)
                 return false;
-            if (requiresConsent && !allRiskBoxesChecked)
+            // FAIL CLOSED (LOW-1): a destructive request enables Apply ONLY when there is at
+            // least one rendered risk box AND every box is checked. List.TrueForAll on an
+            // EMPTY list returns true, so without the riskBoxCount > 0 guard a FUTURE
+            // destructive handler whose disclosure is empty/null would enable Apply with zero
+            // acknowledged checkboxes. The count guard removes that implicit coupling.
+            if (requiresConsent && !(riskBoxCount > 0 && allRiskBoxesChecked))
                 return false;
             if (resolvedByName && !byNameAck)
                 return false;

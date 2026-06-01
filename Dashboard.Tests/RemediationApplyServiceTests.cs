@@ -440,14 +440,14 @@ public class RemediationApplyServiceTests
             var allChecked = checkedCount == 5;   // never true in this loop (0..4)
             Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
                 baseActionable: true, requiresConsent: true, allRiskBoxesChecked: allChecked,
-                resolvedByName: false, byNameAck: false),
+                resolvedByName: false, byNameAck: false, riskBoxCount: 5),
                 $"Apply must stay DISABLED with a subset ({checkedCount}/5) of risk boxes checked.");
         }
 
         // All boxes checked -> enabled (no by-name complication).
         Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
-            resolvedByName: false, byNameAck: false));
+            resolvedByName: false, byNameAck: false, riskBoxCount: 5));
     }
 
     [Fact]
@@ -456,11 +456,11 @@ public class RemediationApplyServiceTests
         // Enabled with all checked...
         Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
-            resolvedByName: false, byNameAck: false));
+            resolvedByName: false, byNameAck: false, riskBoxCount: 4));
         // ...then un-checking ANY box (allRiskBoxesChecked flips false) re-disables.
         Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: true, allRiskBoxesChecked: false,
-            resolvedByName: false, byNameAck: false));
+            resolvedByName: false, byNameAck: false, riskBoxCount: 4));
     }
 
     [Fact]
@@ -469,15 +469,15 @@ public class RemediationApplyServiceTests
         // Risk boxes all checked but by-name NOT acked -> still disabled.
         Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
-            resolvedByName: true, byNameAck: false));
+            resolvedByName: true, byNameAck: false, riskBoxCount: 4));
         // By-name acked but a risk box still unchecked -> still disabled.
         Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: true, allRiskBoxesChecked: false,
-            resolvedByName: true, byNameAck: true));
+            resolvedByName: true, byNameAck: true, riskBoxCount: 4));
         // BOTH satisfied -> enabled.
         Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
-            resolvedByName: true, byNameAck: true));
+            resolvedByName: true, byNameAck: true, riskBoxCount: 4));
     }
 
     [Fact]
@@ -487,7 +487,28 @@ public class RemediationApplyServiceTests
         // of consent (the consent gate is ADDITIVE to AnyActionable, never a replacement).
         Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: false, requiresConsent: true, allRiskBoxesChecked: true,
-            resolvedByName: false, byNameAck: false));
+            resolvedByName: false, byNameAck: false, riskBoxCount: 4));
+    }
+
+    [Fact]
+    public void Gate_Destructive_ZeroRiskBoxes_FailsClosed()
+    {
+        // FAIL CLOSED (LOW-1): a destructive (requiresConsent) request with NO rendered
+        // risk boxes must keep Apply DISABLED, even though allRiskBoxesChecked is vacuously
+        // true (List.TrueForAll on an empty list) and the base apply-ability holds. A
+        // future destructive handler whose disclosure is empty/null can never enable Apply
+        // with zero acknowledged checkboxes.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 0));
+        // Still fails closed even if the (irrelevant) by-name ack is satisfied.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: true, byNameAck: true, riskBoxCount: 0));
+        // One real risk box, all checked -> enabled (the guard only blocks the empty case).
+        Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 1));
     }
 
     [Fact]
@@ -498,10 +519,10 @@ public class RemediationApplyServiceTests
         // exactly as before Phase 3 — no regression for force-plan / always-safe.
         Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: false, allRiskBoxesChecked: false,
-            resolvedByName: false, byNameAck: false));
+            resolvedByName: false, byNameAck: false, riskBoxCount: 0));
         Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
             baseActionable: true, requiresConsent: false, allRiskBoxesChecked: false,
-            resolvedByName: true, byNameAck: false));
+            resolvedByName: true, byNameAck: false, riskBoxCount: 0));
     }
 
     // ── Real figures survive persistence to apply time (CRITICAL correctness) ─────
