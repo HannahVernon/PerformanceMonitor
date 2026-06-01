@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.IO;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Common;
 using PerformanceMonitorLite.Models;
@@ -291,6 +292,85 @@ public class AzureAuthConnectionStringTests
         finally
         {
             cs.DeleteCredential(server.Id);
+        }
+    }
+
+    // ---- ServerManager.UpdateServer credential lifecycle (Credential Manager) -------------
+    // ServerManager owns its own CredentialService (real Windows Credential Manager, DPAPI),
+    // same seam the tests above use. These drive UpdateServer against a temp config directory
+    // and a unique GUID server id, asserting the orphaned-secret cleanup, then clean up.
+
+    [Fact]
+    public void UpdateServer_ServicePrincipalToEntraMfa_BlankUsername_DeletesOrphanedSecret()
+    {
+        var configDir = Path.Combine(Path.GetTempPath(), "pmlite-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(configDir);
+        var manager = new ServerManager(configDir);
+
+        var server = new ServerConnection
+        {
+            Id = Guid.NewGuid().ToString(),
+            ServerName = "myazure.database.windows.net",
+            AuthenticationType = AuthenticationTypes.ServicePrincipal
+        };
+        var cs = manager.CredentialService;
+
+        try
+        {
+            // Add as ServicePrincipal: stores client id + client secret in Credential Manager.
+            manager.AddServer(server, "client-id-123", "the-sp-secret");
+            Assert.True(cs.CredentialExists(server.Id), "precondition: SP secret should be stored");
+
+            // Switch to EntraMFA with a BLANK MFA username (the legitimate, reachable case).
+            // No username means the username-storing EntraMFA arm must NOT fire, and the stale
+            // SP secret must be deleted rather than left orphaned (LOW-1).
+            server.AuthenticationType = AuthenticationTypes.EntraMFA;
+            manager.UpdateServer(server, username: string.Empty, password: null);
+
+            Assert.False(cs.CredentialExists(server.Id),
+                "orphaned SP secret must be deleted when switching SP -> EntraMFA with a blank username");
+        }
+        finally
+        {
+            cs.DeleteCredential(server.Id);
+            try { Directory.Delete(configDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void UpdateServer_ServicePrincipalToEntraMfa_NonBlankUsername_StoresUsername()
+    {
+        // Regression guard for the fix: a NON-blank EntraMFA username must still hit the earlier
+        // EntraMFA arm and STORE the username (not get deleted by the broadened cleanup arm).
+        var configDir = Path.Combine(Path.GetTempPath(), "pmlite-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(configDir);
+        var manager = new ServerManager(configDir);
+
+        var server = new ServerConnection
+        {
+            Id = Guid.NewGuid().ToString(),
+            ServerName = "myazure.database.windows.net",
+            AuthenticationType = AuthenticationTypes.ServicePrincipal
+        };
+        var cs = manager.CredentialService;
+
+        try
+        {
+            manager.AddServer(server, "client-id-123", "the-sp-secret");
+
+            server.AuthenticationType = AuthenticationTypes.EntraMFA;
+            manager.UpdateServer(server, username: "user@tenant.com", password: null);
+
+            Assert.True(cs.CredentialExists(server.Id),
+                "non-blank EntraMFA username must be stored, not deleted");
+            var stored = cs.GetCredential(server.Id);
+            Assert.NotNull(stored);
+            Assert.Equal("user@tenant.com", stored!.Value.Username);
+        }
+        finally
+        {
+            cs.DeleteCredential(server.Id);
+            try { Directory.Delete(configDir, recursive: true); } catch { /* best effort */ }
         }
     }
 }

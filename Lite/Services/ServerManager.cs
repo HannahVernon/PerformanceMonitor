@@ -185,11 +185,18 @@ public class ServerManager
             }
         }
         else if (server.AuthenticationType == AuthenticationTypes.Windows ||
-                 server.AuthenticationType == AuthenticationTypes.ManagedIdentity)
+                 server.AuthenticationType == AuthenticationTypes.ManagedIdentity ||
+                 server.AuthenticationType == AuthenticationTypes.EntraMFA)
         {
             // Zero-touch auth (Windows / Managed Identity): remove any stored credential.
             // This also deletes an orphaned secret left behind when switching away from
             // SqlServer or ServicePrincipal (e.g. SP -> MI, SP -> Windows).
+            //
+            // EntraMFA reaches this arm ONLY when the MFA username is blank, because the
+            // earlier EntraMFA arm (which requires a non-blank username) runs first and stores
+            // the username. The blank-username case is exactly the orphan case: switching e.g.
+            // SP -> EntraMFA with no username must delete the stale SP client secret rather than
+            // leaving it in Credential Manager indefinitely.
             _credentialService.DeleteCredential(server.Id);
         }
 
