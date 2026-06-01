@@ -119,6 +119,79 @@ public class RemediationApplyServiceTests
         Assert.Equal(1, exec.UnforceCalls);
     }
 
+    // ── Apply-only enforcement (m-1 / m-C): un-apply for SupportsUnapply==false ──
+
+    [Fact]
+    public async Task Unapply_HandlerDoesNotSupport_ShortCircuits_NeverConfirms_NeverReachesHandler()
+    {
+        var exec = new FakeExecutor();
+        var handler = new DbConfigHandler();        // SupportsUnapply == false
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { handler }), _ => exec, null);
+
+        var confirmed = false;
+        var dbConfigAction = new RemediationAction("DB_CONFIG", "set",
+            Array.Empty<ForcePlanTarget>(),
+            new List<DbConfigTarget> { new("Foo", DbConfigSetting.AutoShrinkOff, "ON") });
+
+        // Even if a future mis-wired caller invokes UnapplyAsync, it must fail SAFE
+        // (clean report, no NotSupportedException) and never confirm or mutate.
+        var report = await service.UnapplyAsync(dbConfigAction, Server, "DOM\\op", "ref",
+            confirm: _ => { confirmed = true; return Task.FromResult(true); }, CancellationToken.None);
+
+        Assert.Equal(RemediationRunStatus.UnapplyNotSupported, report.Status);
+        Assert.True(report.IsUnapply);
+        Assert.False(confirmed);                    // the gate was never even shown
+        Assert.Equal(0, exec.SetDbCalls);
+        Assert.Empty(exec.AuditRecords);
+    }
+
+    [Fact]
+    public async Task Apply_DbConfig_ConfirmRequest_RendersDbConfigRows_NoQueryId()
+    {
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new DbConfigHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        var action = new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            new List<DbConfigTarget> { new("Foo", DbConfigSetting.AutoShrinkOff, "ON") });
+
+        await service.ApplyAsync(action, Server, previewSql: null, "DOM\\op", "ref",
+            confirm: req => { captured = req; return Task.FromResult(false); }, CancellationToken.None);
+
+        Assert.NotNull(captured);
+        Assert.Equal("DB_CONFIG", captured!.FactKey);
+        var row = Assert.Single(captured.Targets);
+        Assert.Contains("AUTO_SHRINK OFF", row.StatusTitle);
+        Assert.True(captured.AnyActionable);        // a DB_CONFIG Ok is actionable
+        // The fallback preview renders the ALTER statement, not sp_query_store_*.
+        Assert.Contains("ALTER DATABASE [Foo] SET AUTO_SHRINK OFF;", captured.PreviewSql);
+        Assert.DoesNotContain("sp_query_store", captured.PreviewSql);
+    }
+
+    [Fact]
+    public async Task Apply_DbConfig_AllAlreadyDesired_NotActionable()
+    {
+        // Preflight all-AlreadyInDesiredState => AnyActionable false => Apply disabled.
+        var exec = new FakeExecutor();   // PreflightDbConfigAsync returns Ok by default;
+        // override via a handler driven by a preflight that's already-desired:
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new DbConfigHandler() }),
+            _ => new AlreadyDesiredExecutor(), null);
+        RemediationConfirmRequest? captured = null;
+
+        var action = new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            new List<DbConfigTarget> { new("Foo", DbConfigSetting.AutoShrinkOff, "OFF") });
+
+        await service.ApplyAsync(action, Server, previewSql: null, "DOM\\op", "ref",
+            confirm: req => { captured = req; return Task.FromResult(false); }, CancellationToken.None);
+
+        Assert.NotNull(captured);
+        Assert.False(captured!.AnyActionable);
+        Assert.Equal(RemediationDisposition.AlreadyInDesiredState, Assert.Single(captured.Targets).Disposition);
+    }
+
     // ── LOW-2: applied-but-unlogged permanent vs transient ───────────────────────
 
     [Fact]
@@ -306,10 +379,52 @@ public class RemediationApplyServiceTests
             });
         }
 
+        public int SetDbCalls;
+
+        public Task<DbConfigPreflight> PreflightDbConfigAsync(string database, DbConfigSetting setting, CancellationToken ct)
+            => Task.FromResult(new DbConfigPreflight
+            {
+                Database = database, Setting = setting, DatabaseExists = true, HasAlter = true,
+                AlreadyInDesiredState = false, ExecutingLogin = "PerfMonLogin", CurrentValue = "ON"
+            });
+
+        public Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
+        {
+            SetDbCalls++;
+            return Task.FromResult(new DbConfigOutcome
+            {
+                Database = database, Setting = setting, Status = RemediationStatus.Success, Applied = true,
+                ExecutingLogin = "PerfMonLogin", PriorValue = "ON", GeneratedSql = "ALTER DATABASE [x] SET AUTO_SHRINK OFF;",
+                GateSpid = 55, ExecSpid = 55
+            });
+        }
+
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
         {
             AuditRecords.Add(record);
             return Task.FromResult(AuditWriteResult);
         }
+    }
+
+    /// <summary>Executor whose DB-config preflight always reports already-in-desired-state.</summary>
+    private sealed class AlreadyDesiredExecutor : IRemediationExecutor
+    {
+        public Task<TargetPreflight> PreflightForcePlanAsync(string database, long queryId, long planId, CancellationToken ct)
+            => Task.FromResult(new TargetPreflight { Database = database });
+        public Task<bool> AuditTableExistsAsync(CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> HasPriorForceAsync(string database, long queryId, long planId, CancellationToken ct) => Task.FromResult(false);
+        public Task<ForcePlanOutcome> ForcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new ForcePlanOutcome { Database = database });
+        public Task<ForcePlanOutcome> UnforcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new ForcePlanOutcome { Database = database });
+        public Task<DbConfigPreflight> PreflightDbConfigAsync(string database, DbConfigSetting setting, CancellationToken ct)
+            => Task.FromResult(new DbConfigPreflight
+            {
+                Database = database, Setting = setting, DatabaseExists = true, HasAlter = true,
+                AlreadyInDesiredState = true, ExecutingLogin = "PerfMonLogin", CurrentValue = "OFF"
+            });
+        public Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new DbConfigOutcome { Database = database, Setting = setting, Status = RemediationStatus.Skipped });
+        public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct) => Task.FromResult(true);
     }
 }

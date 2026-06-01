@@ -212,6 +212,8 @@ namespace PerformanceMonitorDashboard
                     return "No remediation handler is registered for this finding.";
                 case RemediationRunStatus.NotConfirmed:
                     return "Cancelled — no change was made.";
+                case RemediationRunStatus.UnapplyNotSupported:
+                    return "This fix type cannot be un-applied — no change was made.";
             }
 
             var verb = report.IsUnapply ? "unforced" : "forced";
@@ -226,27 +228,37 @@ namespace PerformanceMonitorDashboard
 
         private static string FormatTarget(RemediationTargetReport t, string verb)
         {
-            var where = $"[{t.Database}] query_id {t.QueryId}, plan_id {t.PlanId}";
+            // Force-plan rows carry query_id/plan_id; DB_CONFIG rows do not (both 0).
+            var isForcePlan = t.QueryId != 0 || t.PlanId != 0;
+            var where = isForcePlan
+                ? $"[{t.Database}] query_id {t.QueryId}, plan_id {t.PlanId}"
+                : $"[{t.Database}]";
+            // For DB_CONFIG the handler's per-target message already names the setting
+            // and outcome; "plan forced" wording is force-plan-specific.
+            var successText = isForcePlan ? $"plan {verb}" : (t.Message ?? "applied");
 
             // Applied-but-unlogged (O3 + LOW-2): the mutation succeeded; distinguish a
             // permanent setup/grant failure (loud, "fix this") from a transient one.
             if (t.AppliedButUnlogged)
             {
+                var reversal = isForcePlan
+                    ? "The change is in place (reversible via Un-apply)."
+                    : "The change is in place (the prior value was recorded for manual reversal).";
                 return t.AuditFailureKind switch
                 {
                     AuditWriteFailureKind.Permanent =>
-                        $"⚠ {where}: plan {verb}, but the audit row could NOT be written — the monitoring "
+                        $"⚠ {where}: {successText}, but the audit row could NOT be written — the monitoring "
                         + "login lacks INSERT on config.remediation_action_log. EVERY Apply on this server "
-                        + "will go unlogged until this grant is fixed. The change is in place (reversible via Un-apply).",
+                        + "will go unlogged until this grant is fixed. " + reversal,
                     _ =>
-                        $"⚠ {where}: plan {verb}, but writing the audit row failed (transient). The change is "
+                        $"⚠ {where}: {successText}, but writing the audit row failed (transient). The change is "
                         + "in place; re-check config.remediation_action_log."
                 };
             }
 
             return t.Status switch
             {
-                RemediationStatus.Success => $"✓ {where}: plan {verb}.",
+                RemediationStatus.Success => $"✓ {where}: {successText}.",
                 RemediationStatus.Skipped => $"• {where}: skipped — {t.Message}",
                 RemediationStatus.PermissionDenied => $"⛔ {where}: {t.Message}",
                 RemediationStatus.Blocked => $"⛔ {where}: {t.Message}",
@@ -257,7 +269,9 @@ namespace PerformanceMonitorDashboard
 
         private static ResultSeverity SeverityOf(RemediationRunReport report)
         {
-            if (report.Status == RemediationRunStatus.NotConfirmed || report.Status == RemediationRunStatus.NoHandler)
+            if (report.Status is RemediationRunStatus.NotConfirmed
+                or RemediationRunStatus.NoHandler
+                or RemediationRunStatus.UnapplyNotSupported)
                 return ResultSeverity.Info;
 
             // A permanent unlogged failure, or any hard error/block/permission-denied,

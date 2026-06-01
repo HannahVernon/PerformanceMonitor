@@ -26,9 +26,42 @@ namespace PerformanceMonitor.Analysis;
 /// </para>
 /// </summary>
 public sealed record RemediationAction(
-    string FactKey,                              // e.g. "PLAN_REGRESSION" — handler-registry key
-    string Action,                              // "force" (v1). Un-apply derives "unforce".
-    IReadOnlyList<ForcePlanTarget> Targets);
+    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" — handler-registry key
+    string Action,                              // "force" (plan regression) | "set" (db config). Un-apply derives "unforce".
+    IReadOnlyList<ForcePlanTarget> Targets,      // force-plan targets (empty list for DB_CONFIG)
+    IReadOnlyList<DbConfigTarget>? DbConfigTargets = null);  // DB-config targets (null for force-plan)
+
+/// <summary>
+/// The fixed, hardcoded set of always-safe database settings B3 Phase 2 can apply.
+/// This enum — NOT any data/operator-supplied string — selects the SET clause
+/// literal in the executor (see DatabaseService.Remediation DB-config arm). RCSI
+/// (READ_COMMITTED_SNAPSHOT) is deliberately absent: it is destructive and excluded.
+/// </summary>
+public enum DbConfigSetting
+{
+    /// <summary>ALTER DATABASE [db] SET AUTO_SHRINK OFF;</summary>
+    AutoShrinkOff,
+
+    /// <summary>ALTER DATABASE [db] SET AUTO_CLOSE OFF;</summary>
+    AutoCloseOff,
+
+    /// <summary>ALTER DATABASE [db] SET PAGE_VERIFY CHECKSUM;</summary>
+    PageVerifyChecksum
+}
+
+/// <summary>
+/// One always-safe database-config target: a (database, setting) pair. Each maps
+/// 1:1 onto an independent ALTER DATABASE statement, an audit row, and a confirm
+/// row. <see cref="Database"/> is validated non-empty by the extractor and
+/// re-validated against sys.databases at apply time; <see cref="Setting"/> is the
+/// hardcoded-literal selector (NOT free text). <see cref="CurrentValue"/> is a
+/// possibly-stale display/audit prior-value snapshot ONLY — it is never an
+/// execution input (the live apply-time sys.databases read drives the skip).
+/// </summary>
+public sealed record DbConfigTarget(
+    string Database,
+    DbConfigSetting Setting,
+    string? CurrentValue = null);
 
 /// <summary>
 /// One force-plan target. <see cref="Database"/>, <see cref="QueryId"/> and

@@ -9,6 +9,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using PerformanceMonitor.Analysis;
 
 namespace PerformanceMonitorDashboard.Services.Remediation
 {
@@ -44,6 +45,12 @@ namespace PerformanceMonitorDashboard.Services.Remediation
 
         public Task<ForcePlanOutcome> UnforcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct)
             => _databaseService.UnforcePlanAsync(database, queryId, planId, identity, ct);
+
+        public Task<DbConfigPreflight> PreflightDbConfigAsync(string database, DbConfigSetting setting, CancellationToken ct)
+            => _databaseService.PreflightDbConfigAsync(database, setting, ct);
+
+        public Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
+            => _databaseService.SetDatabaseOptionAsync(database, setting, identity, ct);
 
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
             => _auditWriter.WriteAsync(record, ct);

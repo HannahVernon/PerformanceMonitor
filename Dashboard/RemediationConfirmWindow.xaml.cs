@@ -28,9 +28,12 @@ namespace PerformanceMonitorDashboard
 
             var verb = request.IsUnapply ? "Un-apply Fix" : "Apply Fix";
             Title = $"Confirm {verb}";
-            HeaderText.Text = request.IsUnapply
-                ? $"Un-apply (unforce) the forced plan on {request.ServerDisplayName}?"
-                : $"Force the historical-better plan on {request.ServerDisplayName}?";
+            var isDbConfig = string.Equals(request.FactKey, "DB_CONFIG", System.StringComparison.Ordinal);
+            HeaderText.Text = isDbConfig
+                ? $"Apply the always-safe database setting change(s) on {request.ServerDisplayName}?"
+                : request.IsUnapply
+                    ? $"Un-apply (unforce) the forced plan on {request.ServerDisplayName}?"
+                    : $"Force the historical-better plan on {request.ServerDisplayName}?";
 
             ServerText.Text = request.ServerDisplayName;
             ExecutingText.Text = string.IsNullOrEmpty(request.ExecutingLogin)
@@ -52,9 +55,16 @@ namespace PerformanceMonitorDashboard
                 rows.Add(TargetRow.From(t, request.IsUnapply));
             TargetsList.ItemsSource = rows;
 
-            // M2 caveat is an apply-time judgment; on un-apply there is no "still
-            // better" decision, so the caveat is hidden.
-            if (request.IsUnapply)
+            // Fact-key-specific caveat. DB_CONFIG: the always-safe note (RCSI excluded).
+            // PLAN_REGRESSION: the M2 still-better caveat (apply-time judgment; hidden
+            // on un-apply where there is no "still better" decision).
+            if (isDbConfig)
+            {
+                CaveatText.Text =
+                    "These three settings are always-safe to change on a live database (online, no blocking). "
+                    + "RCSI (READ_COMMITTED_SNAPSHOT) is intentionally excluded — test it on a copy first.";
+            }
+            else if (request.IsUnapply)
             {
                 CaveatBanner.Visibility = Visibility.Collapsed;
             }
@@ -142,9 +152,19 @@ namespace PerformanceMonitorDashboard
 
             public static TargetRow From(RemediationConfirmTarget t, bool isUnapply)
             {
-                var head = $"[{t.Database}]  query_id {t.QueryId}, plan_id {t.PlanId}";
-                if (!isUnapply && t.RegressionFactor > 0)
-                    head += $"  —  regression {t.RegressionFactor.ToString("0.#", CultureInfo.InvariantCulture)}x";
+                // DB_CONFIG rows carry a fact-key-neutral StatusTitle (no query_id/plan_id);
+                // force-plan rows render the query_id/plan_id head + the M2 regression Nx.
+                string head;
+                if (!string.IsNullOrEmpty(t.StatusTitle))
+                {
+                    head = t.StatusTitle!;
+                }
+                else
+                {
+                    head = $"[{t.Database}]  query_id {t.QueryId}, plan_id {t.PlanId}";
+                    if (!isUnapply && t.RegressionFactor > 0)
+                        head += $"  —  regression {t.RegressionFactor.ToString("0.#", CultureInfo.InvariantCulture)}x";
+                }
 
                 var status = DescribeDisposition(t, isUnapply);
                 return new TargetRow { HeadLine = head, StatusLine = status };
@@ -165,6 +185,8 @@ namespace PerformanceMonitorDashboard
                     RemediationDisposition.BlockNoAlter => "Monitoring login lacks ALTER — will fail closed (no change).",
                     RemediationDisposition.BlockWrongDatabase => "Connected DB does not match the target — will not proceed.",
                     RemediationDisposition.BlockAuditTableAbsent => "Audit table absent (pre-2.12.0) — hard-blocked.",
+                    RemediationDisposition.AlreadyInDesiredState => "Already in the desired state — will be skipped.",
+                    RemediationDisposition.BlockDatabaseNotFound => "Database not found on the server — will not proceed.",
                     _ => t.DispositionMessage ?? "Unable to determine target state."
                 };
             }

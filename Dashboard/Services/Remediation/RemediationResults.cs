@@ -7,6 +7,7 @@
  */
 
 using System.Collections.Generic;
+using PerformanceMonitor.Analysis;
 
 namespace PerformanceMonitorDashboard.Services.Remediation
 {
@@ -52,6 +53,13 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         BlockNoAlter,
         BlockWrongDatabase,
         BlockAuditTableAbsent,
+
+        /// <summary>DB_CONFIG: the setting is already in the desired state — idempotent skip (no ALTER).</summary>
+        AlreadyInDesiredState,
+
+        /// <summary>DB_CONFIG: the target database was not found on the server (renamed/dropped) — blocked, no ALTER.</summary>
+        BlockDatabaseNotFound,
+
         Error
     }
 
@@ -111,6 +119,60 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public int? ExecSpid { get; init; }
     }
 
+    /// <summary>
+    /// Read-only display probe for one DB-config target (advisory only — never the
+    /// authoritative gate; <see cref="IRemediationExecutor.SetDatabaseOptionAsync"/>
+    /// re-derives its own gate on the mutating connection before any ALTER).
+    /// </summary>
+    public sealed class DbConfigPreflight
+    {
+        public string Database { get; init; } = "";
+        public DbConfigSetting Setting { get; init; }
+
+        /// <summary>True when the database exists on the server (parameterized sys.databases check).</summary>
+        public bool DatabaseExists { get; init; }
+
+        /// <summary>HAS_PERMS_BY_NAME(@db,'DATABASE','ALTER') wrapped ISNULL(...,0).</summary>
+        public bool HasAlter { get; init; }
+
+        /// <summary>True when the live sys.databases read shows the setting already in the desired state.</summary>
+        public bool AlreadyInDesiredState { get; init; }
+
+        public string? ExecutingLogin { get; init; }
+
+        /// <summary>The current value read live (display/audit prior value).</summary>
+        public string? CurrentValue { get; init; }
+
+        public RemediationDisposition Disposition { get; set; }
+        public string? Message { get; set; }
+    }
+
+    /// <summary>
+    /// Outcome of a single DB-config <c>ALTER DATABASE SET</c> attempt. The gate
+    /// (existence + permission + freshness) and the ALTER run on ONE open monitoring
+    /// connection; <see cref="GateSpid"/>/<see cref="ExecSpid"/> prove they shared it
+    /// (R2-MOD-1). <see cref="GeneratedSql"/> is the exact statement executed.
+    /// </summary>
+    public sealed class DbConfigOutcome
+    {
+        public string Database { get; init; } = "";
+        public DbConfigSetting Setting { get; init; }
+        public RemediationStatus Status { get; init; }
+
+        /// <summary>True only when an ALTER actually ran and succeeded.</summary>
+        public bool Applied { get; init; }
+        public string? ExecutingLogin { get; init; }
+        public string? Message { get; init; }
+
+        /// <summary>The prior setting value, captured at the gate read (audit prior_value).</summary>
+        public string? PriorValue { get; init; }
+
+        /// <summary>The exact ALTER DATABASE statement executed (audited generated_sql).</summary>
+        public string? GeneratedSql { get; init; }
+        public int? GateSpid { get; init; }
+        public int? ExecSpid { get; init; }
+    }
+
     /// <summary>Per-target outcome of an apply/unapply, including the audit disposition.</summary>
     public sealed class TargetOutcome
     {
@@ -151,9 +213,10 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public string? TargetServer { get; set; }
         public string TargetDatabase { get; init; } = "";
         public string FactKey { get; init; } = "";
-        public long QueryId { get; init; }
-        public long PlanId { get; init; }
-        public string Action { get; init; } = "";          // "force" | "unforce"
+        public long? QueryId { get; init; }                 // force-plan only; null for DB_CONFIG
+        public long? PlanId { get; init; }                  // force-plan only; null for DB_CONFIG
+        public string Action { get; init; } = "";          // "force" | "unforce" | "set_*"
+        public string? PriorValue { get; init; }            // DB_CONFIG prior value ("ON" | "NONE" | ...); null for force-plan
         public string? GeneratedSql { get; init; }
         public string Result { get; init; } = "";          // "success" | "skipped" | "error" | "aborted"
         public string? ErrorMessage { get; init; }

@@ -188,6 +188,63 @@ public class AnalysisNotificationTests
     }
 
     [Fact]
+    public void AlertContext_DbConfigAction_DbConfigTargetsSurviveRoundTrip()
+    {
+        // m-A: a DB_CONFIG action must come back with its DbConfigTargets intact after
+        // a full serialize -> deserialize. A 3-arg FromDto ctor call would silently
+        // drop them (action survives but un-applyable); this pins they survive.
+        var action = new RemediationAction("DB_CONFIG", "set",
+            Array.Empty<ForcePlanTarget>(),
+            new List<DbConfigTarget>
+            {
+                new("Foo", DbConfigSetting.AutoShrinkOff, "ON"),
+                new("Foo", DbConfigSetting.PageVerifyChecksum, "TORN_PAGE_DETECTION")
+            });
+
+        var context = new AlertContext();
+        context.Details.Add(new AlertDetailItem
+        {
+            Heading = "Remediation T-SQL",
+            IsCodeBlock = true,
+            Body = "ALTER DATABASE [Foo] SET AUTO_SHRINK OFF;",
+            Remediation = action
+        });
+
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        var rem = restored.Details.Single(d => d.IsCodeBlock).Remediation;
+        Assert.NotNull(rem);
+        Assert.Equal("DB_CONFIG", rem!.FactKey);
+        Assert.Equal("set", rem.Action);
+        Assert.Empty(rem.Targets);                       // force-plan list empty
+        Assert.NotNull(rem.DbConfigTargets);
+        Assert.Equal(2, rem.DbConfigTargets!.Count);
+        Assert.Equal("Foo", rem.DbConfigTargets[0].Database);
+        Assert.Equal(DbConfigSetting.AutoShrinkOff, rem.DbConfigTargets[0].Setting);
+        Assert.Equal("ON", rem.DbConfigTargets[0].CurrentValue);
+        Assert.Equal(DbConfigSetting.PageVerifyChecksum, rem.DbConfigTargets[1].Setting);
+        Assert.Equal("TORN_PAGE_DETECTION", rem.DbConfigTargets[1].CurrentValue);
+    }
+
+    [Fact]
+    public void AlertContext_ForcePlanAction_DbConfigTargetsNull_AfterRoundTrip()
+    {
+        // A force-plan action has no DbConfigTargets; it must round-trip to null
+        // (not an empty list that would imply a DB_CONFIG action).
+        var finding = MakeFinding("remround00000002", rootFactKey: "PLAN_REGRESSION",
+            drillDown: RegressedQueriesDrillDown());
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        var rem = restored.Details.Single(d => d.IsCodeBlock).Remediation;
+        Assert.NotNull(rem);
+        Assert.Null(rem!.DbConfigTargets);
+    }
+
+    [Fact]
     public void AlertContext_LegacyJsonWithoutRemediation_DeserializesToNull()
     {
         // A persisted context written before the Remediation field existed: a code

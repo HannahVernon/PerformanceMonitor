@@ -27,6 +27,14 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// <summary>The operator declined the confirm modal — the gate held; no mutation.</summary>
         NotConfirmed,
 
+        /// <summary>
+        /// An un-apply was requested for a handler that does not support it
+        /// (SupportsUnapply == false). Fails SAFE: nothing ran, no exception (m-C).
+        /// The UI gates the Un-apply button on SupportsUnapply, so this is a
+        /// defensive backstop for a future mis-wired caller.
+        /// </summary>
+        UnapplyNotSupported,
+
         /// <summary>The handler ran; see <see cref="RemediationRunReport.Targets"/>.</summary>
         Ran
     }
@@ -93,6 +101,13 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// <summary>Original regression_factor from the finding (M2 — surfaced so the operator owns the still-better judgment).</summary>
         public double RegressionFactor { get; init; }
 
+        /// <summary>
+        /// Fact-key-neutral display title for a non-force-plan row (DB_CONFIG renders
+        /// this instead of query_id/plan_id), e.g. "[Foo] SET AUTO_SHRINK OFF — was ON".
+        /// Null for force-plan rows (they render the query_id/plan_id head).
+        /// </summary>
+        public string? StatusTitle { get; init; }
+
         /// <summary>Advisory preflight disposition for this target (display only).</summary>
         public RemediationDisposition Disposition { get; init; }
         public string? DispositionMessage { get; init; }
@@ -109,6 +124,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public string ServerDisplayName { get; init; } = "";
         public bool IsUnapply { get; init; }
 
+        /// <summary>The action's fact key ("PLAN_REGRESSION" | "DB_CONFIG"), so the modal can show a fact-key-specific header/banner.</summary>
+        public string FactKey { get; init; } = "";
+
         /// <summary>Exact SQL preview shown verbatim (the code-block T-SQL for apply; the unforce statements for un-apply).</summary>
         public string PreviewSql { get; init; } = "";
 
@@ -123,7 +141,14 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// <summary>False when the target server is pre-2.12.0 schema — apply will hard-block.</summary>
         public bool AuditTableExists { get; init; }
 
-        /// <summary>True when at least one target is in a state where applying can do something.</summary>
+        /// <summary>
+        /// True when at least one target is in a state where applying can do something.
+        /// Ok / WarnFailing are actionable (force-plan AND a DB_CONFIG Ok). The new
+        /// DB_CONFIG dispositions (AlreadyInDesiredState, BlockDatabaseNotFound) are
+        /// deliberately NOT actionable — an all-already-desired DB_CONFIG request
+        /// disables Apply, exactly like an all-AlreadyForced force-plan request. This
+        /// set is unchanged for force-plan (no loosening).
+        /// </summary>
         public bool AnyActionable =>
             AuditTableExists &&
             Targets.Any(t => t.Disposition is RemediationDisposition.Ok or RemediationDisposition.WarnFailing);

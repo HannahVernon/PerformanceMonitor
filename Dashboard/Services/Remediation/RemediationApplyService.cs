@@ -52,7 +52,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             _serverManager = serverManager ?? throw new ArgumentNullException(nameof(serverManager));
             if (credentialService is null) throw new ArgumentNullException(nameof(credentialService));
 
-            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler() });
+            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler() });
             _executorFactory = server =>
                 new DatabaseServiceRemediationExecutor(new DatabaseService(server.GetConnectionString(credentialService)));
             _auditFailureClassifier = (server, ct) =>
@@ -168,6 +168,14 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             if (handler is null)
                 return new RemediationRunReport { Status = RemediationRunStatus.NoHandler, IsUnapply = isUnapply };
 
+            // m-C fail-safe: an un-apply for a handler that doesn't support it (e.g.
+            // a future mis-wired DB_CONFIG un-apply) short-circuits to a clean report
+            // BEFORE any confirm or handler call — never bubbles NotSupportedException.
+            // The privileged action is a no-op either way; this removes the only path
+            // that turns the guard violation into a crash.
+            if (isUnapply && !handler.SupportsUnapply)
+                return new RemediationRunReport { Status = RemediationRunStatus.UnapplyNotSupported, IsUnapply = true };
+
             var exec = _executorFactory(server);
 
             // Read-only preflight: DISPLAY DRIVER ONLY. Populates the confirm modal's
@@ -234,22 +242,44 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             bool isUnapply,
             PreflightResult preflight)
         {
-            // Preflight targets align 1:1 with action targets (the handler builds them
+            // Preflight targets align 1:1 with action targets (each handler builds them
             // in order). Match by index; tolerate a short preflight list defensively.
-            var confirmTargets = new List<RemediationConfirmTarget>(action.Targets.Count);
-            for (var i = 0; i < action.Targets.Count; i++)
+            // Branch on which target list is populated: DB_CONFIG carries
+            // DbConfigTargets (action.Targets is empty for it), force-plan carries Targets.
+            List<RemediationConfirmTarget> confirmTargets;
+            if (action.DbConfigTargets is { Count: > 0 } dbTargets)
             {
-                var t = action.Targets[i];
-                var pf = i < preflight.Targets.Count ? preflight.Targets[i] : null;
-                confirmTargets.Add(new RemediationConfirmTarget
+                confirmTargets = new List<RemediationConfirmTarget>(dbTargets.Count);
+                for (var i = 0; i < dbTargets.Count; i++)
                 {
-                    Database = t.Database,
-                    QueryId = t.QueryId,
-                    PlanId = t.PlanId,
-                    RegressionFactor = t.RegressionFactor,
-                    Disposition = pf?.Disposition ?? RemediationDisposition.Error,
-                    DispositionMessage = pf?.Message
-                });
+                    var t = dbTargets[i];
+                    var pf = i < preflight.Targets.Count ? preflight.Targets[i] : null;
+                    confirmTargets.Add(new RemediationConfirmTarget
+                    {
+                        Database = t.Database,
+                        StatusTitle = $"[{t.Database}] {DbConfigHandler.SettingTitle(t.Setting)} — was {t.CurrentValue}",
+                        Disposition = pf?.Disposition ?? RemediationDisposition.Error,
+                        DispositionMessage = pf?.Message
+                    });
+                }
+            }
+            else
+            {
+                confirmTargets = new List<RemediationConfirmTarget>(action.Targets.Count);
+                for (var i = 0; i < action.Targets.Count; i++)
+                {
+                    var t = action.Targets[i];
+                    var pf = i < preflight.Targets.Count ? preflight.Targets[i] : null;
+                    confirmTargets.Add(new RemediationConfirmTarget
+                    {
+                        Database = t.Database,
+                        QueryId = t.QueryId,
+                        PlanId = t.PlanId,
+                        RegressionFactor = t.RegressionFactor,
+                        Disposition = pf?.Disposition ?? RemediationDisposition.Error,
+                        DispositionMessage = pf?.Message
+                    });
+                }
             }
 
             var executingLogin = preflight.Targets
@@ -260,6 +290,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             {
                 ServerDisplayName = string.IsNullOrEmpty(server.DisplayName) ? server.ServerName : server.DisplayName,
                 IsUnapply = isUnapply,
+                FactKey = action.FactKey,
                 PreviewSql = preview,
                 OperatorIdentity = operatorIdentity,
                 ExecutingLogin = executingLogin,
@@ -275,6 +306,22 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// </summary>
         private static string RenderPreview(RemediationAction action, bool isUnapply)
         {
+            // DB_CONFIG: render the ALTER DATABASE statements (apply-only — there is no
+            // un-apply branch). Display only; the executor builds its own validated +
+            // bracketed statement and never executes this text. Reaches here only as a
+            // fallback when no code-block preview was supplied.
+            if (action.DbConfigTargets is { Count: > 0 } dbTargets)
+            {
+                var sb2 = new StringBuilder();
+                foreach (var t in dbTargets)
+                {
+                    sb2.Append("ALTER DATABASE ").Append(QuoteIdentifier(t.Database))
+                       .Append(' ').Append(SetClauseFor(t.Setting))
+                       .Append(";   -- was ").Append(t.CurrentValue).Append('\n');
+                }
+                return sb2.ToString().TrimEnd('\n');
+            }
+
             var proc = isUnapply ? "sp_query_store_unforce_plan" : "sp_query_store_force_plan";
             var sb = new StringBuilder();
             foreach (var t in action.Targets)
@@ -286,5 +333,18 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             }
             return sb.ToString().TrimEnd('\n');
         }
+
+        // Display-only bracketing for the fallback preview (mirrors the executor's
+        // QUOTENAME doubling). The executed statement is built by the executor, not here.
+        private static string QuoteIdentifier(string identifier) =>
+            "[" + identifier.Replace("]", "]]") + "]";
+
+        private static string SetClauseFor(DbConfigSetting setting) => setting switch
+        {
+            DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
+            DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
+            DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
+            _ => "SET /* unknown */"
+        };
     }
 }

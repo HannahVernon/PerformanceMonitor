@@ -35,6 +35,15 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// </summary>
         bool IsDestructive { get; }
 
+        /// <summary>
+        /// Whether this fix type can be un-applied. Force-plan can (unforce); the
+        /// always-safe DB-config fixes have no sensible reverse, so DbConfigHandler
+        /// returns false. The UI gates the Un-apply button on this, and
+        /// RemediationApplyService fails safe (clean report, no exception) if an
+        /// un-apply is requested for a handler where this is false.
+        /// </summary>
+        bool SupportsUnapply { get; }
+
         /// <summary>Read-only, per-target disposition for the UI. Advisory.</summary>
         Task<PreflightResult> PreflightAsync(RemediationAction action, IRemediationExecutor exec, CancellationToken ct);
 

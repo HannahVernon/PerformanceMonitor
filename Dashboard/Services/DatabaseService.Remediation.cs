@@ -11,6 +11,7 @@ using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Services.Remediation;
 
 namespace PerformanceMonitorDashboard.Services
@@ -225,6 +226,262 @@ SET NUMERIC_ROUNDABORT OFF;";
             GateSpid = gate.Spid,
             ExecSpid = null
         };
+
+        // ── B3 Phase 2: always-safe DB-config fixes (ALTER DATABASE SET …) ──────────
+        //
+        // The one genuinely new sharp edge vs force-plan: the database is a syntactic
+        // IDENTIFIER in the statement and CANNOT be a parameter. The no-injection
+        // mechanism is three mandatory layers, all on ONE monitoring connection (no
+        // InitialCatalog retarget — we stay on PerformanceMonitor, where even the
+        // README's least-privilege login is db_owner and the by-name permission probe
+        // is fail-closed):
+        //   1. validate the candidate name against sys.databases, PARAMETERIZED
+        //      (@db NVARCHAR(128), no concatenation);
+        //   2. bracket the EXACT validated string with an inline QUOTENAME-equivalent
+        //      (']'→']]') — the same-string invariant (M-1): the string validated in
+        //      layer 1 is byte-identical to the string bracketed here;
+        //   3. the SET clause is a HARDCODED compile-time literal chosen by a switch
+        //      over DbConfigSetting — never data/operator-supplied.
+        // The display renderer's rendered text is NEVER executed; this executor builds
+        // its own statement. FactRemediation.QuoteName is private in another assembly,
+        // so we implement our own byte-identical doubling routine here (m-B).
+
+        /// <summary>
+        /// Inline QUOTENAME-equivalent (byte-identical to FactRemediation.QuoteName,
+        /// which is private in PerformanceMonitor.Analysis — m-B). Wraps an identifier
+        /// in brackets and doubles any embedded close-bracket so even a pathological
+        /// database name is inert. This is the ONLY non-constant token placed in the
+        /// ALTER statement, and only AFTER the name was validated against sys.databases.
+        /// </summary>
+        internal static string QuoteIdentifier(string identifier) =>
+            "[" + identifier.Replace("]", "]]") + "]";
+
+        /// <summary>
+        /// The hardcoded SET-clause literal for each setting. NOTHING here comes from
+        /// data or operator input — the enum is the entire selection surface (§1 layer 3).
+        /// </summary>
+        internal static string SetClauseFor(DbConfigSetting setting) => setting switch
+        {
+            DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
+            DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
+            DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
+            _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting")
+        };
+
+        /// <summary>
+        /// Builds the exact ALTER DATABASE statement: the ONLY non-constant token is
+        /// the bracketed, ALREADY-VALIDATED identifier; the SET clause is a hardcoded
+        /// enum-selected literal (§1). Exposed internal so the §11 no-injection /
+        /// same-string tests run against the executor's OWN builder (not the display
+        /// renderer). Callers MUST pass the exact string that the sys.databases
+        /// existence check validated (M-1 same-string invariant).
+        /// </summary>
+        internal static string BuildAlterStatement(string validatedName, DbConfigSetting setting) =>
+            $"ALTER DATABASE {QuoteIdentifier(validatedName)} {SetClauseFor(setting)};";
+
+        /// <summary>
+        /// Read-only display probe (advisory only). Runs on the monitoring connection
+        /// (no retarget); reads existence + ALTER permission + the live setting value.
+        /// </summary>
+        internal async Task<DbConfigPreflight> PreflightDbConfigAsync(string database, DbConfigSetting setting, CancellationToken ct)
+        {
+            // Monitoring connection — InitialCatalog left as PerformanceMonitor.
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            var gate = await ReadDbConfigGateAsync(connection, database, setting, ct).ConfigureAwait(false);
+
+            return new DbConfigPreflight
+            {
+                Database = database,
+                Setting = setting,
+                DatabaseExists = gate.DatabaseExists,
+                HasAlter = gate.HasAlter,
+                AlreadyInDesiredState = gate.AlreadyInDesiredState,
+                ExecutingLogin = gate.ExecutingLogin,
+                CurrentValue = gate.CurrentValue
+            };
+        }
+
+        /// <summary>
+        /// Self-gating always-safe DB-config ALTER (R2-MOD-1). The gate (parameterized
+        /// existence + ALTER permission + live freshness) and the ALTER run on ONE
+        /// open monitoring connection with no re-open between them. The validated @db
+        /// string is the SAME string that gets bracketed and placed in the statement
+        /// (M-1 same-string invariant).
+        /// </summary>
+        internal async Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
+        {
+            // ONE monitoring connection for gate + mutation. No InitialCatalog
+            // retarget (least-priv login is db_owner on PerformanceMonitor, not a user
+            // in the target DB), no re-open — this is what closes the gate→ALTER TOCTOU.
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            // Layer 1 (existence, PARAMETERIZED) + permission + live freshness, in one
+            // gate read on this open connection. `database` is bound as @db NVARCHAR(128).
+            var gate = await ReadDbConfigGateAsync(connection, database, setting, ct).ConfigureAwait(false);
+
+            // (1) Existence — absent => block, no ALTER.
+            if (!gate.DatabaseExists)
+            {
+                return DbOutcome(database, setting, RemediationStatus.Blocked, applied: false, gate,
+                    $"Database '{database}' was not found on the server (renamed or dropped since the finding); no change made.");
+            }
+
+            // (2) Permission — fail closed, no elevation, no retry.
+            if (!gate.HasAlter)
+            {
+                return DbOutcome(database, setting, RemediationStatus.PermissionDenied, applied: false, gate,
+                    $"The monitoring login '{gate.ExecutingLogin}' lacks ALTER on '{database}'. " +
+                    $"Map it into '{database}' (CREATE USER ... FOR LOGIN) and GRANT ALTER, or connect with a login that has it.");
+            }
+
+            // (3) Freshness / idempotency — already in desired state => skip, no ALTER.
+            if (gate.AlreadyInDesiredState)
+            {
+                return DbOutcome(database, setting, RemediationStatus.Skipped, applied: false, gate,
+                    $"'{database}' is already in the desired state for {SetClauseFor(setting)}; nothing to do.");
+            }
+
+            // Gate passed. Build the statement: the ONLY non-constant token is the
+            // bracketed, ALREADY-VALIDATED identifier (M-1 same-string: gate.ValidatedName
+            // is the exact @db value sys.databases confirmed). The SET clause is a
+            // hardcoded literal. No parameter is possible for a DDL identifier; QUOTENAME
+            // doubling + prior existence validation is the control.
+            var statement = BuildAlterStatement(gate.ValidatedName!, setting);
+
+            int? execSpid;
+            try
+            {
+                using var exec = connection.CreateCommand();
+                exec.CommandTimeout = RemediationCommandTimeoutSeconds;
+                // ALTER DATABASE SET is not permitted inside an explicit transaction;
+                // it runs in autocommit. It is an online metadata change (no blocking,
+                // no forced disconnects) — which is what makes these three always-safe.
+                exec.CommandText = statement + " SELECT exec_spid = @@SPID;";
+                var raw = await exec.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                execSpid = raw is null || raw is DBNull ? (int?)null : Convert.ToInt32(raw);
+            }
+            catch (SqlException ex)
+            {
+                var status = ex.Number is 297 or 15247 or 229 ? RemediationStatus.PermissionDenied : RemediationStatus.Error;
+                return DbOutcome(database, setting, status, applied: false, gate,
+                    $"ALTER DATABASE {SetClauseFor(setting)} failed (error {ex.Number}): {ex.Message}", statement);
+            }
+
+            return new DbConfigOutcome
+            {
+                Database = database,
+                Setting = setting,
+                Status = RemediationStatus.Success,
+                Applied = true,
+                ExecutingLogin = gate.ExecutingLogin,
+                Message = $"Applied {SetClauseFor(setting)} on '{database}' (was {gate.CurrentValue}).",
+                PriorValue = gate.CurrentValue,
+                GeneratedSql = statement,
+                GateSpid = gate.Spid,
+                ExecSpid = execSpid
+            };
+        }
+
+        private static DbConfigOutcome DbOutcome(string database, DbConfigSetting setting, RemediationStatus status, bool applied, DbConfigGateReading gate, string message, string? generatedSql = null) => new()
+        {
+            Database = database,
+            Setting = setting,
+            Status = status,
+            Applied = applied,
+            ExecutingLogin = gate.ExecutingLogin,
+            Message = message,
+            PriorValue = gate.CurrentValue,
+            GeneratedSql = generatedSql,
+            GateSpid = gate.Spid,
+            ExecSpid = null
+        };
+
+        /// <summary>
+        /// The DB-config gate read: identity + parameterized sys.databases existence +
+        /// ALTER permission + the live current setting value, in one round-trip on the
+        /// open monitoring connection. The setting column is selected by the enum (a
+        /// constant column expression — not data). Captures <see cref="DbConfigGateReading.ValidatedName"/>
+        /// = the exact @db value (the same-string source for QUOTENAME, M-1).
+        /// </summary>
+        private static async Task<DbConfigGateReading> ReadDbConfigGateAsync(SqlConnection connection, string database, DbConfigSetting setting, CancellationToken ct)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = RemediationCommandTimeoutSeconds;
+
+            // The current-value column expression is chosen by the enum (constant SQL,
+            // never data). is_auto_shrink_on / is_auto_close_on / page_verify_option_desc
+            // are all server-visible from the monitoring connection (VIEW ANY DATABASE →
+            // public). desired-state is computed server-side so the skip decision uses
+            // the LIVE read, never the extractor's possibly-stale CurrentValue (m-2).
+            string currentValueExpr;
+            string desiredExpr;
+            switch (setting)
+            {
+                case DbConfigSetting.AutoShrinkOff:
+                    currentValueExpr = "CASE WHEN d.is_auto_shrink_on = 1 THEN N'ON' ELSE N'OFF' END";
+                    desiredExpr = "CASE WHEN d.is_auto_shrink_on = 0 THEN 1 ELSE 0 END";
+                    break;
+                case DbConfigSetting.AutoCloseOff:
+                    currentValueExpr = "CASE WHEN d.is_auto_close_on = 1 THEN N'ON' ELSE N'OFF' END";
+                    desiredExpr = "CASE WHEN d.is_auto_close_on = 0 THEN 1 ELSE 0 END";
+                    break;
+                case DbConfigSetting.PageVerifyChecksum:
+                    currentValueExpr = "d.page_verify_option_desc";
+                    desiredExpr = "CASE WHEN d.page_verify_option_desc = N'CHECKSUM' THEN 1 ELSE 0 END";
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting");
+            }
+
+            command.CommandText = $@"
+DECLARE @exists bit =
+    CASE WHEN EXISTS (SELECT 1 FROM sys.databases AS d WHERE d.name = @db) THEN 1 ELSE 0 END;
+
+SELECT
+    db_exists = @exists,
+    executing_login = SUSER_SNAME(),
+    has_alter = CONVERT(int, ISNULL(HAS_PERMS_BY_NAME(@db, 'DATABASE', 'ALTER'), 0)),
+    current_value = (SELECT {currentValueExpr} FROM sys.databases AS d WHERE d.name = @db),
+    already_desired = ISNULL((SELECT {desiredExpr} FROM sys.databases AS d WHERE d.name = @db), 0),
+    spid = @@SPID;";
+            command.Parameters.Add(new SqlParameter("@db", SqlDbType.NVarChar, 128) { Value = database });
+
+            using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                return new DbConfigGateReading();
+
+            var dbExists = !reader.IsDBNull(0) && reader.GetBoolean(0);
+            return new DbConfigGateReading
+            {
+                DatabaseExists = dbExists,
+                // Same-string invariant (M-1): only treat the candidate as validated
+                // when the existence check passed; the bracketed token is THIS exact
+                // string, byte-identical to the validated @db parameter value.
+                ValidatedName = dbExists ? database : null,
+                ExecutingLogin = reader.IsDBNull(1) ? null : reader.GetString(1),
+                HasAlter = !reader.IsDBNull(2) && reader.GetInt32(2) == 1,
+                CurrentValue = reader.IsDBNull(3) ? null : reader.GetString(3),
+                AlreadyInDesiredState = !reader.IsDBNull(4) && reader.GetInt32(4) == 1,
+                Spid = reader.IsDBNull(5) ? (int?)null : Convert.ToInt32(reader.GetInt16(5))
+            };
+        }
+
+        private sealed class DbConfigGateReading
+        {
+            public bool DatabaseExists { get; init; }
+            /// <summary>The validated @db value (== existence-checked string) — the M-1 same-string source for QUOTENAME.</summary>
+            public string? ValidatedName { get; init; }
+            public string? ExecutingLogin { get; init; }
+            public bool HasAlter { get; init; }
+            public string? CurrentValue { get; init; }
+            public bool AlreadyInDesiredState { get; init; }
+            public int? Spid { get; init; }
+        }
 
         /// <summary>
         /// Gate part 1: identity + permission, using only always-accessible intrinsics

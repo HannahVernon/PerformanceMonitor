@@ -38,6 +38,7 @@ public static class FactRemediation
         return finding.RootFactKey switch
         {
             "PLAN_REGRESSION" => GenerateForPlanRegression(finding),
+            "DB_CONFIG" => GenerateForDbConfig(finding),
             _ => null
         };
     }
@@ -62,6 +63,11 @@ public static class FactRemediation
                 return targets.Count == 0
                     ? null
                     : new RemediationAction("PLAN_REGRESSION", "force", targets);
+            case "DB_CONFIG":
+                var dbConfigTargets = ExtractDbConfigTargets(finding);
+                return dbConfigTargets.Count == 0
+                    ? null
+                    : new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), dbConfigTargets);
             default:
                 return null;
         }
@@ -164,6 +170,160 @@ public static class FactRemediation
     }
 
     /// <summary>
+    /// Extracts the always-safe DB-config targets from a DB_CONFIG finding's
+    /// drill-down <c>config_issues</c> array. For each row with a non-empty
+    /// <c>database</c>, emits one target per safe setting currently in the wrong
+    /// state, reading the STRUCTURED typed fields (<c>auto_shrink</c> bool,
+    /// <c>auto_close</c> bool, <c>page_verify</c> string) — never parsing the human
+    /// <c>issues</c> strings (which are display wording defined in two collectors
+    /// and would drift). RCSI is NEVER emitted (destructive — excluded);
+    /// recovery_model / query_store are out of scope. This is the single parse:
+    /// <see cref="GenerateForDbConfig"/> renders entirely from this list and
+    /// <see cref="BuildAction"/> persists it. A defensive cap of 50 targets mirrors
+    /// the force-plan cap discipline.
+    /// </summary>
+    public static IReadOnlyList<DbConfigTarget> ExtractDbConfigTargets(AnalysisFinding finding)
+    {
+        var targets = new List<DbConfigTarget>();
+
+        if (finding?.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("config_issues", out var raw) ||
+            raw is null)
+            return targets;
+
+        JsonElement element;
+        try
+        {
+            element = JsonSerializer.SerializeToElement(raw);
+        }
+        catch
+        {
+            return targets;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return targets;
+
+        foreach (var row in element.EnumerateArray())
+        {
+            if (targets.Count >= 50) break;
+            if (row.ValueKind != JsonValueKind.Object) continue;
+
+            var database = GetString(row, "database");
+            if (string.IsNullOrEmpty(database))
+                continue;
+
+            // Each setting is an independent (db, setting) target. RCSI is never
+            // emitted — it is intentionally absent from DbConfigSetting.
+            if (GetBool(row, "auto_shrink"))
+            {
+                if (targets.Count >= 50) break;
+                targets.Add(new DbConfigTarget(database, DbConfigSetting.AutoShrinkOff, "ON"));
+            }
+            if (GetBool(row, "auto_close"))
+            {
+                if (targets.Count >= 50) break;
+                targets.Add(new DbConfigTarget(database, DbConfigSetting.AutoCloseOff, "ON"));
+            }
+            var pageVerify = GetString(row, "page_verify");
+            if (!string.IsNullOrEmpty(pageVerify) &&
+                !string.Equals(pageVerify, "CHECKSUM", StringComparison.OrdinalIgnoreCase))
+            {
+                if (targets.Count >= 50) break;
+                targets.Add(new DbConfigTarget(database, DbConfigSetting.PageVerifyChecksum, pageVerify));
+            }
+        }
+
+        return targets;
+    }
+
+    /// <summary>
+    /// Thin renderer over <see cref="ExtractDbConfigTargets"/>. Emits the exact
+    /// <c>ALTER DATABASE [db] SET ...;</c> statements that will run (matching the
+    /// executor and the audited generated_sql), grouped by database, with a "was X"
+    /// comment per statement and an explicit note when a database ALSO has RCSI OFF
+    /// (intentionally NOT auto-fixed). The bracketed identifier uses the same
+    /// QUOTENAME doubling as the force-plan renderer; the displayed text is NEVER
+    /// executed (the executor builds its own statement from the validated identifier
+    /// + the enum literal).
+    /// </summary>
+    private static string? GenerateForDbConfig(AnalysisFinding finding)
+    {
+        var targets = ExtractDbConfigTargets(finding);
+        if (targets.Count == 0)
+            return null;
+
+        // Which databases also carry RCSI OFF (so we can append the note). Read the
+        // structured rcsi flag from the same drill-down; never parse issues strings.
+        var rcsiOffDatabases = new HashSet<string>(StringComparer.Ordinal);
+        if (finding?.DrillDown is not null &&
+            finding.DrillDown.TryGetValue("config_issues", out var raw) && raw is not null)
+        {
+            try
+            {
+                var element = JsonSerializer.SerializeToElement(raw);
+                if (element.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var row in element.EnumerateArray())
+                    {
+                        if (row.ValueKind != JsonValueKind.Object) continue;
+                        var db = GetString(row, "database");
+                        // rcsi == false means RCSI is OFF (the wrong-state we exclude).
+                        if (!string.IsNullOrEmpty(db) && row.TryGetProperty("rcsi", out var r)
+                            && r.ValueKind == JsonValueKind.False)
+                            rcsiOffDatabases.Add(db);
+                    }
+                }
+            }
+            catch { /* note is best-effort */ }
+        }
+
+        var sb = new StringBuilder();
+        string? currentDb = null;
+
+        foreach (var target in targets)
+        {
+            if (!string.Equals(currentDb, target.Database, StringComparison.Ordinal))
+            {
+                if (currentDb is not null)
+                {
+                    // Close out the previous database group with its RCSI note (if any).
+                    if (rcsiOffDatabases.Contains(currentDb))
+                        sb.AppendLine($"-- NOTE: {QuoteName(currentDb)} also has RCSI OFF — intentionally NOT auto-fixed (test on a copy first).");
+                    sb.AppendLine();
+                }
+                currentDb = target.Database;
+                sb.AppendLine($"-- Database: {target.Database}");
+            }
+
+            sb.AppendLine($"{StatementFor(target.Setting, target.Database)}   -- was {target.CurrentValue}");
+        }
+
+        if (currentDb is not null && rcsiOffDatabases.Contains(currentDb))
+            sb.AppendLine($"-- NOTE: {QuoteName(currentDb)} also has RCSI OFF — intentionally NOT auto-fixed (test on a copy first).");
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// The full <c>ALTER DATABASE [db] SET ...;</c> statement text for display
+    /// rendering, built from the QUOTENAME'd identifier + a hardcoded SET-clause
+    /// literal selected by the enum. The Dashboard executor builds its OWN
+    /// byte-identical statement and never executes this rendered string.
+    /// </summary>
+    private static string StatementFor(DbConfigSetting setting, string database)
+    {
+        var setClause = setting switch
+        {
+            DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
+            DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
+            DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
+            _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting")
+        };
+        return $"ALTER DATABASE {QuoteName(database)} {setClause};";
+    }
+
+    /// <summary>
     /// QUOTENAME-equivalent: wrap an identifier in square brackets and double
     /// any embedded close-bracket. The database name comes from
     /// sys.databases (via the drill-down collector), so it is already a valid
@@ -196,5 +356,21 @@ public static class FactRemediation
     {
         if (!row.TryGetProperty(property, out var v)) return 0.0;
         return v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0.0;
+    }
+
+    private static bool GetBool(JsonElement row, string property)
+    {
+        if (!row.TryGetProperty(property, out var v)) return false;
+        return v.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            // Defensive: a collector that emitted a "1"/"0" string or a number still
+            // reads correctly, but both collectors emit a JSON bool (§4.1 parity).
+            JsonValueKind.String => string.Equals(v.GetString(), "1", StringComparison.Ordinal)
+                                     || string.Equals(v.GetString(), "true", StringComparison.OrdinalIgnoreCase),
+            JsonValueKind.Number => v.TryGetInt64(out var n) && n != 0,
+            _ => false
+        };
     }
 }

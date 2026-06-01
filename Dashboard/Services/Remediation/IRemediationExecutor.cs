@@ -8,6 +8,7 @@
 
 using System.Threading;
 using System.Threading.Tasks;
+using PerformanceMonitor.Analysis;
 
 namespace PerformanceMonitorDashboard.Services.Remediation
 {
@@ -59,6 +60,26 @@ namespace PerformanceMonitorDashboard.Services.Remediation
 
         /// <summary>Self-gating inverse of <see cref="ForcePlanAsync"/> (sp_query_store_unforce_plan).</summary>
         Task<ForcePlanOutcome> UnforcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct);
+
+        /// <summary>
+        /// Read-only display probe for one DB-config target (existence, ALTER
+        /// permission, live current value / desired-state). Advisory only — does NOT
+        /// authorise a mutation. Runs on the monitoring connection (no retarget).
+        /// </summary>
+        Task<DbConfigPreflight> PreflightDbConfigAsync(string database, DbConfigSetting setting, CancellationToken ct);
+
+        /// <summary>
+        /// Self-gating always-safe DB-config ALTER. R2-MOD-1: the gate (parameterized
+        /// sys.databases existence + HAS_PERMS_BY_NAME(@db,'DATABASE','ALTER') +
+        /// live freshness read) and the <c>ALTER DATABASE [db] SET &lt;literal&gt;</c>
+        /// run on ONE open MONITORING connection (no InitialCatalog retarget, no
+        /// re-open between gate and mutation). The database identifier is validated
+        /// against sys.databases (parameterized), then the SAME validated string is
+        /// bracketed by an inline QUOTENAME-equivalent and placed as the ONLY
+        /// non-constant token; the SET clause is a hardcoded compile-time literal
+        /// chosen by <paramref name="setting"/>. Emits GateSpid/ExecSpid.
+        /// </summary>
+        Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct);
 
         /// <summary>
         /// Writes one audit row on the MONITORING connection. Returns false if the

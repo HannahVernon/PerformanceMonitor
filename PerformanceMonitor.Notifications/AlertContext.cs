@@ -76,7 +76,11 @@ public record FieldDto(string Label, string Value);
 /// the round-trip backward-compatible: legacy contextJson with no Remediation
 /// property deserializes the field to null.
 /// </summary>
-public record RemediationActionDto(string FactKey, string Action, List<ForcePlanTargetDto> Targets);
+public record RemediationActionDto(
+    string FactKey,
+    string Action,
+    List<ForcePlanTargetDto> Targets,
+    List<DbConfigTargetDto>? DbConfigTargets = null);
 public record ForcePlanTargetDto(
     string Database,
     long QueryId,
@@ -86,6 +90,17 @@ public record ForcePlanTargetDto(
     double LatestCpuPerExecUs,
     double BestCpuPerExecUs,
     double RegressionFactor);
+
+/// <summary>
+/// JSON mirror of <see cref="DbConfigTarget"/>. <see cref="Setting"/> is persisted
+/// as the enum's int value. The trailing optional <c>DbConfigTargets</c> member on
+/// <see cref="RemediationActionDto"/> keeps the round-trip backward-compatible:
+/// legacy contextJson without it deserializes to null.
+/// </summary>
+public record DbConfigTargetDto(
+    string Database,
+    int Setting,
+    string? CurrentValue);
 
 /// <summary>
 /// Maps <see cref="AlertContext"/> to/from the <see cref="AlertContextDto"/> JSON projection
@@ -161,7 +176,15 @@ public static class AlertContextSerializer
                 t.RegressionFactor));
         }
 
-        return new RemediationActionDto(action.FactKey, action.Action, targets);
+        List<DbConfigTargetDto>? dbConfigTargets = null;
+        if (action.DbConfigTargets is not null)
+        {
+            dbConfigTargets = new List<DbConfigTargetDto>(action.DbConfigTargets.Count);
+            foreach (var t in action.DbConfigTargets)
+                dbConfigTargets.Add(new DbConfigTargetDto(t.Database, (int)t.Setting, t.CurrentValue));
+        }
+
+        return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -186,6 +209,20 @@ public static class AlertContextSerializer
             }
         }
 
-        return new RemediationAction(dto.FactKey, dto.Action, targets);
+        // m-A: deserialize the DB-config targets and PASS them to the ctor. The
+        // RemediationAction ctor's trailing DbConfigTargets defaults to null, so a
+        // 3-arg call here would silently drop a DB_CONFIG action's targets on the
+        // round-trip (un-applyable from any persisted context). Legacy JSON without
+        // the field deserializes dto.DbConfigTargets to null -> dbConfigTargets null
+        // -> backward-compatible.
+        List<DbConfigTarget>? dbConfigTargets = null;
+        if (dto.DbConfigTargets is not null)
+        {
+            dbConfigTargets = new List<DbConfigTarget>(dto.DbConfigTargets.Count);
+            foreach (var t in dto.DbConfigTargets)
+                dbConfigTargets.Add(new DbConfigTarget(t.Database, (DbConfigSetting)t.Setting, t.CurrentValue));
+        }
+
+        return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets);
     }
 }
