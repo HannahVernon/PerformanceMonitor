@@ -121,6 +121,7 @@ INSERT INTO
     query_id,
     plan_id,
     action,
+    prior_value,
     generated_sql,
     result,
     error_message,
@@ -137,6 +138,7 @@ VALUES
     @query_id,
     @plan_id,
     @action,
+    @prior_value,
     @generated_sql,
     @result,
     @error_message,
@@ -147,9 +149,15 @@ VALUES
                 command.Parameters.Add(new SqlParameter("@target_server", SqlDbType.NVarChar, 256) { Value = (object?)targetServer ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@target_database", SqlDbType.NVarChar, 128) { Value = record.TargetDatabase });
                 command.Parameters.Add(new SqlParameter("@finding_fact_key", SqlDbType.VarChar, 64) { Value = record.FactKey });
-                command.Parameters.Add(new SqlParameter("@query_id", SqlDbType.BigInt) { Value = record.QueryId });
-                command.Parameters.Add(new SqlParameter("@plan_id", SqlDbType.BigInt) { Value = record.PlanId });
-                command.Parameters.Add(new SqlParameter("@action", SqlDbType.VarChar, 16) { Value = record.Action });
+                // B-1: DB_CONFIG rows have no query_id/plan_id — write DBNull, not 0.
+                command.Parameters.Add(new SqlParameter("@query_id", SqlDbType.BigInt) { Value = (object?)record.QueryId ?? DBNull.Value });
+                command.Parameters.Add(new SqlParameter("@plan_id", SqlDbType.BigInt) { Value = (object?)record.PlanId ?? DBNull.Value });
+                // B-3: widen to VarChar(32) — the DB_CONFIG taxonomy (e.g.
+                // 'set_page_verify_checksum' = 24 chars) silently truncates at 16
+                // here, BEFORE the widened column is reached. Column width alone is
+                // insufficient; this client parameter is the first truncation point.
+                command.Parameters.Add(new SqlParameter("@action", SqlDbType.VarChar, 32) { Value = record.Action });
+                command.Parameters.Add(new SqlParameter("@prior_value", SqlDbType.NVarChar, 128) { Value = (object?)record.PriorValue ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@generated_sql", SqlDbType.NVarChar, -1) { Value = (object?)record.GeneratedSql ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@result", SqlDbType.VarChar, 16) { Value = record.Result });
                 command.Parameters.Add(new SqlParameter("@error_message", SqlDbType.NVarChar, -1) { Value = (object?)record.ErrorMessage ?? DBNull.Value });

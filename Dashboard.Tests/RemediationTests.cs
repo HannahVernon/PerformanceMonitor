@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitorDashboard.Services;
 using PerformanceMonitorDashboard.Services.Remediation;
 using Xunit;
 
@@ -357,6 +358,457 @@ public class RemediationTests
         Assert.Equal("unforce", Assert.Single(exec.AuditRecords).Action);
     }
 
+    // ════════════════════════════════════════════════════════════════════════════
+    // B3 Phase 2 — always-safe DB-config fixes (DB_CONFIG)
+    // ════════════════════════════════════════════════════════════════════════════
+
+    private static AnalysisFinding DbConfigFinding(List<object>? rows = null) => new()
+    {
+        ServerId = 1,
+        ServerName = "TestServer",
+        Category = "config_issues",
+        StoryPath = "DB_CONFIG",
+        StoryPathHash = "dbconfig00000001",
+        RootFactKey = "DB_CONFIG",
+        DrillDown = new Dictionary<string, object>
+        {
+            ["config_issues"] = rows ?? new List<object>
+            {
+                new { database = "Foo", recovery_model = "FULL", rcsi = true, query_store = true,
+                      issues = new[] { "auto_shrink ON", "auto_close ON" },
+                      auto_shrink = true, auto_close = true, page_verify = "CHECKSUM" }
+            }
+        }
+    };
+
+    private static RemediationAction DbConfigAction(params DbConfigTarget[] targets) =>
+        new("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), targets.ToList());
+
+    // ── Extractor: only the three safe settings, NEVER RCSI ──────────────────────
+
+    [Fact]
+    public void ExtractDbConfig_EmitsOnlySafeSettings_NeverRcsi()
+    {
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "Db1", rcsi = false, query_store = false,
+                  auto_shrink = true, auto_close = true, page_verify = "NONE",
+                  issues = new[] { "auto_shrink ON", "auto_close ON", "RCSI OFF", "page_verify=NONE" } }
+        });
+
+        var targets = FactRemediation.ExtractDbConfigTargets(finding);
+
+        // 3 safe targets (shrink, close, page_verify) — RCSI is NEVER emitted.
+        Assert.Equal(3, targets.Count);
+        Assert.Contains(targets, t => t.Setting == DbConfigSetting.AutoShrinkOff && t.CurrentValue == "ON");
+        Assert.Contains(targets, t => t.Setting == DbConfigSetting.AutoCloseOff && t.CurrentValue == "ON");
+        Assert.Contains(targets, t => t.Setting == DbConfigSetting.PageVerifyChecksum && t.CurrentValue == "NONE");
+        // No enum value for RCSI exists, but assert defensively none slipped through as page_verify.
+        Assert.All(targets, t => Assert.True(Enum.IsDefined(typeof(DbConfigSetting), t.Setting)));
+    }
+
+    [Fact]
+    public void ExtractDbConfig_PageVerifyChecksum_IsNotEmitted()
+    {
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "Db1", rcsi = true, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new string[0] }
+        });
+
+        Assert.Empty(FactRemediation.ExtractDbConfigTargets(finding));
+    }
+
+    [Fact]
+    public void ExtractDbConfig_EmptyDatabase_IsSkipped()
+    {
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "", rcsi = true, query_store = true, auto_shrink = true, auto_close = false, page_verify = "CHECKSUM", issues = new string[0] }
+        });
+
+        Assert.Empty(FactRemediation.ExtractDbConfigTargets(finding));
+    }
+
+    [Fact]
+    public void ExtractDbConfig_MultipleDatabases_MultipleTargets()
+    {
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "A", rcsi = true, query_store = true, auto_shrink = true,  auto_close = false, page_verify = "CHECKSUM", issues = new string[0] },
+            new { database = "B", rcsi = true, query_store = true, auto_shrink = false, auto_close = false, page_verify = "TORN_PAGE_DETECTION", issues = new string[0] }
+        });
+
+        var targets = FactRemediation.ExtractDbConfigTargets(finding);
+        Assert.Equal(2, targets.Count);
+        Assert.Equal("A", targets[0].Database);
+        Assert.Equal(DbConfigSetting.AutoShrinkOff, targets[0].Setting);
+        Assert.Equal("B", targets[1].Database);
+        Assert.Equal(DbConfigSetting.PageVerifyChecksum, targets[1].Setting);
+        Assert.Equal("TORN_PAGE_DETECTION", targets[1].CurrentValue);
+    }
+
+    [Fact]
+    public void BuildAction_DbConfig_OnlyRcsi_ReturnsNull()
+    {
+        // A DB whose only issue is RCSI OFF yields no safe target → no action → no Apply button.
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "Db1", rcsi = false, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "RCSI OFF" } }
+        });
+
+        Assert.Null(FactRemediation.BuildAction(finding));
+    }
+
+    [Fact]
+    public void BuildAction_DbConfig_ProducesSetActionWithTargets()
+    {
+        var action = FactRemediation.BuildAction(DbConfigFinding());
+
+        Assert.NotNull(action);
+        Assert.Equal("DB_CONFIG", action!.FactKey);
+        Assert.Equal("set", action.Action);
+        Assert.Empty(action.Targets);                       // force-plan list is empty for DB_CONFIG
+        Assert.NotNull(action.DbConfigTargets);
+        Assert.Equal(2, action.DbConfigTargets!.Count);     // shrink + close
+    }
+
+    // ── Render-stability golden (incl. "was X" + RCSI-excluded note) ─────────────
+
+    [Fact]
+    public void GenerateForFinding_DbConfig_RenderStability_ByteForByte()
+    {
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "Foo", rcsi = false, query_store = true,
+                  auto_shrink = true, auto_close = true, page_verify = "NONE",
+                  issues = new[] { "auto_shrink ON", "auto_close ON", "RCSI OFF", "page_verify=NONE" } }
+        });
+
+        const string expected =
+            "-- Database: Foo\n" +
+            "ALTER DATABASE [Foo] SET AUTO_SHRINK OFF;   -- was ON\n" +
+            "ALTER DATABASE [Foo] SET AUTO_CLOSE OFF;   -- was ON\n" +
+            "ALTER DATABASE [Foo] SET PAGE_VERIFY CHECKSUM;   -- was NONE\n" +
+            "-- NOTE: [Foo] also has RCSI OFF — intentionally NOT auto-fixed (test on a copy first).";
+
+        var actual = FactRemediation.GenerateForFinding(finding);
+        Assert.NotNull(actual);
+        Assert.Equal(expected, actual!.Replace("\r\n", "\n"));
+    }
+
+    // ── Handler: audit-absent hard block, fail-closed, freshness-skip, db-not-found, success ──
+
+    [Fact]
+    public async Task DbConfig_AuditTableAbsent_HardBlocks_NoMutation_NoAudit()
+    {
+        var exec = new FakeExecutor { AuditTableExists = false };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON"),
+                           new DbConfigTarget("Bar", DbConfigSetting.AutoCloseOff, "ON")),
+            exec, Identity, CancellationToken.None);
+
+        Assert.Equal(2, result.Outcomes.Count);
+        Assert.All(result.Outcomes, o =>
+        {
+            Assert.Equal(RemediationStatus.Blocked, o.Status);
+            Assert.False(o.AuditWritten);
+            Assert.Contains("2.12.0", o.Message);
+        });
+        Assert.Equal(0, exec.SetDbCalls);
+        Assert.Empty(exec.AuditRecords);
+    }
+
+    [Fact]
+    public async Task DbConfig_PermissionDenied_FailsClosed_AuditSkipped()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.PermissionDenied, Applied = false,
+                Message = "lacks ALTER", PriorValue = "ON"
+            }
+        };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.PermissionDenied, o.Status);
+        Assert.False(o.AppliedButUnlogged);
+        Assert.Equal("skipped", Assert.Single(exec.AuditRecords).Result);
+        Assert.Equal(1, exec.SetDbCalls);
+    }
+
+    [Fact]
+    public async Task DbConfig_AlreadyDesired_Skips_NoMutationFlag_AuditSkipped()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.Skipped, Applied = false,
+                Message = "already desired", PriorValue = "OFF"
+            }
+        };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "OFF")), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Skipped, o.Status);
+        Assert.False(o.AppliedButUnlogged);
+        Assert.Equal("skipped", Assert.Single(exec.AuditRecords).Result);
+    }
+
+    [Fact]
+    public async Task DbConfig_DatabaseNotFound_Blocks_AuditAborted()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.Blocked, Applied = false,
+                Message = "not found", PriorValue = null
+            }
+        };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Gone", DbConfigSetting.AutoShrinkOff, "ON")), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Blocked, o.Status);
+        Assert.Equal("aborted", Assert.Single(exec.AuditRecords).Result);
+    }
+
+    [Fact]
+    public async Task DbConfig_Success_AppliesAndAudits_NullIds_PriorValue_PreciseAction()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) => new DbConfigOutcome
+            {
+                Database = db, Setting = s, Status = RemediationStatus.Success, Applied = true,
+                ExecutingLogin = "sa", PriorValue = "ON",
+                GeneratedSql = "ALTER DATABASE [Foo] SET AUTO_SHRINK OFF;", GateSpid = 7, ExecSpid = 7
+            }
+        };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Success, o.Status);
+        Assert.True(o.AuditWritten);
+        Assert.False(o.AppliedButUnlogged);
+
+        var row = Assert.Single(exec.AuditRecords);
+        Assert.Equal("DB_CONFIG", row.FactKey);
+        Assert.Equal("set_auto_shrink_off", row.Action);     // precise taxonomy (24/19/18 chars)
+        Assert.Equal("success", row.Result);
+        Assert.Null(row.QueryId);                            // B-1: DB_CONFIG rows have no IDs
+        Assert.Null(row.PlanId);
+        Assert.Equal("ON", row.PriorValue);
+        Assert.Contains("ALTER DATABASE", row.GeneratedSql);
+    }
+
+    [Fact]
+    public async Task DbConfig_AppliesButAuditFails_FlagsAppliedButUnlogged()
+    {
+        var exec = new FakeExecutor { AuditWriteResult = false };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Success, o.Status);
+        Assert.False(o.AuditWritten);
+        Assert.True(o.AppliedButUnlogged);
+    }
+
+    [Fact]
+    public async Task DbConfig_OneTargetThrows_OthersStillRun()
+    {
+        var exec = new FakeExecutor
+        {
+            SetDbFunc = (db, s) =>
+            {
+                if (db == "A") throw new InvalidOperationException("boom");
+                return new DbConfigOutcome { Database = db, Setting = s, Status = RemediationStatus.Success, Applied = true, PriorValue = "ON" };
+            }
+        };
+
+        var result = await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(new DbConfigTarget("A", DbConfigSetting.AutoShrinkOff, "ON"),
+                           new DbConfigTarget("B", DbConfigSetting.AutoCloseOff, "ON")),
+            exec, Identity, CancellationToken.None);
+
+        Assert.Equal(2, result.Outcomes.Count);
+        Assert.Equal(RemediationStatus.Error, result.Outcomes[0].Status);
+        Assert.Equal(RemediationStatus.Success, result.Outcomes[1].Status);
+    }
+
+    [Fact]
+    public async Task DbConfig_PreciseTaxonomy_AllThreeSettings()
+    {
+        var exec = new FakeExecutor();
+        await new DbConfigHandler().ApplyAsync(
+            DbConfigAction(
+                new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON"),
+                new DbConfigTarget("Foo", DbConfigSetting.AutoCloseOff, "ON"),
+                new DbConfigTarget("Foo", DbConfigSetting.PageVerifyChecksum, "NONE")),
+            exec, Identity, CancellationToken.None);
+
+        var actions = exec.AuditRecords.Select(r => r.Action).ToList();
+        Assert.Contains("set_auto_shrink_off", actions);
+        Assert.Contains("set_auto_close_off", actions);
+        Assert.Contains("set_page_verify_checksum", actions);     // 24 chars — needs varchar(32) + param(32)
+    }
+
+    // ── Preflight dispositions ───────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(false, true, false, RemediationDisposition.BlockDatabaseNotFound)]
+    [InlineData(true, false, false, RemediationDisposition.BlockNoAlter)]
+    [InlineData(true, true, true, RemediationDisposition.AlreadyInDesiredState)]
+    [InlineData(true, true, false, RemediationDisposition.Ok)]
+    public async Task DbConfig_Preflight_ClassifiesDisposition(bool exists, bool hasAlter, bool alreadyDesired, RemediationDisposition expected)
+    {
+        var exec = new FakeExecutor
+        {
+            DbPreflightFunc = (db, s) => new DbConfigPreflight
+            {
+                Database = db, Setting = s, DatabaseExists = exists, HasAlter = hasAlter,
+                AlreadyInDesiredState = alreadyDesired, CurrentValue = "ON"
+            }
+        };
+
+        var pre = await new DbConfigHandler().PreflightAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), exec, CancellationToken.None);
+        Assert.Equal(expected, pre.Targets.Single().Disposition);
+    }
+
+    [Fact]
+    public async Task DbConfig_Preflight_AuditTableAbsent_OverridesDisposition()
+    {
+        var exec = new FakeExecutor { AuditTableExists = false };
+
+        var pre = await new DbConfigHandler().PreflightAsync(
+            DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), exec, CancellationToken.None);
+
+        Assert.False(pre.AuditTableExists);
+        Assert.Equal(RemediationDisposition.BlockAuditTableAbsent, pre.Targets.Single().Disposition);
+    }
+
+    // ── Apply-only enforcement (m-1) + SupportsUnapply ───────────────────────────
+
+    [Fact]
+    public void DbConfig_SupportsUnapply_IsFalse_NotDestructive()
+    {
+        var handler = new DbConfigHandler();
+        Assert.False(handler.SupportsUnapply);
+        Assert.False(handler.IsDestructive);
+    }
+
+    [Fact]
+    public async Task DbConfig_UnapplyAsync_Throws()
+    {
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            new DbConfigHandler().UnapplyAsync(
+                DbConfigAction(new DbConfigTarget("Foo", DbConfigSetting.AutoShrinkOff, "ON")), new FakeExecutor(), Identity, CancellationToken.None));
+    }
+
+    [Fact]
+    public void CoreMachineryMarkers_CoverNewPrivilegedSurface()
+    {
+        // M-2: the reachability guard must list the new handler + executor methods,
+        // or a future UI/MCP file referencing them would silently pass the guard.
+        Assert.Contains("DbConfigHandler", CoreMachineryMarkers);
+        Assert.Contains("SetDatabaseOptionAsync", CoreMachineryMarkers);
+        Assert.Contains("PreflightDbConfigAsync", CoreMachineryMarkers);
+    }
+
+    [Fact]
+    public void Registry_ResolvesDbConfigHandler()
+    {
+        var registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler() });
+        Assert.IsType<DbConfigHandler>(registry.TryGet("DB_CONFIG"));
+        Assert.IsType<ForcePlanHandler>(registry.TryGet("PLAN_REGRESSION"));
+    }
+
+    // ── §1 identifier safety: no-injection / QUOTENAME / same-string (M-1) ───────
+    //
+    // These run against the EXECUTOR's OWN statement builder (DatabaseService.
+    // BuildAlterStatement), NOT the display renderer (m-B). The builder is the exact
+    // composition SetDatabaseOptionAsync uses for the executed statement.
+
+    [Theory]
+    [InlineData(DbConfigSetting.AutoShrinkOff, "SET AUTO_SHRINK OFF")]
+    [InlineData(DbConfigSetting.AutoCloseOff, "SET AUTO_CLOSE OFF")]
+    [InlineData(DbConfigSetting.PageVerifyChecksum, "SET PAGE_VERIFY CHECKSUM")]
+    public void Build_SetClause_IsHardcodedLiteral_RegardlessOfName(DbConfigSetting setting, string expectedClause)
+    {
+        // The SET clause is byte-identical regardless of the (pathological) db name.
+        foreach (var name in new[] { "Db", "Db]; DROP TABLE x--", "[weird]", "Ünîçödé" })
+        {
+            var stmt = DatabaseService.BuildAlterStatement(name, setting);
+            Assert.Contains(expectedClause + ";", stmt);
+            Assert.EndsWith(expectedClause + ";", stmt);
+        }
+    }
+
+    [Theory]
+    [InlineData("normal")]
+    [InlineData("has]bracket")]
+    [InlineData("has]]double")]
+    [InlineData("ev;il-- GO DROP")]
+    [InlineData("'; ALTER DATABASE master SET")]
+    [InlineData("Ünîçödé​")]   // unicode + zero-width
+    public void Build_BracketsIdentifierInert_NoInjection(string name)
+    {
+        var stmt = DatabaseService.BuildAlterStatement(name, DbConfigSetting.AutoShrinkOff);
+
+        // The identifier is bracketed with ]-doubling; the whole thing is one ALTER
+        // with exactly one bracketed token and the hardcoded clause.
+        var expectedToken = "[" + name.Replace("]", "]]") + "]";
+        Assert.Equal($"ALTER DATABASE {expectedToken} SET AUTO_SHRINK OFF;", stmt);
+
+        // No un-doubled close-bracket can prematurely end the identifier: the only
+        // ']' runs in the statement are the doubled ones we produced plus the final.
+        // Reconstruct: stripping the known prefix/suffix yields exactly the token.
+        Assert.StartsWith("ALTER DATABASE [", stmt);
+    }
+
+    [Fact]
+    public void Build_SameString_ValidatedNameIsBracketedExactly()
+    {
+        // M-1: the bracketed token is byte-identical to the validated name passed in
+        // — an implementer cannot validate one variable and bracket a trimmed/cased one.
+        const string validated = "  Padded Name  ";          // deliberate surrounding whitespace
+        var stmt = DatabaseService.BuildAlterStatement(validated, DbConfigSetting.AutoCloseOff);
+        Assert.Equal("ALTER DATABASE [  Padded Name  ] SET AUTO_CLOSE OFF;", stmt);
+
+        // A name differing only by trailing whitespace produces a DIFFERENT statement,
+        // proving the builder brackets exactly what it was given (no normalization).
+        var stmt2 = DatabaseService.BuildAlterStatement(validated.TrimEnd(), DbConfigSetting.AutoCloseOff);
+        Assert.NotEqual(stmt, stmt2);
+    }
+
+    [Fact]
+    public void Build_DisplayRenderer_NotExecuted_ExecutorHasOwnBuilder()
+    {
+        // m-B: the executor's builder is byte-identical to the display QUOTENAME but
+        // is its OWN routine in the Dashboard assembly (not the private Analysis one).
+        // Spot-check parity on a ]-containing name.
+        var stmt = DatabaseService.BuildAlterStatement("a]b", DbConfigSetting.PageVerifyChecksum);
+        Assert.Equal("ALTER DATABASE [a]]b] SET PAGE_VERIFY CHECKSUM;", stmt);
+    }
+
     // ── Reachability-with-gate guard (replaces PR-A's no-caller guard) ──────────
     //
     // PR-A asserted the privileged machinery had NO non-core caller. PR-B adds a
@@ -379,6 +831,9 @@ public class RemediationTests
         "ForcePlanAsync", "UnforcePlanAsync",
         "RemediationHandlerRegistry", "DatabaseServiceRemediationExecutor",
         "ForcePlanHandler", "IRemediationExecutor", "IRemediationHandler",
+        // B3 Phase 2 privileged surface (M-2): the new handler + executor methods
+        // must be reachable ONLY through the gate, exactly like the force-plan ones.
+        "DbConfigHandler", "SetDatabaseOptionAsync", "PreflightDbConfigAsync",
     };
 
     [Fact]
@@ -503,6 +958,29 @@ public class RemediationTests
             {
                 Database = database, QueryId = queryId, PlanId = planId,
                 Status = RemediationStatus.Success, Forced = true, ExecutingLogin = "sa", GateSpid = 55, ExecSpid = 55
+            });
+        }
+
+        // ── DB-config seams (Phase 2) ────────────────────────────────────────────
+        public Func<string, DbConfigSetting, DbConfigPreflight>? DbPreflightFunc;
+        public Func<string, DbConfigSetting, DbConfigOutcome>? SetDbFunc;
+        public int SetDbCalls;
+
+        public Task<DbConfigPreflight> PreflightDbConfigAsync(string database, DbConfigSetting setting, CancellationToken ct)
+            => Task.FromResult(DbPreflightFunc?.Invoke(database, setting) ?? new DbConfigPreflight
+            {
+                Database = database, Setting = setting, DatabaseExists = true, HasAlter = true,
+                AlreadyInDesiredState = false, ExecutingLogin = "sa", CurrentValue = "ON"
+            });
+
+        public Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
+        {
+            SetDbCalls++;
+            return Task.FromResult(SetDbFunc?.Invoke(database, setting) ?? new DbConfigOutcome
+            {
+                Database = database, Setting = setting, Status = RemediationStatus.Success, Applied = true,
+                ExecutingLogin = "sa", PriorValue = "ON", GeneratedSql = "ALTER DATABASE [x] SET AUTO_SHRINK OFF;",
+                GateSpid = 55, ExecSpid = 55
             });
         }
 

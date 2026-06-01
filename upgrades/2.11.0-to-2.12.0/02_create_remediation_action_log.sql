@@ -6,8 +6,10 @@ Upgrade from 2.11.0 to 2.12.0
 Creates config.remediation_action_log — the durable, append-only audit trail for
 the approval-gated "Apply Fix" feature (B3). One row is written per apply/unapply
 attempt (success, skip, error, or abort), so every privileged mutation the
-Dashboard issues against a monitored server (today: sys.sp_query_store_force_plan
-for a plan regression) is recorded with who/what/when/where/result.
+Dashboard issues against a monitored server (sys.sp_query_store_force_plan for a
+plan regression, or ALTER DATABASE SET for an always-safe DB-config fix) is
+recorded with who/what/when/where/result. Force-plan rows carry query_id/plan_id;
+DB_CONFIG rows leave those NULL and record the prior setting in prior_value.
 
 Lives in the config schema alongside the other operational logs
 (config.collection_log, config.installation_history). Idempotent: guarded by
@@ -50,10 +52,11 @@ BEGIN
             DEFAULT (0),                       /* always 0 in v1 (no in-app elevation); reserved */
         target_server nvarchar(256) NULL,
         target_database sysname NOT NULL,
-        finding_fact_key varchar(64) NOT NULL, /* e.g. 'PLAN_REGRESSION' */
-        query_id bigint NOT NULL,
-        plan_id bigint NOT NULL,
-        action varchar(16) NOT NULL,           /* 'force' | 'unforce' */
+        finding_fact_key varchar(64) NOT NULL, /* e.g. 'PLAN_REGRESSION' | 'DB_CONFIG' */
+        query_id bigint NULL,                  /* force-plan only; NULL for DB_CONFIG rows */
+        plan_id bigint NULL,                   /* force-plan only; NULL for DB_CONFIG rows */
+        action varchar(32) NOT NULL,           /* 'force' | 'unforce' | 'set_auto_shrink_off' | 'set_auto_close_off' | 'set_page_verify_checksum' */
+        prior_value nvarchar(128) NULL,        /* DB_CONFIG prior value for manual reversal ('ON' | 'NONE' | 'TORN_PAGE_DETECTION'); NULL for force-plan */
         generated_sql nvarchar(max) NULL,      /* the previewed statement, recorded only — never executed */
         result varchar(16) NOT NULL,           /* 'success' | 'skipped' | 'error' | 'aborted' */
         error_message nvarchar(max) NULL,

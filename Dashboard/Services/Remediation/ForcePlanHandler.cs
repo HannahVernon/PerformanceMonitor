@@ -37,6 +37,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         // destructive action and does not require the typed-confirm hook.
         public bool IsDestructive => false;
 
+        // Force-plan has a real inverse (unforce), so it supports un-apply.
+        public bool SupportsUnapply => true;
+
         public async Task<PreflightResult> PreflightAsync(RemediationAction action, IRemediationExecutor exec, CancellationToken ct)
         {
             if (action is null) throw new ArgumentNullException(nameof(action));

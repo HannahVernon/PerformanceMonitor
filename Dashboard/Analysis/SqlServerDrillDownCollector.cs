@@ -529,7 +529,13 @@ ORDER BY database_name;";
                 recovery_model = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 rcsi = rcsi == "1",
                 query_store = queryStore == "1",
-                issues
+                issues,
+                // §4.1: structured, wording-independent fields the shared extractor
+                // (FactRemediation.ExtractDbConfigTargets) reads. Identical JSON names
+                // and types to the Lite collector (bool / bool / string).
+                auto_shrink = autoShrink == "1",
+                auto_close = autoClose == "1",
+                page_verify = pageVerify
             });
         }
 
