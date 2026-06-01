@@ -43,10 +43,30 @@ public class ServerConnection : INotifyPropertyChanged
     }
     
     /// <summary>
-    /// Authentication type: Windows, SqlServer, or EntraMFA
+    /// Authentication type: Windows, SqlServer, EntraMFA, ServicePrincipal, or ManagedIdentity
     /// </summary>
     public string AuthenticationType { get; set; } = AuthenticationTypes.Windows;
-    
+
+    /// <summary>
+    /// Service-principal application/client id (used as UserID for ServicePrincipal auth).
+    /// Non-secret; safe to persist in servers.json. The SP secret is NEVER stored here —
+    /// it lives only in Windows Credential Manager (DPAPI) via CredentialService.
+    /// </summary>
+    public string? AzureClientId { get; set; }
+
+    /// <summary>
+    /// Optional Microsoft Entra tenant id. Stored for display/future use only.
+    /// MDS resolves the tenant from the target server's AAD authority during the handshake,
+    /// so this is NOT injected into the connection string (no first-class SP tenant keyword).
+    /// </summary>
+    public string? AzureTenantId { get; set; }
+
+    /// <summary>
+    /// Optional user-assigned managed identity client id. Blank = system-assigned identity.
+    /// Non-secret; safe to persist in servers.json.
+    /// </summary>
+    public string? ManagedIdentityClientId { get; set; }
+
     public string? Description { get; set; }
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime LastConnected { get; set; } = DateTime.Now;
@@ -126,6 +146,8 @@ public class ServerConnection : INotifyPropertyChanged
     {
         AuthenticationTypes.EntraMFA => "Microsoft Entra MFA",
         AuthenticationTypes.SqlServer => "SQL Server",
+        AuthenticationTypes.ServicePrincipal => "Azure — Service Principal",
+        AuthenticationTypes.ManagedIdentity => "Azure — Managed Identity",
         _ => "Windows"
     };
 
@@ -196,8 +218,11 @@ public class ServerConnection : INotifyPropertyChanged
         string? username = null;
         string? password = null;
 
-        if (AuthenticationType == AuthenticationTypes.SqlServer)
+        if (AuthenticationType == AuthenticationTypes.SqlServer ||
+            AuthenticationType == AuthenticationTypes.ServicePrincipal)
         {
+            // SqlServer: stored username + password.
+            // ServicePrincipal: stored client id (Username) + client secret (Password).
             var cred = credentialService.GetCredential(Id);
             if (cred.HasValue)
             {
@@ -205,6 +230,7 @@ public class ServerConnection : INotifyPropertyChanged
                 password = cred.Value.Password;
             }
         }
+        // ManagedIdentity fetches no credential (no secret).
 
         return BuildConnectionString(username, password);
     }
@@ -230,7 +256,7 @@ public class ServerConnection : INotifyPropertyChanged
     /// <summary>
     /// Builds the connection string with the given credentials.
     /// </summary>
-    private string BuildConnectionString(string? username, string? password)
+    internal string BuildConnectionString(string? username, string? password)
     {
         var builder = new SqlConnectionStringBuilder
         {
@@ -253,17 +279,41 @@ public class ServerConnection : INotifyPropertyChanged
             _ => SqlConnectionEncryptOption.Optional
         };
 
-        if (AuthenticationType == AuthenticationTypes.Windows)
+        ApplyAuthentication(builder, AuthenticationType, username, password, AzureClientId, ManagedIdentityClientId);
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// Applies the authentication-mode keywords (IntegratedSecurity / Authentication / UserID /
+    /// Password) to a connection-string builder. Shared by <see cref="BuildConnectionString"/> and
+    /// the Add/Edit dialog's Test-Connection builder so the two build sites never diverge.
+    /// </summary>
+    /// <param name="builder">The builder to mutate.</param>
+    /// <param name="authenticationType">One of the <see cref="AuthenticationTypes"/> constants.</param>
+    /// <param name="username">SQL username, Entra UPN, or SP client id (depending on mode).</param>
+    /// <param name="password">SQL password or SP client secret (depending on mode). Never logged.</param>
+    /// <param name="azureClientId">SP client id fallback when <paramref name="username"/> is null.</param>
+    /// <param name="managedIdentityClientId">User-assigned MI client id; blank = system-assigned.</param>
+    internal static void ApplyAuthentication(
+        SqlConnectionStringBuilder builder,
+        string authenticationType,
+        string? username,
+        string? password,
+        string? azureClientId,
+        string? managedIdentityClientId)
+    {
+        if (authenticationType == AuthenticationTypes.Windows)
         {
             builder.IntegratedSecurity = true;
         }
-        else if (AuthenticationType == AuthenticationTypes.SqlServer)
+        else if (authenticationType == AuthenticationTypes.SqlServer)
         {
             builder.IntegratedSecurity = false;
             builder.UserID = username ?? string.Empty;
             builder.Password = password ?? string.Empty;
         }
-        else if (AuthenticationType == AuthenticationTypes.EntraMFA)
+        else if (authenticationType == AuthenticationTypes.EntraMFA)
         {
             // Microsoft Entra MFA (Azure AD Interactive)
             builder.IntegratedSecurity = false;
@@ -274,8 +324,24 @@ public class ServerConnection : INotifyPropertyChanged
                 builder.UserID = username;
             }
         }
-
-        return builder.ConnectionString;
+        else if (authenticationType == AuthenticationTypes.ServicePrincipal)
+        {
+            // Microsoft Entra service principal (non-interactive): client id + secret.
+            builder.IntegratedSecurity = false;
+            builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryServicePrincipal;
+            builder.UserID = username ?? azureClientId ?? string.Empty;   // client/app id
+            builder.Password = password ?? string.Empty;                  // client secret (from Credential Manager)
+        }
+        else if (authenticationType == AuthenticationTypes.ManagedIdentity)
+        {
+            // Azure managed identity (non-interactive): no secret.
+            builder.IntegratedSecurity = false;
+            builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryManagedIdentity;
+            if (!string.IsNullOrWhiteSpace(managedIdentityClientId))
+            {
+                builder.UserID = managedIdentityClientId;   // user-assigned MI; omit for system-assigned
+            }
+        }
     }
 
     /// <summary>
@@ -283,11 +349,15 @@ public class ServerConnection : INotifyPropertyChanged
     /// </summary>
     public bool HasStoredCredentials(CredentialService credentialService)
     {
-        if (AuthenticationType == AuthenticationTypes.Windows || AuthenticationType == AuthenticationTypes.EntraMFA)
+        // Zero-touch auth modes need no stored secret.
+        if (AuthenticationType == AuthenticationTypes.Windows ||
+            AuthenticationType == AuthenticationTypes.EntraMFA ||
+            AuthenticationType == AuthenticationTypes.ManagedIdentity)
         {
             return true;
         }
 
+        // SqlServer (password) and ServicePrincipal (client secret) require a stored credential.
         return credentialService.CredentialExists(Id);
     }
 }

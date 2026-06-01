@@ -123,6 +123,16 @@ public class ServerManager
                 throw new InvalidOperationException("Failed to save username to Windows Credential Manager");
             }
         }
+        else if (server.AuthenticationType == AuthenticationTypes.ServicePrincipal && !string.IsNullOrEmpty(username) && password != null)
+        {
+            // For service principal, save client id (username) + client secret (password).
+            // The secret lives ONLY in Windows Credential Manager (DPAPI), never in servers.json.
+            if (!_credentialService.SaveCredential(server.Id, username, password))
+            {
+                throw new InvalidOperationException("Failed to save service principal secret to Windows Credential Manager");
+            }
+        }
+        // ManagedIdentity stores nothing (no secret).
 
         // Initialize status as unknown for new server
         _connectionStatuses[server.Id] = new ServerConnectionStatus { ServerId = server.Id };
@@ -165,9 +175,21 @@ public class ServerManager
                 throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
             }
         }
-        else if (server.AuthenticationType == AuthenticationTypes.Windows)
+        else if (server.AuthenticationType == AuthenticationTypes.ServicePrincipal && !string.IsNullOrEmpty(username) && password != null)
         {
-            // For Windows auth, remove any stored credentials
+            // For service principal, update client id (username) + client secret (password).
+            // The secret lives ONLY in Windows Credential Manager (DPAPI), never in servers.json.
+            if (!_credentialService.UpdateCredential(server.Id, username, password))
+            {
+                throw new InvalidOperationException("Failed to update service principal secret in Windows Credential Manager");
+            }
+        }
+        else if (server.AuthenticationType == AuthenticationTypes.Windows ||
+                 server.AuthenticationType == AuthenticationTypes.ManagedIdentity)
+        {
+            // Zero-touch auth (Windows / Managed Identity): remove any stored credential.
+            // This also deletes an orphaned secret left behind when switching away from
+            // SqlServer or ServicePrincipal (e.g. SP -> MI, SP -> Windows).
             _credentialService.DeleteCredential(server.Id);
         }
 
