@@ -16,6 +16,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Header -->
@@ -125,8 +126,52 @@
                      BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"/>
         </StackPanel>
 
+        <!-- B3 Phase 3: informed-consent acknowledge-each-risk gate (destructive only) -->
+        <StackPanel Grid.Row="6" x:Name="ConsentSection" Visibility="Collapsed" Margin="0,0,0,12">
+            <!-- One-line framing banner (FactKey-specific; RCSI arm) -->
+            <Border x:Name="ConsentBanner" CornerRadius="4" Padding="10" Margin="0,0,0,10">
+                <Border.Background>
+                    <SolidColorBrush Color="{StaticResource ErrorColor}" Opacity="0.20"/>
+                </Border.Background>
+                <TextBlock x:Name="ConsentBannerText" Foreground="{DynamicResource ForegroundBrush}"
+                           FontWeight="SemiBold" TextWrapping="Wrap"/>
+            </Border>
+
+            <!-- RISK OF CHANGING -->
+            <TextBlock Text="RISK OF CHANGING" FontWeight="SemiBold" FontSize="13"
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+            <ItemsControl x:Name="ChangingRisksList" Margin="0,0,0,10">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox Margin="0,3" IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  Checked="RiskBox_Changed" Unchecked="RiskBox_Changed"
+                                  Foreground="{DynamicResource ForegroundBrush}">
+                            <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource ForegroundBrush}"/>
+                        </CheckBox>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- RISK OF NOT CHANGING -->
+            <TextBlock Text="RISK OF NOT CHANGING" FontWeight="SemiBold" FontSize="13"
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+            <ItemsControl x:Name="NotChangingRisksList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox Margin="0,3" IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  Checked="RiskBox_Changed" Unchecked="RiskBox_Changed"
+                                  Foreground="{DynamicResource ForegroundBrush}">
+                            <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource ForegroundBrush}"/>
+                        </CheckBox>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
         <!-- Buttons -->
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="CancelButton" Content="Cancel" Padding="14,5" Margin="0,0,8,0"
                     Click="CancelButton_Click" IsCancel="True"/>
             <Button x:Name="ConfirmButton" Padding="14,5" Click="ConfirmButton_Click" IsDefault="True"/>

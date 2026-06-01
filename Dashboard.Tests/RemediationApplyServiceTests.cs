@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services.Remediation;
@@ -419,6 +420,173 @@ public class RemediationApplyServiceTests
             CancellationToken.None, finding: RcsiFinding(rwPct: 8));
 
         Assert.Contains(captured!.Risks!.RisksOfNotChanging, r => r.Text.Contains("RCSI does NOT resolve"));
+    }
+
+    // ── HARD gate-enforcement (B-1, MANDATORY): the acknowledge-each-risk predicate ──
+    //
+    // The dialog IS the trust boundary; the confirm callback returns true ONLY when the
+    // gate is satisfied. The dialog's exact enablement predicate is the pure, testable
+    // RemediationConfirmWindow.ComputeConfirmEnabled. These prove: a destructive request
+    // keeps Apply DISABLED until ALL risk checkboxes are checked; a subset leaves it
+    // disabled; un-checking any one re-disables; and the by-name ack combines (BOTH
+    // required for a destructive by-name target).
+
+    [Fact]
+    public void Gate_Destructive_Disabled_UntilAllRiskBoxesChecked()
+    {
+        // 5 risk boxes (e.g. 3 changing + 2 not-changing). Disabled until ALL are ticked.
+        for (var checkedCount = 0; checkedCount < 5; checkedCount++)
+        {
+            var allChecked = checkedCount == 5;   // never true in this loop (0..4)
+            Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+                baseActionable: true, requiresConsent: true, allRiskBoxesChecked: allChecked,
+                resolvedByName: false, byNameAck: false, riskBoxCount: 5),
+                $"Apply must stay DISABLED with a subset ({checkedCount}/5) of risk boxes checked.");
+        }
+
+        // All boxes checked -> enabled (no by-name complication).
+        Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 5));
+    }
+
+    [Fact]
+    public void Gate_Destructive_UncheckingAnyBox_ReDisables()
+    {
+        // Enabled with all checked...
+        Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 4));
+        // ...then un-checking ANY box (allRiskBoxesChecked flips false) re-disables.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: false,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 4));
+    }
+
+    [Fact]
+    public void Gate_Destructive_ByName_RequiresBoth_RiskBoxesAndByNameAck()
+    {
+        // Risk boxes all checked but by-name NOT acked -> still disabled.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: true, byNameAck: false, riskBoxCount: 4));
+        // By-name acked but a risk box still unchecked -> still disabled.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: false,
+            resolvedByName: true, byNameAck: true, riskBoxCount: 4));
+        // BOTH satisfied -> enabled.
+        Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: true, byNameAck: true, riskBoxCount: 4));
+    }
+
+    [Fact]
+    public void Gate_NotActionable_NeverEnabled_EvenWithAllConsent()
+    {
+        // Audit-absent / nothing-applyable: baseActionable false hard-blocks regardless
+        // of consent (the consent gate is ADDITIVE to AnyActionable, never a replacement).
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: false, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 4));
+    }
+
+    [Fact]
+    public void Gate_Destructive_ZeroRiskBoxes_FailsClosed()
+    {
+        // FAIL CLOSED (LOW-1): a destructive (requiresConsent) request with NO rendered
+        // risk boxes must keep Apply DISABLED, even though allRiskBoxesChecked is vacuously
+        // true (List.TrueForAll on an empty list) and the base apply-ability holds. A
+        // future destructive handler whose disclosure is empty/null can never enable Apply
+        // with zero acknowledged checkboxes.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 0));
+        // Still fails closed even if the (irrelevant) by-name ack is satisfied.
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: true, byNameAck: true, riskBoxCount: 0));
+        // One real risk box, all checked -> enabled (the guard only blocks the empty case).
+        Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: true, allRiskBoxesChecked: true,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 1));
+    }
+
+    [Fact]
+    public void Gate_NonDestructive_Unaffected_ByConsentArm()
+    {
+        // A non-destructive (requiresConsent false) request ignores the risk-box arm:
+        // base actionable + (by-name ack if resolved-by-name) is the whole predicate,
+        // exactly as before Phase 3 — no regression for force-plan / always-safe.
+        Assert.True(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: false, allRiskBoxesChecked: false,
+            resolvedByName: false, byNameAck: false, riskBoxCount: 0));
+        Assert.False(RemediationConfirmWindow.ComputeConfirmEnabled(
+            baseActionable: true, requiresConsent: false, allRiskBoxesChecked: false,
+            resolvedByName: true, byNameAck: false, riskBoxCount: 0));
+    }
+
+    // ── Real figures survive persistence to apply time (CRITICAL correctness) ─────
+    //
+    // The UI apply call site passes NO finding; only the persisted RemediationAction
+    // survives. The RCSI figures must therefore ride the action through the AlertContext
+    // serialize -> deserialize round-trip, so the dialog shows the REAL blocking numbers,
+    // not the weak-case baseline.
+
+    [Fact]
+    public async Task Apply_Destructive_RealFigures_SurvivePersistence_NoFindingAtApplyTime()
+    {
+        // 1. Build the action the way AnalysisNotificationService does (finding in hand).
+        var finding = RcsiFinding(rwPct: 80);
+        var builtAction = FactRemediation.BuildRcsiAction(finding);
+        Assert.NotNull(builtAction);
+        Assert.NotNull(builtAction!.RcsiFigures);
+        Assert.Equal(12, builtAction.RcsiFigures!.BlockingEvents);
+
+        // 2. Round-trip it through the persisted AlertContext (the only thing that
+        //    survives to the UI apply call site).
+        var ctx = new AlertContext();
+        ctx.Details.Add(new AlertDetailItem { Heading = "Enable RCSI (advanced)", IsCodeBlock = true, Remediation = builtAction });
+        Assert.True(AlertContextSerializer.TryDeserialize(AlertContextSerializer.Serialize(ctx), out var round));
+        var persistedAction = round.Details[0].Remediation!;
+        Assert.NotNull(persistedAction.RcsiFigures);
+        Assert.Equal(12, persistedAction.RcsiFigures!.BlockingEvents);
+        Assert.Equal(3, persistedAction.RcsiFigures.Deadlocks);
+        Assert.Equal(80, persistedAction.RcsiFigures.ReaderWriterPct);
+
+        // 3. Apply with the PERSISTED action and NO finding (exactly the UI call site).
+        //    The confirm request's Risks must show the REAL figures, not weak-case.
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new RcsiHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        await service.ApplyAsync(persistedAction, Server, previewSql: "preview", "DOM\\op", "ref",
+            confirm: req => { captured = req; return Task.FromResult(false); },
+            CancellationToken.None /* finding defaults to null — the UI apply call site */);
+
+        Assert.NotNull(captured!.Risks);
+        Assert.Contains(captured.Risks!.RisksOfNotChanging,
+            r => r.Text.Contains("12") && r.Text.Contains("blocked-process events") && r.Text.Contains("3 deadlocks"));
+        Assert.Contains(captured.Risks.RisksOfNotChanging, r => r.Text.Contains("80%") && r.Text.Contains("RCSI eliminates"));
+        // NOT the weak-case baseline (proves the real figures reached the dialog).
+        Assert.DoesNotContain(captured.Risks.RisksOfNotChanging, r => r.Text.Contains("Little or no reader/writer blocking"));
+    }
+
+    [Fact]
+    public async Task Apply_Destructive_NoFiguresNoFinding_ShowsWeakCaseBaseline()
+    {
+        // Genuinely no data: an action WITHOUT figures + no finding -> weak-case baseline.
+        var bareAction = RcsiAction();   // built without RcsiFigures
+        Assert.Null(bareAction.RcsiFigures);
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new RcsiHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        await service.ApplyAsync(bareAction, Server, previewSql: "preview", "DOM\\op", "ref",
+            confirm: req => { captured = req; return Task.FromResult(false); }, CancellationToken.None);
+
+        Assert.Contains(captured!.Risks!.RisksOfNotChanging, r => r.Text.Contains("Little or no reader/writer blocking"));
     }
 
     // ── Fake executor (PR-B-local) ───────────────────────────────────────────────

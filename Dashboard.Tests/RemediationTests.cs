@@ -742,19 +742,26 @@ public class RemediationTests
     }
 
     [Fact]
-    public void Rcsi_Handler_IsUnregistered_DeadCodeSafe()
+    public void Rcsi_Handler_IsRegistered_AndReachableThroughGate()
     {
-        // PR-A is dead-code-safe: a registry without RcsiHandler (the production shape:
-        // ForcePlanHandler + DbConfigHandler) does not route "RCSI" to anything, so no
-        // Apply affordance can reach the destructive handler. PR-B adds the registration.
-        var productionRegistry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler() });
-        Assert.Null(productionRegistry.TryGet("RCSI"));
+        // PR-B makes RCSI LIVE: the PRODUCTION wiring registers RcsiHandler so the Apply
+        // affordance can appear and route to the destructive handler — but ONLY through
+        // the gated RemediationApplyService facade (proven by the Gate_* behavioural tests
+        // and the reachability guards CoreMachinery_OnlyReferencedInRemediationCore +
+        // GatedEntry_ReferencedOnlyBySanctionedUiPath).
+        var productionRegistry = new RemediationHandlerRegistry(
+            new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler() });
+        Assert.IsType<RcsiHandler>(productionRegistry.TryGet("RCSI"));
 
-        // And the PRODUCTION wiring must NOT yet construct an RcsiHandler — assert at the
-        // source level that RemediationApplyService.cs does not register it in PR-A.
+        // Assert at the source level that the PRODUCTION wiring now constructs RcsiHandler.
         var dir = FindDashboardSourceDir();
         var serviceSrc = File.ReadAllText(Path.Combine(dir, "Services", "Remediation", "RemediationApplyService.cs"));
-        Assert.DoesNotContain("new RcsiHandler()", serviceSrc);
+        Assert.Contains("new RcsiHandler()", serviceSrc);
+
+        // The always-safe DbConfigHandler still routes ONLY DB_CONFIG — never RCSI — so
+        // the two affordances can never cross at the registry/handler layer.
+        Assert.IsType<DbConfigHandler>(productionRegistry.TryGet("DB_CONFIG"));
+        Assert.NotEqual("RCSI", productionRegistry.TryGet("DB_CONFIG")!.FactKey);
     }
 
     [Fact]

@@ -133,10 +133,47 @@ public static class FactRemediation
                 continue;
 
             var target = new DbConfigTarget(database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF");
-            return new RemediationAction("RCSI", "set", Array.Empty<ForcePlanTarget>(), new[] { target });
+
+            // Capture the risk-of-NOT-changing figures HERE (the finding is available)
+            // and carry them on the persisted action, so the informed-consent dialog can
+            // render the REAL numbers at apply time — when only the persisted action
+            // survives (the UI apply call site passes no finding). FactRiskDisclosure
+            // reads these from the action in preference to the finding.
+            var figures = new RcsiInactionFigures(
+                BlockingEvents: GetInt(row, "rcsi_blocking_events"),
+                Deadlocks: GetInt(row, "rcsi_deadlocks"),
+                ReaderWriterPct: GetNullableInt(row, "rcsi_reader_writer_pct"));
+
+            return new RemediationAction("RCSI", "set", Array.Empty<ForcePlanTarget>(), new[] { target }, figures);
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Renders the display-only RCSI code block for the "Enable RCSI (advanced)" detail
+    /// item (B3 Phase 3, §4.3): the enabling ALTER with a "was OFF" comment, a commented
+    /// back-out statement, and the test-on-a-copy note. Returns null when no RCSI action
+    /// applies (RCSI on / no enrichment). The Dashboard executor builds its OWN validated
+    /// + bracketed statement and never executes this rendered text.
+    /// </summary>
+    public static string? GenerateRcsiPreview(AnalysisFinding finding)
+    {
+        var action = BuildRcsiAction(finding);
+        if (action?.DbConfigTargets is not { Count: > 0 } targets)
+            return null;
+
+        var db = targets[0].Database;
+        var quoted = QuoteName(db);
+        var sb = new StringBuilder();
+        sb.AppendLine($"-- Database: {db}");
+        sb.AppendLine($"ALTER DATABASE {quoted} SET READ_COMMITTED_SNAPSHOT ON;   -- was OFF");
+        sb.AppendLine();
+        sb.AppendLine("-- To back out (itself a destructive change — blocking returns):");
+        sb.AppendLine($"-- ALTER DATABASE {quoted} SET READ_COMMITTED_SNAPSHOT OFF;");
+        sb.AppendLine();
+        sb.Append("-- Test on a copy first if the application relies on default locking behavior or uses NOLOCK hints.");
+        return sb.ToString();
     }
 
     /// <summary>
@@ -433,6 +470,28 @@ public static class FactRemediation
     {
         if (!row.TryGetProperty(property, out var v)) return 0.0;
         return v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0.0;
+    }
+
+    private static int GetInt(JsonElement row, string property)
+    {
+        if (!row.TryGetProperty(property, out var v)) return 0;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number when v.TryGetInt32(out var i) => i,
+            JsonValueKind.Number => (int)v.GetDouble(),
+            _ => 0
+        };
+    }
+
+    private static int? GetNullableInt(JsonElement row, string property)
+    {
+        if (!row.TryGetProperty(property, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number when v.TryGetInt32(out var i) => i,
+            JsonValueKind.Number => (int)v.GetDouble(),
+            _ => null
+        };
     }
 
     private static bool GetBool(JsonElement row, string property)
