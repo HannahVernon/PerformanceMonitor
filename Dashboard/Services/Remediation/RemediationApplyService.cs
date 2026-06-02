@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -52,11 +53,13 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             _serverManager = serverManager ?? throw new ArgumentNullException(nameof(serverManager));
             if (credentialService is null) throw new ArgumentNullException(nameof(credentialService));
 
-            // B3 Phase 3 (PR-B): RcsiHandler is now LIVE. It is the only IsDestructive
-            // handler; reaching it requires the informed-consent (acknowledge-each-risk)
-            // confirm dialog returning true. Routed via the distinct "RCSI" fact key so
-            // it can never be reached through the always-safe DbConfigHandler.
-            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler() });
+            // B3 Phase 3 (PR-B): RcsiHandler is LIVE. Clear-cached-plan (PR-B): ClearPlanHandler
+            // is now LIVE too. Both are IsDestructive; reaching either requires the informed-
+            // consent (acknowledge-each-risk) confirm dialog returning true. Each is routed via
+            // its OWN distinct fact key ("RCSI" / "CLEAR_PLAN") so neither can ever be reached
+            // through the always-safe DbConfigHandler/ForcePlanHandler, and they cannot cross
+            // each other (the registry keys on FactKey).
+            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler() });
             _executorFactory = server =>
                 new DatabaseServiceRemediationExecutor(new DatabaseService(server.GetConnectionString(credentialService)));
             _auditFailureClassifier = (server, ct) =>
@@ -259,7 +262,33 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             // Branch on which target list is populated: DB_CONFIG carries
             // DbConfigTargets (action.Targets is empty for it), force-plan carries Targets.
             List<RemediationConfirmTarget> confirmTargets;
-            if (action.DbConfigTargets is { Count: > 0 } dbTargets)
+            if (action.ClearPlanTargets is { Count: > 0 } clearTargets)
+            {
+                // CLEAR_PLAN rides ClearPlanTargets (action.Targets and DbConfigTargets are
+                // empty for it). Each row is one abnormal query hash; the per-handle list
+                // (database + query_text snippet) is RESOLVED LIVE at apply (§1/§4 — the
+                // handle set is not known until then), so the confirm preview shows the
+                // per-query identity + anomaly figures the detector captured. The two-sided
+                // Risks (below) carry the per-handle blast-radius framing the operator must ack.
+                confirmTargets = new List<RemediationConfirmTarget>(clearTargets.Count);
+                for (var i = 0; i < clearTargets.Count; i++)
+                {
+                    var t = clearTargets[i];
+                    var pf = i < preflight.Targets.Count ? preflight.Targets[i] : null;
+                    var dbLabel = string.IsNullOrEmpty(t.Database) ? "(server-wide)" : t.Database;
+                    var title = t.AnomalyRatio > 0
+                        ? $"[{dbLabel}] query hash {t.QueryHash} — ~{t.AnomalyRatio.ToString("0.0", CultureInfo.InvariantCulture)}x per-exec CPU (live-resolve at apply)"
+                        : $"[{dbLabel}] query hash {t.QueryHash} (live-resolve at apply)";
+                    confirmTargets.Add(new RemediationConfirmTarget
+                    {
+                        Database = t.Database,
+                        StatusTitle = title,
+                        Disposition = pf?.Disposition ?? RemediationDisposition.Error,
+                        DispositionMessage = pf?.Message
+                    });
+                }
+            }
+            else if (action.DbConfigTargets is { Count: > 0 } dbTargets)
             {
                 confirmTargets = new List<RemediationConfirmTarget>(dbTargets.Count);
                 for (var i = 0; i < dbTargets.Count; i++)

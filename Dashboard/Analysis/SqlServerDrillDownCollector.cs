@@ -442,6 +442,20 @@ WITH
             CAST(SUM(CASE WHEN rd.collection_time >= @startTime THEN rd.total_worker_time_delta ELSE 0 END) AS float) / 1000.0
     FROM real_delta AS rd
     GROUP BY rd.query_hash
+),
+    /*
+    LOW-1 fix: the window's TOTAL query CPU (ms) over the SAME §2a real-delta rows in the
+    current window, so each query's cpu_percent is its real share of query CPU over the
+    window (NOT the hardcoded 0 that understated risk in PR-A). Using the same exclusion
+    keeps the numerator and denominator consistent (a query can't show a share computed on
+    contaminated raw-total CPU it won't actually clear, R2-MIN-B).
+    */
+    window_total AS
+(
+    SELECT
+        total_cpu_ms =
+            CAST(SUM(CASE WHEN rd.collection_time >= @startTime THEN rd.total_worker_time_delta ELSE 0 END) AS float) / 1000.0
+    FROM real_delta AS rd
 )
 SELECT TOP 5
     query_hash = CONVERT(VARCHAR(18), w.query_hash, 1),
@@ -459,6 +473,10 @@ SELECT TOP 5
         NULLIF(w.baseline_worker_ms / NULLIF(w.baseline_execs, 0), 0),
     execution_count = w.current_execs,
     total_cpu_ms = w.current_total_cpu_ms,
+    /* LOW-1: real share of the window's total query CPU (rounded int %), 0 when the window
+       total is non-positive (degenerate). Display-only — carried into the disclosure. */
+    cpu_percent =
+        CONVERT(int, ROUND(100.0 * w.current_total_cpu_ms / NULLIF(wt.total_cpu_ms, 0), 0)),
     latest_plan_handle =
     (
         SELECT TOP (1) CONVERT(VARCHAR(130), rd3.plan_handle, 1)
@@ -475,6 +493,7 @@ SELECT TOP 5
         ORDER BY rd4.collection_time DESC
     )
 FROM windowed AS w
+CROSS JOIN window_total AS wt
 WHERE w.current_execs > 0
 AND   w.baseline_execs > 0
 AND   w.baseline_worker_ms > 0
@@ -503,10 +522,12 @@ ORDER BY w.current_total_cpu_ms DESC;";
                 anomaly_ratio = reader.IsDBNull(4) ? 0.0 : Convert.ToDouble(reader.GetValue(4)),
                 execution_count = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5)),
                 total_cpu_ms = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6)),
-                latest_plan_handle = reader.IsDBNull(7) ? "" : reader.GetString(7),
-                query_text = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                // LOW-1 fix: the REAL window CPU share (was hardcoded 0 in PR-A, which made
+                // the disclosure render "responsible for 0% of CPU" and understate the risk).
+                cpu_percent = reader.IsDBNull(7) ? 0 : Convert.ToInt32(reader.GetValue(7)),
+                latest_plan_handle = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                query_text = reader.IsDBNull(9) ? "" : reader.GetString(9),
                 // §2b co-fired flags (drive the §5 disclosure steer); display-only.
-                cpu_percent = 0,
                 plan_regression_cofired = planRegressionCoFired,
                 parameter_sensitivity_cofired = parameterSensitivityCoFired
             });

@@ -391,6 +391,142 @@ public class AnalysisNotificationTests
         }
     }
 
+    // ── Clear-cached-plan (PR-B): "Clear cached plan (advanced)" item + cross-surface ──
+
+    private static AnalysisFinding CpuFindingWithAbnormalPlans(
+        bool withRow = true, string rootFactKey = "CPU_SQL_PERCENT",
+        int cpuPercent = 62, bool planRegressionCoFired = false, bool parameterSensitivityCoFired = false)
+    {
+        var rows = new List<object>();
+        if (withRow)
+        {
+            rows.Add(new
+            {
+                query_hash = "0xABCDEF0123456789",
+                database = "AdventureWorks",
+                current_cpu_per_exec_ms = 45.0,
+                baseline_cpu_per_exec_ms = 9.0,
+                anomaly_ratio = 5.0,
+                execution_count = 1200L,
+                total_cpu_ms = 54000.0,
+                latest_plan_handle = "0x06000100ABCD",
+                query_text = "SELECT * FROM dbo.BigTable WHERE x = @p",
+                cpu_percent = cpuPercent,
+                plan_regression_cofired = planRegressionCoFired,
+                parameter_sensitivity_cofired = parameterSensitivityCoFired
+            });
+        }
+        return MakeFinding("cpuplan000000001", rootFactKey: rootFactKey, category: "cpu",
+            drillDown: new Dictionary<string, object> { ["abnormal_cpu_plans"] = rows });
+    }
+
+    [Fact]
+    public void BuildContext_CpuWithAbnormalPlans_EmitsClearCachedPlanItem()
+    {
+        var context = FindingMessageFormatter.BuildContext(CpuFindingWithAbnormalPlans(), notifyThreshold: 1.5);
+
+        var item = Assert.Single(context.Details, d => d.Heading == "Clear cached plan (advanced)");
+        Assert.True(item.IsCodeBlock);
+        Assert.NotNull(item.Remediation);
+        Assert.Equal("CLEAR_PLAN", item.Remediation!.FactKey);
+        var t = Assert.Single(item.Remediation.ClearPlanTargets!);
+        Assert.Equal("0xABCDEF0123456789", t.QueryHash);
+        // The figures rode the action (captured while the finding was in hand) incl. the REAL cpu%.
+        Assert.NotNull(item.Remediation.ClearPlanFigures);
+        Assert.Equal(62, item.Remediation.ClearPlanFigures!.CpuPercent);
+
+        // The cross-surface disclosure item is also present (read-only, both email bodies + webhook).
+        var disclosure = Assert.Single(context.Details, d => d.Heading == "Clear cached plan — risks of changing / not changing");
+        Assert.False(disclosure.IsCodeBlock);
+        Assert.Contains("Risks of CHANGING", disclosure.Body);
+        Assert.Contains("Risks of NOT changing", disclosure.Body);
+        Assert.Contains("62%", disclosure.Body);          // the REAL cpu% (LOW-1 fix), not 0%
+        Assert.Contains("forces a recompile", disclosure.Body);
+    }
+
+    [Fact]
+    public void BuildContext_CpuSpikeRootKey_AlsoEmitsClearCachedPlanItem()
+    {
+        var context = FindingMessageFormatter.BuildContext(
+            CpuFindingWithAbnormalPlans(rootFactKey: "CPU_SPIKE"), notifyThreshold: 1.5);
+        Assert.Contains(context.Details, d => d.Heading == "Clear cached plan (advanced)");
+    }
+
+    [Fact]
+    public void BuildContext_CpuNoQualifyingRow_EmitsNoClearCachedPlanItem()
+    {
+        // No qualifying abnormal_cpu_plans row -> no affordance, no disclosure.
+        var context = FindingMessageFormatter.BuildContext(
+            CpuFindingWithAbnormalPlans(withRow: false), notifyThreshold: 1.5);
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Clear cached plan (advanced)");
+        Assert.DoesNotContain(context.Details, d => d.Heading == "Clear cached plan — risks of changing / not changing");
+    }
+
+    [Fact]
+    public void BuildContext_ClearPlanItem_ActionAndFigures_SurviveRoundTrip()
+    {
+        var context = FindingMessageFormatter.BuildContext(CpuFindingWithAbnormalPlans(), notifyThreshold: 1.5);
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        var item = Assert.Single(restored.Details, d => d.Heading == "Clear cached plan (advanced)");
+        Assert.NotNull(item.Remediation);
+        Assert.Equal("CLEAR_PLAN", item.Remediation!.FactKey);
+        var t = Assert.Single(item.Remediation.ClearPlanTargets!);
+        Assert.Equal("0xABCDEF0123456789", t.QueryHash);
+        // The real figures (incl. the cpu% fix) survive the persistence round-trip.
+        Assert.NotNull(item.Remediation.ClearPlanFigures);
+        Assert.Equal(62, item.Remediation.ClearPlanFigures!.CpuPercent);
+        Assert.Equal(5.0, item.Remediation.ClearPlanFigures.AnomalyRatio);
+    }
+
+    [Fact]
+    public void CrossSurface_ClearPlan_RiskDisclosure_RendersInBothEmailBodiesAndWebhook()
+    {
+        var context = FindingMessageFormatter.BuildContext(CpuFindingWithAbnormalPlans(), notifyThreshold: 1.5);
+        var branding = EmailAlertService.Branding;
+
+        // Both email bodies flow from context.Details — the disclosure must render in EACH
+        // (feedback_emailtemplatebuilder_two_bodies: HTML + plain-text are separate bodies).
+        var (html, plain) = EmailTemplateBuilder.BuildAlertEmail(
+            "High CPU", "TestServer", "n/a", "n/a", 15, branding, context);
+
+        foreach (var body in new[] { html, plain })
+        {
+            Assert.Contains("Clear cached plan — risks of changing / not changing", body);
+            Assert.Contains("Risks of CHANGING", body);
+            Assert.Contains("Risks of NOT changing", body);
+            Assert.Contains("62%", body);             // the REAL cpu% in both bodies
+        }
+
+        // Webhook payloads (Teams + Slack) also flow from context.Details.
+        var teams = WebhookAlertService.BuildTeamsPayload(
+            "High CPU", "TestServer", "n/a", "n/a", branding, context: context);
+        var slack = WebhookAlertService.BuildSlackPayload(
+            "High CPU", "TestServer", "n/a", "n/a", branding, context: context);
+
+        foreach (var payload in new[] { teams, slack })
+        {
+            Assert.Contains("Risks of NOT changing", payload);
+            Assert.Contains("forces a recompile", payload);
+        }
+    }
+
+    [Fact]
+    public void CrossSurface_ClearPlan_McpDisclosure_FromGetForFinding()
+    {
+        // The MCP analyze_server output reads advice.Risks from FactAdvice.GetForFinding —
+        // the SAME seam email/webhook use. A CPU finding with abnormal_cpu_plans must carry
+        // the two-sided CLEAR_PLAN disclosure there too.
+        var advice = FactAdvice.GetForFinding(CpuFindingWithAbnormalPlans());
+        Assert.NotNull(advice);
+        Assert.NotNull(advice!.Risks);
+        Assert.NotEmpty(advice.Risks!.RisksOfChanging);
+        Assert.NotEmpty(advice.Risks.RisksOfNotChanging);
+        Assert.Contains(advice.Risks.RisksOfChanging, r => r.Text.Contains("forces a recompile"));
+        Assert.Contains(advice.Risks.RisksOfNotChanging, r => r.Text.Contains("62%"));
+    }
+
     [Fact]
     public void AlertContext_LegacyJsonWithoutRemediation_DeserializesToNull()
     {

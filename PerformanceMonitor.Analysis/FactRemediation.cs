@@ -177,6 +177,46 @@ public static class FactRemediation
     }
 
     /// <summary>
+    /// Renders the display-only clear-cached-plan code block for the "Clear cached plan
+    /// (advanced)" detail item (§5/§6, PR-B). It shows, per qualifying query hash, the
+    /// anomaly figures the detector captured and a NOTE that the actual plan handle(s)
+    /// are LIVE-RESOLVED at apply (the snapshot handle is display-only, never executed).
+    /// Returns null when no CLEAR_PLAN action applies. The Dashboard executor builds its
+    /// OWN single-`@plan_handle` DBCC statements at apply against the live-resolved handles
+    /// and never executes this rendered text.
+    /// </summary>
+    public static string? GenerateClearPlanPreview(AnalysisFinding finding)
+    {
+        var action = BuildClearPlanAction(finding);
+        if (action?.ClearPlanTargets is not { Count: > 0 } targets)
+            return null;
+
+        var sb = new StringBuilder();
+        var emitted = 0;
+        foreach (var t in targets)
+        {
+            if (emitted > 0)
+                sb.AppendLine();
+
+            var dbLabel = string.IsNullOrEmpty(t.Database) ? "(unknown — resolved live)" : t.Database;
+            sb.AppendLine($"-- Database: {dbLabel}");
+            sb.AppendLine($"-- query_hash = {t.QueryHash}");
+            sb.AppendLine(
+                $"--   ~{t.AnomalyRatio.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)}x normal per-exec CPU " +
+                $"({t.CurrentCpuPerExecMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} ms vs baseline " +
+                $"{t.BaselineCpuPerExecMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} ms)");
+            if (!string.IsNullOrEmpty(t.LatestPlanHandle))
+                sb.AppendLine($"--   last-seen plan handle: {t.LatestPlanHandle} (display only — apply RE-RESOLVES live)");
+            sb.AppendLine("-- Apply live-resolves the currently-cached plan_handle(s) for this query hash and runs:");
+            sb.AppendLine("--   DBCC FREEPROCCACHE(<resolved plan_handle>);   -- per surviving handle");
+            sb.AppendLine("-- There is NO un-clear: the prior plan is gone. The recompile is not guaranteed better.");
+            emitted++;
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
     /// Builds the DESTRUCTIVE clear-cached-plan remediation action for a CPU finding
     /// (CPU_SQL_PERCENT / CPU_SPIKE), or null when it does not apply. PARALLEL to
     /// <see cref="BuildAction"/>, which stays EXACTLY as-is (it never emits CLEAR_PLAN) —

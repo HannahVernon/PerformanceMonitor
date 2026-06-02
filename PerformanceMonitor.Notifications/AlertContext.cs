@@ -81,7 +81,38 @@ public record RemediationActionDto(
     string Action,
     List<ForcePlanTargetDto> Targets,
     List<DbConfigTargetDto>? DbConfigTargets = null,
-    RcsiInactionFiguresDto? RcsiFigures = null);
+    RcsiInactionFiguresDto? RcsiFigures = null,
+    List<ClearPlanTargetDto>? ClearPlanTargets = null,
+    ClearPlanFiguresDto? ClearPlanFigures = null);
+
+/// <summary>
+/// JSON mirror of <see cref="ClearPlanTarget"/> (clear-cached-plan, PR-B). The
+/// <c>QueryHash</c> is the only execution input; the remaining members are display/
+/// disclosure only. The trailing optional <c>ClearPlanTargets</c> member on
+/// <see cref="RemediationActionDto"/> keeps the round-trip backward-compatible: legacy/
+/// non-CLEAR_PLAN contextJson without it deserializes to null.
+/// </summary>
+public record ClearPlanTargetDto(
+    string Database,
+    string QueryHash,
+    double CurrentCpuPerExecMs,
+    double BaselineCpuPerExecMs,
+    double AnomalyRatio,
+    string? LatestPlanHandle);
+
+/// <summary>
+/// JSON mirror of <see cref="ClearPlanFigures"/> (clear-cached-plan, PR-B). Carried on
+/// the persisted CLEAR_PLAN action so the informed-consent dialog shows the REAL anomaly
+/// figures (incl. the window CPU%, LOW-1) at apply time, when the UI apply call site has
+/// no finding. Trailing optional → backward-compatible.
+/// </summary>
+public record ClearPlanFiguresDto(
+    double CurrentCpuPerExecMs,
+    double BaselineCpuPerExecMs,
+    double AnomalyRatio,
+    int CpuPercent,
+    bool PlanRegressionCoFired,
+    bool ParameterSensitivityCoFired);
 
 /// <summary>
 /// JSON mirror of <see cref="RcsiInactionFigures"/> (B3 Phase 3). Carried on the
@@ -202,7 +233,25 @@ public static class AlertContextSerializer
             ? new RcsiInactionFiguresDto(f.BlockingEvents, f.Deadlocks, f.ReaderWriterPct)
             : null;
 
-        return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets, rcsiFigures);
+        // Clear-cached-plan (PR-B): persist the targets + carried figures so the affordance
+        // survives the contextJson round-trip and the dialog shows the REAL numbers at apply.
+        List<ClearPlanTargetDto>? clearPlanTargets = null;
+        if (action.ClearPlanTargets is not null)
+        {
+            clearPlanTargets = new List<ClearPlanTargetDto>(action.ClearPlanTargets.Count);
+            foreach (var t in action.ClearPlanTargets)
+                clearPlanTargets.Add(new ClearPlanTargetDto(
+                    t.Database, t.QueryHash, t.CurrentCpuPerExecMs, t.BaselineCpuPerExecMs,
+                    t.AnomalyRatio, t.LatestPlanHandle));
+        }
+
+        var clearPlanFigures = action.ClearPlanFigures is { } cf
+            ? new ClearPlanFiguresDto(cf.CurrentCpuPerExecMs, cf.BaselineCpuPerExecMs, cf.AnomalyRatio,
+                cf.CpuPercent, cf.PlanRegressionCoFired, cf.ParameterSensitivityCoFired)
+            : null;
+
+        return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets,
+            rcsiFigures, clearPlanTargets, clearPlanFigures);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -248,6 +297,26 @@ public static class AlertContextSerializer
             ? new RcsiInactionFigures(f.BlockingEvents, f.Deadlocks, f.ReaderWriterPct)
             : null;
 
-        return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures);
+        // Clear-cached-plan (PR-B): rebuild the targets + carried figures from the DTO and
+        // PASS them to the ctor (the trailing ClearPlan* members default to null, so a short
+        // call would silently drop a CLEAR_PLAN action's targets on the round-trip). Legacy
+        // JSON without the fields deserializes to null → backward-compatible.
+        List<ClearPlanTarget>? clearPlanTargets = null;
+        if (dto.ClearPlanTargets is not null)
+        {
+            clearPlanTargets = new List<ClearPlanTarget>(dto.ClearPlanTargets.Count);
+            foreach (var t in dto.ClearPlanTargets)
+                clearPlanTargets.Add(new ClearPlanTarget(
+                    t.Database, t.QueryHash, t.CurrentCpuPerExecMs, t.BaselineCpuPerExecMs,
+                    t.AnomalyRatio, t.LatestPlanHandle));
+        }
+
+        var clearPlanFigures = dto.ClearPlanFigures is { } cf
+            ? new ClearPlanFigures(cf.CurrentCpuPerExecMs, cf.BaselineCpuPerExecMs, cf.AnomalyRatio,
+                cf.CpuPercent, cf.PlanRegressionCoFired, cf.ParameterSensitivityCoFired)
+            : null;
+
+        return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures,
+            clearPlanTargets, clearPlanFigures);
     }
 }
