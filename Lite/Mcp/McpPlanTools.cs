@@ -95,7 +95,7 @@ public sealed class McpPlanTools
             if (server == null)
                 return $"Could not find connection details for server '{resolved.Value.ServerName}'.";
 
-            var connectionString = server.GetConnectionString(serverManager.CredentialService);
+            var connectionString = serverManager.CredentialResolver.GetConnectionString(server);
             var xml = await LocalDataService.FetchQueryStorePlanAsync(connectionString, database_name, plan_id);
 
             if (string.IsNullOrEmpty(xml))

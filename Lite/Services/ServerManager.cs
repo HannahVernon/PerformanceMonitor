@@ -53,6 +53,29 @@ public class ServerManager
     public CredentialService CredentialService => _credentialService;
 
     /// <summary>
+    /// Full path to this manager's servers.json. Used by <see cref="ProfileManager"/> to colocate
+    /// profiles.json in the same (shared) config directory.
+    /// </summary>
+    public string ConfigFilePath => _configFilePath;
+
+    /// <summary>
+    /// Late-injected profile lookup (§3.1, B1-R2). Default null = today's no-profile behavior: every
+    /// server resolves to its own inline auth. When wired (after <see cref="ProfileManager"/> exists),
+    /// <see cref="CheckConnectionAsync"/> resolves profile-backed servers through the SAME fail-closed
+    /// atomic-tuple logic as the external consumers, rather than flipping them "Offline" under the
+    /// wrong identity. <see cref="ServerManager"/> holds only this abstraction — never ProfileManager —
+    /// so coupling stays acyclic.
+    /// </summary>
+    public IProfileLookup? ProfileLookup { get; set; }
+
+    /// <summary>
+    /// A resolver bound to this manager's credential service + current profile lookup. Hand this to
+    /// connection-string consumers (ServerTab, FinOpsTab, the collector, the MCP path, etc.) so they
+    /// all resolve through the same profile-or-self/fail-closed path.
+    /// </summary>
+    public CredentialResolver CredentialResolver => new(_credentialService, ProfileLookup);
+
+    /// <summary>
     /// Gets all servers sorted by favorite status and last connected time.
     /// </summary>
     public List<ServerConnection> GetAllServers()
@@ -349,7 +372,10 @@ public class ServerManager
 
         try
         {
-            var connectionString = server.GetConnectionString(_credentialService);
+            // Resolve through the same fail-closed atomic-tuple logic as the external consumers
+            // (§3.1). A profile-backed server with a dangling/missing profile throws here rather than
+            // silently connecting under the server's own stale inline auth.
+            var connectionString = ServerConnection.ResolveConnectionString(server, _credentialService, ProfileLookup);
 
             // Modify connection string to use short timeout for connectivity check
             var builder = new SqlConnectionStringBuilder(connectionString)

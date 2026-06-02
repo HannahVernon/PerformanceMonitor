@@ -209,10 +209,15 @@ public class AzureAuthConnectionStringTests
     // These touch the real Windows Credential Manager (DPAPI, per-user). Each test uses a unique
     // GUID server id and deletes its credential afterward.
 
+    // Profile-less resolver: regression-identical to the removed GetConnectionString(CredentialService)
+    // instance overload. A null IProfileLookup means every server resolves to its own inline auth.
+    private static CredentialResolver ProfileLessResolver(CredentialService cs) => new(cs, profileLookup: null);
+
     [Fact]
     public void GetConnectionString_ServicePrincipal_FetchesStoredSecret()
     {
         var cs = new CredentialService();
+        var resolver = ProfileLessResolver(cs);
         var server = new ServerConnection
         {
             ServerName = "s",
@@ -222,7 +227,7 @@ public class AzureAuthConnectionStringTests
         {
             Assert.True(cs.SaveCredential(server.Id, "stored-client-id", "stored-secret"));
 
-            var conn = Parse(server.GetConnectionString(cs));
+            var conn = Parse(resolver.GetConnectionString(server));
 
             Assert.Equal(SqlAuthenticationMethod.ActiveDirectoryServicePrincipal, conn.Authentication);
             Assert.Equal("stored-client-id", conn.UserID);
@@ -238,6 +243,7 @@ public class AzureAuthConnectionStringTests
     public void GetConnectionString_ManagedIdentity_FetchesNoSecret()
     {
         var cs = new CredentialService();
+        var resolver = ProfileLessResolver(cs);
         var server = new ServerConnection
         {
             ServerName = "s",
@@ -248,7 +254,7 @@ public class AzureAuthConnectionStringTests
             // Even if a stale credential somehow existed, MI must not pull it into the string.
             cs.SaveCredential(server.Id, "leftover", "leftover-secret");
 
-            var conn = Parse(server.GetConnectionString(cs));
+            var conn = Parse(resolver.GetConnectionString(server));
 
             Assert.Equal(SqlAuthenticationMethod.ActiveDirectoryManagedIdentity, conn.Authentication);
             Assert.True(string.IsNullOrEmpty(conn.Password));
@@ -264,19 +270,21 @@ public class AzureAuthConnectionStringTests
     public void HasStoredCredentials_ManagedIdentity_IsTrue_WithoutCredential()
     {
         var cs = new CredentialService();
+        var resolver = ProfileLessResolver(cs);
         var server = new ServerConnection
         {
             Id = Guid.NewGuid().ToString(),
             AuthenticationType = AuthenticationTypes.ManagedIdentity
         };
 
-        Assert.True(server.HasStoredCredentials(cs));
+        Assert.True(resolver.HasStoredCredentials(server));
     }
 
     [Fact]
     public void HasStoredCredentials_ServicePrincipal_ReflectsCredentialManager()
     {
         var cs = new CredentialService();
+        var resolver = ProfileLessResolver(cs);
         var server = new ServerConnection
         {
             Id = Guid.NewGuid().ToString(),
@@ -284,10 +292,10 @@ public class AzureAuthConnectionStringTests
         };
         try
         {
-            Assert.False(server.HasStoredCredentials(cs));
+            Assert.False(resolver.HasStoredCredentials(server));
 
             Assert.True(cs.SaveCredential(server.Id, "client", "secret"));
-            Assert.True(server.HasStoredCredentials(cs));
+            Assert.True(resolver.HasStoredCredentials(server));
         }
         finally
         {
