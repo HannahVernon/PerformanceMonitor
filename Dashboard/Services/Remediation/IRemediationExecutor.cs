@@ -82,6 +82,22 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct);
 
         /// <summary>
+        /// Self-gating clear-cached-plan (DBCC FREEPROCCACHE). On ONE open monitoring
+        /// connection to the TARGET server (FREEPROCCACHE is server-scoped — no
+        /// InitialCatalog retarget), in order: the NAMED ALTER SERVER STATE permission
+        /// gate (<c>ISNULL(HAS_PERMS_BY_NAME(NULL,NULL,'ALTER SERVER STATE'),0)=1</c>,
+        /// fail-closed — the documented least-privilege login lacks it, so
+        /// PermissionDenied is the PRIMARY path); then a LIVE resolve of the current
+        /// cached <c>plan_handle(s)</c> for the typed <c>query_hash</c> param (selecting
+        /// only <c>plan_handle IS NOT NULL</c>); then — for each non-null, non-zero-length
+        /// handle (rejected in C# BEFORE any DBCC string is built) — one
+        /// <c>DBCC FREEPROCCACHE(@plan_handle)</c> with a typed <c>varbinary(64)</c> param.
+        /// There is NO code path that emits the bare/whole-cache form. An empty resolve
+        /// set is a Skip (nothing to clear). Emits GateSpid/ExecSpid (R2-MOD-1).
+        /// </summary>
+        Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct);
+
+        /// <summary>
         /// Writes one audit row on the MONITORING connection. Returns false if the
         /// INSERT failed against a present table (the O3 applied-but-unlogged case);
         /// the absent-table case never reaches here (hard-blocked earlier).

@@ -177,6 +177,108 @@ public static class FactRemediation
     }
 
     /// <summary>
+    /// Builds the DESTRUCTIVE clear-cached-plan remediation action for a CPU finding
+    /// (CPU_SQL_PERCENT / CPU_SPIKE), or null when it does not apply. PARALLEL to
+    /// <see cref="BuildAction"/>, which stays EXACTLY as-is (it never emits CLEAR_PLAN) —
+    /// this is a SEPARATE entry point, mirroring <see cref="BuildRcsiAction"/>, so the
+    /// CPU finding's normal actions are unchanged and the CLEAR_PLAN action rides a
+    /// SECOND "Clear cached plan (advanced)" detail item (emitted in PR-B).
+    ///
+    /// <para>
+    /// Emits ONLY when the finding carries an <c>abnormal_cpu_plans</c> drill-down (the
+    /// §2 detector enrichment) with at least one qualifying row (the detector has
+    /// already applied the per-exec anomaly threshold + materiality gate + the §2a
+    /// row-level first-collection/restart exclusion server-side; this builder does NOT
+    /// re-derive the math). The action carries FactKey "CLEAR_PLAN" (a distinct
+    /// destructive handler), one <see cref="ClearPlanTarget"/> per qualifying row (the
+    /// stable <c>query_hash</c> is the only execution input — the executor re-resolves
+    /// the live <c>plan_handle(s)</c> at apply), and the <see cref="ClearPlanFigures"/>
+    /// from the FIRST qualifying row so the informed-consent dialog renders the REAL
+    /// numbers at apply time even with no finding in hand.
+    /// </para>
+    /// </summary>
+    public static RemediationAction? BuildClearPlanAction(AnalysisFinding finding)
+    {
+        if (finding is null ||
+            (!string.Equals(finding.RootFactKey, "CPU_SQL_PERCENT", StringComparison.Ordinal) &&
+             !string.Equals(finding.RootFactKey, "CPU_SPIKE", StringComparison.Ordinal)))
+            return null;
+
+        if (finding.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("abnormal_cpu_plans", out var raw) ||
+            raw is null)
+            return null;
+
+        JsonElement element;
+        try
+        {
+            element = JsonSerializer.SerializeToElement(raw);
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var targets = new List<ClearPlanTarget>();
+        ClearPlanFigures? figures = null;
+
+        foreach (var row in element.EnumerateArray())
+        {
+            if (targets.Count >= 5) break;       // defensive cap, sibling of the force-plan cap discipline
+            if (row.ValueKind != JsonValueKind.Object) continue;
+
+            var queryHash = GetString(row, "query_hash");
+            // query_hash is the ONLY execution input. It must be present and look like a
+            // hex handle (0x...); the detector emits it via CONVERT(VARCHAR, .., 1). A
+            // blank/garbage value cannot become a target (it would never resolve a handle).
+            if (string.IsNullOrEmpty(queryHash) ||
+                !queryHash.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
+                queryHash.Length <= 2)
+                continue;
+
+            var database = GetString(row, "database");
+            var current = GetDouble(row, "current_cpu_per_exec_ms");
+            var baseline = GetDouble(row, "baseline_cpu_per_exec_ms");
+            var ratio = GetDouble(row, "anomaly_ratio");
+
+            targets.Add(new ClearPlanTarget(
+                Database: database,
+                QueryHash: queryHash,
+                CurrentCpuPerExecMs: current,
+                BaselineCpuPerExecMs: baseline,
+                AnomalyRatio: ratio,
+                LatestPlanHandle: GetString(row, "latest_plan_handle")));
+
+            // Capture the risk-of-NOT-changing figures from the FIRST qualifying row,
+            // carried on the persisted action so the dialog shows REAL numbers at apply
+            // time (the RcsiInactionFigures precedent). The co-fired flags steer the
+            // honest tool-choice disclosure (§5).
+            figures ??= new ClearPlanFigures(
+                CurrentCpuPerExecMs: current,
+                BaselineCpuPerExecMs: baseline,
+                AnomalyRatio: ratio,
+                CpuPercent: GetInt(row, "cpu_percent"),
+                PlanRegressionCoFired: GetBool(row, "plan_regression_cofired"),
+                ParameterSensitivityCoFired: GetBool(row, "parameter_sensitivity_cofired"));
+        }
+
+        if (targets.Count == 0)
+            return null;
+
+        return new RemediationAction(
+            "CLEAR_PLAN",
+            "clear",
+            Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: null,
+            RcsiFigures: null,
+            ClearPlanTargets: targets,
+            ClearPlanFigures: figures);
+    }
+
+    /// <summary>
     /// True when the RCSI inaction-risk enrichment fields are present on the row (the
     /// collector emits them only for RCSI-off databases). At least one of the three
     /// structured fields must exist.

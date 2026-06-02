@@ -1087,6 +1087,482 @@ public class RemediationTests
         Assert.Contains("Reader/writer concurrency semantics change", d.RisksOfChanging[2].Text);
     }
 
+    // ════════════════════════════════════════════════════════════════════════════
+    // CLEAR CACHED PLAN (DBCC FREEPROCCACHE) — destructive privileged core (PR-A;
+    // UNREGISTERED). The two catastrophic axes: never-bare/null-handle-guard, and the
+    // ALTER-SERVER-STATE fail-closed gate. Plus the §2a row-level detector exclusion.
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>A CPU finding carrying an abnormal_cpu_plans drill-down with one qualifying row.</summary>
+    private static AnalysisFinding CpuFinding(List<object>? rows = null, string rootKey = "CPU_SQL_PERCENT") => new()
+    {
+        ServerId = 1,
+        ServerName = "TestServer",
+        Category = "cpu",
+        StoryPath = rootKey,
+        StoryPathHash = "cpuplan000000001",
+        RootFactKey = rootKey,
+        DrillDown = new Dictionary<string, object>
+        {
+            ["abnormal_cpu_plans"] = rows ?? new List<object>
+            {
+                new
+                {
+                    query_hash = "0xABCDEF0123456789",
+                    database = "AdventureWorks",
+                    current_cpu_per_exec_ms = 45.0,
+                    baseline_cpu_per_exec_ms = 9.0,
+                    anomaly_ratio = 5.0,
+                    execution_count = 1200L,
+                    total_cpu_ms = 54000.0,
+                    latest_plan_handle = "0x06000100ABCD",
+                    query_text = "SELECT * FROM dbo.BigTable WHERE x = @p",
+                    cpu_percent = 62,
+                    plan_regression_cofired = false,
+                    parameter_sensitivity_cofired = false
+                }
+            }
+        }
+    };
+
+    private static RemediationAction ClearAction(string hash = "0xABCDEF0123456789", string db = "AdventureWorks") =>
+        new("CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>(),
+            ClearPlanTargets: new[] { new ClearPlanTarget(db, hash, 45.0, 9.0, 5.0, "0x06") },
+            ClearPlanFigures: new ClearPlanFigures(45.0, 9.0, 5.0, 62, false, false));
+
+    // ── BuildClearPlanAction (parallel builder) + BuildAction-unchanged guard ────
+
+    [Fact]
+    public void BuildClearPlanAction_EmitsOnAbnormalCpuPlans()
+    {
+        var action = FactRemediation.BuildClearPlanAction(CpuFinding());
+        Assert.NotNull(action);
+        Assert.Equal("CLEAR_PLAN", action!.FactKey);
+        Assert.Equal("clear", action.Action);
+        Assert.Empty(action.Targets);
+        Assert.Null(action.DbConfigTargets);
+        var t = Assert.Single(action.ClearPlanTargets!);
+        Assert.Equal("0xABCDEF0123456789", t.QueryHash);
+        Assert.Equal("AdventureWorks", t.Database);
+        Assert.Equal(5.0, t.AnomalyRatio);
+        // The figures are carried for the at-apply dialog (no finding in hand).
+        Assert.NotNull(action.ClearPlanFigures);
+        Assert.Equal(45.0, action.ClearPlanFigures!.CurrentCpuPerExecMs);
+        Assert.Equal(62, action.ClearPlanFigures.CpuPercent);
+    }
+
+    [Fact]
+    public void BuildClearPlanAction_CpuSpikeRootKey_AlsoEmits()
+    {
+        var action = FactRemediation.BuildClearPlanAction(CpuFinding(rootKey: "CPU_SPIKE"));
+        Assert.NotNull(action);
+        Assert.Equal("CLEAR_PLAN", action!.FactKey);
+    }
+
+    [Fact]
+    public void BuildClearPlanAction_ReturnsNull_WhenNoDrillDown()
+    {
+        var finding = CpuFinding();
+        finding.DrillDown = new Dictionary<string, object>();   // no abnormal_cpu_plans
+        Assert.Null(FactRemediation.BuildClearPlanAction(finding));
+    }
+
+    [Fact]
+    public void BuildClearPlanAction_ReturnsNull_WhenNotCpuFinding()
+    {
+        var finding = CpuFinding();
+        finding.RootFactKey = "PLAN_REGRESSION";
+        Assert.Null(FactRemediation.BuildClearPlanAction(finding));
+    }
+
+    [Fact]
+    public void BuildClearPlanAction_RejectsRowsWithoutValidQueryHash()
+    {
+        // A row whose query_hash is blank / not a hex handle can never become a target —
+        // it could never resolve a plan handle (defends the never-resolve-garbage edge).
+        var action = FactRemediation.BuildClearPlanAction(CpuFinding(new List<object>
+        {
+            new { query_hash = "", database = "Db", current_cpu_per_exec_ms = 10.0, baseline_cpu_per_exec_ms = 1.0,
+                  anomaly_ratio = 10.0, execution_count = 5L, total_cpu_ms = 5000.0, latest_plan_handle = "",
+                  query_text = "", cpu_percent = 10, plan_regression_cofired = false, parameter_sensitivity_cofired = false },
+            new { query_hash = "notahex", database = "Db", current_cpu_per_exec_ms = 10.0, baseline_cpu_per_exec_ms = 1.0,
+                  anomaly_ratio = 10.0, execution_count = 5L, total_cpu_ms = 5000.0, latest_plan_handle = "",
+                  query_text = "", cpu_percent = 10, plan_regression_cofired = false, parameter_sensitivity_cofired = false }
+        }));
+        Assert.Null(action);
+    }
+
+    [Fact]
+    public void BuildAction_Unchanged_NeverEmitsClearPlan_OnCpuFinding()
+    {
+        // The regression guard (§9): the parallel builder does not leak into BuildAction —
+        // a CPU finding carrying abnormal_cpu_plans yields NO action from BuildAction.
+        Assert.Null(FactRemediation.BuildAction(CpuFinding()));
+    }
+
+    // ── FactRiskDisclosure CLEAR_PLAN arm (two-sided, real figures, both steers) ──
+
+    [Fact]
+    public void RiskDisclosure_ClearPlan_HasAtLeastOneOfEachSide_RealFigures()
+    {
+        var d = FactRiskDisclosure.GetForAction(ClearAction(), CpuFinding());
+        Assert.NotNull(d);
+        Assert.NotEmpty(d!.RisksOfChanging);
+        Assert.NotEmpty(d.RisksOfNotChanging);
+        // Real figures substituted from the carried ClearPlanFigures.
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("5.0x") && r.Text.Contains("45.0 ms") && r.Text.Contains("9.0 ms") && r.Text.Contains("62%"));
+        // The changing side discloses the recompile + not-guaranteed-better + per-handle blast radius.
+        Assert.Contains(d.RisksOfChanging, r => r.Text.Contains("forces a recompile"));
+        Assert.Contains(d.RisksOfChanging, r => r.Text.Contains("NOT guaranteed to produce a better plan"));
+        Assert.Contains(d.RisksOfChanging, r => r.Text.Contains("EVERY currently-cached plan"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_ClearPlan_PlanRegressionCoFired_SteersToForce()
+    {
+        var action = new RemediationAction("CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>(),
+            ClearPlanTargets: new[] { new ClearPlanTarget("Db", "0xAA") },
+            ClearPlanFigures: new ClearPlanFigures(40.0, 8.0, 5.0, 50, PlanRegressionCoFired: true, ParameterSensitivityCoFired: false));
+        var d = FactRiskDisclosure.GetForAction(action, null)!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("forcing it") && r.Text.Contains("more durable"));
+        Assert.DoesNotContain(d.RisksOfNotChanging, r => r.Text.Contains("parameter-sensitive"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_ClearPlan_ParameterSensitivityCoFired_SaysWontDurablyHelp()
+    {
+        var action = new RemediationAction("CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>(),
+            ClearPlanTargets: new[] { new ClearPlanTarget("Db", "0xAA") },
+            ClearPlanFigures: new ClearPlanFigures(40.0, 8.0, 5.0, 50, PlanRegressionCoFired: false, ParameterSensitivityCoFired: true));
+        var d = FactRiskDisclosure.GetForAction(action, null)!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("parameter-sensitive") && r.Text.Contains("WON'T durably"));
+    }
+
+    [Fact]
+    public void RiskDisclosure_ClearPlan_FiguresSurvivePersistence_NoFinding()
+    {
+        // The RcsiInactionFigures analog: with NO finding (apply-time), the carried
+        // ClearPlanFigures still render the real numbers.
+        var d = FactRiskDisclosure.GetForAction(ClearAction(), null)!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("5.0x") && r.Text.Contains("62%"));
+    }
+
+    // ── ClearPlanHandler invariants ──────────────────────────────────────────────
+
+    [Fact]
+    public void ClearPlan_Handler_IsDestructive_And_ApplyOnly()
+    {
+        var handler = new ClearPlanHandler();
+        Assert.Equal("CLEAR_PLAN", handler.FactKey);
+        Assert.True(handler.IsDestructive);          // the second true in the codebase
+        Assert.False(handler.SupportsUnapply);       // you cannot un-clear a cache
+    }
+
+    [Fact]
+    public async Task ClearPlan_UnapplyAsync_Throws()
+    {
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            new ClearPlanHandler().UnapplyAsync(ClearAction(), new FakeExecutor(), Identity, CancellationToken.None));
+    }
+
+    [Fact]
+    public void ClearPlan_Handler_IsNotRegistered_InProduction()
+    {
+        // PR-A is dead-code-safe: the PRODUCTION registry must NOT construct ClearPlanHandler.
+        var dir = FindDashboardSourceDir();
+        var serviceSrc = File.ReadAllText(Path.Combine(dir, "Services", "Remediation", "RemediationApplyService.cs"));
+        Assert.DoesNotContain("new ClearPlanHandler()", serviceSrc);
+
+        // And it does not resolve in a registry built like production (no CLEAR_PLAN handler).
+        var productionRegistry = new RemediationHandlerRegistry(
+            new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler() });
+        Assert.Null(productionRegistry.TryGet("CLEAR_PLAN"));
+    }
+
+    [Fact]
+    public void CoreMachineryMarkers_Include_ClearPlanSurface()
+    {
+        Assert.Contains("ClearPlanHandler", CoreMachineryMarkers);
+        Assert.Contains("ClearProcCacheAsync", CoreMachineryMarkers);
+    }
+
+    // ── ClearPlanHandler apply behaviours against the faked executor ─────────────
+
+    [Fact]
+    public async Task ClearPlan_AuditTableAbsent_HardBlocks_NoMutation_NoAudit()
+    {
+        var exec = new FakeExecutor { AuditTableExists = false };
+        var result = await new ClearPlanHandler().ApplyAsync(ClearAction(), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Blocked, o.Status);
+        Assert.False(o.AuditWritten);
+        Assert.Equal(0, exec.ClearPlanCalls);        // no DBCC path even attempted
+        Assert.Empty(exec.AuditRecords);
+    }
+
+    [Fact]
+    public async Task ClearPlan_PermissionDenied_FailsClosed_NoElevation()
+    {
+        // The DOMINANT runtime path: the least-privilege login lacks ALTER SERVER STATE.
+        var exec = new FakeExecutor
+        {
+            ClearPlanFunc = h => new ClearPlanOutcome
+            {
+                QueryHash = h, Status = RemediationStatus.PermissionDenied, Cleared = false, HandlesCleared = 0,
+                ExecutingLogin = "PerfMonLogin",
+                Message = "lacks ALTER SERVER STATE ... GRANT ALTER SERVER STATE TO [PerfMonLogin];",
+                PriorValue = "0 plans (permission denied)"
+            }
+        };
+        var result = await new ClearPlanHandler().ApplyAsync(ClearAction(), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.PermissionDenied, o.Status);
+        Assert.Equal(1, exec.ClearPlanCalls);
+        var rec = Assert.Single(exec.AuditRecords);
+        Assert.Equal("skipped", rec.Result);          // PermissionDenied audits as skipped
+        Assert.True(rec.ConsentAcknowledged);
+        Assert.Equal("CLEAR_PLAN", rec.FactKey);
+        Assert.Equal("clear_cached_plan", rec.Action);
+        Assert.Null(rec.QueryId);
+        Assert.Null(rec.PlanId);
+        Assert.Contains("GRANT ALTER SERVER STATE", rec.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ClearPlan_NoSurvivingHandle_Skips()
+    {
+        var exec = new FakeExecutor
+        {
+            ClearPlanFunc = h => new ClearPlanOutcome
+            {
+                QueryHash = h, Status = RemediationStatus.Skipped, Cleared = false, HandlesCleared = 0,
+                ExecutingLogin = "sa", Message = "No cached plan is currently present", PriorValue = "0 plans (no surviving handle)"
+            }
+        };
+        var result = await new ClearPlanHandler().ApplyAsync(ClearAction(), exec, Identity, CancellationToken.None);
+
+        Assert.Equal(RemediationStatus.Skipped, Assert.Single(result.Outcomes).Status);
+        var rec = Assert.Single(exec.AuditRecords);
+        Assert.Equal("skipped", rec.Result);
+        Assert.True(rec.ConsentAcknowledged);
+    }
+
+    [Fact]
+    public async Task ClearPlan_Success_WritesAudit_ConsentTrue_NullIds_Action()
+    {
+        var exec = new FakeExecutor();   // default success outcome
+        var result = await new ClearPlanHandler().ApplyAsync(ClearAction(), exec, Identity, CancellationToken.None);
+
+        var o = Assert.Single(result.Outcomes);
+        Assert.Equal(RemediationStatus.Success, o.Status);
+        Assert.True(o.AuditWritten);
+        var rec = Assert.Single(exec.AuditRecords);
+        Assert.Equal("success", rec.Result);
+        Assert.True(rec.ConsentAcknowledged);
+        Assert.Equal("clear_cached_plan", rec.Action);
+        Assert.Null(rec.QueryId);
+        Assert.Null(rec.PlanId);
+        Assert.Contains("DBCC FREEPROCCACHE", rec.GeneratedSql);
+        // The audited action string fits the VarChar(32) @action param (17 chars).
+        Assert.True(rec.Action.Length <= 32);
+    }
+
+    // ── Never-bare / null-handle-guard structural assertions (M-1) ───────────────
+    //
+    // The single-connection SPID equality + the actual DBCC text are executor/real-server
+    // concerns (cannot be exercised against a faked executor). These assert, at the SOURCE
+    // level, that the executor ONLY ever builds the single-`@plan_handle` form, binds the
+    // handle as a typed param, filters plan_handle IS NOT NULL, rejects null/zero-length in
+    // C# before any DBCC string, and never emits the bare/whole-cache form.
+
+    [Fact]
+    public void Executor_NeverEmitsBareFreeProcCache_OnlyTypedSingleHandleForm()
+    {
+        var dir = FindDashboardSourceDir();
+        var src = File.ReadAllText(Path.Combine(dir, "Services", "DatabaseService.Remediation.cs"));
+
+        // The ONLY DBCC text is the single-handle form with a typed @plan_handle param.
+        Assert.Contains("DBCC FREEPROCCACHE(@plan_handle)", src);
+        Assert.Contains("@plan_handle", src);
+        Assert.Contains("SqlDbType.VarBinary, 64", src);
+
+        // The catastrophic bare/whole-cache form must NOT appear anywhere: no
+        // no-argument FREEPROCCACHE statement and no empty-arg form.
+        Assert.DoesNotContain("FREEPROCCACHE;", src);
+        Assert.DoesNotContain("FREEPROCCACHE ;", src);
+        Assert.DoesNotContain("FREEPROCCACHE()", src);   // no empty-arg form
+
+        // The live resolve filters plan_handle IS NOT NULL (the BAD_ACTOR precedent),
+        // and the C# guard rejects null/zero-length BEFORE any DBCC string is built.
+        Assert.Contains("plan_handle IS NOT NULL", src);
+        Assert.Contains("handle.Length == 0", src);
+    }
+
+    [Fact]
+    public void Executor_GateIsNamedAlterServerState_FailClosed()
+    {
+        var dir = FindDashboardSourceDir();
+        var src = File.ReadAllText(Path.Combine(dir, "Services", "DatabaseService.Remediation.cs"));
+
+        // The NAMED server permission, fail-closed via ISNULL(...,0). NOT the generic
+        // (NULL,NULL,'ALTER') token (which returns NULL even for sysadmin).
+        Assert.Contains("HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER SERVER STATE')", src);
+        Assert.Contains("ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER SERVER STATE'), 0)", src);
+        Assert.DoesNotContain("HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER')", src);
+        // PermissionDenied carries grant guidance.
+        Assert.Contains("GRANT ALTER SERVER STATE", src);
+    }
+
+    [Fact]
+    public void Executor_HexHandleParse_RejectsMalformed_NeverThrows()
+    {
+        // The query_hash → binary(8) bind path: a typed param, never concatenated. A
+        // malformed value parses to null (→ Skip), never a DBCC string.
+        Assert.Null(DatabaseService.TryParseHexHandle(null));
+        Assert.Null(DatabaseService.TryParseHexHandle(""));
+        Assert.Null(DatabaseService.TryParseHexHandle("0x"));
+        Assert.Null(DatabaseService.TryParseHexHandle("0xABC"));     // odd length
+        Assert.Null(DatabaseService.TryParseHexHandle("0xZZ"));      // not hex
+        var ok = DatabaseService.TryParseHexHandle("0xABCDEF0123456789");
+        Assert.NotNull(ok);
+        Assert.Equal(8, ok!.Length);
+        // No "0x" prefix is also accepted (raw hex).
+        Assert.Equal(8, DatabaseService.TryParseHexHandle("ABCDEF0123456789")!.Length);
+    }
+
+    // ── Detector row-level exclusion (§2a / R2-MOD-A / R2-MOD-B) ─────────────────
+    //
+    // The production detector runs this logic as T-SQL against collect.query_stats; the
+    // PlanCacheAnomalyDetector reference encodes the SAME row-level exclusion + per-exec
+    // math so the catastrophic correctness rules are headlessly guarded.
+
+    private static readonly DateTime ServerUp = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime CurrentStart = new(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc);
+
+    private static PlanCacheAnomalyDetector.StatRow Row(
+        string hash, string plan, DateTime t, long workerUs, long execs,
+        DateTime? serverStart = null, string sqlH = "S1", int so = 0, int eo = -1) =>
+        new(hash, sqlH, so, eo, plan, t, serverStart ?? ServerUp, workerUs, execs);
+
+    [Fact]
+    public void Detector_LeakyFirstCollection_YieldsNoTarget()
+    {
+        // R2-MOD-A: a plan_handle whose GLOBAL-first collection is the FIRST in-window row,
+        // carrying delta = full cumulative raw total. The leaky "≥2 in-window" gate would
+        // wrongly pass it; the row-level exclusion drops it. There is no earlier collection
+        // for (sql_handle, offsets, plan_handle) → not a real-delta row → excluded.
+        var rows = new List<PlanCacheAnomalyDetector.StatRow>
+        {
+            // baseline window: a normal plan at low per-exec CPU, WITH a real prior.
+            Row("0xQ1", "P0", CurrentStart.AddHours(-10), 1_000_000, 1000),   // first-collection of P0 (no prior) — excluded
+            Row("0xQ1", "P0", CurrentStart.AddHours(-9),    10_000, 1000),    // real delta: 10us/exec
+            // current window: a NEW plan_handle P1 whose FIRST collected row carries 6h of
+            // accumulated CPU as one delta (the contamination this feature targets).
+            Row("0xQ1", "P1", CurrentStart.AddHours(1), 6_000_000_000, 1000), // first-collection of P1 — excluded
+        };
+
+        var results = PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart);
+        // The only real-delta row is the one baseline row; current window has no real-delta
+        // rows → no current execs → no anomaly. The fake 6h spike never counts.
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void Detector_ServerRestartRow_YieldsNoTarget()
+    {
+        // R2-MOD-B: the first post-restart row (server_start_time >= prior collection_time)
+        // carries delta = full cumulative raw total. The row-level predicate requires the
+        // prior collection_time > this row's server_start_time, so a post-restart row is
+        // excluded even though an earlier collection exists.
+        var restart = CurrentStart.AddMinutes(30);   // server restarted mid-window
+        var rows = new List<PlanCacheAnomalyDetector.StatRow>
+        {
+            Row("0xQ2", "P0", CurrentStart.AddHours(-9), 9_000, 1000),                 // first-collection — excluded
+            Row("0xQ2", "P0", CurrentStart.AddHours(-8), 9_000, 1000, ServerUp),       // real delta (prior at -9 > ServerUp)
+            // post-restart row: huge raw total; prior collection (-8) is BEFORE the new
+            // server_start_time (restart), so it is NOT a real-delta row → excluded.
+            Row("0xQ2", "P0", CurrentStart.AddHours(1), 9_000_000_000, 1000, restart),
+        };
+
+        var results = PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart);
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void Detector_SyntheticMassRestart_ProducesNoTargetsEnMasse()
+    {
+        // A mass restart: MANY plan_handles each with a first-post-restart raw-total row in
+        // the current window. None has a real-delta current row → no targets en masse.
+        var restart = CurrentStart.AddMinutes(15);
+        var rows = new List<PlanCacheAnomalyDetector.StatRow>();
+        for (int i = 0; i < 50; i++)
+        {
+            var hash = "0xQ" + i.ToString("X");
+            var plan = "P" + i;
+            // a real baseline so each query has a baseline per-exec
+            rows.Add(Row(hash, plan, CurrentStart.AddHours(-9), 5_000, 500, ServerUp, sqlH: "S" + i));
+            rows.Add(Row(hash, plan, CurrentStart.AddHours(-8), 5_000, 500, ServerUp, sqlH: "S" + i));
+            // the mass post-restart contaminated row in the current window
+            rows.Add(Row(hash, plan, CurrentStart.AddMinutes(20), 8_000_000_000, 500, restart, sqlH: "S" + i));
+        }
+
+        var results = PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart);
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void Detector_GenuinePerExecJump_OnRealDeltaRows_EmitsTarget()
+    {
+        // A genuine per-exec jump on REAL-prior-delta rows (an earlier collection exists,
+        // after server_start_time) DOES emit a target. Baseline ~10us/exec; current
+        // ~50us/exec = 5x, material CPU.
+        var rows = new List<PlanCacheAnomalyDetector.StatRow>
+        {
+            Row("0xHOT", "P0", CurrentStart.AddHours(-9), 9_999_999, 1000),                 // first-collection — excluded
+            Row("0xHOT", "P0", CurrentStart.AddHours(-8), 10_000_000, 1000),                // baseline real delta: 10us/exec
+            Row("0xHOT", "P0", CurrentStart.AddHours(-7), 10_000_000, 1000),                // baseline real delta: 10us/exec
+            Row("0xHOT", "P0", CurrentStart.AddHours(1),  50_000_000, 1000),                // current real delta: 50us/exec
+        };
+
+        var results = PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart);
+        var hit = Assert.Single(results);
+        Assert.Equal("0xHOT", hit.QueryHash);
+        Assert.True(hit.AnomalyRatio >= 4.5 && hit.AnomalyRatio <= 5.5, $"ratio was {hit.AnomalyRatio}");
+        Assert.True(hit.CurrentCpuPerExecMs > hit.BaselineCpuPerExecMs);
+    }
+
+    [Fact]
+    public void Detector_StableExpensiveQuery_NoTarget()
+    {
+        // A query that is expensive but STABLE (high but unchanging per-exec) is NOT a
+        // clear-plan candidate — the anomaly gate (ratio < T) excludes it.
+        var rows = new List<PlanCacheAnomalyDetector.StatRow>
+        {
+            Row("0xSTABLE", "P0", CurrentStart.AddHours(-9), 100_000_000, 1000),    // first-collection — excluded
+            Row("0xSTABLE", "P0", CurrentStart.AddHours(-8), 100_000_000, 1000),    // baseline 100us/exec
+            Row("0xSTABLE", "P0", CurrentStart.AddHours(1),  105_000_000, 1000),    // current 105us/exec — ~1.05x
+        };
+
+        Assert.Empty(PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart));
+    }
+
+    [Fact]
+    public void Detector_AnomalousButTrivialCpu_NoTarget()
+    {
+        // Abnormal per-exec ratio but below the materiality floor → no target (clearing
+        // a trivial-CPU query is pointless).
+        var rows = new List<PlanCacheAnomalyDetector.StatRow>
+        {
+            Row("0xTINY", "P0", CurrentStart.AddHours(-9), 100, 10),     // first-collection — excluded
+            Row("0xTINY", "P0", CurrentStart.AddHours(-8), 100, 10),     // baseline 10us/exec
+            Row("0xTINY", "P0", CurrentStart.AddHours(1),  5_000, 10),   // current 500us/exec = 50x but only 5ms total
+        };
+
+        Assert.Empty(PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart));
+    }
+
     // ── Full lock-mode vocabulary classifier (M-1) ───────────────────────────────
 
     [Theory]
@@ -1247,6 +1723,12 @@ public class RemediationTests
         // the gate. It is UNREGISTERED in PR-A (dead-code-safe), but the marker still
         // guards against any UI/MCP/menu file referencing it directly.
         "RcsiHandler",
+        // Clear-cached-plan (DBCC FREEPROCCACHE) destructive core: the new handler + the
+        // DISTINCTIVE executor method name. UNREGISTERED in PR-A (dead-code-safe); the
+        // markers still guard against any UI/MCP/menu file referencing the privileged
+        // surface directly. ClearProcCacheAsync is distinctive enough not to substring-
+        // false-match an unrelated reference.
+        "ClearPlanHandler", "ClearProcCacheAsync",
     };
 
     [Fact]
@@ -1393,6 +1875,22 @@ public class RemediationTests
             {
                 Database = database, Setting = setting, Status = RemediationStatus.Success, Applied = true,
                 ExecutingLogin = "sa", PriorValue = "ON", GeneratedSql = "ALTER DATABASE [x] SET AUTO_SHRINK OFF;",
+                GateSpid = 55, ExecSpid = 55
+            });
+        }
+
+        // ── Clear-cached-plan seam (DBCC FREEPROCCACHE) ──────────────────────────
+        public Func<string, ClearPlanOutcome>? ClearPlanFunc;
+        public int ClearPlanCalls;
+
+        public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
+        {
+            ClearPlanCalls++;
+            return Task.FromResult(ClearPlanFunc?.Invoke(queryHash) ?? new ClearPlanOutcome
+            {
+                QueryHash = queryHash, Status = RemediationStatus.Success, Cleared = true, HandlesCleared = 1,
+                ExecutingLogin = "sa", Message = "Cleared 1 cached plan(s).",
+                GeneratedSql = "DBCC FREEPROCCACHE(0xDEADBEEF);", PriorValue = "1 plan(s) cached for this query hash",
                 GateSpid = 55, ExecSpid = 55
             });
         }

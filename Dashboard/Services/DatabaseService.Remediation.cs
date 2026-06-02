@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
@@ -404,6 +405,283 @@ SET NUMERIC_ROUNDABORT OFF;";
             GateSpid = gate.Spid,
             ExecSpid = null
         };
+
+        // ── Clear cached plan (DBCC FREEPROCCACHE behind ALTER SERVER STATE) ────────
+        //
+        // The two catastrophic axes (get these EXACTLY right):
+        //
+        //  1. NEVER the bare/whole-cache form. The only DBCC text this method ever
+        //     builds is the single-handle form `DBCC FREEPROCCACHE(@plan_handle)` with a
+        //     typed varbinary(64) param bound to a NON-NULL, non-zero-length handle. The
+        //     live-resolve selects only `plan_handle IS NOT NULL`; every resolved handle
+        //     is re-checked in C# (null / zero-length → rejected) BEFORE any DBCC string
+        //     is constructed. An empty resolve set is a Skip. There is no code path that
+        //     emits `DBCC FREEPROCCACHE` with no argument.
+        //
+        //  2. Permission gate = the NAMED server permission
+        //     `ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER SERVER STATE'), 0) = 1`,
+        //     fail-closed (NULL/error → denied). NOT the generic 'ALTER' server token
+        //     (which returns NULL even for sysadmin — the project_has_perms_by_name_alter
+        //     gotcha). The documented least-privilege login (VIEW SERVER STATE + db_owner)
+        //     LACKS ALTER SERVER STATE, so PermissionDenied is the PRIMARY runtime path —
+        //     returned with a `GRANT ALTER SERVER STATE` guidance string, no elevation,
+        //     no retry. The feature is opt-in.
+        //
+        // Single-connection self-gating (R2-MOD-1): the gate, the live resolve, and every
+        // DBCC run on ONE open connection to the TARGET server (FREEPROCCACHE is
+        // server-scoped — no InitialCatalog retarget). GateSpid == ExecSpid proves it.
+        // No transaction (DBCC is not transactional). Per-handle independence: one
+        // handle's DBCC error never aborts the rest.
+
+        /// <summary>
+        /// The number of query-text snippet characters captured per resolved handle for
+        /// the M-2 disclosure (display only — never an execution input).
+        /// </summary>
+        private const int ClearPlanSnippetLength = 200;
+
+        /// <summary>
+        /// Self-gating clear-cached-plan. See <see cref="IRemediationExecutor.ClearProcCacheAsync"/>.
+        /// The query hash is bound as a typed <c>binary(8)</c> param (the BAD_ACTOR
+        /// precedent, never concatenated); each resolved plan handle is bound as a typed
+        /// <c>varbinary(64)</c> param. The ONLY DBCC text built is the single-handle form.
+        /// </summary>
+        internal async Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
+        {
+            // Parse the hex query_hash ("0x...") to the raw binary(8) bytes in C#, so the
+            // value bound to SQL is a typed binary param — never a string concatenated
+            // into the text. A malformed value yields an empty/oversized array → Skip
+            // (it can never resolve a handle, and never produces a DBCC string).
+            var hashBytes = TryParseHexHandle(queryHash);
+            if (hashBytes is null || hashBytes.Length != 8)
+            {
+                return new ClearPlanOutcome
+                {
+                    QueryHash = queryHash,
+                    Status = RemediationStatus.Skipped,
+                    Cleared = false,
+                    HandlesCleared = 0,
+                    Message = "The query hash was not a valid 8-byte hex value; nothing to clear.",
+                    PriorValue = "0 plans (invalid query hash)"
+                };
+            }
+
+            // ONE monitoring connection to the TARGET server. No InitialCatalog retarget:
+            // FREEPROCCACHE is server-scoped. Gate + resolve + DBCC all ride this one open
+            // connection — no re-open between gate and mutation (R2-MOD-1).
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            // ── Gate: NAMED ALTER SERVER STATE, fail-closed ─────────────────────────
+            string? executingLogin;
+            int? gateSpid;
+            bool hasAlterServerState;
+            {
+                using var gate = connection.CreateCommand();
+                gate.CommandTimeout = RemediationCommandTimeoutSeconds;
+                // The NAMED server permission. The generic (NULL,NULL,'ALTER') token
+                // returns NULL even for sysadmin (project_has_perms_by_name_alter_form);
+                // the named 'ALTER SERVER STATE' evaluates 1 for a holder, 0 otherwise.
+                // ISNULL(...,0) makes NULL/indeterminate fail closed.
+                gate.CommandText = @"
+SELECT
+    executing_login = SUSER_SNAME(),
+    has_alter_server_state = CONVERT(int, ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER SERVER STATE'), 0)),
+    spid = @@SPID;";
+                using var reader = await gate.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    return new ClearPlanOutcome
+                    {
+                        QueryHash = queryHash,
+                        Status = RemediationStatus.Error,
+                        Cleared = false,
+                        Message = "Could not read the permission gate result; no change made."
+                    };
+                }
+                executingLogin = reader.IsDBNull(0) ? null : reader.GetString(0);
+                hasAlterServerState = !reader.IsDBNull(1) && reader.GetInt32(1) == 1;
+                gateSpid = reader.IsDBNull(2) ? (int?)null : Convert.ToInt32(reader.GetInt16(2));
+            }
+
+            if (!hasAlterServerState)
+            {
+                // The DOMINANT runtime outcome on a least-privilege install. Fail closed
+                // with grant guidance — no elevation, no retry, no DBCC.
+                return new ClearPlanOutcome
+                {
+                    QueryHash = queryHash,
+                    Status = RemediationStatus.PermissionDenied,
+                    Cleared = false,
+                    HandlesCleared = 0,
+                    ExecutingLogin = executingLogin,
+                    Message = $"The monitoring login '{executingLogin}' lacks ALTER SERVER STATE on this server, " +
+                              "which clearing a cached plan requires. To opt in, run " +
+                              $"GRANT ALTER SERVER STATE TO [{executingLogin}]; on the target server, or connect with a login that has it. No change was made.",
+                    PriorValue = "0 plans (permission denied)",
+                    GateSpid = gateSpid
+                };
+            }
+
+            // ── Live resolve: current cached plan_handle(s) for this query_hash ─────
+            // Reuse the BAD_ACTOR precedent (plan_handle IS NOT NULL). Capture per handle
+            // the raw varbinary handle + database_name + a short query_text snippet (M-2).
+            var resolved = new List<(byte[] Handle, string? Database, string? Snippet)>();
+            {
+                using var resolve = connection.CreateCommand();
+                resolve.CommandTimeout = RemediationCommandTimeoutSeconds;
+                resolve.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT DISTINCT
+    qs.plan_handle,
+    database_name = qs.database_name,
+    query_text = LEFT(CAST(DECOMPRESS(qs.query_text) AS nvarchar(max)), @snippet_len)
+FROM collect.query_stats AS qs
+WHERE qs.query_hash = @query_hash
+AND   qs.plan_handle IS NOT NULL
+AND   qs.collection_time =
+      (
+          SELECT MAX(qs2.collection_time)
+          FROM collect.query_stats AS qs2
+          WHERE qs2.query_hash = @query_hash
+          AND   qs2.plan_handle = qs.plan_handle
+      );";
+                resolve.Parameters.Add(new SqlParameter("@query_hash", SqlDbType.Binary, 8) { Value = hashBytes });
+                resolve.Parameters.Add(new SqlParameter("@snippet_len", SqlDbType.Int) { Value = ClearPlanSnippetLength });
+
+                using var reader = await resolve.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    // M-1 null/zero-length guard: reject in C# BEFORE any DBCC string is
+                    // built. A null or empty handle never becomes a target.
+                    if (reader.IsDBNull(0)) continue;
+                    var handle = (byte[])reader.GetValue(0);
+                    if (handle is null || handle.Length == 0) continue;
+
+                    var db = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    var snippet = reader.IsDBNull(2) ? null : reader.GetString(2);
+                    resolved.Add((handle, db, snippet));
+                }
+            }
+
+            if (resolved.Count == 0)
+            {
+                // Nothing currently cached for this hash (aged out / recompiled). Skip —
+                // the freshness/idempotency analog. No DBCC.
+                return new ClearPlanOutcome
+                {
+                    QueryHash = queryHash,
+                    Status = RemediationStatus.Skipped,
+                    Cleared = false,
+                    HandlesCleared = 0,
+                    ExecutingLogin = executingLogin,
+                    Message = "No cached plan is currently present for this query hash (it may have aged out or recompiled); nothing to clear.",
+                    PriorValue = "0 plans (no surviving handle)",
+                    GateSpid = gateSpid
+                };
+            }
+
+            // ── Execute: one DBCC FREEPROCCACHE(@plan_handle) per surviving handle ──
+            // Per-handle independence: one handle's error never aborts the rest.
+            var handleContexts = new List<ClearPlanHandleContext>(resolved.Count);
+            var sqlLog = new System.Text.StringBuilder();
+            int cleared = 0;
+            int? execSpid = null;
+
+            foreach (var (handle, db, snippet) in resolved)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    using var dbcc = connection.CreateCommand();
+                    dbcc.CommandTimeout = RemediationCommandTimeoutSeconds;
+                    // The ONLY DBCC text ever built: the single-handle form with a typed
+                    // varbinary(64) param. NEVER the bare form. The handle is bound, never
+                    // concatenated.
+                    dbcc.CommandText = "DBCC FREEPROCCACHE(@plan_handle); SELECT exec_spid = @@SPID;";
+                    dbcc.Parameters.Add(new SqlParameter("@plan_handle", SqlDbType.VarBinary, 64) { Value = handle });
+                    var raw = await dbcc.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                    execSpid = raw is null || raw is DBNull ? execSpid : Convert.ToInt32(raw);
+
+                    cleared++;
+                    sqlLog.AppendLine($"DBCC FREEPROCCACHE(0x{Convert.ToHexString(handle)});" +
+                                      (string.IsNullOrEmpty(db) ? "" : $"   -- {db}"));
+                    handleContexts.Add(new ClearPlanHandleContext
+                    {
+                        Database = db,
+                        QueryTextSnippet = snippet,
+                        Cleared = true
+                    });
+                }
+                catch (SqlException ex)
+                {
+                    handleContexts.Add(new ClearPlanHandleContext
+                    {
+                        Database = db,
+                        QueryTextSnippet = snippet,
+                        Cleared = false,
+                        Error = $"DBCC FREEPROCCACHE failed (error {ex.Number}): {ex.Message}"
+                    });
+                }
+            }
+
+            var priorValue = $"{resolved.Count} plan(s) cached for this query hash";
+            if (cleared == 0)
+            {
+                // Every handle errored (e.g. all aged out between resolve and DBCC). Report
+                // an error so it is visible; per-handle errors are carried for detail.
+                return new ClearPlanOutcome
+                {
+                    QueryHash = queryHash,
+                    Status = RemediationStatus.Error,
+                    Cleared = false,
+                    HandlesCleared = 0,
+                    ExecutingLogin = executingLogin,
+                    Message = $"All {resolved.Count} resolved plan handle(s) failed to clear; see per-handle detail.",
+                    Handles = handleContexts,
+                    GeneratedSql = sqlLog.Length == 0 ? null : sqlLog.ToString().TrimEnd(),
+                    PriorValue = priorValue,
+                    GateSpid = gateSpid,
+                    ExecSpid = execSpid
+                };
+            }
+
+            return new ClearPlanOutcome
+            {
+                QueryHash = queryHash,
+                Status = RemediationStatus.Success,
+                Cleared = true,
+                HandlesCleared = cleared,
+                ExecutingLogin = executingLogin,
+                Message = $"Cleared {cleared} cached plan(s) for this query hash; they will recompile on next execution.",
+                Handles = handleContexts,
+                GeneratedSql = sqlLog.ToString().TrimEnd(),
+                PriorValue = priorValue,
+                GateSpid = gateSpid,
+                ExecSpid = execSpid
+            };
+        }
+
+        /// <summary>
+        /// Parses a hex handle string ("0x" + even-length hex) to its raw bytes, or null
+        /// when malformed. Used for the query_hash → binary(8) bind (the value is ALWAYS
+        /// a typed param, never concatenated) and never to build DBCC text.
+        /// </summary>
+        internal static byte[]? TryParseHexHandle(string? hex)
+        {
+            if (string.IsNullOrEmpty(hex)) return null;
+            var s = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex.Substring(2) : hex;
+            if (s.Length == 0 || (s.Length % 2) != 0) return null;
+            try
+            {
+                return Convert.FromHexString(s);
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         /// <summary>
         /// The DB-config gate read: identity + parameterized sys.databases existence +

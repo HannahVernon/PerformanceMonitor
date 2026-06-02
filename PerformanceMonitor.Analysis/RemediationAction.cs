@@ -26,11 +26,56 @@ namespace PerformanceMonitor.Analysis;
 /// </para>
 /// </summary>
 public sealed record RemediationAction(
-    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" | "RCSI" — handler-registry key
-    string Action,                              // "force" (plan regression) | "set" (db config). Un-apply derives "unforce".
-    IReadOnlyList<ForcePlanTarget> Targets,      // force-plan targets (empty list for DB_CONFIG)
+    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" | "RCSI" | "CLEAR_PLAN" — handler-registry key
+    string Action,                              // "force" (plan regression) | "set" (db config) | "clear" (clear cached plan). Un-apply derives "unforce".
+    IReadOnlyList<ForcePlanTarget> Targets,      // force-plan targets (empty list for DB_CONFIG / CLEAR_PLAN)
     IReadOnlyList<DbConfigTarget>? DbConfigTargets = null,  // DB-config targets (null for force-plan)
-    RcsiInactionFigures? RcsiFigures = null);    // B3 Phase 3: RCSI risk-of-not-changing figures carried on the persisted action
+    RcsiInactionFigures? RcsiFigures = null,     // B3 Phase 3: RCSI risk-of-not-changing figures carried on the persisted action
+    IReadOnlyList<ClearPlanTarget>? ClearPlanTargets = null, // clear-cached-plan targets (null for the other fact keys)
+    ClearPlanFigures? ClearPlanFigures = null);  // clear-cached-plan risk-of-not-changing figures carried on the persisted action
+
+/// <summary>
+/// The risk-of-NOT-changing monitoring figures for a destructive CLEAR_PLAN action
+/// (clear cached plan via DBCC FREEPROCCACHE), captured at
+/// <see cref="FactRemediation.BuildClearPlanAction"/> time when the finding (and its
+/// <c>abnormal_cpu_plans</c> drill-down enrichment) IS available, and CARRIED on the
+/// persisted <see cref="RemediationAction"/> so the informed-consent dialog renders the
+/// REAL figures at apply time — when only the persisted action survives (the UI apply
+/// call site has no finding). <see cref="FactRiskDisclosure.GetForAction"/> reads these
+/// in preference to the (often-null at apply time) finding.
+///
+/// <para>
+/// These are DISPLAY/disclosure values only — never an execution input. They mirror the
+/// §2 detector enrichment fields: current vs baseline per-exec CPU (ms), the anomaly
+/// ratio, the query's window CPU share (%), and whether PLAN_REGRESSION /
+/// PARAMETER_SENSITIVITY co-fired (which steer the honest tool-choice disclosure).
+/// </para>
+/// </summary>
+public sealed record ClearPlanFigures(
+    double CurrentCpuPerExecMs,
+    double BaselineCpuPerExecMs,
+    double AnomalyRatio,
+    int CpuPercent,
+    bool PlanRegressionCoFired,
+    bool ParameterSensitivityCoFired);
+
+/// <summary>
+/// One clear-cached-plan target: a (database, query_hash) pair. The
+/// <see cref="QueryHash"/> (the stable cross-collection key, <c>binary(8)</c> rendered
+/// as a hex string like <c>0x...</c>) is the ONLY execution input — the executor
+/// re-resolves the current cached <c>plan_handle(s)</c> for it LIVE at apply time
+/// (the snapshot <see cref="LatestPlanHandle"/> is display only and is NEVER fed to
+/// DBCC). A <c>query_hash</c> is not unique to one logical query, so the live resolve
+/// can return several handles spanning distinct databases — disclosed per-handle (M-2).
+/// The remaining members are carried for the confirm dialog / disclosure only.
+/// </summary>
+public sealed record ClearPlanTarget(
+    string Database,                            // user DB name (display; the gate is server-scoped, not per-DB)
+    string QueryHash,                          // stable key, hex "0x..." (binary(8)); the only execution input
+    double CurrentCpuPerExecMs = 0,            // display only
+    double BaselineCpuPerExecMs = 0,           // display only
+    double AnomalyRatio = 0,                   // display only
+    string? LatestPlanHandle = null);          // display only — the apply path re-resolves live
 
 /// <summary>
 /// The risk-of-NOT-changing monitoring figures for a destructive RCSI action
