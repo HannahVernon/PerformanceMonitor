@@ -1,3 +1,2 @@
 01_extend_blocked_process_report_columns.sql
-02_create_remediation_action_log.sql
-03_make_other_process_cpu_nullable.sql
+02_make_other_process_cpu_nullable.sql

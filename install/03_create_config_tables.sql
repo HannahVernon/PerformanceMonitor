@@ -713,6 +713,72 @@ BEGIN
         END;
 
         /*
+        Create config.remediation_action_log — durable, append-only audit trail for the
+        approval-gated "Apply Fix" feature (B3). One row per apply/unapply attempt
+        (success/skip/error/abort) for every privileged mutation the Dashboard issues
+        against a monitored server: sys.sp_query_store_(un)force_plan (PLAN_REGRESSION),
+        ALTER DATABASE SET (always-safe DB-config + RCSI), or DBCC FREEPROCCACHE
+        (CLEAR_PLAN). Force-plan rows carry query_id/plan_id; the others leave those NULL
+        and record the prior state in prior_value. consent_acknowledged marks a DESTRUCTIVE
+        apply (RCSI) that passed the informed-consent gate (0 otherwise). Lives in config
+        alongside the other operational logs. Created here (in the install scripts, not the
+        upgrade folder) so a FRESH install gets it; the installer re-runs the install scripts
+        on upgrade too, so existing databases get it as well.
+        */
+        IF OBJECT_ID(N'config.remediation_action_log', N'U') IS NULL
+        BEGIN
+            IF @debug = 1
+            BEGIN
+                RAISERROR(N'Creating config.remediation_action_log table', 0, 1) WITH NOWAIT;
+            END;
+
+            CREATE TABLE
+                config.remediation_action_log
+            (
+                action_id bigint IDENTITY(1, 1) NOT NULL,
+                applied_utc datetime2(7) NOT NULL
+                    CONSTRAINT df_remediation_action_log_applied_utc
+                    DEFAULT (SYSUTCDATETIME()),
+                operator_identity nvarchar(256) NULL, /* app / OS identity that clicked Apply */
+                executing_login sysname NULL,         /* SUSER_SNAME() actually used on the target */
+                used_elevated_cred bit NOT NULL
+                    CONSTRAINT df_remediation_action_log_used_elevated_cred
+                    DEFAULT (0),                       /* always 0 in v1 (no in-app elevation); reserved */
+                target_server nvarchar(256) NULL,
+                target_database sysname NOT NULL,
+                finding_fact_key varchar(64) NOT NULL, /* e.g. 'PLAN_REGRESSION' | 'DB_CONFIG' | 'RCSI' | 'CLEAR_PLAN' */
+                query_id bigint NULL,                  /* force-plan only; NULL otherwise */
+                plan_id bigint NULL,                   /* force-plan only; NULL otherwise */
+                action varchar(32) NOT NULL,           /* 'force'|'unforce'|'set_auto_shrink_off'|'set_auto_close_off'|'set_page_verify_checksum'|'set_read_committed_snapshot_on'|'clear_cached_plan' */
+                prior_value nvarchar(128) NULL,        /* prior state for manual reversal; NULL for force-plan */
+                generated_sql nvarchar(max) NULL,      /* the previewed statement, recorded only — never executed */
+                result varchar(16) NOT NULL,           /* 'success' | 'skipped' | 'error' | 'aborted' */
+                error_message nvarchar(max) NULL,
+                source_alert_ref nvarchar(256) NULL,   /* metric_name / story hash for traceback */
+                consent_acknowledged bit NOT NULL
+                    CONSTRAINT df_remediation_action_log_consent_acknowledged
+                    DEFAULT (0),                       /* destructive apply (RCSI) passed the consent gate; 0 otherwise */
+                CONSTRAINT pk_remediation_action_log PRIMARY KEY CLUSTERED (action_id) WITH (DATA_COMPRESSION = PAGE)
+            );
+
+            SET @tables_created = @tables_created + 1;
+
+            INSERT INTO
+                config.collection_log
+            (
+                collector_name,
+                collection_status,
+                error_message
+            )
+            VALUES
+            (
+                N'ensure_config_tables',
+                N'TABLE_CREATED',
+                N'Created config.remediation_action_log table'
+            );
+        END;
+
+        /*
         Log final summary
         */
         INSERT INTO
