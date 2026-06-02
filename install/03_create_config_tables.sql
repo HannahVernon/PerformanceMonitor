@@ -721,9 +721,9 @@ BEGIN
         (CLEAR_PLAN). Force-plan rows carry query_id/plan_id; the others leave those NULL
         and record the prior state in prior_value. consent_acknowledged marks a DESTRUCTIVE
         apply (RCSI) that passed the informed-consent gate (0 otherwise). Lives in config
-        alongside the other operational logs. Created here (not in upgrades/) so a FRESH
-        install gets it; the installer re-runs install/* on upgrade too, so existing DBs
-        get it as well.
+        alongside the other operational logs. Created here (in the install scripts, not the
+        upgrade folder) so a FRESH install gets it; the installer re-runs the install scripts
+        on upgrade too, so existing databases get it as well.
         */
         IF OBJECT_ID(N'config.remediation_action_log', N'U') IS NULL
         BEGIN
