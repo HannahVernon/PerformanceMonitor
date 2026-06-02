@@ -63,7 +63,10 @@ public class SqlServerDrillDownCollector
                     await CollectQueriesAtSpike(finding, context);
 
                 if (pathKeys.Contains("CPU_SQL_PERCENT") || pathKeys.Contains("CPU_SPIKE"))
+                {
                     await CollectTopCpuQueries(finding, context);
+                    await CollectAbnormalCpuPlans(finding, context, pathKeys);
+                }
 
                 if (pathKeys.Contains("QUERY_SPILLS"))
                     await CollectTopSpillingQueries(finding, context);
@@ -337,6 +340,180 @@ ORDER BY CAST(SUM(total_worker_time_delta) AS BIGINT) DESC;";
 
         if (items.Count > 0 && !finding.DrillDown!.ContainsKey("top_cpu_queries"))
             finding.DrillDown!["top_cpu_queries"] = items;
+    }
+
+    /// <summary>
+    /// The plan-cache anomaly detector (§2): one row per offending <c>query_hash</c> whose
+    /// CURRENT per-exec CPU has jumped to an abnormal multiple of its OWN trailing baseline,
+    /// and which is a material CPU contributor in the window. This is the enrichment the
+    /// (PR-B) "Clear cached plan (advanced)" affordance reads. PR-A emits the drill-down but
+    /// does NOT register the handler / emit the affordance — dead-code-safe display only.
+    ///
+    /// <para>
+    /// §2a ROW-LEVEL exclusion (the round-2 correctness fix): the delta framework
+    /// (install/05_delta_framework.sql:218-307) assigns <c>delta = full cumulative raw
+    /// total</c> on TWO arms — first-collection-of-a-plan_handle (the <c>pc.collection_id
+    /// IS NULL</c> arm, :233-235) and the first-post-restart row (the
+    /// <c>server_start_time &gt;= pc.collection_time</c> arm, :235-236). Both inject false
+    /// anomalies on exactly this feature's target population. We exclude BOTH, per row, in
+    /// BOTH the current and baseline windows: a row counts as a REAL prior-delta row only
+    /// when an earlier collection exists for the same (sql_handle, offsets, plan_handle)
+    /// AND that earlier collection_time is &gt; this row's server_start_time (i.e. the
+    /// delta interval started at a real prior collection, not at compile/restart). The
+    /// per-exec math (M-3) and the materiality CPU sum use ONLY these real-delta rows.
+    /// </para>
+    /// </summary>
+    private async Task CollectAbnormalCpuPlans(AnalysisFinding finding, AnalysisContext context, HashSet<string> pathKeys)
+    {
+        // The anomaly threshold (sibling of PLAN_REGRESSION's regression_factor) and the
+        // materiality floor (a query must contribute at least this much CPU in the window
+        // for clearing to be worth offering). Conservative defaults — start ~3x.
+        const double AnomalyThreshold = 3.0;
+        const double MaterialCpuMsFloor = 1000.0;   // 1s of CPU in the window
+
+        // Co-fired-fact awareness (drives the §5 disclosure steer): whether this CPU
+        // finding's story crossed PLAN_REGRESSION / PARAMETER_SENSITIVITY. The analysis
+        // already holds the story path — no extra SQL.
+        var planRegressionCoFired = pathKeys.Contains("PLAN_REGRESSION");
+        var parameterSensitivityCoFired = pathKeys.Contains("PARAMETER_SENSITIVITY");
+
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        // The baseline window is the @baselineDays preceding the current window (NOT
+        // overlapping it). The current window is [@startTime, @endTime].
+        cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+DECLARE @baselineStart datetime2(7) = DATEADD(DAY, -@baselineDays, @startTime);
+
+/*
+Real-delta rows only (§2a row-level exclusion): a row is a genuine inter-collection
+delta when an EARLIER collection exists for the same (sql_handle, offsets, plan_handle)
+whose collection_time is BOTH < this row's collection_time (it is a prior) AND
+> this row's server_start_time (so the delta interval did not start at compile/restart).
+This drops the first-collection-of-a-plan_handle row and the first-post-restart row in
+one predicate, by row, without using sample_interval_seconds (R2-MIN-A).
+*/
+WITH
+    real_delta AS
+(
+    SELECT
+        qs.query_hash,
+        qs.database_name,
+        qs.collection_time,
+        qs.total_worker_time_delta,
+        qs.execution_count_delta,
+        qs.plan_handle,
+        qs.query_text
+    FROM collect.query_stats AS qs
+    WHERE qs.query_hash IS NOT NULL
+    AND   qs.collection_time >= @baselineStart
+    AND   qs.collection_time <= @endTime
+    AND   EXISTS
+          (
+              SELECT 1
+              FROM collect.query_stats AS prior
+              WHERE prior.sql_handle = qs.sql_handle
+              AND   prior.statement_start_offset = qs.statement_start_offset
+              AND   prior.statement_end_offset = qs.statement_end_offset
+              AND   prior.plan_handle = qs.plan_handle
+              AND   prior.collection_time < qs.collection_time
+              AND   prior.collection_time > qs.server_start_time
+          )
+),
+    windowed AS
+(
+    SELECT
+        rd.query_hash,
+        /* current-window per-exec CPU (ms): SUM(worker)/SUM(execs) on real-delta rows */
+        current_worker_ms =
+            CAST(SUM(CASE WHEN rd.collection_time >= @startTime THEN rd.total_worker_time_delta ELSE 0 END) AS float) / 1000.0,
+        current_execs =
+            SUM(CASE WHEN rd.collection_time >= @startTime THEN rd.execution_count_delta ELSE 0 END),
+        /* baseline-window per-exec CPU (ms): the preceding window, same exclusion */
+        baseline_worker_ms =
+            CAST(SUM(CASE WHEN rd.collection_time < @startTime THEN rd.total_worker_time_delta ELSE 0 END) AS float) / 1000.0,
+        baseline_execs =
+            SUM(CASE WHEN rd.collection_time < @startTime THEN rd.execution_count_delta ELSE 0 END),
+        /* window CPU contribution (ms), §2a exclusion applied (R2-MIN-B) */
+        current_total_cpu_ms =
+            CAST(SUM(CASE WHEN rd.collection_time >= @startTime THEN rd.total_worker_time_delta ELSE 0 END) AS float) / 1000.0
+    FROM real_delta AS rd
+    GROUP BY rd.query_hash
+)
+SELECT TOP 5
+    query_hash = CONVERT(VARCHAR(18), w.query_hash, 1),
+    database_name =
+    (
+        SELECT TOP (1) rd2.database_name
+        FROM real_delta AS rd2
+        WHERE rd2.query_hash = w.query_hash
+        ORDER BY rd2.collection_time DESC
+    ),
+    current_cpu_per_exec_ms = w.current_worker_ms / NULLIF(w.current_execs, 0),
+    baseline_cpu_per_exec_ms = w.baseline_worker_ms / NULLIF(w.baseline_execs, 0),
+    anomaly_ratio =
+        (w.current_worker_ms / NULLIF(w.current_execs, 0)) /
+        NULLIF(w.baseline_worker_ms / NULLIF(w.baseline_execs, 0), 0),
+    execution_count = w.current_execs,
+    total_cpu_ms = w.current_total_cpu_ms,
+    latest_plan_handle =
+    (
+        SELECT TOP (1) CONVERT(VARCHAR(130), rd3.plan_handle, 1)
+        FROM real_delta AS rd3
+        WHERE rd3.query_hash = w.query_hash
+        AND   rd3.plan_handle IS NOT NULL
+        ORDER BY rd3.collection_time DESC
+    ),
+    query_text =
+    (
+        SELECT TOP (1) LEFT(CAST(DECOMPRESS(rd4.query_text) AS NVARCHAR(MAX)), 500)
+        FROM real_delta AS rd4
+        WHERE rd4.query_hash = w.query_hash
+        ORDER BY rd4.collection_time DESC
+    )
+FROM windowed AS w
+WHERE w.current_execs > 0
+AND   w.baseline_execs > 0
+AND   w.baseline_worker_ms > 0
+AND   w.current_total_cpu_ms >= @materialFloor
+/* the anomaly gate: current per-exec >= T x baseline per-exec */
+AND   (w.current_worker_ms / NULLIF(w.current_execs, 0)) >=
+      @threshold * (w.baseline_worker_ms / NULLIF(w.baseline_execs, 0))
+ORDER BY w.current_total_cpu_ms DESC;";
+
+        cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+        cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+        cmd.Parameters.Add(new SqlParameter("@baselineDays", 7));
+        cmd.Parameters.Add(new SqlParameter("@threshold", AnomalyThreshold));
+        cmd.Parameters.Add(new SqlParameter("@materialFloor", MaterialCpuMsFloor));
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new
+            {
+                query_hash = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                database = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                current_cpu_per_exec_ms = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2)),
+                baseline_cpu_per_exec_ms = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3)),
+                anomaly_ratio = reader.IsDBNull(4) ? 0.0 : Convert.ToDouble(reader.GetValue(4)),
+                execution_count = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5)),
+                total_cpu_ms = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6)),
+                latest_plan_handle = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                query_text = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                // §2b co-fired flags (drive the §5 disclosure steer); display-only.
+                cpu_percent = 0,
+                plan_regression_cofired = planRegressionCoFired,
+                parameter_sensitivity_cofired = parameterSensitivityCoFired
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["abnormal_cpu_plans"] = items;
     }
 
     private async Task CollectTopSpillingQueries(AnalysisFinding finding, AnalysisContext context)

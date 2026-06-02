@@ -52,6 +52,9 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
             => _databaseService.SetDatabaseOptionAsync(database, setting, identity, ct);
 
+        public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
+            => _databaseService.ClearProcCacheAsync(queryHash, identity, ct);
+
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
             => _auditWriter.WriteAsync(record, ct);
     }

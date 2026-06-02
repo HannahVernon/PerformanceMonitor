@@ -173,6 +173,60 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public int? ExecSpid { get; init; }
     }
 
+    /// <summary>
+    /// One live-resolved cached plan for a query hash: the database it ran in and a short
+    /// query-text snippet (M-2 per-handle blast-radius disclosure). The plan handle itself
+    /// is NEVER surfaced here — it is bound as a typed <c>varbinary(64)</c> parameter
+    /// inside the executor and passed straight to DBCC, never round-tripped as a string.
+    /// </summary>
+    public sealed class ClearPlanHandleContext
+    {
+        public string? Database { get; init; }
+        public string? QueryTextSnippet { get; init; }
+
+        /// <summary>True only when this handle's DBCC FREEPROCCACHE ran without error.</summary>
+        public bool Cleared { get; init; }
+
+        /// <summary>Per-handle error message when <see cref="Cleared"/> is false due to a server error.</summary>
+        public string? Error { get; init; }
+    }
+
+    /// <summary>
+    /// Outcome of a single executor clear-cached-plan call for one query hash. The gate
+    /// (ALTER SERVER STATE permission), the live handle resolve (with the null/zero-length
+    /// guard), and every <c>DBCC FREEPROCCACHE(@plan_handle)</c> run on ONE open monitoring
+    /// connection; <see cref="GateSpid"/>/<see cref="ExecSpid"/> prove they shared it
+    /// (R2-MOD-1, GateSpid == ExecSpid). <see cref="HandlesCleared"/> is the count of
+    /// handles actually cleared; <see cref="Handles"/> carries the per-handle disclosure
+    /// context (M-2). PermissionDenied is the DOMINANT runtime path on a least-privilege
+    /// install (the default login lacks ALTER SERVER STATE — opt-in feature).
+    /// </summary>
+    public sealed class ClearPlanOutcome
+    {
+        public string QueryHash { get; init; } = "";
+        public RemediationStatus Status { get; init; }
+
+        /// <summary>True only when at least one DBCC FREEPROCCACHE actually ran and succeeded.</summary>
+        public bool Cleared { get; init; }
+
+        /// <summary>How many plan handles were cleared (0 on Skip/PermissionDenied/Block).</summary>
+        public int HandlesCleared { get; init; }
+
+        public string? ExecutingLogin { get; init; }
+        public string? Message { get; init; }
+
+        /// <summary>Per-handle context for the disclosure / audit (M-2). Empty on a Skip.</summary>
+        public IReadOnlyList<ClearPlanHandleContext> Handles { get; init; } = new List<ClearPlanHandleContext>();
+
+        /// <summary>The DBCC FREEPROCCACHE statements actually run (display/audit generated_sql).</summary>
+        public string? GeneratedSql { get; init; }
+
+        /// <summary>A short prior-state summary for the audit prior_value ("{N} plans, ~{ratio}x baseline").</summary>
+        public string? PriorValue { get; init; }
+        public int? GateSpid { get; init; }
+        public int? ExecSpid { get; init; }
+    }
+
     /// <summary>Per-target outcome of an apply/unapply, including the audit disposition.</summary>
     public sealed class TargetOutcome
     {

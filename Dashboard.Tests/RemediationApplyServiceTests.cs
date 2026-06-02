@@ -652,6 +652,20 @@ public class RemediationApplyServiceTests
             });
         }
 
+        public int ClearPlanCalls;
+
+        public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
+        {
+            ClearPlanCalls++;
+            return Task.FromResult(new ClearPlanOutcome
+            {
+                QueryHash = queryHash, Status = RemediationStatus.Success, Cleared = true, HandlesCleared = 1,
+                ExecutingLogin = "PerfMonLogin", Message = "Cleared 1 cached plan(s).",
+                GeneratedSql = "DBCC FREEPROCCACHE(0xDEADBEEF);", PriorValue = "1 plan(s) cached for this query hash",
+                GateSpid = 55, ExecSpid = 55
+            });
+        }
+
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
         {
             AuditRecords.Add(record);
@@ -678,6 +692,8 @@ public class RemediationApplyServiceTests
             });
         public Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct)
             => Task.FromResult(new DbConfigOutcome { Database = database, Setting = setting, Status = RemediationStatus.Skipped });
+        public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new ClearPlanOutcome { QueryHash = queryHash, Status = RemediationStatus.Skipped });
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct) => Task.FromResult(true);
     }
 }
