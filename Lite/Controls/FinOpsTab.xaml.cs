@@ -28,7 +28,7 @@ public partial class FinOpsTab : UserControl
 {
     private LocalDataService? _dataService;
     private ServerManager? _serverManager;
-    private CredentialService? _credentialService;
+    private CredentialResolver? _credentialResolver;
     private List<ServerPropertyRow>? _serverInventoryCache;
     private DateTime _serverInventoryCacheTime;
 
@@ -64,7 +64,7 @@ public partial class FinOpsTab : UserControl
     {
         _dataService = dataService;
         _serverManager = serverManager;
-        _credentialService = serverManager.CredentialService;
+        _credentialResolver = serverManager.CredentialResolver;
 
         PopulateServerSelector();
         RefreshData();
@@ -158,15 +158,15 @@ public partial class FinOpsTab : UserControl
 
     private async System.Threading.Tasks.Task LoadRecommendationsAsync(int serverId)
     {
-        if (_dataService == null || _credentialService == null) return;
+        if (_dataService == null || _credentialResolver == null) return;
 
         try
         {
             var selectedServer = ServerSelector.SelectedItem as Models.ServerConnection;
-            var connectionString = selectedServer?.GetConnectionString(_credentialService);
+            var connectionString = selectedServer == null ? null : _credentialResolver.GetConnectionString(selectedServer);
             if (string.IsNullOrEmpty(connectionString)) return;
 
-            var utilityConnectionString = selectedServer!.GetUtilityConnectionString(_credentialService);
+            var utilityConnectionString = _credentialResolver.GetUtilityConnectionString(selectedServer!);
             var data = await _dataService.GetRecommendationsAsync(serverId, connectionString, utilityConnectionString, _currentServerMonthlyCost);
             RecommendationsDataGrid.ItemsSource = data;
             RecommendationsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -438,7 +438,7 @@ public partial class FinOpsTab : UserControl
     private async System.Threading.Tasks.Task LoadServerInventoryAsync(bool forceRefresh = false)
     {
         using var _profiler = Helpers.MethodProfiler.StartTiming("FinOps-ServerInventory");
-        if (_dataService == null || _serverManager == null || _credentialService == null) return;
+        if (_dataService == null || _serverManager == null || _credentialResolver == null) return;
 
         // Use cache if available and less than 5 minutes old
         if (!forceRefresh && _serverInventoryCache != null
@@ -458,7 +458,7 @@ public partial class FinOpsTab : UserControl
             {
                 try
                 {
-                    var connStr = server.GetConnectionString(_credentialService);
+                    var connStr = _credentialResolver.GetConnectionString(server);
 
                     // Step 1: Query live server properties
                     var item = await LocalDataService.GetServerPropertiesLiveAsync(connStr);
@@ -796,14 +796,14 @@ public partial class FinOpsTab : UserControl
     private async void RunIndexAnalysis_Click(object sender, RoutedEventArgs e)
     {
         using var _profiler = Helpers.MethodProfiler.StartTiming("FinOps-IndexAnalysis");
-        if (_serverManager == null || _credentialService == null) return;
+        if (_serverManager == null || _credentialResolver == null) return;
 
         var server = ServerSelector.SelectedItem as ServerConnection;
         if (server == null) return;
 
         try
         {
-            var utilityConnectionString = server.GetUtilityConnectionString(_credentialService);
+            var utilityConnectionString = _credentialResolver.GetUtilityConnectionString(server);
 
             var exists = await LocalDataService.CheckSpIndexCleanupExistsAsync(utilityConnectionString);
             if (!exists)

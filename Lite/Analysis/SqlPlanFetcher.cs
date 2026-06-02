@@ -31,7 +31,7 @@ public class SqlPlanFetcher : IPlanFetcher
 
         try
         {
-            var connectionString = server.GetConnectionString(_serverManager.CredentialService);
+            var connectionString = _serverManager.CredentialResolver.GetConnectionString(server);
             var builder = new SqlConnectionStringBuilder(connectionString)
             {
                 ConnectTimeout = 10,

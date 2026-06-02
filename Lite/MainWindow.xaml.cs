@@ -32,6 +32,7 @@ public partial class MainWindow : Window
 {
     private readonly DuckDbInitializer _databaseInitializer;
     private readonly ServerManager _serverManager;
+    private readonly ProfileManager _profileManager;
     private readonly ScheduleManager _scheduleManager;
     private RemoteCollectorService? _collectorService;
     private CollectionBackgroundService? _backgroundService;
@@ -84,6 +85,12 @@ public partial class MainWindow : Window
             new DuckDbMuteRuleStore(_databaseInitializer),
             new AppLoggerAdapter<MuteRuleService>());
         _serverManager = new ServerManager(App.SharedConfigDirectory, logger: new AppLoggerAdapter<ServerManager>());
+        // Two-phase wiring (§3.1): build the ProfileManager (one-way ServerManager injection for the
+        // referential-integrity query), then late-inject it back as the ServerManager's IProfileLookup
+        // so CheckConnectionAsync resolves profile-backed servers through the same fail-closed logic.
+        // Coupling stays acyclic: ServerManager → IProfileLookup ← ProfileManager, ProfileManager → ServerManager.
+        _profileManager = new ProfileManager(_serverManager, new AppLoggerAdapter<ProfileManager>());
+        _serverManager.ProfileLookup = _profileManager;
         _scheduleManager = new ScheduleManager(App.ConfigDirectory);
 
         // Status bar update timer
@@ -543,7 +550,7 @@ public partial class MainWindow : Window
         }
 
         var utcOffset = status.UtcOffsetMinutes ?? 0;
-        var serverTab = new ServerTab(server, _databaseInitializer, _serverManager.CredentialService, utcOffset, status.HasMsdbAccess, status.SqlEngineEdition == 5);
+        var serverTab = new ServerTab(server, _databaseInitializer, _serverManager.CredentialResolver, utcOffset, status.HasMsdbAccess, status.SqlEngineEdition == 5);
         var tabHeader = CreateTabHeader(server);
         var tabItem = new TabItem
         {
@@ -852,7 +859,7 @@ public partial class MainWindow : Window
 
     private void AddServerButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddServerDialog(_serverManager) { Owner = this };
+        var dialog = new AddServerDialog(_serverManager, _profileManager) { Owner = this };
         if (dialog.ShowDialog() == true && dialog.AddedServer != null)
         {
             RefreshServerList();
@@ -862,7 +869,7 @@ public partial class MainWindow : Window
 
     private void ManageServersButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new ManageServersWindow(_serverManager) { Owner = this };
+        var window = new ManageServersWindow(_serverManager, _profileManager) { Owner = this };
         window.ShowDialog();
 
         if (window.ServersChanged)
@@ -974,6 +981,24 @@ public partial class MainWindow : Window
             // Import server connections (upsert by server name)
             var (imported, skipped) = _serverManager.ImportServersFromFile(serversJsonPath);
 
+            // Import credential profiles from the SHARED config dir (M-1: NOT the per-user copy loop
+            // below — profiles.json, like servers.json, lives in App.SharedConfigDirectory, so it must
+            // be imported via ProfileManager which is backed by that dir). Source path is built from
+            // the SAME oldConfigDir variable serversJsonPath uses (M1-R2).
+            int profilesImported = 0;
+            var profilesJsonPath = System.IO.Path.Combine(oldConfigDir, "profiles.json");
+            if (System.IO.File.Exists(profilesJsonPath))
+            {
+                try
+                {
+                    (profilesImported, _) = _profileManager.ImportProfilesFromFile(profilesJsonPath);
+                }
+                catch (Exception pex)
+                {
+                    AppLogger.Warn("Import", $"Failed to import profiles.json: {pex.Message}");
+                }
+            }
+
             // Copy config files that don't already exist in the current install
             var settingsFiles = new[] { "settings.json", "collection_schedule.json", "ignored_wait_types.json" };
             int settingsCopied = 0;
@@ -1002,10 +1027,14 @@ public partial class MainWindow : Window
             var message = $"Imported {imported} server connection(s).";
             if (skipped > 0)
                 message += $"\nSkipped {skipped} duplicate(s) (already configured).";
+            if (profilesImported > 0)
+                message += $"\nImported {profilesImported} credential profile(s).";
             if (settingsCopied > 0)
                 message += $"\nCopied {settingsCopied} settings file(s).";
             if (imported > 0)
                 message += "\n\nCredentials from the previous install are preserved.\nIf any connections fail to authenticate, re-enter the password in Manage Servers.";
+            if (profilesImported > 0)
+                message += "\n\nCredential profile secrets are NOT importable (they live only in Windows Credential Manager, per user).\nEdit each imported profile once in Manage Servers → Credential Profiles to re-enter its secret.";
             if (settingsCopied > 0)
                 message += "\n\nRestart the application to apply imported settings.";
 
@@ -1159,7 +1188,7 @@ public partial class MainWindow : Window
         var server = GetServerFromContextMenu(sender);
         if (server == null) return;
 
-        var dialog = new AddServerDialog(_serverManager, server) { Owner = this };
+        var dialog = new AddServerDialog(_serverManager, _profileManager, server) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             RefreshServerList();

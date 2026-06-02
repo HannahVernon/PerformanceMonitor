@@ -163,7 +163,7 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, stats.QueryHash);
                     }
                     catch { /* Plan fetch failed — continue without plan */ }
@@ -179,7 +179,7 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
                     catch { /* Plan fetch failed — continue without plan */ }

@@ -615,7 +615,7 @@ WHERE server_id = $3";
     protected async Task<List<string>> GetAzureDatabaseListAsync(ServerConnection server, CancellationToken cancellationToken)
     {
         var serverId = GetServerId(server);
-        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var baseConnStr = _serverManager.CredentialResolver.GetConnectionString(server);
         var targetDb = new SqlConnectionStringBuilder(baseConnStr).InitialCatalog;
 
         bool knownInaccessible;
@@ -751,7 +751,7 @@ WHERE server_id = $3";
     /// </summary>
     protected async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerConnection server, string databaseName, CancellationToken cancellationToken)
     {
-        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var baseConnStr = _serverManager.CredentialResolver.GetConnectionString(server);
         var connStr = new SqlConnectionStringBuilder(baseConnStr)
         {
             ConnectTimeout = ConnectionTimeoutSeconds,
@@ -794,7 +794,7 @@ WHERE server_id = $3";
             await s_connectionThrottle.WaitAsync(cancellationToken);
             try
             {
-                var connectionString = server.GetConnectionString(_serverManager.CredentialService);
+                var connectionString = _serverManager.CredentialResolver.GetConnectionString(server);
 
             var builder = new SqlConnectionStringBuilder(connectionString)
             {

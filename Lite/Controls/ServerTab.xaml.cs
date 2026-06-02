@@ -40,7 +40,7 @@ public partial class ServerTab : UserControl
     private readonly int _serverId;
     public int ServerId => _serverId;
     public ServerConnection Server => _server;
-    private readonly CredentialService _credentialService;
+    private readonly CredentialResolver _credentialResolver;
     private readonly DispatcherTimer _refreshTimer;
     private bool _isRefreshing;
     private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
@@ -112,14 +112,14 @@ public partial class ServerTab : UserControl
     public event Action<int>? ApplyTimeRangeRequested; /* selectedIndex */
     public event Func<Task>? ManualRefreshRequested;
 
-    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialService credentialService, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
+    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
     {
         InitializeComponent();
 
         _server = server;
         _dataService = new LocalDataService(duckDb);
         _serverId = RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(server));
-        _credentialService = credentialService;
+        _credentialResolver = credentialResolver;
         UtcOffsetMinutes = utcOffsetMinutes;
         _hasMsdbAccess = hasMsdbAccess;
         _isAzureSqlDatabase = isAzureSqlDatabase;
@@ -963,7 +963,7 @@ public partial class ServerTab : UserControl
         if (QueryStatsGrid.SelectedItem is not QueryStatsRow item) return;
         if (string.IsNullOrEmpty(item.DatabaseName) || string.IsNullOrEmpty(item.QueryHash)) return;
 
-        var connStr = _server.GetConnectionString(_credentialService);
+        var connStr = _credentialResolver.GetConnectionString(_server);
         var window = new Windows.QueryStatsHistoryWindow(_dataService, _serverId, item.DatabaseName, item.QueryHash, GetHoursBack(), connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
@@ -974,7 +974,7 @@ public partial class ServerTab : UserControl
         if (ProcedureStatsGrid.SelectedItem is not ProcedureStatsRow item) return;
         if (string.IsNullOrEmpty(item.DatabaseName) || string.IsNullOrEmpty(item.ObjectName)) return;
 
-        var connStr = _server.GetConnectionString(_credentialService);
+        var connStr = _credentialResolver.GetConnectionString(_server);
         var window = new Windows.ProcedureHistoryWindow(_dataService, _serverId, item.DatabaseName, item.SchemaName, item.ObjectName, GetHoursBack(), connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
@@ -985,7 +985,7 @@ public partial class ServerTab : UserControl
         if (QueryStoreGrid.SelectedItem is not QueryStoreRow item) return;
         if (string.IsNullOrEmpty(item.DatabaseName) || item.QueryId == 0) return;
 
-        var connStr = _server.GetConnectionString(_credentialService);
+        var connStr = _credentialResolver.GetConnectionString(_server);
         var window = new Windows.QueryStoreHistoryWindow(_dataService, _serverId, item.DatabaseName, item.QueryId, item.PlanId, item.QueryText, GetHoursBack(), connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
@@ -1436,7 +1436,7 @@ public partial class ServerTab : UserControl
 
         try
         {
-            var connectionString = _server.GetConnectionString(_credentialService);
+            var connectionString = _credentialResolver.GetConnectionString(_server);
             var builder = new SqlConnectionStringBuilder(connectionString)
             {
                 ConnectTimeout = 15

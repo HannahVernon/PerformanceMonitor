@@ -67,6 +67,14 @@ public class ServerConnection : INotifyPropertyChanged
     /// </summary>
     public string? ManagedIdentityClientId { get; set; }
 
+    /// <summary>
+    /// Optional id of a <see cref="CredentialProfile"/> this server uses instead of inline per-server
+    /// credentials. When set, the profile supplies the auth type + credentials (the server keeps its own
+    /// connection facts: ServerName, DatabaseName, Encrypt, intent, etc.). null = today's per-server
+    /// behavior, unchanged and backward-compatible (old servers.json simply omits this field → null).
+    /// </summary>
+    public string? CredentialProfileId { get; set; }
+
     public string? Description { get; set; }
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime LastConnected { get; set; } = DateTime.Now;
@@ -210,53 +218,131 @@ public class ServerConnection : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>
-    /// Builds and returns a connection string for this server.
-    /// Credentials are retrieved from Windows Credential Manager if SQL auth is used.
+    /// The immutable, atomic resolution tuple fed to <see cref="ApplyAuthentication"/>. It is sourced
+    /// ENTIRELY from one place — either entirely from a credential profile or entirely from this
+    /// server's own inline fields — never mixed field-by-field. This atomic shape is what structurally
+    /// prevents a wrong-identity build (e.g. a profile secret combined with the server's stale
+    /// AzureClientId). See <see cref="ResolveAuth"/>.
     /// </summary>
-    public string GetConnectionString(CredentialService credentialService)
-    {
-        string? username = null;
-        string? password = null;
+    private readonly record struct ResolvedAuth(
+        string AuthType,
+        string? Username,
+        string? Password,
+        string? AzureClientId,
+        string? ManagedIdentityClientId);
 
-        if (AuthenticationType == AuthenticationTypes.SqlServer ||
-            AuthenticationType == AuthenticationTypes.ServicePrincipal)
+    /// <summary>
+    /// Resolves the single auth tuple for this server, fail-closed (§2, B-2/B-3).
+    /// <list type="bullet">
+    /// <item>No profile (<see cref="CredentialProfileId"/> == null) → tuple sourced entirely from this
+    /// server's own inline fields (today's behavior, regression-identical).</item>
+    /// <item>Profile in effect, profile FOUND → tuple sourced entirely from the profile (its AuthType,
+    /// its non-secret fields, secret from <c>profile_{id}</c>). NEVER reads any <c>this.*</c> auth field.</item>
+    /// <item>Profile in effect, profile MISSING → THROWS "credential profile '{id}' not found". A closed
+    /// branch with NO fall-through to the server-self path — a dangling profile must never silently
+    /// connect under the server's own stale inline auth.</item>
+    /// </list>
+    /// </summary>
+    private ResolvedAuth ResolveAuth(CredentialService credentialService, IProfileLookup? profileLookup)
+    {
+        // No profile referenced → entirely server-self (regression-identical).
+        if (string.IsNullOrEmpty(CredentialProfileId))
         {
-            // SqlServer: stored username + password.
-            // ServicePrincipal: stored client id (Username) + client secret (Password).
-            var cred = credentialService.GetCredential(Id);
+            string? username = null;
+            string? password = null;
+
+            if (AuthenticationType == AuthenticationTypes.SqlServer ||
+                AuthenticationType == AuthenticationTypes.ServicePrincipal)
+            {
+                var cred = credentialService.GetCredential(Id);
+                if (cred.HasValue)
+                {
+                    username = cred.Value.Username;
+                    password = cred.Value.Password;
+                }
+            }
+            // ManagedIdentity fetches no credential (no secret).
+
+            return new ResolvedAuth(AuthenticationType, username, password, AzureClientId, ManagedIdentityClientId);
+        }
+
+        // Profile referenced — CLOSED, fail-closed branch (B-2). No fall-through to server-self.
+        var profile = profileLookup?.GetProfile(CredentialProfileId);
+        if (profile == null)
+        {
+            throw new InvalidOperationException(
+                $"credential profile '{CredentialProfileId}' not found");
+        }
+
+        // Tuple sourced ENTIRELY from the profile (B-3). We never read this.AzureClientId /
+        // this.ManagedIdentityClientId here — only the profile's own fields.
+        string? profileUser = null;
+        string? profileSecret = null;
+        if (profile.AuthType == AuthenticationTypes.SqlServer ||
+            profile.AuthType == AuthenticationTypes.ServicePrincipal)
+        {
+            var cred = credentialService.GetCredential(ProfileManager.ProfileCredentialId(profile.Id));
             if (cred.HasValue)
             {
-                username = cred.Value.Username;
-                password = cred.Value.Password;
+                profileUser = cred.Value.Username;
+                profileSecret = cred.Value.Password;
             }
         }
-        // ManagedIdentity fetches no credential (no secret).
+        // ManagedIdentity profile carries no secret.
 
-        return BuildConnectionString(username, password);
+        return new ResolvedAuth(
+            profile.AuthType,
+            profileUser,
+            profileSecret,
+            profile.AzureClientId,
+            profile.ManagedIdentityClientId);
     }
 
     /// <summary>
-    /// Returns a connection string targeting UtilityDatabase if set, otherwise falls back to GetConnectionString().
-    /// Used for locating community stored procedures (sp_IndexCleanup) that may be installed in a non-default database.
+    /// Builds the connection string for this server, resolving credentials from a profile (when
+    /// <see cref="CredentialProfileId"/> is set) or from this server's own inline fields otherwise.
+    /// This is the single resolution entry point; the removed instance overloads used to expose a
+    /// <see cref="CredentialService"/>-only path that could silently bypass a profile.
     /// </summary>
-    public string GetUtilityConnectionString(CredentialService credentialService)
+    public static string ResolveConnectionString(
+        ServerConnection server,
+        CredentialService credentialService,
+        IProfileLookup? profileLookup)
     {
-        var baseConnStr = GetConnectionString(credentialService);
+        var auth = server.ResolveAuth(credentialService, profileLookup);
+        return server.BuildConnectionString(auth);
+    }
 
-        if (string.IsNullOrWhiteSpace(UtilityDatabase))
+    /// <summary>
+    /// Like <see cref="ResolveConnectionString"/> but targets <see cref="UtilityDatabase"/> when set.
+    /// Used for locating community stored procedures (sp_IndexCleanup) installed in a non-default database.
+    /// </summary>
+    public static string ResolveUtilityConnectionString(
+        ServerConnection server,
+        CredentialService credentialService,
+        IProfileLookup? profileLookup)
+    {
+        var baseConnStr = ResolveConnectionString(server, credentialService, profileLookup);
+
+        if (string.IsNullOrWhiteSpace(server.UtilityDatabase))
             return baseConnStr;
 
         var builder = new SqlConnectionStringBuilder(baseConnStr)
         {
-            InitialCatalog = UtilityDatabase
+            InitialCatalog = server.UtilityDatabase
         };
         return builder.ConnectionString;
     }
 
     /// <summary>
     /// Builds the connection string with the given credentials.
+    /// Used by tests for the server-self shape; production paths go through
+    /// <see cref="ResolveConnectionString"/>, which supplies the resolved tuple.
     /// </summary>
     internal string BuildConnectionString(string? username, string? password)
+        => BuildConnectionString(new ResolvedAuth(AuthenticationType, username, password, AzureClientId, ManagedIdentityClientId));
+
+    private string BuildConnectionString(ResolvedAuth auth)
     {
         var builder = new SqlConnectionStringBuilder
         {
@@ -279,7 +365,9 @@ public class ServerConnection : INotifyPropertyChanged
             _ => SqlConnectionEncryptOption.Optional
         };
 
-        ApplyAuthentication(builder, AuthenticationType, username, password, AzureClientId, ManagedIdentityClientId);
+        // The tuple is atomic: every auth field comes from the SAME source (profile or server).
+        ApplyAuthentication(builder, auth.AuthType, auth.Username, auth.Password,
+            auth.AzureClientId, auth.ManagedIdentityClientId);
 
         return builder.ConnectionString;
     }
@@ -345,19 +433,39 @@ public class ServerConnection : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Checks if credentials are stored in Windows Credential Manager for this server.
+    /// Checks if credentials are available for this server (profile-aware, N-1).
+    /// When a profile is referenced, reflects the profile's stored-secret state (SP/SQL → the
+    /// <c>profile_{id}</c> key; MI → true); a dangling profile reference reports false. Otherwise
+    /// reflects the per-server <c>this.Id</c> key, matching the legacy behavior.
     /// </summary>
-    public bool HasStoredCredentials(CredentialService credentialService)
+    public static bool HasStoredCredentials(
+        ServerConnection server,
+        CredentialService credentialService,
+        IProfileLookup? profileLookup)
     {
+        if (!string.IsNullOrEmpty(server.CredentialProfileId))
+        {
+            var profile = profileLookup?.GetProfile(server.CredentialProfileId);
+            if (profile == null)
+            {
+                // Dangling profile — no resolvable credential.
+                return false;
+            }
+            // MI needs no secret; SQL/SP need the profile secret present.
+            if (profile.AuthType == AuthenticationTypes.ManagedIdentity)
+                return true;
+            return credentialService.CredentialExists(ProfileManager.ProfileCredentialId(profile.Id));
+        }
+
         // Zero-touch auth modes need no stored secret.
-        if (AuthenticationType == AuthenticationTypes.Windows ||
-            AuthenticationType == AuthenticationTypes.EntraMFA ||
-            AuthenticationType == AuthenticationTypes.ManagedIdentity)
+        if (server.AuthenticationType == AuthenticationTypes.Windows ||
+            server.AuthenticationType == AuthenticationTypes.EntraMFA ||
+            server.AuthenticationType == AuthenticationTypes.ManagedIdentity)
         {
             return true;
         }
 
         // SqlServer (password) and ServicePrincipal (client secret) require a stored credential.
-        return credentialService.CredentialExists(Id);
+        return credentialService.CredentialExists(server.Id);
     }
 }
