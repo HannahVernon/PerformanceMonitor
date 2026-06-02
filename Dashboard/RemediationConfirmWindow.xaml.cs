@@ -43,13 +43,16 @@ namespace PerformanceMonitorDashboard
             Title = $"Confirm {verb}";
             var isDbConfig = string.Equals(request.FactKey, "DB_CONFIG", System.StringComparison.Ordinal);
             var isRcsi = string.Equals(request.FactKey, "RCSI", System.StringComparison.Ordinal);
+            var isClearPlan = string.Equals(request.FactKey, "CLEAR_PLAN", System.StringComparison.Ordinal);
             HeaderText.Text = isRcsi
                 ? $"Enable READ_COMMITTED_SNAPSHOT (RCSI) — a database-wide concurrency change — on {request.ServerDisplayName}?"
-                : isDbConfig
-                    ? $"Apply the always-safe database setting change(s) on {request.ServerDisplayName}?"
-                    : request.IsUnapply
-                        ? $"Un-apply (unforce) the forced plan on {request.ServerDisplayName}?"
-                        : $"Force the historical-better plan on {request.ServerDisplayName}?";
+                : isClearPlan
+                    ? $"Clear the cached plan(s) for an abnormally-expensive query (DBCC FREEPROCCACHE) on {request.ServerDisplayName}?"
+                    : isDbConfig
+                        ? $"Apply the always-safe database setting change(s) on {request.ServerDisplayName}?"
+                        : request.IsUnapply
+                            ? $"Un-apply (unforce) the forced plan on {request.ServerDisplayName}?"
+                            : $"Force the historical-better plan on {request.ServerDisplayName}?";
 
             ServerText.Text = request.ServerDisplayName;
             ExecutingText.Text = string.IsNullOrEmpty(request.ExecutingLogin)
@@ -79,6 +82,14 @@ namespace PerformanceMonitorDashboard
             {
                 CaveatBanner.Visibility = Visibility.Collapsed;
             }
+            else if (isClearPlan)
+            {
+                // One-line framing (§6); the two-sided risk sections below carry the full
+                // disclosure + the acknowledge-each-risk gate.
+                CaveatText.Text =
+                    "Clearing a cached plan forces a recompile; it may not produce a better plan — if this "
+                    + "query is parameter-sensitive or a known plan regression, prefer those fixes. Read both risk lists.";
+            }
             else if (isDbConfig)
             {
                 CaveatText.Text =
@@ -101,7 +112,9 @@ namespace PerformanceMonitorDashboard
                 ConsentSection.Visibility = Visibility.Visible;
                 ConsentBannerText.Text = isRcsi
                     ? "RCSI is a database-wide concurrency change. Read both risk lists; every box must be checked to enable Apply."
-                    : "This is a possibly-destructive change. Read both risk lists; every box must be checked to enable Apply.";
+                    : isClearPlan
+                        ? "Clearing a cached plan is possibly destructive and cannot be undone — it live-resolves and clears every currently-cached plan for this query hash. Read both risk lists; every box must be checked to enable Apply."
+                        : "This is a possibly-destructive change. Read both risk lists; every box must be checked to enable Apply.";
 
                 foreach (var r in request.Risks.RisksOfChanging)
                     _changingRisks.Add(new RiskRow(r.Text));

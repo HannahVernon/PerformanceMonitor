@@ -1266,17 +1266,31 @@ public class RemediationTests
     }
 
     [Fact]
-    public void ClearPlan_Handler_IsNotRegistered_InProduction()
+    public void ClearPlan_Handler_IsRegistered_AndReachableThroughGate()
     {
-        // PR-A is dead-code-safe: the PRODUCTION registry must NOT construct ClearPlanHandler.
+        // PR-B makes CLEAR_PLAN LIVE: the PRODUCTION wiring registers ClearPlanHandler so the
+        // "Clear cached plan (advanced)" affordance can appear and route to the destructive
+        // handler — but ONLY through the gated RemediationApplyService facade (proven by the
+        // Gate_* behavioural tests + the reachability guards CoreMachinery_OnlyReferencedInRemediationCore
+        // and GatedEntry_ReferencedOnlyBySanctionedUiPath).
+        var productionRegistry = new RemediationHandlerRegistry(
+            new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler() });
+        Assert.IsType<ClearPlanHandler>(productionRegistry.TryGet("CLEAR_PLAN"));
+
+        // Assert at the source level that the PRODUCTION wiring now constructs ClearPlanHandler.
         var dir = FindDashboardSourceDir();
         var serviceSrc = File.ReadAllText(Path.Combine(dir, "Services", "Remediation", "RemediationApplyService.cs"));
-        Assert.DoesNotContain("new ClearPlanHandler()", serviceSrc);
+        Assert.Contains("new ClearPlanHandler()", serviceSrc);
 
-        // And it does not resolve in a registry built like production (no CLEAR_PLAN handler).
-        var productionRegistry = new RemediationHandlerRegistry(
-            new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler() });
-        Assert.Null(productionRegistry.TryGet("CLEAR_PLAN"));
+        // The destructive CLEAR_PLAN handler can NEVER be reached through the always-safe
+        // force-plan / DB-config handlers, nor cross with the other destructive (RCSI) one:
+        // every fact key resolves to its OWN distinct handler type.
+        Assert.IsType<ForcePlanHandler>(productionRegistry.TryGet("PLAN_REGRESSION"));
+        Assert.IsType<DbConfigHandler>(productionRegistry.TryGet("DB_CONFIG"));
+        Assert.IsType<RcsiHandler>(productionRegistry.TryGet("RCSI"));
+        Assert.NotEqual("CLEAR_PLAN", productionRegistry.TryGet("DB_CONFIG")!.FactKey);
+        Assert.NotEqual("CLEAR_PLAN", productionRegistry.TryGet("PLAN_REGRESSION")!.FactKey);
+        Assert.NotEqual("CLEAR_PLAN", productionRegistry.TryGet("RCSI")!.FactKey);
     }
 
     [Fact]
@@ -1561,6 +1575,50 @@ public class RemediationTests
         };
 
         Assert.Empty(PlanCacheAnomalyDetector.Evaluate(rows, CurrentStart));
+    }
+
+    // ── cpu_percent fix (PR-A security review LOW-1) ─────────────────────────────
+    //
+    // The live detector ran in T-SQL against collect.query_stats; the cpu_percent SHARE is
+    // computed in that SQL (numerator/denominator over the SAME §2a real-delta rows). These
+    // source-level assertions guard that PR-B replaced the hardcoded 0 with the real share.
+
+    [Fact]
+    public void Detector_CpuPercent_IsRealWindowShare_NotHardcodedZero()
+    {
+        var dir = FindDashboardSourceDir();
+        var src = File.ReadAllText(Path.Combine(dir, "Analysis", "SqlServerDrillDownCollector.cs"));
+
+        // The CollectAbnormalCpuPlans detector must NO LONGER hardcode cpu_percent = 0.
+        Assert.DoesNotContain("cpu_percent = 0,", src);
+
+        // It computes the real share: a window_total CTE (same §2a real-delta exclusion) as
+        // the denominator, and cpu_percent = the per-query current_total_cpu_ms / that total.
+        Assert.Contains("window_total", src);
+        Assert.Contains("cpu_percent =", src);
+        Assert.Contains("w.current_total_cpu_ms / NULLIF(wt.total_cpu_ms, 0)", src);
+        Assert.Contains("CROSS JOIN window_total AS wt", src);
+    }
+
+    [Fact]
+    public void ClearPlanFigures_CarryRealCpuPercent_Through_BuildClearPlanAction()
+    {
+        // The carried path (NOT the live finding): a finding whose abnormal_cpu_plans row
+        // has a real cpu_percent flows that number onto ClearPlanFigures, and the disclosure
+        // renders it — so the dialog/disclosure show the real % at apply time.
+        var action = FactRemediation.BuildClearPlanAction(CpuFinding(new List<object>
+        {
+            new { query_hash = "0xABCDEF0123456789", database = "Db", current_cpu_per_exec_ms = 45.0,
+                  baseline_cpu_per_exec_ms = 9.0, anomaly_ratio = 5.0, execution_count = 1200L,
+                  total_cpu_ms = 54000.0, latest_plan_handle = "0x06", query_text = "q",
+                  cpu_percent = 73, plan_regression_cofired = false, parameter_sensitivity_cofired = false }
+        }));
+        Assert.NotNull(action);
+        Assert.Equal(73, action!.ClearPlanFigures!.CpuPercent);
+        Assert.NotEqual(0, action.ClearPlanFigures.CpuPercent);
+
+        var d = FactRiskDisclosure.GetForAction(action, null)!;
+        Assert.Contains(d.RisksOfNotChanging, r => r.Text.Contains("73%"));
     }
 
     // ── Full lock-mode vocabulary classifier (M-1) ───────────────────────────────

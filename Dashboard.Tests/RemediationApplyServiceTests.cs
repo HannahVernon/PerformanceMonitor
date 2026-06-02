@@ -422,6 +422,78 @@ public class RemediationApplyServiceTests
         Assert.Contains(captured!.Risks!.RisksOfNotChanging, r => r.Text.Contains("RCSI does NOT resolve"));
     }
 
+    // ── Clear-cached-plan: destructive request threading + reachability (PR-B) ──────
+
+    private static RemediationAction ClearPlanAction() =>
+        new("CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>(),
+            ClearPlanTargets: new[] { new ClearPlanTarget("AdventureWorks", "0xABCDEF0123456789", 45.0, 9.0, 5.0, "0x06") },
+            ClearPlanFigures: new ClearPlanFigures(45.0, 9.0, 5.0, 62, false, false));
+
+    [Fact]
+    public async Task Apply_ClearPlan_RequiresInformedConsent_CarriesRisks_AndPerQueryTarget()
+    {
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new ClearPlanHandler() }), _ => exec, null);
+        RemediationConfirmRequest? captured = null;
+
+        await service.ApplyAsync(ClearPlanAction(), Server, previewSql: "DBCC FREEPROCCACHE(<resolved>);",
+            "DOM\\op", "ref", confirm: req => { captured = req; return Task.FromResult(false); },
+            CancellationToken.None);
+
+        Assert.NotNull(captured);
+        Assert.Equal("CLEAR_PLAN", captured!.FactKey);
+        Assert.True(captured.RequiresInformedConsent);
+        Assert.NotNull(captured.Risks);
+        Assert.NotEmpty(captured.Risks!.RisksOfChanging);
+        Assert.NotEmpty(captured.Risks.RisksOfNotChanging);
+        // The confirm preview carries the per-query target (the per-HANDLE list is resolved
+        // live at apply); it shows the query hash + the anomaly figures.
+        var target = Assert.Single(captured.Targets);
+        Assert.Contains("0xABCDEF0123456789", target.StatusTitle);
+        Assert.Contains("5.0x", target.StatusTitle);
+        // Gate refused (confirm == false): the privileged DBCC path was never entered.
+        Assert.Equal(0, exec.ClearPlanCalls);
+    }
+
+    [Fact]
+    public async Task Apply_ClearPlan_ConfirmTrue_ReachesClearProcCache_NotForceOrSetDb()
+    {
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new ClearPlanHandler() }), _ => exec, null);
+
+        var report = await service.ApplyAsync(ClearPlanAction(), Server, previewSql: "preview",
+            "DOM\\op", "ref", confirm: _ => Task.FromResult(true), CancellationToken.None);
+
+        Assert.Equal(RemediationRunStatus.Ran, report.Status);
+        Assert.Equal(1, exec.ClearPlanCalls);   // routed to the DBCC executor method
+        Assert.Equal(0, exec.ForceCalls);       // NOT the force-plan path
+        Assert.Equal(0, exec.SetDbCalls);       // NOT the always-safe DB-config path
+    }
+
+    [Fact]
+    public async Task Apply_AlwaysSafe_DbConfig_CannotExecute_ClearPlanTarget()
+    {
+        // Cross-routing guard: an action that (illegitimately) carries CLEAR_PLAN targets but
+        // is keyed to the always-safe DB_CONFIG handler must NOT reach the DBCC executor.
+        // DbConfigHandler iterates ONLY DbConfigTargets — a CLEAR_PLAN payload is inert to it,
+        // and the registry would never hand a CLEAR_PLAN fact key to DbConfigHandler anyway.
+        var exec = new FakeExecutor();
+        var service = new RemediationApplyService(serverManager: null!,
+            new RemediationHandlerRegistry(new IRemediationHandler[] { new DbConfigHandler() }), _ => exec, null);
+
+        var crossAction = new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: null,
+            RcsiFigures: null,
+            ClearPlanTargets: new[] { new ClearPlanTarget("AdventureWorks", "0xABCDEF0123456789") });
+
+        await service.ApplyAsync(crossAction, Server, previewSql: "preview", "DOM\\op", "ref",
+            confirm: _ => Task.FromResult(true), CancellationToken.None);
+
+        Assert.Equal(0, exec.ClearPlanCalls);   // the DBCC path is unreachable via DB_CONFIG
+    }
+
     // ── HARD gate-enforcement (B-1, MANDATORY): the acknowledge-each-risk predicate ──
     //
     // The dialog IS the trust boundary; the confirm callback returns true ONLY when the
