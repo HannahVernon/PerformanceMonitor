@@ -244,7 +244,9 @@ namespace PerformanceMonitorDashboard.Services
                                 sample_time,
                                 sqlserver_cpu_utilization,
                                 other_process_cpu_utilization,
-                                total_cpu_utilization
+                                /* total is NULL on SQL Server on Linux (host CPU not derivable, Issue #1048);
+                                   degrade to the correct SQL-only figure so the chart never plots a total below SQL. */
+                                total_cpu_utilization = ISNULL(total_cpu_utilization, sqlserver_cpu_utilization)
                             FROM collect.cpu_utilization_stats
                             WHERE collection_time >= @from_date
                             AND collection_time <= @to_date
@@ -260,7 +262,9 @@ namespace PerformanceMonitorDashboard.Services
                                 sample_time,
                                 sqlserver_cpu_utilization,
                                 other_process_cpu_utilization,
-                                total_cpu_utilization
+                                /* total is NULL on SQL Server on Linux (host CPU not derivable, Issue #1048);
+                                   degrade to the correct SQL-only figure so the chart never plots a total below SQL. */
+                                total_cpu_utilization = ISNULL(total_cpu_utilization, sqlserver_cpu_utilization)
                             FROM collect.cpu_utilization_stats
                             WHERE collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())
                             ORDER BY
@@ -1580,7 +1584,9 @@ namespace PerformanceMonitorDashboard.Services
             cu.sample_time,
             cu.sqlserver_cpu_utilization,
             cu.other_process_cpu_utilization,
-            cu.total_cpu_utilization
+            /* total is NULL on SQL Server on Linux (host CPU not derivable, Issue #1048);
+               degrade to the correct SQL-only figure rather than reporting 0. */
+            total_cpu_utilization = ISNULL(cu.total_cpu_utilization, cu.sqlserver_cpu_utilization)
         FROM collect.cpu_utilization_stats AS cu
         {dateFilter}
         ORDER BY

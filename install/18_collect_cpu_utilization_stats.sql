@@ -52,7 +52,27 @@ BEGIN
             FROM sys.dm_os_sys_info AS osi
         ),
         @max_sample_time datetime2(7) = NULL,
+        @is_linux bit = 0,
         @error_message nvarchar(4000);
+
+    /*
+    Detect SQL Server on Linux. On Linux the SCHEDULER_MONITOR ring buffer
+    reports SystemIdle = 0, so 100 - SystemIdle - ProcessUtilization fabricates
+    a host figure that pins total CPU at 100% forever (Issue #1048). There is no
+    DMV that exposes true host CPU on Linux, so on Linux we store NULL for
+    other_process_cpu_utilization instead of a false value.
+
+    sys.dm_os_host_info exists only on SQL Server 2017+. It is referenced through
+    sp_executesql so SQL Server 2016 (which has no Linux build) never binds it and
+    simply leaves @is_linux = 0.
+    */
+    IF OBJECT_ID(N'sys.dm_os_host_info', N'V') IS NOT NULL
+    BEGIN
+        EXECUTE sys.sp_executesql
+            N'SELECT @linux = CASE WHEN hi.host_platform = N''Linux'' THEN 1 ELSE 0 END FROM sys.dm_os_host_info AS hi;',
+            N'@linux bit OUTPUT',
+            @linux = @is_linux OUTPUT;
+    END;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -134,6 +154,8 @@ BEGIN
                 x.process_utilization,
             other_process_cpu_utilization =
                 CASE
+                    WHEN @is_linux = 1
+                    THEN NULL /*SystemIdle is always 0 on Linux; host CPU is not derivable (Issue #1048)*/
                     WHEN (100 - x.system_idle - x.process_utilization) < 0
                     THEN 0
                     ELSE 100 - x.system_idle - x.process_utilization
