@@ -32,7 +32,12 @@ namespace PerformanceMonitorDashboard.Services
                     // CPU column for the High CPU events count + critical-health check (PM#1004).
                     // The view at report.daily_summary always uses total_cpu_utilization (no per-user prefs available there).
                     // This date-parameterized path additionally honors the user's CpuAlertMode.
-                    string cpuColumn = cpuAlertMode == CpuAlertMode.SqlOnly ? "sqlserver_cpu_utilization" : "total_cpu_utilization";
+                    // Total mode coalesces to the SQL-only figure because total_cpu_utilization is
+                    // NULL on SQL Server on Linux, where host CPU is not derivable (Issue #1048).
+                    // Expressions are fully cus.-qualified so they drop straight into the predicates below.
+                    string cpuColumn = cpuAlertMode == CpuAlertMode.SqlOnly
+                        ? "cus.sqlserver_cpu_utilization"
+                        : "ISNULL(cus.total_cpu_utilization, cus.sqlserver_cpu_utilization)";
 
                     // If no date provided, use the view directly (today's summary)
                     // Otherwise, replicate the view logic with the specified date
@@ -111,7 +116,7 @@ namespace PerformanceMonitorDashboard.Services
                 SELECT
                     COUNT_BIG(*)
                 FROM collect.cpu_utilization_stats AS cus
-                WHERE cus.{cpuColumn} >= 80
+                WHERE {cpuColumn} >= 80
                 AND   cus.collection_time >= @day_start
                 AND   cus.collection_time < @day_end
             ),
@@ -138,7 +143,7 @@ namespace PerformanceMonitorDashboard.Services
                         SELECT
                             1/0
                         FROM collect.cpu_utilization_stats AS cus
-                        WHERE cus.{cpuColumn} >= 90
+                        WHERE {cpuColumn} >= 90
                         AND   cus.collection_time >= @day_start
                         AND   cus.collection_time < @day_end
                     )
