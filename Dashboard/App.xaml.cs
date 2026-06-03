@@ -42,6 +42,12 @@ namespace PerformanceMonitorDashboard
 
             base.OnStartup(e);
 
+            // #1050: WPF's GPU render thread can zombie its surface across sleep/wake or RDP, leaving a
+            // live-but-blank window. Software rendering removes the GPU dependency entirely. Charts are
+            // unaffected — ScottPlot renders via SkiaSharp (CPU) into a bitmap, not WPF's GPU path.
+            System.Windows.Media.RenderOptions.ProcessRenderMode =
+                System.Windows.Interop.RenderMode.SoftwareOnly;
+
             // Use the user's locale for date/time formatting in WPF bindings (issue #459)
             FrameworkElement.LanguageProperty.OverrideMetadata(
                 typeof(FrameworkElement),
