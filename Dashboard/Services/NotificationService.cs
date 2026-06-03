@@ -211,7 +211,10 @@ namespace PerformanceMonitorDashboard.Services
                 NotificationType.Success);
         }
 
-        private void ShowMainWindow()
+        /// <summary>
+        /// Restores the main window from the tray. Also used as the #1050 resume-restore callback.
+        /// </summary>
+        internal void ShowMainWindow()
         {
             _mainWindow.Show();
             _mainWindow.WindowState = WindowState.Normal;

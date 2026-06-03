@@ -44,6 +44,7 @@ namespace PerformanceMonitorDashboard
         private readonly DispatcherTimer _displayRefreshTimer;
         private readonly DispatcherTimer _connectionStatusTimer;
         private NotificationService? _notificationService;
+        private WindowResumeGuard? _resumeGuard;
         private readonly AlertStateService _alertStateService;
         private readonly MuteRuleService _muteRuleService;
         private readonly Dictionary<string, bool> _previousConnectionStates;
@@ -349,6 +350,10 @@ namespace PerformanceMonitorDashboard
         {
             _notificationService = new NotificationService(this, _preferencesService);
             _notificationService.Initialize();
+
+            /* #1050: restore the window from the tray on resume/unlock if a sleep- or lock-driven
+               minimize hid it. ??= so a repeated Loaded can't double-subscribe (static SystemEvents). */
+            _resumeGuard ??= new WindowResumeGuard(this, _notificationService.ShowMainWindow);
         }
 
         private void MainWindow_StateChanged(object? sender, EventArgs e)
@@ -388,7 +393,9 @@ namespace PerformanceMonitorDashboard
             // Save alert history to disk
             _alertHistoryStore?.SaveAlertLog();
 
-            // Clean up notification service
+            // Clean up notification service (real-close path only — the X-button minimize-to-tray
+            // branch above returns early, so the resume guard stays alive while the app runs)
+            _resumeGuard?.Dispose();
             _notificationService?.Dispose();
         }
 

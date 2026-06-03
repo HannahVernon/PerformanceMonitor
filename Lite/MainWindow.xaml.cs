@@ -25,6 +25,7 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitorLite.Windows;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite;
 
@@ -38,6 +39,7 @@ public partial class MainWindow : Window
     private CollectionBackgroundService? _backgroundService;
     private CancellationTokenSource? _backgroundCts;
     private SystemTrayService? _trayService;
+    private WindowResumeGuard? _resumeGuard;
     private readonly Dictionary<string, TabItem> _openServerTabs = new();
     private readonly Dictionary<string, (Action<int, int, DateTime?> AlertCounts, Action<int> ApplyTimeRange, Func<Task> ManualRefresh)> _tabEventHandlers = new();
     private readonly Dictionary<string, bool> _previousConnectionStates = new();
@@ -150,6 +152,10 @@ public partial class MainWindow : Window
             _trayService = new SystemTrayService(this, _backgroundService);
             _trayService.Initialize();
 
+            /* #1050: restore the window from the tray on resume/unlock if a sleep- or lock-driven
+               minimize hid it. ??= so a repeated Loaded can't double-subscribe (static SystemEvents). */
+            _resumeGuard ??= new WindowResumeGuard(this, _trayService.ShowMainWindow);
+
             // Initialize data service for overview
             _dataService = new LocalDataService(_databaseInitializer);
 
@@ -238,6 +244,7 @@ public partial class MainWindow : Window
     private async void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
         // Dispose system tray
+        _resumeGuard?.Dispose();
         _trayService?.Dispose();
 
         // Stop background collection with timeout

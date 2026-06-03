@@ -270,6 +270,12 @@ public partial class App : Application
 
         base.OnStartup(e);
 
+        // #1050: WPF's GPU render thread can zombie its surface across sleep/wake or RDP, leaving a
+        // live-but-blank window. Software rendering removes the GPU dependency entirely. Charts are
+        // unaffected — ScottPlot renders via SkiaSharp (CPU) into a bitmap, not WPF's GPU path.
+        System.Windows.Media.RenderOptions.ProcessRenderMode =
+            System.Windows.Interop.RenderMode.SoftwareOnly;
+
         // Initialize paths — store data in %LOCALAPPDATA% so Velopack updates
         // can replace the app directory without losing data
         var appDataRoot = Path.Combine(

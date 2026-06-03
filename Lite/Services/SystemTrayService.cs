@@ -121,7 +121,11 @@ public class SystemTrayService : IDisposable
         }
     }
 
-    private void ShowMainWindow()
+    /// <summary>
+    /// Restores the main window from the tray. Also used as the #1050 resume-restore callback,
+    /// so it must set ShowInTaskbar = true (the tray-hide path only calls Hide()).
+    /// </summary>
+    internal void ShowMainWindow()
     {
         _mainWindow.Show();
         _mainWindow.ShowInTaskbar = true;
