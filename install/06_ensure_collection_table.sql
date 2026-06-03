@@ -802,7 +802,7 @@ BEGIN
         collection_time datetime2(7) NOT NULL DEFAULT SYSDATETIME(),
         sample_time datetime2(7) NOT NULL,
         sqlserver_cpu_utilization integer NOT NULL,
-        other_process_cpu_utilization integer NOT NULL,
+        other_process_cpu_utilization integer NULL, /* #1048: NULL on Linux (host CPU not derivable); matches install/02 + upgrade 02 */
         total_cpu_utilization AS (sqlserver_cpu_utilization + other_process_cpu_utilization) PERSISTED,
         CONSTRAINT PK_cpu_utilization_stats PRIMARY KEY CLUSTERED (collection_time, collection_id) WITH (DATA_COMPRESSION = PAGE)
     );
