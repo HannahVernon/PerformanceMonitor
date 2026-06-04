@@ -43,12 +43,26 @@ public class SqlServerDrillDownCollector
     {
         foreach (var finding in findings)
         {
-            if (finding.Severity < 0.5) continue;
-
             try
             {
                 finding.DrillDown = new Dictionary<string, object>();
                 var pathKeys = finding.StoryPath.Split(" → ", StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+
+                /* D7: the config drill-down is a single cheap config-table read and is
+                   required to build config/RCSI/db-config Apply actions, which legitimately
+                   score below 0.5 (RCSI-off base severity is 0.3). Collect it regardless of
+                   the 0.5 display gate. */
+                if (pathKeys.Contains("DB_CONFIG"))
+                    await CollectConfigIssues(finding, context);
+
+                // Below the 0.5 display gate, only the cheap config drill-down above runs;
+                // the expensive collectors (plan fetches, multi-row reads) are skipped.
+                if (finding.Severity < 0.5)
+                {
+                    if (finding.DrillDown.Count == 0)
+                        finding.DrillDown = null;
+                    continue;
+                }
 
                 if (pathKeys.Contains("DEADLOCKS"))
                     await CollectTopDeadlocks(finding, context);
@@ -81,9 +95,6 @@ public class SqlServerDrillDownCollector
                     || pathKeys.Contains("LCK_M_IS")
                     )
                     await CollectLockModeBreakdown(finding, context);
-
-                if (pathKeys.Contains("DB_CONFIG"))
-                    await CollectConfigIssues(finding, context);
 
                 if (pathKeys.Contains("TEMPDB_USAGE"))
                     await CollectTempDbBreakdown(finding, context);
