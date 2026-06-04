@@ -252,6 +252,22 @@ namespace PerformanceMonitorDashboard.Services
                 OPTION(MAXDOP 1);"
                 : @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
+                DECLARE @is_linux bit = 0;
+
+                /* SystemIdle is always 0 in the SCHEDULER_MONITOR ring buffer on SQL Server
+                   on Linux, so 100 - SystemIdle - ProcessUtilization fabricates a host figure
+                   that pins total CPU at 100% forever (Issue #1048). No DMV exposes true host
+                   CPU on Linux, so report other/host CPU as NULL there and let the alert engine
+                   fall back to the SQL-only figure. sys.dm_os_host_info is 2017+; referenced via
+                   sp_executesql so SQL 2016 (no Linux build) never binds it (@is_linux stays 0). */
+                IF OBJECT_ID(N'sys.dm_os_host_info', N'V') IS NOT NULL
+                BEGIN
+                    EXEC sys.sp_executesql
+                        N'SELECT @linux = CASE WHEN hi.host_platform = N''Linux'' THEN 1 ELSE 0 END FROM sys.dm_os_host_info AS hi;',
+                        N'@linux bit OUTPUT',
+                        @linux = @is_linux OUTPUT;
+                END;
+
                 SELECT TOP (1)
                     sql_cpu_percent =
                         x.rb.value
@@ -260,17 +276,21 @@ namespace PerformanceMonitorDashboard.Services
                             'integer'
                         ),
                     other_cpu_percent =
-                        100
-                        - x.rb.value
-                        (
-                            '(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]',
-                            'integer'
-                        )
-                        - x.rb.value
-                        (
-                            '(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]',
-                            'integer'
-                        )
+                        CASE
+                            WHEN @is_linux = 1
+                            THEN NULL
+                            ELSE 100
+                                 - x.rb.value
+                                 (
+                                     '(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]',
+                                     'integer'
+                                 )
+                                 - x.rb.value
+                                 (
+                                     '(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]',
+                                     'integer'
+                                 )
+                        END
                 FROM
                 (
                     SELECT
