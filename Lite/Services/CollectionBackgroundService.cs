@@ -206,18 +206,24 @@ public class CollectionBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// Runs the triage engine for each enabled server on a configurable interval and
-    /// routes high-severity findings to the notification channels. Gated by
-    /// App.AnalysisNotificationsEnabled — zero cost when off.
+    /// Runs the triage engine for each enabled server on the independent
+    /// AnalysisIntervalMinutes cadence and persists findings to DuckDB. Production is
+    /// gated by App.AnalysisEnabled (default ON, D0); findings are only routed to the
+    /// notification channels when App.AnalysisNotificationsEnabled is also on.
     /// </summary>
     private async Task RunAnalysisIfDueAsync(CancellationToken stoppingToken)
     {
-        /* Feature off, or dependencies not injected in this construction path. */
-        if (!App.AnalysisNotificationsEnabled ||
+        /* Analysis production is gated by AnalysisEnabled, NOT by the notification toggle
+           (D0). Skip when disabled, or when dependencies aren't injected in this path. */
+        if (!App.AnalysisEnabled ||
             _duckDb == null || _serverManager == null || _notificationService == null)
         {
             return;
         }
+
+        /* D0: deliver findings only when notifications are also enabled. Analysis
+           runs+persists regardless; this inner gate controls delivery alone. */
+        var notify = App.AnalysisNotificationsEnabled;
 
         if (DateTime.UtcNow - _lastAnalysisTime < TimeSpan.FromMinutes(App.AnalysisIntervalMinutes))
         {
@@ -274,7 +280,13 @@ public class CollectionBackgroundService : BackgroundService
                     continue;
                 }
 
-                await _notificationService.NotifyAsync(await analyzeTask);
+                /* Analysis already persisted via SaveFindingsAsync inside AnalyzeAsync.
+                   Only route findings to the notification channels when delivery is on. */
+                var findings = await analyzeTask;
+                if (notify)
+                {
+                    await _notificationService.NotifyAsync(findings);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

@@ -24,9 +24,12 @@ namespace PerformanceMonitorDashboard.Services
     /// in MainWindow's lifetime; entirely separate cadence and gating.
     ///
     /// <para>
-    /// Gated by <see cref="UserPreferences.AnalysisNotificationsEnabled"/> — zero cost
-    /// when off. Per-server in-flight tracking prevents a hung connection from piling
-    /// up overlapping analysis tasks for the same server.
+    /// Production is gated by <see cref="UserPreferences.AnalysisEnabled"/> (default ON):
+    /// when enabled the timer runs and <c>AnalyzeAsync</c> persists findings every cycle.
+    /// Notification *delivery* is the inner gate — <c>NotifyAsync</c> is only called when
+    /// <see cref="UserPreferences.AnalysisNotificationsEnabled"/> is also on. Per-server
+    /// in-flight tracking prevents a hung connection from piling up overlapping analysis
+    /// tasks for the same server.
     /// </para>
     /// </summary>
     public sealed class AnalysisScheduler
@@ -72,7 +75,10 @@ namespace PerformanceMonitorDashboard.Services
         {
             var prefs = _preferencesService.GetPreferences();
 
-            if (!prefs.AnalysisNotificationsEnabled)
+            /* D0: analysis *production* is gated by AnalysisEnabled, NOT by the
+               notification toggle. The timer runs (and AnalyzeAsync persists findings)
+               whenever analysis is enabled; NotifyAsync is gated separately in the cycle. */
+            if (!prefs.AnalysisEnabled)
             {
                 _timer.Stop();
                 return;
@@ -126,8 +132,12 @@ namespace PerformanceMonitorDashboard.Services
         private async Task RunCycleAsync(CancellationToken cancellationToken)
         {
             var prefs = _preferencesService.GetPreferences();
-            if (!prefs.AnalysisNotificationsEnabled)
+            if (!prefs.AnalysisEnabled)
                 return;
+
+            /* D0: deliver findings only when notifications are also enabled. Analysis
+               runs+persists regardless; this inner gate controls delivery alone. */
+            var notify = prefs.AnalysisNotificationsEnabled;
 
             var timeoutSeconds = Math.Clamp(prefs.AnalysisTimeoutSeconds, 30, 600);
             var timeout = TimeSpan.FromSeconds(timeoutSeconds);
@@ -181,7 +191,11 @@ namespace PerformanceMonitorDashboard.Services
                     }
 
                     var findings = await analyzeTask;
-                    await _notificationService.NotifyAsync(findings);
+
+                    /* Analysis already persisted via SaveFindingsAsync inside AnalyzeAsync.
+                       Only route findings to the notification channels when delivery is on. */
+                    if (notify)
+                        await _notificationService.NotifyAsync(findings);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

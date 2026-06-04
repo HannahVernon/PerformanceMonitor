@@ -274,13 +274,15 @@
                 <CheckBox x:Name="LogAlertDismissalsCheckBox" Content="Log alert dismiss and mute actions"
                           Margin="20,8,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
 
-                <!-- Automated Analysis Notifications -->
-                <TextBlock Text="Automated Analysis Notifications" FontWeight="SemiBold" FontSize="12"
+                <!-- Automated Analysis -->
+                <TextBlock Text="Automated Analysis" FontWeight="SemiBold" FontSize="12"
                            Foreground="{DynamicResource ForegroundBrush}" Margin="20,14,0,4"/>
-                <TextBlock Text="Periodically run the triage engine and send high-severity findings through the channels above."
+                <TextBlock Text="Periodically run the triage engine and record findings in the Alerts tab. Notifications below are optional — analysis runs and stores findings even with notifications off."
                            FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
                            Margin="20,0,0,4" TextWrapping="Wrap"/>
-                <CheckBox x:Name="AnalysisNotificationsCheckBox" Content="Enable scheduled analysis notifications"
+                <CheckBox x:Name="AnalysisEnabledCheckBox" Content="Enable automated analysis"
+                          Margin="20,4,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
+                <CheckBox x:Name="AnalysisNotificationsCheckBox" Content="Send scheduled analysis notifications"
                           Margin="20,4,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
                 <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
                     <TextBlock Text="Run analysis every" VerticalAlignment="Center" Margin="0,0,8,0"

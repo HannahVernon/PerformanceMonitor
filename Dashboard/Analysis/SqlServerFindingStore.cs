@@ -93,44 +93,60 @@ END;";
     public async Task<List<AnalysisFinding>> SaveFindingsAsync(
         List<AnalysisStory> stories, AnalysisContext context)
     {
-        var mutedHashes = await GetMutedHashesAsync(context.ServerId);
         var analysisTime = DateTime.UtcNow;
         var saved = new List<AnalysisFinding>();
 
-        foreach (var story in stories)
+        try
         {
-            // Skip absolution stories (severity 0) -- they confirm health, not problems
-            if (story.Severity <= 0)
-                continue;
+            /* One connection per save call. EnsureTablesExistAsync runs ONCE here (not
+               per finding) and the muted-hash read + every insert reuse this connection.
+               Mandatory under D0's default-on analysis: the previous per-finding pattern
+               opened a fresh connection AND re-checked the schema for every row. */
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await EnsureTablesExistAsync(connection);
 
-            if (mutedHashes.Contains(story.StoryPathHash))
-                continue;
+            var mutedHashes = await GetMutedHashesAsync(connection, context.ServerId);
 
-            var finding = new AnalysisFinding
+            foreach (var story in stories)
             {
-                FindingId = _nextId++,
-                AnalysisTime = analysisTime,
-                ServerId = context.ServerId,
-                ServerName = context.ServerName,
-                TimeRangeStart = context.TimeRangeStart,
-                TimeRangeEnd = context.TimeRangeEnd,
-                Severity = story.Severity,
-                Confidence = story.Confidence,
-                Category = story.Category,
-                StoryPath = story.StoryPath,
-                StoryPathHash = story.StoryPathHash,
-                StoryText = story.StoryText,
-                RootFactKey = story.RootFactKey,
-                RootFactValue = story.RootFactValue,
-                LeafFactKey = story.LeafFactKey,
-                LeafFactValue = story.LeafFactValue,
-                FactCount = story.FactCount,
-                // Carried in-memory only; no analysis_findings column for it.
-                RootFactMetadata = story.RootFactMetadata
-            };
+                // Skip absolution stories (severity 0) -- they confirm health, not problems
+                if (story.Severity <= 0)
+                    continue;
 
-            await InsertFindingAsync(finding);
-            saved.Add(finding);
+                if (mutedHashes.Contains(story.StoryPathHash))
+                    continue;
+
+                var finding = new AnalysisFinding
+                {
+                    FindingId = _nextId++,
+                    AnalysisTime = analysisTime,
+                    ServerId = context.ServerId,
+                    ServerName = context.ServerName,
+                    TimeRangeStart = context.TimeRangeStart,
+                    TimeRangeEnd = context.TimeRangeEnd,
+                    Severity = story.Severity,
+                    Confidence = story.Confidence,
+                    Category = story.Category,
+                    StoryPath = story.StoryPath,
+                    StoryPathHash = story.StoryPathHash,
+                    StoryText = story.StoryText,
+                    RootFactKey = story.RootFactKey,
+                    RootFactValue = story.RootFactValue,
+                    LeafFactKey = story.LeafFactKey,
+                    LeafFactValue = story.LeafFactValue,
+                    FactCount = story.FactCount,
+                    // Carried in-memory only; no analysis_findings column for it.
+                    RootFactMetadata = story.RootFactMetadata
+                };
+
+                await InsertFindingAsync(connection, finding);
+                saved.Add(finding);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[SqlServerFindingStore] SaveFindingsAsync failed: {ex.Message}");
         }
 
         return saved;
@@ -302,16 +318,17 @@ VALUES (@muteId, @serverId, @storyPathHash, @storyPath, @mutedDate, @reason);";
         }
     }
 
-    private async Task<HashSet<string>> GetMutedHashesAsync(int serverId)
+    /// <summary>
+    /// Reads muted story hashes for a server on an already-open connection. The caller
+    /// owns the connection and is responsible for EnsureTablesExistAsync. Used by
+    /// SaveFindingsAsync so the mute-filter read reuses the save connection.
+    /// </summary>
+    private static async Task<HashSet<string>> GetMutedHashesAsync(SqlConnection connection, int serverId)
     {
         var hashes = new HashSet<string>();
 
         try
         {
-            using var connection = new SqlConnection(_connectionString);
-            await connection.OpenAsync();
-            await EnsureTablesExistAsync(connection);
-
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -333,14 +350,15 @@ WHERE server_id = @serverId OR server_id IS NULL;";
         return hashes;
     }
 
-    private async Task InsertFindingAsync(AnalysisFinding finding)
+    /// <summary>
+    /// Inserts one finding on an already-open connection. The caller owns the connection
+    /// and has already run EnsureTablesExistAsync, so a batch of inserts in one
+    /// SaveFindingsAsync call shares a single connection and a single schema check.
+    /// </summary>
+    private static async Task InsertFindingAsync(SqlConnection connection, AnalysisFinding finding)
     {
         try
         {
-            using var connection = new SqlConnection(_connectionString);
-            await connection.OpenAsync();
-            await EnsureTablesExistAsync(connection);
-
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
 INSERT INTO config.analysis_findings
