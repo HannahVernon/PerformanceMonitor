@@ -374,13 +374,16 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <!-- Automated Analysis Notifications -->
-                        <TextBlock Text="Automated Analysis Notifications" FontWeight="Bold" FontSize="13" Margin="0,20,0,5"/>
-                        <TextBlock Text="Runs the diagnostic inference engine on a schedule and routes high-severity findings to your configured channels (email, Teams, Slack)."
+                        <!-- Automated Analysis -->
+                        <TextBlock Text="Automated Analysis" FontWeight="Bold" FontSize="13" Margin="0,20,0,5"/>
+                        <TextBlock Text="Runs the diagnostic inference engine on a schedule and records findings. Notifications are optional — analysis runs and persists findings even with notifications off. When notifications are on, high-severity findings are also routed to your configured channels (email, Teams, Slack)."
                                    TextWrapping="Wrap" Margin="0,0,0,10" FontStyle="Italic" Foreground="Gray"/>
                         <StackPanel>
+                            <CheckBox x:Name="AnalysisEnabledCheckBox"
+                                      Content="Enable automated analysis"
+                                      Margin="0,0,0,8"/>
                             <CheckBox x:Name="AnalysisNotificationsEnabledCheckBox"
-                                      Content="Enable automated analysis notifications"
+                                      Content="Send automated analysis notifications"
                                       Margin="0,0,0,8"/>
                             <Grid Margin="20,0,0,0">
                                 <Grid.ColumnDefinitions>

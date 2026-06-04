@@ -143,6 +143,13 @@ namespace PerformanceMonitorDashboard.Models
         public bool McpEnabled { get; set; } = false;
         public int McpPort { get; set; } = 5150;
 
+        // Automated analysis production (D0): run the triage engine and persist
+        // findings on the independent AnalysisIntervalMinutes cadence. Decoupled from
+        // notification *delivery* (AnalysisNotificationsEnabled) — analysis runs and
+        // persists regardless of whether findings are delivered. Default ON so the
+        // Recommendations surface has data without the user opting in to alerts.
+        public bool AnalysisEnabled { get; set; } = true;
+
         // Automated analysis notifications (Stage 2)
         // Bounds are enforced where these are consumed (the scheduler and the
         // notification service), not here — keeps the prefs surface simple and

@@ -155,8 +155,10 @@ namespace PerformanceMonitorDashboard
             McpPortTextBox.IsEnabled = prefs.McpEnabled;
             UpdateMcpStatus(prefs);
 
-            // Automated analysis notifications (Stage 2). Cooldown and timeout are
-            // intentionally not exposed in the UI — preferences.json only.
+            // Automated analysis. Production (AnalysisEnabled, default on) is decoupled
+            // from notification delivery (AnalysisNotificationsEnabled). Cooldown and
+            // timeout are intentionally not exposed in the UI — preferences.json only.
+            AnalysisEnabledCheckBox.IsChecked = prefs.AnalysisEnabled;
             AnalysisNotificationsEnabledCheckBox.IsChecked = prefs.AnalysisNotificationsEnabled;
             AnalysisIntervalMinutesTextBox.Text = prefs.AnalysisIntervalMinutes.ToString(CultureInfo.InvariantCulture);
             AnalysisNotifySeverityTextBox.Text = prefs.AnalysisNotifySeverity.ToString("F1", CultureInfo.InvariantCulture);
@@ -764,9 +766,11 @@ namespace PerformanceMonitorDashboard
             else
                 validationErrors.Add($"MCP port must be between 1024 and {IPEndPoint.MaxPort}.\nPorts 0–1023 are well-known privileged ports reserved by the operating system.");
 
-            // Automated analysis notifications (Stage 2). Bounds are also enforced at
-            // consumption (AnalysisScheduler.Configure, AnalysisNotificationService.NotifyAsync),
-            // but validating here catches typos early.
+            // Automated analysis. Production gate (AnalysisEnabled) is independent of the
+            // notification delivery gate (AnalysisNotificationsEnabled). Bounds are also
+            // enforced at consumption (AnalysisScheduler.Configure,
+            // AnalysisNotificationService.NotifyAsync), but validating here catches typos early.
+            prefs.AnalysisEnabled = AnalysisEnabledCheckBox.IsChecked == true;
             prefs.AnalysisNotificationsEnabled = AnalysisNotificationsEnabledCheckBox.IsChecked == true;
 
             if (int.TryParse(AnalysisIntervalMinutesTextBox.Text?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int analysisInterval)
