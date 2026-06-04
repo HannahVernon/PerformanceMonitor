@@ -192,7 +192,7 @@ namespace PerformanceMonitorDashboard.Services
 
                     var findings = await analyzeTask;
 
-                    /* Analysis already persisted via SaveFindingsAsync inside AnalyzeAsync.
+                    /* Analysis already persisted via the batched insert inside AnalyzeAsync.
                        Only route findings to the notification channels when delivery is on. */
                     if (notify)
                         await _notificationService.NotifyAsync(findings);
