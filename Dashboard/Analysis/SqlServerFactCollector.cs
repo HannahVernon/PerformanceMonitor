@@ -1474,7 +1474,7 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
         setting_value,
         ROW_NUMBER() OVER (PARTITION BY database_name, setting_name ORDER BY collection_time DESC) AS rn
     FROM config.database_configuration_history
-    WHERE setting_type = 'database_option'
+    WHERE setting_type = 'DATABASE_PROPERTY' /* collector writes 'DATABASE_PROPERTY' (install/39); 'database_option' matched 0 rows → DB_CONFIG fact never fired */
     AND   database_name NOT IN ('master', 'msdb', 'model', 'tempdb')
 ),
 pivoted AS (
