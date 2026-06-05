@@ -181,7 +181,7 @@ namespace PerformanceMonitorDashboard
 
         /// <summary>
         /// Refreshes the Overview tab: Collection Health, Duration Trends, Daily Summary,
-        /// Critical Issues, Default Trace, Current Config, Config Changes, Resource Overview, Running Jobs.
+        /// Recommendations, Default Trace, Current Config, Config Changes, Resource Overview, Running Jobs.
         /// </summary>
         private async Task RefreshOverviewTabAsync()
         {
@@ -192,13 +192,13 @@ namespace PerformanceMonitorDashboard
                 var resourceOverviewTask = RefreshResourceOverviewAsync();
                 var runningJobsTask = RefreshRunningJobsAsync();
                 var dailySummaryTask = DailySummaryTab.RefreshDataAsync();
-                var criticalIssuesTask = CriticalIssuesTab.RefreshDataAsync();
+                var recommendationsTask = RecommendationsTab.RefreshDataAsync();
                 var defaultTraceTask = DefaultTraceTab.RefreshAllDataAsync();
                 var currentConfigTask = CurrentConfigTab.RefreshAllDataAsync();
                 var configChangesTask = ConfigChangesTab.RefreshAllDataAsync();
 
                 await Task.WhenAll(healthTask, durationLogsTask, resourceOverviewTask, runningJobsTask,
-                    dailySummaryTask, criticalIssuesTask, defaultTraceTask, currentConfigTask, configChangesTask);
+                    dailySummaryTask, recommendationsTask, defaultTraceTask, currentConfigTask, configChangesTask);
 
                 var healthData = await healthTask;
                 HealthDataGrid.ItemsSource = healthData;

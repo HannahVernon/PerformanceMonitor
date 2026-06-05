@@ -230,7 +230,7 @@ namespace PerformanceMonitorDashboard
                 MemoryTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 ResourceMetricsContent.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 SystemEventsContent.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
-                CriticalIssuesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
+                RecommendationsTab.SetTimeRange(_globalHoursBack);
                 DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
 
                 // Refresh all data
@@ -526,18 +526,18 @@ namespace PerformanceMonitorDashboard
                 switch (tabHeader)
                 {
                     case "Overview":
-                        // Overview tab has Collection Health, Daily Summary, Critical Issues, Resource Overview sub-tabs
+                        // Overview tab has Collection Health, Daily Summary, Recommendations, Resource Overview sub-tabs
                         _collectionHealthHoursBack = _globalHoursBack;
                         _collectionHealthFromDate = _globalFromDate;
                         _collectionHealthToDate = _globalToDate;
                         _resourceOverviewHoursBack = _globalHoursBack;
                         _resourceOverviewFromDate = _globalFromDate;
                         _resourceOverviewToDate = _globalToDate;
-                        CriticalIssuesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
+                        RecommendationsTab.SetTimeRange(_globalHoursBack);
                         DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                         ConfigChangesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                         CollectionHealth_Refresh_Click(null, new RoutedEventArgs());
-                        await CriticalIssuesTab.RefreshDataAsync();
+                        await RecommendationsTab.RefreshDataAsync();
                         await DefaultTraceTab.RefreshAllDataAsync();
                         await CurrentConfigTab.RefreshAllDataAsync();
                         await ConfigChangesTab.RefreshAllDataAsync();

@@ -96,8 +96,7 @@ namespace PerformanceMonitorDashboard
 
             // Initialize Overview sub-tab UserControls
             DailySummaryTab.Initialize(_databaseService, _preferencesService);
-            CriticalIssuesTab.Initialize(_databaseService);
-            CriticalIssuesTab.InvestigateRequested += OnInvestigateCriticalIssue;
+            RecommendationsTab.Initialize(_databaseService, _serverConnection, _credentialService);
             DefaultTraceTab.Initialize(_databaseService);
             CurrentConfigTab.Initialize(_databaseService);
             ConfigChangesTab.Initialize(_databaseService);
@@ -125,7 +124,7 @@ namespace PerformanceMonitorDashboard
 
             // Set default time range on UserControls based on user preferences
             var prefs = _preferencesService.GetPreferences();
-            CriticalIssuesTab.SetTimeRange(prefs.DefaultHoursBack);
+            RecommendationsTab.SetTimeRange(prefs.DefaultHoursBack);
 
             // Sync time display mode picker with current setting
             var modeTag = ServerTimeHelper.CurrentDisplayMode.ToString();
@@ -235,7 +234,6 @@ namespace PerformanceMonitorDashboard
             BlockingSlicer.RangeChanged -= OnBlockingSlicerChanged;
             DeadlockSlicer.RangeChanged -= OnDeadlockSlicerChanged;
 
-            CriticalIssuesTab.InvestigateRequested -= OnInvestigateCriticalIssue;
             MemoryTab.ChartDrillDownRequested -= OnChildChartDrillDown;
             ResourceMetricsContent.ChartDrillDownRequested -= OnChildChartDrillDown;
 
@@ -383,7 +381,7 @@ namespace PerformanceMonitorDashboard
                 MemoryTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 ResourceMetricsContent.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 SystemEventsContent.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
-                CriticalIssuesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
+                RecommendationsTab.SetTimeRange(_globalHoursBack);
                 DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
 
                 await LoadDataAsync(fullRefresh: false);

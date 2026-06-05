@@ -280,9 +280,9 @@
                         <controls:DailySummaryContent x:Name="DailySummaryTab" />
                     </TabItem>
 
-                    <!-- Critical Issues Sub-Tab -->
-                    <TabItem Header="Critical Issues">
-                        <controls:CriticalIssuesContent x:Name="CriticalIssuesTab" />
+                    <!-- Recommendations Sub-Tab -->
+                    <TabItem Header="Recommendations">
+                        <controls:RecommendationsContent x:Name="RecommendationsTab" />
                     </TabItem>
 
                     <!-- Default Trace Sub-Tab -->
