@@ -205,7 +205,8 @@ namespace PerformanceMonitorDashboard.Models
             get
             {
                 if (!_cpuPercent.HasValue && !_otherCpuPercent.HasValue) return "";
-                return $"SQL: {_cpuPercent ?? 0}% Other: {_otherCpuPercent ?? 0}%";
+                string other = _otherCpuPercent.HasValue ? $"{_otherCpuPercent}%" : "n/a";
+                return $"SQL: {_cpuPercent ?? 0}% Other: {other}";
             }
         }
 
