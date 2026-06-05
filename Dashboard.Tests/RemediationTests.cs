@@ -1832,6 +1832,8 @@ public class RemediationTests
             "Controls/AlertsHistoryContent.xaml.cs", // threads it into the alert detail dialog
             "AlertDetailWindow.xaml.cs",             // invokes Apply/Un-apply via the service
             "RemediationConfirmWindow.xaml.cs",      // the confirm modal (gate UI)
+            "ServerTab.xaml.cs",                     // forwards it to the Recommendations sub-tab (WS1b-2)
+            "Controls/RecommendationsContent.xaml.cs", // invokes Apply via the service (WS1b-2)
         };
 
         var offenders = new List<string>();

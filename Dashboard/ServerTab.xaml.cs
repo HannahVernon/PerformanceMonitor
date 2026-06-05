@@ -26,6 +26,18 @@ namespace PerformanceMonitorDashboard
         public int UtcOffsetMinutes { get; }
 
         public DatabaseService DatabaseService => _databaseService;
+
+        /// <summary>
+        /// The shared, gated remediation entry point. Threaded from <c>MainWindow</c> after
+        /// construction and forwarded to the Recommendations sub-tab (its Apply button reads it
+        /// lazily at click time), mirroring how the Alerts tab receives the same instance.
+        /// </summary>
+        public Services.Remediation.RemediationApplyService? RemediationApplyService
+        {
+            get => RecommendationsTab.RemediationApplyService;
+            set => RecommendationsTab.RemediationApplyService = value;
+        }
+
         private static string GetLoadingMessage() => LoadingMessages.GetRandom();
 
 

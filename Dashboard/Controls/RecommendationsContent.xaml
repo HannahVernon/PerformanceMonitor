@@ -12,8 +12,9 @@
 
             <!-- One card: severity badge + database + title + advice, then affordances.
                  Incidents (Setting==None) send the operator to the dashboard / AI; config-fixes
-                 (Setting!=None) offer "Copy fix" (the ALTER). Apply is present-but-disabled until
-                 WS1b-2. Mirrors AlertDetailWindow's per-row visual conventions. -->
+                 (Setting!=None) offer "Copy fix" (the ALTER). Apply (live: confirm gate +
+                 two-sided informed consent for destructive fixes) and Mute (engine rows) are wired
+                 in WS1b-2. Mirrors AlertDetailWindow's per-row visual conventions. -->
             <DataTemplate x:Key="RecommendationCardTemplate">
                 <Border Background="{DynamicResource BackgroundLightBrush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
@@ -52,7 +53,8 @@
                                    Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
 
                         <!-- Affordances. Incidents: Open in Active Queries + Ask AI (+ Apply when
-                             a remediation exists). Config-fixes: Apply + Copy fix. -->
+                             a remediation exists). Config-fixes: Apply + Copy fix. Engine rows also
+                             offer Mute. Apply opens the confirm gate (two-sided consent if destructive). -->
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
                             <Button Content="Open in Active Queries →" Padding="10,3" Margin="0,0,8,0"
                                     Visibility="{Binding ShowOpenInActiveQueries, Converter={StaticResource BoolToVis}}"
@@ -66,10 +68,14 @@
                                     Visibility="{Binding ShowCopyFix, Converter={StaticResource BoolToVis}}"
                                     Click="CopyFix_Click"
                                     ToolTip="Copy the ALTER statement to the clipboard"/>
-                            <Button Content="Apply…" Padding="10,3"
-                                    IsEnabled="False"
+                            <Button Content="Apply…" Padding="10,3" Margin="0,0,8,0"
                                     Visibility="{Binding ShowApply, Converter={StaticResource BoolToVis}}"
-                                    ToolTip="{Binding ActionsDisabledReason}"/>
+                                    Click="ApplyButton_Click"
+                                    ToolTip="Apply this fix — you review and confirm before anything runs"/>
+                            <Button Content="Mute" Padding="10,3"
+                                    Visibility="{Binding ShowMute, Converter={StaticResource BoolToVis}}"
+                                    Click="MuteButton_Click"
+                                    ToolTip="Stop showing this recommendation (mutes the pattern for this server)"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>

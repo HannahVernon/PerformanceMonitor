@@ -385,6 +385,7 @@ public class RecommendationDeduperTests
             StoryText = "AUTO_SHRINK is on",
             RootFactKey = "DB_CONFIG",
             StoryPathHash = "abc123",
+            StoryPath = "config>db_config>MyDb",
             Remediation = action
         };
 
@@ -395,6 +396,7 @@ public class RecommendationDeduperTests
         Assert.Equal(CanonicalSeverity.Info, item.CanonicalSeverity); // 0.3 -> Info
         Assert.Same(action, item.Remediation);
         Assert.Equal("abc123", item.StoryPathHash);
+        Assert.Equal("config>db_config>MyDb", item.StoryPath); // carried for the mute record
         Assert.NotNull(item.CopyPasteSql);
         Assert.Contains("AUTO_SHRINK OFF", item.CopyPasteSql);
     }
@@ -418,6 +420,7 @@ public class RecommendationDeduperTests
         Assert.Equal(CanonicalSeverity.Critical, item.CanonicalSeverity);
         Assert.Null(item.Remediation);
         Assert.Null(item.StoryPathHash);
+        Assert.Null(item.StoryPath); // legacy rows have no mute concept
         Assert.Null(item.Database); // empty AffectedDatabase -> null
         Assert.Equal("Memory pressure detected", item.AdviceText);
         Assert.Equal("SELECT * FROM sys.dm_os_memory_clerks;", item.CopyPasteSql);

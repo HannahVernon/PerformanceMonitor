@@ -122,6 +122,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 CopyPasteSql = BuildCopyPasteFromAction(finding.Remediation),
                 Remediation = finding.Remediation,
                 StoryPathHash = finding.StoryPathHash,
+                StoryPath = finding.StoryPath,
                 Setting = SettingFromAction(finding.Remediation),
                 WindowStartUtc = AsUtc(finding.TimeRangeStart),
                 WindowEndUtc = AsUtc(finding.TimeRangeEnd)
