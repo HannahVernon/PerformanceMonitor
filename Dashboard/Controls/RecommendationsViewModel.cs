@@ -54,8 +54,8 @@ namespace PerformanceMonitorDashboard.Controls
     ///   <item>Config-fixes: Apply (when a remediation exists) + "Copy fix" (copies the ALTER).</item>
     /// </list>
     /// <para>
-    /// Apply is still rendered DISABLED with the WS1b-1 tooltip — its action wiring + the
-    /// informed-consent gate are WS1b-2. "Open in Active Queries", "Ask AI" and "Copy fix" ARE
+    /// Apply (the gated remediation + two-sided informed consent for destructive fixes) and Mute
+    /// (engine rows) are wired in WS1b-2; "Open in Active Queries", "Ask AI" and "Copy fix" were
     /// wired in WS1b-1 (navigation + clipboard).
     /// </para>
     /// </summary>
@@ -149,23 +149,18 @@ namespace PerformanceMonitorDashboard.Controls
         /// Whether the Apply button is shown for this card — only when the row carries a built,
         /// persisted <see cref="RecommendationItem.Remediation"/> action (engine rows; mirrors the
         /// alert path's <c>Remediation != null</c> rule). Shown for both incidents (e.g.
-        /// clear-plan / plan-regression) and config-fixes (e.g. RCSI). Rendered DISABLED in WS1b-1.
+        /// clear-plan / plan-regression) and config-fixes (e.g. RCSI). Drives the Apply button +
+        /// (for destructive fixes) the two-sided informed-consent gate, wired in WS1b-2.
         /// </summary>
         public bool ShowApply => Item.Remediation != null;
 
         /// <summary>
         /// Whether the Mute button is shown. Mute is an engine-only concept (the legacy
         /// <c>config.critical_issues</c> store has no mute), so it shows only for
-        /// <see cref="RecommendationSource.Engine"/> rows. Rendered DISABLED in WS1b-1.
+        /// <see cref="RecommendationSource.Engine"/> rows. Drives the Mute button (mutes the
+        /// story pattern for this server), wired in WS1b-2.
         /// </summary>
         public bool ShowMute => Item.Source == RecommendationSource.Engine;
-
-        /// <summary>
-        /// The tooltip shown on the (disabled) Apply button in WS1b-1. The action wiring + consent
-        /// gate land in WS1b-2; until then Apply is present-but-inert so the approved layout is
-        /// fully reviewable without any half-working behaviour.
-        /// </summary>
-        public string ActionsDisabledReason => RecommendationsViewModel.ActionsDisabledTooltip;
 
         // ---- deep-link window (raw UTC; the handler applies grace + tz) --------
 
@@ -253,11 +248,6 @@ namespace PerformanceMonitorDashboard.Controls
     /// </summary>
     public sealed class RecommendationsViewModel
     {
-        /// <summary>
-        /// Tooltip on the disabled Apply button until WS1b-2 wires its action + consent gate.
-        /// </summary>
-        public const string ActionsDisabledTooltip = "Available in the next update";
-
         /// <summary>The severity sections, Critical → Warning → Info, omitting empty ones.</summary>
         public IReadOnlyList<RecommendationSectionViewModel> Sections { get; }
 

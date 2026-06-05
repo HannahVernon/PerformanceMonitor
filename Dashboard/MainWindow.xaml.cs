@@ -653,6 +653,11 @@ namespace PerformanceMonitorDashboard
                     System.Windows.MessageBoxImage.Error);
                 return;
             }
+
+            // WS1b-2: thread the shared gated remediation service to the Recommendations sub-tab
+            // (the same instance the Alerts tab uses), enabling Apply + the informed-consent gate.
+            serverTab.RemediationApplyService = _remediationApplyService;
+
             EventHandler alertHandler = (_, _) =>
             {
                 _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);

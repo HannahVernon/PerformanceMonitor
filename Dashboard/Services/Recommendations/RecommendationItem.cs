@@ -131,6 +131,14 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         public string? StoryPathHash { get; set; }
 
         /// <summary>
+        /// The engine finding's <c>story_path</c> — the human-readable pattern path persisted on
+        /// the mute record alongside <see cref="StoryPathHash"/> (the hash is the mute key; the
+        /// path is the operator-facing label for any future un-mute UI). Engine rows only; null
+        /// for legacy rows (the legacy store has no mute concept).
+        /// </summary>
+        public string? StoryPath { get; set; }
+
+        /// <summary>
         /// The canonical de-dupe setting (or <see cref="RecommendationSetting.None"/>). See
         /// <see cref="RecommendationSetting"/>. Drives the (database, setting) de-dupe key.
         /// </summary>

@@ -7,6 +7,8 @@
  */
 
 using System;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,6 +19,7 @@ using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitorDashboard.Services.Recommendations;
+using PerformanceMonitorDashboard.Services.Remediation;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -51,6 +54,20 @@ namespace PerformanceMonitorDashboard.Controls
         private RecommendationsReader? _reader;
         private ServerConnection? _serverConnection;
         private ICredentialService? _credentialService;
+        private RemediationApplyService? _remediationApplyService;
+
+        /// <summary>
+        /// The shared, gated remediation entry point (constructed once in <c>MainWindow</c> and
+        /// threaded MainWindow -> ServerTab -> here, mirroring how <c>AlertsHistoryContent</c>
+        /// receives it). Drives the Apply button: server resolution, the two-sided informed-
+        /// consent gate for destructive fixes (RCSI / clear-plan), and the audit write. Null in
+        /// contexts where no service was supplied, which leaves Apply inert.
+        /// </summary>
+        public RemediationApplyService? RemediationApplyService
+        {
+            get => _remediationApplyService;
+            set => _remediationApplyService = value;
+        }
 
         private int _hoursBack = 24;
         private int _utcOffsetMinutes;
@@ -241,6 +258,209 @@ namespace PerformanceMonitorDashboard.Controls
 
             Clipboard.SetDataObject(card.CopyPasteSql, false);
             StatusText.Text = "Fix copied to clipboard.";
+        }
+
+        // ── Apply (gated remediation, mirrors AlertDetailWindow) ───────────────────
+
+        /// <summary>
+        /// Applies the card's built remediation through the gated <see cref="RemediationApplyService"/>.
+        /// Mirrors <c>AlertDetailWindow</c> exactly: fail-closed server resolution, the handler-for-fact
+        /// gate, then <c>ApplyAsync</c> with a confirm callback that news up the (two-sided when
+        /// destructive) <see cref="RemediationConfirmWindow"/>. On a run, refreshes so the action-log
+        /// outcome is reflected. <c>finding: null</c> is correct — the disclosure renders from the
+        /// persisted action's carried figures, exactly as on the alert path.
+        /// </summary>
+        private async void ApplyButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
+                return;
+
+            await RunApplyAsync(card);
+        }
+
+        private async Task RunApplyAsync(RecommendationCardViewModel card)
+        {
+            var item = card.Item;
+            if (_remediationApplyService is null || item.Remediation is null || _serverConnection is null)
+                return;
+
+            if (_isBusy)
+                return;
+
+            // M3 fail-closed resolution: exact GUID match on this tab's connection Id, falling back to a
+            // unique ServerName match. Ambiguous/unresolved disables Apply (the reason is surfaced).
+            var resolution = _remediationApplyService.ResolveServer(_serverConnection.Id, _serverConnection.ServerName);
+            if (!resolution.IsResolved || resolution.Server is null)
+            {
+                StatusText.Text = resolution.Reason ?? "Apply is unavailable — the source server could not be resolved.";
+                return;
+            }
+
+            if (!_remediationApplyService.HasHandlerFor(item.Remediation.FactKey))
+            {
+                StatusText.Text = "No remediation handler is registered for this recommendation.";
+                return;
+            }
+
+            _isBusy = true;
+            try
+            {
+                StatusText.Text = "Applying…";
+
+                var operatorIdentity = ResolveOperatorIdentity();
+                // Audit provenance (RemediationIdentity doc: "the alert's metric name / story hash").
+                var sourceRef = $"Recommendations: {item.StoryPathHash ?? item.Title}";
+
+                // previewSql may be null for RCSI/clear-plan (no DB-config ALTER) — ApplyAsync then
+                // renders the canonical EXEC/ALTER preview itself, exactly as on the alert path.
+                var report = await _remediationApplyService.ApplyAsync(
+                    item.Remediation, resolution.Server, item.CopyPasteSql, operatorIdentity, sourceRef,
+                    request => ConfirmAsync(request, resolution), CancellationToken.None, finding: null);
+
+                StatusText.Text = FormatApplyStatus(report);
+                _isBusy = false; // release before re-entering RefreshDataAsync's own guard
+                await RefreshDataAsync();
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error applying recommendation: {ex.Message}", ex);
+                StatusText.Text = $"Apply failed: {ex.Message}";
+            }
+            finally
+            {
+                _isBusy = false;
+            }
+        }
+
+        /// <summary>
+        /// The confirm gate. Invoked by the service from a background continuation, so it marshals to
+        /// the UI thread to show the modal. Returning true is the only thing that lets the privileged
+        /// handler run. For a destructive action the request carries the two-sided risks and the dialog
+        /// renders the acknowledge-each-risk checkboxes automatically (no special-casing here).
+        /// </summary>
+        private async Task<bool> ConfirmAsync(RemediationConfirmRequest request, ServerResolution resolution)
+        {
+            return await Dispatcher.InvokeAsync(() =>
+            {
+                var dialog = new RemediationConfirmWindow(request, resolution.ResolvedByName, resolution.Reason)
+                {
+                    Owner = Window.GetWindow(this)
+                };
+                return dialog.ShowDialog() == true;
+            });
+        }
+
+        /// <summary>
+        /// A compact one-line outcome for the status strip (the alert path renders a per-target detail
+        /// block; the Recommendations surface refreshes the cards, so a summary line suffices).
+        /// </summary>
+        private static string FormatApplyStatus(RemediationRunReport report)
+        {
+            switch (report.Status)
+            {
+                case RemediationRunStatus.NotConfirmed:
+                    return "Cancelled — no change was made.";
+                case RemediationRunStatus.NoHandler:
+                    return "No remediation handler is registered for this recommendation.";
+                case RemediationRunStatus.UnapplyNotSupported:
+                    return "This fix type cannot be un-applied — no change was made.";
+            }
+
+            var succeeded = report.Targets.Count(t => t.Status == RemediationStatus.Success);
+            var failed = report.Targets.Count(t =>
+                t.Status is RemediationStatus.Error or RemediationStatus.Blocked or RemediationStatus.PermissionDenied);
+            var skipped = report.Targets.Count(t => t.Status == RemediationStatus.Skipped);
+
+            if (report.Targets.Any(t => t.AppliedButUnlogged && t.AuditFailureKind == AuditWriteFailureKind.Permanent))
+                return $"Applied ({succeeded}), but the audit row could NOT be written — the monitoring login " +
+                       "lacks INSERT on config.remediation_action_log. Fix this grant.";
+
+            if (failed > 0)
+                return $"Apply finished with issues — {succeeded} succeeded, {failed} failed" +
+                       (skipped > 0 ? $", {skipped} skipped." : ".");
+
+            if (succeeded > 0)
+                return $"Applied — {succeeded} target(s) succeeded" + (skipped > 0 ? $", {skipped} skipped." : ".");
+
+            if (skipped > 0)
+                return $"Nothing to apply — {skipped} target(s) skipped.";
+
+            return "Apply finished — no targets were processed.";
+        }
+
+        // ── Mute (engine rows only) ────────────────────────────────────────────────
+
+        /// <summary>
+        /// Mutes an engine recommendation's story pattern via the finding store, keyed on
+        /// (serverId, <c>story_path_hash</c>) — the lower-level story mute, because the card carries a
+        /// <see cref="RecommendationItem"/> rather than a full <c>AnalysisFinding</c>. After muting,
+        /// refreshes so the row drops out (the next read filters it). Legacy rows have no mute concept
+        /// and never reach here (the button is engine-only).
+        /// </summary>
+        private async void MuteButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
+                return;
+
+            await RunMuteAsync(card);
+        }
+
+        private async Task RunMuteAsync(RecommendationCardViewModel card)
+        {
+            var item = card.Item;
+            if (_findingStore is null || _serverConnection is null
+                || item.Source != RecommendationSource.Engine
+                || string.IsNullOrEmpty(item.StoryPathHash))
+                return;
+
+            if (_isBusy)
+                return;
+
+            _isBusy = true;
+            try
+            {
+                StatusText.Text = "Muting…";
+
+                // Same deterministic server id the reader/scheduler use.
+                var serverId = ServerIdHelper.GetDeterministicHashCode(_serverConnection.ServerName);
+                await _findingStore.MuteStoryAsync(
+                    serverId, item.StoryPathHash, item.StoryPath ?? item.StoryPathHash,
+                    reason: "Muted from Recommendations");
+
+                StatusText.Text = "Recommendation muted.";
+                _isBusy = false; // release before re-entering RefreshDataAsync's own guard
+                await RefreshDataAsync();
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error muting recommendation: {ex.Message}", ex);
+                StatusText.Text = $"Mute failed: {ex.Message}";
+            }
+            finally
+            {
+                _isBusy = false;
+            }
+        }
+
+        /// <summary>
+        /// The OS / Windows user running the Dashboard, recorded as the audit <c>operator_identity</c>
+        /// (mirrors <c>AlertDetailWindow.ResolveOperatorIdentity</c>; not a credential).
+        /// </summary>
+        private static string ResolveOperatorIdentity()
+        {
+            try
+            {
+                var name = System.Security.Principal.WindowsIdentity.GetCurrent()?.Name;
+                if (!string.IsNullOrEmpty(name))
+                    return name;
+            }
+            catch
+            {
+                /* WindowsIdentity can throw in constrained contexts — fall back. */
+            }
+            return Environment.UserName;
         }
 
         /// <summary>

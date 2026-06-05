@@ -49,7 +49,8 @@ public class RecommendationsViewModelTests
         string? advice = null,
         DateTime? windowStartUtc = null,
         DateTime? windowEndUtc = null,
-        string? storyHash = "hash")
+        string? storyHash = "hash",
+        string? storyPath = "root>leaf")
     {
         return new RecommendationItem
         {
@@ -64,7 +65,8 @@ public class RecommendationsViewModelTests
             AdviceText = advice,
             WindowStartUtc = windowStartUtc,
             WindowEndUtc = windowEndUtc,
-            StoryPathHash = source == RecommendationSource.Engine ? storyHash : null
+            StoryPathHash = source == RecommendationSource.Engine ? storyHash : null,
+            StoryPath = source == RecommendationSource.Engine ? storyPath : null
         };
     }
 
@@ -430,9 +432,29 @@ public class RecommendationsViewModelTests
     }
 
     [Fact]
-    public void Card_ActionsDisabledReason_IsTheNextUpdateTooltip()
+    public void EngineCard_ExposesMuteKeyInputs_HashAndPath()
     {
-        var card = Card(Item(CanonicalSeverity.Warning));
-        Assert.Equal(RecommendationsViewModel.ActionsDisabledTooltip, card.ActionsDisabledReason);
+        // The Mute handler keys on the underlying item's StoryPathHash (the mute key) and carries
+        // StoryPath (the operator-facing label). Both must round-trip through the card for engine rows.
+        var card = Card(Item(
+            CanonicalSeverity.Warning,
+            source: RecommendationSource.Engine,
+            storyHash: "h-42",
+            storyPath: "blocking>rcsi>Sales"));
+
+        Assert.True(card.ShowMute);
+        Assert.Equal("h-42", card.Item.StoryPathHash);
+        Assert.Equal("blocking>rcsi>Sales", card.Item.StoryPath);
+    }
+
+    [Fact]
+    public void LegacyCard_HasNoMuteKeyInputs()
+    {
+        // Legacy rows never mute: no hash, no path, no Mute button.
+        var card = Card(Item(CanonicalSeverity.Warning, source: RecommendationSource.Legacy));
+
+        Assert.False(card.ShowMute);
+        Assert.Null(card.Item.StoryPathHash);
+        Assert.Null(card.Item.StoryPath);
     }
 }
