@@ -20,9 +20,11 @@ namespace PerformanceMonitorDashboard.Tests;
 /// WS1b-1 coverage for the PURE, WPF-free Recommendations view-model: grouping a flat
 /// (already de-duped + severity-sorted) <see cref="RecommendationItem"/> list into the
 /// Critical / Warning / Info collapsible sections; selecting the single top-level
-/// <see cref="RecommendationsState"/> (loading / insufficient-data / empty / loaded); and the
-/// per-card Apply/Mute visibility predicates. The XAML rendering itself is not unit-testable
-/// (it needs a running Dashboard — see the PR's visual-verification note).
+/// <see cref="RecommendationsState"/> (loading / insufficient-data / empty / loaded); the
+/// incident-vs-config affordance predicates (Open-in-Active-Queries + Ask-AI for incidents,
+/// Copy-fix for config rows; Apply/Mute visibility); and the Ask-AI prompt interpolation. The
+/// WPF navigation + clipboard themselves are not unit-testable (they need a running Dashboard —
+/// see the PR's visual-verification note).
 /// </summary>
 public class RecommendationsViewModelTests
 {
@@ -38,12 +40,15 @@ public class RecommendationsViewModelTests
     private static RecommendationItem Item(
         CanonicalSeverity severity,
         RecommendationSource source = RecommendationSource.Engine,
+        RecommendationSetting setting = RecommendationSetting.None,
         RemediationAction? remediation = null,
         string? sql = null,
         string title = "rec",
         string? db = null,
         double rawSeverity = 0.3,
         string? advice = null,
+        DateTime? windowStartUtc = null,
+        DateTime? windowEndUtc = null,
         string? storyHash = "hash")
     {
         return new RecommendationItem
@@ -51,14 +56,21 @@ public class RecommendationsViewModelTests
             CanonicalSeverity = severity,
             RawSeverity = rawSeverity,
             Source = source,
+            Setting = setting,
             Remediation = remediation,
             CopyPasteSql = sql,
             Title = title,
             Database = db,
             AdviceText = advice,
+            WindowStartUtc = windowStartUtc,
+            WindowEndUtc = windowEndUtc,
             StoryPathHash = source == RecommendationSource.Engine ? storyHash : null
         };
     }
+
+    private static RecommendationCardViewModel Card(
+        RecommendationItem item, string serverName = "SRV", int utcOffsetMinutes = 0) =>
+        new(item, serverName, utcOffsetMinutes);
 
     // ---- state selection --------------------------------------------------
 
@@ -204,26 +216,111 @@ public class RecommendationsViewModelTests
         Assert.Equal("Critical (3)", vm.Sections[0].Header);
     }
 
+    [Fact]
+    public void FromItems_FlowsServerNameAndOffsetOntoCards()
+    {
+        var item = Item(
+            CanonicalSeverity.Critical,
+            windowStartUtc: new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc),
+            windowEndUtc: new DateTime(2026, 6, 1, 10, 30, 0, DateTimeKind.Utc));
+
+        var vm = RecommendationsViewModel.FromItems(new[] { item }, "PROD-SQL-01", utcOffsetMinutes: 60);
+        var card = vm.Sections[0].Cards[0];
+
+        Assert.Equal("PROD-SQL-01", card.ServerName);
+        // offset 60 → window shifts +1h into server-local in the Ask-AI prompt.
+        Assert.Contains("11:00", card.AskAiPrompt);
+        Assert.Contains("11:30", card.AskAiPrompt);
+    }
+
+    // ---- incident vs config affordances -----------------------------------
+
+    [Fact]
+    public void IncidentRow_ShowsOpenInActiveQueriesAndAskAi_NotCopyFix()
+    {
+        // Setting == None => incident (CPU/memory/blocking/waits/plan-regression).
+        var card = Card(Item(CanonicalSeverity.Critical, setting: RecommendationSetting.None));
+
+        Assert.True(card.IsIncident);
+        Assert.False(card.IsConfigFix);
+        Assert.True(card.ShowOpenInActiveQueries);
+        Assert.True(card.ShowAskAi);
+        Assert.False(card.ShowCopyFix);
+    }
+
+    [Theory]
+    [InlineData(RecommendationSetting.AutoShrink)]
+    [InlineData(RecommendationSetting.AutoClose)]
+    [InlineData(RecommendationSetting.QueryStore)]
+    [InlineData(RecommendationSetting.Rcsi)]
+    [InlineData(RecommendationSetting.PageVerify)]
+    public void ConfigFixRow_ShowsCopyFix_NotOpenInActiveQueriesOrAskAi(RecommendationSetting setting)
+    {
+        // Setting != None => standing config-fix; carries an ALTER → Copy fix.
+        var card = Card(Item(
+            CanonicalSeverity.Warning,
+            setting: setting,
+            sql: "ALTER DATABASE [db1] SET AUTO_SHRINK OFF;"));
+
+        Assert.False(card.IsIncident);
+        Assert.True(card.IsConfigFix);
+        Assert.False(card.ShowOpenInActiveQueries);
+        Assert.False(card.ShowAskAi);
+        Assert.True(card.ShowCopyFix);
+    }
+
+    [Fact]
+    public void ConfigFixRow_WithoutSql_DoesNotShowCopyFix()
+    {
+        var card = Card(Item(CanonicalSeverity.Warning, setting: RecommendationSetting.Rcsi, sql: null));
+
+        Assert.True(card.IsConfigFix);
+        Assert.False(card.ShowCopyFix);
+    }
+
+    [Fact]
+    public void IncidentRow_DoesNotShowCopyFix_EvenIfSqlSomehowPresent()
+    {
+        // Defensive: an incident never offers Copy fix regardless of CopyPasteSql.
+        var card = Card(Item(CanonicalSeverity.Critical, setting: RecommendationSetting.None, sql: "SELECT 1;"));
+
+        Assert.True(card.IsIncident);
+        Assert.False(card.ShowCopyFix);
+    }
+
     // ---- Apply visibility (Remediation != null) ---------------------------
 
     [Fact]
     public void ShowApply_True_OnlyWhenRemediationPresent()
     {
-        var withAction = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Warning, remediation: DbConfigAction(DbConfigSetting.AutoShrinkOff)));
-        var withoutAction = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Warning, remediation: null));
+        var withAction = Card(Item(
+            CanonicalSeverity.Warning,
+            setting: RecommendationSetting.AutoShrink,
+            remediation: DbConfigAction(DbConfigSetting.AutoShrinkOff)));
+        var withoutAction = Card(Item(CanonicalSeverity.Warning, remediation: null));
 
         Assert.True(withAction.ShowApply);
         Assert.False(withoutAction.ShowApply);
     }
 
     [Fact]
+    public void ShowApply_True_ForIncidentWithRemediation()
+    {
+        // e.g. plan-regression / clear-plan: an incident (Setting==None) that still has an action.
+        var card = Card(Item(
+            CanonicalSeverity.Critical,
+            setting: RecommendationSetting.None,
+            remediation: new RemediationAction("CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>())));
+
+        Assert.True(card.IsIncident);
+        Assert.True(card.ShowApply);
+    }
+
+    [Fact]
     public void ShowApply_False_ForLegacyRow()
     {
         // Legacy rows never carry a built action, so Apply is never shown.
-        var legacy = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Critical, source: RecommendationSource.Legacy, remediation: null));
+        var legacy = Card(Item(CanonicalSeverity.Critical, source: RecommendationSource.Legacy, remediation: null));
 
         Assert.False(legacy.ShowApply);
     }
@@ -233,8 +330,7 @@ public class RecommendationsViewModelTests
     [Fact]
     public void ShowMute_True_ForEngineRow()
     {
-        var engine = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Warning, source: RecommendationSource.Engine));
+        var engine = Card(Item(CanonicalSeverity.Warning, source: RecommendationSource.Engine));
 
         Assert.True(engine.ShowMute);
     }
@@ -242,42 +338,79 @@ public class RecommendationsViewModelTests
     [Fact]
     public void ShowMute_False_ForLegacyRow()
     {
-        var legacy = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Warning, source: RecommendationSource.Legacy));
+        var legacy = Card(Item(CanonicalSeverity.Warning, source: RecommendationSource.Legacy));
 
         Assert.False(legacy.ShowMute);
     }
 
-    [Fact]
-    public void EngineRowWithoutAction_ShowsMuteButNotApply()
-    {
-        // A CPU/wait engine finding with no executable shape: Mute (engine) yes, Apply no.
-        var card = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Critical, source: RecommendationSource.Engine, remediation: null));
+    // ---- Ask-AI prompt generation -----------------------------------------
 
-        Assert.True(card.ShowMute);
-        Assert.False(card.ShowApply);
+    [Fact]
+    public void BuildAskAiPrompt_InterpolatesServerTitleAndWindow()
+    {
+        var from = new DateTime(2026, 6, 1, 14, 5, 0);
+        var to = new DateTime(2026, 6, 1, 15, 30, 0);
+
+        var prompt = RecommendationsViewModel.BuildAskAiPrompt("PROD\\SQL2022", "High CXPACKET waits", from, to);
+
+        Assert.Contains("server \"PROD\\SQL2022\"", prompt);
+        Assert.Contains("\"High CXPACKET waits\"", prompt);
+        Assert.Contains("2026-06-01 14:05", prompt);
+        Assert.Contains("15:30", prompt);
+        Assert.Contains("PerformanceMonitor MCP tools", prompt);
+        Assert.Contains("analyze_server", prompt);
+        Assert.Contains("get_analysis_findings", prompt);
+    }
+
+    [Fact]
+    public void Card_AskAiPrompt_UsesItemTitleAndServerName()
+    {
+        var item = Item(
+            CanonicalSeverity.Critical,
+            title: "Blocking storm",
+            windowStartUtc: new DateTime(2026, 6, 2, 9, 0, 0, DateTimeKind.Utc),
+            windowEndUtc: new DateTime(2026, 6, 2, 9, 15, 0, DateTimeKind.Utc));
+
+        var card = Card(item, serverName: "SQLBOX", utcOffsetMinutes: 0);
+
+        Assert.Contains("server \"SQLBOX\"", card.AskAiPrompt);
+        Assert.Contains("\"Blocking storm\"", card.AskAiPrompt);
+        Assert.Contains("2026-06-02 09:00", card.AskAiPrompt);
+        Assert.Contains("09:15", card.AskAiPrompt);
+    }
+
+    [Fact]
+    public void Card_AskAiPrompt_WithNoWindow_UsesNowAnchoredFallback()
+    {
+        // No producer window → a 2h band ending "now" (server-local). Just assert it renders a
+        // well-formed prompt (no crash, contains the fixed scaffolding + the title).
+        var card = Card(Item(CanonicalSeverity.Critical, title: "Memory pressure"), serverName: "S1");
+
+        Assert.Contains("server \"S1\"", card.AskAiPrompt);
+        Assert.Contains("\"Memory pressure\"", card.AskAiPrompt);
+        Assert.Contains("PerformanceMonitor MCP tools", card.AskAiPrompt);
+    }
+
+    // ---- deep-link window passthrough -------------------------------------
+
+    [Fact]
+    public void Card_ExposesRawUtcWindow_ForDeepLink()
+    {
+        var su = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        var eu = new DateTime(2026, 6, 1, 10, 30, 0, DateTimeKind.Utc);
+        var card = Card(Item(CanonicalSeverity.Critical, windowStartUtc: su, windowEndUtc: eu));
+
+        Assert.Equal(su, card.WindowStartUtc);
+        Assert.Equal(eu, card.WindowEndUtc);
     }
 
     // ---- card display flags ----------------------------------------------
 
     [Fact]
-    public void Card_HasSql_TracksCopyPastePresence()
-    {
-        var withSql = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Warning, sql: "ALTER DATABASE [db1] SET AUTO_SHRINK OFF;"));
-        var withoutSql = new RecommendationCardViewModel(
-            Item(CanonicalSeverity.Warning, sql: null));
-
-        Assert.True(withSql.HasSql);
-        Assert.False(withoutSql.HasSql);
-    }
-
-    [Fact]
     public void Card_DatabaseBracketed_WrapsOrCollapses()
     {
-        var withDb = new RecommendationCardViewModel(Item(CanonicalSeverity.Warning, db: "Sales"));
-        var serverScoped = new RecommendationCardViewModel(Item(CanonicalSeverity.Warning, db: null));
+        var withDb = Card(Item(CanonicalSeverity.Warning, db: "Sales"));
+        var serverScoped = Card(Item(CanonicalSeverity.Warning, db: null));
 
         Assert.True(withDb.HasDatabase);
         Assert.Equal("[Sales]", withDb.DatabaseBracketed);
@@ -292,14 +425,14 @@ public class RecommendationsViewModelTests
     [InlineData(CanonicalSeverity.Info, "INFO")]
     public void Card_SeverityLabel_MatchesBand(CanonicalSeverity severity, string expected)
     {
-        var card = new RecommendationCardViewModel(Item(severity));
+        var card = Card(Item(severity));
         Assert.Equal(expected, card.SeverityLabel);
     }
 
     [Fact]
     public void Card_ActionsDisabledReason_IsTheNextUpdateTooltip()
     {
-        var card = new RecommendationCardViewModel(Item(CanonicalSeverity.Warning));
+        var card = Card(Item(CanonicalSeverity.Warning));
         Assert.Equal(RecommendationsViewModel.ActionsDisabledTooltip, card.ActionsDisabledReason);
     }
 }

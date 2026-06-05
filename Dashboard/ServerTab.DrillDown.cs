@@ -17,6 +17,36 @@ namespace PerformanceMonitorDashboard
 {
     public partial class ServerTab : UserControl
     {
+        // ── Recommendations → Open in Active Queries (WS1b-1) ──
+
+        /// <summary>
+        /// Handles an incident card's "Open in Active Queries" deep-link. The control supplies the
+        /// finding's RAW UTC window; here we convert it to the monitored server's local time (the
+        /// time zone <c>collect.*</c> timestamps use), widen it by the ±1h grace, sync the global
+        /// range/pickers (so "Apply to All" works, matching the Investigate path), select the
+        /// Queries tab, and scope the Active Queries sub-tab to the window.
+        /// </summary>
+        private async void OnOpenActiveQueriesForFinding(DateTime fromUtc, DateTime toUtc)
+        {
+            // UTC -> server-local (collection_time is stored in server-local time), then ±1h grace.
+            var offset = UtcOffsetMinutes;
+            var from = fromUtc.AddMinutes(offset).AddHours(-1);
+            var to = toUtc.AddMinutes(offset).AddHours(1);
+
+            // Populate global custom date pickers + range so "Apply to All" reflects the window.
+            SetPickersFromDateTime(from, GlobalFromDate, GlobalFromHour, GlobalFromMinute);
+            SetPickersFromDateTime(to, GlobalToDate, GlobalToHour, GlobalToMinute);
+            _globalHoursBack = 0;
+            _globalFromDate = from;
+            _globalToDate = to;
+            HighlightTimeButton(0);
+            GlobalDateRangeIndicator.Text = GetGlobalDateRangeText();
+
+            QueriesTabItem.IsSelected = true;
+            PerformanceTab.SetTimeRange(0, from, to);
+            await PerformanceTab.ShowActiveQueriesForRange(from, to);
+        }
+
         // ── Critical Issues → Investigate Navigation (#684) ──
 
         private async void OnInvestigateCriticalIssue(string problemArea, DateTime logDate, string? affectedDatabase, string? investigateQuery)

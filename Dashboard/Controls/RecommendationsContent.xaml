@@ -10,9 +10,10 @@
         <ResourceDictionary>
             <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
-            <!-- One card: severity badge + database + title + advice, with a "Show T-SQL"
-                 expander (Copy button) and the (WS1b-1 disabled) Apply + Mute buttons.
-                 Mirrors AlertDetailWindow's per-row visual conventions. -->
+            <!-- One card: severity badge + database + title + advice, then affordances.
+                 Incidents (Setting==None) send the operator to the dashboard / AI; config-fixes
+                 (Setting!=None) offer "Copy fix" (the ALTER). Apply is present-but-disabled until
+                 WS1b-2. Mirrors AlertDetailWindow's per-row visual conventions. -->
             <DataTemplate x:Key="RecommendationCardTemplate">
                 <Border Background="{DynamicResource BackgroundLightBrush}"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
@@ -50,35 +51,24 @@
                                    Visibility="{Binding HasAdvice, Converter={StaticResource BoolToVis}}"
                                    Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
 
-                        <!-- Show T-SQL: collapsed by default; reveals a monospace block + Copy. -->
-                        <Expander Header="Show T-SQL" IsExpanded="False"
-                                  Visibility="{Binding HasSql, Converter={StaticResource BoolToVis}}"
-                                  Foreground="{DynamicResource ForegroundBrush}" Margin="0,2,0,0">
-                            <StackPanel Margin="0,4,0,0">
-                                <Button Content="Copy" HorizontalAlignment="Right"
-                                        Padding="8,2" Margin="0,0,0,4"
-                                        Click="CopySql_Click"/>
-                                <TextBox Text="{Binding CopyPasteSql, Mode=OneWay}" IsReadOnly="True"
-                                         FontFamily="Consolas" FontSize="12" TextWrapping="NoWrap"
-                                         MaxHeight="240"
-                                         VerticalScrollBarVisibility="Auto"
-                                         HorizontalScrollBarVisibility="Auto"
-                                         Background="Transparent"
-                                         Foreground="{DynamicResource ForegroundBrush}"
-                                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"/>
-                            </StackPanel>
-                        </Expander>
-
-                        <!-- Actions: Apply (engine rows with a built action) + Mute (engine rows).
-                             Both DISABLED in WS1b-1 — wired in WS1b-2. -->
+                        <!-- Affordances. Incidents: Open in Active Queries + Ask AI (+ Apply when
+                             a remediation exists). Config-fixes: Apply + Copy fix. -->
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-                            <Button Content="Apply…" Padding="10,3" Margin="0,0,8,0"
+                            <Button Content="Open in Active Queries →" Padding="10,3" Margin="0,0,8,0"
+                                    Visibility="{Binding ShowOpenInActiveQueries, Converter={StaticResource BoolToVis}}"
+                                    Click="OpenInActiveQueries_Click"
+                                    ToolTip="Jump to Active Queries scoped to this finding's time window"/>
+                            <Button Content="Ask AI" Padding="10,3" Margin="0,0,8,0"
+                                    Visibility="{Binding ShowAskAi, Converter={StaticResource BoolToVis}}"
+                                    Click="AskAi_Click"
+                                    ToolTip="Copy an MCP investigation prompt to the clipboard"/>
+                            <Button Content="Copy fix" Padding="10,3" Margin="0,0,8,0"
+                                    Visibility="{Binding ShowCopyFix, Converter={StaticResource BoolToVis}}"
+                                    Click="CopyFix_Click"
+                                    ToolTip="Copy the ALTER statement to the clipboard"/>
+                            <Button Content="Apply…" Padding="10,3"
                                     IsEnabled="False"
                                     Visibility="{Binding ShowApply, Converter={StaticResource BoolToVis}}"
-                                    ToolTip="{Binding ActionsDisabledReason}"/>
-                            <Button Content="Mute" Padding="10,3"
-                                    IsEnabled="False"
-                                    Visibility="{Binding ShowMute, Converter={StaticResource BoolToVis}}"
                                     ToolTip="{Binding ActionsDisabledReason}"/>
                         </StackPanel>
                     </StackPanel>

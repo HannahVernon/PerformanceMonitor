@@ -24,19 +24,28 @@ namespace PerformanceMonitorDashboard.Controls
     /// The unified, read-only Recommendations surface (recommendations rebuild WS1b-1). Renders
     /// the de-duped <see cref="RecommendationItem"/> list from
     /// <see cref="RecommendationsReader.GetRecommendationsAsync"/> as a card list grouped into
-    /// collapsible Critical / Warning / Info sections. Each card shows a severity badge, the
-    /// affected database, a headline + advice, a "Show T-SQL" expander with a working Copy button,
-    /// and Apply + Mute buttons.
+    /// collapsible Critical / Warning / Info sections.
     ///
     /// <para>
-    /// Scope (WS1b-1): the surface is read-only. Copy is wired (trivial clipboard write). Refresh
-    /// re-runs the reader; "Generate now" runs an on-demand analysis for the current server and
-    /// then refreshes. Apply and Mute are rendered DISABLED with an "Available in the next update"
-    /// tooltip — their action wiring (and the informed-consent gate) is WS1b-2.
+    /// Per-card affordances split on whether the finding is an <b>incident</b> (time-bound) or a
+    /// standing <b>config-fix</b>. Incidents get "Open in Active Queries" (raises
+    /// <see cref="OpenActiveQueriesRequested"/> so the host tab deep-links to the time window) and
+    /// "Ask AI" (copies an MCP investigation prompt). Config-fixes get "Copy fix" (copies the
+    /// ALTER). Both kinds get Apply when a built remediation exists — rendered DISABLED with an
+    /// "Available in the next update" tooltip; the Apply action + informed-consent gate are WS1b-2.
     /// </para>
     /// </summary>
     public partial class RecommendationsContent : UserControl
     {
+        /// <summary>
+        /// Raised when the user clicks "Open in Active Queries" on an incident card. Carries the
+        /// finding's RAW UTC time window; the host (<c>ServerTab</c>) applies the ±1h grace, the
+        /// UTC→server-local conversion, selects the Performance/Queries tab + Active Queries
+        /// sub-tab, and scopes it to the window. Mirrors
+        /// <c>CriticalIssuesContent.InvestigateRequested</c>.
+        /// </summary>
+        public event Action<DateTime, DateTime>? OpenActiveQueriesRequested;
+
         private DatabaseService? _databaseService;
         private SqlServerFindingStore? _findingStore;
         private RecommendationsReader? _reader;
@@ -44,6 +53,7 @@ namespace PerformanceMonitorDashboard.Controls
         private ICredentialService? _credentialService;
 
         private int _hoursBack = 24;
+        private int _utcOffsetMinutes;
         private bool _isBusy;
 
         public RecommendationsContent()
@@ -56,16 +66,20 @@ namespace PerformanceMonitorDashboard.Controls
         /// run an on-demand analysis. <paramref name="serverConnection"/> +
         /// <paramref name="credentialService"/> are used only by "Generate now" to build a
         /// connection string and derive the deterministic server id, exactly as the
-        /// <see cref="AnalysisScheduler"/> does.
+        /// <see cref="AnalysisScheduler"/> does. <paramref name="utcOffsetMinutes"/> is the
+        /// monitored server's UTC offset, used to normalize the legacy producer's server-local
+        /// timestamps to UTC (reader) and to render the Ask-AI prompt window in server-local time.
         /// </summary>
         public void Initialize(
             DatabaseService databaseService,
             ServerConnection serverConnection,
-            ICredentialService credentialService)
+            ICredentialService credentialService,
+            int utcOffsetMinutes = 0)
         {
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
             _serverConnection = serverConnection ?? throw new ArgumentNullException(nameof(serverConnection));
             _credentialService = credentialService ?? throw new ArgumentNullException(nameof(credentialService));
+            _utcOffsetMinutes = utcOffsetMinutes;
             _findingStore = new SqlServerFindingStore(databaseService.ConnectionString);
             _reader = new RecommendationsReader(databaseService, _findingStore);
         }
@@ -102,9 +116,10 @@ namespace PerformanceMonitorDashboard.Controls
                 var serverName = _serverConnection.ServerName;
                 var serverId = ServerIdHelper.GetDeterministicHashCode(serverName);
 
-                var items = await _reader.GetRecommendationsAsync(serverId, serverName, _hoursBack);
+                var items = await _reader.GetRecommendationsAsync(
+                    serverId, serverName, _hoursBack, utcOffsetMinutes: _utcOffsetMinutes);
 
-                ApplyViewModel(RecommendationsViewModel.FromItems(items));
+                ApplyViewModel(RecommendationsViewModel.FromItems(items, serverName, _utcOffsetMinutes));
             }
             catch (Exception ex)
             {
@@ -181,9 +196,42 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         /// <summary>
-        /// Copies a card's T-SQL to the clipboard. The only wired action in WS1b-1.
+        /// Deep-links an incident card to the Active Queries view scoped to the finding's window.
+        /// Raises <see cref="OpenActiveQueriesRequested"/> with the RAW UTC window; the host tab
+        /// applies the grace + timezone conversion. Wired in WS1b-1.
         /// </summary>
-        private void CopySql_Click(object sender, RoutedEventArgs e)
+        private void OpenInActiveQueries_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
+                return;
+
+            // Engine findings always carry a window; legacy incidents carry log_date. Fall back to
+            // a "now"-anchored band only if a producer somehow omitted it (handler widens anyway).
+            var fromUtc = card.WindowStartUtc ?? DateTime.UtcNow.AddHours(-2);
+            var toUtc = card.WindowEndUtc ?? DateTime.UtcNow;
+
+            OpenActiveQueriesRequested?.Invoke(fromUtc, toUtc);
+        }
+
+        /// <summary>
+        /// Copies the MCP investigation prompt for an incident card to the clipboard (no dialog;
+        /// a brief status confirmation). Wired in WS1b-1.
+        /// </summary>
+        private void AskAi_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
+                return;
+
+            // SetDataObject with copy=false avoids WPF's problematic Clipboard.Flush() (matches the
+            // convention in CriticalIssuesContent / AlertDetailWindow).
+            Clipboard.SetDataObject(card.AskAiPrompt, false);
+            StatusText.Text = "AI prompt copied to clipboard.";
+        }
+
+        /// <summary>
+        /// Copies a config-fix card's ALTER statement to the clipboard. Wired in WS1b-1.
+        /// </summary>
+        private void CopyFix_Click(object sender, RoutedEventArgs e)
         {
             if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
                 return;
@@ -191,9 +239,8 @@ namespace PerformanceMonitorDashboard.Controls
             if (string.IsNullOrEmpty(card.CopyPasteSql))
                 return;
 
-            // SetDataObject with copy=false avoids WPF's problematic Clipboard.Flush() (matches
-            // the convention in CriticalIssuesContent / AlertDetailWindow).
             Clipboard.SetDataObject(card.CopyPasteSql, false);
+            StatusText.Text = "Fix copied to clipboard.";
         }
 
         /// <summary>

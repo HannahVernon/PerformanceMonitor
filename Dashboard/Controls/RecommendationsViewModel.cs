@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using PerformanceMonitorDashboard.Services.Recommendations;
 
@@ -39,19 +40,41 @@ namespace PerformanceMonitorDashboard.Controls
     /// <summary>
     /// A single recommendation rendered as a card. A plain DTO (no WPF dependency) wrapping a
     /// <see cref="RecommendationItem"/> plus the pre-computed display/visibility flags the XAML
-    /// binds to, so the Apply/Mute visibility rules and the copy-paste presence are unit-testable
-    /// (WS1b-1). The action wiring (Apply/Mute/Generate) is WS1b-2 — here the buttons render but
-    /// are inert (see <see cref="ActionsDisabledReason"/>).
+    /// binds to, so the affordance model and the Ask-AI prompt are unit-testable (WS1b-1).
+    ///
+    /// <para>
+    /// The card affordances split on whether the finding is an <b>incident</b> (time-bound:
+    /// CPU/memory/blocking/waits/plan-regression — <see cref="RecommendationSetting.None"/>) or a
+    /// standing <b>config-fix</b> (AutoShrink/AutoClose/QueryStore/MAXDOP/RCSI —
+    /// <see cref="RecommendationSetting"/> other than None):
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>Incidents: "Open in Active Queries" (deep-links to the time window) + "Ask AI"
+    ///   (copies an MCP prompt) + Apply (when a remediation exists, e.g. clear-plan).</item>
+    ///   <item>Config-fixes: Apply (when a remediation exists) + "Copy fix" (copies the ALTER).</item>
+    /// </list>
+    /// <para>
+    /// Apply is still rendered DISABLED with the WS1b-1 tooltip — its action wiring + the
+    /// informed-consent gate are WS1b-2. "Open in Active Queries", "Ask AI" and "Copy fix" ARE
+    /// wired in WS1b-1 (navigation + clipboard).
+    /// </para>
     /// </summary>
     public sealed class RecommendationCardViewModel
     {
-        public RecommendationCardViewModel(RecommendationItem item)
+        public RecommendationCardViewModel(RecommendationItem item, string serverName = "", int utcOffsetMinutes = 0)
         {
             Item = item ?? throw new ArgumentNullException(nameof(item));
+            ServerName = serverName ?? string.Empty;
+            _utcOffsetMinutes = utcOffsetMinutes;
         }
+
+        private readonly int _utcOffsetMinutes;
 
         /// <summary>The underlying unified recommendation row.</summary>
         public RecommendationItem Item { get; }
+
+        /// <summary>The monitored server's display name (for the Ask-AI prompt).</summary>
+        public string ServerName { get; }
 
         /// <summary>The three-band severity (drives the badge glyph + colour).</summary>
         public CanonicalSeverity Severity => Item.CanonicalSeverity;
@@ -67,9 +90,9 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>A glyph for the badge (Segoe MDL2 Assets code point) per severity.</summary>
         public string SeverityGlyph => Item.CanonicalSeverity switch
         {
-            CanonicalSeverity.Critical => "", // error / critical
-            CanonicalSeverity.Warning => "",  // warning triangle
-            _ => ""                            // info
+            CanonicalSeverity.Critical => "", // error / critical
+            CanonicalSeverity.Warning => "",  // warning triangle
+            _ => ""                            // info
         };
 
         /// <summary>The card heading.</summary>
@@ -91,20 +114,42 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>Whether there is advice prose to render.</summary>
         public bool HasAdvice => !string.IsNullOrEmpty(Item.AdviceText);
 
-        /// <summary>The copy-paste-ready T-SQL, if any.</summary>
+        /// <summary>The copy-paste-ready fix T-SQL (config-fixes only), if any.</summary>
         public string? CopyPasteSql => Item.CopyPasteSql;
 
-        /// <summary>
-        /// Whether the "Show T-SQL" expander + Copy button should appear (only when there is SQL).
-        /// </summary>
-        public bool HasSql => !string.IsNullOrEmpty(Item.CopyPasteSql);
+        // ---- affordance model -------------------------------------------------
 
         /// <summary>
-        /// Whether the Apply button is shown for this card. Apply is engine-only AND requires a
-        /// built, persisted <see cref="RecommendationItem.Remediation"/> action — legacy rows and
-        /// engine rows with no executable shape never show it. (Mirrors the
-        /// <c>Remediation != null</c> rule the alert path uses.) The button is rendered DISABLED in
-        /// WS1b-1; the action is wired in WS1b-2.
+        /// Whether this is a time-bound INCIDENT finding (CPU/memory/blocking/waits/plan-regression):
+        /// <see cref="RecommendationItem.Setting"/> == <see cref="RecommendationSetting.None"/>.
+        /// Incidents send the operator to the dashboard / AI rather than showing a raw query.
+        /// </summary>
+        public bool IsIncident => Item.Setting == RecommendationSetting.None;
+
+        /// <summary>
+        /// Whether this is a standing CONFIG-FIX finding (a flagged
+        /// <see cref="RecommendationSetting"/>: AutoShrink/AutoClose/QueryStore/RCSI/PageVerify).
+        /// </summary>
+        public bool IsConfigFix => Item.Setting != RecommendationSetting.None;
+
+        /// <summary>
+        /// Whether the "Open in Active Queries" deep-link button is shown — incidents only.
+        /// </summary>
+        public bool ShowOpenInActiveQueries => IsIncident;
+
+        /// <summary>Whether the "Ask AI" (copy MCP prompt) button is shown — incidents only.</summary>
+        public bool ShowAskAi => IsIncident;
+
+        /// <summary>
+        /// Whether the "Copy fix" button is shown — config-fixes that carry an ALTER statement.
+        /// </summary>
+        public bool ShowCopyFix => IsConfigFix && !string.IsNullOrEmpty(Item.CopyPasteSql);
+
+        /// <summary>
+        /// Whether the Apply button is shown for this card — only when the row carries a built,
+        /// persisted <see cref="RecommendationItem.Remediation"/> action (engine rows; mirrors the
+        /// alert path's <c>Remediation != null</c> rule). Shown for both incidents (e.g.
+        /// clear-plan / plan-regression) and config-fixes (e.g. RCSI). Rendered DISABLED in WS1b-1.
         /// </summary>
         public bool ShowApply => Item.Remediation != null;
 
@@ -116,11 +161,47 @@ namespace PerformanceMonitorDashboard.Controls
         public bool ShowMute => Item.Source == RecommendationSource.Engine;
 
         /// <summary>
-        /// The tooltip shown on the (disabled) Apply/Mute buttons in WS1b-1. The action wiring
-        /// lands in WS1b-2; until then the buttons are present-but-inert so the approved layout is
+        /// The tooltip shown on the (disabled) Apply button in WS1b-1. The action wiring + consent
+        /// gate land in WS1b-2; until then Apply is present-but-inert so the approved layout is
         /// fully reviewable without any half-working behaviour.
         /// </summary>
         public string ActionsDisabledReason => RecommendationsViewModel.ActionsDisabledTooltip;
+
+        // ---- deep-link window (raw UTC; the handler applies grace + tz) --------
+
+        /// <summary>Raw UTC start of the finding window (drives the deep-link), or null.</summary>
+        public DateTime? WindowStartUtc => Item.WindowStartUtc;
+
+        /// <summary>Raw UTC end of the finding window (drives the deep-link), or null.</summary>
+        public DateTime? WindowEndUtc => Item.WindowEndUtc;
+
+        // ---- Ask-AI prompt ----------------------------------------------------
+
+        /// <summary>
+        /// The MCP investigation prompt copied to the clipboard by "Ask AI". The window is rendered
+        /// in the monitored server's local time (UTC window + offset) for operator legibility.
+        /// </summary>
+        public string AskAiPrompt
+        {
+            get
+            {
+                var (from, to) = ServerLocalWindow();
+                return RecommendationsViewModel.BuildAskAiPrompt(ServerName, Title, from, to);
+            }
+        }
+
+        /// <summary>
+        /// The finding window converted to the monitored server's local time, with a sensible
+        /// fallback when the producer carried no window (a 2h band ending "now" in server time).
+        /// </summary>
+        private (DateTime From, DateTime To) ServerLocalWindow()
+        {
+            if (Item.WindowStartUtc is { } su && Item.WindowEndUtc is { } eu)
+                return (su.AddMinutes(_utcOffsetMinutes), eu.AddMinutes(_utcOffsetMinutes));
+
+            var now = DateTime.UtcNow.AddMinutes(_utcOffsetMinutes);
+            return (now.AddHours(-2), now);
+        }
     }
 
     /// <summary>
@@ -173,7 +254,7 @@ namespace PerformanceMonitorDashboard.Controls
     public sealed class RecommendationsViewModel
     {
         /// <summary>
-        /// Tooltip on the disabled Apply/Mute buttons until WS1b-2 wires their actions.
+        /// Tooltip on the disabled Apply button until WS1b-2 wires its action + consent gate.
         /// </summary>
         public const string ActionsDisabledTooltip = "Available in the next update";
 
@@ -229,8 +310,11 @@ namespace PerformanceMonitorDashboard.Controls
         /// are omitted), preserving the reader's intra-severity order. Critical and Warning start
         /// expanded; Info starts collapsed. The state is <see cref="RecommendationsState.Empty"/>
         /// when the list is empty, else <see cref="RecommendationsState.Loaded"/>.
+        /// <paramref name="serverName"/> + <paramref name="utcOffsetMinutes"/> are carried onto each
+        /// card for the Ask-AI prompt (the deep-link itself uses the raw UTC window).
         /// </summary>
-        public static RecommendationsViewModel FromItems(IEnumerable<RecommendationItem> items)
+        public static RecommendationsViewModel FromItems(
+            IEnumerable<RecommendationItem> items, string serverName = "", int utcOffsetMinutes = 0)
         {
             var list = items as IReadOnlyList<RecommendationItem> ?? items?.ToList()
                        ?? (IReadOnlyList<RecommendationItem>)Array.Empty<RecommendationItem>();
@@ -240,9 +324,9 @@ namespace PerformanceMonitorDashboard.Controls
 
             var sections = new List<RecommendationSectionViewModel>(3);
             // Fixed display order Critical → Warning → Info, regardless of which bands are present.
-            AppendSection(sections, list, CanonicalSeverity.Critical, expanded: true);
-            AppendSection(sections, list, CanonicalSeverity.Warning, expanded: true);
-            AppendSection(sections, list, CanonicalSeverity.Info, expanded: false);
+            AppendSection(sections, list, CanonicalSeverity.Critical, expanded: true, serverName, utcOffsetMinutes);
+            AppendSection(sections, list, CanonicalSeverity.Warning, expanded: true, serverName, utcOffsetMinutes);
+            AppendSection(sections, list, CanonicalSeverity.Info, expanded: false, serverName, utcOffsetMinutes);
 
             return new(sections, RecommendationsState.Loaded, string.Empty);
         }
@@ -251,16 +335,34 @@ namespace PerformanceMonitorDashboard.Controls
             List<RecommendationSectionViewModel> sections,
             IReadOnlyList<RecommendationItem> all,
             CanonicalSeverity severity,
-            bool expanded)
+            bool expanded,
+            string serverName,
+            int utcOffsetMinutes)
         {
             // Preserve the reader's order within the band (it is already severity-desc sorted).
             var cards = all
                 .Where(i => i.CanonicalSeverity == severity)
-                .Select(i => new RecommendationCardViewModel(i))
+                .Select(i => new RecommendationCardViewModel(i, serverName, utcOffsetMinutes))
                 .ToList();
 
             if (cards.Count > 0)
                 sections.Add(new RecommendationSectionViewModel(severity, cards, expanded));
+        }
+
+        /// <summary>
+        /// Builds the MCP investigation prompt "Ask AI" copies to the clipboard for an incident.
+        /// Pure (no WPF / clock) so the interpolation is unit-testable. The window times are
+        /// formatted in whatever timezone the caller passed (the card passes server-local).
+        /// </summary>
+        public static string BuildAskAiPrompt(string serverName, string title, DateTime from, DateTime to)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "Using the PerformanceMonitor MCP tools, investigate this finding on server \"{0}\": " +
+                "\"{1}\". It was flagged around {2:yyyy-MM-dd HH:mm}–{3:HH:mm}. Call analyze_server / " +
+                "get_analysis_findings and the relevant wait/blocking/memory tools, then tell me the " +
+                "likely cause and what to do.",
+                serverName, title, from, to);
         }
     }
 }

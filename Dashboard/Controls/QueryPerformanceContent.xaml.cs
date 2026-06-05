@@ -1264,6 +1264,17 @@ namespace PerformanceMonitorDashboard.Controls
             QueryPerfTrendsExecChart.Refresh();
         }
 
+        /// <summary>
+        /// Selects the Active Queries sub-tab and scopes it to [<paramref name="from"/>,
+        /// <paramref name="to"/>] (server-local time). Public entry point for a deep-link from the
+        /// Recommendations surface (WS1b-1); reuses the same range-refresh the chart drill-down uses.
+        /// </summary>
+        public async Task ShowActiveQueriesForRange(DateTime from, DateTime to)
+        {
+            SubTabControl.SelectedIndex = 1; // Active Queries
+            await RefreshActiveQueriesWithRangeAsync(from, to);
+        }
+
         private async Task RefreshActiveQueriesWithRangeAsync(DateTime from, DateTime to)
         {
             if (_databaseService == null) return;

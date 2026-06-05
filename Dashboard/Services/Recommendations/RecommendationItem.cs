@@ -135,5 +135,21 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         /// <see cref="RecommendationSetting"/>. Drives the (database, setting) de-dupe key.
         /// </summary>
         public RecommendationSetting Setting { get; set; }
+
+        /// <summary>
+        /// UTC start of the time window the finding pertains to (engine: the analysis
+        /// <c>TimeRangeStart</c>; legacy: the <c>critical_issues.log_date</c>). Raw - no grace
+        /// window is applied here; the navigation handler widens it (+/- 1h) and converts to
+        /// server-local time when deep-linking to Active Queries. Null when the producer carried
+        /// no time bound.
+        /// </summary>
+        public System.DateTime? WindowStartUtc { get; set; }
+
+        /// <summary>
+        /// UTC end of the finding time window (engine: the analysis <c>TimeRangeEnd</c>;
+        /// legacy: the <c>critical_issues.log_date</c>, i.e. equal to <see cref="WindowStartUtc"/>).
+        /// Raw - see <see cref="WindowStartUtc"/>.
+        /// </summary>
+        public System.DateTime? WindowEndUtc { get; set; }
     }
 }

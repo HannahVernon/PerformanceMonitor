@@ -96,7 +96,8 @@ namespace PerformanceMonitorDashboard
 
             // Initialize Overview sub-tab UserControls
             DailySummaryTab.Initialize(_databaseService, _preferencesService);
-            RecommendationsTab.Initialize(_databaseService, _serverConnection, _credentialService);
+            RecommendationsTab.Initialize(_databaseService, _serverConnection, _credentialService, UtcOffsetMinutes);
+            RecommendationsTab.OpenActiveQueriesRequested += OnOpenActiveQueriesForFinding;
             DefaultTraceTab.Initialize(_databaseService);
             CurrentConfigTab.Initialize(_databaseService);
             ConfigChangesTab.Initialize(_databaseService);
@@ -233,6 +234,8 @@ namespace PerformanceMonitorDashboard
 
             BlockingSlicer.RangeChanged -= OnBlockingSlicerChanged;
             DeadlockSlicer.RangeChanged -= OnDeadlockSlicerChanged;
+
+            RecommendationsTab.OpenActiveQueriesRequested -= OnOpenActiveQueriesForFinding;
 
             MemoryTab.ChartDrillDownRequested -= OnChildChartDrillDown;
             ResourceMetricsContent.ChartDrillDownRequested -= OnChildChartDrillDown;
