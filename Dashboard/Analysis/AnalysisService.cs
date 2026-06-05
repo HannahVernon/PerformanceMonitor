@@ -142,15 +142,44 @@ public class AnalysisService
             // 3. Build stories via graph traversal
             var stories = _engine.BuildStories(facts);
 
-            // 4. Persist findings (filtering out muted)
-            var findings = await _findingStore.SaveFindingsAsync(stories, context);
+            // 4. Mute-filter the stories into the surviving findings (P2 reorder) — WITHOUT
+            //    inserting yet, so enrichment + action-build happen on the survivors first
+            //    and the BUILT RemediationAction is persisted on each row (D2). Muted/
+            //    absolution findings are dropped here and never enriched (no enrich-then-
+            //    discard; round-3 MODERATE-2).
+            var findings = await _findingStore.FilterMutedFindingsAsync(stories, context);
 
-            // 5. Enrich findings with drill-down data (ephemeral, not persisted)
+            // 5. Enrich the survivors with drill-down data (ephemeral, not persisted). The
+            //    cheap config drill-down runs regardless of severity (D7), so config/RCSI/
+            //    db-config actions can build at their true 0.3 severity; the expensive
+            //    plan-fetch enrichment stays behind the 0.5 gate inside the collector.
             await _drillDown.EnrichFindingsAsync(findings, context);
+
+            // 6. Build + attach each finding's RemediationAction from the now drill-down-
+            //    populated finding (D2). The builders REQUIRE finding.DrillDown, which the
+            //    store read-back does not return — so the BUILT action is persisted, exactly
+            //    the artifact the alert path serializes into ContextJson. Try the always-safe/
+            //    db-config force action first, then the two destructive entry points (each
+            //    gates internally on RootFactKey + drill-down and returns null when N/A);
+            //    attach the first non-null.
+            foreach (var finding in findings)
+            {
+                finding.Remediation =
+                    FactRemediation.BuildAction(finding)
+                    ?? FactRemediation.BuildRcsiAction(finding)
+                    ?? FactRemediation.BuildClearPlanAction(finding);
+            }
+
+            // 7. Insert the survivors in one batched pass, persisting remediation_action_json
+            //    (D2). Reuses PR-1's single-connection + single-schema-check discipline.
+            await _findingStore.InsertFindingsAsync(findings, context);
 
             LastAnalysisTime = DateTime.UtcNow;
 
-            // 6. Notify listeners
+            // 8. Notify listeners — the returned/enriched findings (now action-bearing) flow
+            //    to the AnalysisCompleted event and, via the scheduler, to NotifyAsync, which
+            //    builds its own context from the drill-down. The reorder did not change which
+            //    list notify receives.
             AnalysisCompleted?.Invoke(this, new AnalysisCompletedEventArgs
             {
                 ServerId = context.ServerId,

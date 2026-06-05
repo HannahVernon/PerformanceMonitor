@@ -166,6 +166,42 @@ public static class AlertContextSerializer
         return JsonSerializer.Serialize(dto);
     }
 
+    /// <summary>
+    /// Serializes a single <see cref="RemediationAction"/> to JSON for persistence on a
+    /// finding row (recommendations rebuild D2). Reuses the SAME private
+    /// <see cref="ToDto(RemediationAction?)"/> projection the alert-context write already
+    /// uses, so a finding's persisted action round-trips byte-identically to one carried
+    /// in an alert's ContextJson (incl. RcsiInactionFigures / ClearPlanFigures / all
+    /// target lists). Returns null when the action is null.
+    /// </summary>
+    public static string? SerializeAction(RemediationAction? action)
+    {
+        if (action is null)
+            return null;
+        return JsonSerializer.Serialize(ToDto(action));
+    }
+
+    /// <summary>
+    /// Deserializes a finding's persisted <c>remediation_action_json</c> back into a
+    /// <see cref="RemediationAction"/> via the SAME private
+    /// <see cref="FromDto(RemediationActionDto?)"/> the alert-context read uses. Returns
+    /// null for null/blank/garbage JSON (try-catch, mirroring <see cref="TryDeserialize"/>),
+    /// so a corrupt column degrades to "no Apply affordance" rather than throwing.
+    /// </summary>
+    public static RemediationAction? DeserializeAction(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+        try
+        {
+            return FromDto(JsonSerializer.Deserialize<RemediationActionDto>(json));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public static bool TryDeserialize(string? json, out AlertContext context)
     {
         context = new AlertContext();

@@ -112,6 +112,20 @@ public class AnalysisFinding
     public Dictionary<string, object>? DrillDown { get; set; }
 
     /// <summary>
+    /// The built remediation action for this finding (recommendations rebuild D2).
+    /// Ephemeral, like <see cref="DrillDown"/>: populated post-enrich on the WRITE path
+    /// (AnalysisService builds it from the drill-down-populated finding via FactRemediation),
+    /// serialized into the analysis_findings <c>remediation_action_json</c> column, and
+    /// deserialized back here on READ. It is NOT a scored field and takes no part in story
+    /// scoring/traversal; it exists so the Recommendations surface can drive Apply + the
+    /// two-sided consent gate from a finding read back from storage (the builders require a
+    /// drill-down that GetRecentFindingsAsync does not return, so the BUILT action is
+    /// persisted instead, mirroring the alert path's ContextJson). Null when no execution
+    /// shape applies. <see cref="RemediationAction"/> lives in this same assembly.
+    /// </summary>
+    public RemediationAction? Remediation { get; set; }
+
+    /// <summary>
     /// Metadata from the root fact carried in from <see cref="AnalysisStory.RootFactMetadata"/>.
     /// Ephemeral — used by the notification layer for diagnosis context; not persisted.
     /// In practice this is anomaly-detector baseline context: mean, stddev, tier, hour, dow.

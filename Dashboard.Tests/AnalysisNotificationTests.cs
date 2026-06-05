@@ -543,4 +543,97 @@ public class AnalysisNotificationTests
         Assert.Null(item.Remediation);
         Assert.Contains("sp_query_store_force_plan", item.Body);
     }
+
+    // ── Recommendations rebuild D2: persist the BUILT RemediationAction on a finding ──
+    // SerializeAction/DeserializeAction wrap the SAME private ToDto/FromDto the alert
+    // path uses, so a finding's persisted action round-trips byte-identically. These
+    // mirror the RCSI/clear-plan ContextJson round-trips above, but exercise the new
+    // single-action seam the Recommendations reader uses.
+
+    [Fact]
+    public void SerializeAction_RcsiAction_RoundTripsFiguresAndTargets()
+    {
+        // Build a real RCSI action from a finding whose config_issues row is rcsi:false
+        // with the inaction enrichment, then round-trip ONLY the action (the finding seam).
+        var action = FactRemediation.BuildRcsiAction(DbConfigRcsiFinding());
+        Assert.NotNull(action);
+        Assert.Equal("RCSI", action!.FactKey);
+
+        var json = AlertContextSerializer.SerializeAction(action);
+        Assert.NotNull(json);
+        var restored = AlertContextSerializer.DeserializeAction(json);
+
+        Assert.NotNull(restored);
+        Assert.Equal("RCSI", restored!.FactKey);
+        var t = Assert.Single(restored.DbConfigTargets!);
+        Assert.Equal(DbConfigSetting.ReadCommittedSnapshotOn, t.Setting);
+        // The RcsiInactionFigures survive the persist round-trip.
+        Assert.NotNull(restored.RcsiFigures);
+        Assert.Equal(12, restored.RcsiFigures!.BlockingEvents);
+        Assert.Equal(3, restored.RcsiFigures.Deadlocks);
+        Assert.Equal(80, restored.RcsiFigures.ReaderWriterPct);
+    }
+
+    [Fact]
+    public void SerializeAction_ClearPlanAction_RoundTripsFiguresAndTargets()
+    {
+        var action = FactRemediation.BuildClearPlanAction(CpuFindingWithAbnormalPlans());
+        Assert.NotNull(action);
+        Assert.Equal("CLEAR_PLAN", action!.FactKey);
+
+        var json = AlertContextSerializer.SerializeAction(action);
+        Assert.NotNull(json);
+        var restored = AlertContextSerializer.DeserializeAction(json);
+
+        Assert.NotNull(restored);
+        Assert.Equal("CLEAR_PLAN", restored!.FactKey);
+        var t = Assert.Single(restored.ClearPlanTargets!);
+        Assert.Equal("0xABCDEF0123456789", t.QueryHash);
+        // The ClearPlanFigures survive the persist round-trip.
+        Assert.NotNull(restored.ClearPlanFigures);
+        Assert.Equal(62, restored.ClearPlanFigures!.CpuPercent);
+        Assert.Equal(5.0, restored.ClearPlanFigures.AnomalyRatio);
+    }
+
+    [Fact]
+    public void SerializeAction_NullAction_SerializesAndDeserializesToNull()
+    {
+        // A finding with no execution shape persists a NULL column → no Apply affordance.
+        Assert.Null(AlertContextSerializer.SerializeAction(null));
+        Assert.Null(AlertContextSerializer.DeserializeAction(null));
+        Assert.Null(AlertContextSerializer.DeserializeAction(""));
+        // Garbage JSON degrades to null (try-catch), never throws.
+        Assert.Null(AlertContextSerializer.DeserializeAction("{ not json"));
+    }
+
+    [Fact]
+    public void PersistedRcsiAction_RendersTwoSidedConsentGate_WithFindingNull()
+    {
+        // THE C1 GATING TEST. The Recommendations Apply surface reconstructs the action from
+        // the persisted remediation_action_json and has NO finding in hand, then asks
+        // FactRiskDisclosure.GetForAction(action, finding: null) for the consent gate. This
+        // proves the gate renders the REAL inaction figures from the PERSISTED ACTION ALONE.
+        var built = FactRemediation.BuildRcsiAction(DbConfigRcsiFinding(blocking: 12, deadlocks: 3, rwPct: 80));
+        Assert.NotNull(built);
+
+        // Round-trip through the exact persistence seam the store row uses.
+        var json = AlertContextSerializer.SerializeAction(built);
+        var action = AlertContextSerializer.DeserializeAction(json);
+        Assert.NotNull(action);
+
+        // finding: null — exactly how the real Apply call site invokes it.
+        var disclosure = FactRiskDisclosure.GetForAction(action!, finding: null);
+
+        Assert.NotNull(disclosure);
+        Assert.NotEmpty(disclosure!.RisksOfChanging);       // two-sided: risk OF changing
+        Assert.NotEmpty(disclosure.RisksOfNotChanging);     // two-sided: risk of NOT changing
+
+        // The original inaction figures (carried on the action) are present in the rendered
+        // inaction side — proving they survived persistence and drive the gate with no finding.
+        var inaction = string.Join(" ", disclosure.RisksOfNotChanging.Select(r => r.Text));
+        Assert.Contains("12 blocked-process events", inaction);
+        Assert.Contains("3 deadlocks", inaction);
+        Assert.Contains("80%", inaction);                   // 80% reader/writer
+        Assert.Contains("RCSI eliminates", inaction);       // the >=50% reader/writer arm
+    }
 }
