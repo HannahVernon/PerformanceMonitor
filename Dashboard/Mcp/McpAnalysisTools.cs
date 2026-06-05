@@ -453,6 +453,7 @@ internal static class ToolRecommendations
         ["PLAN_REGRESSION"] = [new("analyze_query_store_plan", "Compare the regressed plan against the prior plan"), new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"), new("get_query_store_top", "Pull the full Query Store entry and forced-plan history before forcing")],
         ["PERFMON_PLE"] = [new("get_memory_stats", "Check buffer pool"), new("get_memory_clerks", "See memory allocation")],
         ["DB_CONFIG"] = [new("audit_config", "Check configuration")],
+        ["FILE_AUTOGROWTH_PERCENT"] = [new("get_database_sizes", "See per-file sizes and autogrowth settings"), new("get_file_io_stats", "Check per-file growth/latency")],
         ["DISK_SPACE"] = [new("get_file_io_stats", "Check per-file sizes")],
         ["LATCH_EX"] = [new("get_latch_stats", "Check latch contention"), new("get_tempdb_trend", "Check TempDB")],
         ["BAD_ACTOR"] = [new("get_top_queries_by_cpu", "See full query stats"), new("analyze_query_plan", "Analyze the execution plan")],
