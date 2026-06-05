@@ -54,7 +54,9 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 "Memory Pressure",
                 "Memory Grant Pressure",
                 "CPU Scheduling Pressure",
-                "Memory Clerk Growth",
+                // NOT "Memory Clerk Growth" — that legacy rule is the TokenAndPermUserStore
+                // bloat check: quantified (GB grown), actionable (DBCC FREESYSTEMCACHE), fires
+                // on a real 1GB threshold, and the engine doesn't cover it. It's a keeper.
             };
 
         public RecommendationsReader(DatabaseService databaseService, SqlServerFindingStore findingStore)
