@@ -47,4 +47,37 @@ public class InferenceEngineTests
         var edges = graph.GetActiveEdges("CXPACKET", facts);
         Assert.DoesNotContain(edges, e => e.Destination == "SOS_SCHEDULER_YIELD");
     }
+
+    // WS3: a config-advisory fact (DB_CONFIG/SERVER_CONFIG) roots a standalone recommendation
+    // at its base severity (e.g. RCSI-off = 0.3), below the 0.5 incident threshold — so a
+    // standing misconfig surfaces on a quiet, healthy server. An incident fact at the same
+    // severity does NOT root.
+    [Fact]
+    public void ConfigFact_RootsStandalone_BelowMinimumSeverity()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "DB_CONFIG", Source = "config", Value = 1, Severity = 0.3,
+                    Metadata = new Dictionary<string, double> { ["rcsi_off_count"] = 9 } }
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == "DB_CONFIG");
+    }
+
+    [Fact]
+    public void IncidentFact_BelowMinimumSeverity_DoesNotRoot()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 60, Severity = 0.3 }
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.DoesNotContain(stories, s => s.RootFactKey == "CPU_SQL_PERCENT");
+    }
 }
