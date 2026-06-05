@@ -41,6 +41,22 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         internal const string ProblemAreaDatabaseConfiguration = "Database Configuration";
         internal const string ProblemAreaQueryStoreConfiguration = "Query Store Configuration";
 
+        /// <summary>
+        /// Legacy "pressure/growth" problem-areas that are noise — short-window deltas, no
+        /// quantification, circular investigate queries — AND inferior duplicates of analysis-
+        /// engine facts (RESOURCE_SEMAPHORE / SOS_SCHEDULER_YIELD / THREADPOOL / memory-grant
+        /// waits). Suppressed from the Recommendations surface; also cut at the source in
+        /// install/50. See the recommendations-engine-rebuild plan, "Legacy-rule curation".
+        /// </summary>
+        internal static readonly HashSet<string> SuppressedLegacyProblemAreas =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "Memory Pressure",
+                "Memory Grant Pressure",
+                "CPU Scheduling Pressure",
+                "Memory Clerk Growth",
+            };
+
         public RecommendationsReader(DatabaseService databaseService, SqlServerFindingStore findingStore)
         {
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
@@ -52,10 +68,13 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         /// unified list sorted by severity desc. <paramref name="serverName"/> is carried for
         /// display only (the reads key on <paramref name="serverId"/> for findings and on the
         /// connection's own server for the legacy store). <paramref name="hoursBack"/> bounds
-        /// both reads to the same window.
+        /// both reads to the same window. <paramref name="utcOffsetMinutes"/> is the monitored
+        /// server's UTC offset; it is applied ONLY to the legacy <c>log_date</c> (server-local)
+        /// to normalize it to the UTC window the engine rows already carry, so both producers
+        /// expose a single consistent UTC window (the navigation handler converts back).
         /// </summary>
         public async Task<List<RecommendationItem>> GetRecommendationsAsync(
-            int serverId, string serverName, int hoursBack = 24, int limit = 100)
+            int serverId, string serverName, int hoursBack = 24, int limit = 100, int utcOffsetMinutes = 0)
         {
             var findings = await _findingStore.GetRecentFindingsAsync(serverId, hoursBack, limit);
             var legacy = await _databaseService.GetCriticalIssuesAsync(hoursBack);
@@ -66,7 +85,12 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
 
             var legacyItems = new List<RecommendationItem>(legacy.Count);
             foreach (var issue in legacy)
-                legacyItems.Add(MapLegacyIssue(issue));
+            {
+                // Drop the legacy pressure/growth noise (duplicated, better, by engine facts).
+                if (SuppressedLegacyProblemAreas.Contains(issue.ProblemArea ?? string.Empty))
+                    continue;
+                legacyItems.Add(MapLegacyIssue(issue, utcOffsetMinutes));
+            }
 
             return RecommendationDeduper.Merge(engineItems, legacyItems);
         }
@@ -96,7 +120,9 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 CopyPasteSql = BuildCopyPasteFromAction(finding.Remediation),
                 Remediation = finding.Remediation,
                 StoryPathHash = finding.StoryPathHash,
-                Setting = SettingFromAction(finding.Remediation)
+                Setting = SettingFromAction(finding.Remediation),
+                WindowStartUtc = AsUtc(finding.TimeRangeStart),
+                WindowEndUtc = AsUtc(finding.TimeRangeEnd)
             };
         }
 
@@ -108,7 +134,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         /// free-text message). Every other legacy row gets
         /// <see cref="RecommendationSetting.None"/> and is non-deduping pass-through.
         /// </summary>
-        internal static RecommendationItem MapLegacyIssue(CriticalIssueItem issue)
+        internal static RecommendationItem MapLegacyIssue(CriticalIssueItem issue, int utcOffsetMinutes = 0)
         {
             var band = RecommendationDeduper.FromLegacySeverity(issue.Severity);
             var database = string.IsNullOrEmpty(issue.AffectedDatabase) ? null : issue.AffectedDatabase;
@@ -126,7 +152,10 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 CopyPasteSql = sql,
                 Remediation = null,           // legacy rows are advise/copy-paste only — never Apply
                 StoryPathHash = null,          // the legacy store has no mute concept
-                Setting = SettingFromLegacy(issue.ProblemArea, sql)
+                Setting = SettingFromLegacy(issue.ProblemArea, sql),
+                // log_date is server-local; subtract the offset to express the same instant in UTC.
+                WindowStartUtc = LegacyLogDateToUtc(issue.LogDate, utcOffsetMinutes),
+                WindowEndUtc = LegacyLogDateToUtc(issue.LogDate, utcOffsetMinutes)
             };
         }
 
@@ -286,5 +315,21 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         /// </summary>
         private static string QuoteName(string identifier) =>
             "[" + (identifier ?? string.Empty).Replace("]", "]]") + "]";
+
+        /// <summary>
+        /// Stamps a nullable engine timestamp as UTC (the analysis pipeline records
+        /// <c>TimeRangeStart/End</c> in UTC; the store read-back can return Kind=Unspecified, so
+        /// fix the Kind to avoid an ambiguous later conversion). Null passes through.
+        /// </summary>
+        private static System.DateTime? AsUtc(System.DateTime? value) =>
+            value is null ? null : System.DateTime.SpecifyKind(value.Value, System.DateTimeKind.Utc);
+
+        /// <summary>
+        /// Converts a legacy server-local <c>log_date</c> to the equivalent UTC instant by
+        /// subtracting the monitored server's UTC offset, and stamps it Utc. With
+        /// <paramref name="utcOffsetMinutes"/> == 0 (unit tests) this is an identity stamp.
+        /// </summary>
+        private static System.DateTime LegacyLogDateToUtc(System.DateTime logDate, int utcOffsetMinutes) =>
+            System.DateTime.SpecifyKind(logDate.AddMinutes(-utcOffsetMinutes), System.DateTimeKind.Utc);
     }
 }
