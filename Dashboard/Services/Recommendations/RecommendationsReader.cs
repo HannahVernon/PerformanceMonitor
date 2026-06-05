@@ -41,6 +41,22 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         internal const string ProblemAreaDatabaseConfiguration = "Database Configuration";
         internal const string ProblemAreaQueryStoreConfiguration = "Query Store Configuration";
 
+        /// <summary>
+        /// Legacy "pressure/growth" problem-areas that are noise — short-window deltas, no
+        /// quantification, circular investigate queries — AND inferior duplicates of analysis-
+        /// engine facts (RESOURCE_SEMAPHORE / SOS_SCHEDULER_YIELD / THREADPOOL / memory-grant
+        /// waits). Suppressed from the Recommendations surface; also cut at the source in
+        /// install/50. See the recommendations-engine-rebuild plan, "Legacy-rule curation".
+        /// </summary>
+        internal static readonly HashSet<string> SuppressedLegacyProblemAreas =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "Memory Pressure",
+                "Memory Grant Pressure",
+                "CPU Scheduling Pressure",
+                "Memory Clerk Growth",
+            };
+
         public RecommendationsReader(DatabaseService databaseService, SqlServerFindingStore findingStore)
         {
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
@@ -69,7 +85,12 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
 
             var legacyItems = new List<RecommendationItem>(legacy.Count);
             foreach (var issue in legacy)
+            {
+                // Drop the legacy pressure/growth noise (duplicated, better, by engine facts).
+                if (SuppressedLegacyProblemAreas.Contains(issue.ProblemArea ?? string.Empty))
+                    continue;
                 legacyItems.Add(MapLegacyIssue(issue, utcOffsetMinutes));
+            }
 
             return RecommendationDeduper.Merge(engineItems, legacyItems);
         }
