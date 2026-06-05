@@ -72,4 +72,55 @@ public class FactScorerTests
         Assert.True(cx.Severity <= 2.0, "Severity should never exceed 2.0");
         Assert.Equal(2.0, cx.Severity);
     }
+
+    /* ── WS3: percent-autogrowth-on-large-files config fact ── */
+
+    // A FILE_AUTOGROWTH_PERCENT fact scores the 0.3 advisory base when at least one large
+    // percent-growth file was found (file_count > 0) — mirroring DB_CONFIG's single-misconfig
+    // base. It is deliberately below the 0.5 incident threshold; it surfaces only because it
+    // is a config-advisory root key (see the InferenceEngine rooting test).
+    [Fact]
+    public void FileAutogrowthPercent_ScoresAdvisoryBase_WhenFilesPresent()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "FILE_AUTOGROWTH_PERCENT", Value = 2,
+                    Metadata = new() { ["file_count"] = 2, ["database_count"] = 1 } }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(0.3, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // No offending files (file_count == 0) → no severity. Defends the collector contract that
+    // the fact is emitted only when file_count > 0, and the scorer's own guard.
+    [Fact]
+    public void FileAutogrowthPercent_ScoresZero_WhenNoFiles()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "FILE_AUTOGROWTH_PERCENT", Value = 0,
+                    Metadata = new() { ["file_count"] = 0, ["database_count"] = 0 } }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(0.0, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // Advice exists for the fact key (a missing AdviceBlock is the P1 dead-fact bug class —
+    // a fact that roots but renders no advice). Headline must be the authored copy.
+    [Fact]
+    public void FileAutogrowthPercent_HasAdviceBlock()
+    {
+        var advice = FactAdvice.GetForFactKey("FILE_AUTOGROWTH_PERCENT");
+
+        Assert.NotNull(advice);
+        Assert.Equal("Large file(s) growing in percentage steps", advice!.Headline);
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+    }
 }

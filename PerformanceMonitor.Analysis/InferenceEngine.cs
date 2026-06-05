@@ -37,6 +37,7 @@ public class InferenceEngine
     {
         "DB_CONFIG",
         "SERVER_CONFIG",
+        "FILE_AUTOGROWTH_PERCENT",
     };
 
     private readonly RelationshipGraph _graph;

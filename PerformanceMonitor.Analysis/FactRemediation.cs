@@ -39,6 +39,7 @@ public static class FactRemediation
         {
             "PLAN_REGRESSION" => GenerateForPlanRegression(finding),
             "DB_CONFIG" => GenerateForDbConfig(finding),
+            "FILE_AUTOGROWTH_PERCENT" => GenerateForFileAutogrowth(finding),
             _ => null
         };
     }
@@ -73,6 +74,26 @@ public static class FactRemediation
         }
     }
 
+    /// <summary>
+    /// Builds the ADVISORY percent-autogrowth action for a FILE_AUTOGROWTH_PERCENT finding,
+    /// or null when no offending file is present (WS3). Parallel to <see cref="BuildAction"/>
+    /// — a SEPARATE entry point so neither switch grows. The action carries FactKey
+    /// "FILE_AUTOGROWTH_PERCENT", for which NO handler is registered, so it produces NO Apply
+    /// button: it exists purely to carry the per-file <see cref="FileGrowthTarget"/>s through
+    /// the persisted-action round-trip so the Recommendations reader can render the copy-paste
+    /// MODIFY FILE statements on read (the drill-down the targets come from is ephemeral).
+    /// </summary>
+    public static RemediationAction? BuildFileAutogrowthAction(AnalysisFinding finding)
+    {
+        if (finding is null || !string.Equals(finding.RootFactKey, "FILE_AUTOGROWTH_PERCENT", StringComparison.Ordinal))
+            return null;
+
+        var fileTargets = ExtractFileGrowthTargets(finding);
+        return fileTargets.Count == 0
+            ? null
+            : new RemediationAction("FILE_AUTOGROWTH_PERCENT", "advise", Array.Empty<ForcePlanTarget>(),
+                                    FileGrowthTargets: fileTargets);
+    }
     /// <summary>
     /// Builds the DESTRUCTIVE RCSI remediation action for a DB_CONFIG finding, or null
     /// when it does not apply (B3 Phase 3). Parallel to <see cref="BuildAction"/>, which
@@ -577,6 +598,105 @@ public static class FactRemediation
             _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown DbConfigSetting")
         };
         return $"ALTER DATABASE {QuoteName(database)} {setClause};";
+    }
+
+    /// <summary>
+    /// Extracts the percent-autogrowth file targets from a FILE_AUTOGROWTH_PERCENT
+    /// finding's drill-down <c>autogrowth_percent_files</c> array (WS3). For each row with a
+    /// non-empty <c>database</c> and <c>logical_file_name</c>, emits one
+    /// <see cref="FileGrowthTarget"/> carrying the structured fields (<c>total_size_mb</c>,
+    /// <c>growth_pct</c>) — never parsing the human <c>issue</c>/<c>alter_statement</c>
+    /// strings. The recommended fixed-MB step is computed once here via
+    /// <see cref="RecommendedGrowthMbFor"/> so the collector's rendered statement and the
+    /// reader's rendered statement agree. A defensive cap of 50 mirrors the other extractors.
+    /// </summary>
+    public static IReadOnlyList<FileGrowthTarget> ExtractFileGrowthTargets(AnalysisFinding finding)
+    {
+        var targets = new List<FileGrowthTarget>();
+
+        if (finding?.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("autogrowth_percent_files", out var raw) ||
+            raw is null)
+            return targets;
+
+        JsonElement element;
+        try
+        {
+            element = JsonSerializer.SerializeToElement(raw);
+        }
+        catch
+        {
+            return targets;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return targets;
+
+        foreach (var row in element.EnumerateArray())
+        {
+            if (targets.Count >= 50) break;
+            if (row.ValueKind != JsonValueKind.Object) continue;
+
+            var database = GetString(row, "database");
+            var logical = GetString(row, "logical_file_name");
+            if (string.IsNullOrEmpty(database) || string.IsNullOrEmpty(logical))
+                continue;
+
+            var sizeMb = GetDouble(row, "total_size_mb");
+            var growthPct = GetInt(row, "growth_pct");
+            targets.Add(new FileGrowthTarget(
+                database, logical, sizeMb, growthPct, RecommendedGrowthMbFor(sizeMb)));
+        }
+
+        return targets;
+    }
+
+    /// <summary>
+    /// Thin renderer over <see cref="ExtractFileGrowthTargets"/> for the read-only surfaces
+    /// (email / webhook / MCP): the exact copy-paste <c>ALTER DATABASE ... MODIFY FILE</c>
+    /// statements, one per file, with a "was N% on X GB" comment. Nothing executes this — it
+    /// is advisory text (there is no handler for the fact key). Null when no file applies.
+    /// </summary>
+    private static string? GenerateForFileAutogrowth(AnalysisFinding finding)
+    {
+        var targets = ExtractFileGrowthTargets(finding);
+        if (targets.Count == 0)
+            return null;
+
+        var sb = new StringBuilder();
+        foreach (var t in targets)
+        {
+            var gb = t.CurrentSizeMb / 1024.0;
+            sb.AppendLine($"-- {QuoteName(t.Database)}.{QuoteName(t.LogicalFileName)}: was {t.CurrentGrowthPercent}% growth on {gb:N1} GB");
+            sb.AppendLine(BuildModifyFileStatement(t.Database, t.LogicalFileName, t.RecommendedGrowthMb));
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// The size-tiered fixed-MB FILEGROWTH suggested for a file of <paramref name="totalSizeMb"/>:
+    /// 256 MB for 10-50 GB, 512 MB for 50-200 GB, 1024 MB for &gt; 200 GB. A STARTING POINT the
+    /// advice tells the operator to tune. Single source of truth so the drill-down collector and
+    /// the Recommendations reader render byte-identical statements.
+    /// </summary>
+    public static int RecommendedGrowthMbFor(double totalSizeMb)
+    {
+        const double GB = 1024.0;
+        if (totalSizeMb > 200 * GB) return 1024;
+        if (totalSizeMb >= 50 * GB) return 512;
+        return 256;
+    }
+
+    /// <summary>
+    /// Renders one copy-paste <c>ALTER DATABASE [db] MODIFY FILE (NAME = [logical],</c>
+    /// <c>FILEGROWTH = NMB);</c> statement with both identifiers QUOTENAME-bracketed. Shared by
+    /// the drill-down collectors (the per-file <c>alter_statement</c>) and the reader's
+    /// copy-paste rebuild so they never drift. Advisory text only — nothing executes it.
+    /// </summary>
+    public static string BuildModifyFileStatement(string database, string logicalFileName, int growthMb)
+    {
+        return $"ALTER DATABASE {QuoteName(database)} MODIFY FILE (NAME = {QuoteName(logicalFileName)}, FILEGROWTH = {growthMb}MB);";
     }
 
     /// <summary>

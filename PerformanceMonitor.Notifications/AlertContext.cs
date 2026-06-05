@@ -83,7 +83,8 @@ public record RemediationActionDto(
     List<DbConfigTargetDto>? DbConfigTargets = null,
     RcsiInactionFiguresDto? RcsiFigures = null,
     List<ClearPlanTargetDto>? ClearPlanTargets = null,
-    ClearPlanFiguresDto? ClearPlanFigures = null);
+    ClearPlanFiguresDto? ClearPlanFigures = null,
+    List<FileGrowthTargetDto>? FileGrowthTargets = null);
 
 /// <summary>
 /// JSON mirror of <see cref="ClearPlanTarget"/> (clear-cached-plan, PR-B). The
@@ -146,6 +147,21 @@ public record DbConfigTargetDto(
     string Database,
     int Setting,
     string? CurrentValue);
+
+/// <summary>
+/// JSON mirror of <see cref="FileGrowthTarget"/> (WS3 percent-autogrowth advisory). The
+/// trailing optional <c>FileGrowthTargets</c> member on <see cref="RemediationActionDto"/>
+/// keeps the round-trip backward-compatible: legacy/non-autogrowth contextJson without it
+/// deserializes to null. Carried so the copy-paste MODIFY FILE statements survive the
+/// persisted-action round-trip the Recommendations reader renders from (the drill-down is
+/// ephemeral). Advisory only — there is no handler, so it never drives Apply.
+/// </summary>
+public record FileGrowthTargetDto(
+    string Database,
+    string LogicalFileName,
+    double CurrentSizeMb,
+    int CurrentGrowthPercent,
+    int RecommendedGrowthMb);
 
 /// <summary>
 /// Maps <see cref="AlertContext"/> to/from the <see cref="AlertContextDto"/> JSON projection
@@ -286,8 +302,20 @@ public static class AlertContextSerializer
                 cf.CpuPercent, cf.PlanRegressionCoFired, cf.ParameterSensitivityCoFired)
             : null;
 
+        // WS3 (percent-autogrowth advisory): persist the file targets so the Recommendations
+        // reader can render the copy-paste MODIFY FILE statements on read (the drill-down is
+        // ephemeral). Null for every other fact key -> backward-compatible.
+        List<FileGrowthTargetDto>? fileGrowthTargets = null;
+        if (action.FileGrowthTargets is not null)
+        {
+            fileGrowthTargets = new List<FileGrowthTargetDto>(action.FileGrowthTargets.Count);
+            foreach (var t in action.FileGrowthTargets)
+                fileGrowthTargets.Add(new FileGrowthTargetDto(
+                    t.Database, t.LogicalFileName, t.CurrentSizeMb, t.CurrentGrowthPercent, t.RecommendedGrowthMb));
+        }
+
         return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets,
-            rcsiFigures, clearPlanTargets, clearPlanFigures);
+            rcsiFigures, clearPlanTargets, clearPlanFigures, fileGrowthTargets);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -352,7 +380,19 @@ public static class AlertContextSerializer
                 cf.CpuPercent, cf.PlanRegressionCoFired, cf.ParameterSensitivityCoFired)
             : null;
 
+        // WS3: rebuild the percent-autogrowth file targets from the DTO and PASS them to the
+        // ctor (the trailing FileGrowthTargets member defaults to null, so a short call would
+        // silently drop them on the round-trip). Legacy JSON without the field -> null.
+        List<FileGrowthTarget>? fileGrowthTargets = null;
+        if (dto.FileGrowthTargets is not null)
+        {
+            fileGrowthTargets = new List<FileGrowthTarget>(dto.FileGrowthTargets.Count);
+            foreach (var t in dto.FileGrowthTargets)
+                fileGrowthTargets.Add(new FileGrowthTarget(
+                    t.Database, t.LogicalFileName, t.CurrentSizeMb, t.CurrentGrowthPercent, t.RecommendedGrowthMb));
+        }
+
         return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures,
-            clearPlanTargets, clearPlanFigures);
+            clearPlanTargets, clearPlanFigures, fileGrowthTargets);
     }
 }

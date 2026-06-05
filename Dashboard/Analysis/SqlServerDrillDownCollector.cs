@@ -55,6 +55,13 @@ public class SqlServerDrillDownCollector
                 if (pathKeys.Contains("DB_CONFIG"))
                     await CollectConfigIssues(finding, context);
 
+                /* WS3: the percent-autogrowth drill-down is a single cheap config-table read
+                   and is required to render the copy-paste MODIFY FILE fix for a
+                   FILE_AUTOGROWTH_PERCENT finding, which scores 0.3 (advisory). Collect it
+                   regardless of the 0.5 display gate, like the config drill-down above. */
+                if (pathKeys.Contains("FILE_AUTOGROWTH_PERCENT"))
+                    await CollectAutogrowthPercentFiles(finding, context);
+
                 // Below the 0.5 display gate, only the cheap config drill-down above runs;
                 // the expensive collectors (plan fetches, multi-row reads) are skipped.
                 if (finding.Severity < 0.5)
@@ -801,6 +808,79 @@ ORDER BY database_name;";
 
         if (items.Count > 0)
             finding.DrillDown!["config_issues"] = items;
+    }
+
+    /// <summary>
+    /// Lists the large (&gt;= 10 GB) data/log files on PERCENTAGE autogrowth (WS3), latest
+    /// snapshot per file, excluding system databases — and attaches a copy-paste
+    /// <c>ALTER DATABASE ... MODIFY FILE</c> fix per file (FILEGROWTH set to a size-tiered
+    /// fixed MB). The structured fields (<c>database</c>, <c>logical_file_name</c>,
+    /// <c>total_size_mb</c>, <c>growth_pct</c>) are what the shared extractor
+    /// (FactRemediation.ExtractFileGrowthTargets) reads; the rendered <c>alter_statement</c>
+    /// uses the SHARED renderer so it is byte-identical to the reader's copy-paste rebuild.
+    /// Advisory only — no Apply.
+    /// </summary>
+    private async Task CollectAutogrowthPercentFiles(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+;WITH latest AS (
+    SELECT
+        database_name,
+        file_id,
+        file_type_desc,
+        file_name,
+        total_size_mb,
+        growth_pct,
+        ROW_NUMBER() OVER (PARTITION BY database_name, file_id ORDER BY collection_time DESC) AS rn
+    FROM collect.database_size_stats
+    WHERE database_name NOT IN ('master', 'msdb', 'model', 'tempdb')
+)
+SELECT TOP (50)
+    database_name,
+    file_type_desc,
+    file_name,
+    total_size_mb,
+    growth_pct
+FROM latest
+WHERE rn = 1
+AND   is_percent_growth = 1
+AND   total_size_mb >= @minSizeMb
+ORDER BY total_size_mb DESC;";
+
+        cmd.Parameters.Add(new SqlParameter("@minSizeMb", 10240.0)); /* 10 GB */
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var database = reader.IsDBNull(0) ? "" : reader.GetString(0);
+            var fileType = reader.IsDBNull(1) ? "" : reader.GetString(1);
+            var logical = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            var sizeMb = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3));
+            var growthPct = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
+            if (string.IsNullOrEmpty(database) || string.IsNullOrEmpty(logical)) continue;
+
+            var growthMb = FactRemediation.RecommendedGrowthMbFor(sizeMb);
+            items.Add(new
+            {
+                database,
+                logical_file_name = logical,
+                file_type = fileType,
+                total_size_mb = sizeMb,
+                growth_pct = growthPct,
+                issue = $"{growthPct}% autogrowth on {sizeMb / 1024.0:N1} GB {fileType} file",
+                alter_statement = FactRemediation.BuildModifyFileStatement(database, logical, growthMb)
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["autogrowth_percent_files"] = items;
     }
 
     private sealed class ConfigIssueRow

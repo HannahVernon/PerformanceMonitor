@@ -47,6 +47,7 @@ public class SqlServerFactCollector : IFactCollector
         await CollectPerfmonFactsAsync(context, facts);
         await CollectMemoryClerkFactsAsync(context, facts);
         await CollectDatabaseConfigFactsAsync(context, facts);
+        await CollectFileAutogrowthFactsAsync(context, facts);
         await CollectProcedureStatsFactsAsync(context, facts);
         await CollectActiveQueryFactsAsync(context, facts);
         await CollectRunningJobFactsAsync(context, facts);
@@ -1545,6 +1546,72 @@ FROM pivoted";
         catch (Exception ex)
         {
             Logger.Error("SqlServerFactCollector.CollectDatabaseConfigFactsAsync failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Collects the percent-autogrowth-on-large-files config fact (WS3): data/log files set
+    /// to grow in PERCENTAGE steps that are also large (>= 10 GB), where a single growth is a
+    /// huge, stalling allocation. Reads the latest snapshot per file from
+    /// collect.database_size_stats, excludes system databases, and emits ONE aggregate
+    /// FILE_AUTOGROWTH_PERCENT fact carrying the offending-file/database counts (the per-file
+    /// detail + copy-paste fix is attached later by the drill-down collector).
+    /// </summary>
+    private async Task CollectFileAutogrowthFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+;WITH latest AS (
+    SELECT
+        database_name,
+        file_id,
+        total_size_mb,
+        is_percent_growth,
+        ROW_NUMBER() OVER (PARTITION BY database_name, file_id ORDER BY collection_time DESC) AS rn
+    FROM collect.database_size_stats
+    WHERE database_name NOT IN ('master', 'msdb', 'model', 'tempdb')
+)
+SELECT
+    file_count = COUNT(*),
+    database_count = COUNT(DISTINCT database_name)
+FROM latest
+WHERE rn = 1
+AND   is_percent_growth = 1
+AND   total_size_mb >= @minSizeMb;";
+
+            cmd.Parameters.Add(new SqlParameter("@minSizeMb", 10240.0)); /* 10 GB */
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var fileCount = reader.IsDBNull(0) ? 0L : Convert.ToInt64(reader.GetValue(0));
+            if (fileCount == 0) return;
+
+            var databaseCount = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1));
+
+            facts.Add(new Fact
+            {
+                Source = "config",
+                Key = "FILE_AUTOGROWTH_PERCENT",
+                Value = fileCount,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["file_count"] = fileCount,
+                    ["database_count"] = databaseCount
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SqlServerFactCollector.CollectFileAutogrowthFactsAsync failed", ex);
         }
     }
 

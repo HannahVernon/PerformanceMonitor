@@ -789,6 +789,11 @@ internal static class ToolRecommendations
             new("audit_config", "Check server-level configuration"),
             new("get_blocked_process_reports", "Check if RCSI-off databases have blocking")
         ],
+        ["FILE_AUTOGROWTH_PERCENT"] =
+        [
+            new("get_database_sizes", "See per-file sizes and autogrowth settings"),
+            new("get_file_io_stats", "Check per-file growth and latency")
+        ],
         ["RUNNING_JOBS"] =
         [
             new("get_running_jobs", "See currently running jobs with duration vs historical"),

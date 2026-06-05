@@ -47,6 +47,7 @@ public class DuckDbFactCollector : IFactCollector
         await CollectPerfmonFactsAsync(context, facts);
         await CollectMemoryClerkFactsAsync(context, facts);
         await CollectDatabaseConfigFactsAsync(context, facts);
+        await CollectFileAutogrowthFactsAsync(context, facts);
         await CollectProcedureStatsFactsAsync(context, facts);
         await CollectActiveQueryFactsAsync(context, facts);
         await CollectRunningJobFactsAsync(context, facts);
@@ -1437,6 +1438,65 @@ AND database_name NOT IN ('master', 'msdb', 'model', 'tempdb')";
                     ["full_recovery_count"] = fullRecovery,
                     ["simple_recovery_count"] = simpleRecovery,
                     ["query_store_on_count"] = queryStoreOn
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
+    }
+
+    /// <summary>
+    /// Collects the percent-autogrowth-on-large-files config fact (WS3): data/log files set
+    /// to grow in PERCENTAGE steps that are also large (>= 10 GB), where a single growth is a
+    /// huge, stalling allocation. Reads the latest snapshot per file from database_size_stats,
+    /// excludes system databases, and emits ONE aggregate FILE_AUTOGROWTH_PERCENT fact carrying
+    /// the offending-file/database counts (the per-file detail + copy-paste fix is attached
+    /// later by the drill-down collector).
+    /// </summary>
+    private async Task CollectFileAutogrowthFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var readLock = _duckDb.AcquireReadLock();
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+WITH latest AS (
+    SELECT database_name, file_id, total_size_mb, is_percent_growth,
+           ROW_NUMBER() OVER (PARTITION BY database_name, file_id ORDER BY collection_time DESC) AS rn
+    FROM database_size_stats
+    WHERE server_id = $1
+)
+SELECT
+    COUNT(*) AS file_count,
+    COUNT(DISTINCT database_name) AS database_count
+FROM latest
+WHERE rn = 1
+AND   is_percent_growth = true
+AND   total_size_mb >= 10240
+AND   database_name NOT IN ('master', 'msdb', 'model', 'tempdb')";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var fileCount = reader.IsDBNull(0) ? 0L : ToInt64(reader.GetValue(0));
+            if (fileCount == 0) return;
+
+            var databaseCount = reader.IsDBNull(1) ? 0L : ToInt64(reader.GetValue(1));
+
+            facts.Add(new Fact
+            {
+                Source = "config",
+                Key = "FILE_AUTOGROWTH_PERCENT",
+                Value = fileCount,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["file_count"] = fileCount,
+                    ["database_count"] = databaseCount
                 }
             });
         }

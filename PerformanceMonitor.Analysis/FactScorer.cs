@@ -33,6 +33,7 @@ public class FactScorer
                 "memory" => ScoreMemoryFact(fact),
                 "queries" => ScoreQueryFact(fact),
                 "perfmon" => ScorePerfmonFact(fact),
+                "config" => ScoreConfigFact(fact),
                 "database_config" => ScoreDatabaseConfigFact(fact),
                 "jobs" => ScoreJobFact(fact),
                 "disk" => ScoreDiskFact(fact),
@@ -229,6 +230,25 @@ public class FactScorer
             "PERFMON_PLE" => 0.0,
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores config-source advisory facts. Today the only scored key is
+    /// FILE_AUTOGROWTH_PERCENT (WS3): large data/log files set to grow in PERCENTAGE
+    /// steps. It is an advisory at base 0.3 (mirrors DB_CONFIG's single-misconfig base) —
+    /// below the 0.5 incident threshold, so it only surfaces because it is a
+    /// config-advisory root key (see InferenceEngine.ConfigAdvisoryRootKeys). Every other
+    /// "config"-source fact (CONFIG_MAXDOP / CONFIG_CTFP / SERVER_* / DATABASE_TOTAL_SIZE_MB
+    /// / SERVER_HARDWARE) is a leaf/amplifier with no base severity of its own and scores 0
+    /// here, exactly as it did before this arm existed (it contributes only via amplifiers).
+    /// </summary>
+    private static double ScoreConfigFact(Fact fact)
+    {
+        if (fact.Key != "FILE_AUTOGROWTH_PERCENT") return 0.0;
+
+        // Base 0.3 when at least one large percent-growth file was found; 0 otherwise.
+        var fileCount = fact.Metadata.GetValueOrDefault("file_count");
+        return fileCount > 0 ? 0.3 : 0.0;
     }
 
     /// <summary>

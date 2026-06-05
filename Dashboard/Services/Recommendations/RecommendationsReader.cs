@@ -247,7 +247,27 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         /// </summary>
         internal static string? BuildCopyPasteFromAction(RemediationAction? action)
         {
-            if (action?.DbConfigTargets is not { Count: > 0 } targets)
+            if (action is null)
+                return null;
+
+            // WS3: a percent-autogrowth advisory action carries per-file MODIFY FILE targets
+            // (no DB-config targets). Render them via the SHARED renderer so the copy-paste is
+            // byte-identical to the drill-down's alter_statement. These two target lists are
+            // mutually exclusive (distinct fact keys), so order does not matter.
+            if (action.FileGrowthTargets is { Count: > 0 } fileTargets)
+            {
+                var fsb = new StringBuilder();
+                foreach (var target in fileTargets)
+                {
+                    if (fsb.Length > 0)
+                        fsb.AppendLine();
+                    fsb.Append(FactRemediation.BuildModifyFileStatement(
+                        target.Database, target.LogicalFileName, target.RecommendedGrowthMb));
+                }
+                return fsb.Length == 0 ? null : fsb.ToString();
+            }
+
+            if (action.DbConfigTargets is not { Count: > 0 } targets)
                 return null;
 
             var sb = new StringBuilder();

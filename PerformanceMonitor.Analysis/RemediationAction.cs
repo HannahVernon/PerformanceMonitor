@@ -26,13 +26,14 @@ namespace PerformanceMonitor.Analysis;
 /// </para>
 /// </summary>
 public sealed record RemediationAction(
-    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" | "RCSI" | "CLEAR_PLAN" — handler-registry key
+    string FactKey,                              // "PLAN_REGRESSION" | "DB_CONFIG" | "RCSI" | "CLEAR_PLAN" | "FILE_AUTOGROWTH_PERCENT" — handler-registry key
     string Action,                              // "force" (plan regression) | "set" (db config) | "clear" (clear cached plan). Un-apply derives "unforce".
     IReadOnlyList<ForcePlanTarget> Targets,      // force-plan targets (empty list for DB_CONFIG / CLEAR_PLAN)
     IReadOnlyList<DbConfigTarget>? DbConfigTargets = null,  // DB-config targets (null for force-plan)
     RcsiInactionFigures? RcsiFigures = null,     // B3 Phase 3: RCSI risk-of-not-changing figures carried on the persisted action
     IReadOnlyList<ClearPlanTarget>? ClearPlanTargets = null, // clear-cached-plan targets (null for the other fact keys)
-    ClearPlanFigures? ClearPlanFigures = null);  // clear-cached-plan risk-of-not-changing figures carried on the persisted action
+    ClearPlanFigures? ClearPlanFigures = null,   // clear-cached-plan risk-of-not-changing figures carried on the persisted action
+    IReadOnlyList<FileGrowthTarget>? FileGrowthTargets = null); // WS3: percent-autogrowth files — advise/copy-paste ONLY (no registered handler, no Apply)
 
 /// <summary>
 /// The risk-of-NOT-changing monitoring figures for a destructive CLEAR_PLAN action
@@ -141,6 +142,24 @@ public sealed record DbConfigTarget(
     string Database,
     DbConfigSetting Setting,
     string? CurrentValue = null);
+
+/// <summary>
+/// One percent-autogrowth file target (WS3): a large data/log file set to grow in
+/// PERCENTAGE steps, which on a big file is a single huge allocation that stalls
+/// writes. This is an ADVISORY/copy-paste payload only — there is NO registered
+/// handler for the "FILE_AUTOGROWTH_PERCENT" fact key, so it never produces an Apply
+/// button (<see cref="DbConfigTarget"/> by contrast drives the always-safe Apply). All
+/// members are display/copy-paste inputs: the reader renders one
+/// <c>ALTER DATABASE [db] MODIFY FILE (NAME = [logical], FILEGROWTH = NMB);</c> per
+/// target. <see cref="RecommendedGrowthMb"/> is the fixed-MB step suggested from the
+/// observed file size (a starting point, not a prescription).
+/// </summary>
+public sealed record FileGrowthTarget(
+    string Database,                            // user DB name (bracketed by the renderer; never executed)
+    string LogicalFileName,                     // sys.database_files.name (bracketed by the renderer)
+    double CurrentSizeMb,                       // total_size_mb — display only
+    int CurrentGrowthPercent,                   // growth_pct — display only
+    int RecommendedGrowthMb);                   // suggested fixed-MB FILEGROWTH (size-tiered)
 
 /// <summary>
 /// One force-plan target. <see cref="Database"/>, <see cref="QueryId"/> and

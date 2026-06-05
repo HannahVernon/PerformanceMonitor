@@ -1816,6 +1816,46 @@ VALUES ($1, $2, $3, $4, 'UserDB', 5, 1, 'ROWS', 'UserDB', 'D:\Data\UserDB.mdf',
         }
     }
 
+    /// <summary>
+    /// WS3: seeds database_size_stats file rows for the percent-autogrowth-on-large-files
+    /// fact. Each tuple is (database, logicalName, fileType, totalSizeMb, isPercentGrowth,
+    /// growthPct). Only large (&gt;= 10 GB) percent-growth files in NON-system databases should
+    /// drive the FILE_AUTOGROWTH_PERCENT fact.
+    /// </summary>
+    internal async Task SeedPercentAutogrowthFilesAsync(
+        params (string database, string logicalName, string fileType, double totalSizeMb, bool isPercentGrowth, int growthPct)[] files)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        var fileId = 1;
+        foreach (var (database, logicalName, fileType, totalSizeMb, isPercentGrowth, growthPct) in files)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO database_size_stats
+    (collection_id, collection_time, server_id, server_name,
+     database_name, database_id, file_id, file_type_desc, file_name, physical_name,
+     total_size_mb, used_size_mb, is_percent_growth, growth_pct)
+VALUES ($1, $2, $3, $4, $5, 7, $6, $7, $8, 'X:\Data\file.mdf', $9, NULL, $10, $11)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = database });
+            cmd.Parameters.Add(new DuckDBParameter { Value = fileId++ });
+            cmd.Parameters.Add(new DuckDBParameter { Value = fileType });
+            cmd.Parameters.Add(new DuckDBParameter { Value = logicalName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = totalSizeMb });
+            cmd.Parameters.Add(new DuckDBParameter { Value = isPercentGrowth });
+            cmd.Parameters.Add(new DuckDBParameter { Value = growthPct });
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
     // ============================================
     // FinOps Test Scenarios
     // ============================================

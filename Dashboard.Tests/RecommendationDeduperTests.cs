@@ -401,6 +401,60 @@ public class RecommendationDeduperTests
         Assert.Contains("AUTO_SHRINK OFF", item.CopyPasteSql);
     }
 
+    // ---- WS3: percent-autogrowth advisory copy-paste flows through the reader ----
+
+    [Fact]
+    public void BuildCopyPasteFromAction_FileAutogrowth_RendersModifyFileStatements()
+    {
+        var action = new RemediationAction(
+            "FILE_AUTOGROWTH_PERCENT", "advise", System.Array.Empty<ForcePlanTarget>(),
+            FileGrowthTargets: new[]
+            {
+                // Bracket-doubling is exercised on both the db and the logical file name.
+                new FileGrowthTarget("My]Db", "data]1", 60000, 10, 512),
+                new FileGrowthTarget("My]Db", "log]1", 250000, 25, 1024)
+            });
+
+        var sql = RecommendationsReader.BuildCopyPasteFromAction(action);
+
+        Assert.NotNull(sql);
+        Assert.Contains("ALTER DATABASE [My]]Db] MODIFY FILE (NAME = [data]]1], FILEGROWTH = 512MB);", sql);
+        Assert.Contains("ALTER DATABASE [My]]Db] MODIFY FILE (NAME = [log]]1], FILEGROWTH = 1024MB);", sql);
+    }
+
+    [Fact]
+    public void MapEngineFinding_FileAutogrowth_CarriesCopyPasteAndNoDeDupeSetting()
+    {
+        var action = new RemediationAction(
+            "FILE_AUTOGROWTH_PERCENT", "advise", System.Array.Empty<ForcePlanTarget>(),
+            FileGrowthTargets: new[] { new FileGrowthTarget("MyDb", "MyDb_data", 120000, 10, 512) });
+
+        var finding = new AnalysisFinding
+        {
+            ServerId = 1,
+            ServerName = "S",
+            DatabaseName = "MyDb",
+            Severity = 0.3,
+            Category = "config",
+            StoryText = "Large file(s) growing in percentage steps",
+            RootFactKey = "FILE_AUTOGROWTH_PERCENT",
+            StoryPathHash = "fa9000",
+            StoryPath = "FILE_AUTOGROWTH_PERCENT",
+            Remediation = action
+        };
+
+        var item = RecommendationsReader.MapEngineFinding(finding);
+
+        // Advise + copy-paste only: the copy-paste flows, but the row never de-dupes (file-
+        // level, not a per-DB config-setting collision) and the action stays attached.
+        Assert.Equal(RecommendationSetting.None, item.Setting);
+        Assert.Same(action, item.Remediation);
+        Assert.NotNull(item.CopyPasteSql);
+        Assert.Contains("MODIFY FILE (NAME = [MyDb_data], FILEGROWTH = 512MB);", item.CopyPasteSql);
+        // Headline from the authored advice block.
+        Assert.Equal("Large file(s) growing in percentage steps", item.Title);
+    }
+
     [Fact]
     public void MapLegacyIssue_MemoryPressure_IsNoneAndAdviseOnly()
     {

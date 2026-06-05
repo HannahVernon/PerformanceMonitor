@@ -167,7 +167,8 @@ public class AnalysisService
                 finding.Remediation =
                     FactRemediation.BuildAction(finding)
                     ?? FactRemediation.BuildRcsiAction(finding)
-                    ?? FactRemediation.BuildClearPlanAction(finding);
+                    ?? FactRemediation.BuildClearPlanAction(finding)
+                    ?? FactRemediation.BuildFileAutogrowthAction(finding); // WS3: advisory only (no handler -> no Apply); carried for the read-time copy-paste
             }
 
             // 7. Insert the survivors in one batched pass, persisting remediation_action_json

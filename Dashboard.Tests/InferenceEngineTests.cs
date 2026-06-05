@@ -80,4 +80,22 @@ public class InferenceEngineTests
 
         Assert.DoesNotContain(stories, s => s.RootFactKey == "CPU_SQL_PERCENT");
     }
+
+    // WS3: a FILE_AUTOGROWTH_PERCENT fact at its 0.3 advisory base roots a standalone
+    // recommendation, below the 0.5 incident threshold — because it is a config-advisory root
+    // key. Mirrors ConfigFact_RootsStandalone_BelowMinimumSeverity for the new key.
+    [Fact]
+    public void FileAutogrowthPercentFact_RootsStandalone_BelowMinimumSeverity()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "FILE_AUTOGROWTH_PERCENT", Source = "config", Value = 2, Severity = 0.3,
+                    Metadata = new Dictionary<string, double> { ["file_count"] = 2 } }
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == "FILE_AUTOGROWTH_PERCENT");
+    }
 }
