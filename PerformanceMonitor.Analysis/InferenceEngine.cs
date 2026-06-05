@@ -24,6 +24,21 @@ public class InferenceEngine
     private const double MinimumSeverityThreshold = 0.5;
     private const int MaxPathDepth = 10; // Safety limit
 
+    /// <summary>
+    /// Config-advisory fact keys that root a finding at ANY positive severity, bypassing the
+    /// MinimumSeverityThreshold. A standing misconfiguration (RCSI off, auto-shrink on, MAXDOP at
+    /// a silly default) is an advisory the operator should see regardless of current load — unlike
+    /// an incident fact, which must clear 0.5 to be worth surfacing. The existing severity-ordered
+    /// <c>consumed</c> traversal still suppresses duplicates: a higher-severity incident story that
+    /// consumes the config fact (e.g. CXPACKET → CONFIG_MAXDOP, or LCK_M_S → DB_CONFIG) wins, and
+    /// only an UN-consumed config fact roots a standalone recommendation.
+    /// </summary>
+    private static readonly HashSet<string> ConfigAdvisoryRootKeys = new(StringComparer.Ordinal)
+    {
+        "DB_CONFIG",
+        "SERVER_CONFIG",
+    };
+
     private readonly RelationshipGraph _graph;
 
     public InferenceEngine(RelationshipGraph graph)
@@ -43,9 +58,14 @@ public class InferenceEngine
             .ToDictionary(f => f.Key, f => f);
         var consumed = new HashSet<string>();
 
-        // Process facts in severity order
+        // Process facts in severity order. Incident facts must clear the 0.5 threshold to root;
+        // config-advisory facts (DB_CONFIG/SERVER_CONFIG) root at any positive severity so a
+        // standing misconfig surfaces on a quiet, healthy server (it would otherwise never reach
+        // 0.5 without contention — e.g. RCSI-off is base 0.3). Severity ordering + `consumed`
+        // (below) keep an incident story from being shadowed by, or duplicating, its config leaf.
         var entryPoints = facts
-            .Where(f => f.Severity >= MinimumSeverityThreshold)
+            .Where(f => f.Severity >= MinimumSeverityThreshold
+                     || (ConfigAdvisoryRootKeys.Contains(f.Key) && f.Severity > 0))
             .OrderByDescending(f => f.Severity)
             .ToList();
 
