@@ -637,13 +637,13 @@ public class AnalysisNotificationTests
         Assert.Contains("RCSI eliminates", inaction);       // the >=50% reader/writer arm
     }
 
-    // ── WS3: percent-autogrowth advisory action persists + round-trips ──────────
+    // ── WS3: percent-autogrowth action persists + round-trips ──────────
 
-    // The advisory FILE_AUTOGROWTH_PERCENT action is built from the drill-down and carries
-    // its per-file targets through the SAME SerializeAction/DeserializeAction round-trip the
-    // store uses for remediation_action_json — so the Recommendations reader can rebuild the
-    // copy-paste on read (the drill-down itself is ephemeral). No handler is registered for
-    // the key, so it never produces an Apply button.
+    // The FILE_AUTOGROWTH_PERCENT action is built from the drill-down and carries its per-file
+    // targets through the SAME SerializeAction/DeserializeAction round-trip the store uses for
+    // remediation_action_json — so the Recommendations reader can rebuild the copy-paste on read
+    // AND the FileAutogrowthHandler can re-derive the MODIFY FILE targets at apply (the drill-down
+    // itself is ephemeral). The action is Apply-able (handler registered) and copy-paste.
     [Fact]
     public void FileAutogrowthAction_BuildsFromDrillDown_AndRoundTrips()
     {
@@ -672,8 +672,8 @@ public class AnalysisNotificationTests
         Assert.Equal("FILE_AUTOGROWTH_PERCENT", action!.FactKey);
         Assert.NotNull(action.FileGrowthTargets);
         Assert.Single(action.FileGrowthTargets!);
-        // 250 GB file -> 1024 MB tier.
-        Assert.Equal(1024, action.FileGrowthTargets![0].RecommendedGrowthMb);
+        // LOG file -> 64 MB flat (data files -> 1024 MB).
+        Assert.Equal(64, action.FileGrowthTargets![0].RecommendedGrowthMb);
 
         var json = AlertContextSerializer.SerializeAction(action);
         Assert.NotNull(json);
@@ -686,10 +686,10 @@ public class AnalysisNotificationTests
         Assert.Equal("AppDb", t.Database);
         Assert.Equal("AppDb_log", t.LogicalFileName);
         Assert.Equal(10, t.CurrentGrowthPercent);
-        Assert.Equal(1024, t.RecommendedGrowthMb);
+        Assert.Equal(64, t.RecommendedGrowthMb);
         // The shared renderer rebuilds the exact copy-paste from the restored target.
         Assert.Equal(
-            "ALTER DATABASE [AppDb] MODIFY FILE (NAME = [AppDb_log], FILEGROWTH = 1024MB);",
+            "ALTER DATABASE [AppDb] MODIFY FILE (NAME = [AppDb_log], FILEGROWTH = 64MB);",
             FactRemediation.BuildModifyFileStatement(t.Database, t.LogicalFileName, t.RecommendedGrowthMb));
     }
 }

@@ -738,6 +738,28 @@ public class RemediationApplyServiceTests
             });
         }
 
+        public int SetFileCalls;
+
+        public Task<FileGrowthPreflight> PreflightFileGrowthAsync(string database, string logicalFileName, int growthMb, CancellationToken ct)
+            => Task.FromResult(new FileGrowthPreflight
+            {
+                Database = database, LogicalFileName = logicalFileName, RecommendedGrowthMb = growthMb,
+                DatabaseExists = true, FileExists = true, HasAlter = true, AlreadyInDesiredState = false,
+                ExecutingLogin = "PerfMonLogin", CurrentValue = "percent"
+            });
+
+        public Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct)
+        {
+            SetFileCalls++;
+            return Task.FromResult(new FileGrowthOutcome
+            {
+                Database = database, LogicalFileName = logicalFileName, Status = RemediationStatus.Success, Applied = true,
+                ExecutingLogin = "PerfMonLogin", PriorValue = "percent",
+                GeneratedSql = $"ALTER DATABASE [{database}] MODIFY FILE (NAME = [{logicalFileName}], FILEGROWTH = {growthMb}MB);",
+                GateSpid = 55, ExecSpid = 55
+            });
+        }
+
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
         {
             AuditRecords.Add(record);
@@ -766,6 +788,15 @@ public class RemediationApplyServiceTests
             => Task.FromResult(new DbConfigOutcome { Database = database, Setting = setting, Status = RemediationStatus.Skipped });
         public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
             => Task.FromResult(new ClearPlanOutcome { QueryHash = queryHash, Status = RemediationStatus.Skipped });
+        public Task<FileGrowthPreflight> PreflightFileGrowthAsync(string database, string logicalFileName, int growthMb, CancellationToken ct)
+            => Task.FromResult(new FileGrowthPreflight
+            {
+                Database = database, LogicalFileName = logicalFileName, RecommendedGrowthMb = growthMb,
+                DatabaseExists = true, FileExists = true, HasAlter = true, AlreadyInDesiredState = true,
+                ExecutingLogin = "PerfMonLogin", CurrentValue = "percent"
+            });
+        public Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new FileGrowthOutcome { Database = database, LogicalFileName = logicalFileName, Status = RemediationStatus.Skipped });
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct) => Task.FromResult(true);
     }
 }

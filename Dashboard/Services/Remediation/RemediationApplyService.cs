@@ -59,7 +59,10 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             // its OWN distinct fact key ("RCSI" / "CLEAR_PLAN") so neither can ever be reached
             // through the always-safe DbConfigHandler/ForcePlanHandler, and they cannot cross
             // each other (the registry keys on FactKey).
-            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler() });
+            // FileAutogrowthHandler (FILE_AUTOGROWTH_PERCENT) is always-safe (metadata-only,
+            // online, non-destructive — same class as DbConfigHandler) and rides its own fact
+            // key, so it never crosses the destructive RCSI/CLEAR_PLAN handlers.
+            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler(), new FileAutogrowthHandler() });
             _executorFactory = server =>
                 new DatabaseServiceRemediationExecutor(new DatabaseService(server.GetConnectionString(credentialService)));
             _auditFailureClassifier = (server, ct) =>
@@ -304,6 +307,25 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                     });
                 }
             }
+            else if (action.FileGrowthTargets is { Count: > 0 } fileTargets)
+            {
+                // FILE_AUTOGROWTH_PERCENT rides FileGrowthTargets (action.Targets / DbConfigTargets
+                // are empty for it). One row per offending file; the always-safe MODIFY FILE fix
+                // is non-destructive, so no two-sided Risks (RequiresInformedConsent stays false).
+                confirmTargets = new List<RemediationConfirmTarget>(fileTargets.Count);
+                for (var i = 0; i < fileTargets.Count; i++)
+                {
+                    var t = fileTargets[i];
+                    var pf = i < preflight.Targets.Count ? preflight.Targets[i] : null;
+                    confirmTargets.Add(new RemediationConfirmTarget
+                    {
+                        Database = t.Database,
+                        StatusTitle = $"[{t.Database}] {t.LogicalFileName} FILEGROWTH → {t.RecommendedGrowthMb}MB",
+                        Disposition = pf?.Disposition ?? RemediationDisposition.Error,
+                        DispositionMessage = pf?.Message
+                    });
+                }
+            }
             else
             {
                 confirmTargets = new List<RemediationConfirmTarget>(action.Targets.Count);
@@ -371,6 +393,21 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                        .Append(";   -- was ").Append(t.CurrentValue).Append('\n');
                 }
                 return sb2.ToString().TrimEnd('\n');
+            }
+
+            // FILE_AUTOGROWTH_PERCENT: render one ALTER DATABASE … MODIFY FILE per file (apply-only
+            // — no un-apply branch). Display only; the executor builds its own validated +
+            // bracketed statement and never executes this text. The shared QUOTENAME-safe renderer
+            // keeps it byte-identical to the drill-down / reader copy-paste.
+            if (action.FileGrowthTargets is { Count: > 0 } fileTargets)
+            {
+                var sb3 = new StringBuilder();
+                foreach (var t in fileTargets)
+                {
+                    sb3.Append(FactRemediation.BuildModifyFileStatement(t.Database, t.LogicalFileName, t.RecommendedGrowthMb))
+                       .Append('\n');
+                }
+                return sb3.ToString().TrimEnd('\n');
             }
 
             var proc = isUnapply ? "sp_query_store_unforce_plan" : "sp_query_store_force_plan";

@@ -79,11 +79,31 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
             int serverId, string serverName, int hoursBack = 24, int limit = 100, int utcOffsetMinutes = 0)
         {
             var findings = await _findingStore.GetRecentFindingsAsync(serverId, hoursBack, limit);
+
+            // Show only the LATEST analysis run. GetRecentFindingsAsync returns EVERY batch in the
+            // window (ordered analysis_time DESC), so on a server analyzed repeatedly each run would
+            // otherwise add another copy of every finding — the (database, setting) de-dupe hides it
+            // for config settings, but a Setting=None finding (file growth, an incident) would stack
+            // one card per batch. Keep only the most-recent analysis_time. (GetLatestFindingsAsync is
+            // the natural home, but it omits remediation_action_json — which Apply needs — so we trim
+            // the action-carrying GetRecentFindingsAsync result here.)
+            if (findings.Count > 1)
+            {
+                var latest = findings[0].AnalysisTime; // ordered DESC -> [0] is the most recent batch
+                var latestOnly = new List<AnalysisFinding>(findings.Count);
+                foreach (var f in findings)
+                {
+                    if (f.AnalysisTime == latest)
+                        latestOnly.Add(f);
+                }
+                findings = latestOnly;
+            }
+
             var legacy = await _databaseService.GetCriticalIssuesAsync(hoursBack);
 
             var engineItems = new List<RecommendationItem>(findings.Count);
             foreach (var finding in findings)
-                engineItems.Add(MapEngineFinding(finding));
+                engineItems.AddRange(MapEngineFindings(finding));
 
             var legacyItems = new List<RecommendationItem>(legacy.Count);
             foreach (var issue in legacy)
@@ -98,7 +118,88 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         }
 
         /// <summary>
-        /// Maps one engine <see cref="AnalysisFinding"/> to a <see cref="RecommendationItem"/>.
+        /// Maps one engine <see cref="AnalysisFinding"/> to ONE OR MORE
+        /// <see cref="RecommendationItem"/>s — the reader's per-finding entry point.
+        ///
+        /// <para>
+        /// A <c>DB_CONFIG</c> finding is SERVER-scoped (its <see cref="AnalysisFinding.DatabaseName"/>
+        /// is null) but its persisted action carries per-(database, setting) safe targets across
+        /// potentially many databases. The Recommendations surface is per-(database, setting): each
+        /// such pair is its own card so it (a) de-dupes with the matching per-db LEGACY row
+        /// (<see cref="RecommendationDeduper"/> keys on (database, setting) — and was built so
+        /// AUTO_SHRINK/AUTO_CLOSE "engine wins") and (b) carries its OWN single-target Apply that
+        /// touches only that one database+setting. So a DB_CONFIG finding with safe targets fans
+        /// out into one item per target. Everything else (and a DB_CONFIG finding with no safe
+        /// targets) maps 1:1 via <see cref="MapEngineFinding"/>.
+        /// </para>
+        /// </summary>
+        internal static IReadOnlyList<RecommendationItem> MapEngineFindings(AnalysisFinding finding)
+        {
+            if (string.Equals(finding.RootFactKey, "DB_CONFIG", StringComparison.Ordinal) &&
+                finding.Remediation?.DbConfigTargets is { Count: > 0 } targets)
+            {
+                var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
+                var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
+                var items = new List<RecommendationItem>(targets.Count);
+
+                foreach (var target in targets)
+                {
+                    var setting = SettingFromDbConfig(target.Setting);
+                    if (setting == RecommendationSetting.None)
+                        continue; // defensive: safe DB-config settings always map to a key.
+
+                    items.Add(new RecommendationItem
+                    {
+                        Source = RecommendationSource.Engine,
+                        CanonicalSeverity = band,
+                        RawSeverity = finding.Severity,
+                        Database = target.Database,
+                        Title = DbConfigCardTitle(target),
+                        ProblemArea = finding.Category,
+                        AdviceText = adviceText,
+                        // Single-target copy-paste + a single-target Apply action, so Copy/Apply
+                        // on this card act on ONLY this (database, setting) — not the whole server.
+                        CopyPasteSql = AlterStatementFor(target),
+                        Remediation = new RemediationAction(
+                            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), new[] { target }),
+                        StoryPathHash = finding.StoryPathHash,
+                        StoryPath = finding.StoryPath,
+                        Setting = setting,
+                        WindowStartUtc = AsUtc(finding.TimeRangeStart),
+                        WindowEndUtc = AsUtc(finding.TimeRangeEnd)
+                    });
+                }
+
+                if (items.Count > 0)
+                    return items;
+                // No mappable target — fall through to the single generic card below.
+            }
+
+            return new[] { MapEngineFinding(finding) };
+        }
+
+        /// <summary>
+        /// The per-card title for a fanned-out <c>DB_CONFIG</c> safe-setting target:
+        /// "&lt;SETTING&gt; — &lt;database&gt;" (e.g. "AUTO_SHRINK is ON — MyDb"), so each
+        /// per-database card reads as its own specific misconfiguration.
+        /// </summary>
+        private static string DbConfigCardTitle(DbConfigTarget target)
+        {
+            var what = target.Setting switch
+            {
+                DbConfigSetting.AutoShrinkOff => "AUTO_SHRINK is ON",
+                DbConfigSetting.AutoCloseOff => "AUTO_CLOSE is ON",
+                DbConfigSetting.PageVerifyChecksum => "PAGE_VERIFY is below CHECKSUM",
+                DbConfigSetting.ReadCommittedSnapshotOn => "RCSI is OFF",
+                _ => "Database configuration issue"
+            };
+            return string.IsNullOrEmpty(target.Database) ? what : $"{what} — {target.Database}";
+        }
+
+        /// <summary>
+        /// Maps one engine <see cref="AnalysisFinding"/> to a SINGLE <see cref="RecommendationItem"/>
+        /// (the non-fanned representation — used by <see cref="MapEngineFindings"/> for every
+        /// fact key except a DB_CONFIG finding that carries safe per-database targets).
         /// Advice comes from <see cref="FactAdvice"/> for the root fact key; the de-dupe
         /// <see cref="RecommendationSetting"/> and the copy-paste SQL come from the PERSISTED
         /// <see cref="AnalysisFinding.Remediation"/> action — the drill-down that the live

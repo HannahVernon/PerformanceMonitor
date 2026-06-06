@@ -327,6 +327,30 @@ public class RecommendationsViewModelTests
         Assert.False(legacy.ShowApply);
     }
 
+    [Fact]
+    public void AutogrowthFix_ShowsCopyFixAndApply_NotIncident()
+    {
+        // FILE_AUTOGROWTH_PERCENT: Setting==None, but the action carries typed FileGrowthTargets —
+        // a structured standing fix. It must read as a config fix (NOT a time-bound incident) that
+        // offers BOTH "Copy fix" AND Apply (the MODIFY FILE FILEGROWTH change is metadata-only,
+        // online, non-destructive — same class as AUTO_SHRINK OFF, now handled by
+        // FileAutogrowthHandler). It must never get the incident affordances: a large file growing
+        // by a percent should offer Copy fix / Apply, never "Open in Active Queries".
+        var card = Card(Item(
+            CanonicalSeverity.Info,
+            setting: RecommendationSetting.None,
+            remediation: new RemediationAction(
+                "FILE_AUTOGROWTH_PERCENT", "set", Array.Empty<ForcePlanTarget>(),
+                FileGrowthTargets: new[] { new FileGrowthTarget("BigDb", "BigDb_data", 51200, 10, 1024) }),
+            sql: "ALTER DATABASE [BigDb] MODIFY FILE (NAME = [BigDb_data], FILEGROWTH = 1024MB);"));
+
+        Assert.False(card.IsIncident);
+        Assert.False(card.ShowOpenInActiveQueries); // <-- the user's exact complaint
+        Assert.False(card.ShowAskAi);
+        Assert.True(card.ShowCopyFix);              // the copy-paste MODIFY FILE fix
+        Assert.True(card.ShowApply);                // autogrowth IS Apply-able (FileAutogrowthHandler)
+    }
+
     // ---- Mute visibility (Source == Engine) -------------------------------
 
     [Fact]

@@ -75,13 +75,15 @@ public static class FactRemediation
     }
 
     /// <summary>
-    /// Builds the ADVISORY percent-autogrowth action for a FILE_AUTOGROWTH_PERCENT finding,
-    /// or null when no offending file is present (WS3). Parallel to <see cref="BuildAction"/>
-    /// — a SEPARATE entry point so neither switch grows. The action carries FactKey
-    /// "FILE_AUTOGROWTH_PERCENT", for which NO handler is registered, so it produces NO Apply
-    /// button: it exists purely to carry the per-file <see cref="FileGrowthTarget"/>s through
-    /// the persisted-action round-trip so the Recommendations reader can render the copy-paste
-    /// MODIFY FILE statements on read (the drill-down the targets come from is ephemeral).
+    /// Builds the percent-autogrowth action for a FILE_AUTOGROWTH_PERCENT finding, or null when
+    /// no offending file is present (WS3). Parallel to <see cref="BuildAction"/> — a SEPARATE
+    /// entry point so neither switch grows. The action carries FactKey "FILE_AUTOGROWTH_PERCENT"
+    /// and the "set" verb: it is APPLY-able (FileAutogrowthHandler runs one
+    /// <c>ALTER DATABASE … MODIFY FILE (… FILEGROWTH = N MB)</c> per offending file — a
+    /// metadata-only, online, non-destructive change), AND it carries the per-file
+    /// <see cref="FileGrowthTarget"/>s through the persisted-action round-trip so the
+    /// Recommendations reader can also render the copy-paste MODIFY FILE statements on read (the
+    /// drill-down the targets come from is ephemeral).
     /// </summary>
     public static RemediationAction? BuildFileAutogrowthAction(AnalysisFinding finding)
     {
@@ -91,7 +93,7 @@ public static class FactRemediation
         var fileTargets = ExtractFileGrowthTargets(finding);
         return fileTargets.Count == 0
             ? null
-            : new RemediationAction("FILE_AUTOGROWTH_PERCENT", "advise", Array.Empty<ForcePlanTarget>(),
+            : new RemediationAction("FILE_AUTOGROWTH_PERCENT", "set", Array.Empty<ForcePlanTarget>(),
                                     FileGrowthTargets: fileTargets);
     }
     /// <summary>
@@ -644,8 +646,9 @@ public static class FactRemediation
 
             var sizeMb = GetDouble(row, "total_size_mb");
             var growthPct = GetInt(row, "growth_pct");
+            var fileType = GetString(row, "file_type");
             targets.Add(new FileGrowthTarget(
-                database, logical, sizeMb, growthPct, RecommendedGrowthMbFor(sizeMb)));
+                database, logical, sizeMb, growthPct, RecommendedGrowthMbFor(fileType)));
         }
 
         return targets;
@@ -675,18 +678,13 @@ public static class FactRemediation
     }
 
     /// <summary>
-    /// The size-tiered fixed-MB FILEGROWTH suggested for a file of <paramref name="totalSizeMb"/>:
-    /// 256 MB for 10-50 GB, 512 MB for 50-200 GB, 1024 MB for &gt; 200 GB. A STARTING POINT the
-    /// advice tells the operator to tune. Single source of truth so the drill-down collector and
-    /// the Recommendations reader render byte-identical statements.
+    /// The fixed-MB FILEGROWTH recommended for a file BY TYPE: 1024 MB for data (ROWS) files,
+    /// 64 MB for LOG files. A flat, predictable step — every growth is a bounded allocation
+    /// instead of an ever-larger percentage of the file. Single source of truth so the
+    /// drill-down collector and the Recommendations reader render byte-identical statements.
     /// </summary>
-    public static int RecommendedGrowthMbFor(double totalSizeMb)
-    {
-        const double GB = 1024.0;
-        if (totalSizeMb > 200 * GB) return 1024;
-        if (totalSizeMb >= 50 * GB) return 512;
-        return 256;
-    }
+    public static int RecommendedGrowthMbFor(string fileType) =>
+        string.Equals(fileType, "LOG", StringComparison.OrdinalIgnoreCase) ? 64 : 1024;
 
     /// <summary>
     /// Renders one copy-paste <c>ALTER DATABASE [db] MODIFY FILE (NAME = [logical],</c>

@@ -836,6 +836,7 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
         file_type_desc,
         file_name,
         total_size_mb,
+        is_percent_growth,
         growth_pct,
         ROW_NUMBER() OVER (PARTITION BY database_name, file_id ORDER BY collection_time DESC) AS rn
     FROM collect.database_size_stats
@@ -866,7 +867,7 @@ ORDER BY total_size_mb DESC;";
             var growthPct = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
             if (string.IsNullOrEmpty(database) || string.IsNullOrEmpty(logical)) continue;
 
-            var growthMb = FactRemediation.RecommendedGrowthMbFor(sizeMb);
+            var growthMb = FactRemediation.RecommendedGrowthMbFor(fileType);
             items.Add(new
             {
                 database,

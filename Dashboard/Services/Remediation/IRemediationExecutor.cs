@@ -82,6 +82,28 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         Task<DbConfigOutcome> SetDatabaseOptionAsync(string database, DbConfigSetting setting, RemediationIdentity identity, CancellationToken ct);
 
         /// <summary>
+        /// Read-only display probe for one percent-autogrowth file target (database +
+        /// file existence, ALTER permission, live current growth / desired-state).
+        /// Advisory only — does NOT authorise a mutation. Runs on the monitoring
+        /// connection (no retarget).
+        /// </summary>
+        Task<FileGrowthPreflight> PreflightFileGrowthAsync(string database, string logicalFileName, int growthMb, CancellationToken ct);
+
+        /// <summary>
+        /// Self-gating percent-autogrowth ALTER. R2-MOD-1: the gate (parameterized
+        /// sys.databases + sys.master_files existence + HAS_PERMS_BY_NAME(@db,'DATABASE',
+        /// 'ALTER') + live freshness read) and the
+        /// <c>ALTER DATABASE [db] MODIFY FILE (NAME = [logical], FILEGROWTH = N MB)</c>
+        /// run on ONE open MONITORING connection (no InitialCatalog retarget — the database
+        /// is named in the statement; no re-open between gate and mutation). Both identifiers
+        /// are validated (parameterized), then the SAME validated strings are bracketed and
+        /// placed as the ONLY non-constant tokens alongside the already-computed int
+        /// <paramref name="growthMb"/> literal. Metadata-only, online, non-destructive. Emits
+        /// GateSpid/ExecSpid.
+        /// </summary>
+        Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct);
+
+        /// <summary>
         /// Self-gating clear-cached-plan (DBCC FREEPROCCACHE). On ONE open monitoring
         /// connection to the TARGET server (FREEPROCCACHE is server-scoped — no
         /// InitialCatalog retarget), in order: the NAMED ALTER SERVER STATE permission
