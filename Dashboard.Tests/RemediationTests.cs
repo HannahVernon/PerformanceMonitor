@@ -1787,6 +1787,9 @@ public class RemediationTests
         // surface directly. ClearProcCacheAsync is distinctive enough not to substring-
         // false-match an unrelated reference.
         "ClearPlanHandler", "ClearProcCacheAsync",
+        // WS3 percent-autogrowth always-safe core: the new handler + the DISTINCTIVE
+        // executor method name. Reachable ONLY through the gate, exactly like DbConfigHandler.
+        "FileAutogrowthHandler", "SetFileGrowthAsync", "PreflightFileGrowthAsync",
     };
 
     [Fact]
@@ -1954,6 +1957,27 @@ public class RemediationTests
                 GateSpid = 55, ExecSpid = 55
             });
         }
+
+        // ── Percent-autogrowth seam (ALTER DATABASE … MODIFY FILE FILEGROWTH) ─────
+        // Default-only here; the behavioural file-growth coverage (and its own injectable
+        // fake) lives in FileAutogrowthHandlerTests. These satisfy the interface so this
+        // shared force-plan/DB-config/clear-plan fake still compiles.
+        public Task<FileGrowthPreflight> PreflightFileGrowthAsync(string database, string logicalFileName, int growthMb, CancellationToken ct)
+            => Task.FromResult(new FileGrowthPreflight
+            {
+                Database = database, LogicalFileName = logicalFileName, RecommendedGrowthMb = growthMb,
+                DatabaseExists = true, FileExists = true, HasAlter = true, AlreadyInDesiredState = false,
+                ExecutingLogin = "sa", CurrentValue = "percent"
+            });
+
+        public Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new FileGrowthOutcome
+            {
+                Database = database, LogicalFileName = logicalFileName, Status = RemediationStatus.Success, Applied = true,
+                ExecutingLogin = "sa", PriorValue = "percent",
+                GeneratedSql = $"ALTER DATABASE [{database}] MODIFY FILE (NAME = [{logicalFileName}], FILEGROWTH = {growthMb}MB);",
+                GateSpid = 55, ExecSpid = 55
+            });
 
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
         {

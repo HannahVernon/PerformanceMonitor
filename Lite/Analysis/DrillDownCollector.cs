@@ -869,7 +869,7 @@ ORDER BY database_name";
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
 WITH latest AS (
-    SELECT database_name, file_id, file_type_desc, file_name, total_size_mb, growth_pct,
+    SELECT database_name, file_id, file_type_desc, file_name, total_size_mb, is_percent_growth, growth_pct,
            ROW_NUMBER() OVER (PARTITION BY database_name, file_id ORDER BY collection_time DESC) AS rn
     FROM v_database_size_stats
     WHERE server_id = $1
@@ -896,7 +896,7 @@ LIMIT 50";
             var growthPct = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
             if (string.IsNullOrEmpty(database) || string.IsNullOrEmpty(logical)) continue;
 
-            var growthMb = FactRemediation.RecommendedGrowthMbFor(sizeMb);
+            var growthMb = FactRemediation.RecommendedGrowthMbFor(fileType);
             items.Add(new
             {
                 database,

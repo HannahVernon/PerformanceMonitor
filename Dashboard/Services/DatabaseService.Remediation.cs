@@ -406,6 +406,280 @@ SET NUMERIC_ROUNDABORT OFF;";
             ExecSpid = null
         };
 
+        // ── WS3: percent-autogrowth fix (ALTER DATABASE … MODIFY FILE FILEGROWTH) ────
+        //
+        // Same safety class as the always-safe DB-config arm (metadata-only, online,
+        // non-destructive) and the SAME no-injection mechanism, with ONE extra validated
+        // identifier (the logical file name). All on ONE monitoring connection (no
+        // InitialCatalog retarget — `ALTER DATABASE [db] MODIFY FILE` names the database
+        // in the statement, exactly like ALTER DATABASE SET; mirror SetDatabaseOptionAsync,
+        // NOT ForcePlanAsync):
+        //   1. validate BOTH candidate names — the database against sys.databases and the
+        //      logical file against sys.master_files joined to that database — PARAMETERIZED
+        //      (@db / @logical NVARCHAR(128), no concatenation);
+        //   2. bracket the EXACT validated strings with the inline QUOTENAME-equivalent
+        //      (M-1 same-string: the strings validated in layer 1 are byte-identical to the
+        //      strings bracketed here);
+        //   3. the FILEGROWTH value is the already-computed int growthMb rendered as a
+        //      bare integer literal (1024/64) — never data/operator free text, never a
+        //      parameter (MODIFY FILE does not accept one for FILEGROWTH).
+        // The growth target is NOT recomputed here — it is passed in from the finding's
+        // FileGrowthTarget.RecommendedGrowthMb.
+
+        /// <summary>
+        /// Builds the exact ALTER DATABASE … MODIFY FILE statement: the ONLY non-constant
+        /// tokens are the two bracketed, ALREADY-VALIDATED identifiers + the int growthMb
+        /// literal. Callers MUST pass the exact strings the sys.databases / sys.master_files
+        /// existence checks validated (M-1 same-string invariant). Exposed internal so the
+        /// no-injection / same-string tests run against the executor's OWN builder.
+        /// </summary>
+        internal static string BuildModifyFileStatement(string validatedDatabase, string validatedLogicalName, int growthMb) =>
+            $"ALTER DATABASE {QuoteIdentifier(validatedDatabase)} MODIFY FILE (NAME = {QuoteIdentifier(validatedLogicalName)}, FILEGROWTH = {growthMb}MB);";
+
+        /// <summary>
+        /// Read-only display probe (advisory only). Runs on the monitoring connection
+        /// (no retarget); reads database + file existence + ALTER permission + the live
+        /// current growth value. Mirrors <see cref="PreflightDbConfigAsync"/>.
+        /// </summary>
+        internal async Task<FileGrowthPreflight> PreflightFileGrowthAsync(string database, string logicalFileName, int growthMb, CancellationToken ct)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            var gate = await ReadFileGrowthGateAsync(connection, database, logicalFileName, growthMb, ct).ConfigureAwait(false);
+
+            return new FileGrowthPreflight
+            {
+                Database = database,
+                LogicalFileName = logicalFileName,
+                RecommendedGrowthMb = growthMb,
+                DatabaseExists = gate.DatabaseExists,
+                FileExists = gate.FileExists,
+                HasAlter = gate.HasAlter,
+                AlreadyInDesiredState = gate.AlreadyInDesiredState,
+                ExecutingLogin = gate.ExecutingLogin,
+                CurrentValue = gate.CurrentGrowthDisplay
+            };
+        }
+
+        /// <summary>
+        /// Self-gating percent-autogrowth ALTER (R2-MOD-1). The gate (parameterized
+        /// sys.databases + sys.master_files existence + ALTER permission + live freshness)
+        /// and the <c>ALTER DATABASE [db] MODIFY FILE (NAME = [logical], FILEGROWTH = N MB)</c>
+        /// run on ONE open monitoring connection with no re-open between them. The validated
+        /// @db / @logical strings are the SAME strings bracketed and placed in the statement
+        /// (M-1 same-string invariant). MODIFY FILE runs in autocommit (no explicit
+        /// transaction), like ALTER DATABASE SET. <paramref name="growthMb"/> is the
+        /// already-computed target — never recomputed.
+        /// </summary>
+        internal async Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct)
+        {
+            // Defense-in-depth (security review L-2): growthMb is sourced only from
+            // RecommendedGrowthMbFor (64 / 1024 today), but enforce the positive-MB invariant
+            // HERE, where the FILEGROWTH literal is rendered, so a future producer change can
+            // never emit a negative/zero growth. Caught per-target by the handler's try/catch.
+            if (growthMb <= 0)
+                throw new ArgumentOutOfRangeException(nameof(growthMb), growthMb, "FILEGROWTH must be a positive MB value.");
+
+            // ONE monitoring connection for gate + mutation. No InitialCatalog retarget
+            // (the database is named in the MODIFY FILE statement), no re-open — closes the
+            // gate→ALTER TOCTOU.
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            var gate = await ReadFileGrowthGateAsync(connection, database, logicalFileName, growthMb, ct).ConfigureAwait(false);
+
+            // (1) Database existence — absent => block, no ALTER.
+            if (!gate.DatabaseExists)
+            {
+                return FileOutcome(database, logicalFileName, RemediationStatus.Blocked, applied: false, gate,
+                    $"Database '{database}' was not found on the server (renamed or dropped since the finding); no change made.");
+            }
+
+            // (2) File existence — absent => block, no ALTER.
+            if (!gate.FileExists)
+            {
+                return FileOutcome(database, logicalFileName, RemediationStatus.Blocked, applied: false, gate,
+                    $"Logical file '{logicalFileName}' was not found on database '{database}' (renamed or removed since the finding); no change made.");
+            }
+
+            // (3) Permission — fail closed, no elevation, no retry.
+            if (!gate.HasAlter)
+            {
+                return FileOutcome(database, logicalFileName, RemediationStatus.PermissionDenied, applied: false, gate,
+                    $"The monitoring login '{gate.ExecutingLogin}' lacks ALTER on '{database}'. " +
+                    $"Map it into '{database}' (CREATE USER ... FOR LOGIN) and GRANT ALTER, or connect with a login that has it.");
+            }
+
+            // (4) Freshness / idempotency — already at the desired fixed-MB growth => skip.
+            if (gate.AlreadyInDesiredState)
+            {
+                return FileOutcome(database, logicalFileName, RemediationStatus.Skipped, applied: false, gate,
+                    $"File '{logicalFileName}' on '{database}' is already set to FILEGROWTH = {growthMb}MB; nothing to do.");
+            }
+
+            // Gate passed. Build the statement: the ONLY non-constant tokens are the two
+            // bracketed, ALREADY-VALIDATED identifiers (M-1 same-string) + the int growthMb
+            // literal. No parameter is possible for a MODIFY FILE identifier or FILEGROWTH
+            // value; QUOTENAME doubling + prior existence validation is the control.
+            var statement = BuildModifyFileStatement(gate.ValidatedDatabase!, gate.ValidatedLogicalName!, growthMb);
+
+            int? execSpid;
+            try
+            {
+                using var exec = connection.CreateCommand();
+                exec.CommandTimeout = RemediationCommandTimeoutSeconds;
+                // ALTER DATABASE … MODIFY FILE is an online metadata change and runs in
+                // autocommit (it is not permitted inside an explicit transaction).
+                exec.CommandText = statement + " SELECT exec_spid = @@SPID;";
+                var raw = await exec.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                execSpid = raw is null || raw is DBNull ? (int?)null : Convert.ToInt32(raw);
+            }
+            catch (SqlException ex)
+            {
+                var status = ex.Number is 297 or 15247 or 229 ? RemediationStatus.PermissionDenied : RemediationStatus.Error;
+                return FileOutcome(database, logicalFileName, status, applied: false, gate,
+                    $"ALTER DATABASE MODIFY FILE failed (error {ex.Number}): {ex.Message}", statement);
+            }
+
+            return new FileGrowthOutcome
+            {
+                Database = database,
+                LogicalFileName = logicalFileName,
+                Status = RemediationStatus.Success,
+                Applied = true,
+                ExecutingLogin = gate.ExecutingLogin,
+                Message = $"Set FILEGROWTH = {growthMb}MB on '{logicalFileName}' in '{database}' (was {gate.CurrentGrowthDisplay}).",
+                PriorValue = gate.CurrentGrowthDisplay,
+                GeneratedSql = statement,
+                GateSpid = gate.Spid,
+                ExecSpid = execSpid
+            };
+        }
+
+        private static FileGrowthOutcome FileOutcome(string database, string logicalFileName, RemediationStatus status, bool applied, FileGrowthGateReading gate, string message, string? generatedSql = null) => new()
+        {
+            Database = database,
+            LogicalFileName = logicalFileName,
+            Status = status,
+            Applied = applied,
+            ExecutingLogin = gate.ExecutingLogin,
+            Message = message,
+            PriorValue = gate.CurrentGrowthDisplay,
+            GeneratedSql = generatedSql,
+            GateSpid = gate.Spid,
+            ExecSpid = null
+        };
+
+        /// <summary>
+        /// The percent-autogrowth gate read: identity + parameterized sys.databases existence +
+        /// parameterized sys.master_files file existence + ALTER permission + the live current
+        /// growth (MB when fixed, NULL when still percent) + is_percent flag, in one round-trip
+        /// on the open monitoring connection. Captures <see cref="FileGrowthGateReading.ValidatedDatabase"/>
+        /// / <see cref="FileGrowthGateReading.ValidatedLogicalName"/> = the exact @db / @logical
+        /// values (the same-string source for QUOTENAME, M-1). <c>growth</c> is in 8 KB pages, so
+        /// <c>growth / 128</c> yields MB. AlreadyInDesiredState = the file is already a fixed-MB
+        /// growth equal to <paramref name="growthMb"/>.
+        /// </summary>
+        private static async Task<FileGrowthGateReading> ReadFileGrowthGateAsync(SqlConnection connection, string database, string logicalFileName, int growthMb, CancellationToken ct)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = RemediationCommandTimeoutSeconds;
+
+            command.CommandText = @"
+DECLARE @db_exists bit =
+    CASE WHEN EXISTS (SELECT 1 FROM sys.databases AS d WHERE d.name = @db) THEN 1 ELSE 0 END;
+
+DECLARE @file_exists bit =
+    CASE WHEN EXISTS
+    (
+        SELECT 1
+        FROM sys.master_files AS mf
+        JOIN sys.databases AS d
+          ON mf.database_id = d.database_id
+        WHERE d.name = @db
+        AND   mf.name = @logical
+    ) THEN 1 ELSE 0 END;
+
+SELECT
+    db_exists = @db_exists,
+    file_exists = @file_exists,
+    executing_login = SUSER_SNAME(),
+    has_alter = CONVERT(int, ISNULL(HAS_PERMS_BY_NAME(@db, 'DATABASE', 'ALTER'), 0)),
+    current_growth_mb =
+    (
+        SELECT CASE WHEN mf.is_percent_growth = 1 THEN NULL ELSE mf.growth / 128 END
+        FROM sys.master_files AS mf
+        JOIN sys.databases AS d
+          ON mf.database_id = d.database_id
+        WHERE d.name = @db
+        AND   mf.name = @logical
+    ),
+    is_percent =
+    (
+        SELECT mf.is_percent_growth
+        FROM sys.master_files AS mf
+        JOIN sys.databases AS d
+          ON mf.database_id = d.database_id
+        WHERE d.name = @db
+        AND   mf.name = @logical
+    ),
+    spid = @@SPID;";
+            command.Parameters.Add(new SqlParameter("@db", SqlDbType.NVarChar, 128) { Value = database });
+            command.Parameters.Add(new SqlParameter("@logical", SqlDbType.NVarChar, 128) { Value = logicalFileName });
+
+            using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                return new FileGrowthGateReading();
+
+            var dbExists = !reader.IsDBNull(0) && reader.GetBoolean(0);
+            var fileExists = !reader.IsDBNull(1) && reader.GetBoolean(1);
+            var isPercent = !reader.IsDBNull(5) && reader.GetBoolean(5);
+            int? currentGrowthMb = reader.IsDBNull(4) ? (int?)null : Convert.ToInt32(reader.GetValue(4));
+
+            return new FileGrowthGateReading
+            {
+                DatabaseExists = dbExists,
+                FileExists = fileExists,
+                // Same-string invariant (M-1): only treat each candidate as validated when its
+                // existence check passed; the bracketed tokens are THESE exact strings,
+                // byte-identical to the validated @db / @logical parameter values.
+                ValidatedDatabase = dbExists ? database : null,
+                ValidatedLogicalName = fileExists ? logicalFileName : null,
+                ExecutingLogin = reader.IsDBNull(2) ? null : reader.GetString(2),
+                HasAlter = !reader.IsDBNull(3) && reader.GetInt32(3) == 1,
+                CurrentGrowthMb = currentGrowthMb,
+                IsPercentGrowth = isPercent,
+                Spid = reader.IsDBNull(6) ? (int?)null : Convert.ToInt32(reader.GetInt16(6)),
+                // Already in desired state ONLY when the file is a fixed-MB growth equal to the
+                // target. A percent-growth file (current_growth_mb NULL) is never "desired".
+                AlreadyInDesiredState = !isPercent && currentGrowthMb == growthMb
+            };
+        }
+
+        private sealed class FileGrowthGateReading
+        {
+            public bool DatabaseExists { get; init; }
+            public bool FileExists { get; init; }
+            /// <summary>The validated @db value (== existence-checked string) — an M-1 same-string source for QUOTENAME.</summary>
+            public string? ValidatedDatabase { get; init; }
+            /// <summary>The validated @logical value (== existence-checked string) — an M-1 same-string source for QUOTENAME.</summary>
+            public string? ValidatedLogicalName { get; init; }
+            public string? ExecutingLogin { get; init; }
+            public bool HasAlter { get; init; }
+            /// <summary>Current fixed growth in MB, or null when the file still grows by percent.</summary>
+            public int? CurrentGrowthMb { get; init; }
+            public bool IsPercentGrowth { get; init; }
+            public bool AlreadyInDesiredState { get; init; }
+            public int? Spid { get; init; }
+
+            /// <summary>Human prior-value for display/audit: "N%" while percent, else "N MB".</summary>
+            public string? CurrentGrowthDisplay =>
+                IsPercentGrowth ? "percent" : (CurrentGrowthMb is { } mb ? $"{mb} MB" : null);
+        }
+
         // ── Clear cached plan (DBCC FREEPROCCACHE behind ALTER SERVER STATE) ────────
         //
         // The two catastrophic axes (get these EXACTLY right):

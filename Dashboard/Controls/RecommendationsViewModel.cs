@@ -44,9 +44,11 @@ namespace PerformanceMonitorDashboard.Controls
     ///
     /// <para>
     /// The card affordances split on whether the finding is an <b>incident</b> (time-bound:
-    /// CPU/memory/blocking/waits/plan-regression — <see cref="RecommendationSetting.None"/>) or a
-    /// standing <b>config-fix</b> (AutoShrink/AutoClose/QueryStore/MAXDOP/RCSI —
-    /// <see cref="RecommendationSetting"/> other than None):
+    /// CPU/memory/blocking/waits/plan-regression — <see cref="RecommendationSetting.None"/> with no
+    /// structured standing-fix action) or a standing <b>config-fix</b> (either a flagged
+    /// <see cref="RecommendationSetting"/> — AutoShrink/AutoClose/QueryStore/MAXDOP/RCSI — OR a
+    /// structured per-target action such as FILE_AUTOGROWTH_PERCENT, which has Setting==None but
+    /// still carries a typed MODIFY FILE fix):
     /// </para>
     /// <list type="bullet">
     ///   <item>Incidents: "Open in Active Queries" (deep-links to the time window) + "Ask AI"
@@ -121,16 +123,30 @@ namespace PerformanceMonitorDashboard.Controls
 
         /// <summary>
         /// Whether this is a time-bound INCIDENT finding (CPU/memory/blocking/waits/plan-regression):
-        /// <see cref="RecommendationItem.Setting"/> == <see cref="RecommendationSetting.None"/>.
-        /// Incidents send the operator to the dashboard / AI rather than showing a raw query.
+        /// <see cref="RecommendationItem.Setting"/> == <see cref="RecommendationSetting.None"/> AND it
+        /// does not carry a <see cref="HasStructuredFixAction"/> standing fix. Incidents send the
+        /// operator to the dashboard / AI rather than showing a raw query.
         /// </summary>
-        public bool IsIncident => Item.Setting == RecommendationSetting.None;
+        public bool IsIncident => Item.Setting == RecommendationSetting.None && !HasStructuredFixAction;
 
         /// <summary>
         /// Whether this is a standing CONFIG-FIX finding (a flagged
         /// <see cref="RecommendationSetting"/>: AutoShrink/AutoClose/QueryStore/RCSI/PageVerify).
         /// </summary>
         public bool IsConfigFix => Item.Setting != RecommendationSetting.None;
+
+        /// <summary>
+        /// Whether this row carries a STRUCTURED standing fix — a persisted action with typed
+        /// per-target lists that map to a database-config-style ALTER (DB_CONFIG settings or
+        /// FILE_AUTOGROWTH_PERCENT files). Such a row is a config fix you run against a standing
+        /// setting (not a time-bound incident): it offers BOTH "Copy fix" AND Apply, and never the
+        /// incident affordances (Open-in-Active-Queries / Ask-AI). Plan-regression / clear-plan
+        /// actions are NOT structured fixes (their target lists are empty here) and remain
+        /// incidents that happen to be Apply-able.
+        /// </summary>
+        private bool HasStructuredFixAction =>
+            (Item.Remediation?.DbConfigTargets is { Count: > 0 }) ||
+            (Item.Remediation?.FileGrowthTargets is { Count: > 0 });
 
         /// <summary>
         /// Whether the "Open in Active Queries" deep-link button is shown — incidents only.
@@ -141,16 +157,21 @@ namespace PerformanceMonitorDashboard.Controls
         public bool ShowAskAi => IsIncident;
 
         /// <summary>
-        /// Whether the "Copy fix" button is shown — config-fixes that carry an ALTER statement.
+        /// Whether the "Copy fix" button is shown — config-fixes (a flagged setting) or
+        /// structured standing fixes (DB_CONFIG / FILE_AUTOGROWTH_PERCENT) that carry an ALTER
+        /// statement to copy.
         /// </summary>
-        public bool ShowCopyFix => IsConfigFix && !string.IsNullOrEmpty(Item.CopyPasteSql);
+        public bool ShowCopyFix =>
+            !string.IsNullOrEmpty(Item.CopyPasteSql) && (IsConfigFix || HasStructuredFixAction);
 
         /// <summary>
-        /// Whether the Apply button is shown for this card — only when the row carries a built,
+        /// Whether the Apply button is shown for this card — whenever the row carries a built,
         /// persisted <see cref="RecommendationItem.Remediation"/> action (engine rows; mirrors the
-        /// alert path's <c>Remediation != null</c> rule). Shown for both incidents (e.g.
-        /// clear-plan / plan-regression) and config-fixes (e.g. RCSI). Drives the Apply button +
-        /// (for destructive fixes) the two-sided informed-consent gate, wired in WS1b-2.
+        /// alert path's <c>Remediation != null</c> rule). Every persisted action now has a
+        /// registered handler (plan-regression, DB-config, RCSI, clear-plan, file-autogrowth), so
+        /// there is no non-executable action to exclude. Shown for incidents (e.g. clear-plan /
+        /// plan-regression), config-fixes (e.g. RCSI), and structured standing fixes (autogrowth).
+        /// Drives the Apply button + (for destructive fixes) the two-sided informed-consent gate.
         /// </summary>
         public bool ShowApply => Item.Remediation != null;
 

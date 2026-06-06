@@ -174,6 +174,68 @@ namespace PerformanceMonitorDashboard.Services.Remediation
     }
 
     /// <summary>
+    /// Read-only display probe for one percent-autogrowth file target (advisory only — never
+    /// the authoritative gate; <see cref="IRemediationExecutor.SetFileGrowthAsync"/> re-derives
+    /// its own gate on the mutating connection before any ALTER). Mirrors
+    /// <see cref="DbConfigPreflight"/>.
+    /// </summary>
+    public sealed class FileGrowthPreflight
+    {
+        public string Database { get; init; } = "";
+        public string LogicalFileName { get; init; } = "";
+
+        /// <summary>The already-computed fixed-MB FILEGROWTH target (probed for, never recomputed).</summary>
+        public int RecommendedGrowthMb { get; init; }
+
+        /// <summary>True when the database exists on the server (parameterized sys.databases check).</summary>
+        public bool DatabaseExists { get; init; }
+
+        /// <summary>True when the logical file exists on that database (parameterized sys.master_files check).</summary>
+        public bool FileExists { get; init; }
+
+        /// <summary>HAS_PERMS_BY_NAME(@db,'DATABASE','ALTER') wrapped ISNULL(...,0).</summary>
+        public bool HasAlter { get; init; }
+
+        /// <summary>True when the live read shows the file already at the desired fixed-MB growth.</summary>
+        public bool AlreadyInDesiredState { get; init; }
+
+        public string? ExecutingLogin { get; init; }
+
+        /// <summary>The current growth value read live (display/audit prior value), e.g. "10%" or "256 MB".</summary>
+        public string? CurrentValue { get; init; }
+
+        public RemediationDisposition Disposition { get; set; }
+        public string? Message { get; set; }
+    }
+
+    /// <summary>
+    /// Outcome of a single percent-autogrowth <c>ALTER DATABASE … MODIFY FILE</c> attempt. The
+    /// gate (existence + file existence + permission + freshness) and the ALTER run on ONE open
+    /// monitoring connection; <see cref="GateSpid"/>/<see cref="ExecSpid"/> prove they shared it
+    /// (R2-MOD-1). <see cref="GeneratedSql"/> is the exact statement executed. Mirrors
+    /// <see cref="DbConfigOutcome"/>.
+    /// </summary>
+    public sealed class FileGrowthOutcome
+    {
+        public string Database { get; init; } = "";
+        public string LogicalFileName { get; init; } = "";
+        public RemediationStatus Status { get; init; }
+
+        /// <summary>True only when an ALTER actually ran and succeeded.</summary>
+        public bool Applied { get; init; }
+        public string? ExecutingLogin { get; init; }
+        public string? Message { get; init; }
+
+        /// <summary>The prior growth value (e.g. "10%"), captured at the gate read (audit prior_value).</summary>
+        public string? PriorValue { get; init; }
+
+        /// <summary>The exact ALTER DATABASE … MODIFY FILE statement executed (audited generated_sql).</summary>
+        public string? GeneratedSql { get; init; }
+        public int? GateSpid { get; init; }
+        public int? ExecSpid { get; init; }
+    }
+
+    /// <summary>
     /// One live-resolved cached plan for a query hash: the database it ran in and a short
     /// query-text snippet (M-2 per-handle blast-radius disclosure). The plan handle itself
     /// is NEVER surfaced here — it is bound as a typed <c>varbinary(64)</c> parameter
