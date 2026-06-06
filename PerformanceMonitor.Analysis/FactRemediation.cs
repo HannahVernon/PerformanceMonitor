@@ -66,9 +66,20 @@ public static class FactRemediation
                     : new RemediationAction("PLAN_REGRESSION", "force", targets);
             case "DB_CONFIG":
                 var dbConfigTargets = ExtractDbConfigTargets(finding);
-                return dbConfigTargets.Count == 0
+                // Per-db RCSI targets are CARRIED on the safe DB_CONFIG action so the
+                // Recommendations reader can fan per-db RCSI cards on read. They are NEVER
+                // executed from here (DbConfigHandler only runs DbConfigTargets). Returning the
+                // action when ONLY RCSI targets exist matters: a finding whose only issue is
+                // contended RCSI-off databases would otherwise persist nothing (no safe target),
+                // and the persisted action — not the ephemeral drill-down — is what the reader
+                // fans from. This also lets the DB_CONFIG action win AnalysisService's
+                // BuildAction ?? BuildRcsiAction chain, so the persisted action carries the
+                // fan-out data (BuildRcsiAction's singular action does not carry RcsiTargets).
+                var rcsiTargets = CollectRcsiTargets(finding);
+                return dbConfigTargets.Count == 0 && rcsiTargets.Count == 0
                     ? null
-                    : new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), dbConfigTargets);
+                    : new RemediationAction("DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), dbConfigTargets,
+                                            RcsiTargets: rcsiTargets);
             default:
                 return null;
         }
@@ -115,13 +126,49 @@ public static class FactRemediation
     /// </summary>
     public static RemediationAction? BuildRcsiAction(AnalysisFinding finding)
     {
-        if (finding is null || !string.Equals(finding.RootFactKey, "DB_CONFIG", StringComparison.Ordinal))
+        // Single source of truth for the qualifying-db scan + the real-contention gate:
+        // build the alert-path action from the FIRST collected target (or null when none),
+        // so the alert path and the per-db Recommendations cards apply the SAME gate.
+        var rcsiTargets = CollectRcsiTargets(finding);
+        if (rcsiTargets.Count == 0)
             return null;
+
+        var first = rcsiTargets[0];
+        var target = new DbConfigTarget(first.Database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF");
+
+        // The risk-of-NOT-changing figures were captured by CollectRcsiTargets (the finding
+        // was available) and are carried on the persisted action, so the informed-consent
+        // dialog renders the REAL numbers at apply time — when only the persisted action
+        // survives (the UI apply call site passes no finding). FactRiskDisclosure reads these
+        // from the action in preference to the finding.
+        return new RemediationAction("RCSI", "set", Array.Empty<ForcePlanTarget>(), new[] { target }, first.Figures);
+    }
+
+    /// <summary>
+    /// Collects EVERY per-database RCSI target a DB_CONFIG finding qualifies for (B3 Phase 3,
+    /// recommendations rebuild). Scans <c>config_issues</c> EXACTLY like
+    /// <see cref="BuildRcsiAction"/> — a row qualifies only when its <c>rcsi</c> value is
+    /// <c>false</c> (M2-1 polarity: RCSI is OFF) AND the §3.3 enrichment is present
+    /// (<see cref="HasRcsiEnrichment"/>) — but additionally GATES on REAL contention: a row is
+    /// included only when it carries a positive <c>rcsi_blocking_events</c> OR
+    /// <c>rcsi_deadlocks</c> count. An RCSI-off database with NO observed blocking/deadlocks is
+    /// NOT recommended: enabling RCSI there only adds tempdb version-store cost for no
+    /// concurrency benefit. Unlike <see cref="BuildRcsiAction"/> (which stops at the first
+    /// qualifying db for the singular alert action) this returns ALL qualifying databases, each
+    /// carrying its own <see cref="RcsiInactionFigures"/>, so the Recommendations reader can fan
+    /// one per-database RCSI card. A defensive cap of 50 mirrors the other extractors.
+    /// </summary>
+    public static IReadOnlyList<RcsiTarget> CollectRcsiTargets(AnalysisFinding finding)
+    {
+        var targets = new List<RcsiTarget>();
+
+        if (finding is null || !string.Equals(finding.RootFactKey, "DB_CONFIG", StringComparison.Ordinal))
+            return targets;
 
         if (finding.DrillDown is null ||
             !finding.DrillDown.TryGetValue("config_issues", out var raw) ||
             raw is null)
-            return null;
+            return targets;
 
         JsonElement element;
         try
@@ -130,21 +177,22 @@ public static class FactRemediation
         }
         catch
         {
-            return null;
+            return targets;
         }
 
         if (element.ValueKind != JsonValueKind.Array)
-            return null;
+            return targets;
 
         foreach (var row in element.EnumerateArray())
         {
+            if (targets.Count >= 50) break;
             if (row.ValueKind != JsonValueKind.Object) continue;
 
             var database = GetString(row, "database");
             if (string.IsNullOrEmpty(database))
                 continue;
 
-            // M2-1: rcsi == true means RCSI is ON. Emit ONLY when RCSI is OFF
+            // M2-1: rcsi == true means RCSI is ON. Collect ONLY when RCSI is OFF
             // (JsonValueKind.False) — mirrors the rcsiOffDatabases scan exactly.
             if (!row.TryGetProperty("rcsi", out var r) || r.ValueKind != JsonValueKind.False)
                 continue;
@@ -155,22 +203,30 @@ public static class FactRemediation
             if (!HasRcsiEnrichment(row))
                 continue;
 
-            var target = new DbConfigTarget(database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF");
+            // Reader/writer-contention gate: RCSI only relieves blocking BETWEEN readers and
+            // writers (a reader's S lock waiting on a writer's X lock, or a writer waiting behind
+            // a reader's S lock). Writer/writer blocking (X/IX/U) and raw deadlock counts are NOT
+            // helped by RCSI — recommending it there only adds tempdb version-store overhead. So
+            // gate on the reader/writer SHARE (classified from the blocked-process report's lock
+            // modes in CollectRcsiInactionFigures), using the SAME threshold the consent disclosure
+            // uses to say "RCSI eliminates this". An rcsi-off db whose contention is writer/writer-
+            // dominant (pct below the threshold) or where no reader/writer blocking was captured
+            // (pct null) gets NO card. The alert path and the cards share this gate (BuildRcsiAction
+            // builds from this same list). The raw blocking/deadlock counts are still carried for
+            // the consent dialog's magnitude context.
+            var readerWriterPct = GetNullableInt(row, "rcsi_reader_writer_pct");
+            if (readerWriterPct is not int pct || pct < FactRiskDisclosure.ReaderWriterMeaningfulPct)
+                continue;
 
-            // Capture the risk-of-NOT-changing figures HERE (the finding is available)
-            // and carry them on the persisted action, so the informed-consent dialog can
-            // render the REAL numbers at apply time — when only the persisted action
-            // survives (the UI apply call site passes no finding). FactRiskDisclosure
-            // reads these from the action in preference to the finding.
-            var figures = new RcsiInactionFigures(
-                BlockingEvents: GetInt(row, "rcsi_blocking_events"),
-                Deadlocks: GetInt(row, "rcsi_deadlocks"),
-                ReaderWriterPct: GetNullableInt(row, "rcsi_reader_writer_pct"));
-
-            return new RemediationAction("RCSI", "set", Array.Empty<ForcePlanTarget>(), new[] { target }, figures);
+            targets.Add(new RcsiTarget(
+                database,
+                new RcsiInactionFigures(
+                    BlockingEvents: GetInt(row, "rcsi_blocking_events"),
+                    Deadlocks: GetInt(row, "rcsi_deadlocks"),
+                    ReaderWriterPct: pct)));
         }
 
-        return null;
+        return targets;
     }
 
     /// <summary>

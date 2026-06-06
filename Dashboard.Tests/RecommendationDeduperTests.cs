@@ -523,6 +523,105 @@ public class RecommendationDeduperTests
         Assert.Same(action, item.Remediation);   // same single action, NOT sliced
     }
 
+    // ---- per-db RCSI fan-out of DB_CONFIG findings (destructive, consent-gated) ----
+
+    [Fact]
+    public void MapEngineFindings_DbConfig_RcsiTargets_FanToPerDbRcsiCardsWithRcsiAction()
+    {
+        // A DB_CONFIG finding whose action carries TWO per-db RCSI targets fans to TWO RCSI
+        // cards — each a distinct FactKey="RCSI" action (dispatches to RcsiHandler + the two-
+        // sided consent gate) carrying THAT db's real inaction figures.
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: Array.Empty<DbConfigTarget>(),
+            RcsiTargets: new[]
+            {
+                new RcsiTarget("Sales", new RcsiInactionFigures(40, 2, 85)),
+                new RcsiTarget("Orders", new RcsiInactionFigures(12, 0, 30))
+            });
+
+        var finding = new AnalysisFinding
+        {
+            ServerId = 1,
+            ServerName = "S",
+            DatabaseName = null,            // DB_CONFIG is SERVER-scoped
+            Severity = 0.3,
+            Category = "database_config",
+            RootFactKey = "DB_CONFIG",
+            StoryPathHash = "h",
+            StoryPath = "p",
+            Remediation = action
+        };
+
+        var items = RecommendationsReader.MapEngineFindings(finding);
+
+        Assert.Equal(2, items.Count);
+        Assert.All(items, i =>
+        {
+            Assert.Equal(RecommendationSource.Engine, i.Source);
+            Assert.Equal(RecommendationSetting.Rcsi, i.Setting);
+            Assert.NotNull(i.Remediation);
+            Assert.Equal("RCSI", i.Remediation!.FactKey);                       // dispatches to RcsiHandler
+            Assert.NotNull(i.Remediation.RcsiFigures);                          // real figures for the consent dialog
+            Assert.Contains("READ_COMMITTED_SNAPSHOT ON", i.CopyPasteSql);
+            Assert.Contains(i.Database!, i.Title);                              // Title names the db
+            // The reconstructed action's single target is THIS db with the RCSI setting.
+            var target = Assert.Single(i.Remediation.DbConfigTargets!);
+            Assert.Equal(i.Database, target.Database);
+            Assert.Equal(DbConfigSetting.ReadCommittedSnapshotOn, target.Setting);
+            Assert.Equal("h", i.StoryPathHash);
+        });
+
+        var sales = Assert.Single(items, i => i.Database == "Sales");
+        Assert.Equal(40, sales.Remediation!.RcsiFigures!.BlockingEvents);
+        Assert.Equal(2, sales.Remediation.RcsiFigures.Deadlocks);
+        Assert.Equal(85, sales.Remediation.RcsiFigures.ReaderWriterPct);
+
+        var orders = Assert.Single(items, i => i.Database == "Orders");
+        Assert.Equal(12, orders.Remediation!.RcsiFigures!.BlockingEvents);
+        Assert.Equal(0, orders.Remediation.RcsiFigures.Deadlocks);
+        Assert.Equal(30, orders.Remediation.RcsiFigures.ReaderWriterPct);
+    }
+
+    [Fact]
+    public void MapEngineFindings_DbConfig_SafeAndRcsiTargets_ProduceBothSetsOfCards()
+    {
+        // One DB_CONFIG finding carrying BOTH a safe AUTO_SHRINK target and an RCSI target must
+        // produce a safe-setting card AND an RCSI card (the two fan-outs are independent).
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("Sales", DbConfigSetting.AutoShrinkOff, "ON") },
+            RcsiTargets: new[] { new RcsiTarget("Orders", new RcsiInactionFigures(12, 3, 80)) });
+
+        var finding = new AnalysisFinding
+        {
+            ServerId = 1,
+            ServerName = "S",
+            DatabaseName = null,
+            Severity = 0.3,
+            Category = "database_config",
+            RootFactKey = "DB_CONFIG",
+            StoryPathHash = "h",
+            StoryPath = "p",
+            Remediation = action
+        };
+
+        var items = RecommendationsReader.MapEngineFindings(finding);
+
+        Assert.Equal(2, items.Count);
+        // The safe AUTO_SHRINK card: DB_CONFIG action, AutoShrink setting.
+        var safe = Assert.Single(items, i => i.Setting == RecommendationSetting.AutoShrink);
+        Assert.Equal("Sales", safe.Database);
+        Assert.Equal("DB_CONFIG", safe.Remediation!.FactKey);
+        Assert.Contains("AUTO_SHRINK OFF", safe.CopyPasteSql);
+        // The destructive RCSI card: distinct FactKey="RCSI" action with figures.
+        var rcsi = Assert.Single(items, i => i.Setting == RecommendationSetting.Rcsi);
+        Assert.Equal("Orders", rcsi.Database);
+        Assert.Equal("RCSI", rcsi.Remediation!.FactKey);
+        Assert.Equal(12, rcsi.Remediation.RcsiFigures!.BlockingEvents);
+        Assert.Contains("READ_COMMITTED_SNAPSHOT ON", rcsi.CopyPasteSql);
+    }
+
     [Fact]
     public void EngineDbConfigFanOut_DeDupesWithLegacyPerDbRow_EngineWinsWithApply()
     {
