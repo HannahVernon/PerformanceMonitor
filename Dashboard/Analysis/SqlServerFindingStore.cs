@@ -134,8 +134,13 @@ IF COL_LENGTH(N'config.analysis_findings', N'remediation_action_json') IS NULL
                     AnalysisTime = analysisTime,
                     ServerId = context.ServerId,
                     ServerName = context.ServerName,
-                    TimeRangeStart = context.TimeRangeStart,
-                    TimeRangeEnd = context.TimeRangeEnd,
+                    // The context window is in the SERVER's local clock (so windowed reads match
+                    // the collectors' SYSDATETIME rows); convert back to UTC for persistence so the
+                    // stored time_range_* stay UTC — the reader's AsUtc, the deep-link offset math,
+                    // and the retention purge all continue to assume UTC. (offset = SYSDATETIME −
+                    // SYSUTCDATETIME, so local − offset = UTC.)
+                    TimeRangeStart = context.TimeRangeStart - context.ServerUtcOffset,
+                    TimeRangeEnd = context.TimeRangeEnd - context.ServerUtcOffset,
                     Severity = story.Severity,
                     Confidence = story.Confidence,
                     Category = story.Category,

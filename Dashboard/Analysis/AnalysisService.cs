@@ -68,12 +68,53 @@ public class AnalysisService
     }
 
     /// <summary>
+    /// Probes the MONITORED server's clock so the analysis window is built in the SAME clock the
+    /// collectors stamp rows with (SYSDATETIME, server-local). Returns the server's local "now"
+    /// and its UTC offset (SYSDATETIME − SYSUTCDATETIME). Falls back to host UTC + zero offset
+    /// when the server is unreachable — degrading to the prior (host-UTC-window) behavior rather
+    /// than introducing a new hard failure (the collectors that follow would fail anyway).
+    /// </summary>
+    private async Task<(DateTime LocalNow, TimeSpan UtcOffset)> GetServerClockAsync()
+    {
+        try
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT SYSDATETIME(), SYSUTCDATETIME();";
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                var local = reader.GetDateTime(0);
+                var utc = reader.GetDateTime(1);
+                return (local, local - utc);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[AnalysisService] Server clock probe failed; using host UTC: {ex.Message}");
+        }
+        return (DateTime.UtcNow, TimeSpan.Zero);
+    }
+
+    /// <summary>
+    /// The monitored server's current LOCAL time, for callers that compute their own analysis
+    /// windows (e.g. period comparison). See <see cref="GetServerClockAsync"/>.
+    /// </summary>
+    public async Task<DateTime> GetServerLocalNowAsync() => (await GetServerClockAsync()).LocalNow;
+
+    /// <summary>
     /// Runs the full analysis pipeline for a server.
     /// Default time range is the last 4 hours.
     /// </summary>
     public async Task<List<AnalysisFinding>> AnalyzeAsync(int serverId, string serverName, int hoursBack = 4)
     {
-        var timeRangeEnd = DateTime.UtcNow;
+        // The collectors stamp rows with the SERVER's clock (SYSDATETIME, server-local), so the
+        // analysis window MUST be in that same clock — otherwise every windowed read filters
+        // server-local data against a host-UTC window and silently misses it on any non-UTC
+        // server. The captured offset converts this window back to UTC at persistence time.
+        var (serverNow, serverUtcOffset) = await GetServerClockAsync();
+        var timeRangeEnd = serverNow;
         var timeRangeStart = timeRangeEnd.AddHours(-hoursBack);
 
         var context = new AnalysisContext
@@ -81,7 +122,8 @@ public class AnalysisService
             ServerId = serverId,
             ServerName = serverName,
             TimeRangeStart = timeRangeStart,
-            TimeRangeEnd = timeRangeEnd
+            TimeRangeEnd = timeRangeEnd,
+            ServerUtcOffset = serverUtcOffset
         };
 
         return await AnalyzeAsync(context);
@@ -212,7 +254,9 @@ public class AnalysisService
     /// </summary>
     public async Task<List<Fact>> CollectAndScoreFactsAsync(int serverId, string serverName, int hoursBack = 4)
     {
-        var timeRangeEnd = DateTime.UtcNow;
+        // Server-local window (see AnalyzeAsync) so windowed fact reads match the collectors.
+        var (serverNow, serverUtcOffset) = await GetServerClockAsync();
+        var timeRangeEnd = serverNow;
         var timeRangeStart = timeRangeEnd.AddHours(-hoursBack);
 
         var context = new AnalysisContext
@@ -220,7 +264,8 @@ public class AnalysisService
             ServerId = serverId,
             ServerName = serverName,
             TimeRangeStart = timeRangeStart,
-            TimeRangeEnd = timeRangeEnd
+            TimeRangeEnd = timeRangeEnd,
+            ServerUtcOffset = serverUtcOffset
         };
 
         try

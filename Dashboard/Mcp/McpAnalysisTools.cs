@@ -219,7 +219,9 @@ public sealed class McpAnalysisTools
             var analysisService = CreateAnalysisService(resolved.Value.Service);
             var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
 
-            var now = DateTime.UtcNow;
+            // Server-local clock so the comparison windows match the collectors' SYSDATETIME rows
+            // (compare returns facts only — it does not persist, so no UTC conversion is needed).
+            var now = await analysisService.GetServerLocalNowAsync();
             var comparisonStart = now.AddHours(-hours_back);
             var baselineEnd = now.AddHours(-baseline_hours_back + hours_back);
             var baselineStart = now.AddHours(-baseline_hours_back);
