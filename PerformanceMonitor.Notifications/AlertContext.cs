@@ -84,7 +84,20 @@ public record RemediationActionDto(
     RcsiInactionFiguresDto? RcsiFigures = null,
     List<ClearPlanTargetDto>? ClearPlanTargets = null,
     ClearPlanFiguresDto? ClearPlanFigures = null,
-    List<FileGrowthTargetDto>? FileGrowthTargets = null);
+    List<FileGrowthTargetDto>? FileGrowthTargets = null,
+    List<RcsiTargetDto>? RcsiTargets = null);
+
+/// <summary>
+/// JSON mirror of <see cref="RcsiTarget"/>. The per-database RCSI targets are carried on a
+/// DB_CONFIG action PURELY so the Recommendations reader can fan per-db RCSI cards on read
+/// (the drill-down is ephemeral); they are never executed from the DB_CONFIG action itself.
+/// The trailing optional <c>RcsiTargets</c> member on <see cref="RemediationActionDto"/> keeps
+/// the round-trip backward-compatible: legacy/non-DB_CONFIG contextJson without it deserializes
+/// to null.
+/// </summary>
+public record RcsiTargetDto(
+    string Database,
+    RcsiInactionFiguresDto Figures);
 
 /// <summary>
 /// JSON mirror of <see cref="ClearPlanTarget"/> (clear-cached-plan, PR-B). The
@@ -314,8 +327,22 @@ public static class AlertContextSerializer
                     t.Database, t.LogicalFileName, t.CurrentSizeMb, t.CurrentGrowthPercent, t.RecommendedGrowthMb));
         }
 
+        // Per-db RCSI targets (carried on a DB_CONFIG action for the read-time card fan-out).
+        // Persist them so the Recommendations reader can fan per-db RCSI cards after the round-
+        // trip (the drill-down they came from is ephemeral). Null for every other fact key ->
+        // backward-compatible. Never executed from the DB_CONFIG action.
+        List<RcsiTargetDto>? rcsiTargets = null;
+        if (action.RcsiTargets is not null)
+        {
+            rcsiTargets = new List<RcsiTargetDto>(action.RcsiTargets.Count);
+            foreach (var t in action.RcsiTargets)
+                rcsiTargets.Add(new RcsiTargetDto(
+                    t.Database,
+                    new RcsiInactionFiguresDto(t.Figures.BlockingEvents, t.Figures.Deadlocks, t.Figures.ReaderWriterPct)));
+        }
+
         return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets,
-            rcsiFigures, clearPlanTargets, clearPlanFigures, fileGrowthTargets);
+            rcsiFigures, clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -392,7 +419,21 @@ public static class AlertContextSerializer
                     t.Database, t.LogicalFileName, t.CurrentSizeMb, t.CurrentGrowthPercent, t.RecommendedGrowthMb));
         }
 
+        // Per-db RCSI targets: rebuild from the DTO and PASS them to the ctor (the trailing
+        // RcsiTargets member defaults to null, so a short call would silently drop them on the
+        // round-trip — the reader would then fan no RCSI cards). Legacy JSON without the field
+        // deserializes to null → backward-compatible.
+        List<RcsiTarget>? rcsiTargets = null;
+        if (dto.RcsiTargets is not null)
+        {
+            rcsiTargets = new List<RcsiTarget>(dto.RcsiTargets.Count);
+            foreach (var t in dto.RcsiTargets)
+                rcsiTargets.Add(new RcsiTarget(
+                    t.Database,
+                    new RcsiInactionFigures(t.Figures.BlockingEvents, t.Figures.Deadlocks, t.Figures.ReaderWriterPct)));
+        }
+
         return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures,
-            clearPlanTargets, clearPlanFigures, fileGrowthTargets);
+            clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets);
     }
 }

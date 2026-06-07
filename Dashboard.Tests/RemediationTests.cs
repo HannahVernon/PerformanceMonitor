@@ -1005,13 +1005,23 @@ public class RemediationTests
     }
 
     [Fact]
-    public void BuildAction_Unchanged_NeverEmitsRcsi_Phase2RegressionGuard()
+    public void BuildAction_NeverPutsRcsiInSafeTargets_ButCarriesRcsiTargets()
     {
-        // The always-safe BuildAction must STILL never emit RCSI, even on the enriched
-        // RCSI-off finding — the destructive arm rides BuildRcsiAction only.
-        Assert.Null(FactRemediation.BuildAction(RcsiOffFinding()));
+        // The always-safe BuildAction must STILL never put RCSI in the EXECUTED DbConfigTargets
+        // (DbConfigHandler runs those). RCSI is now CARRIED on the action's RcsiTargets purely so
+        // the Recommendations reader can fan per-db RCSI cards — never executed from here. On an
+        // enriched, CONTENDED RCSI-off finding the action exists (so the reader can fan), has NO
+        // safe DbConfigTargets, and carries exactly the one RCSI target.
+        var rcsiOnly = FactRemediation.BuildAction(RcsiOffFinding());
+        Assert.NotNull(rcsiOnly);
+        Assert.Equal("DB_CONFIG", rcsiOnly!.FactKey);
+        Assert.True(rcsiOnly.DbConfigTargets is null || rcsiOnly.DbConfigTargets.Count == 0);
+        var carried = Assert.Single(rcsiOnly.RcsiTargets!);
+        Assert.Equal("Foo", carried.Database);
+        Assert.Equal(12, carried.Figures.BlockingEvents);
 
-        // And a mixed finding (RCSI off + a safe setting) yields only the safe target.
+        // And a mixed finding (RCSI off + a safe setting) yields the safe target in
+        // DbConfigTargets (never RCSI) AND carries the RCSI target separately.
         var mixed = DbConfigFinding(new List<object>
         {
             new { database = "Foo", rcsi = false, query_store = true,
@@ -1022,7 +1032,56 @@ public class RemediationTests
         var safe = FactRemediation.BuildAction(mixed);
         Assert.NotNull(safe);
         Assert.Equal("DB_CONFIG", safe!.FactKey);
+        Assert.NotEmpty(safe.DbConfigTargets!);
         Assert.All(safe.DbConfigTargets!, t => Assert.NotEqual(DbConfigSetting.ReadCommittedSnapshotOn, t.Setting));
+        Assert.Single(safe.RcsiTargets!);   // RCSI carried for the card fan-out, not executed
+    }
+
+    [Fact]
+    public void CollectRcsiTargets_OnlyReaderWriterContention_WriterWriterAndUnknownExcluded()
+    {
+        // RCSI only relieves reader-vs-writer blocking. The gate is the reader/writer SHARE
+        // (>= FactRiskDisclosure.ReaderWriterMeaningfulPct), NOT raw blocking/deadlock counts:
+        //  - reader/writer-dominant    -> recommended
+        //  - writer/writer-dominant    -> NOT recommended, even with HEAVY blocking (RCSI does
+        //                                 nothing for X/IX/U vs X/IX/U contention)
+        //  - no blocked-process detail -> NOT recommended (pct null — can't confirm RCSI helps)
+        var finding = DbConfigFinding(new List<object>
+        {
+            new { database = "ReaderWriter", rcsi = false, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "RCSI OFF" },
+                  rcsi_blocking_events = 40, rcsi_deadlocks = 2, rcsi_reader_writer_pct = 85 },
+            new { database = "WriterWriter", rcsi = false, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "RCSI OFF" },
+                  // Heavy blocking + deadlocks, but almost all writer/writer — RCSI won't relieve it.
+                  rcsi_blocking_events = 500, rcsi_deadlocks = 12, rcsi_reader_writer_pct = 15 },
+            new { database = "Unknown", rcsi = false, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "RCSI OFF" },
+                  rcsi_blocking_events = 30, rcsi_deadlocks = 0, rcsi_reader_writer_pct = (int?)null },
+            new { database = "AtThreshold", rcsi = false, query_store = true,
+                  auto_shrink = false, auto_close = false, page_verify = "CHECKSUM",
+                  issues = new[] { "RCSI OFF" },
+                  rcsi_blocking_events = 10, rcsi_deadlocks = 0, rcsi_reader_writer_pct = 50 }
+        });
+
+        var collected = FactRemediation.CollectRcsiTargets(finding);
+
+        Assert.Equal(2, collected.Count);
+        Assert.DoesNotContain(collected, t => t.Database == "WriterWriter"); // heavy blocking, but writer/writer
+        Assert.DoesNotContain(collected, t => t.Database == "Unknown");      // no reader/writer detail captured
+        var rw = Assert.Single(collected, t => t.Database == "ReaderWriter");
+        Assert.Equal(40, rw.Figures.BlockingEvents);
+        Assert.Equal(85, rw.Figures.ReaderWriterPct);
+        Assert.Single(collected, t => t.Database == "AtThreshold");          // pct == threshold qualifies
+
+        // BuildAction carries exactly the two reader/writer targets (no safe DbConfigTargets here).
+        var action = FactRemediation.BuildAction(finding);
+        Assert.NotNull(action);
+        Assert.Equal(2, action!.RcsiTargets!.Count);
+        Assert.True(action.DbConfigTargets is null || action.DbConfigTargets.Count == 0);
     }
 
     // ── FactRiskDisclosure: two-sided, honest-both-directions, golden prose ──────

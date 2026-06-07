@@ -33,7 +33,28 @@ public sealed record RemediationAction(
     RcsiInactionFigures? RcsiFigures = null,     // B3 Phase 3: RCSI risk-of-not-changing figures carried on the persisted action
     IReadOnlyList<ClearPlanTarget>? ClearPlanTargets = null, // clear-cached-plan targets (null for the other fact keys)
     ClearPlanFigures? ClearPlanFigures = null,   // clear-cached-plan risk-of-not-changing figures carried on the persisted action
-    IReadOnlyList<FileGrowthTarget>? FileGrowthTargets = null); // WS3: percent-autogrowth files — Apply-able (FileAutogrowthHandler: MODIFY FILE FILEGROWTH) + copy-paste
+    IReadOnlyList<FileGrowthTarget>? FileGrowthTargets = null, // WS3: percent-autogrowth files — Apply-able (FileAutogrowthHandler: MODIFY FILE FILEGROWTH) + copy-paste
+    IReadOnlyList<RcsiTarget>? RcsiTargets = null); // per-DB RCSI targets CARRIED on a DB_CONFIG action so the reader can fan per-db RCSI cards on read — NEVER executed from here (see RcsiTarget)
+
+/// <summary>
+/// One per-database RCSI target — a (database, inaction-figures) pair carried on the
+/// DB_CONFIG <see cref="RemediationAction.RcsiTargets"/> list PURELY so the Recommendations
+/// reader can fan one per-database RCSI card on read (the <c>config_issues</c> drill-down they
+/// were collected from is ephemeral and is NOT returned by the store read-back).
+///
+/// <para>
+/// These are NEVER executed from the DB_CONFIG action: <c>DbConfigHandler</c> only ever
+/// executes the always-safe <see cref="RemediationAction.DbConfigTargets"/> and ignores this
+/// list entirely, so no destructive RCSI change can ride the safe action. For each target the
+/// reader reconstructs a DISTINCT <c>FactKey="RCSI"</c> <see cref="RemediationAction"/> (a single
+/// <see cref="DbConfigSetting.ReadCommittedSnapshotOn"/> target + these <see cref="Figures"/>),
+/// which is what runs through <c>RcsiHandler</c> (IsDestructive == true) behind the two-sided
+/// informed-consent gate — identical to the action <see cref="FactRemediation.BuildRcsiAction"/>
+/// produces for the alert path. <see cref="Figures"/> is carried so that reconstructed action's
+/// consent dialog renders the REAL blocking/deadlock/reader-writer numbers.
+/// </para>
+/// </summary>
+public sealed record RcsiTarget(string Database, RcsiInactionFigures Figures);
 
 /// <summary>
 /// The risk-of-NOT-changing monitoring figures for a destructive CLEAR_PLAN action

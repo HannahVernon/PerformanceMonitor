@@ -136,13 +136,18 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         internal static IReadOnlyList<RecommendationItem> MapEngineFindings(AnalysisFinding finding)
         {
             if (string.Equals(finding.RootFactKey, "DB_CONFIG", StringComparison.Ordinal) &&
-                finding.Remediation?.DbConfigTargets is { Count: > 0 } targets)
+                finding.Remediation is { } remediation &&
+                ((remediation.DbConfigTargets is { Count: > 0 }) || (remediation.RcsiTargets is { Count: > 0 })))
             {
                 var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
                 var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
-                var items = new List<RecommendationItem>(targets.Count);
+                var safeTargets = remediation.DbConfigTargets ?? Array.Empty<DbConfigTarget>();
+                var rcsiTargets = remediation.RcsiTargets ?? Array.Empty<RcsiTarget>();
+                var items = new List<RecommendationItem>(safeTargets.Count + rcsiTargets.Count);
 
-                foreach (var target in targets)
+                // Safe (always-online) DB-config settings: one per-(db, setting) card with a
+                // single-target Apply, so Copy/Apply act on ONLY this (database, setting).
+                foreach (var target in safeTargets)
                 {
                     var setting = SettingFromDbConfig(target.Setting);
                     if (setting == RecommendationSetting.None)
@@ -157,14 +162,49 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                         Title = DbConfigCardTitle(target),
                         ProblemArea = finding.Category,
                         AdviceText = adviceText,
-                        // Single-target copy-paste + a single-target Apply action, so Copy/Apply
-                        // on this card act on ONLY this (database, setting) — not the whole server.
                         CopyPasteSql = AlterStatementFor(target),
                         Remediation = new RemediationAction(
                             "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), new[] { target }),
                         StoryPathHash = finding.StoryPathHash,
                         StoryPath = finding.StoryPath,
                         Setting = setting,
+                        WindowStartUtc = AsUtc(finding.TimeRangeStart),
+                        WindowEndUtc = AsUtc(finding.TimeRangeEnd)
+                    });
+                }
+
+                // DESTRUCTIVE per-db RCSI: one card per contended RCSI-off database. Each
+                // RECONSTRUCTS a distinct FactKey="RCSI" action (the SAME shape
+                // FactRemediation.BuildRcsiAction produces) so Apply routes to the destructive
+                // RCSI handler (IsDestructive == true) and the two-sided informed-consent dialog
+                // renders the REAL figures from this target's RcsiInactionFigures. The DB_CONFIG
+                // action's own RcsiTargets are NEVER executed — they are carried only to drive
+                // this fan-out.
+                foreach (var t in rcsiTargets)
+                {
+                    // RCSI's value is relieving reader/writer blocking, so escalate the card by the
+                    // contention it would address (its inaction risk) rather than the flat config
+                    // band auto_shrink/page_verify get — an RCSI rec sitting at Info next to a
+                    // Warning blocking-spike reads wrong.
+                    var rcsiBand = RcsiSeverityBand(t.Figures);
+                    items.Add(new RecommendationItem
+                    {
+                        Source = RecommendationSource.Engine,
+                        CanonicalSeverity = rcsiBand,
+                        RawSeverity = RcsiRawSeverity(rcsiBand),
+                        Database = t.Database,
+                        Title = $"RCSI is OFF — {t.Database}",
+                        ProblemArea = finding.Category,
+                        AdviceText = adviceText,
+                        CopyPasteSql = AlterStatementFor(
+                            new DbConfigTarget(t.Database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF")),
+                        Remediation = new RemediationAction(
+                            "RCSI", "set", Array.Empty<ForcePlanTarget>(),
+                            new[] { new DbConfigTarget(t.Database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF") },
+                            RcsiFigures: t.Figures),
+                        StoryPathHash = finding.StoryPathHash,
+                        StoryPath = finding.StoryPath,
+                        Setting = RecommendationSetting.Rcsi,
                         WindowStartUtc = AsUtc(finding.TimeRangeStart),
                         WindowEndUtc = AsUtc(finding.TimeRangeEnd)
                     });
@@ -177,6 +217,30 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
 
             return new[] { MapEngineFinding(finding) };
         }
+
+        /// <summary>
+        /// The canonical severity for an RCSI card, driven by the reader/writer contention the
+        /// change would relieve (its inaction risk) — NOT the flat config-advisory band the safe
+        /// settings (auto_shrink/page_verify) get. Blocking is the primary signal (RCSI directly
+        /// removes reader S-lock vs writer X-lock waits); deadlocks escalate it. Counts are over
+        /// the analysis window.
+        /// </summary>
+        internal static CanonicalSeverity RcsiSeverityBand(RcsiInactionFigures f)
+        {
+            if (f.BlockingEvents >= 100 || f.Deadlocks >= 10)
+                return CanonicalSeverity.Critical;
+            if (f.BlockingEvents >= 10 || f.Deadlocks >= 1)
+                return CanonicalSeverity.Warning;
+            return CanonicalSeverity.Info;
+        }
+
+        /// <summary>A raw-severity stand-in for an RCSI card's within/cross-band sort.</summary>
+        private static double RcsiRawSeverity(CanonicalSeverity band) => band switch
+        {
+            CanonicalSeverity.Critical => 2.0,
+            CanonicalSeverity.Warning => 1.0,
+            _ => 0.3
+        };
 
         /// <summary>
         /// The per-card title for a fanned-out <c>DB_CONFIG</c> safe-setting target:

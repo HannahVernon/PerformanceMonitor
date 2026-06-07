@@ -645,6 +645,39 @@ public class RemediationApplyServiceTests
     }
 
     [Fact]
+    public void RcsiTargets_OnDbConfigAction_SurviveAlertContextRoundTrip_WithFigures()
+    {
+        // The per-db RCSI targets carried on a DB_CONFIG action (for the read-time card fan-out)
+        // must survive the AlertContext serialize -> deserialize round-trip with their figures
+        // intact — otherwise the Recommendations reader fans no RCSI cards after persistence.
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("Sales", DbConfigSetting.AutoShrinkOff, "ON") },
+            RcsiTargets: new[]
+            {
+                new RcsiTarget("Sales", new RcsiInactionFigures(40, 2, 85)),
+                new RcsiTarget("Orders", new RcsiInactionFigures(12, 0, null))
+            });
+
+        var ctx = new AlertContext();
+        ctx.Details.Add(new AlertDetailItem { Heading = "DB config", IsCodeBlock = true, Remediation = action });
+        Assert.True(AlertContextSerializer.TryDeserialize(AlertContextSerializer.Serialize(ctx), out var round));
+        var persisted = round.Details[0].Remediation!;
+
+        // Safe target preserved...
+        Assert.Single(persisted.DbConfigTargets!);
+        // ...and the two RCSI targets with their figures.
+        Assert.Equal(2, persisted.RcsiTargets!.Count);
+        var sales = Assert.Single(persisted.RcsiTargets, t => t.Database == "Sales");
+        Assert.Equal(40, sales.Figures.BlockingEvents);
+        Assert.Equal(2, sales.Figures.Deadlocks);
+        Assert.Equal(85, sales.Figures.ReaderWriterPct);
+        var orders = Assert.Single(persisted.RcsiTargets, t => t.Database == "Orders");
+        Assert.Equal(12, orders.Figures.BlockingEvents);
+        Assert.Null(orders.Figures.ReaderWriterPct);   // nullable pct round-trips as null
+    }
+
+    [Fact]
     public async Task Apply_Destructive_NoFiguresNoFinding_ShowsWeakCaseBaseline()
     {
         // Genuinely no data: an action WITHOUT figures + no finding -> weak-case baseline.

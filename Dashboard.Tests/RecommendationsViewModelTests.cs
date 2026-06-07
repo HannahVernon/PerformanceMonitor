@@ -351,6 +351,30 @@ public class RecommendationsViewModelTests
         Assert.True(card.ShowApply);                // autogrowth IS Apply-able (FileAutogrowthHandler)
     }
 
+    [Fact]
+    public void RcsiCard_ShowsApplyAndCopyFix_NotIncident()
+    {
+        // A per-db RCSI recommendation: Setting=Rcsi (config-fix, NOT a time-bound incident) with
+        // a distinct FactKey="RCSI" action. It must offer Apply (-> RcsiHandler + the two-sided
+        // consent gate) and Copy fix (the ALTER), and never the incident affordances.
+        var card = Card(Item(
+            CanonicalSeverity.Warning,
+            setting: RecommendationSetting.Rcsi,
+            remediation: new RemediationAction(
+                "RCSI", "set", Array.Empty<ForcePlanTarget>(),
+                new[] { new DbConfigTarget("Sales", DbConfigSetting.ReadCommittedSnapshotOn, "OFF") },
+                RcsiFigures: new RcsiInactionFigures(40, 2, 85)),
+            sql: "ALTER DATABASE [Sales] SET READ_COMMITTED_SNAPSHOT ON;",
+            db: "Sales"));
+
+        Assert.False(card.IsIncident);
+        Assert.True(card.IsConfigFix);
+        Assert.True(card.ShowApply);
+        Assert.True(card.ShowCopyFix);
+        Assert.False(card.ShowOpenInActiveQueries);
+        Assert.False(card.ShowAskAi);
+    }
+
     // ---- Mute visibility (Source == Engine) -------------------------------
 
     [Fact]
