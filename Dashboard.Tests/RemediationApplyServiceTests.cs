@@ -793,6 +793,27 @@ public class RemediationApplyServiceTests
             });
         }
 
+        public int SetServerConfigCalls;
+
+        public Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct)
+            => Task.FromResult(new ServerConfigPreflight
+            {
+                Setting = setting, RecommendedValue = recommendedValue,
+                Executable = setting is ServerConfigSetting.Maxdop or ServerConfigSetting.CostThreshold,
+                HasPermission = true, AlreadyInDesiredState = false, ExecutingLogin = "PerfMonLogin", CurrentValue = 0
+            });
+
+        public Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct)
+        {
+            SetServerConfigCalls++;
+            return Task.FromResult(new ServerConfigOutcome
+            {
+                Setting = setting, Status = RemediationStatus.Success, Applied = true, ExecutingLogin = "PerfMonLogin",
+                PriorValue = 0, GeneratedSql = "EXEC sys.sp_configure N'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure N'max degree of parallelism', @value; RECONFIGURE;",
+                GateSpid = 55, ExecSpid = 55
+            });
+        }
+
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct)
         {
             AuditRecords.Add(record);
@@ -830,6 +851,15 @@ public class RemediationApplyServiceTests
             });
         public Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct)
             => Task.FromResult(new FileGrowthOutcome { Database = database, LogicalFileName = logicalFileName, Status = RemediationStatus.Skipped });
+        public Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct)
+            => Task.FromResult(new ServerConfigPreflight
+            {
+                Setting = setting, RecommendedValue = recommendedValue,
+                Executable = setting is ServerConfigSetting.Maxdop or ServerConfigSetting.CostThreshold,
+                HasPermission = true, AlreadyInDesiredState = true, ExecutingLogin = "PerfMonLogin", CurrentValue = recommendedValue
+            });
+        public Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new ServerConfigOutcome { Setting = setting, Status = RemediationStatus.Skipped });
         public Task<bool> WriteAuditAsync(RemediationAuditRecord record, CancellationToken ct) => Task.FromResult(true);
     }
 }

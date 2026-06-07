@@ -432,6 +432,43 @@ public static class FactAdvice
                 "The drill-down `autogrowth_percent_files` lists each offending file (database, logical name, type, size, configured percent). Percentage growth on a large file means an ever-larger single allocation — 10% of a 200 GB file is a 20 GB extend, and every transaction that triggers it waits for the whole allocation. Log growths are always zeroed, so a large percentage log growth stalls every writer until it finishes.",
             Remediation:
                 "Switch the flagged files to a fixed-MB autogrowth so each growth is bounded and predictable: 1024 MB for data files, 64 MB for log files. The attached `alter_statement` per file applies exactly that. This is a metadata-only change and is safe to run online.");
+
+        // ─────────────────────────────────────────────────────────────────
+        // Server config (WS3) — one advisory per per-setting CONFIG_* root key
+        // ─────────────────────────────────────────────────────────────────
+
+        t["CONFIG_MAXDOP"] = new AdviceBlock(
+            Headline:
+                "MAXDOP is 0 — every query can use every core",
+            Investigation:
+                "`max degree of parallelism` at 0 means an individual query is allowed unlimited parallelism — it can fan out across all schedulers, so one big query starves everything else and CXPACKET/SOS_SCHEDULER_YIELD waits pile up. Open Configuration → Server Configuration in-app, or call `audit_config`, for the current value alongside the server's socket/core layout.",
+            Remediation:
+                "Set MAXDOP to a sensible cap: 8 on Enterprise, 4 on Standard, 1 on Express, and never higher than the number of cores in a single NUMA node (cores-per-socket). The Apply button runs `sp_configure 'max degree of parallelism'` to the edition-aware value (capped at this server's cores-per-socket) followed by RECONFIGURE — an online metadata change. Cost Threshold for Parallelism (the next finding, if it fired) should be raised in the same pass; the two work together.");
+
+        t["CONFIG_CTFP"] = new AdviceBlock(
+            Headline:
+                "Cost Threshold for Parallelism is at (or below) the default 5",
+            Investigation:
+                "`cost threshold for parallelism` is the optimizer-cost cutoff above which a query gets a parallel plan. The shipped default of 5 is from the 1990s: on modern hardware it sends trivial queries parallel, paying thread-coordination overhead (CXPACKET) for no gain. Call `audit_config` for the current value.",
+            Remediation:
+                "Raise CTFP to 50 as a starting point (then tune up if CXPACKET persists on genuinely large queries). The Apply button runs `sp_configure 'cost threshold for parallelism', 50` + RECONFIGURE — an online metadata change. Pair it with a sane MAXDOP (the companion finding).");
+
+        t["CONFIG_MAX_MEMORY_MB"] = new AdviceBlock(
+            Headline:
+                "max server memory is unconfigured — SQL Server can consume all the RAM",
+            Investigation:
+                "`max server memory (MB)` is at its ~2 PB default, so SQL Server will grow its buffer pool until the OS is under memory pressure — which can page out SQL's own working set and destabilize the whole host (and any other instances). Call `audit_config` / open Server Configuration for the current value and the server's total physical RAM.",
+            Remediation:
+                "Cap max server memory below total RAM, leaving headroom for the OS, the SQL Server thread stacks, and anything else on the box (a common starting point is total RAM minus 4 GB for the OS plus ~1 GB per 4 GB beyond 16 GB, but the right number depends on what else runs here). This is intentionally NOT auto-applied — the correct value is workload- and host-specific. Copy the statement, set the value you've chosen, and run `sp_configure 'max server memory (MB)', <your MB>` + RECONFIGURE.");
+
+        t["CONFIG_MIN_MAX_MEMORY_NARROW"] = new AdviceBlock(
+            Headline:
+                "min server memory is pinned near max server memory",
+            Investigation:
+                "`min server memory (MB)` is set within ~20% of `max server memory (MB)`. min server memory is a floor SQL will not release BELOW once reached — pinning it near max means SQL effectively never gives memory back to the OS, which starves other processes and defeats the OS's ability to reclaim under pressure. The finding's metadata carries the configured min and max. Call `audit_config` for context.",
+            Remediation:
+                "Lower min server memory well below max so SQL can grow into the cap under load but release memory back to the OS when idle (min is best left at the default 0, or a modest floor only if you have a specific reason). This is NOT auto-applied — how low to set it is a workload judgement. Copy the statement, choose your floor, and run `sp_configure 'min server memory (MB)', <your MB>` + RECONFIGURE.");
+
         // ─────────────────────────────────────────────────────────────────
         // Jobs / disk / bad actors
         // ─────────────────────────────────────────────────────────────────

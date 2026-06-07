@@ -58,6 +58,12 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct)
             => _databaseService.SetFileGrowthAsync(database, logicalFileName, growthMb, identity, ct);
 
+        public Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct)
+            => _databaseService.PreflightServerConfigAsync(setting, recommendedValue, ct);
+
+        public Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct)
+            => _databaseService.SetServerConfigAsync(setting, value, identity, ct);
+
         public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
             => _databaseService.ClearProcCacheAsync(queryHash, identity, ct);
 

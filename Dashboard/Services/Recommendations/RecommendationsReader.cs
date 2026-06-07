@@ -135,6 +135,51 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         /// </summary>
         internal static IReadOnlyList<RecommendationItem> MapEngineFindings(AnalysisFinding finding)
         {
+            // WS3 server-level config: a CONFIG_* finding whose persisted action carries
+            // ServerConfigTargets fans into one card per target. MAXDOP/CTFP cards carry a
+            // single-target SERVER_CONFIG Apply; the two advise-only memory cards carry only
+            // CopyPasteSql (no Apply). All four are server-scoped (Setting stays None — they don't
+            // de-dupe with legacy per-db rows) but are flagged IsServerConfigAdvisory so the
+            // view-model treats them as Copy/Apply config fixes, not incidents.
+            if (finding.Remediation is { ServerConfigTargets: { Count: > 0 } serverTargets } serverAction &&
+                string.Equals(serverAction.FactKey, "SERVER_CONFIG", StringComparison.Ordinal))
+            {
+                var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
+                var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
+                var items = new List<RecommendationItem>(serverTargets.Count);
+
+                foreach (var target in serverTargets)
+                {
+                    var executable = target.Setting is ServerConfigSetting.Maxdop or ServerConfigSetting.CostThreshold;
+                    items.Add(new RecommendationItem
+                    {
+                        Source = RecommendationSource.Engine,
+                        CanonicalSeverity = band,
+                        RawSeverity = finding.Severity,
+                        Database = null,                       // server-scoped
+                        Title = ServerConfigCardTitle(target, finding.ServerName),
+                        ProblemArea = finding.Category,
+                        AdviceText = adviceText,
+                        CopyPasteSql = FactRemediation.BuildSpConfigureStatement(target.Setting, target.RecommendedValue),
+                        // MAXDOP/CTFP carry a single-target Apply (FactKey SERVER_CONFIG, routed to the
+                        // server-config handler); the memory cards carry no action (advise-only → no Apply button).
+                        Remediation = executable
+                            ? new RemediationAction("SERVER_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+                                ServerConfigTargets: new[] { target })
+                            : null,
+                        StoryPathHash = finding.StoryPathHash,
+                        StoryPath = finding.StoryPath,
+                        Setting = RecommendationSetting.None,  // server-level — never de-dupes with legacy
+                        IsServerConfigAdvisory = true,
+                        WindowStartUtc = AsUtc(finding.TimeRangeStart),
+                        WindowEndUtc = AsUtc(finding.TimeRangeEnd)
+                    });
+                }
+
+                if (items.Count > 0)
+                    return items;
+            }
+
             if (string.Equals(finding.RootFactKey, "DB_CONFIG", StringComparison.Ordinal) &&
                 finding.Remediation is { } remediation &&
                 ((remediation.DbConfigTargets is { Count: > 0 }) || (remediation.RcsiTargets is { Count: > 0 })))
@@ -258,6 +303,24 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 _ => "Database configuration issue"
             };
             return string.IsNullOrEmpty(target.Database) ? what : $"{what} — {target.Database}";
+        }
+
+        /// <summary>
+        /// The per-card title for a fanned-out SERVER_CONFIG target (WS3):
+        /// "&lt;what&gt; — &lt;server&gt;" (e.g. "MAXDOP is 0 — SQL2022"), so each server-level
+        /// card reads as its own specific misconfiguration. The server name is appended when known.
+        /// </summary>
+        private static string ServerConfigCardTitle(ServerConfigTarget target, string? serverName)
+        {
+            var what = target.Setting switch
+            {
+                ServerConfigSetting.Maxdop => $"MAXDOP is {target.CurrentValue}",
+                ServerConfigSetting.CostThreshold => $"Cost Threshold for Parallelism is {target.CurrentValue}",
+                ServerConfigSetting.MaxServerMemory => "max server memory is unconfigured",
+                ServerConfigSetting.MinServerMemory => "min server memory is pinned near max",
+                _ => "Server configuration issue"
+            };
+            return string.IsNullOrEmpty(serverName) ? what : $"{what} — {serverName}";
         }
 
         /// <summary>

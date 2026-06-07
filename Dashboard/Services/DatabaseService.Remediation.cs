@@ -957,6 +957,263 @@ AND   qs.collection_time =
             }
         }
 
+        // ── WS3: server-level config (sp_configure + RECONFIGURE) ───────────────────
+        //
+        // The sharp edges (get these EXACTLY right):
+        //
+        //  1. The sp_configure NAME is a HARDCODED compile-time literal selected by the
+        //     ServerConfigSetting enum (SpConfigureNameLiteral) — NEVER built from data. The value
+        //     is bound as an @value INT parameter (range-validated in C# first). There is no path
+        //     that concatenates either into the batch.
+        //
+        //  2. ONLY Maxdop + CostThreshold are executable. MaxServerMemory / MinServerMemory throw
+        //     before any gate/mutation — their right value is RAM/workload-dependent and must never
+        //     be applied from a guessed number (advise-only; the card is copy-paste only).
+        //
+        //  3. Permission gate = the NAMED server permission ALTER SETTINGS (fail-closed), OR the
+        //     sysadmin / serveradmin fixed roles (which can sp_configure even without the named
+        //     perm). Deny → PermissionDenied with grant guidance, no elevation, no retry. The
+        //     generic (NULL,NULL,'ALTER') token returns NULL even for sysadmin
+        //     (project_has_perms_by_name_alter_form), so it is NOT used here.
+        //
+        // Single-connection self-gating (R2-MOD-1): the gate read + the show-advanced-options +
+        // RECONFIGURE + the sp_configure of the target + RECONFIGURE all run on ONE open connection
+        // to the TARGET server (server-scoped — no InitialCatalog retarget). GateSpid == ExecSpid
+        // proves it. Plain RECONFIGURE (not WITH OVERRIDE).
+
+        /// <summary>The sane inclusive value range for an executable server-config setting (defense-in-depth before binding @value).</summary>
+        private static (long Min, long Max) ServerConfigValueRange(ServerConfigSetting setting) => setting switch
+        {
+            ServerConfigSetting.Maxdop => (0, 32767),
+            ServerConfigSetting.CostThreshold => (0, 32767),
+            _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Only MAXDOP / CostThreshold are executable.")
+        };
+
+        /// <summary>
+        /// The HARDCODED <c>sp_configure</c> name literal for the two EXECUTABLE settings. This is
+        /// the entire selection surface (§1) — nothing here comes from data. Memory settings throw:
+        /// they are advise-only and must never reach the executor.
+        /// </summary>
+        internal static string SpConfigureNameLiteral(ServerConfigSetting setting) => setting switch
+        {
+            ServerConfigSetting.Maxdop => "max degree of parallelism",
+            ServerConfigSetting.CostThreshold => "cost threshold for parallelism",
+            ServerConfigSetting.MaxServerMemory => throw new ArgumentOutOfRangeException(nameof(setting), setting, "max server memory is advise-only — never applied."),
+            ServerConfigSetting.MinServerMemory => throw new ArgumentOutOfRangeException(nameof(setting), setting, "min server memory is advise-only — never applied."),
+            _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown ServerConfigSetting")
+        };
+
+        /// <summary>Whether a server-config setting can be applied (Maxdop / CostThreshold) vs advise-only (memory).</summary>
+        internal static bool IsExecutableServerConfig(ServerConfigSetting setting) =>
+            setting is ServerConfigSetting.Maxdop or ServerConfigSetting.CostThreshold;
+
+        /// <summary>
+        /// Read-only display probe (advisory only). Runs on the monitoring connection to the target
+        /// server (no retarget); reads the named/role permission + the live current value. Mirrors
+        /// <see cref="PreflightDbConfigAsync"/>. Advise-only settings report Executable = false.
+        /// </summary>
+        internal async Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            var gate = await ReadServerConfigGateAsync(connection, setting, ct).ConfigureAwait(false);
+            var executable = IsExecutableServerConfig(setting);
+
+            return new ServerConfigPreflight
+            {
+                Setting = setting,
+                RecommendedValue = recommendedValue,
+                Executable = executable,
+                HasPermission = gate.HasPermission,
+                CurrentValue = gate.CurrentValue,
+                ExecutingLogin = gate.ExecutingLogin,
+                // "Already desired" only applies to executable settings (we never apply memory).
+                AlreadyInDesiredState = executable && gate.CurrentValue == recommendedValue
+            };
+        }
+
+        /// <summary>
+        /// Self-gating server-config apply (R2-MOD-1). The gate (named ALTER SETTINGS / sysadmin /
+        /// serveradmin + live current value) and the
+        /// <c>sp_configure 'show advanced options',1; RECONFIGURE; sp_configure '&lt;hardcoded&gt;',@value; RECONFIGURE;</c>
+        /// batch run on ONE open connection to the target server, no re-open between gate and
+        /// mutation (closes the TOCTOU). The name is a HARDCODED literal selected by
+        /// <paramref name="setting"/>; the value is bound as @value INT (range-validated first).
+        /// IsDestructive context = false (online metadata change). Only Maxdop / CostThreshold are
+        /// executable — memory settings return an error outcome WITHOUT touching the server.
+        /// </summary>
+        internal async Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct)
+        {
+            // (0) Advise-only guard — BEFORE any connection. max/min server memory must never be
+            // applied from a guessed value; the handler also blocks them, this is defense-in-depth.
+            if (!IsExecutableServerConfig(setting))
+            {
+                return new ServerConfigOutcome
+                {
+                    Setting = setting,
+                    Status = RemediationStatus.Blocked,
+                    Applied = false,
+                    Message = $"{FactRemediation.SpConfigureName(setting)} is advise-only — its correct value is RAM/workload-dependent and is never applied automatically. Copy the statement and set the value you choose.",
+                    PriorValue = null
+                };
+            }
+
+            // (0b) Range validation — defense-in-depth before binding @value, where the literal is
+            // sent. A future producer change can never push an out-of-range value to sp_configure.
+            var (min, max) = ServerConfigValueRange(setting);
+            if (value < min || value > max)
+            {
+                return new ServerConfigOutcome
+                {
+                    Setting = setting,
+                    Status = RemediationStatus.Error,
+                    Applied = false,
+                    Message = $"Recommended value {value} for {FactRemediation.SpConfigureName(setting)} is outside the valid range [{min}, {max}]; no change made.",
+                    PriorValue = null
+                };
+            }
+
+            // ONE connection to the target server (server-scoped — no InitialCatalog retarget). Gate
+            // + RECONFIGUREs + sp_configure all ride this one open connection (R2-MOD-1).
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(ct).ConfigureAwait(false);
+            await ApplySessionOptionsAsync(connection, ct).ConfigureAwait(false);
+
+            var gate = await ReadServerConfigGateAsync(connection, setting, ct).ConfigureAwait(false);
+
+            // (1) Permission — fail closed with grant guidance, no elevation, no retry.
+            if (!gate.HasPermission)
+            {
+                return new ServerConfigOutcome
+                {
+                    Setting = setting,
+                    Status = RemediationStatus.PermissionDenied,
+                    Applied = false,
+                    ExecutingLogin = gate.ExecutingLogin,
+                    PriorValue = gate.CurrentValue,
+                    Message = $"The monitoring login '{gate.ExecutingLogin}' lacks ALTER SETTINGS on this server, which sp_configure requires. " +
+                              $"GRANT ALTER SETTINGS TO [{gate.ExecutingLogin}]; on the target server (or use a sysadmin/serveradmin login). No change was made.",
+                    GateSpid = gate.Spid
+                };
+            }
+
+            // (2) Freshness / idempotency — already at the recommended value => skip, no sp_configure.
+            if (gate.CurrentValue == value)
+            {
+                return new ServerConfigOutcome
+                {
+                    Setting = setting,
+                    Status = RemediationStatus.Skipped,
+                    Applied = false,
+                    ExecutingLogin = gate.ExecutingLogin,
+                    PriorValue = gate.CurrentValue,
+                    Message = $"{FactRemediation.SpConfigureName(setting)} is already {value}; nothing to do.",
+                    GateSpid = gate.Spid
+                };
+            }
+
+            // Gate passed. Build the batch: the name is a HARDCODED literal selected by the enum;
+            // the value is bound as @value INT. show advanced options is required because both
+            // MAXDOP and CTFP are advanced. Plain RECONFIGURE (not WITH OVERRIDE).
+            var nameLiteral = SpConfigureNameLiteral(setting);
+            var statement =
+                "EXEC sys.sp_configure N'show advanced options', 1; RECONFIGURE; " +
+                $"EXEC sys.sp_configure N'{nameLiteral}', @value; RECONFIGURE;";
+
+            int? execSpid;
+            try
+            {
+                using var exec = connection.CreateCommand();
+                exec.CommandTimeout = RemediationCommandTimeoutSeconds;
+                exec.CommandText = statement + " SELECT exec_spid = @@SPID;";
+                exec.Parameters.Add(new SqlParameter("@value", SqlDbType.Int) { Value = (int)value });
+                var raw = await exec.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                execSpid = raw is null || raw is DBNull ? (int?)null : Convert.ToInt32(raw);
+            }
+            catch (SqlException ex)
+            {
+                var status = ex.Number is 297 or 15247 or 229 ? RemediationStatus.PermissionDenied : RemediationStatus.Error;
+                return new ServerConfigOutcome
+                {
+                    Setting = setting,
+                    Status = status,
+                    Applied = false,
+                    ExecutingLogin = gate.ExecutingLogin,
+                    PriorValue = gate.CurrentValue,
+                    Message = $"sp_configure '{FactRemediation.SpConfigureName(setting)}' failed (error {ex.Number}): {ex.Message}",
+                    GeneratedSql = statement,
+                    GateSpid = gate.Spid
+                };
+            }
+
+            return new ServerConfigOutcome
+            {
+                Setting = setting,
+                Status = RemediationStatus.Success,
+                Applied = true,
+                ExecutingLogin = gate.ExecutingLogin,
+                PriorValue = gate.CurrentValue,
+                Message = $"Set {FactRemediation.SpConfigureName(setting)} to {value} (was {gate.CurrentValue}).",
+                GeneratedSql = statement,
+                GateSpid = gate.Spid,
+                ExecSpid = execSpid
+            };
+        }
+
+        /// <summary>
+        /// The server-config gate read: identity + named ALTER SETTINGS / sysadmin / serveradmin
+        /// permission + the live current value_in_use for the setting, in one round-trip on the open
+        /// connection. The configuration NAME used in the live-value lookup is a HARDCODED literal
+        /// selected by the enum (constant SQL, never data), bound only as the @config_name read
+        /// parameter (read-only lookup — not the mutation path). Fail-closed permission.
+        /// </summary>
+        private static async Task<ServerConfigGateReading> ReadServerConfigGateAsync(SqlConnection connection, ServerConfigSetting setting, CancellationToken ct)
+        {
+            // The configuration name for the read-only current-value lookup. For advise-only memory
+            // settings (which never apply) we still want a correct prior-value, so use the shared
+            // display name; for executable settings this equals the hardcoded literal.
+            var configName = FactRemediation.SpConfigureName(setting);
+
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = RemediationCommandTimeoutSeconds;
+            // Named ALTER SETTINGS (fail-closed via ISNULL) OR the sysadmin/serveradmin fixed roles
+            // (which can sp_configure without the named perm). The generic (NULL,NULL,'ALTER') token
+            // is intentionally NOT used (returns NULL even for sysadmin).
+            command.CommandText = @"
+SELECT
+    executing_login = SUSER_SNAME(),
+    has_permission = CONVERT(int,
+        CASE WHEN ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER SETTINGS'), 0) = 1
+                  OR IS_SRVROLEMEMBER('sysadmin') = 1
+                  OR IS_SRVROLEMEMBER('serveradmin') = 1
+             THEN 1 ELSE 0 END),
+    current_value = ISNULL((SELECT CONVERT(bigint, c.value_in_use) FROM sys.configurations AS c WHERE c.name = @config_name), 0),
+    spid = @@SPID;";
+            command.Parameters.Add(new SqlParameter("@config_name", SqlDbType.NVarChar, 128) { Value = configName });
+
+            using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                return new ServerConfigGateReading();
+
+            return new ServerConfigGateReading
+            {
+                ExecutingLogin = reader.IsDBNull(0) ? null : reader.GetString(0),
+                HasPermission = !reader.IsDBNull(1) && reader.GetInt32(1) == 1,
+                CurrentValue = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2)),
+                Spid = reader.IsDBNull(3) ? (int?)null : Convert.ToInt32(reader.GetInt16(3))
+            };
+        }
+
+        private sealed class ServerConfigGateReading
+        {
+            public string? ExecutingLogin { get; init; }
+            public bool HasPermission { get; init; }
+            public long CurrentValue { get; init; }
+            public int? Spid { get; init; }
+        }
+
         /// <summary>
         /// The DB-config gate read: identity + parameterized sys.databases existence +
         /// ALTER permission + the live current setting value, in one round-trip on the

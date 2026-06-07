@@ -336,50 +336,78 @@ AND   collection_time <= $3";
         await connection.OpenAsync();
 
         using var cmd = connection.CreateCommand();
+        // Latest value PER configuration_name (ROW_NUMBER, not LIMIT N): server_config accumulates
+        // a row per capture, so LIMIT-N-ORDER-BY-time returns the newest N ROWS — which collapses to
+        // one config when captures are frequent, silently dropping settings. Partition by name and
+        // take rn = 1 so each requested setting is its latest value.
         cmd.CommandText = @"
-SELECT configuration_name, value_in_use
-FROM server_config
-WHERE server_id = $1
-AND   configuration_name IN (
-    'cost threshold for parallelism',
-    'max degree of parallelism',
-    'max server memory (MB)',
-    'max worker threads'
+WITH latest AS (
+    SELECT
+        configuration_name,
+        value_in_use,
+        ROW_NUMBER() OVER (PARTITION BY configuration_name ORDER BY capture_time DESC) AS rn
+    FROM server_config
+    WHERE server_id = $1
+    AND   configuration_name IN (
+        'cost threshold for parallelism',
+        'max degree of parallelism',
+        'max server memory (MB)',
+        'min server memory (MB)',
+        'max worker threads'
+    )
 )
-ORDER BY capture_time DESC
-LIMIT 4";
+SELECT configuration_name, value_in_use
+FROM latest
+WHERE rn = 1";
 
         cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
 
-        using var reader = await cmd.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        // max/min server memory are read alongside the rooted CONFIG_* facts so the
+        // narrow-memory derivation below can compare them without a second query.
+        double? maxMemoryMb = null;
+        double? minMemoryMb = null;
+
+        using (var reader = await cmd.ExecuteReaderAsync())
         {
-            var configName = reader.GetString(0);
-            var value = Convert.ToDouble(reader.GetValue(1));
-
-            var factKey = configName switch
+            while (await reader.ReadAsync())
             {
-                "cost threshold for parallelism" => "CONFIG_CTFP",
-                "max degree of parallelism" => "CONFIG_MAXDOP",
-                "max server memory (MB)" => "CONFIG_MAX_MEMORY_MB",
-                "max worker threads" => "CONFIG_MAX_WORKER_THREADS",
-                _ => null
-            };
+                var configName = reader.GetString(0);
+                var value = Convert.ToDouble(reader.GetValue(1));
 
-            if (factKey == null) continue;
+                if (configName == "max server memory (MB)") maxMemoryMb = value;
+                if (configName == "min server memory (MB)") minMemoryMb = value;
 
-            facts.Add(new Fact
-            {
-                Source = "config",
-                Key = factKey,
-                Value = value,
-                ServerId = context.ServerId,
-                Metadata = new Dictionary<string, double>
+                var factKey = configName switch
                 {
-                    ["value_in_use"] = value
-                }
-            });
+                    "cost threshold for parallelism" => "CONFIG_CTFP",
+                    "max degree of parallelism" => "CONFIG_MAXDOP",
+                    "max server memory (MB)" => "CONFIG_MAX_MEMORY_MB",
+                    "min server memory (MB)" => "CONFIG_MIN_MEMORY_MB",
+                    "max worker threads" => "CONFIG_MAX_WORKER_THREADS",
+                    _ => null
+                };
+
+                if (factKey == null) continue;
+
+                facts.Add(new Fact
+                {
+                    Source = "config",
+                    Key = factKey,
+                    Value = value,
+                    ServerId = context.ServerId,
+                    Metadata = new Dictionary<string, double>
+                    {
+                        ["value_in_use"] = value
+                    }
+                });
+            }
         }
+
+        // CONFIG_MIN_MAX_MEMORY_NARROW: emitted only when max is configured AND min is pinned
+        // near it (shared rule so Dashboard/Lite agree).
+        var narrow = FactRemediation.BuildNarrowMemoryFact(context.ServerId, maxMemoryMb, minMemoryMb);
+        if (narrow is not null)
+            facts.Add(narrow);
     }
 
     /// <summary>

@@ -60,6 +60,12 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// <summary>DB_CONFIG: the target database was not found on the server (renamed/dropped) — blocked, no ALTER.</summary>
         BlockDatabaseNotFound,
 
+        /// <summary>
+        /// SERVER_CONFIG: the setting is advise-only (max/min server memory) — the executor refuses
+        /// to apply a guessed value, so the card is copy-paste only and never runs sp_configure.
+        /// </summary>
+        AdviseOnly,
+
         Error
     }
 
@@ -230,6 +236,63 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         public string? PriorValue { get; init; }
 
         /// <summary>The exact ALTER DATABASE … MODIFY FILE statement executed (audited generated_sql).</summary>
+        public string? GeneratedSql { get; init; }
+        public int? GateSpid { get; init; }
+        public int? ExecSpid { get; init; }
+    }
+
+    /// <summary>
+    /// Read-only display probe for one server-config target (advisory only — never the
+    /// authoritative gate; <see cref="IRemediationExecutor.SetServerConfigAsync"/> re-derives its
+    /// own gate on the mutating connection before any sp_configure). Mirrors
+    /// <see cref="DbConfigPreflight"/>. Memory settings are advise-only — <see cref="Executable"/>
+    /// is false and the executor refuses them.
+    /// </summary>
+    public sealed class ServerConfigPreflight
+    {
+        public ServerConfigSetting Setting { get; init; }
+
+        /// <summary>The recommended value WS3 would apply (MAXDOP/CTFP) or display (memory).</summary>
+        public long RecommendedValue { get; init; }
+
+        /// <summary>True for MAXDOP/CostThreshold; false for the advise-only memory settings.</summary>
+        public bool Executable { get; init; }
+
+        /// <summary>ISNULL(HAS_PERMS_BY_NAME(NULL,NULL,'ALTER SETTINGS'),0)=1 OR sysadmin/serveradmin.</summary>
+        public bool HasPermission { get; init; }
+
+        /// <summary>True when the live read shows the setting already at the recommended value (executable settings only).</summary>
+        public bool AlreadyInDesiredState { get; init; }
+
+        public string? ExecutingLogin { get; init; }
+
+        /// <summary>The current value read live (display/audit prior value).</summary>
+        public long CurrentValue { get; init; }
+
+        public RemediationDisposition Disposition { get; set; }
+        public string? Message { get; set; }
+    }
+
+    /// <summary>
+    /// Outcome of a single server-config <c>sp_configure</c>+<c>RECONFIGURE</c> attempt. The gate
+    /// (permission + live freshness) and the mutation run on ONE open connection;
+    /// <see cref="GateSpid"/>/<see cref="ExecSpid"/> prove they shared it (R2-MOD-1).
+    /// <see cref="GeneratedSql"/> is the exact batch executed. Mirrors <see cref="DbConfigOutcome"/>.
+    /// </summary>
+    public sealed class ServerConfigOutcome
+    {
+        public ServerConfigSetting Setting { get; init; }
+        public RemediationStatus Status { get; init; }
+
+        /// <summary>True only when an sp_configure actually ran and succeeded.</summary>
+        public bool Applied { get; init; }
+        public string? ExecutingLogin { get; init; }
+        public string? Message { get; init; }
+
+        /// <summary>The prior value, captured at the gate read (audit prior_value).</summary>
+        public long? PriorValue { get; init; }
+
+        /// <summary>The exact sp_configure + RECONFIGURE batch executed (audited generated_sql).</summary>
         public string? GeneratedSql { get; init; }
         public int? GateSpid { get; init; }
         public int? ExecSpid { get; init; }

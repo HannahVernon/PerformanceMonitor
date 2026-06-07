@@ -146,7 +146,12 @@ namespace PerformanceMonitorDashboard.Controls
         /// </summary>
         private bool HasStructuredFixAction =>
             (Item.Remediation?.DbConfigTargets is { Count: > 0 }) ||
-            (Item.Remediation?.FileGrowthTargets is { Count: > 0 });
+            (Item.Remediation?.FileGrowthTargets is { Count: > 0 }) ||
+            // WS3 server-level config (MAXDOP/CTFP carry a typed ServerConfigTargets Apply action;
+            // the advise-only memory cards carry no action but set IsServerConfigAdvisory so they
+            // still read as Copy-only config fixes, not incidents).
+            (Item.Remediation?.ServerConfigTargets is { Count: > 0 }) ||
+            Item.IsServerConfigAdvisory;
 
         /// <summary>
         /// Whether the "Open in Active Queries" deep-link button is shown — incidents only.

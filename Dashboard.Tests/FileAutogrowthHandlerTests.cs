@@ -323,5 +323,11 @@ public class FileAutogrowthHandlerTests
 
         public Task<ClearPlanOutcome> ClearProcCacheAsync(string queryHash, RemediationIdentity identity, CancellationToken ct)
             => Task.FromResult(new ClearPlanOutcome { QueryHash = queryHash, Status = RemediationStatus.Success });
+
+        public Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct)
+            => Task.FromResult(new ServerConfigPreflight { Setting = setting, RecommendedValue = recommendedValue, HasPermission = true });
+
+        public Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new ServerConfigOutcome { Setting = setting, Status = RemediationStatus.Success });
     }
 }

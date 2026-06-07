@@ -85,7 +85,8 @@ public record RemediationActionDto(
     List<ClearPlanTargetDto>? ClearPlanTargets = null,
     ClearPlanFiguresDto? ClearPlanFigures = null,
     List<FileGrowthTargetDto>? FileGrowthTargets = null,
-    List<RcsiTargetDto>? RcsiTargets = null);
+    List<RcsiTargetDto>? RcsiTargets = null,
+    List<ServerConfigTargetDto>? ServerConfigTargets = null);
 
 /// <summary>
 /// JSON mirror of <see cref="RcsiTarget"/>. The per-database RCSI targets are carried on a
@@ -175,6 +176,19 @@ public record FileGrowthTargetDto(
     double CurrentSizeMb,
     int CurrentGrowthPercent,
     int RecommendedGrowthMb);
+
+/// <summary>
+/// JSON mirror of <see cref="ServerConfigTarget"/> (WS3 server-level config). <see cref="Setting"/>
+/// is persisted as the enum's int value. The trailing optional <c>ServerConfigTargets</c> member on
+/// <see cref="RemediationActionDto"/> keeps the round-trip backward-compatible: legacy/non-
+/// SERVER_CONFIG contextJson without it deserializes to null. Carried so the Recommendations reader
+/// can fan the server-config cards on read (the drill-down is ephemeral); MAXDOP/CTFP drive Apply,
+/// the two memory targets are copy-paste only.
+/// </summary>
+public record ServerConfigTargetDto(
+    int Setting,
+    long CurrentValue,
+    long RecommendedValue);
 
 /// <summary>
 /// Maps <see cref="AlertContext"/> to/from the <see cref="AlertContextDto"/> JSON projection
@@ -341,8 +355,20 @@ public static class AlertContextSerializer
                     new RcsiInactionFiguresDto(t.Figures.BlockingEvents, t.Figures.Deadlocks, t.Figures.ReaderWriterPct)));
         }
 
+        // WS3 (server-level config): persist the targets so the Recommendations reader can fan the
+        // server-config cards on read (the drill-down is ephemeral) AND the ServerConfigHandler can
+        // re-derive the MAXDOP/CTFP target at apply. Null for every other fact key -> backward-compatible.
+        List<ServerConfigTargetDto>? serverConfigTargets = null;
+        if (action.ServerConfigTargets is not null)
+        {
+            serverConfigTargets = new List<ServerConfigTargetDto>(action.ServerConfigTargets.Count);
+            foreach (var t in action.ServerConfigTargets)
+                serverConfigTargets.Add(new ServerConfigTargetDto((int)t.Setting, t.CurrentValue, t.RecommendedValue));
+        }
+
         return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets,
-            rcsiFigures, clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets);
+            rcsiFigures, clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets,
+            serverConfigTargets);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -433,7 +459,20 @@ public static class AlertContextSerializer
                     new RcsiInactionFigures(t.Figures.BlockingEvents, t.Figures.Deadlocks, t.Figures.ReaderWriterPct)));
         }
 
+        // WS3: rebuild the server-config targets from the DTO and PASS them to the ctor (the trailing
+        // ServerConfigTargets member defaults to null, so a short call would silently drop them on the
+        // round-trip — the reader would then fan no server-config cards and the handler could not
+        // re-derive the MAXDOP/CTFP target). Legacy JSON without the field deserializes to null →
+        // backward-compatible.
+        List<ServerConfigTarget>? serverConfigTargets = null;
+        if (dto.ServerConfigTargets is not null)
+        {
+            serverConfigTargets = new List<ServerConfigTarget>(dto.ServerConfigTargets.Count);
+            foreach (var t in dto.ServerConfigTargets)
+                serverConfigTargets.Add(new ServerConfigTarget((ServerConfigSetting)t.Setting, t.CurrentValue, t.RecommendedValue));
+        }
+
         return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures,
-            clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets);
+            clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets, serverConfigTargets);
     }
 }

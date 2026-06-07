@@ -233,22 +233,44 @@ public class FactScorer
     }
 
     /// <summary>
-    /// Scores config-source advisory facts. Today the only scored key is
-    /// FILE_AUTOGROWTH_PERCENT (WS3): large data/log files set to grow in PERCENTAGE
-    /// steps. It is an advisory at base 0.3 (mirrors DB_CONFIG's single-misconfig base) —
-    /// below the 0.5 incident threshold, so it only surfaces because it is a
-    /// config-advisory root key (see InferenceEngine.ConfigAdvisoryRootKeys). Every other
-    /// "config"-source fact (CONFIG_MAXDOP / CONFIG_CTFP / SERVER_* / DATABASE_TOTAL_SIZE_MB
-    /// / SERVER_HARDWARE) is a leaf/amplifier with no base severity of its own and scores 0
-    /// here, exactly as it did before this arm existed (it contributes only via amplifiers).
+    /// Scores config-source advisory facts. FILE_AUTOGROWTH_PERCENT (WS3) is a base-0.3
+    /// advisory; the four server-level config keys (WS3) score 0.4 ONLY when the value is bad,
+    /// and 0 otherwise — so audit_config still sees every CONFIG_* fact (it reads the raw value),
+    /// but only a BAD one roots a recommendation card (via InferenceEngine.ConfigAdvisoryRootKeys).
+    /// Edition is NOT needed to decide "bad" — only later for the recommended MAXDOP value.
+    /// Every other "config"-source fact (SERVER_* / DATABASE_TOTAL_SIZE_MB / SERVER_HARDWARE /
+    /// CONFIG_MAX_WORKER_THREADS / CONFIG_MIN_MEMORY_MB) is a leaf/amplifier with no base severity
+    /// of its own and scores 0 here, exactly as before (it contributes only via amplifiers / the
+    /// audit tool / the narrow-memory derivation).
     /// </summary>
     private static double ScoreConfigFact(Fact fact)
     {
-        if (fact.Key != "FILE_AUTOGROWTH_PERCENT") return 0.0;
+        switch (fact.Key)
+        {
+            case "FILE_AUTOGROWTH_PERCENT":
+                // Base 0.3 when at least one large percent-growth file was found; 0 otherwise.
+                return fact.Metadata.GetValueOrDefault("file_count") > 0 ? 0.3 : 0.0;
 
-        // Base 0.3 when at least one large percent-growth file was found; 0 otherwise.
-        var fileCount = fact.Metadata.GetValueOrDefault("file_count");
-        return fileCount > 0 ? 0.3 : 0.0;
+            // MAXDOP at 0 = unlimited parallelism — bad. Any other value is operator-chosen.
+            case "CONFIG_MAXDOP":
+                return fact.Value == 0 ? 0.4 : 0.0;
+
+            // CTFP <= 5 (the default 5 and below) is too low for almost any workload.
+            case "CONFIG_CTFP":
+                return fact.Value <= 5 ? 0.4 : 0.0;
+
+            // max server memory left at the 2 PB default = SQL can take all RAM, starving the OS.
+            case "CONFIG_MAX_MEMORY_MB":
+                return fact.Value == 2147483647 ? 0.4 : 0.0;
+
+            // min server memory pinned near max — emitted by the collector ONLY when bad, so any
+            // presence of this fact is a flag.
+            case "CONFIG_MIN_MAX_MEMORY_NARROW":
+                return 0.4;
+
+            default:
+                return 0.0;
+        }
     }
 
     /// <summary>
