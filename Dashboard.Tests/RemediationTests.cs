@@ -1849,6 +1849,9 @@ public class RemediationTests
         // WS3 percent-autogrowth always-safe core: the new handler + the DISTINCTIVE
         // executor method name. Reachable ONLY through the gate, exactly like DbConfigHandler.
         "FileAutogrowthHandler", "SetFileGrowthAsync", "PreflightFileGrowthAsync",
+        // WS3 server-level config always-safe core (MAXDOP/CTFP sp_configure): the new handler + the
+        // DISTINCTIVE executor method names. Reachable ONLY through the gate, exactly like DbConfigHandler.
+        "ServerConfigHandler", "SetServerConfigAsync", "PreflightServerConfigAsync",
     };
 
     [Fact]
@@ -2016,6 +2019,26 @@ public class RemediationTests
                 GateSpid = 55, ExecSpid = 55
             });
         }
+
+        // ── Server-config seam (sp_configure MAXDOP/CTFP + RECONFIGURE) ───────────
+        // Default-only here; the behavioural server-config coverage (and its own injectable
+        // fake) lives in ServerConfigHandlerTests. These satisfy the interface so this shared
+        // fake still compiles.
+        public Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct)
+            => Task.FromResult(new ServerConfigPreflight
+            {
+                Setting = setting, RecommendedValue = recommendedValue,
+                Executable = setting is ServerConfigSetting.Maxdop or ServerConfigSetting.CostThreshold,
+                HasPermission = true, AlreadyInDesiredState = false, ExecutingLogin = "sa", CurrentValue = 0
+            });
+
+        public Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct)
+            => Task.FromResult(new ServerConfigOutcome
+            {
+                Setting = setting, Status = RemediationStatus.Success, Applied = true, ExecutingLogin = "sa",
+                PriorValue = 0, GeneratedSql = "EXEC sys.sp_configure N'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure N'max degree of parallelism', @value; RECONFIGURE;",
+                GateSpid = 55, ExecSpid = 55
+            });
 
         // ── Percent-autogrowth seam (ALTER DATABASE … MODIFY FILE FILEGROWTH) ─────
         // Default-only here; the behavioural file-growth coverage (and its own injectable

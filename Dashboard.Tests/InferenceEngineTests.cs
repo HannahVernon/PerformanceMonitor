@@ -98,4 +98,47 @@ public class InferenceEngineTests
 
         Assert.Contains(stories, s => s.RootFactKey == "FILE_AUTOGROWTH_PERCENT");
     }
+
+    // WS3: each bad server-level config fact at its 0.4 advisory base roots a standalone
+    // recommendation, below the 0.5 incident threshold — because each is a config-advisory root
+    // key. One finding per CONFIG_* fact (they are leaves with no edges between them).
+    [Theory]
+    [InlineData("CONFIG_MAXDOP")]
+    [InlineData("CONFIG_CTFP")]
+    [InlineData("CONFIG_MAX_MEMORY_MB")]
+    [InlineData("CONFIG_MIN_MAX_MEMORY_NARROW")]
+    public void ServerConfigFact_RootsStandalone_BelowMinimumSeverity(string key)
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = key, Source = "config", Value = 0, Severity = 0.4 }
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == key);
+    }
+
+    // All four bad server-config facts together root four distinct standalone findings (no edges
+    // between them, so none consumes another).
+    [Fact]
+    public void ServerConfigFacts_AllFour_RootFourDistinctFindings()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "CONFIG_MAXDOP", Source = "config", Value = 0, Severity = 0.4 },
+            new() { Key = "CONFIG_CTFP", Source = "config", Value = 5, Severity = 0.4 },
+            new() { Key = "CONFIG_MAX_MEMORY_MB", Source = "config", Value = 2147483647, Severity = 0.4 },
+            new() { Key = "CONFIG_MIN_MAX_MEMORY_NARROW", Source = "config", Value = 24000, Severity = 0.4 },
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == "CONFIG_MAXDOP");
+        Assert.Contains(stories, s => s.RootFactKey == "CONFIG_CTFP");
+        Assert.Contains(stories, s => s.RootFactKey == "CONFIG_MAX_MEMORY_MB");
+        Assert.Contains(stories, s => s.RootFactKey == "CONFIG_MIN_MAX_MEMORY_NARROW");
+    }
 }

@@ -123,4 +123,119 @@ public class FactScorerTests
         Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
         Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
     }
+
+    /* ── WS3: server-level config facts (MAXDOP / CTFP / max & min memory) ── */
+
+    // Each per-setting CONFIG_* fact scores the 0.4 advisory base ONLY when the value is bad, and
+    // 0 otherwise — so audit_config still sees every CONFIG_* fact (it reads the raw value) but
+    // only a BAD one roots a recommendation card.
+    [Theory]
+    // MAXDOP: 0 is bad (unlimited); any other value is operator-chosen.
+    [InlineData("CONFIG_MAXDOP", 0, 0.4)]
+    [InlineData("CONFIG_MAXDOP", 4, 0.0)]
+    [InlineData("CONFIG_MAXDOP", 8, 0.0)]
+    // CTFP: <= 5 is bad (default-and-below); above is fine.
+    [InlineData("CONFIG_CTFP", 5, 0.4)]
+    [InlineData("CONFIG_CTFP", 1, 0.4)]
+    [InlineData("CONFIG_CTFP", 50, 0.0)]
+    [InlineData("CONFIG_CTFP", 6, 0.0)]
+    // max server memory: the 2 PB default (2147483647) is bad; a real cap is fine.
+    [InlineData("CONFIG_MAX_MEMORY_MB", 2147483647, 0.4)]
+    [InlineData("CONFIG_MAX_MEMORY_MB", 28672, 0.0)]
+    public void ServerConfigFact_ScoresBadValueOnly(string key, long value, double expected)
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = key, Value = value,
+                    Metadata = new() { ["value_in_use"] = value } }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(expected, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // CONFIG_MIN_MAX_MEMORY_NARROW is emitted by the collector ONLY when bad, so any presence of
+    // the fact scores 0.4 (the fact's existence is the flag).
+    [Fact]
+    public void NarrowMemoryFact_AlwaysScoresAdvisoryBase()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_MIN_MAX_MEMORY_NARROW", Value = 24000,
+                    Metadata = new() { ["min_memory_mb"] = 24000, ["max_memory_mb"] = 28672 } }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(0.4, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // CONFIG_MIN_MEMORY_MB and CONFIG_MAX_WORKER_THREADS are leaf/context facts — never scored
+    // (they feed audit_config / the narrow-memory derivation, not a card of their own).
+    [Theory]
+    [InlineData("CONFIG_MIN_MEMORY_MB")]
+    [InlineData("CONFIG_MAX_WORKER_THREADS")]
+    public void ServerConfigLeafFacts_ScoreZero(string key)
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = key, Value = 1024, Metadata = new() { ["value_in_use"] = 1024 } }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(0.0, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // Advice exists for each of the four server-config root keys (dead-fact guard).
+    [Theory]
+    [InlineData("CONFIG_MAXDOP")]
+    [InlineData("CONFIG_CTFP")]
+    [InlineData("CONFIG_MAX_MEMORY_MB")]
+    [InlineData("CONFIG_MIN_MAX_MEMORY_NARROW")]
+    public void ServerConfigKeys_HaveAdviceBlocks(string key)
+    {
+        var advice = FactAdvice.GetForFactKey(key);
+
+        Assert.NotNull(advice);
+        Assert.False(string.IsNullOrWhiteSpace(advice!.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+    }
+
+    // The shared narrow-memory builder: emitted only when max is CONFIGURED and min >= 80% of max.
+    [Theory]
+    [InlineData(28672, 24000, true)]    // min 83.7% of max -> narrow
+    [InlineData(28672, 22938, true)]    // just over 80% (threshold 22937.6) -> narrow
+    [InlineData(28672, 22000, false)]   // ~76.7% -> just under 80%, not narrow
+    [InlineData(28672, 14000, false)]   // min ~49% -> not narrow
+    [InlineData(2147483647, 2000000000, false)] // max unconfigured -> never narrow
+    [InlineData(0, 0, false)]           // max 0 -> guard
+    public void BuildNarrowMemoryFact_FollowsThreshold(long maxMb, long minMb, bool emitted)
+    {
+        var fact = FactRemediation.BuildNarrowMemoryFact(1, maxMb, minMb);
+
+        if (!emitted)
+        {
+            Assert.Null(fact);
+            return;
+        }
+
+        Assert.NotNull(fact);
+        Assert.Equal("CONFIG_MIN_MAX_MEMORY_NARROW", fact!.Key);
+        Assert.Equal(minMb, fact.Value);
+        Assert.Equal(minMb, fact.Metadata["min_memory_mb"]);
+        Assert.Equal(maxMb, fact.Metadata["max_memory_mb"]);
+    }
+
+    [Fact]
+    public void BuildNarrowMemoryFact_NullInputs_ReturnsNull()
+    {
+        Assert.Null(FactRemediation.BuildNarrowMemoryFact(1, null, 24000));
+        Assert.Null(FactRemediation.BuildNarrowMemoryFact(1, 28672, null));
+    }
 }

@@ -210,7 +210,8 @@ public class AnalysisService
                     FactRemediation.BuildAction(finding)
                     ?? FactRemediation.BuildRcsiAction(finding)
                     ?? FactRemediation.BuildClearPlanAction(finding)
-                    ?? FactRemediation.BuildFileAutogrowthAction(finding); // WS3: advisory only (no handler -> no Apply); carried for the read-time copy-paste
+                    ?? FactRemediation.BuildFileAutogrowthAction(finding) // WS3: advisory only (no handler -> no Apply); carried for the read-time copy-paste
+                    ?? FactRemediation.BuildServerConfigAction(finding); // WS3: server-level config — MAXDOP/CTFP Apply-able, memory advise-only
             }
 
             // 7. Insert the survivors in one batched pass, persisting remediation_action_json

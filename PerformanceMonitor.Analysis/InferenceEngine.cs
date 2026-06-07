@@ -38,6 +38,13 @@ public class InferenceEngine
         "DB_CONFIG",
         "SERVER_CONFIG",
         "FILE_AUTOGROWTH_PERCENT",
+        // WS3: bad server-level config. Each per-setting CONFIG_* fact scores 0.4 ONLY when
+        // bad (FactScorer) and roots its own standalone advisory card here, bypassing the 0.5
+        // incident threshold — a standing misconfig should surface on a quiet, healthy server.
+        "CONFIG_MAXDOP",
+        "CONFIG_CTFP",
+        "CONFIG_MAX_MEMORY_MB",
+        "CONFIG_MIN_MAX_MEMORY_NARROW",
     };
 
     private readonly RelationshipGraph _graph;

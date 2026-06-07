@@ -107,6 +107,205 @@ public static class FactRemediation
             : new RemediationAction("FILE_AUTOGROWTH_PERCENT", "set", Array.Empty<ForcePlanTarget>(),
                                     FileGrowthTargets: fileTargets);
     }
+
+    // ── WS3: server-level config (MAXDOP / CTFP / max & min server memory) ──────────
+    //
+    // The per-setting CONFIG_* facts (CONFIG_MAXDOP / CONFIG_CTFP / CONFIG_MAX_MEMORY_MB /
+    // CONFIG_MIN_MAX_MEMORY_NARROW) each root their OWN advisory finding. The drill-down
+    // attaches a `server_config` array carrying ONLY the bad setting(s) for that finding plus
+    // the edition + cores-per-socket needed to compute the recommended MAXDOP. The recommended
+    // value is computed HERE (not in the collector) so the edition-aware MAXDOP cap is unit-
+    // testable without a server. CTFP is a flat 50; the two memory settings are advise-only and
+    // carry their current value as "recommended" (the executor refuses to apply them).
+
+    /// <summary>The CTFP value WS3 recommends — the canonical AuditConfig figure.</summary>
+    public const long RecommendedCostThreshold = 50;
+
+    /// <summary>The MAXDOP default (0) WS3 flags as bad — unlimited parallelism.</summary>
+    public const long BadMaxdopValue = 0;
+
+    /// <summary>The "max server memory (MB)" default (~2 PB) WS3 flags as unconfigured.</summary>
+    public const long UnconfiguredMaxMemoryMb = 2147483647;
+
+    /// <summary>
+    /// The edition-aware recommended MAXDOP starting point, BEFORE the cores-per-socket cap:
+    /// Enterprise (engine_edition 3) → 8, Express (4) → 1, everything else (incl. Standard 2 /
+    /// unknown) → 4. Mirrors the AuditConfig MAXDOP suggestion exactly.
+    /// </summary>
+    public static long RecommendedMaxdopForEdition(int engineEdition) => engineEdition switch
+    {
+        3 => 8,   // Enterprise
+        4 => 1,   // Express
+        _ => 4    // Standard / unknown
+    };
+
+    /// <summary>
+    /// The recommended MAXDOP value: the edition-aware starting point
+    /// (<see cref="RecommendedMaxdopForEdition"/>) capped at cores-per-socket when that is
+    /// known (&gt; 0). On a 2-core box "MAXDOP 8" is nonsense, so cap to the socket's core
+    /// count — the same guidance AuditConfig gives. With cores unknown (0) the edition value
+    /// stands.
+    /// </summary>
+    public static long RecommendedMaxdop(int engineEdition, int coresPerSocket)
+    {
+        var byEdition = RecommendedMaxdopForEdition(engineEdition);
+        if (coresPerSocket > 0 && coresPerSocket < byEdition)
+            return coresPerSocket;
+        return byEdition;
+    }
+
+    /// <summary>
+    /// Builds the server-level config action for a CONFIG_* finding (WS3), or null when the
+    /// drill-down carries no bad server-config setting. Parallel to <see cref="BuildAction"/> —
+    /// a SEPARATE entry point so neither switch grows. The action carries FactKey
+    /// "SERVER_CONFIG" and the "set" verb. MAXDOP / CTFP targets are APPLY-able
+    /// (ServerConfigHandler runs <c>sp_configure</c>+<c>RECONFIGURE</c>); the two memory targets
+    /// are advise-only (the executor refuses them) but still ride the persisted-action round-trip
+    /// so the Recommendations reader can render their copy-paste on read (the drill-down is
+    /// ephemeral). Each finding roots on a single CONFIG_* key, so its drill-down carries a
+    /// single bad setting → a single target; the reader's fan loop turns each into one card.
+    /// </summary>
+    public static RemediationAction? BuildServerConfigAction(AnalysisFinding finding)
+    {
+        var targets = ExtractServerConfigTargets(finding);
+        return targets.Count == 0
+            ? null
+            : new RemediationAction("SERVER_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+                                    ServerConfigTargets: targets);
+    }
+
+    /// <summary>
+    /// Extracts the server-config target(s) from a CONFIG_* finding's drill-down
+    /// <c>server_config</c> array. Each row carries the structured fields <c>setting</c>
+    /// (canonical id), <c>current_value</c>, and (for MAXDOP) <c>edition</c> +
+    /// <c>cores_per_socket</c> — never parsing human prose. The recommended value is computed
+    /// per setting (edition-aware capped MAXDOP / flat CTFP / current for the advise-only memory
+    /// settings). A defensive cap of 8 mirrors the other extractors.
+    /// </summary>
+    public static IReadOnlyList<ServerConfigTarget> ExtractServerConfigTargets(AnalysisFinding finding)
+    {
+        var targets = new List<ServerConfigTarget>();
+
+        if (finding?.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("server_config", out var raw) ||
+            raw is null)
+            return targets;
+
+        JsonElement element;
+        try
+        {
+            element = JsonSerializer.SerializeToElement(raw);
+        }
+        catch
+        {
+            return targets;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return targets;
+
+        foreach (var row in element.EnumerateArray())
+        {
+            if (targets.Count >= 8) break;
+            if (row.ValueKind != JsonValueKind.Object) continue;
+
+            var settingId = GetString(row, "setting");
+            if (string.IsNullOrEmpty(settingId))
+                continue;
+
+            var current = GetInt64(row, "current_value");
+            var edition = GetInt(row, "edition");
+            var cores = GetInt(row, "cores_per_socket");
+
+            switch (settingId)
+            {
+                case "maxdop":
+                    targets.Add(new ServerConfigTarget(
+                        ServerConfigSetting.Maxdop, current, RecommendedMaxdop(edition, cores)));
+                    break;
+                case "ctfp":
+                    targets.Add(new ServerConfigTarget(
+                        ServerConfigSetting.CostThreshold, current, RecommendedCostThreshold));
+                    break;
+                case "max_memory":
+                    // Advise-only: the right value is RAM-dependent. Carry current as
+                    // "recommended" — the executor never applies it; the card is copy-paste only.
+                    targets.Add(new ServerConfigTarget(
+                        ServerConfigSetting.MaxServerMemory, current, current));
+                    break;
+                case "min_memory":
+                    // Advise-only (pinned near max). Carry current as "recommended".
+                    targets.Add(new ServerConfigTarget(
+                        ServerConfigSetting.MinServerMemory, current, current));
+                    break;
+            }
+        }
+
+        return targets;
+    }
+
+    /// <summary>
+    /// The fraction of max server memory at/above which min server memory is "pinned near max"
+    /// (WS3): min &gt;= 80% of max. Pinning the floor that high stops SQL releasing memory back to
+    /// the OS. Single source of truth so Dashboard and Lite collectors agree.
+    /// </summary>
+    public const double MinMaxMemoryNarrowFraction = 0.80;
+
+    /// <summary>
+    /// Builds the CONFIG_MIN_MAX_MEMORY_NARROW fact, or null when it does not apply — shared by
+    /// the Dashboard and Lite collectors so the "pinned near max" rule never drifts. Emitted ONLY
+    /// when max server memory is CONFIGURED (not the ~2 PB default) AND min &gt;=
+    /// <see cref="MinMaxMemoryNarrowFraction"/> of max. Carries the configured min + max in
+    /// metadata for the advice/disclosure. The fact's presence is itself the "bad" flag
+    /// (FactScorer scores it 0.4 unconditionally).
+    /// </summary>
+    public static Fact? BuildNarrowMemoryFact(int serverId, double? maxMemoryMb, double? minMemoryMb)
+    {
+        if (maxMemoryMb is not double max || minMemoryMb is not double min)
+            return null;
+
+        // Only meaningful once max is actually configured below the 2 PB default; an unconfigured
+        // max is its OWN finding (CONFIG_MAX_MEMORY_MB) and min-vs-2PB is never "narrow".
+        if (max >= UnconfiguredMaxMemoryMb || max <= 0)
+            return null;
+
+        if (min < max * MinMaxMemoryNarrowFraction)
+            return null;
+
+        return new Fact
+        {
+            Source = "config",
+            Key = "CONFIG_MIN_MAX_MEMORY_NARROW",
+            Value = min,
+            ServerId = serverId,
+            Metadata = new Dictionary<string, double>
+            {
+                ["min_memory_mb"] = min,
+                ["max_memory_mb"] = max
+            }
+        };
+    }
+
+    /// <summary>The hardcoded <c>sp_configure</c> name for a server-config setting (display + executor share the taxonomy).</summary>
+    public static string SpConfigureName(ServerConfigSetting setting) => setting switch
+    {
+        ServerConfigSetting.Maxdop => "max degree of parallelism",
+        ServerConfigSetting.CostThreshold => "cost threshold for parallelism",
+        ServerConfigSetting.MaxServerMemory => "max server memory (MB)",
+        ServerConfigSetting.MinServerMemory => "min server memory (MB)",
+        _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, "Unknown ServerConfigSetting")
+    };
+
+    /// <summary>
+    /// Renders one copy-paste <c>EXEC sys.sp_configure N'&lt;name&gt;', &lt;value&gt;; RECONFIGURE;</c>
+    /// statement for a server-config target. The name is a hardcoded literal selected by the enum;
+    /// the value is the recommended value. Advisory text only — the executor builds its OWN
+    /// statement with a bound @value parameter and never executes this rendered string.
+    /// </summary>
+    public static string BuildSpConfigureStatement(ServerConfigSetting setting, long value)
+    {
+        return $"EXEC sys.sp_configure N'{SpConfigureName(setting)}', {value};\nRECONFIGURE;";
+    }
     /// <summary>
     /// Builds the DESTRUCTIVE RCSI remediation action for a DB_CONFIG finding, or null
     /// when it does not apply (B3 Phase 3). Parallel to <see cref="BuildAction"/>, which

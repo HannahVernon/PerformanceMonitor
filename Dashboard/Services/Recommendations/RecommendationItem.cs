@@ -145,6 +145,17 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         public RecommendationSetting Setting { get; set; }
 
         /// <summary>
+        /// True for the four SERVER-LEVEL config cards (WS3: MAXDOP / CTFP / max &amp; min server
+        /// memory). These are server-scoped (<see cref="Setting"/> stays
+        /// <see cref="RecommendationSetting.None"/> so they never de-dupe with legacy per-db rows),
+        /// but they are standing CONFIG FIXES — Copy fix (and, for MAXDOP/CTFP, Apply) — NOT
+        /// time-bound incidents. The view-model treats this flag as a structured-fix signal so the
+        /// two advise-only memory cards (which carry no <see cref="Remediation"/>) still read as
+        /// config fixes (Copy fix, no incident affordances) rather than incidents.
+        /// </summary>
+        public bool IsServerConfigAdvisory { get; set; }
+
+        /// <summary>
         /// UTC start of the time window the finding pertains to (engine: the analysis
         /// <c>TimeRangeStart</c>; legacy: the <c>critical_issues.log_date</c>). Raw - no grace
         /// window is applied here; the navigation handler widens it (+/- 1h) and converts to

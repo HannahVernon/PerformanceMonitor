@@ -104,6 +104,25 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         Task<FileGrowthOutcome> SetFileGrowthAsync(string database, string logicalFileName, int growthMb, RemediationIdentity identity, CancellationToken ct);
 
         /// <summary>
+        /// Read-only display probe for one server-config target (named/role permission, live
+        /// current value, executable flag). Advisory only — does NOT authorise a mutation. Runs on
+        /// the monitoring connection to the target server (server-scoped, no retarget).
+        /// </summary>
+        Task<ServerConfigPreflight> PreflightServerConfigAsync(ServerConfigSetting setting, long recommendedValue, CancellationToken ct);
+
+        /// <summary>
+        /// Self-gating server-config apply (WS3). R2-MOD-1: the gate (named ALTER SETTINGS /
+        /// sysadmin / serveradmin + live current value) and the
+        /// <c>sp_configure 'show advanced options',1; RECONFIGURE; sp_configure '&lt;hardcoded&gt;',@value; RECONFIGURE;</c>
+        /// batch run on ONE open connection to the target server (server-scoped — no retarget, no
+        /// re-open between gate and mutation). The sp_configure NAME is a HARDCODED literal selected
+        /// by <paramref name="setting"/>; the value is bound as @value INT (range-validated first).
+        /// ONLY Maxdop / CostThreshold are executable; the two memory settings return an error
+        /// outcome WITHOUT touching the server (advise-only). Emits GateSpid/ExecSpid.
+        /// </summary>
+        Task<ServerConfigOutcome> SetServerConfigAsync(ServerConfigSetting setting, long value, RemediationIdentity identity, CancellationToken ct);
+
+        /// <summary>
         /// Self-gating clear-cached-plan (DBCC FREEPROCCACHE). On ONE open monitoring
         /// connection to the TARGET server (FREEPROCCACHE is server-scoped — no
         /// InitialCatalog retarget), in order: the NAMED ALTER SERVER STATE permission

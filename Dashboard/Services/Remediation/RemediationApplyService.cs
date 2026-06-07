@@ -62,7 +62,10 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             // FileAutogrowthHandler (FILE_AUTOGROWTH_PERCENT) is always-safe (metadata-only,
             // online, non-destructive — same class as DbConfigHandler) and rides its own fact
             // key, so it never crosses the destructive RCSI/CLEAR_PLAN handlers.
-            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler(), new FileAutogrowthHandler() });
+            // ServerConfigHandler (SERVER_CONFIG, WS3) is always-safe too (sp_configure MAXDOP/CTFP
+            // + RECONFIGURE — online metadata; the advise-only memory settings never mutate) and
+            // rides its OWN fact key, so it never crosses the destructive handlers either.
+            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler(), new FileAutogrowthHandler(), new ServerConfigHandler() });
             _executorFactory = server =>
                 new DatabaseServiceRemediationExecutor(new DatabaseService(server.GetConnectionString(credentialService)));
             _auditFailureClassifier = (server, ct) =>
@@ -326,6 +329,26 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                     });
                 }
             }
+            else if (action.ServerConfigTargets is { Count: > 0 } serverTargets)
+            {
+                // SERVER_CONFIG (WS3) rides ServerConfigTargets (the other target lists are empty for
+                // it). One row per setting; the always-safe sp_configure fix is non-destructive, so no
+                // two-sided Risks (RequiresInformedConsent stays false). Memory targets render with an
+                // advise-only disposition (they never run).
+                confirmTargets = new List<RemediationConfirmTarget>(serverTargets.Count);
+                for (var i = 0; i < serverTargets.Count; i++)
+                {
+                    var t = serverTargets[i];
+                    var pf = i < preflight.Targets.Count ? preflight.Targets[i] : null;
+                    confirmTargets.Add(new RemediationConfirmTarget
+                    {
+                        Database = "",   // server-scoped — no database column
+                        StatusTitle = $"{ServerConfigHandler.SettingTitle(t.Setting)} {t.CurrentValue} → {t.RecommendedValue}",
+                        Disposition = pf?.Disposition ?? RemediationDisposition.Error,
+                        DispositionMessage = pf?.Message
+                    });
+                }
+            }
             else
             {
                 confirmTargets = new List<RemediationConfirmTarget>(action.Targets.Count);
@@ -408,6 +431,21 @@ namespace PerformanceMonitorDashboard.Services.Remediation
                        .Append('\n');
                 }
                 return sb3.ToString().TrimEnd('\n');
+            }
+
+            // SERVER_CONFIG: render one sp_configure + RECONFIGURE per setting (apply-only — no
+            // un-apply branch). Display only; the executor builds its own batch with a bound @value
+            // and never executes this text. The shared renderer keeps it byte-identical to the
+            // reader copy-paste.
+            if (action.ServerConfigTargets is { Count: > 0 } serverTargets)
+            {
+                var sb4 = new StringBuilder();
+                foreach (var t in serverTargets)
+                {
+                    sb4.Append(FactRemediation.BuildSpConfigureStatement(t.Setting, t.RecommendedValue))
+                       .Append('\n');
+                }
+                return sb4.ToString().TrimEnd('\n');
             }
 
             var proc = isUnapply ? "sp_query_store_unforce_plan" : "sp_query_store_force_plan";

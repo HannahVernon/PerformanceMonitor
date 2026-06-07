@@ -62,6 +62,15 @@ public class SqlServerDrillDownCollector
                 if (pathKeys.Contains("FILE_AUTOGROWTH_PERCENT"))
                     await CollectAutogrowthPercentFiles(finding, context);
 
+                /* WS3: the server-config drill-down is a single cheap config-table read and is
+                   required to build the SERVER_CONFIG Apply/copy-paste action for a CONFIG_*
+                   finding, which scores 0.4 (advisory). Collect it regardless of the 0.5 display
+                   gate, like the two config drill-downs above. Only the bad setting that rooted
+                   THIS finding is emitted (the engine roots one CONFIG_* fact per finding). */
+                if (pathKeys.Contains("CONFIG_MAXDOP") || pathKeys.Contains("CONFIG_CTFP")
+                    || pathKeys.Contains("CONFIG_MAX_MEMORY_MB") || pathKeys.Contains("CONFIG_MIN_MAX_MEMORY_NARROW"))
+                    await CollectServerConfig(finding, context, pathKeys);
+
                 // Below the 0.5 display gate, only the cheap config drill-down above runs;
                 // the expensive collectors (plan fetches, multi-row reads) are skipped.
                 if (finding.Severity < 0.5)
@@ -882,6 +891,99 @@ ORDER BY total_size_mb DESC;";
 
         if (items.Count > 0)
             finding.DrillDown!["autogrowth_percent_files"] = items;
+    }
+
+    /// <summary>
+    /// Emits the <c>server_config</c> drill-down for a CONFIG_* finding (WS3): the single bad
+    /// server-level setting that rooted this finding, with its latest <c>value_in_use</c> plus the
+    /// server's <c>engine_edition</c> and <c>cores_per_socket</c> (needed to compute the
+    /// edition-aware, core-capped MAXDOP recommendation in
+    /// <see cref="FactRemediation.ExtractServerConfigTargets"/>). The structured fields
+    /// (<c>setting</c>, <c>current_value</c>, <c>edition</c>, <c>cores_per_socket</c>) are what the
+    /// shared extractor reads; nothing here is executed. The four CONFIG_* keys root SEPARATE
+    /// findings, so each finding emits exactly the one row for its own setting.
+    /// </summary>
+    private async Task CollectServerConfig(AnalysisFinding finding, AnalysisContext context, HashSet<string> pathKeys)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        // Latest value per requested config (ROW_NUMBER, not TOP N — same dedup correctness as the
+        // fact collector), plus the latest server_properties row for edition + cores-per-socket.
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+;WITH latest_config AS (
+    SELECT
+        configuration_name,
+        CAST(value_in_use AS BIGINT) AS value_in_use,
+        ROW_NUMBER() OVER (PARTITION BY configuration_name ORDER BY collection_time DESC) AS rn
+    FROM config.server_configuration_history
+    WHERE configuration_name IN (
+        'cost threshold for parallelism',
+        'max degree of parallelism',
+        'max server memory (MB)',
+        'min server memory (MB)'
+    )
+)
+SELECT
+    configuration_name,
+    value_in_use
+FROM latest_config
+WHERE rn = 1;
+
+SELECT TOP (1)
+    engine_edition,
+    cores_per_socket
+FROM collect.server_properties
+ORDER BY collection_time DESC;";
+
+        long? ctfp = null, maxdop = null, maxMem = null, minMem = null;
+        int edition = 0, coresPerSocket = 0;
+
+        using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                var name = reader.IsDBNull(0) ? "" : reader.GetString(0);
+                var value = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1));
+                switch (name)
+                {
+                    case "cost threshold for parallelism": ctfp = value; break;
+                    case "max degree of parallelism": maxdop = value; break;
+                    case "max server memory (MB)": maxMem = value; break;
+                    case "min server memory (MB)": minMem = value; break;
+                }
+            }
+
+            if (await reader.NextResultAsync() && await reader.ReadAsync())
+            {
+                edition = reader.IsDBNull(0) ? 0 : Convert.ToInt32(reader.GetValue(0));
+                coresPerSocket = reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1));
+            }
+        }
+
+        var items = new List<object>();
+
+        // Emit ONLY the setting that rooted this finding (the engine roots one CONFIG_* per finding).
+        // edition / cores_per_socket ride every row (the extractor uses them only for MAXDOP).
+        if (pathKeys.Contains("CONFIG_MAXDOP") && maxdop is { } md)
+            items.Add(new { setting = "maxdop", current_value = md, edition, cores_per_socket = coresPerSocket });
+
+        if (pathKeys.Contains("CONFIG_CTFP") && ctfp is { } ct)
+            items.Add(new { setting = "ctfp", current_value = ct, edition, cores_per_socket = coresPerSocket });
+
+        if (pathKeys.Contains("CONFIG_MAX_MEMORY_MB") && maxMem is { } mx)
+            items.Add(new { setting = "max_memory", current_value = mx, edition, cores_per_socket = coresPerSocket });
+
+        // For the narrow-memory finding the bad value the operator acts on is MIN server memory
+        // (lower it); carry it as the min_memory target.
+        if (pathKeys.Contains("CONFIG_MIN_MAX_MEMORY_NARROW") && minMem is { } mn)
+            items.Add(new { setting = "min_memory", current_value = mn, edition, cores_per_socket = coresPerSocket });
+
+        if (items.Count > 0)
+            finding.DrillDown!["server_config"] = items;
     }
 
     private sealed class ConfigIssueRow

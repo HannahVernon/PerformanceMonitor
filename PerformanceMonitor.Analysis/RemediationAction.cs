@@ -34,7 +34,56 @@ public sealed record RemediationAction(
     IReadOnlyList<ClearPlanTarget>? ClearPlanTargets = null, // clear-cached-plan targets (null for the other fact keys)
     ClearPlanFigures? ClearPlanFigures = null,   // clear-cached-plan risk-of-not-changing figures carried on the persisted action
     IReadOnlyList<FileGrowthTarget>? FileGrowthTargets = null, // WS3: percent-autogrowth files — Apply-able (FileAutogrowthHandler: MODIFY FILE FILEGROWTH) + copy-paste
-    IReadOnlyList<RcsiTarget>? RcsiTargets = null); // per-DB RCSI targets CARRIED on a DB_CONFIG action so the reader can fan per-db RCSI cards on read — NEVER executed from here (see RcsiTarget)
+    IReadOnlyList<RcsiTarget>? RcsiTargets = null, // per-DB RCSI targets CARRIED on a DB_CONFIG action so the reader can fan per-db RCSI cards on read — NEVER executed from here (see RcsiTarget)
+    IReadOnlyList<ServerConfigTarget>? ServerConfigTargets = null); // WS3: bad server-level config (MAXDOP/CTFP Apply-able via ServerConfigHandler; max/min memory advise-only) — one card per target
+
+/// <summary>
+/// The fixed, hardcoded set of SERVER-LEVEL configuration settings WS3 surfaces (and, for
+/// the first two, can apply). This enum — NOT any data/operator-supplied string — selects the
+/// HARDCODED <c>sp_configure</c> name literal in the executor (see
+/// DatabaseService.Remediation server-config arm). <see cref="Maxdop"/> and
+/// <see cref="CostThreshold"/> are executable (an online metadata change, not destructive).
+/// <see cref="MaxServerMemory"/> and <see cref="MinServerMemory"/> are ADVISE-ONLY: their
+/// correct value is RAM/workload-dependent, so the executor REFUSES to apply a guessed value —
+/// the cards carry only copy-paste SQL.
+/// </summary>
+public enum ServerConfigSetting
+{
+    /// <summary>EXEC sys.sp_configure N'max degree of parallelism', N; RECONFIGURE; — executable.</summary>
+    Maxdop,
+
+    /// <summary>EXEC sys.sp_configure N'cost threshold for parallelism', N; RECONFIGURE; — executable.</summary>
+    CostThreshold,
+
+    /// <summary>
+    /// max server memory (MB) — ADVISE-ONLY. The right value depends on total RAM, other
+    /// instances, and the OS footprint; the executor never applies a guessed value.
+    /// </summary>
+    MaxServerMemory,
+
+    /// <summary>
+    /// min server memory (MB) — ADVISE-ONLY. Recommended only when pinned near max (which
+    /// starves the OS / stops SQL releasing memory); lowering it is workload-judgement, so the
+    /// executor never applies a value.
+    /// </summary>
+    MinServerMemory
+}
+
+/// <summary>
+/// One server-level config target (WS3): a (setting, current, recommended) triple. Each maps
+/// 1:1 onto a Recommendations card and — for <see cref="ServerConfigSetting.Maxdop"/> /
+/// <see cref="ServerConfigSetting.CostThreshold"/> — an independent
+/// <c>sp_configure</c>+<c>RECONFIGURE</c> Apply and audit row.
+/// <see cref="CurrentValue"/> is a display/audit prior-value snapshot; the executor re-reads
+/// the live value at apply. <see cref="RecommendedValue"/> is the already-computed target used
+/// verbatim as the bound <c>@value</c> (MAXDOP: edition-aware, capped at cores-per-socket;
+/// CTFP: 50). For the two memory settings <see cref="RecommendedValue"/> is carried for the
+/// copy-paste/advice only — the executor refuses to apply it.
+/// </summary>
+public sealed record ServerConfigTarget(
+    ServerConfigSetting Setting,
+    long CurrentValue,
+    long RecommendedValue);
 
 /// <summary>
 /// One per-database RCSI target — a (database, inaction-figures) pair carried on the
