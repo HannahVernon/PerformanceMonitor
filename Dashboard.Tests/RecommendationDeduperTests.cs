@@ -241,6 +241,24 @@ public class RecommendationDeduperTests
         Assert.Equal(expected, RecommendationDeduper.FromEngineSeverity(severity));
     }
 
+    // ---- RCSI card severity scales with the contention it would relieve ----
+
+    [Theory]
+    [InlineData(0, 0, CanonicalSeverity.Info)]        // gated in (rw>=50) but minimal magnitude
+    [InlineData(9, 0, CanonicalSeverity.Info)]        // just under the Warning blocking threshold
+    [InlineData(10, 0, CanonicalSeverity.Warning)]    // notable reader/writer blocking
+    [InlineData(0, 1, CanonicalSeverity.Warning)]     // a deadlock escalates off Info
+    [InlineData(99, 9, CanonicalSeverity.Warning)]    // just under Critical on both axes
+    [InlineData(100, 0, CanonicalSeverity.Critical)]  // extreme blocking
+    [InlineData(0, 10, CanonicalSeverity.Critical)]   // many deadlocks
+    public void RcsiSeverityBand_ScalesWithContention(int blocking, int deadlocks, CanonicalSeverity expected)
+    {
+        // rwPct doesn't affect the band (the >=50% reader/writer gate already decided the card
+        // exists); the band reflects magnitude. 80 here is just a representative gated value.
+        var band = RecommendationsReader.RcsiSeverityBand(new RcsiInactionFigures(blocking, deadlocks, 80));
+        Assert.Equal(expected, band);
+    }
+
     // ---- canonical severity: legacy text ---------------------------------
 
     [Theory]

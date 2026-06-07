@@ -182,11 +182,16 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 // this fan-out.
                 foreach (var t in rcsiTargets)
                 {
+                    // RCSI's value is relieving reader/writer blocking, so escalate the card by the
+                    // contention it would address (its inaction risk) rather than the flat config
+                    // band auto_shrink/page_verify get — an RCSI rec sitting at Info next to a
+                    // Warning blocking-spike reads wrong.
+                    var rcsiBand = RcsiSeverityBand(t.Figures);
                     items.Add(new RecommendationItem
                     {
                         Source = RecommendationSource.Engine,
-                        CanonicalSeverity = band,
-                        RawSeverity = finding.Severity,
+                        CanonicalSeverity = rcsiBand,
+                        RawSeverity = RcsiRawSeverity(rcsiBand),
                         Database = t.Database,
                         Title = $"RCSI is OFF — {t.Database}",
                         ProblemArea = finding.Category,
@@ -212,6 +217,30 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
 
             return new[] { MapEngineFinding(finding) };
         }
+
+        /// <summary>
+        /// The canonical severity for an RCSI card, driven by the reader/writer contention the
+        /// change would relieve (its inaction risk) — NOT the flat config-advisory band the safe
+        /// settings (auto_shrink/page_verify) get. Blocking is the primary signal (RCSI directly
+        /// removes reader S-lock vs writer X-lock waits); deadlocks escalate it. Counts are over
+        /// the analysis window.
+        /// </summary>
+        internal static CanonicalSeverity RcsiSeverityBand(RcsiInactionFigures f)
+        {
+            if (f.BlockingEvents >= 100 || f.Deadlocks >= 10)
+                return CanonicalSeverity.Critical;
+            if (f.BlockingEvents >= 10 || f.Deadlocks >= 1)
+                return CanonicalSeverity.Warning;
+            return CanonicalSeverity.Info;
+        }
+
+        /// <summary>A raw-severity stand-in for an RCSI card's within/cross-band sort.</summary>
+        private static double RcsiRawSeverity(CanonicalSeverity band) => band switch
+        {
+            CanonicalSeverity.Critical => 2.0,
+            CanonicalSeverity.Warning => 1.0,
+            _ => 0.3
+        };
 
         /// <summary>
         /// The per-card title for a fanned-out <c>DB_CONFIG</c> safe-setting target:
