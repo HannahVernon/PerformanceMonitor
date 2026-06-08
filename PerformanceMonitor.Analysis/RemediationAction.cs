@@ -35,7 +35,8 @@ public sealed record RemediationAction(
     ClearPlanFigures? ClearPlanFigures = null,   // clear-cached-plan risk-of-not-changing figures carried on the persisted action
     IReadOnlyList<FileGrowthTarget>? FileGrowthTargets = null, // WS3: percent-autogrowth files — Apply-able (FileAutogrowthHandler: MODIFY FILE FILEGROWTH) + copy-paste
     IReadOnlyList<RcsiTarget>? RcsiTargets = null, // per-DB RCSI targets CARRIED on a DB_CONFIG action so the reader can fan per-db RCSI cards on read — NEVER executed from here (see RcsiTarget)
-    IReadOnlyList<ServerConfigTarget>? ServerConfigTargets = null); // WS3: bad server-level config (MAXDOP/CTFP Apply-able via ServerConfigHandler; max/min memory advise-only) — one card per target
+    IReadOnlyList<ServerConfigTarget>? ServerConfigTargets = null, // WS3: bad server-level config (MAXDOP/CTFP Apply-able via ServerConfigHandler; max/min memory advise-only) — one card per target
+    IReadOnlyList<MissingIndexTarget>? MissingIndexTargets = null); // WS4: missing-index CREATE statements — COPY-PASTE ONLY (no handler -> never Apply); carried so the reader can render the CREATE on read (the drill-down is ephemeral)
 
 /// <summary>
 /// The fixed, hardcoded set of SERVER-LEVEL configuration settings WS3 surfaces (and, for
@@ -232,6 +233,23 @@ public sealed record FileGrowthTarget(
     double CurrentSizeMb,                       // total_size_mb — display only
     int CurrentGrowthPercent,                   // growth_pct — display only
     int RecommendedGrowthMb);                   // already-computed fixed-MB FILEGROWTH (1024 data / 64 log)
+
+/// <summary>
+/// One missing-index suggestion (WS4): the SQL Server-generated <c>CREATE INDEX</c> statement
+/// for a query plan's missing-index request, surfaced as COPY-PASTE ONLY. Unlike
+/// <see cref="FileGrowthTarget"/>, this carries NO handler and is NEVER Apply-able — creating an
+/// index is a judgement call (over-indexing, write/storage cost), so the operator copies the
+/// suggested statement and decides. It rides the persisted <see cref="RemediationAction"/> (FactKey
+/// "MISSING_INDEX") purely so the Recommendations reader can render <see cref="CreateStatement"/>
+/// on read; the drill-down it was extracted from (<c>missing_indexes</c>) is ephemeral. The reader
+/// surfaces the statement as the card's copy-paste SQL and leaves the card's <c>Remediation</c>
+/// null so no Apply button appears. <see cref="Table"/> (schema-qualified) and <see cref="Impact"/>
+/// are display only.
+/// </summary>
+public sealed record MissingIndexTarget(
+    string Table,                               // "schema.table" (display)
+    double Impact,                             // estimated % improvement (display)
+    string CreateStatement);                    // the SQL Server-suggested CREATE INDEX — the copy-paste payload
 
 /// <summary>
 /// One force-plan target. <see cref="Database"/>, <see cref="QueryId"/> and

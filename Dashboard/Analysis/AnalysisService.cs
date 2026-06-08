@@ -211,7 +211,8 @@ public class AnalysisService
                     ?? FactRemediation.BuildRcsiAction(finding)
                     ?? FactRemediation.BuildClearPlanAction(finding)
                     ?? FactRemediation.BuildFileAutogrowthAction(finding) // WS3: advisory only (no handler -> no Apply); carried for the read-time copy-paste
-                    ?? FactRemediation.BuildServerConfigAction(finding); // WS3: server-level config — MAXDOP/CTFP Apply-able, memory advise-only
+                    ?? FactRemediation.BuildServerConfigAction(finding) // WS3: server-level config — MAXDOP/CTFP Apply-able, memory advise-only
+                    ?? FactRemediation.BuildMissingIndexAction(finding); // WS4: missing-index CREATE — copy-paste only (no handler -> no Apply); carried for the read-time copy-paste
             }
 
             // 7. Insert the survivors in one batched pass, persisting remediation_action_json

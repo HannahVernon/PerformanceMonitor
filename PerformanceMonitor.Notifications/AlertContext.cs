@@ -86,7 +86,8 @@ public record RemediationActionDto(
     ClearPlanFiguresDto? ClearPlanFigures = null,
     List<FileGrowthTargetDto>? FileGrowthTargets = null,
     List<RcsiTargetDto>? RcsiTargets = null,
-    List<ServerConfigTargetDto>? ServerConfigTargets = null);
+    List<ServerConfigTargetDto>? ServerConfigTargets = null,
+    List<MissingIndexTargetDto>? MissingIndexTargets = null);
 
 /// <summary>
 /// JSON mirror of <see cref="RcsiTarget"/>. The per-database RCSI targets are carried on a
@@ -189,6 +190,18 @@ public record ServerConfigTargetDto(
     int Setting,
     long CurrentValue,
     long RecommendedValue);
+
+/// <summary>
+/// JSON mirror of <see cref="MissingIndexTarget"/> (WS4 missing-index advisory). The trailing
+/// optional <c>MissingIndexTargets</c> member on <see cref="RemediationActionDto"/> keeps the
+/// round-trip backward-compatible: legacy/non-MISSING_INDEX contextJson without it deserializes to
+/// null. Carried so the Recommendations reader can render the suggested CREATE on read (the
+/// drill-down is ephemeral). Copy-paste only — there is no handler, so it never drives Apply.
+/// </summary>
+public record MissingIndexTargetDto(
+    string Table,
+    double Impact,
+    string CreateStatement);
 
 /// <summary>
 /// Maps <see cref="AlertContext"/> to/from the <see cref="AlertContextDto"/> JSON projection
@@ -366,9 +379,20 @@ public static class AlertContextSerializer
                 serverConfigTargets.Add(new ServerConfigTargetDto((int)t.Setting, t.CurrentValue, t.RecommendedValue));
         }
 
+        // WS4 (missing-index advisory): persist the suggested CREATE statements so the Recommendations
+        // reader can render them as copy-paste on read (the drill-down is ephemeral). Copy-paste only —
+        // no handler, never Apply. Null for every other fact key -> backward-compatible.
+        List<MissingIndexTargetDto>? missingIndexTargets = null;
+        if (action.MissingIndexTargets is not null)
+        {
+            missingIndexTargets = new List<MissingIndexTargetDto>(action.MissingIndexTargets.Count);
+            foreach (var t in action.MissingIndexTargets)
+                missingIndexTargets.Add(new MissingIndexTargetDto(t.Table, t.Impact, t.CreateStatement));
+        }
+
         return new RemediationActionDto(action.FactKey, action.Action, targets, dbConfigTargets,
             rcsiFigures, clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets,
-            serverConfigTargets);
+            serverConfigTargets, missingIndexTargets);
     }
 
     private static RemediationAction? FromDto(RemediationActionDto? dto)
@@ -472,7 +496,20 @@ public static class AlertContextSerializer
                 serverConfigTargets.Add(new ServerConfigTarget((ServerConfigSetting)t.Setting, t.CurrentValue, t.RecommendedValue));
         }
 
+        // WS4: rebuild the missing-index targets from the DTO and PASS them to the ctor (the trailing
+        // MissingIndexTargets member defaults to null, so a short call would silently drop them on the
+        // round-trip — the reader would then render no missing-index copy-paste). Legacy JSON without
+        // the field deserializes to null → backward-compatible.
+        List<MissingIndexTarget>? missingIndexTargets = null;
+        if (dto.MissingIndexTargets is not null)
+        {
+            missingIndexTargets = new List<MissingIndexTarget>(dto.MissingIndexTargets.Count);
+            foreach (var t in dto.MissingIndexTargets)
+                missingIndexTargets.Add(new MissingIndexTarget(t.Table, t.Impact, t.CreateStatement));
+        }
+
         return new RemediationAction(dto.FactKey, dto.Action, targets, dbConfigTargets, rcsiFigures,
-            clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets, serverConfigTargets);
+            clearPlanTargets, clearPlanFigures, fileGrowthTargets, rcsiTargets, serverConfigTargets,
+            missingIndexTargets);
     }
 }
