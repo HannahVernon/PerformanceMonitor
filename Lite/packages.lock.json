@@ -754,7 +754,10 @@
         "type": "Project"
       },
       "performancemonitor.common": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "ModelContextProtocol": "[1.3.0, )"
+        }
       },
       "performancemonitor.notifications": {
         "type": "Project",
