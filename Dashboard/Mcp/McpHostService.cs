@@ -74,28 +74,31 @@ public sealed class McpHostService : BackgroundService
                    Required for clients like Google Antigravity that don't echo the session id,
                    which otherwise connect but list zero tools (issue #1074). */
                 .WithHttpTransport(options => options.Stateless = true)
-                .WithTools<McpDiscoveryTools>()
-                .WithTools<McpHealthTools>()
-                .WithTools<McpWaitTools>()
-                .WithTools<McpBlockingTools>()
-                .WithTools<McpQueryTools>()
-                .WithTools<McpCpuTools>()
-                .WithTools<McpMemoryTools>()
-                .WithTools<McpIoTools>()
-                .WithTools<McpTempDbTools>()
-                .WithTools<McpPerfmonTools>()
-                .WithTools<McpAlertTools>()
-                .WithTools<McpJobTools>()
-                .WithTools<McpPlanTools>()
-                .WithTools<McpLatchSpinlockTools>()
-                .WithTools<McpSchedulerTools>()
-                .WithTools<McpConfigHistoryTools>()
-                .WithTools<McpDiagnosticTools>()
-                .WithTools<McpActiveQueryTools>()
-                .WithTools<McpSystemEventTools>()
-                .WithTools<McpHealthParserTools>()
-                .WithTools<McpServerInventoryTools>()
-                .WithTools<McpAnalysisTools>();
+                /* WithGeminiCompatibleTools (not the SDK's WithTools) rewrites parameter schemas into
+                   the subset Gemini/Antigravity accepts — collapsing nullable type unions and
+                   dropping the default keyword. The companion to stateless transport for issue #1074. */
+                .WithGeminiCompatibleTools<McpDiscoveryTools>()
+                .WithGeminiCompatibleTools<McpHealthTools>()
+                .WithGeminiCompatibleTools<McpWaitTools>()
+                .WithGeminiCompatibleTools<McpBlockingTools>()
+                .WithGeminiCompatibleTools<McpQueryTools>()
+                .WithGeminiCompatibleTools<McpCpuTools>()
+                .WithGeminiCompatibleTools<McpMemoryTools>()
+                .WithGeminiCompatibleTools<McpIoTools>()
+                .WithGeminiCompatibleTools<McpTempDbTools>()
+                .WithGeminiCompatibleTools<McpPerfmonTools>()
+                .WithGeminiCompatibleTools<McpAlertTools>()
+                .WithGeminiCompatibleTools<McpJobTools>()
+                .WithGeminiCompatibleTools<McpPlanTools>()
+                .WithGeminiCompatibleTools<McpLatchSpinlockTools>()
+                .WithGeminiCompatibleTools<McpSchedulerTools>()
+                .WithGeminiCompatibleTools<McpConfigHistoryTools>()
+                .WithGeminiCompatibleTools<McpDiagnosticTools>()
+                .WithGeminiCompatibleTools<McpActiveQueryTools>()
+                .WithGeminiCompatibleTools<McpSystemEventTools>()
+                .WithGeminiCompatibleTools<McpHealthParserTools>()
+                .WithGeminiCompatibleTools<McpServerInventoryTools>()
+                .WithGeminiCompatibleTools<McpAnalysisTools>();
 
             _app = builder.Build();
             _app.MapMcp();
