@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorDashboard.Helpers;
 
 namespace PerformanceMonitorDashboard.Analysis;
@@ -55,6 +56,7 @@ public class SqlServerFactCollector : IFactCollector
         await CollectTraceFlagFactsAsync(context, facts);
         await CollectServerPropertiesFactsAsync(context, facts);
         await CollectDiskSpaceFactsAsync(context, facts);
+        await CollectPlanAdvisoryFactsAsync(context, facts);
 
         return facts;
     }
@@ -2098,6 +2100,89 @@ ORDER BY collection_time DESC";
                     ["memory_dump_count"] = memoryDumpCount.Value
                 }
             });
+        }
+    }
+
+    /// <summary>
+    /// WS4: plan-XML advisories. Parses the already-collected query plans of the top queries by
+    /// cost (no live fetch, no DMV) with the shared ShowPlanParser/PlanAnalyzer and emits two
+    /// advise-only facts — MISSING_INDEX (Value = distinct suggested indexes) and PLAN_WARNING
+    /// (Value = actionable warnings). The specific indexes/warnings ride in the finding drill-down
+    /// (SqlServerDrillDownCollector); Fact.Metadata is numeric only.
+    /// </summary>
+    private async Task CollectPlanAdvisoryFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            var planXmls = new List<string>();
+
+            using (var connection = new SqlConnection(_connectionString))
+            {
+                await connection.OpenAsync();
+
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT TOP (10)
+    plan_xml = CAST(DECOMPRESS(qs.query_plan_text) AS nvarchar(max))
+FROM collect.query_stats AS qs
+WHERE qs.collection_time >= @startTime
+AND   qs.collection_time <= @endTime
+AND   qs.query_plan_text IS NOT NULL
+ORDER BY
+    qs.total_worker_time DESC;";
+                cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
+                cmd.Parameters.Add(new SqlParameter("@endTime", context.TimeRangeEnd));
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    if (!reader.IsDBNull(0))
+                        planXmls.Add(reader.GetString(0));
+                }
+            }
+
+            if (planXmls.Count == 0)
+                return;
+
+            var summary = PlanAdvisoryAggregator.Summarize(planXmls);
+
+            if (summary.MissingIndexCount > 0)
+            {
+                facts.Add(new Fact
+                {
+                    Source = "queries",
+                    Key = "MISSING_INDEX",
+                    Value = summary.MissingIndexCount,
+                    ServerId = context.ServerId,
+                    Metadata = new Dictionary<string, double>
+                    {
+                        ["index_count"] = summary.MissingIndexCount,
+                        ["max_impact"] = summary.MaxImpact
+                    }
+                });
+            }
+
+            if (summary.WarningCount > 0)
+            {
+                facts.Add(new Fact
+                {
+                    Source = "queries",
+                    Key = "PLAN_WARNING",
+                    Value = summary.WarningCount,
+                    ServerId = context.ServerId,
+                    Metadata = new Dictionary<string, double>
+                    {
+                        ["warning_count"] = summary.WarningCount,
+                        ["critical_count"] = summary.CriticalCount
+                    }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SqlServerFactCollector.CollectPlanAdvisoryFactsAsync failed", ex);
         }
     }
 

@@ -324,4 +324,40 @@ public class FactScorerTests
         // Advise-only: no generated Apply T-SQL is attached to the bare advice block.
         Assert.Null(advice.RemediationTsql);
     }
+
+    // WS4: plan-XML advisories. MISSING_INDEX / PLAN_WARNING (Source "queries", Value = count)
+    // score the 0.4 advisory base only when the count is > 0, and 0 otherwise. Advise-only.
+    [Theory]
+    [InlineData("MISSING_INDEX", 1, 0.4)]
+    [InlineData("MISSING_INDEX", 5, 0.4)]
+    [InlineData("MISSING_INDEX", 0, 0.0)]
+    [InlineData("PLAN_WARNING", 1, 0.4)]
+    [InlineData("PLAN_WARNING", 0, 0.0)]
+    public void PlanAdvisoryFact_ScoresWhenPresentOnly(string key, long value, double expected)
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "queries", Key = key, Value = value }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(expected, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // Advice exists for each WS4 plan-advisory root key (dead-fact guard); advise-only (no Apply T-SQL).
+    [Theory]
+    [InlineData("MISSING_INDEX")]
+    [InlineData("PLAN_WARNING")]
+    public void PlanAdvisoryKeys_HaveAdviceBlocks(string key)
+    {
+        var advice = FactAdvice.GetForFactKey(key);
+
+        Assert.NotNull(advice);
+        Assert.False(string.IsNullOrWhiteSpace(advice!.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+        Assert.Null(advice.RemediationTsql);
+    }
 }
