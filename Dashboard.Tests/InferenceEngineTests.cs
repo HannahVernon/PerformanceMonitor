@@ -141,4 +141,45 @@ public class InferenceEngineTests
         Assert.Contains(stories, s => s.RootFactKey == "CONFIG_MAX_MEMORY_MB");
         Assert.Contains(stories, s => s.RootFactKey == "CONFIG_MIN_MAX_MEMORY_NARROW");
     }
+
+    // WS5: each server-health advisory fact at its 0.4 advisory base roots a standalone
+    // recommendation, below the 0.5 incident threshold — because each is a config-advisory root
+    // key. One finding per fact (they are leaves with no edges between them). Mirrors the WS3
+    // ServerConfigFact_RootsStandalone_BelowMinimumSeverity test.
+    [Theory]
+    [InlineData("CONFIG_IFI_DISABLED")]
+    [InlineData("CONFIG_LPIM_DISABLED")]
+    [InlineData("SERVER_MEMORY_DUMPS")]
+    public void ServerHealthFact_RootsStandalone_BelowMinimumSeverity(string key)
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = key, Source = "config", Value = 0, Severity = 0.4 }
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == key);
+    }
+
+    // All three server-health facts together root three distinct standalone findings (no edges
+    // between them, so none consumes another).
+    [Fact]
+    public void ServerHealthFacts_AllThree_RootThreeDistinctFindings()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "CONFIG_IFI_DISABLED", Source = "config", Value = 0, Severity = 0.4 },
+            new() { Key = "CONFIG_LPIM_DISABLED", Source = "config", Value = 0, Severity = 0.4 },
+            new() { Key = "SERVER_MEMORY_DUMPS", Source = "config", Value = 3, Severity = 0.4 },
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == "CONFIG_IFI_DISABLED");
+        Assert.Contains(stories, s => s.RootFactKey == "CONFIG_LPIM_DISABLED");
+        Assert.Contains(stories, s => s.RootFactKey == "SERVER_MEMORY_DUMPS");
+    }
 }

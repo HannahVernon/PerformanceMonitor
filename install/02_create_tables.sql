@@ -1501,6 +1501,9 @@ BEGIN
         is_clustered bit NULL,
         enterprise_features nvarchar(max) NULL,
         service_objective sysname NULL,
+        lock_pages_in_memory bit NULL,
+        instant_file_initialization_enabled bit NULL,
+        memory_dump_count integer NULL,
         row_hash binary(32) NULL,
         CONSTRAINT
             PK_server_properties

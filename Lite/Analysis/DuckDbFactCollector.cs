@@ -1844,7 +1844,8 @@ ORDER BY trace_flag";
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
 SELECT COALESCE(vcore_count, cpu_count) AS cpu_count, hyperthread_ratio, physical_memory_mb,
-       socket_count, cores_per_socket, is_hadr_enabled, edition, product_version
+       socket_count, cores_per_socket, is_hadr_enabled, edition, product_version,
+       lock_pages_in_memory, instant_file_initialization_enabled, memory_dump_count
 FROM server_properties
 WHERE server_id = $1
 ORDER BY collection_time DESC
@@ -1861,6 +1862,10 @@ LIMIT 1";
             var socketCount = reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3));
             var coresPerSocket = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
             var hadrEnabled = !reader.IsDBNull(5) && Convert.ToBoolean(reader.GetValue(5));
+            var edition = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+            bool? lpim = reader.IsDBNull(8) ? (bool?)null : Convert.ToBoolean(reader.GetValue(8));
+            bool? ifi = reader.IsDBNull(9) ? (bool?)null : Convert.ToBoolean(reader.GetValue(9));
+            int? dumpCount = reader.IsDBNull(10) ? (int?)null : Convert.ToInt32(reader.GetValue(10));
 
             if (cpuCount == 0) return;
 
@@ -1880,8 +1885,77 @@ LIMIT 1";
                     ["hadr_enabled"] = hadrEnabled ? 1 : 0
                 }
             });
+
+            // WS5 server-health advisories (advise-only). Gating mirrors the Dashboard collector so
+            // both apps agree on what is worth flagging; a fact that would score 0 is simply never
+            // emitted (noise control).
+            EmitServerHealthFacts(context, facts, edition, physicalMemMb, lpim, ifi, dumpCount);
         }
         catch { /* Table may not exist or have no data */ }
+    }
+
+    // RAM floor below which LPIM-off is not worth flagging — shared rule with the Dashboard
+    // SqlServerFactCollector (small buffer pools do not suffer from OS paging the way large ones do).
+    private const long LpimAdvisoryMinPhysicalMemoryMb = 32 * 1024;
+
+    /// <summary>
+    /// Emits the WS5 advise-only server-health facts (IFI off / LPIM off / memory dumps) from the
+    /// latest server_properties values, applying the same noise-control gating as the Dashboard:
+    ///   • IFI: emit whenever the value is known (Value = enabled bit) — universally good advice.
+    ///   • LPIM: emit only on non-Express editions with meaningful RAM (Value = enabled bit).
+    ///   • Dumps: emit whenever the count is known (Value = count) — the scorer flags count > 0.
+    /// </summary>
+    private static void EmitServerHealthFacts(
+        AnalysisContext context, List<Fact> facts, string edition, long physicalMemMb,
+        bool? lockPagesInMemory, bool? instantFileInit, int? memoryDumpCount)
+    {
+        var isExpress = edition.Contains("Express", StringComparison.OrdinalIgnoreCase);
+
+        if (instantFileInit.HasValue)
+        {
+            facts.Add(new Fact
+            {
+                Source = "config",
+                Key = "CONFIG_IFI_DISABLED",
+                Value = instantFileInit.Value ? 1 : 0,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["instant_file_initialization_enabled"] = instantFileInit.Value ? 1 : 0
+                }
+            });
+        }
+
+        if (lockPagesInMemory.HasValue && !isExpress && physicalMemMb >= LpimAdvisoryMinPhysicalMemoryMb)
+        {
+            facts.Add(new Fact
+            {
+                Source = "config",
+                Key = "CONFIG_LPIM_DISABLED",
+                Value = lockPagesInMemory.Value ? 1 : 0,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["lock_pages_in_memory"] = lockPagesInMemory.Value ? 1 : 0,
+                    ["physical_memory_mb"] = physicalMemMb
+                }
+            });
+        }
+
+        if (memoryDumpCount.HasValue)
+        {
+            facts.Add(new Fact
+            {
+                Source = "config",
+                Key = "SERVER_MEMORY_DUMPS",
+                Value = memoryDumpCount.Value,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["memory_dump_count"] = memoryDumpCount.Value
+                }
+            });
+        }
     }
 
     /// <summary>

@@ -45,6 +45,12 @@ public class InferenceEngine
         "CONFIG_CTFP",
         "CONFIG_MAX_MEMORY_MB",
         "CONFIG_MIN_MAX_MEMORY_NARROW",
+        // WS5: server-health advisories (advise-only). Each scores its 0.4 advisory base only when
+        // bad (FactScorer) and roots its own standalone card here, bypassing the 0.5 incident
+        // threshold — a standing server-health gap should surface on a quiet, healthy server.
+        "CONFIG_IFI_DISABLED",
+        "CONFIG_LPIM_DISABLED",
+        "SERVER_MEMORY_DUMPS",
     };
 
     private readonly RelationshipGraph _graph;

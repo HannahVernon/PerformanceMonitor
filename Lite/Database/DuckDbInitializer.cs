@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 26;
+    internal const int CurrentSchemaVersion = 27;
 
     private readonly string _archivePath;
 
@@ -714,6 +714,22 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v26 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 27)
+        {
+            _logger?.LogInformation("Running migration to v27: adding server-health columns (LPIM/IFI/memory dumps) to server_properties");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS lock_pages_in_memory BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS instant_file_initialization_enabled BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS memory_dump_count INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Migration to v27 failed");
+                throw;
             }
         }
     }

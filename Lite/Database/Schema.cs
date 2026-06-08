@@ -658,7 +658,10 @@ CREATE TABLE IF NOT EXISTS server_properties (
     is_clustered BOOLEAN,
     enterprise_features VARCHAR,
     service_objective VARCHAR,
-    vcore_count INTEGER
+    vcore_count INTEGER,
+    lock_pages_in_memory BOOLEAN,
+    instant_file_initialization_enabled BOOLEAN,
+    memory_dump_count INTEGER
 )";
 
     public const string CreateServerPropertiesIndex = @"
