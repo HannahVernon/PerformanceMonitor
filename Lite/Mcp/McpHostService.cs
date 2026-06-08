@@ -67,7 +67,10 @@ public sealed class McpHostService : BackgroundService
                     };
                     options.ServerInstructions = McpInstructions.Text;
                 })
-                .WithHttpTransport()
+                /* Stateless mode: each request is self-contained (no Mcp-Session-Id round-trip).
+                   Required for clients like Google Antigravity that don't echo the session id,
+                   which otherwise connect but list zero tools (issue #1074). */
+                .WithHttpTransport(options => options.Stateless = true)
                 .WithTools<McpDiscoveryTools>()
                 .WithTools<McpHealthTools>()
                 .WithTools<McpWaitTools>()

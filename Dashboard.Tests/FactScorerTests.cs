@@ -73,6 +73,44 @@ public class FactScorerTests
         Assert.Equal(2.0, cx.Severity);
     }
 
+    /* ── Regression: duplicate fact keys must not crash scoring ── */
+
+    // A duplicated fact key (e.g. a config collector returning two rows for the same setting)
+    // once aborted the ENTIRE analysis for a server: ScoreAll built its amplifier lookup with a
+    // raw ToDictionary(f => f.Key), which throws on a duplicate. The exception was swallowed
+    // upstream, silently blanking every finding. ScoreAll must now dedupe and survive.
+    [Fact]
+    public void ScoreAll_WithDuplicateFactKeys_DoesNotThrow()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },   // duplicate key
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },
+        };
+
+        var scorer = new FactScorer();
+        var ex = Record.Exception(() => scorer.ScoreAll(facts));
+
+        Assert.Null(ex);
+    }
+
+    // The backstop helper keeps the first fact per key and never throws on duplicates.
+    [Fact]
+    public void ToFactLookup_DedupesByKey_KeepsFirst()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 99 },
+        };
+
+        var lookup = facts.ToFactLookup();
+
+        Assert.Single(lookup);
+        Assert.Equal(5, lookup["CONFIG_CTFP"].Value);   // first wins
+    }
+
     /* ── WS3: percent-autogrowth-on-large-files config fact ── */
 
     // A FILE_AUTOGROWTH_PERCENT fact scores the 0.3 advisory base when at least one large

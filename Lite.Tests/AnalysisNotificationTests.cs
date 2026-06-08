@@ -44,12 +44,15 @@ public class AnalysisNotificationTests : IDisposable
     /// Builds the shared AnalysisNotificationService wired to a real Lite EmailAlertService
     /// (its IFindingAlertSender) over the test DuckDB store, with Lite's serverId resolver.
     /// </summary>
-    private AnalysisNotificationService MakeNotifier(Func<string, bool>? isServerSilenced = null)
+    private AnalysisNotificationService MakeNotifier(
+        Func<string, bool>? isServerSilenced = null,
+        Action<string, string>? showTrayNotification = null)
     {
         var webhook = new WebhookAlertService(_settings, EmailAlertService.Branding, new AppLoggerAdapter<WebhookAlertService>());
         var email = new EmailAlertService(_settings, new DuckDbAlertHistoryStore(_duckDb), webhook, new AppLoggerAdapter<EmailAlertService>());
         return new AnalysisNotificationService(
-            email, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>(), isServerSilenced);
+            email, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>(),
+            isServerSilenced, showTrayNotification);
     }
 
     private static AnalysisFinding MakeFinding(
@@ -393,6 +396,68 @@ public class AnalysisNotificationTests : IDisposable
         });
 
         Assert.Equal(1, await CountAlertLogRowsAsync());
+    }
+
+    /* ── WS2: always raise a tray balloon for a notify-worthy finding ── */
+
+    [Fact]
+    public async Task NotifyAsync_NotifyWorthyFinding_RaisesTrayBalloon()
+    {
+        await _duckDb.InitializeAsync();
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+
+        var balloons = new List<(string Title, string Message)>();
+        var notifier = MakeNotifier(showTrayNotification: (t, m) => balloons.Add((t, m)));
+
+        await notifier.NotifyAsync(new[] { MakeFinding("tray000000000001", severity: 2.0, category: "cpu_pressure") });
+
+        var balloon = Assert.Single(balloons);
+        Assert.Contains("cpu_pressure", balloon.Title);
+        Assert.Contains("TestServer", balloon.Title);
+        Assert.False(string.IsNullOrWhiteSpace(balloon.Message));
+    }
+
+    [Fact]
+    public async Task NotifyAsync_BelowThreshold_RaisesNoTrayBalloon()
+    {
+        await _duckDb.InitializeAsync();
+        App.AnalysisNotifySeverity = 1.5;
+
+        var balloons = new List<(string, string)>();
+        var notifier = MakeNotifier(showTrayNotification: (t, m) => balloons.Add((t, m)));
+
+        await notifier.NotifyAsync(new[] { MakeFinding("traylow000000001", severity: 1.0) });
+
+        Assert.Empty(balloons);   // sub-threshold finding -> no email, no tray
+    }
+
+    [Fact]
+    public async Task NotifyAsync_SilencedServer_RaisesNoTrayBalloon()
+    {
+        await _duckDb.InitializeAsync();
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+
+        var balloons = new List<(string, string)>();
+        var notifier = MakeNotifier(serverId => serverId == "1", showTrayNotification: (t, m) => balloons.Add((t, m)));
+
+        await notifier.NotifyAsync(new[] { MakeFinding("traysilenced0001", severity: 2.0, serverId: 1) });
+
+        Assert.Empty(balloons);   // silenced server -> no tray either
+    }
+
+    [Fact]
+    public void BalloonText_NamesCategoryAndServer_AndCarriesHeadline()
+    {
+        var finding = MakeFinding("balloon000000001", severity: 2.0, category: "blocking",
+            rootFactKey: "BLOCKING_CHAIN", rootValue: 5);
+
+        var (title, message) = FindingMessageFormatter.BalloonText(finding);
+
+        Assert.Contains("blocking", title);
+        Assert.Contains("TestServer", title);
+        Assert.Contains("BLOCKING_CHAIN", message);
     }
 
     private async Task<long> CountAlertLogRowsAsync()

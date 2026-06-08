@@ -49,7 +49,7 @@ public class FactScorer
               "database_config", "jobs", "sessions", "disk", "bad_actor", "anomaly" };
         var factsByKey = facts
             .Where(f => f.BaseSeverity > 0 || contextSources.Contains(f.Source))
-            .ToDictionary(f => f.Key, f => f);
+            .ToFactLookup();
 
         // Layer 2: amplifiers boost base severity using corroborating facts
         foreach (var fact in facts)

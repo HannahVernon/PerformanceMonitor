@@ -169,6 +169,9 @@ public partial class MainWindow : Window
             // Initialize FinOps tab
             FinOpsContent.Initialize(_dataService, _serverManager);
 
+            // Initialize Recommendations tab (advise-only)
+            RecommendationsContent.Initialize(_databaseInitializer, _serverManager);
+
             // Start MCP server if enabled
             await StartMcpServerAsync();
 
@@ -295,6 +298,12 @@ public partial class MainWindow : Window
             AlertsHistoryContent.RefreshAlerts();
         }
 
+        /* Refresh recommendations tab when selected (picks up newly-collected findings) */
+        if (ServerTabControl.SelectedItem == RecommendationsTab)
+        {
+            _ = RecommendationsContent.RefreshDataAsync();
+        }
+
         UpdateCollectorHealth();
     }
 
@@ -366,6 +375,7 @@ public partial class MainWindow : Window
 
         // Refresh FinOps server dropdown when server list changes
         FinOpsContent.RefreshServerList();
+        RecommendationsContent.RefreshServerList();
 
         // Refresh overview when server list changes
         _ = RefreshOverviewAsync();

@@ -73,7 +73,7 @@ public class InferenceEngine
         var stories = new List<AnalysisStory>();
         var factsByKey = facts
             .Where(f => f.Severity > 0)
-            .ToDictionary(f => f.Key, f => f);
+            .ToFactLookup();
         var consumed = new HashSet<string>();
 
         // Process facts in severity order. Incident facts must clear the 0.5 threshold to root;
