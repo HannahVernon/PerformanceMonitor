@@ -1973,11 +1973,25 @@ ORDER BY trace_flag";
     /// when the DB has them. Extracted for testability and so a not-yet-upgraded server (no WS5
     /// columns) reads the core hardware columns without a bind error.
     /// </summary>
-    internal static string BuildServerPropertiesQuery(bool includeHealthColumns)
+    // The WS5 server-health column names (compile-time literals — never built from data, so the
+    // probe + SELECT-list construction below are injection-safe). Each is referenced only when it
+    // actually exists on the target DB.
+    private const string LpimColumn = "lock_pages_in_memory";
+    private const string IfiColumn = "instant_file_initialization_enabled";
+    private const string DumpsColumn = "memory_dump_count";
+
+    /// <summary>
+    /// Builds the latest-row server_properties SELECT, including ONLY the WS5 server-health columns
+    /// that exist on the target DB. Each flag is probed independently, so any subset — none, all, or
+    /// a partial / out-of-order-migration state — produces a SELECT that never references an absent
+    /// column (so it never bind-errors on a not-yet-upgraded server). Extracted for testability.
+    /// </summary>
+    internal static string BuildServerPropertiesQuery(bool hasLpim, bool hasIfi, bool hasDumps)
     {
-        var healthColumns = includeHealthColumns
-            ? ",\n    lock_pages_in_memory,\n    instant_file_initialization_enabled,\n    memory_dump_count"
-            : string.Empty;
+        var health = string.Empty;
+        if (hasLpim) health += ",\n    " + LpimColumn;
+        if (hasIfi) health += ",\n    " + IfiColumn;
+        if (hasDumps) health += ",\n    " + DumpsColumn;
 
         return $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -1990,7 +2004,7 @@ SELECT TOP 1
     cores_per_socket,
     is_hadr_enabled,
     edition,
-    product_version{healthColumns}
+    product_version{health}
 FROM collect.server_properties
 ORDER BY collection_time DESC";
     }
@@ -2003,21 +2017,27 @@ ORDER BY collection_time DESC";
             await connection.OpenAsync();
 
             // Version-skew resilience: a server whose PerformanceMonitor DB has not yet had the WS5
-            // upgrade lacks the three server-health columns. Probe for them (COL_LENGTH returns NULL
-            // for an absent column) and reference them only when present, so the core SERVER_HARDWARE
-            // read never fails — and keeps flowing — on a not-yet-upgraded server during a rollout.
-            // The three are added together by upgrades/2.11.0-to-2.12.0/04 (memory_dump_count last),
-            // so probing the last one is sufficient.
-            bool hasHealthColumns;
+            // upgrade lacks some or all of the three server-health columns. Probe EACH independently
+            // (COL_LENGTH returns NULL for an absent column) and reference only the present ones, so
+            // the core SERVER_HARDWARE read never fails — and keeps flowing — regardless of which
+            // columns a partially-upgraded or out-of-order schema happens to have.
+            bool hasLpim, hasIfi, hasDumps;
             using (var probe = connection.CreateCommand())
             {
-                probe.CommandText = "SELECT COL_LENGTH('collect.server_properties', 'memory_dump_count');";
-                var probeResult = await probe.ExecuteScalarAsync();
-                hasHealthColumns = probeResult is not null && probeResult is not DBNull;
+                probe.CommandText = $@"
+SELECT
+    COL_LENGTH('collect.server_properties', '{LpimColumn}'),
+    COL_LENGTH('collect.server_properties', '{IfiColumn}'),
+    COL_LENGTH('collect.server_properties', '{DumpsColumn}');";
+                using var probeReader = await probe.ExecuteReaderAsync();
+                await probeReader.ReadAsync();
+                hasLpim = !probeReader.IsDBNull(0);
+                hasIfi = !probeReader.IsDBNull(1);
+                hasDumps = !probeReader.IsDBNull(2);
             }
 
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = BuildServerPropertiesQuery(hasHealthColumns);
+            cmd.CommandText = BuildServerPropertiesQuery(hasLpim, hasIfi, hasDumps);
 
             using var reader = await cmd.ExecuteReaderAsync();
             if (!await reader.ReadAsync()) return;
@@ -2030,16 +2050,26 @@ ORDER BY collection_time DESC";
             var hadrEnabled = !reader.IsDBNull(5) && Convert.ToBoolean(reader.GetValue(5));
             var edition = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
 
-            // Present only on a WS5-upgraded DB (see the probe above); null otherwise, so
-            // EmitServerHealthFacts emits nothing for a not-yet-upgraded server.
+            // Read each PRESENT health column by name — the SELECT includes only the columns that
+            // exist, so their ordinals shift with the subset; GetOrdinal resolves each regardless.
+            // An absent column stays null, so EmitServerHealthFacts emits nothing for it.
             bool? lpim = null;
             bool? ifi = null;
             int? dumpCount = null;
-            if (hasHealthColumns)
+            if (hasLpim)
             {
-                lpim = reader.IsDBNull(8) ? (bool?)null : Convert.ToBoolean(reader.GetValue(8));
-                ifi = reader.IsDBNull(9) ? (bool?)null : Convert.ToBoolean(reader.GetValue(9));
-                dumpCount = reader.IsDBNull(10) ? (int?)null : Convert.ToInt32(reader.GetValue(10));
+                var ord = reader.GetOrdinal(LpimColumn);
+                lpim = reader.IsDBNull(ord) ? (bool?)null : Convert.ToBoolean(reader.GetValue(ord));
+            }
+            if (hasIfi)
+            {
+                var ord = reader.GetOrdinal(IfiColumn);
+                ifi = reader.IsDBNull(ord) ? (bool?)null : Convert.ToBoolean(reader.GetValue(ord));
+            }
+            if (hasDumps)
+            {
+                var ord = reader.GetOrdinal(DumpsColumn);
+                dumpCount = reader.IsDBNull(ord) ? (int?)null : Convert.ToInt32(reader.GetValue(ord));
             }
 
             if (cpuCount == 0) return;

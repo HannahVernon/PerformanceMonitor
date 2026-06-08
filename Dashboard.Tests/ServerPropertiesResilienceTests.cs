@@ -12,9 +12,9 @@ namespace PerformanceMonitorDashboard.Tests;
 public class ServerPropertiesResilienceTests
 {
     [Fact]
-    public void Query_WithHealthColumns_SelectsThemPlusCore()
+    public void Query_AllHealthColumns_SelectsThemPlusCore()
     {
-        var sql = SqlServerFactCollector.BuildServerPropertiesQuery(includeHealthColumns: true);
+        var sql = SqlServerFactCollector.BuildServerPropertiesQuery(hasLpim: true, hasIfi: true, hasDumps: true);
 
         Assert.Contains("lock_pages_in_memory", sql);
         Assert.Contains("instant_file_initialization_enabled", sql);
@@ -24,9 +24,9 @@ public class ServerPropertiesResilienceTests
     }
 
     [Fact]
-    public void Query_WithoutHealthColumns_OmitsThem_ButKeepsCore()
+    public void Query_NoHealthColumns_OmitsThem_ButKeepsCore()
     {
-        var sql = SqlServerFactCollector.BuildServerPropertiesQuery(includeHealthColumns: false);
+        var sql = SqlServerFactCollector.BuildServerPropertiesQuery(hasLpim: false, hasIfi: false, hasDumps: false);
 
         // The WS5 columns must NOT be referenced — that is what avoids the bind error on a
         // not-yet-upgraded server.
@@ -38,5 +38,23 @@ public class ServerPropertiesResilienceTests
         Assert.Contains("cpu_count", sql);
         Assert.Contains("product_version", sql);
         Assert.Contains("FROM collect.server_properties", sql);
+    }
+
+    // The point of per-column probing: a partial / out-of-order schema (some columns present, some
+    // not) selects EXACTLY the present ones and never references an absent one — so the previous
+    // all-or-nothing assumption (and its coupling to the migration's column order) can't bite.
+    [Theory]
+    [InlineData(true, false, true)]   // lpim + dumps present, ifi absent
+    [InlineData(false, true, false)]  // ifi only
+    [InlineData(true, false, false)]  // lpim only
+    [InlineData(false, false, true)]  // dumps only
+    public void Query_PartialSubset_ReferencesOnlyPresentColumns(bool hasLpim, bool hasIfi, bool hasDumps)
+    {
+        var sql = SqlServerFactCollector.BuildServerPropertiesQuery(hasLpim, hasIfi, hasDumps);
+
+        Assert.Equal(hasLpim, sql.Contains("lock_pages_in_memory"));
+        Assert.Equal(hasIfi, sql.Contains("instant_file_initialization_enabled"));
+        Assert.Equal(hasDumps, sql.Contains("memory_dump_count"));
+        Assert.Contains("cpu_count", sql);  // core columns always present
     }
 }
