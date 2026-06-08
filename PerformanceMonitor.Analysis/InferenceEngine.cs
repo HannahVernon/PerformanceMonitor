@@ -51,6 +51,10 @@ public class InferenceEngine
         "CONFIG_IFI_DISABLED",
         "CONFIG_LPIM_DISABLED",
         "SERVER_MEMORY_DUMPS",
+        // WS4: plan-XML advisories (advise-only) parsed from the top collected query plans —
+        // missing indexes and actionable plan warnings each root their own standalone advisory card.
+        "MISSING_INDEX",
+        "PLAN_WARNING",
     };
 
     private readonly RelationshipGraph _graph;

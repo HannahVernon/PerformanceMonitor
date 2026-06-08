@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Analysis;
@@ -55,6 +56,7 @@ public class DuckDbFactCollector : IFactCollector
         await CollectTraceFlagFactsAsync(context, facts);
         await CollectServerPropertiesFactsAsync(context, facts);
         await CollectDiskSpaceFactsAsync(context, facts);
+        await CollectPlanAdvisoryFactsAsync(context, facts);
 
         return facts;
     }
@@ -1955,6 +1957,90 @@ LIMIT 1";
                     ["memory_dump_count"] = memoryDumpCount.Value
                 }
             });
+        }
+    }
+
+    /// <summary>
+    /// WS4: plan-XML advisories. Parses the already-collected query plans of the top queries by
+    /// cost with the shared ShowPlanParser/PlanAnalyzer and emits two advise-only facts —
+    /// MISSING_INDEX (Value = distinct suggested indexes) and PLAN_WARNING (Value = actionable
+    /// warnings). The specifics ride in the finding drill-down (DrillDownCollector); Fact.Metadata
+    /// is numeric only. Mirrors the Dashboard SqlServerFactCollector against query_stats.query_plan_xml.
+    /// </summary>
+    private async Task CollectPlanAdvisoryFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            var planXmls = new List<string>();
+
+            using (var readLock = _duckDb.AcquireReadLock())
+            using (var connection = _duckDb.CreateConnection())
+            {
+                await connection.OpenAsync();
+
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT query_plan_xml
+FROM query_stats
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3
+AND   query_plan_xml IS NOT NULL
+ORDER BY delta_worker_time DESC
+LIMIT 10";
+                command.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+                command.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+                command.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    if (!reader.IsDBNull(0))
+                        planXmls.Add(reader.GetString(0));
+                }
+            }
+
+            // Read lock released above; parse off the lock (CPU-only, no DB).
+            if (planXmls.Count == 0)
+                return;
+
+            var summary = PlanAdvisoryAggregator.Summarize(planXmls);
+
+            if (summary.MissingIndexCount > 0)
+            {
+                facts.Add(new Fact
+                {
+                    Source = "queries",
+                    Key = "MISSING_INDEX",
+                    Value = summary.MissingIndexCount,
+                    ServerId = context.ServerId,
+                    Metadata = new Dictionary<string, double>
+                    {
+                        ["index_count"] = summary.MissingIndexCount,
+                        ["max_impact"] = summary.MaxImpact
+                    }
+                });
+            }
+
+            if (summary.WarningCount > 0)
+            {
+                facts.Add(new Fact
+                {
+                    Source = "queries",
+                    Key = "PLAN_WARNING",
+                    Value = summary.WarningCount,
+                    ServerId = context.ServerId,
+                    Metadata = new Dictionary<string, double>
+                    {
+                        ["warning_count"] = summary.WarningCount,
+                        ["critical_count"] = summary.CriticalCount
+                    }
+                });
+            }
+        }
+        catch
+        {
+            // query_stats / plan parse may be unavailable — skip, the advisory is best-effort.
         }
     }
 

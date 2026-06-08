@@ -212,6 +212,12 @@ public class FactScorer
             "PARAMETER_SENSITIVITY" => ApplyThresholdFormula(fact.Value, 10, 100),
             // Plan regression: worst per-exec cost factor vs the best plan. Concerning 2x, critical 10x.
             "PLAN_REGRESSION" => ApplyThresholdFormula(fact.Value, 2, 10),
+            // WS4: plan-XML advisories (advise-only), parsed from the top collected query plans.
+            // Each scores its 0.4 advisory base only when >=1 was found (Value = count) and roots a
+            // standalone card via InferenceEngine.ConfigAdvisoryRootKeys. The specific suggested
+            // indexes / warning detail ride in the finding drill-down (Fact metadata is numeric only).
+            "MISSING_INDEX" => fact.Value > 0 ? 0.4 : 0.0,
+            "PLAN_WARNING" => fact.Value > 0 ? 0.4 : 0.0,
             _ => 0.0
         };
     }

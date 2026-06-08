@@ -61,6 +61,13 @@ public class DrillDownCollector
                 if (pathKeys.Contains("FILE_AUTOGROWTH_PERCENT"))
                     await CollectAutogrowthPercentFiles(finding, context);
 
+                /* WS4: re-parse the top collected query plans to render the specific missing
+                   indexes / warnings for a MISSING_INDEX or PLAN_WARNING finding, which scores 0.4
+                   (advisory). Run regardless of the 0.5 display gate, like the config drill-downs
+                   above — the fact carries only counts, so the strings live here. */
+                if (pathKeys.Contains("MISSING_INDEX") || pathKeys.Contains("PLAN_WARNING"))
+                    await CollectPlanAdvisoryDetail(finding, context, pathKeys);
+
                 // Below the 0.5 display gate, only the cheap config drill-down above runs;
                 // the expensive collectors (plan fetches, multi-row reads) are skipped.
                 if (finding.Severity < 0.5)
@@ -1100,6 +1107,85 @@ LIMIT 1";
         nodes.Add(node);
         foreach (var child in node.Children)
             CollectPlanNodes(child, nodes);
+    }
+
+    /// <summary>
+    /// WS4: re-parses the top collected query plans (the same top-10-by-cost set the fact collector
+    /// summarized) and attaches the specific missing indexes / plan warnings to a MISSING_INDEX or
+    /// PLAN_WARNING finding's drill-down. The fact carries only counts (Fact.Metadata is numeric),
+    /// so the strings — CREATE statements, warning messages — are rendered here. Mirrors the
+    /// Dashboard SqlServerDrillDownCollector. Best-effort: a read/parse failure leaves no detail.
+    /// </summary>
+    private async Task CollectPlanAdvisoryDetail(AnalysisFinding finding, AnalysisContext context, HashSet<string> pathKeys)
+    {
+        try
+        {
+            var planXmls = new List<string>();
+
+            using (var readLock = _duckDb.AcquireReadLock())
+            using (var connection = _duckDb.CreateConnection())
+            {
+                await connection.OpenAsync();
+
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = @"
+SELECT query_plan_xml
+FROM query_stats
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3
+AND   query_plan_xml IS NOT NULL
+ORDER BY delta_worker_time DESC
+LIMIT 10";
+                cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+                cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+                cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    if (!reader.IsDBNull(0))
+                        planXmls.Add(reader.GetString(0));
+                }
+            }
+
+            if (planXmls.Count == 0)
+                return;
+
+            var details = PlanAdvisoryAggregator.Extract(planXmls);
+
+            if (pathKeys.Contains("MISSING_INDEX") && details.MissingIndexes.Count > 0)
+            {
+                finding.DrillDown!["missing_indexes"] = details.MissingIndexes
+                    .OrderByDescending(i => i.Impact)
+                    .Take(5)
+                    .Select(i => new
+                    {
+                        table = $"{i.Schema}.{i.Table}",
+                        impact = Math.Round(i.Impact, 1),
+                        create_statement = i.CreateStatement
+                    })
+                    .ToList();
+            }
+
+            if (pathKeys.Contains("PLAN_WARNING") && details.Warnings.Count > 0)
+            {
+                finding.DrillDown!["plan_warnings"] = details.Warnings
+                    .OrderByDescending(w => w.Severity)
+                    .Take(5)
+                    .Select(w => new
+                    {
+                        type = w.WarningType,
+                        severity = w.Severity.ToString(),
+                        message = McpHelpers.Truncate(w.Message, 300)
+                    })
+                    .ToList();
+            }
+        }
+        catch
+        {
+            // Plan read/parse can fail on malformed XML — skip, the detail is best-effort.
+        }
     }
 
     private async Task CollectBadActorDetail(AnalysisFinding finding, AnalysisContext context)

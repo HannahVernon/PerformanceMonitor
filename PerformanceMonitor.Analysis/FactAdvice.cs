@@ -500,6 +500,29 @@ public static class FactAdvice
                 "Dumps mean investigate, not a setting to flip — so there is nothing to Apply. First, get current on Cumulative Updates: a large share of dump-producing bugs are already fixed in later builds, and 'apply the latest CU and re-evaluate' resolves many cases outright. If dumps continue on a current build, match the ERRORLOG failure type to a known issue or open a case with Microsoft and attach the dump files — they are the artifact support needs. Watch the volume holding the dump directory: repeated large dumps can themselves fill the disk. Do not delete the dump files until you (or support) have read them.");
 
         // ─────────────────────────────────────────────────────────────────
+        // Query-plan advisories (WS4) — advise-only: missing indexes, plan warnings.
+        // Parsed from the already-collected plans of the top queries by cost. The
+        // specific suggested indexes / warnings are in the finding's drill-down detail;
+        // no Apply (index + query changes are judgement calls, tested per workload).
+        // ─────────────────────────────────────────────────────────────────
+
+        t["MISSING_INDEX"] = new AdviceBlock(
+            Headline:
+                "The optimizer asked for indexes that don't exist — top queries are scanning where they could seek",
+            Investigation:
+                "SQL Server records a missing-index request in the query plan whenever the optimizer believes an index it couldn't find would have materially lowered a query's cost. This finding parsed the actual plans of your most expensive queries and collected those requests; the drill-down lists each one with its table, the optimizer's estimated impact %, and the suggested CREATE INDEX. Treat them as a STARTING POINT, not a prescription: the engine's suggestions are naive — it proposes one index per query in isolation, often with the key column order wrong, with wide INCLUDE lists, and with no awareness of indexes you already have or of the write cost. Weigh each by impact AND by how often the query actually runs.",
+            Remediation:
+                "Evaluate and test — there is nothing to auto-Apply, because a wrong index is worse than a missing one (every INSERT/UPDATE/DELETE pays to maintain it). Consolidate overlapping suggestions into the fewest indexes that cover them, get the key-column order right (equality before inequality, then by selectivity), keep INCLUDE lists lean, and check the suggestion against your existing indexes so you don't create a near-duplicate. Validate the chosen index against the real plan on a copy of the data before it goes to production. The drill-down's CREATE statements are the raw optimizer text — refine them, don't paste them blind.");
+
+        t["PLAN_WARNING"] = new AdviceBlock(
+            Headline:
+                "Plans for your top queries carry warnings — implicit conversions, spills, oversized grants and the like",
+            Investigation:
+                "The plan analyzer inspected the actual execution plans of your most expensive queries and flagged actionable problems; the drill-down lists each by type, severity, and message. Common ones: an implicit conversion (a WHERE/JOIN comparing mismatched data types, which makes the predicate non-sargable and forces a scan), a sort/hash spill to tempdb (the memory grant was too small because the row estimate was low), an excessive or stuck memory grant (one query reserving memory that throttles everyone else's concurrency), a forced-serial or ineffective parallel plan, or a scalar-UDF call evaluated per row. Each warning is tied to a specific query in the detail, so you know exactly where to look.",
+            Remediation:
+                "These are query- and schema-specific fixes, so there's nothing to Apply globally. Implicit conversions: align the column and parameter/literal data types (or fix the column type) so the predicate can seek. Spills and bad grants: the root cause is almost always estimate inaccuracy — update statistics, and look for stale stats, table variables, or non-sargable predicates feeding the estimate. Oversized grants: fix the estimate first; `MIN_GRANT_PERCENT`/`MAX_GRANT_PERCENT` hints are a last resort. Work the highest-severity, most-frequently-run warnings first — the detail names the query and the exact warning type for each.");
+
+        // ─────────────────────────────────────────────────────────────────
         // Jobs / disk / bad actors
         // ─────────────────────────────────────────────────────────────────
 

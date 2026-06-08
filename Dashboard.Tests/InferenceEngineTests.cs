@@ -120,6 +120,24 @@ public class InferenceEngineTests
         Assert.Contains(stories, s => s.RootFactKey == key);
     }
 
+    // WS4: each plan-XML advisory (MISSING_INDEX / PLAN_WARNING) roots a standalone recommendation
+    // below the 0.5 incident threshold — they are config-advisory root keys, like the server facts.
+    [Theory]
+    [InlineData("MISSING_INDEX")]
+    [InlineData("PLAN_WARNING")]
+    public void PlanAdvisoryFact_RootsStandalone_BelowMinimumSeverity(string key)
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = key, Source = "queries", Value = 3, Severity = 0.4 }
+        };
+
+        var stories = engine.BuildStories(facts);
+
+        Assert.Contains(stories, s => s.RootFactKey == key);
+    }
+
     // All four bad server-config facts together root four distinct standalone findings (no edges
     // between them, so none consumes another).
     [Fact]

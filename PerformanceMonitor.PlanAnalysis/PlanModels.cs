@@ -15,6 +15,28 @@ public class ParsedPlan
         .SelectMany(b => b.Statements)
         .SelectMany(s => s.MissingIndexes)
         .ToList();
+
+    /// <summary>
+    /// Every plan warning across all statements — statement-level (added by PlanAnalyzer) plus
+    /// per-operator (parsed onto PlanNode.Warnings) — gathered by walking each statement's node
+    /// tree. Mirrors the manual gather the drill-down does, centralized here so the WS4 fact
+    /// collector and the drill-down enrichment share a single definition.
+    /// </summary>
+    public List<PlanWarning> AllWarnings => Batches
+        .SelectMany(b => b.Statements)
+        .SelectMany(s => s.PlanWarnings.Concat(NodeWarnings(s.RootNode)))
+        .ToList();
+
+    private static IEnumerable<PlanWarning> NodeWarnings(PlanNode? node)
+    {
+        if (node is null)
+            yield break;
+        foreach (var warning in node.Warnings)
+            yield return warning;
+        foreach (var child in node.Children)
+            foreach (var warning in NodeWarnings(child))
+                yield return warning;
+    }
 }
 
 public class PlanBatch
