@@ -15,7 +15,7 @@ namespace PerformanceMonitorDashboard.Tests;
 /// Scope note: this locks the HANDLER side (registry integrity + the documented Apply-able set).
 /// The complementary dynamic check — feeding real detector drill-down output through each builder
 /// and asserting it still yields a non-null, dispatchable action (the autogrowth-CTE-drift class) —
-/// is a larger golden-sample follow-up that needs captured detector fixtures.
+/// lives in <see cref="RemediationGoldenSampleTests"/> (the captured-fixture golden-sample).
 /// </summary>
 public class RemediationContractTests
 {
