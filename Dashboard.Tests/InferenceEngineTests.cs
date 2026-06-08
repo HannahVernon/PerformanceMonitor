@@ -182,4 +182,22 @@ public class InferenceEngineTests
         Assert.Contains(stories, s => s.RootFactKey == "CONFIG_LPIM_DISABLED");
         Assert.Contains(stories, s => s.RootFactKey == "SERVER_MEMORY_DUMPS");
     }
+
+    // Regression: a duplicated fact key (e.g. a collector returning two rows for the same
+    // setting) once aborted the entire analysis — BuildStories built its lookup with a raw
+    // ToDictionary(f => f.Key), which throws on a duplicate. It must now dedupe and survive.
+    [Fact]
+    public void BuildStories_WithDuplicateFactKeys_DoesNotThrow()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "CONFIG_CTFP", Source = "config", Value = 5, Severity = 0.4 },
+            new() { Key = "CONFIG_CTFP", Source = "config", Value = 5, Severity = 0.4 },  // duplicate key
+        };
+
+        var ex = Record.Exception(() => engine.BuildStories(facts));
+
+        Assert.Null(ex);
+    }
 }

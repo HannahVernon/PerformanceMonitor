@@ -65,7 +65,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             // ServerConfigHandler (SERVER_CONFIG, WS3) is always-safe too (sp_configure MAXDOP/CTFP
             // + RECONFIGURE — online metadata; the advise-only memory settings never mutate) and
             // rides its OWN fact key, so it never crosses the destructive handlers either.
-            _registry = new RemediationHandlerRegistry(new IRemediationHandler[] { new ForcePlanHandler(), new DbConfigHandler(), new RcsiHandler(), new ClearPlanHandler(), new FileAutogrowthHandler(), new ServerConfigHandler() });
+            _registry = new RemediationHandlerRegistry(CreateDefaultHandlers());
             _executorFactory = server =>
                 new DatabaseServiceRemediationExecutor(new DatabaseService(server.GetConnectionString(credentialService)));
             _auditFailureClassifier = (server, ct) =>
@@ -89,6 +89,25 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             _auditFailureClassifier = auditFailureClassifier
                 ?? ((_, _) => Task.FromResult(AuditWriteFailureKind.Unknown));
         }
+
+        /// <summary>
+        /// The production set of remediation handlers — one per Apply-able fact key. Extracted from
+        /// the constructor so a contract test (InternalsVisibleTo Dashboard.Tests) can assert the
+        /// registered handler keys match the set of fact keys the FactRemediation builders / the
+        /// recommendations reader produce. A builder fact key with no handler here makes Apply
+        /// silently no-op; a handler with no producing builder is dead. Order is irrelevant — the
+        /// registry keys on FactKey — but every handler MUST expose a distinct, non-empty FactKey.
+        /// </summary>
+        internal static IRemediationHandler[] CreateDefaultHandlers() =>
+            new IRemediationHandler[]
+            {
+                new ForcePlanHandler(),
+                new DbConfigHandler(),
+                new RcsiHandler(),
+                new ClearPlanHandler(),
+                new FileAutogrowthHandler(),
+                new ServerConfigHandler(),
+            };
 
         /// <summary>
         /// Whether a registered handler exists for this fact key (one half of the

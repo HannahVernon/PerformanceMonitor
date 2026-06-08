@@ -218,8 +218,8 @@ public sealed class McpAnalysisTools
                 baselineStart, baselineEnd,
                 comparisonStart, comparisonEnd);
 
-            var baselineByKey = baselineFacts.ToDictionary(f => f.Key, f => f);
-            var comparisonByKey = comparisonFacts.ToDictionary(f => f.Key, f => f);
+            var baselineByKey = baselineFacts.ToFactLookup();
+            var comparisonByKey = comparisonFacts.ToFactLookup();
             var allKeys = baselineByKey.Keys.Union(comparisonByKey.Keys).ToHashSet();
 
             var comparisons = allKeys
@@ -293,7 +293,7 @@ public sealed class McpAnalysisTools
             var facts = await analysisService.CollectAndScoreFactsAsync(
                 resolved.Value.ServerId, resolved.Value.ServerName, 1);
 
-            var factsByKey = facts.ToDictionary(f => f.Key, f => f);
+            var factsByKey = facts.ToFactLookup();
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
