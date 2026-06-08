@@ -1968,15 +1968,18 @@ ORDER BY trace_flag";
     /// Collects server hardware properties: CPU count, cores, sockets, memory.
     /// Critical context for MAXDOP and memory recommendations.
     /// </summary>
-    private async Task CollectServerPropertiesFactsAsync(AnalysisContext context, List<Fact> facts)
+    /// <summary>
+    /// Builds the latest-row server_properties SELECT, including the WS5 server-health columns only
+    /// when the DB has them. Extracted for testability and so a not-yet-upgraded server (no WS5
+    /// columns) reads the core hardware columns without a bind error.
+    /// </summary>
+    internal static string BuildServerPropertiesQuery(bool includeHealthColumns)
     {
-        try
-        {
-            using var connection = new SqlConnection(_connectionString);
-            await connection.OpenAsync();
+        var healthColumns = includeHealthColumns
+            ? ",\n    lock_pages_in_memory,\n    instant_file_initialization_enabled,\n    memory_dump_count"
+            : string.Empty;
 
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
+        return $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT TOP 1
@@ -1987,12 +1990,34 @@ SELECT TOP 1
     cores_per_socket,
     is_hadr_enabled,
     edition,
-    product_version,
-    lock_pages_in_memory,
-    instant_file_initialization_enabled,
-    memory_dump_count
+    product_version{healthColumns}
 FROM collect.server_properties
 ORDER BY collection_time DESC";
+    }
+
+    private async Task CollectServerPropertiesFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            // Version-skew resilience: a server whose PerformanceMonitor DB has not yet had the WS5
+            // upgrade lacks the three server-health columns. Probe for them (COL_LENGTH returns NULL
+            // for an absent column) and reference them only when present, so the core SERVER_HARDWARE
+            // read never fails — and keeps flowing — on a not-yet-upgraded server during a rollout.
+            // The three are added together by upgrades/2.11.0-to-2.12.0/04 (memory_dump_count last),
+            // so probing the last one is sufficient.
+            bool hasHealthColumns;
+            using (var probe = connection.CreateCommand())
+            {
+                probe.CommandText = "SELECT COL_LENGTH('collect.server_properties', 'memory_dump_count');";
+                var probeResult = await probe.ExecuteScalarAsync();
+                hasHealthColumns = probeResult is not null && probeResult is not DBNull;
+            }
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = BuildServerPropertiesQuery(hasHealthColumns);
 
             using var reader = await cmd.ExecuteReaderAsync();
             if (!await reader.ReadAsync()) return;
@@ -2004,9 +2029,18 @@ ORDER BY collection_time DESC";
             var coresPerSocket = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
             var hadrEnabled = !reader.IsDBNull(5) && Convert.ToBoolean(reader.GetValue(5));
             var edition = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
-            bool? lpim = reader.IsDBNull(8) ? (bool?)null : Convert.ToBoolean(reader.GetValue(8));
-            bool? ifi = reader.IsDBNull(9) ? (bool?)null : Convert.ToBoolean(reader.GetValue(9));
-            int? dumpCount = reader.IsDBNull(10) ? (int?)null : Convert.ToInt32(reader.GetValue(10));
+
+            // Present only on a WS5-upgraded DB (see the probe above); null otherwise, so
+            // EmitServerHealthFacts emits nothing for a not-yet-upgraded server.
+            bool? lpim = null;
+            bool? ifi = null;
+            int? dumpCount = null;
+            if (hasHealthColumns)
+            {
+                lpim = reader.IsDBNull(8) ? (bool?)null : Convert.ToBoolean(reader.GetValue(8));
+                ifi = reader.IsDBNull(9) ? (bool?)null : Convert.ToBoolean(reader.GetValue(9));
+                dumpCount = reader.IsDBNull(10) ? (int?)null : Convert.ToInt32(reader.GetValue(10));
+            }
 
             if (cpuCount == 0) return;
 
