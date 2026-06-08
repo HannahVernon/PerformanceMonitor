@@ -234,9 +234,12 @@ public class FactScorer
 
     /// <summary>
     /// Scores config-source advisory facts. FILE_AUTOGROWTH_PERCENT (WS3) is a base-0.3
-    /// advisory; the four server-level config keys (WS3) score 0.4 ONLY when the value is bad,
-    /// and 0 otherwise — so audit_config still sees every CONFIG_* fact (it reads the raw value),
-    /// but only a BAD one roots a recommendation card (via InferenceEngine.ConfigAdvisoryRootKeys).
+    /// advisory; the four server-level config keys (WS3) and the three server-health keys (WS5:
+    /// CONFIG_IFI_DISABLED / CONFIG_LPIM_DISABLED / SERVER_MEMORY_DUMPS) score 0.4 ONLY when the
+    /// value is bad, and 0 otherwise — so audit_config still sees every CONFIG_* fact (it reads the
+    /// raw value), but only a BAD one roots a recommendation card (via
+    /// InferenceEngine.ConfigAdvisoryRootKeys). The WS5 keys are advise-only: there is no Apply,
+    /// only advice prose and copy-paste guidance.
     /// Edition is NOT needed to decide "bad" — only later for the recommended MAXDOP value.
     /// Every other "config"-source fact (SERVER_* / DATABASE_TOTAL_SIZE_MB / SERVER_HARDWARE /
     /// CONFIG_MAX_WORKER_THREADS / CONFIG_MIN_MEMORY_MB) is a leaf/amplifier with no base severity
@@ -267,6 +270,24 @@ public class FactScorer
             // presence of this fact is a flag.
             case "CONFIG_MIN_MAX_MEMORY_NARROW":
                 return 0.4;
+
+            // WS5 server-health advisories (advise-only — no Apply). Each carries the bad/good
+            // signal in Value so it scores its 0.4 advisory base only when bad and 0 otherwise;
+            // the noise-control gating (Express / small-RAM for LPIM, dumps>0, IFI-known) lives in
+            // the collectors so a fact that would score 0 is simply never emitted.
+
+            // IFI off (Value == 0) is universally good advice — always advisory when known.
+            case "CONFIG_IFI_DISABLED":
+                return fact.Value == 0 ? 0.4 : 0.0;
+
+            // LPIM off (Value == 0). The collector only emits this when it plausibly matters
+            // (not Express, meaningful RAM), so reaching the scorer with Value 0 is already a flag.
+            case "CONFIG_LPIM_DISABLED":
+                return fact.Value == 0 ? 0.4 : 0.0;
+
+            // A memory dump always warrants a look — advisory when the count is > 0.
+            case "SERVER_MEMORY_DUMPS":
+                return fact.Value > 0 ? 0.4 : 0.0;
 
             default:
                 return 0.0;

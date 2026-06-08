@@ -276,4 +276,52 @@ public class FactScorerTests
         Assert.Null(FactRemediation.BuildNarrowMemoryFact(1, null, 24000));
         Assert.Null(FactRemediation.BuildNarrowMemoryFact(1, 28672, null));
     }
+
+    /* ── WS5: server-health advisory facts (LPIM / IFI / memory dumps) ── */
+
+    // Each WS5 server-health fact scores its 0.4 advisory base ONLY when the value is bad, and 0
+    // otherwise — mirroring the WS3 server-config keys. The collectors gate emission (Express /
+    // small-RAM / dumps>0) so a fact that would score 0 is normally never emitted, but the scorer
+    // is still independently bad-only so it can be unit-tested in isolation.
+    [Theory]
+    // IFI: disabled (Value 0) is bad; enabled (Value 1) is fine.
+    [InlineData("CONFIG_IFI_DISABLED", 0, 0.4)]
+    [InlineData("CONFIG_IFI_DISABLED", 1, 0.0)]
+    // LPIM: disabled (Value 0) is bad; enabled (Value 1) is fine.
+    [InlineData("CONFIG_LPIM_DISABLED", 0, 0.4)]
+    [InlineData("CONFIG_LPIM_DISABLED", 1, 0.0)]
+    // Memory dumps: any count > 0 is bad; 0 is fine.
+    [InlineData("SERVER_MEMORY_DUMPS", 1, 0.4)]
+    [InlineData("SERVER_MEMORY_DUMPS", 7, 0.4)]
+    [InlineData("SERVER_MEMORY_DUMPS", 0, 0.0)]
+    public void ServerHealthFact_ScoresBadValueOnly(string key, long value, double expected)
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = key, Value = value }
+        };
+
+        var scorer = new FactScorer();
+        scorer.ScoreAll(facts);
+
+        Assert.Equal(expected, facts[0].BaseSeverity, precision: 4);
+    }
+
+    // Advice exists for each WS5 server-health root key (dead-fact guard — a fact that roots but
+    // renders no advice is the P1 dead-fact bug class).
+    [Theory]
+    [InlineData("CONFIG_IFI_DISABLED")]
+    [InlineData("CONFIG_LPIM_DISABLED")]
+    [InlineData("SERVER_MEMORY_DUMPS")]
+    public void ServerHealthKeys_HaveAdviceBlocks(string key)
+    {
+        var advice = FactAdvice.GetForFactKey(key);
+
+        Assert.NotNull(advice);
+        Assert.False(string.IsNullOrWhiteSpace(advice!.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+        // Advise-only: no generated Apply T-SQL is attached to the bare advice block.
+        Assert.Null(advice.RemediationTsql);
+    }
 }

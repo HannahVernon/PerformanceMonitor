@@ -470,6 +470,36 @@ public static class FactAdvice
                 "Lower min server memory well below max so SQL can grow into the cap under load but release memory back to the OS when idle (min is best left at the default 0, or a modest floor only if you have a specific reason). This is NOT auto-applied — how low to set it is a workload judgement. Copy the statement, choose your floor, and run `sp_configure 'min server memory (MB)', <your MB>` + RECONFIGURE.");
 
         // ─────────────────────────────────────────────────────────────────
+        // Server health (WS5) — advise-only: LPIM, IFI, memory dumps.
+        // No Apply (these need OS / service-account / investigation work);
+        // advice prose + copy-paste guidance only.
+        // ─────────────────────────────────────────────────────────────────
+
+        t["CONFIG_IFI_DISABLED"] = new AdviceBlock(
+            Headline:
+                "Instant File Initialization is OFF — data file growth and restores zero-fill the whole allocation",
+            Investigation:
+                "Without Instant File Initialization (IFI) SQL Server writes zeros across every newly-allocated data-file region before it can be used — so every data-file autogrowth, every CREATE DATABASE, every RESTORE, and every TempDB re-creation at startup stalls for as long as it takes to zero the new space (minutes, on large files). The finding's metadata carries the service account that needs the right. Confirm the current state with `SELECT servicename, instant_file_initialization_enabled FROM sys.dm_server_services;` (SQL 2016 SP1+). IFI applies to DATA files only — log files are always zeroed regardless, which is why fixed-MB log autogrowth still matters.",
+            Remediation:
+                "Grant the SQL Server service account the Windows 'Perform volume maintenance tasks' user right (SeManageVolumePrivilege): secpol.msc → Local Policies → User Rights Assignment → Perform volume maintenance tasks → add the service account, then restart the SQL Server service for it to take effect. The SQL Server 2016+ setup wizard offers this as a checkbox; on Linux IFI is effectively always on (no action). This is an OS-level change, not a T-SQL one, so there is nothing to Apply from here — but it is one of the highest-value, lowest-risk changes you can make to file-growth and restore times.");
+
+        t["CONFIG_LPIM_DISABLED"] = new AdviceBlock(
+            Headline:
+                "Lock Pages in Memory is OFF — the OS can page out SQL Server's buffer pool under memory pressure",
+            Investigation:
+                "Lock Pages in Memory (LPIM) prevents Windows from trimming SQL Server's working set — paging the buffer pool out to disk — when the OS comes under memory pressure. Without it, a memory-hungry neighbour process (or a runaway on the box) can force SQL's data cache out to the page file, and you see a sudden, unexplained plunge in Page Life Expectancy with a spike in hard faults that no SQL workload explains. This finding only fires on non-Express editions with meaningful RAM, where the buffer pool is large enough for paging to hurt. Read the current memory model with `SELECT sql_memory_model_desc FROM sys.dm_os_sys_info;` — CONVENTIONAL means LPIM is off; LOCK_PAGES or LARGE_PAGES means it is in effect.",
+            Remediation:
+                "LPIM is a judgement call, not an automatic win, which is why there is nothing to Apply from here. Grant it only alongside a correctly-configured 'max server memory (MB)' cap — LPIM with an uncapped max can starve the OS itself. To enable: grant the SQL Server service account the Windows 'Lock pages in memory' user right (secpol.msc → Local Policies → User Rights Assignment → Lock pages in memory), then restart the SQL Server service. It is most valuable on dedicated database hosts with large buffer pools; on a shared or memory-constrained box, fix 'max server memory' first and weigh LPIM second.");
+
+        t["SERVER_MEMORY_DUMPS"] = new AdviceBlock(
+            Headline:
+                "SQL Server has written one or more memory dumps — the engine hit a condition it considered worth dumping",
+            Investigation:
+                "Every row in `sys.dm_server_memory_dumps` is a point where SQL Server detected something abnormal — an access violation, a non-yielding scheduler, a latch time-out, a failed assertion, or a stack corruption — and wrote a dump for diagnosis. The finding's metadata carries the dump count. List them with `SELECT filename, creation_time, size_in_bytes FROM sys.dm_server_memory_dumps ORDER BY creation_time DESC;` and correlate the creation_time against the SQL Server ERRORLOG (`EXEC sys.xp_readerrorlog 0, 1, N'dump';`) — the log entry around each dump names the failure type. A single old dump from a since-patched build is usually historical; recent or repeating dumps are a live reliability signal.",
+            Remediation:
+                "Dumps mean investigate, not a setting to flip — so there is nothing to Apply. First, get current on Cumulative Updates: a large share of dump-producing bugs are already fixed in later builds, and 'apply the latest CU and re-evaluate' resolves many cases outright. If dumps continue on a current build, match the ERRORLOG failure type to a known issue or open a case with Microsoft and attach the dump files — they are the artifact support needs. Watch the volume holding the dump directory: repeated large dumps can themselves fill the disk. Do not delete the dump files until you (or support) have read them.");
+
+        // ─────────────────────────────────────────────────────────────────
         // Jobs / disk / bad actors
         // ─────────────────────────────────────────────────────────────────
 
