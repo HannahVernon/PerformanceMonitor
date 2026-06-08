@@ -41,6 +41,7 @@ public sealed class AnalysisNotificationService
     private readonly Func<AnalysisFinding, string> _resolveServerId;
     private readonly Func<string, bool>? _isServerSilenced;
     private readonly ILogger<AnalysisNotificationService> _logger;
+    private readonly Action<string, string>? _showTrayNotification;
 
     /// <summary>
     /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
@@ -64,18 +65,28 @@ public sealed class AnalysisNotificationService
     /// so "Silence All Alerts" also stops analysis-finding emails; Lite has no silencing
     /// feature and leaves this null (never silenced).
     /// </param>
+    /// <param name="showTrayNotification">
+    /// Optional <c>(title, message)</c> sink raised for every finding that notifies — the same
+    /// notify-worthy set that reaches email/webhook — so a local-only user with no channel
+    /// configured still gets a visible signal. Dashboard wires this to its tray
+    /// <c>NotificationService.ShowNotification</c> (which itself honors the global
+    /// notifications-enabled pref and marshals to the UI thread); Lite leaves it null. Best-effort:
+    /// invoked inside the per-finding try, so a sink fault is logged, not propagated.
+    /// </param>
     public AnalysisNotificationService(
         IFindingAlertSender sender,
         IAlertSettings settings,
         Func<AnalysisFinding, string> serverIdResolver,
         ILogger<AnalysisNotificationService> logger,
-        Func<string, bool>? isServerSilenced = null)
+        Func<string, bool>? isServerSilenced = null,
+        Action<string, string>? showTrayNotification = null)
     {
         _sender = sender;
         _settings = settings;
         _resolveServerId = serverIdResolver;
         _logger = logger;
         _isServerSilenced = isServerSilenced;
+        _showTrayNotification = showTrayNotification;
     }
 
     /// <summary>
@@ -156,6 +167,16 @@ public sealed class AnalysisNotificationService
                     threshold,
                     FindingMessageFormatter.DetailText(finding, threshold)));
 
+                /* Always raise the tray balloon for a notify-worthy finding (user choice), the
+                   same visible signal threshold alerts already pop — so a local-only user with no
+                   email/webhook still sees it. No-op when the host wired no sink (Lite) or tray
+                   notifications are disabled (the sink checks the pref). */
+                if (_showTrayNotification is not null)
+                {
+                    var (title, message) = FindingMessageFormatter.BalloonText(finding);
+                    _showTrayNotification(title, message);
+                }
+
                 _cooldowns[key] = now;
             }
             catch (Exception ex)
@@ -213,6 +234,24 @@ internal static class FindingMessageFormatter
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Tray-balloon title + message for a finding (WS2). Concise by design — balloons truncate.
+    /// Title names the category + server; message is the headline value (root fact + baseline
+    /// context), prefixed with the database when the finding is database-scoped.
+    /// </summary>
+    public static (string Title, string Message) BalloonText(AnalysisFinding finding)
+    {
+        var category = string.IsNullOrEmpty(finding.Category) ? "Performance finding" : finding.Category;
+        var server = string.IsNullOrEmpty(finding.ServerName) ? "this server" : finding.ServerName;
+        var title = $"Analysis: {category} on {server}";
+
+        var message = CurrentValue(finding);
+        if (!string.IsNullOrEmpty(finding.DatabaseName))
+            message = $"{finding.DatabaseName}: {message}";
+
+        return (title, message);
     }
 
     /// <summary>
