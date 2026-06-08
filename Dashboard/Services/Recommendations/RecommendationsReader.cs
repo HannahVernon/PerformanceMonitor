@@ -338,6 +338,14 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
             var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
             var advice = FactAdvice.GetForFactKey(finding.RootFactKey);
 
+            // WS4: a MISSING_INDEX action is COPY-PASTE ONLY. Render its CREATE statements as the
+            // card's copy-paste SQL (via BuildCopyPasteFromAction below), but DON'T carry it as the
+            // card's Remediation — creating an index is a judgement call, so there is no Apply button
+            // (and no registered handler). IsMissingIndexAdvisory tells the view-model to show
+            // "Copy fix" while the card stays an incident (keeps Open-in-Active-Queries / Ask-AI).
+            var isMissingIndex =
+                string.Equals(finding.Remediation?.FactKey, "MISSING_INDEX", StringComparison.Ordinal);
+
             return new RecommendationItem
             {
                 Source = RecommendationSource.Engine,
@@ -348,7 +356,8 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 ProblemArea = finding.Category,
                 AdviceText = ComposeEngineAdvice(advice),
                 CopyPasteSql = BuildCopyPasteFromAction(finding.Remediation),
-                Remediation = finding.Remediation,
+                Remediation = isMissingIndex ? null : finding.Remediation,
+                IsMissingIndexAdvisory = isMissingIndex,
                 StoryPathHash = finding.StoryPathHash,
                 StoryPath = finding.StoryPath,
                 Setting = SettingFromAction(finding.Remediation),
@@ -493,6 +502,23 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                         target.Database, target.LogicalFileName, target.RecommendedGrowthMb));
                 }
                 return fsb.Length == 0 ? null : fsb.ToString();
+            }
+
+            // WS4: a missing-index advisory action carries the SQL Server-suggested CREATE statements
+            // (no DB-config targets). Surface them verbatim, one per line — copy-paste only; the
+            // caller (MapEngineFinding) leaves the card's Remediation null so no Apply button appears.
+            if (action.MissingIndexTargets is { Count: > 0 } indexTargets)
+            {
+                var isb = new StringBuilder();
+                foreach (var target in indexTargets)
+                {
+                    if (string.IsNullOrWhiteSpace(target.CreateStatement))
+                        continue;
+                    if (isb.Length > 0)
+                        isb.AppendLine();
+                    isb.Append(target.CreateStatement);
+                }
+                return isb.Length == 0 ? null : isb.ToString();
             }
 
             if (action.DbConfigTargets is not { Count: > 0 } targets)

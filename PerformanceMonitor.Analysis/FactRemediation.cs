@@ -108,6 +108,29 @@ public static class FactRemediation
                                     FileGrowthTargets: fileTargets);
     }
 
+    /// <summary>
+    /// Builds the missing-index advisory action for a MISSING_INDEX finding (WS4), or null when the
+    /// drill-down carries no suggested index. Parallel to <see cref="BuildAction"/> — a SEPARATE
+    /// entry point so neither switch grows. The action carries FactKey "MISSING_INDEX" and is
+    /// COPY-PASTE ONLY: there is deliberately NO registered handler, so it never drives Apply
+    /// (creating an index is a judgement call — over-indexing, write + storage cost — so the operator
+    /// copies the suggested statement and decides). It carries the SQL Server-suggested CREATE
+    /// statements through the persisted-action round-trip so the Recommendations reader can render
+    /// them on read (the <c>missing_indexes</c> drill-down they come from is ephemeral). The reader
+    /// surfaces them as the card's copy-paste SQL and leaves the card's Remediation null (no Apply).
+    /// </summary>
+    public static RemediationAction? BuildMissingIndexAction(AnalysisFinding finding)
+    {
+        if (finding is null || !string.Equals(finding.RootFactKey, "MISSING_INDEX", StringComparison.Ordinal))
+            return null;
+
+        var indexTargets = ExtractMissingIndexTargets(finding);
+        return indexTargets.Count == 0
+            ? null
+            : new RemediationAction("MISSING_INDEX", "advise", Array.Empty<ForcePlanTarget>(),
+                                    MissingIndexTargets: indexTargets);
+    }
+
     // ── WS3: server-level config (MAXDOP / CTFP / max & min server memory) ──────────
     //
     // The per-setting CONFIG_* facts (CONFIG_MAXDOP / CONFIG_CTFP / CONFIG_MAX_MEMORY_MB /
@@ -904,6 +927,57 @@ public static class FactRemediation
             var fileType = GetString(row, "file_type");
             targets.Add(new FileGrowthTarget(
                 database, logical, sizeMb, growthPct, RecommendedGrowthMbFor(fileType)));
+        }
+
+        return targets;
+    }
+
+    /// <summary>
+    /// Extracts the missing-index suggestions from a MISSING_INDEX finding's drill-down
+    /// <c>missing_indexes</c> array (WS4). For each row with a non-empty <c>create_statement</c> it
+    /// emits one <see cref="MissingIndexTarget"/> carrying the schema-qualified <c>table</c>, the
+    /// <c>impact</c> estimate, and the SQL Server-suggested <c>create_statement</c> (the copy-paste
+    /// payload — never parsed or executed, only surfaced). The structured fields are exactly those
+    /// the drill-down collectors emit (<c>SqlServerDrillDownCollector</c> / Lite
+    /// <c>DrillDownCollector</c> "missing_indexes"). A defensive cap of 5 mirrors the drill-down's
+    /// own Take(5) and the other extractors.
+    /// </summary>
+    public static IReadOnlyList<MissingIndexTarget> ExtractMissingIndexTargets(AnalysisFinding finding)
+    {
+        var targets = new List<MissingIndexTarget>();
+
+        if (finding?.DrillDown is null ||
+            !finding.DrillDown.TryGetValue("missing_indexes", out var raw) ||
+            raw is null)
+            return targets;
+
+        JsonElement element;
+        try
+        {
+            element = JsonSerializer.SerializeToElement(raw);
+        }
+        catch
+        {
+            return targets;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return targets;
+
+        foreach (var row in element.EnumerateArray())
+        {
+            if (targets.Count >= 5) break;
+            if (row.ValueKind != JsonValueKind.Object) continue;
+
+            // The CREATE statement is the whole point — skip a row that has none to copy.
+            var createStatement = GetString(row, "create_statement");
+            if (string.IsNullOrWhiteSpace(createStatement))
+                continue;
+
+            targets.Add(new MissingIndexTarget(
+                Table: GetString(row, "table"),
+                Impact: GetDouble(row, "impact"),
+                CreateStatement: createStatement));
         }
 
         return targets;

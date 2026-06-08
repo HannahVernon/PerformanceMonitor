@@ -250,6 +250,42 @@ public class RemediationGoldenSampleTests
         Assert.Equal(ServerConfigSetting.Maxdop, action.ServerConfigTargets!.Single().Setting);
     }
 
+    // ── MISSING_INDEX → BuildMissingIndexAction → FactKey "MISSING_INDEX" (WS4; COPY-ONLY) ─────────
+    // The drill-down → builder drift guard for the one COPY-PASTE-ONLY advisory: a non-null action
+    // carrying its CREATE-statement targets, but deliberately NOT registry-dispatchable — creating an
+    // index is a judgement call, so there is no handler and no Apply (the reader renders the CREATE as
+    // copy-paste and leaves the card's Remediation null). Drill-down: SqlServerDrillDownCollector /
+    // Lite DrillDownCollector "missing_indexes" ({ table, impact, create_statement }).
+    private static AnalysisFinding MissingIndex() => new()
+    {
+        ServerId = 1, ServerName = "GoldenServer", Category = "missing_index",
+        StoryPath = "MISSING_INDEX", StoryPathHash = "golden_missidx01",
+        RootFactKey = "MISSING_INDEX",
+        DrillDown = new Dictionary<string, object>
+        {
+            ["missing_indexes"] = new List<object>
+            {
+                new
+                {
+                    table = "dbo.Orders", impact = 87.3,
+                    create_statement = "CREATE NONCLUSTERED INDEX [ix_Orders_CustomerId] ON [dbo].[Orders] ([CustomerId]);"
+                }
+            }
+        }
+    };
+
+    [Fact]
+    public void MissingIndex_DrillDown_BuildsCopyOnlyAdvisoryAction_NotDispatchable()
+    {
+        var action = FactRemediation.BuildMissingIndexAction(MissingIndex());
+        Assert.NotNull(action);
+        Assert.Equal("MISSING_INDEX", action!.FactKey);
+        Assert.NotNull(action.MissingIndexTargets);
+        Assert.NotEmpty(action.MissingIndexTargets!);
+        // Copy-only: NO handler resolves it — the reader surfaces copy-paste and shows no Apply.
+        Assert.Null(Registry.TryGet(action.FactKey));
+    }
+
     // ── Completeness: every registered Apply-able key has a golden fixture ─────────────────────────
     [Fact]
     public void EveryRegisteredHandlerKey_IsExercisedByAGoldenFixture()

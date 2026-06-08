@@ -162,20 +162,25 @@ namespace PerformanceMonitorDashboard.Controls
         public bool ShowAskAi => IsIncident;
 
         /// <summary>
-        /// Whether the "Copy fix" button is shown — config-fixes (a flagged setting) or
-        /// structured standing fixes (DB_CONFIG / FILE_AUTOGROWTH_PERCENT) that carry an ALTER
-        /// statement to copy.
+        /// Whether the "Copy fix" button is shown — config-fixes (a flagged setting), structured
+        /// standing fixes (DB_CONFIG / FILE_AUTOGROWTH_PERCENT) that carry an ALTER statement, or a
+        /// MISSING_INDEX advisory (WS4) carrying a SQL Server-suggested CREATE INDEX to copy. The
+        /// missing-index case deliberately stays an incident (it keeps Open-in-Active-Queries / Ask-AI
+        /// and shows no Apply), so it is gated on its own flag rather than reclassifying the card as a
+        /// structured fix.
         /// </summary>
         public bool ShowCopyFix =>
-            !string.IsNullOrEmpty(Item.CopyPasteSql) && (IsConfigFix || HasStructuredFixAction);
+            !string.IsNullOrEmpty(Item.CopyPasteSql) && (IsConfigFix || HasStructuredFixAction || Item.IsMissingIndexAdvisory);
 
         /// <summary>
         /// Whether the Apply button is shown for this card — whenever the row carries a built,
         /// persisted <see cref="RecommendationItem.Remediation"/> action (engine rows; mirrors the
-        /// alert path's <c>Remediation != null</c> rule). Every persisted action now has a
-        /// registered handler (plan-regression, DB-config, RCSI, clear-plan, file-autogrowth), so
-        /// there is no non-executable action to exclude. Shown for incidents (e.g. clear-plan /
-        /// plan-regression), config-fixes (e.g. RCSI), and structured standing fixes (autogrowth).
+        /// alert path's <c>Remediation != null</c> rule). Every Remediation that reaches a CARD has a
+        /// registered handler (plan-regression, DB-config, RCSI, clear-plan, file-autogrowth,
+        /// server-config); the one non-executable persisted action — the WS4 MISSING_INDEX advisory —
+        /// is mapped by the reader to a copy-paste card with Remediation left null, so it never shows
+        /// Apply. Shown for incidents (e.g. clear-plan / plan-regression), config-fixes (e.g. RCSI),
+        /// and structured standing fixes (autogrowth).
         /// Drives the Apply button + (for destructive fixes) the two-sided informed-consent gate.
         /// </summary>
         public bool ShowApply => Item.Remediation != null;

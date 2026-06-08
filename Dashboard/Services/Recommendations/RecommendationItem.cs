@@ -156,6 +156,17 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         public bool IsServerConfigAdvisory { get; set; }
 
         /// <summary>
+        /// True for a MISSING_INDEX advisory card (WS4). Like the advise-only server-config memory
+        /// cards it is COPY-PASTE ONLY — the SQL Server-suggested CREATE INDEX rides
+        /// <see cref="CopyPasteSql"/> while <see cref="Remediation"/> stays null (creating an index is
+        /// a judgement call, so there is deliberately no Apply button). The card stays a
+        /// <see cref="RecommendationSetting.None"/> incident with no structured fix action, so it keeps
+        /// its Open-in-Active-Queries / Ask-AI affordances; this flag only tells the view-model to ALSO
+        /// surface "Copy fix" for the CREATE statement.
+        /// </summary>
+        public bool IsMissingIndexAdvisory { get; set; }
+
+        /// <summary>
         /// UTC start of the time window the finding pertains to (engine: the analysis
         /// <c>TimeRangeStart</c>; legacy: the <c>critical_issues.log_date</c>). Raw - no grace
         /// window is applied here; the navigation handler widens it (+/- 1h) and converts to
