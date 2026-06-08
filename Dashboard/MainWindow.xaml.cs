@@ -163,7 +163,14 @@ namespace PerformanceMonitorDashboard
                 new LoggerAdapter<AnalysisNotificationService>(),
                 /* Suppress analysis-finding emails for servers the user silenced via
                    "Silence All Alerts" — matches the threshold-alert guard. */
-                _alertStateService.IsAnySilencingActive);
+                _alertStateService.IsAnySilencingActive,
+                /* WS2: always pop a tray balloon for a notify-worthy finding — the same visible
+                   signal threshold alerts already raise, so a local-only user with no email/webhook
+                   still sees findings. Late-bound to the _notificationService field (built later in
+                   Loaded); ShowNotification honors the notifications-enabled pref + marshals to the
+                   UI thread, so it is safe to invoke from the analysis cycle. */
+                showTrayNotification: (title, message) =>
+                    _notificationService?.ShowNotification(title, message, NotificationType.Warning));
             _analysisScheduler = new AnalysisScheduler(
                 _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 
