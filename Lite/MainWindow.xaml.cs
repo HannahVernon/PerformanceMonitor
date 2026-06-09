@@ -44,6 +44,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, (Action<int, int, DateTime?> AlertCounts, Action<int> ApplyTimeRange, Func<Task> ManualRefresh)> _tabEventHandlers = new();
     private readonly Dictionary<string, bool> _previousConnectionStates = new();
     private readonly Dictionary<string, bool> _previousCollectorErrorStates = new();
+    private readonly Dictionary<string, bool> _previousXeSessionFailureStates = new();
     private readonly Dictionary<string, DateTime> _lastCpuAlert = new();
     private readonly Dictionary<string, DateTime> _lastBlockingAlert = new();
     private readonly Dictionary<string, DateTime> _lastDeadlockAlert = new();
@@ -463,6 +464,17 @@ public partial class MainWindow : Window
             CollectorHealthText.ToolTip = $"Failing: {names}\n\n" +
                 string.Join("\n", health.Errors.Select(e =>
                     $"{e.CollectorName}: {e.ConsecutiveErrors}x consecutive - {e.LastErrorMessage}"));
+        }
+        else if (health.XeSessionFailures.Count > 0)
+        {
+            /* XE session couldn't be created (#1086). Permission failures don't
+               increment ConsecutiveErrors, so without this branch the status bar
+               would show OK while blocking/deadlock capture is dead. */
+            var names = string.Join(", ", health.XeSessionFailures.Select(e => e.CollectorName));
+            CollectorHealthText.Text = $"Capture down: {names}";
+            CollectorHealthText.Foreground = System.Windows.Media.Brushes.OrangeRed;
+            CollectorHealthText.ToolTip = string.Join("\n", health.XeSessionFailures.Select(e =>
+                $"{e.CollectorName}: {e.XeSessionMessage}"));
         }
         else
         {
@@ -1290,8 +1302,10 @@ public partial class MainWindow : Window
                 if (status?.IsOnline == null) continue;
 
                 bool isOnline = status.IsOnline == true;
-                bool hasErrors = _collectorService != null && isOnline
-                    && _collectorService.GetHealthSummary(server).ErroringCollectors > 0;
+                var healthSummary = _collectorService != null && isOnline
+                    ? _collectorService.GetHealthSummary(server)
+                    : null;
+                bool hasErrors = healthSummary?.ErroringCollectors > 0;
                 server.HasCollectorErrors = hasErrors;
 
                 if (_previousConnectionStates.TryGetValue(server.Id, out var wasOnline))
@@ -1328,6 +1342,25 @@ public partial class MainWindow : Window
                 if (_previousCollectorErrorStates.TryGetValue(server.Id, out var prevHasErrors) && prevHasErrors != hasErrors)
                     needsRefresh = true;
 
+                /* One-time balloon when blocking/deadlock capture can't start because the
+                   XE session couldn't be created (#1086). Edge-triggered on the false→true
+                   transition so it doesn't re-fire every poll while the condition persists. */
+                bool xeSessionDown = healthSummary?.XeSessionFailures.Count > 0;
+                _previousXeSessionFailureStates.TryGetValue(server.Id, out var wasXeSessionDown);
+
+                if (App.AlertsEnabled && xeSessionDown && !wasXeSessionDown)
+                {
+                    var captures = string.Join(" and ", healthSummary!.XeSessionFailures
+                        .Select(f => f.CollectorName == "blocked_process_report" ? "blocking" : "deadlock"));
+                    var reason = healthSummary.XeSessionFailures[0].XeSessionMessage ?? "unknown error";
+
+                    _trayService?.ShowNotification(
+                        "Capture Not Running",
+                        $"{server.DisplayNameWithIntent}: {captures} capture can't start — {reason}",
+                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning);
+                }
+
+                _previousXeSessionFailureStates[server.Id] = xeSessionDown;
                 _previousConnectionStates[server.Id] = isOnline;
                 _previousCollectorErrorStates[server.Id] = hasErrors;
             }

@@ -38,6 +38,13 @@ namespace PerformanceMonitorDashboard.Models
         public bool IsOnline { get; set; } = true;
 
         /// <summary>
+        /// Capture types ("Blocking", "Deadlock") whose XE session is missing —
+        /// the collector's latest collection_log status is SESSION_MISSING (#1086).
+        /// Empty when both sessions are healthy.
+        /// </summary>
+        public List<string> MissingCaptureSessions { get; set; } = new();
+
+        /// <summary>
         /// Total CPU = SQL + Other.
         /// </summary>
         public int? TotalCpuPercent
