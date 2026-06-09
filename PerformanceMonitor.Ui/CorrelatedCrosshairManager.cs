@@ -238,6 +238,13 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         var mouseCoords = sourceLane.Chart.Plot.GetCoordinates(pixel);
         double xValue = mouseCoords.X;
 
+        /* The mouse can sit over a region whose X-coordinate is outside the legal OLE-Automation
+           date range (empty/auto-scaled chart, or hovering past the plotted data). FromOADate
+           throws "Not a legal OleAut date" for anything outside year 0100-9999, so bail out of the
+           crosshair update rather than crashing to the dispatcher handler. */
+        if (double.IsNaN(xValue) || xValue <= -657435.0 || xValue >= 2958466.0)
+            return;
+
         _tooltipText.Inlines.Clear();
         var time = DateTime.FromOADate(xValue);
         var displayTime = UiTimeContext.ConvertForDisplay(time);
