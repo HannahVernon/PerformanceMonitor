@@ -152,10 +152,11 @@ namespace PerformanceMonitorDashboard.Services
                 var longRunningTask = GetLongRunningQueriesAsync(connection, longRunningQueryThresholdMinutes, longRunningQueryMaxResults, excludeSpServerDiagnostics, excludeWaitFor, excludeBackups, excludeMiscWaits);
                 var tempDbTask = GetTempDbSpaceAsync(connection);
                 var anomalousJobTask = GetAnomalousJobsAsync(connection, longRunningJobMultiplier);
+                var missingCaptureTask = GetMissingCaptureSessionsAsync(connection);
 
                 var allTasks = filteredDeadlockTask != null
-                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, anomalousJobTask }
-                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, anomalousJobTask };
+                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, anomalousJobTask, missingCaptureTask }
+                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, anomalousJobTask, missingCaptureTask };
                 await Task.WhenAll(allTasks);
 
                 var cpuResult = await cpuTask;
@@ -173,6 +174,7 @@ namespace PerformanceMonitorDashboard.Services
                 result.LongRunningQueries = await longRunningTask;
                 result.TempDbSpace = await tempDbTask;
                 result.AnomalousJobs = await anomalousJobTask;
+                result.MissingCaptureSessions = await missingCaptureTask;
             }
             catch (Exception ex)
             {
@@ -181,6 +183,52 @@ namespace PerformanceMonitorDashboard.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Returns capture types ("Blocking", "Deadlock") whose collector most recently
+        /// logged SESSION_MISSING — the XE session is absent and couldn't be created,
+        /// so capture is non-functional even though reads "succeed" with zero rows (#1086).
+        /// </summary>
+        private async Task<List<string>> GetMissingCaptureSessionsAsync(SqlConnection connection)
+        {
+            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                SELECT
+                    x.collector_name
+                FROM
+                (
+                    SELECT
+                        cl.collector_name,
+                        cl.collection_status,
+                        n = ROW_NUMBER() OVER (PARTITION BY cl.collector_name ORDER BY cl.log_id DESC)
+                    FROM config.collection_log AS cl
+                    WHERE cl.collector_name IN (N'blocked_process_xml_collector', N'deadlock_xml_collector')
+                ) AS x
+                WHERE x.n = 1
+                AND   x.collection_status = N'SESSION_MISSING'
+                OPTION(RECOMPILE);";
+
+            var missing = new List<string>();
+
+            try
+            {
+                using var cmd = new SqlCommand(query, connection);
+                cmd.CommandTimeout = 10;
+                using var reader = await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var collectorName = reader.GetString(0);
+                    missing.Add(collectorName == "blocked_process_xml_collector" ? "Blocking" : "Deadlock");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to check capture session status: {ex.Message}");
+            }
+
+            return missing;
         }
 
         /// <summary>

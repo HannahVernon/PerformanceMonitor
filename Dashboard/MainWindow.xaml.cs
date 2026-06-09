@@ -99,6 +99,8 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, bool> _activeTempDbSpaceAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningJobAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, long> _previousDeadlockCounts = new();
 
         private const double ExpandedWidth = 250;
@@ -1609,6 +1611,61 @@ namespace PerformanceMonitorDashboard
                     $"{serverName}: No deadlocks since last check");
                 _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
                     "0", prefs.DeadlockThreshold.ToString(), true, "tray");
+            }
+
+            /* Capture Down alerts — the blocking/deadlock XE session is missing and the
+               collector couldn't create it, so capture is silently non-functional (#1086).
+               Gated on the blocking/deadlock notification prefs: if the user wants those
+               alerts, they need to know when the data feeding them stops existing. */
+            bool captureDown = (prefs.NotifyOnBlocking || prefs.NotifyOnDeadlock)
+                && health.MissingCaptureSessions.Count > 0;
+
+            if (captureDown)
+            {
+                _activeCaptureDownAlert[serverId] = true;
+                if (!_lastCaptureDownAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
+                {
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Capture Down" };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastCaptureDownAlert[serverId] = now;
+
+                    var captureList = string.Join(" and ", health.MissingCaptureSessions);
+                    var detailText = $"The {captureList} Extended Events session(s) are missing and could not be created. " +
+                        "Blocking/deadlock data is NOT being captured. " +
+                        "Check the collection log for the SESSION_MISSING error detail (usually a permissions problem: " +
+                        "ALTER ANY EVENT SESSION on-prem, CREATE ANY DATABASE EVENT SESSION on Azure SQL DB).";
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Capture Down",
+                            $"{serverName}: {captureList} capture is not running — XE session missing",
+                            NotificationType.Error,
+                            serverName,
+                            "Capture Down",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Capture Down",
+                        captureList, "session running", !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Capture Down",
+                            serverName,
+                            captureList,
+                            "session running",
+                            serverId);
+                    }
+                }
+            }
+            else if (_activeCaptureDownAlert.TryRemove(serverId, out var wasCaptureDown) && wasCaptureDown)
+            {
+                _notificationService?.ShowNotification("Capture Restored",
+                    $"{serverName}: Blocking/deadlock capture is running again");
+                _emailAlertService.RecordAlert(serverId, serverName, "Capture Restored",
+                    "running", "session running", true, "tray");
             }
 
             /* High CPU alerts — evaluator picks Total or SQL based on prefs.CpuAlertMode */
