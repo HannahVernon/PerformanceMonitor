@@ -1493,7 +1493,13 @@ namespace PerformanceMonitorDashboard
                 return;
             }
 
-            var now = ServerTimeHelper.ServerNow;
+            /* Cooldowns measure elapsed wall-clock time, so use a clock that does not shift when
+               the user switches server tabs. ServerTimeHelper.ServerNow is derived from a process-wide
+               UTC offset that is reassigned on every tab change; using it here makes (now - lastAlert)
+               jump by the timezone delta whenever the selected tab changes between alert ticks, which
+               either suppresses alerts (offset went back) or bypasses the cooldown (offset went
+               forward) for every server. UTC is offset-independent. Display strings keep server time. */
+            var now = DateTime.UtcNow;
 
             /* Blocking alerts */
             bool blockingExceeded = prefs.NotifyOnBlocking
