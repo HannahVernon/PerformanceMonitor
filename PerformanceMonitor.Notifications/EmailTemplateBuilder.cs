@@ -35,13 +35,13 @@ internal static class EmailTemplateBuilder
     {
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
-        var (accentColor, badgeText) = GetSeverity(metricName);
+        var (accentColor, badgeText, _) = AlertSeverity.ForMetric(metricName);
 
         var html = BuildHtmlBody(metricName, serverName, currentValue,
             thresholdValue, utcNow, localNow, accentColor, badgeText, branding, context: context, emailCooldownMinutes: emailCooldownMinutes);
 
         var plain = BuildPlainTextBody(metricName, serverName, currentValue,
-            thresholdValue, utcNow, localNow, branding, context);
+            thresholdValue, utcNow, localNow, emailCooldownMinutes, branding, context);
 
         return (html, plain);
     }
@@ -64,23 +64,6 @@ internal static class EmailTemplateBuilder
                     $"Sent at: {localNow:yyyy-MM-dd HH:mm:ss}\r\n";
 
         return (html, plain);
-    }
-
-    private static (string AccentColor, string BadgeText) GetSeverity(string metricName)
-    {
-        return metricName switch
-        {
-            "Blocking Detected" => ("#D97706", "ALERT"),
-            "Deadlocks Detected" => ("#DC2626", "ALERT"),
-            "High CPU" => ("#F59E0B", "WARNING"),
-            "Poison Wait" => ("#DC2626", "CRITICAL"),
-            "Long-Running Query" => ("#D97706", "WARNING"),
-            "TempDB Space" => ("#D97706", "WARNING"),
-            "Long-Running Job" => ("#D97706", "WARNING"),
-            "Server Unreachable" => ("#DC2626", "CRITICAL"),
-            "Server Restored" => ("#16A34A", "RESOLVED"),
-            _ => ("#2eaef1", "INFO")
-        };
     }
 
     private static string BuildHtmlBody(
@@ -282,6 +265,7 @@ internal static class EmailTemplateBuilder
         string thresholdValue,
         DateTime utcNow,
         DateTime localNow,
+        int emailCooldownMinutes,
         AlertBranding branding,
         AlertContext? context = null)
     {
@@ -334,6 +318,10 @@ internal static class EmailTemplateBuilder
         {
             sb.Append($"\r\nAttached: {context.AttachmentFileName}\r\n");
         }
+
+        /* Footer — mirrors the HTML body's cooldown disclosure (BuildHtmlBody). The HTML and
+           plain-text bodies are maintained in parallel; a footer change must touch both. */
+        sb.Append($"\r\nSent by {branding.EditionName} - {emailCooldownMinutes}-minute cooldown between repeat alerts\r\n");
 
         if (branding.SnoozeHint is not null)
         {
