@@ -129,23 +129,84 @@ public class SqlServerAnomalyDetector
                 cmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-WITH snaps AS (SELECT TOP (2) collection_time FROM (SELECT DISTINCT collection_time FROM collect.index_object_stats) AS d ORDER BY collection_time DESC),
-boundaries AS (SELECT latest_time = MAX(collection_time), prior_time = MIN(collection_time) FROM snaps),
-cur AS (SELECT database_name, object_id, schema_name = MAX(schema_name), table_name = MAX(table_name), mb = SUM(reserved_mb)
-        FROM collect.index_object_stats WHERE collection_time = (SELECT latest_time FROM boundaries) GROUP BY database_name, object_id),
-prv AS (SELECT database_name, object_id, mb = SUM(reserved_mb)
-        FROM collect.index_object_stats WHERE collection_time = (SELECT prior_time FROM boundaries) GROUP BY database_name, object_id)
+WITH
+    snaps AS
+    (
+        SELECT TOP (2)
+            collection_time
+        FROM
+        (
+            SELECT DISTINCT
+                collection_time
+            FROM collect.index_object_stats
+        ) AS d
+        ORDER BY
+            collection_time DESC
+    ),
+    boundaries AS
+    (
+        SELECT
+            latest_time = MAX(collection_time),
+            prior_time = MIN(collection_time)
+        FROM snaps
+    ),
+    cur AS
+    (
+        SELECT
+            database_name,
+            object_id,
+            schema_name = MAX(schema_name),
+            table_name = MAX(table_name),
+            mb = SUM(reserved_mb)
+        FROM collect.index_object_stats
+        WHERE collection_time =
+        (
+            SELECT b.latest_time
+            FROM boundaries AS b
+        )
+        GROUP BY
+            database_name,
+            object_id
+    ),
+    prv AS
+    (
+        SELECT
+            database_name,
+            object_id,
+            mb = SUM(reserved_mb)
+        FROM collect.index_object_stats
+        WHERE collection_time =
+        (
+            SELECT b.prior_time
+            FROM boundaries AS b
+        )
+        GROUP BY
+            database_name,
+            object_id
+    )
 SELECT TOP (1)
-    cur.database_name, cur.schema_name, cur.table_name, prior_mb = prv.mb, current_mb = cur.mb,
+    cur.database_name,
+    cur.schema_name,
+    cur.table_name,
+    prior_mb = prv.mb,
+    current_mb = cur.mb,
     growth_mb = cur.mb - prv.mb,
-    growth_pct = CASE WHEN prv.mb > 0 THEN (cur.mb - prv.mb) * 100.0 / prv.mb ELSE 0 END
+    growth_pct =
+        CASE
+            WHEN prv.mb > 0
+            THEN (cur.mb - prv.mb) * 100.0 / prv.mb
+            ELSE 0
+        END
 FROM cur
-JOIN prv ON cur.database_name = prv.database_name AND cur.object_id = prv.object_id
+JOIN prv
+  ON  prv.database_name = cur.database_name
+  AND prv.object_id = cur.object_id
 CROSS JOIN boundaries AS b
 WHERE b.latest_time <> b.prior_time
 AND   cur.mb - prv.mb >= @growthMb
-AND   (CASE WHEN prv.mb > 0 THEN (cur.mb - prv.mb) * 100.0 / prv.mb ELSE 0 END) >= @growthPct
-ORDER BY cur.mb - prv.mb DESC
+AND   CASE WHEN prv.mb > 0 THEN (cur.mb - prv.mb) * 100.0 / prv.mb ELSE 0 END >= @growthPct
+ORDER BY
+    cur.mb - prv.mb DESC
 OPTION(MAXDOP 1, RECOMPILE);";
                 cmd.Parameters.Add(new SqlParameter("@growthMb", ObjectGrowthMbThreshold));
                 cmd.Parameters.Add(new SqlParameter("@growthPct", ObjectGrowthPctThreshold));
@@ -181,23 +242,78 @@ OPTION(MAXDOP 1, RECOMPILE);";
                 cmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-WITH snaps AS (SELECT TOP (2) collection_time FROM (SELECT DISTINCT collection_time FROM collect.index_object_stats) AS d ORDER BY collection_time DESC),
-boundaries AS (SELECT latest_time = MAX(collection_time), prior_time = MIN(collection_time) FROM snaps),
-cur AS (SELECT database_name, object_id, index_id, schema_name, table_name, index_name,
-               ms = ISNULL(row_lock_wait_in_ms, 0), esc = ISNULL(index_lock_promotion_count, 0)
-        FROM collect.index_object_stats WHERE collection_time = (SELECT latest_time FROM boundaries)),
-prv AS (SELECT database_name, object_id, index_id, ms = ISNULL(row_lock_wait_in_ms, 0), esc = ISNULL(index_lock_promotion_count, 0)
-        FROM collect.index_object_stats WHERE collection_time = (SELECT prior_time FROM boundaries))
+WITH
+    snaps AS
+    (
+        SELECT TOP (2)
+            collection_time
+        FROM
+        (
+            SELECT DISTINCT
+                collection_time
+            FROM collect.index_object_stats
+        ) AS d
+        ORDER BY
+            collection_time DESC
+    ),
+    boundaries AS
+    (
+        SELECT
+            latest_time = MAX(collection_time),
+            prior_time = MIN(collection_time)
+        FROM snaps
+    ),
+    cur AS
+    (
+        SELECT
+            database_name,
+            object_id,
+            index_id,
+            schema_name,
+            table_name,
+            index_name,
+            ms = ISNULL(row_lock_wait_in_ms, 0),
+            esc = ISNULL(index_lock_promotion_count, 0)
+        FROM collect.index_object_stats
+        WHERE collection_time =
+        (
+            SELECT b.latest_time
+            FROM boundaries AS b
+        )
+    ),
+    prv AS
+    (
+        SELECT
+            database_name,
+            object_id,
+            index_id,
+            ms = ISNULL(row_lock_wait_in_ms, 0),
+            esc = ISNULL(index_lock_promotion_count, 0)
+        FROM collect.index_object_stats
+        WHERE collection_time =
+        (
+            SELECT b.prior_time
+            FROM boundaries AS b
+        )
+    )
 SELECT TOP (1)
-    cur.database_name, cur.schema_name, cur.table_name, cur.index_name,
-    ms_delta = cur.ms - prv.ms, esc_delta = cur.esc - prv.esc
+    cur.database_name,
+    cur.schema_name,
+    cur.table_name,
+    cur.index_name,
+    ms_delta = cur.ms - prv.ms,
+    esc_delta = cur.esc - prv.esc
 FROM cur
-JOIN prv ON cur.database_name = prv.database_name AND cur.object_id = prv.object_id AND cur.index_id = prv.index_id
+JOIN prv
+  ON  prv.database_name = cur.database_name
+  AND prv.object_id = cur.object_id
+  AND prv.index_id = cur.index_id
 CROSS JOIN boundaries AS b
 WHERE b.latest_time <> b.prior_time
 AND   cur.ms >= prv.ms
 AND   cur.ms - prv.ms >= @msDelta
-ORDER BY cur.ms - prv.ms DESC
+ORDER BY
+    cur.ms - prv.ms DESC
 OPTION(MAXDOP 1, RECOMPILE);";
                 cmd.Parameters.Add(new SqlParameter("@msDelta", ObjectLockWaitMsDeltaThreshold));
 

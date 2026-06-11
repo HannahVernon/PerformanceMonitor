@@ -56,7 +56,11 @@ WITH
             total_rows = MAX(total_rows),
             index_count = COUNT_BIG(*)
         FROM collect.index_object_stats
-        WHERE collection_time = (SELECT latest_time FROM boundaries)
+        WHERE collection_time =
+        (
+            SELECT b.latest_time
+            FROM boundaries AS b
+        )
         GROUP BY
             database_name,
             schema_name,
@@ -108,7 +112,11 @@ WITH
             table_name,
             reserved_mb = SUM(reserved_mb)
         FROM collect.index_object_stats
-        WHERE collection_time = (SELECT earliest_time FROM boundaries)
+        WHERE collection_time =
+        (
+            SELECT b.earliest_time
+            FROM boundaries AS b
+        )
         GROUP BY
             database_name,
             schema_name,
