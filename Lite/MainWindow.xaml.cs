@@ -69,6 +69,14 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _activeTempDbSpaceAlert = new();
     private readonly Dictionary<string, bool> _activeLongRunningJobAlert = new();
 
+    /* Edge-trigger watermarks (#1091): the rolling 1-hour blocking/deadlock counts stay
+       above the threshold for the whole hour an event lingers in the window, so a plain
+       level check re-fires the same alert every cooldown. These hold the count at the last
+       fired alert; we only re-notify when the count climbs past it (a genuinely new event),
+       and reset to 0 when the window empties so the next event alerts again. */
+    private readonly Dictionary<string, int> _lastAlertedBlockingCount = new();
+    private readonly Dictionary<string, int> _lastAlertedDeadlockCount = new();
+
     public MainWindow()
     {
         InitializeComponent();
@@ -1454,46 +1462,51 @@ public partial class MainWindow : Window
             }
         }
 
-        bool blockingExceeded = App.AlertBlockingEnabled
-            && effectiveBlockingCount >= App.AlertBlockingThreshold;
+        /* Edge-trigger the rolling 1-hour blocking count so the same blocked-process reports
+           don't re-alert every cooldown for the whole hour they linger in the window (#1091).
+           See RollingCountAlertGate for the watermark semantics. */
+        int blockingWatermark = _lastAlertedBlockingCount.TryGetValue(key, out var labc) ? labc : 0;
+        bool blockingCooldownElapsed = !_lastBlockingAlert.TryGetValue(key, out var lastBlocking) || now - lastBlocking >= alertCooldown;
+        var blockingDecision = App.AlertBlockingEnabled
+            ? RollingCountAlertGate.Evaluate(effectiveBlockingCount, App.AlertBlockingThreshold, blockingWatermark, blockingCooldownElapsed, suppressPopups)
+            : new RollingCountAlertGate.Decision(false, false, 0);
+        _lastAlertedBlockingCount[key] = blockingDecision.Watermark;
 
-        if (blockingExceeded)
+        bool wasBlockingActive = _activeBlockingAlert.TryGetValue(key, out var wasBlocking) && wasBlocking;
+        _activeBlockingAlert[key] = blockingDecision.Active;
+
+        if (blockingDecision.Fire)
         {
-            _activeBlockingAlert[key] = true;
-            if (!suppressPopups && (!_lastBlockingAlert.TryGetValue(key, out var lastBlocking) || now - lastBlocking >= alertCooldown))
+            var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Blocking Detected" };
+            bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+            _lastBlockingAlert[key] = now;
+
+            if (!isMuted)
             {
-                var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Blocking Detected" };
-                bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
-                _lastBlockingAlert[key] = now;
-
-                if (!isMuted)
-                {
-                    _trayService.ShowSnoozableNotification(
-                        "Blocking Detected",
-                        $"{summary.DisplayName}: {effectiveBlockingCount} blocking session(s)",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning,
-                        summary.DisplayName,
-                        "Blocking Detected",
-                        _muteRuleService);
-                }
-
-                var blockingContext = await BuildBlockingContextAsync(summary.ServerId);
-                var detailText = ContextToDetailText(blockingContext);
-
-                await _emailAlertService.TrySendAlertEmailAsync(
+                _trayService.ShowSnoozableNotification(
                     "Blocking Detected",
+                    $"{summary.DisplayName}: {effectiveBlockingCount} blocking session(s)",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning,
                     summary.DisplayName,
-                    effectiveBlockingCount.ToString(),
-                    App.AlertBlockingThreshold.ToString(),
-                    summary.ServerId,
-                    blockingContext,
-                    muted: isMuted,
-                    detailText: detailText);
+                    "Blocking Detected",
+                    _muteRuleService);
             }
+
+            var blockingContext = await BuildBlockingContextAsync(summary.ServerId);
+            var detailText = ContextToDetailText(blockingContext);
+
+            await _emailAlertService.TrySendAlertEmailAsync(
+                "Blocking Detected",
+                summary.DisplayName,
+                effectiveBlockingCount.ToString(),
+                App.AlertBlockingThreshold.ToString(),
+                summary.ServerId,
+                blockingContext,
+                muted: isMuted,
+                detailText: detailText);
         }
-        else if (_activeBlockingAlert.TryGetValue(key, out var wasBlocking) && wasBlocking)
+        else if (!blockingDecision.Active && wasBlockingActive)
         {
-            _activeBlockingAlert[key] = false;
             _trayService.ShowNotification(
                 "Blocking Cleared",
                 $"{summary.DisplayName}: No active blocking",
@@ -1517,46 +1530,51 @@ public partial class MainWindow : Window
             }
         }
 
-        bool deadlocksExceeded = App.AlertDeadlockEnabled
-            && effectiveDeadlockCount >= App.AlertDeadlockThreshold;
+        /* Edge-trigger the rolling 1-hour deadlock count so the same deadlocks don't re-alert
+           every cooldown for the whole hour they linger in the window (#1091). See
+           RollingCountAlertGate for the watermark semantics. */
+        int deadlockWatermark = _lastAlertedDeadlockCount.TryGetValue(key, out var ladc) ? ladc : 0;
+        bool deadlockCooldownElapsed = !_lastDeadlockAlert.TryGetValue(key, out var lastDeadlock) || now - lastDeadlock >= alertCooldown;
+        var deadlockDecision = App.AlertDeadlockEnabled
+            ? RollingCountAlertGate.Evaluate(effectiveDeadlockCount, App.AlertDeadlockThreshold, deadlockWatermark, deadlockCooldownElapsed, suppressPopups)
+            : new RollingCountAlertGate.Decision(false, false, 0);
+        _lastAlertedDeadlockCount[key] = deadlockDecision.Watermark;
 
-        if (deadlocksExceeded)
+        bool wasDeadlockActive = _activeDeadlockAlert.TryGetValue(key, out var wasDeadlock) && wasDeadlock;
+        _activeDeadlockAlert[key] = deadlockDecision.Active;
+
+        if (deadlockDecision.Fire)
         {
-            _activeDeadlockAlert[key] = true;
-            if (!suppressPopups && (!_lastDeadlockAlert.TryGetValue(key, out var lastDeadlock) || now - lastDeadlock >= alertCooldown))
+            var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Deadlocks Detected" };
+            bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+            _lastDeadlockAlert[key] = now;
+
+            if (!isMuted)
             {
-                var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Deadlocks Detected" };
-                bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
-                _lastDeadlockAlert[key] = now;
-
-                if (!isMuted)
-                {
-                    _trayService.ShowSnoozableNotification(
-                        "Deadlocks Detected",
-                        $"{summary.DisplayName}: {effectiveDeadlockCount} deadlock(s) in the last hour",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Error,
-                        summary.DisplayName,
-                        "Deadlocks Detected",
-                        _muteRuleService);
-                }
-
-                var deadlockContext = await BuildDeadlockContextAsync(summary.ServerId);
-                var detailText = ContextToDetailText(deadlockContext);
-
-                await _emailAlertService.TrySendAlertEmailAsync(
+                _trayService.ShowSnoozableNotification(
                     "Deadlocks Detected",
+                    $"{summary.DisplayName}: {effectiveDeadlockCount} deadlock(s) in the last hour",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Error,
                     summary.DisplayName,
-                    effectiveDeadlockCount.ToString(),
-                    App.AlertDeadlockThreshold.ToString(),
-                    summary.ServerId,
-                    deadlockContext,
-                    muted: isMuted,
-                    detailText: detailText);
+                    "Deadlocks Detected",
+                    _muteRuleService);
             }
+
+            var deadlockContext = await BuildDeadlockContextAsync(summary.ServerId);
+            var detailText = ContextToDetailText(deadlockContext);
+
+            await _emailAlertService.TrySendAlertEmailAsync(
+                "Deadlocks Detected",
+                summary.DisplayName,
+                effectiveDeadlockCount.ToString(),
+                App.AlertDeadlockThreshold.ToString(),
+                summary.ServerId,
+                deadlockContext,
+                muted: isMuted,
+                detailText: detailText);
         }
-        else if (_activeDeadlockAlert.TryGetValue(key, out var wasDeadlock) && wasDeadlock)
+        else if (!deadlockDecision.Active && wasDeadlockActive)
         {
-            _activeDeadlockAlert[key] = false;
             _trayService.ShowNotification(
                 "Deadlocks Cleared",
                 $"{summary.DisplayName}: No deadlocks in the last hour",
