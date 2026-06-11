@@ -169,9 +169,16 @@ public partial class MainWindow : Window
                 analysisNotificationService,
                 new AppLoggerAdapter<CollectionBackgroundService>());
 
-            // Start background collection
+            // Start background collection.
+            // Off the UI thread on purpose: DuckDB.NET is synchronous and Lite has no
+            // ConfigureAwait(false), so starting this from the Loaded handler would run the entire
+            // collection/checkpoint/archive pipeline on the WPF dispatcher (per-minute jank, and a
+            // multi-second-to-minutes freeze on archive/reset). A pool thread has no
+            // SynchronizationContext, so StartAsync and every subsequent continuation stay off-UI.
+            // Safe: the pipeline only touches DuckDB + the email/webhook notification service; the
+            // UI reads data by polling DuckDB on its own timers, fully decoupled.
             _backgroundCts = new CancellationTokenSource();
-            _ = _backgroundService.StartAsync(_backgroundCts.Token);
+            _ = Task.Run(() => _backgroundService.StartAsync(_backgroundCts.Token));
 
             // Initialize system tray
             _trayService = new SystemTrayService(this, RestoreFromTray, _backgroundService);
