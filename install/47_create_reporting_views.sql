@@ -393,7 +393,9 @@ SELECT
                 SELECT
                     1/0
                 FROM collect.cpu_utilization_stats AS cus
-                WHERE cus.total_cpu_utilization >= 90
+                /* total_cpu_utilization is NULL on SQL Server on Linux; fall back to the SQL-only
+                   figure so daily_summary can still report CPU_CRITICAL there (#1048). */
+                WHERE ISNULL(cus.total_cpu_utilization, cus.sqlserver_cpu_utilization) >= 90
                 AND   cus.collection_time >= DATEADD(HOUR, -1, SYSDATETIME())
             )
             THEN N'CPU_CRITICAL'
