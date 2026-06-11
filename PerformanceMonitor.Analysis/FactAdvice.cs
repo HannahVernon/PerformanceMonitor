@@ -626,6 +626,22 @@ public static class FactAdvice
             Remediation:
                 "Match the fix to the shape. Buffer-pool-driven (PLE crash): find the scan and add the missing index — the PERFMON_PLE playbook applies, `top_cpu_queries` ordered by `logical_reads` per execution names the candidates. Grant-driven: the offender is consuming a too-large grant because of a bad cardinality estimate — `analyze_query_plan` on the worst `query_hash` shows the estimate-vs-actual divergence, FULLSCAN statistics or a filtered index fixes it. Anomalies that resolve on their own are typically one-time reporting queries; sustained ones become standard PERFMON_PLE or RESOURCE_SEMAPHORE findings on the next window.");
 
+        t["ANOMALY_OBJECT_GROWTH"] = new AdviceBlock(
+            Headline:
+                "A table grew sharply day-over-day — its reserved size jumped well above its recent footprint",
+            Investigation:
+                "Computed from the two most recent daily index/object-size snapshots: the named table's total reserved MB (all indexes summed) rose by more than the trip threshold in both percentage and absolute terms. The finding's metadata carries `database_name`, `schema_table`, `prior_mb`, `current_mb`, `growth_mb`, and `growth_pct`. Open FinOps → Object Sizes & Growth and sort by Growth 30d / Daily Rate to see the trend and the next-largest growers; call `get_table_index_sizes` for the full ranked list. Distinguish a one-time load (archive import, backfill, index rebuild that temporarily doubles space) from sustained organic growth — the daily-rate column over several days tells you which.",
+            Remediation:
+                "If it's expected load, no action beyond capacity awareness — confirm the volume has headroom (FinOps → Database Sizes shows volume free space). If it's unexpected: check for a runaway process inserting without cleanup, a disabled or broken purge job, an index rebuild leaving the old allocation, or a heap that needs a clustered index. For genuinely large, fast-growing tables, evaluate PAGE compression and partitioning. Persistent steep growth against limited volume free space is the early warning for an out-of-space outage — act before the file fills.");
+
+        t["ANOMALY_OBJECT_CONTENTION"] = new AdviceBlock(
+            Headline:
+                "An index accrued significant new lock-wait time — contention on this object jumped since the last snapshot",
+            Investigation:
+                "Computed from consecutive daily index/object snapshots (same instance start time, so not a counter reset): the named index's cumulative row-lock wait time grew by more than the trip threshold day-over-day. Metadata carries `database_name`, `schema_table`, `index_name`, `lock_wait_ms_delta`, and `escalation_delta`. Open FinOps → Locking & Contention to see this object and the other top-contended indexes; call `get_object_locking` for the ranked list. Cross-reference Blocking → Blocked Process Reports for the same window to see the actual blocking chains, and check whether a lock-escalation spike (`escalation_delta`) accompanied it — escalation to a table lock serializes the whole object.",
+            Remediation:
+                "Find the queries hitting this object (Query Performance filtered to the database/table) and reduce how long they hold locks: shorten transactions, add the missing index so writers touch fewer rows, or batch large modifications. Reader/writer contention (S vs X) is eliminated by RCSI on the database. If lock escalation is the driver, either fix the query touching too many rows or, as a last resort, disable escalation on the specific table (ALTER TABLE ... SET (LOCK_ESCALATION = DISABLE)) after confirming memory headroom for the extra row locks.");
+
         return t;
     }
 }
