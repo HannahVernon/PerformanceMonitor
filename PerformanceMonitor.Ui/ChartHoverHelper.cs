@@ -22,6 +22,7 @@ internal sealed class ChartHoverHelper
     private readonly TextBlock _text;
     private string _unit;
     private DateTime _lastUpdate;
+    private bool _needsReanchor = true;
 
     public ChartHoverHelper(ScottPlot.WPF.WpfPlot chart, string unit)
     {
@@ -79,14 +80,17 @@ internal sealed class ChartHoverHelper
         _barPlots.Clear();
     }
 
-    private void OnChartVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) =>
-        _popup.IsOpen = false;
+    private void OnChartVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => ForceReanchor();
+    private void OnChartUnloaded(object sender, RoutedEventArgs e) => ForceReanchor();
+    private void OnChartLoaded(object sender, RoutedEventArgs e) => ForceReanchor();
 
-    private void OnChartUnloaded(object sender, RoutedEventArgs e) =>
+    /* A tab visibility/load transition can wedge the popup open with a stale anchor; flag a
+       re-anchor so the next mouse move toggles it once instead of toggling on every move. */
+    private void ForceReanchor()
+    {
         _popup.IsOpen = false;
-
-    private void OnChartLoaded(object sender, RoutedEventArgs e) =>
-        _popup.IsOpen = false;
+        _needsReanchor = true;
+    }
 
     public void Clear()
     {
@@ -151,14 +155,17 @@ internal sealed class ChartHoverHelper
     {
         foreach (var (barPlot, label) in _barPlots)
         {
+            /* Bar width in pixels is the same for every bar on a linear axis, so compute it once
+               per plot (lazily on the first bar) instead of two GetPixel calls per bar. */
+            double? halfWidthPx = null;
             foreach (var bar in barPlot.Bars)
             {
+                halfWidthPx ??= Math.Abs(
+                    _chart.Plot.GetPixel(new ScottPlot.Coordinates(bar.Size / 2, 0)).X
+                    - _chart.Plot.GetPixel(new ScottPlot.Coordinates(0, 0)).X);
                 var topPixel = _chart.Plot.GetPixel(new ScottPlot.Coordinates(bar.Position, bar.Value));
-                double halfWidthPx = Math.Abs(
-                    _chart.Plot.GetPixel(new ScottPlot.Coordinates(bar.Position + bar.Size / 2, bar.Value)).X
-                    - topPixel.X);
                 double dx = Math.Abs(topPixel.X - pixel.X);
-                if (dx > halfWidthPx + 4) continue;
+                if (dx > halfWidthPx.Value + 4) continue;
                 double dy = Math.Abs(topPixel.Y - pixel.Y);
                 if (dy < bestYDistance)
                 {
@@ -229,12 +236,19 @@ internal sealed class ChartHoverHelper
                 _text.Text = $"{bestLabel}\n{valueFormatted} {_unit}\n{time:HH:mm:ss}";
                 _popup.HorizontalOffset = pos.X + 15;
                 _popup.VerticalOffset = pos.Y + 15;
-                /* Toggle if already open so WPF re-evaluates the placement target.
-                   Without this, a popup that was IsOpen = true when its TabItem was
-                   unloaded stays "open" with a stale anchor and never appears on
-                   return — the assignment below is a no-op. */
-                if (_popup.IsOpen) _popup.IsOpen = false;
-                _popup.IsOpen = true;
+                /* Updating the offsets above moves an already-open popup, so only toggle IsOpen
+                   when a re-anchor is actually needed (a tab visibility/load transition wedged it).
+                   Toggling every move tore down and recreated the popup's native window each frame. */
+                if (_needsReanchor)
+                {
+                    if (_popup.IsOpen) _popup.IsOpen = false;
+                    _popup.IsOpen = true;
+                    _needsReanchor = false;
+                }
+                else if (!_popup.IsOpen)
+                {
+                    _popup.IsOpen = true;
+                }
             }
             else
             {
