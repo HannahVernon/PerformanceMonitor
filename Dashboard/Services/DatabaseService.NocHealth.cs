@@ -131,6 +131,7 @@ namespace PerformanceMonitorDashboard.Services
             bool excludeWaitFor = true,
             bool excludeBackups = true,
             bool excludeMiscWaits = true,
+            bool excludeCdc = true,
             IReadOnlyList<string>? excludedDatabases = null)
         {
             var result = new AlertHealthResult();
@@ -149,7 +150,7 @@ namespace PerformanceMonitorDashboard.Services
                     ? GetFilteredDeadlockCountAsync(connection, excludedDatabases)
                     : null;
                 var poisonWaitTask = GetPoisonWaitDeltasAsync(connection);
-                var longRunningTask = GetLongRunningQueriesAsync(connection, longRunningQueryThresholdMinutes, longRunningQueryMaxResults, excludeSpServerDiagnostics, excludeWaitFor, excludeBackups, excludeMiscWaits);
+                var longRunningTask = GetLongRunningQueriesAsync(connection, longRunningQueryThresholdMinutes, longRunningQueryMaxResults, excludeSpServerDiagnostics, excludeWaitFor, excludeBackups, excludeMiscWaits, excludeCdc);
                 var tempDbTask = GetTempDbSpaceAsync(connection);
                 var anomalousJobTask = GetAnomalousJobsAsync(connection, longRunningJobMultiplier);
                 var missingCaptureTask = GetMissingCaptureSessionsAsync(connection);
@@ -751,7 +752,8 @@ namespace PerformanceMonitorDashboard.Services
             bool excludeSpServerDiagnostics = true,
             bool excludeWaitFor = true,
             bool excludeBackups = true,
-            bool excludeMiscWaits = true)
+            bool excludeMiscWaits = true,
+            bool excludeCdc = true)
         {
             maxResults = Math.Clamp(maxResults, 1, 1000);
 
@@ -763,6 +765,12 @@ namespace PerformanceMonitorDashboard.Services
                 ? "AND r.wait_type NOT IN (N'BACKUPTHREAD', N'BACKUPIO')" : "";
             string miscWaitsFilter = excludeMiscWaits
                 ? "AND r.wait_type NOT IN (N'XE_LIVE_TARGET_TVF')" : "";
+            // CDC capture runs continuously as a SQL Agent job (EXEC sys.sp_MScdc_capture_job -> sys.sp_cdc_scan),
+            // so it permanently exceeds the duration threshold. Filter on request text, not program_name, to stay
+            // CDC-specific and avoid hiding unrelated Agent jobs (ETL, index maintenance). Keep NULL text (encrypted
+            // modules) visible -- only drop rows we can positively identify as CDC.
+            string cdcFilter = excludeCdc
+                ? "AND (t.text IS NULL OR (t.text NOT LIKE N'%sp_MScdc_capture_job%' AND t.text NOT LIKE N'%sp_cdc_scan%'))" : "";
 
             string query = @$"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -787,6 +795,7 @@ namespace PerformanceMonitorDashboard.Services
                     {waitForFilter}
                     {backupsFilter}
                     {miscWaitsFilter}
+                    {cdcFilter}
                 ORDER BY r.total_elapsed_time DESC
                 OPTION(MAXDOP 1, RECOMPILE);";
 

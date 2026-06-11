@@ -102,6 +102,7 @@ namespace PerformanceMonitorDashboard.Models
         public bool LongRunningQueryExcludeWaitFor { get; set; } = true;
         public bool LongRunningQueryExcludeBackups { get; set; } = true;
         public bool LongRunningQueryExcludeMiscWaits { get; set; } = true;
+        public bool LongRunningQueryExcludeCdc { get; set; } = true; // Exclude CDC capture jobs (sp_MScdc_capture_job / sp_cdc_scan)
         public bool NotifyOnTempDbSpace { get; set; } = true;
         public int TempDbSpaceThresholdPercent { get; set; } = 80; // Alert when TempDB used > X%
         public bool NotifyOnLongRunningJobs { get; set; } = true;

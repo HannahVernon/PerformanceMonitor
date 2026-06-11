@@ -246,6 +246,9 @@
                                       Margin="0,0,0,4"/>
                             <CheckBox x:Name="LrqExcludeMiscWaitsCheckBox"
                                       Content="Exclude miscellaneous waits (XE_LIVE_TARGET_TVF)"
+                                      Margin="0,0,0,4"/>
+                            <CheckBox x:Name="LrqExcludeCdcCheckBox"
+                                      Content="Exclude CDC capture jobs (sp_MScdc_capture_job, sp_cdc_scan)"
                                       Margin="0,0,0,0"/>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <CheckBox x:Name="NotifyOnTempDbSpaceCheckBox"
