@@ -29,6 +29,8 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
     private readonly Popup _tooltip;
     private readonly TextBlock _tooltipText;
     private DateTime _lastUpdate;
+    private double _lastPixelX = double.NaN;
+    private bool _needsReanchor = true;
 
     public CorrelatedCrosshairManager()
     {
@@ -89,14 +91,17 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         _lanes.Add(lane);
     }
 
-    private void OnLaneVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) =>
-        _tooltip.IsOpen = false;
+    private void OnLaneVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => ForceReanchor();
+    private void OnLaneUnloaded(object sender, RoutedEventArgs e) => ForceReanchor();
+    private void OnLaneLoaded(object sender, RoutedEventArgs e) => ForceReanchor();
 
-    private void OnLaneUnloaded(object sender, RoutedEventArgs e) =>
+    /* A tab visibility/load transition can leave the popup wedged open with a stale anchor; flag a
+       re-anchor so the next mouse move toggles it once, instead of toggling on every move. */
+    private void ForceReanchor()
+    {
         _tooltip.IsOpen = false;
-
-    private void OnLaneLoaded(object sender, RoutedEventArgs e) =>
-        _tooltip.IsOpen = false;
+        _needsReanchor = true;
+    }
 
     /// <summary>
     /// Sets the expected baseline range for a lane (upper/lower bounds).
@@ -233,10 +238,15 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         if (sourceLane.VLine == null) return;
 
         var now = DateTime.UtcNow;
-        if ((now - _lastUpdate).TotalMilliseconds < 16) return;
-        _lastUpdate = now;
+        if ((now - _lastUpdate).TotalMilliseconds < 33) return;
 
         var pos = e.GetPosition(sourceLane.Chart);
+        /* The crosshair only tracks X; skip when the cursor hasn't moved a full pixel
+           horizontally so a near-still mouse doesn't re-render every lane ~30x/sec. */
+        if (!double.IsNaN(_lastPixelX) && Math.Abs(pos.X - _lastPixelX) < 1.0) return;
+        _lastUpdate = now;
+        _lastPixelX = pos.X;
+
         var dpi = VisualTreeHelper.GetDpi(sourceLane.Chart);
         var pixel = new ScottPlot.Pixel(
             (float)(pos.X * dpi.DpiScaleX),
@@ -258,11 +268,10 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         if (_comparisonLabel != null)
             _tooltipText.Inlines.Add(new Run($"  (dashed = {_comparisonLabel})") { Foreground = DimBrush });
 
-        var defaultBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
-
         foreach (var lane in _lanes)
         {
             if (lane.VLine == null) continue;
+            if (!lane.Chart.IsVisible) continue;
 
             lane.VLine.IsVisible = true;
             lane.VLine.X = xValue;
@@ -277,7 +286,7 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
                     var indicator = GetBaselineIndicator(lane, value.Value);
 
                     // Tooltip: value + arrow + "30d avg" context
-                    _tooltipText.Inlines.Add(new Run($"\n{lane.Label}: {value.Value:N1} {lane.Unit}") { Foreground = defaultBrush });
+                    _tooltipText.Inlines.Add(new Run($"\n{lane.Label}: {value.Value:N1} {lane.Unit}") { Foreground = DefaultBrush });
                     if (indicator != null)
                     {
                         _tooltipText.Inlines.Add(new Run($" {indicator.Value.Symbol}") { Foreground = indicator.Value.Brush });
@@ -285,7 +294,7 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
                 }
                 else
                 {
-                    _tooltipText.Inlines.Add(new Run($"\n{lane.Label}: —") { Foreground = defaultBrush });
+                    _tooltipText.Inlines.Add(new Run($"\n{lane.Label}: —") { Foreground = DefaultBrush });
                 }
             }
             else if (lane.Series.Count > 1)
@@ -296,18 +305,18 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
                     string unit = series.Unit ?? lane.Unit;
                     if (value.HasValue)
                     {
-                        _tooltipText.Inlines.Add(new Run($"\n{series.Name}: {value.Value:N0} {unit}") { Foreground = defaultBrush });
+                        _tooltipText.Inlines.Add(new Run($"\n{series.Name}: {value.Value:N0} {unit}") { Foreground = DefaultBrush });
                         var indicator = GetBaselineIndicator(lane, value.Value);
                         if (indicator != null)
                             _tooltipText.Inlines.Add(new Run($" {indicator.Value.Symbol}") { Foreground = indicator.Value.Brush });
                     }
                     else
-                        _tooltipText.Inlines.Add(new Run($"\n{series.Name}: —") { Foreground = defaultBrush });
+                        _tooltipText.Inlines.Add(new Run($"\n{series.Name}: —") { Foreground = DefaultBrush });
                 }
             }
             else
             {
-                _tooltipText.Inlines.Add(new Run($"\n{lane.Label}: —") { Foreground = defaultBrush });
+                _tooltipText.Inlines.Add(new Run($"\n{lane.Label}: —") { Foreground = DefaultBrush });
             }
 
             lane.Chart.Refresh();
@@ -315,12 +324,19 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         _tooltip.PlacementTarget = sourceLane.Chart;
         _tooltip.HorizontalOffset = pos.X + 15;
         _tooltip.VerticalOffset = pos.Y + 15;
-        /* Toggle if already open so WPF re-evaluates the placement target.
-           Without this, a popup that was IsOpen = true when its TabItem was
-           unloaded stays "open" with a stale anchor and never appears on
-           return — the assignment below is a no-op. */
-        if (_tooltip.IsOpen) _tooltip.IsOpen = false;
-        _tooltip.IsOpen = true;
+        /* Updating the offsets above moves an already-open popup, so only toggle IsOpen when a
+           re-anchor is actually needed (a tab visibility/load transition wedged it with a stale
+           anchor). Toggling every move tore down and recreated the popup's native window each frame. */
+        if (_needsReanchor)
+        {
+            if (_tooltip.IsOpen) _tooltip.IsOpen = false;
+            _tooltip.IsOpen = true;
+            _needsReanchor = false;
+        }
+        else if (!_tooltip.IsOpen)
+        {
+            _tooltip.IsOpen = true;
+        }
     }
 
     private static double? FindNearestValue(DataSeries series, double targetX)
@@ -358,9 +374,19 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         return val;
     }
 
-    private static readonly SolidColorBrush RedBrush = new(Color.FromRgb(0xFF, 0x52, 0x52));
-    private static readonly SolidColorBrush GreenBrush = new(Color.FromRgb(0x69, 0xF0, 0x69));
-    private static readonly SolidColorBrush DimBrush = new(Color.FromRgb(0x90, 0x96, 0xA0));
+    private static readonly SolidColorBrush RedBrush = Frozen(0xFF, 0x52, 0x52);
+    private static readonly SolidColorBrush GreenBrush = Frozen(0x69, 0xF0, 0x69);
+    private static readonly SolidColorBrush DimBrush = Frozen(0x90, 0x96, 0xA0);
+    /* Reused on every mouse-move; cached + frozen so each move doesn't allocate a brush and they
+       carry no dispatcher-affinity / change-notification overhead. */
+    private static readonly SolidColorBrush DefaultBrush = Frozen(0xE0, 0xE0, 0xE0);
+
+    private static SolidColorBrush Frozen(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
 
     private record struct BaselineIndicator(string Symbol, SolidColorBrush Brush);
 
@@ -393,11 +419,16 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
     private void OnMouseLeave()
     {
         _tooltip.IsOpen = false;
+        _lastPixelX = double.NaN;
         foreach (var lane in _lanes)
         {
-            if (lane.VLine != null)
+            /* Only refresh lanes whose VLine was actually showing — crossing the stacked lanes
+               fires MouseLeave per boundary, so refreshing already-hidden lanes is wasted work. */
+            if (lane.VLine != null && lane.VLine.IsVisible)
+            {
                 lane.VLine.IsVisible = false;
-            lane.Chart.Refresh();
+                lane.Chart.Refresh();
+            }
         }
     }
 
