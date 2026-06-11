@@ -58,6 +58,7 @@ public class FindingStore
                 AnalysisTime = analysisTime,
                 ServerId = context.ServerId,
                 ServerName = context.ServerName,
+                DatabaseName = story.DatabaseName,
                 TimeRangeStart = context.TimeRangeStart,
                 TimeRangeEnd = context.TimeRangeEnd,
                 Severity = story.Severity,
