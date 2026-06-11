@@ -33,24 +33,18 @@ public partial class App : Application
     [DllImport("shell32.dll", SetLastError = true)]
     private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsIconic(IntPtr hWnd);
-
-    private const int SW_RESTORE = 9;
-
     private const string MutexName = "PerformanceMonitorLite_SingleInstance";
     private Mutex? _singleInstanceMutex;
     private bool _ownsMutex;
+
+    /* Single-instance "surface the window" channel (#769, #1050). A second launch signals this named
+       event and exits; the owning instance restores its window through WPF's own Show() path
+       (MainWindow.RestoreFromTray). The old approach poked the HWND with raw Win32 ShowWindow, which
+       leaves a tray-hidden (WPF Visibility.Hidden) window visible but blank — the root cause of the
+       "blank window after relaunch" reports. */
+    private const string ShowWindowEventName = "PerformanceMonitorLite_ShowWindow";
+    private SingleInstanceSignal? _instanceSignal;
+    private MainWindow? _mainWindow;
 
     /// <summary>
     /// Gets the application data directory where config and data files are stored.
@@ -261,17 +255,20 @@ public partial class App : Application
 
         if (!_ownsMutex)
         {
-            /* Bring the existing instance's window to the foreground instead of showing an error (#769) */
-            var hWnd = FindWindow(null, "Performance Monitor Lite");
-            if (hWnd != IntPtr.Zero)
-            {
-                if (IsIconic(hWnd))
-                    ShowWindow(hWnd, SW_RESTORE);
-                SetForegroundWindow(hWnd);
-            }
+            /* Ask the running instance to surface its window, then exit (#769). We signal a named
+               event rather than poking its HWND with Win32 ShowWindow: the owning instance restores
+               through WPF's own Show() path, which is the only thing that un-blanks a tray-hidden
+               window (#1050). Best-effort — if the first instance is still mid-startup the channel
+               may not exist yet, but it's already coming up visible anyway. */
+            SingleInstanceSignal.TrySignal(ShowWindowEventName);
             Shutdown();
             return;
         }
+
+        /* Own the "surface me" channel before anything slow runs, so a fast second launch finds it.
+           The callback null-checks _mainWindow, so a signal that lands before the window exists is a
+           harmless no-op (the window is about to show regardless). */
+        _instanceSignal = new SingleInstanceSignal(ShowWindowEventName, OnSurfaceWindowRequested);
 
         base.OnStartup(e);
 
@@ -325,13 +322,25 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         // Create and show main window (StartupUri removed for Velopack custom Main)
-        var mainWindow = new MainWindow();
-        mainWindow.Show();
+        _mainWindow = new MainWindow();
+        _mainWindow.Show();
+    }
+
+    /// <summary>
+    /// Invoked on <see cref="SingleInstanceSignal"/>'s background thread when a second launch asks us
+    /// to surface the window. Marshals to the UI thread and restores via WPF's Show() path (#1050).
+    /// </summary>
+    private void OnSurfaceWindowRequested()
+    {
+        Dispatcher.BeginInvoke(new Action(() => _mainWindow?.RestoreFromTray()));
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         AppLogger.Info("App", "Shutting down");
+
+        _instanceSignal?.Dispose();
+
         AppLogger.Shutdown();
 
         if (_ownsMutex)
