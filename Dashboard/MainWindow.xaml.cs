@@ -102,6 +102,13 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, long> _previousDeadlockCounts = new();
+        /* Time of the last NEW deadlock per server, used to de-flap the "Deadlocks Cleared"
+           notification (#1091): deadlock detection is edge-triggered off a delta, so the check
+           right after a deadlock has a zero delta and would otherwise immediately fire "Cleared".
+           We instead keep the alert active until a deadlock-quiet window has elapsed, matching
+           Lite's "no deadlocks in the last hour" semantics. */
+        private readonly ConcurrentDictionary<string, DateTime> _lastDeadlockActivity = new();
+        private static readonly TimeSpan DeadlockQuietWindow = TimeSpan.FromHours(1);
 
         private const double ExpandedWidth = 250;
         private const double CollapsedWidth = 52;
@@ -1567,6 +1574,7 @@ namespace PerformanceMonitorDashboard
             if (deadlocksExceeded)
             {
                 _activeDeadlockAlert[serverId] = true;
+                _lastDeadlockActivity[serverId] = now;
                 if (!_lastDeadlockAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
                 {
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Deadlocks Detected" };
@@ -1605,12 +1613,22 @@ namespace PerformanceMonitorDashboard
                     }
                 }
             }
-            else if (_activeDeadlockAlert.TryRemove(serverId, out var wasDeadlock) && wasDeadlock)
+            else
             {
-                _notificationService?.ShowNotification("Deadlocks Cleared",
-                    $"{serverName}: No deadlocks since last check");
-                _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
-                    "0", prefs.DeadlockThreshold.ToString(), true, "tray");
+                /* Don't flap: deadlock detection is edge-triggered, so the check right after a
+                   deadlock sees a zero delta. Only clear once the deadlock-quiet window has
+                   elapsed since the last new deadlock, matching Lite's window semantics (#1091). */
+                bool wasDeadlockActive = _activeDeadlockAlert.TryGetValue(serverId, out var wasDeadlock) && wasDeadlock;
+                DateTime? lastDeadlockActivity = _lastDeadlockActivity.TryGetValue(serverId, out var lda) ? lda : null;
+                if (DeadlockAlertClearPolicy.ShouldClear(wasDeadlockActive, lastDeadlockActivity, now, DeadlockQuietWindow))
+                {
+                    _activeDeadlockAlert.TryRemove(serverId, out _);
+                    _lastDeadlockActivity.TryRemove(serverId, out _);
+                    _notificationService?.ShowNotification("Deadlocks Cleared",
+                        $"{serverName}: No deadlocks in the last hour");
+                    _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
+                        "0", prefs.DeadlockThreshold.ToString(), true, "tray");
+                }
             }
 
             /* Capture Down alerts — the blocking/deadlock XE session is missing and the
