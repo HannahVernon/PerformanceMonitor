@@ -555,7 +555,7 @@ public partial class MainWindow : Window
                 try
                 {
                     var serverId = RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(server));
-                    var summary = await _dataService.GetServerSummaryAsync(serverId, server.DisplayNameWithIntent);
+                    var summary = await Task.Run(() => _dataService.GetServerSummaryAsync(serverId, server.DisplayNameWithIntent));
                     if (summary != null)
                     {
                         summary.ServerName = server.ServerName;
@@ -705,7 +705,7 @@ public partial class MainWindow : Window
             StatusText.Text = $"Collecting data from {server.DisplayNameWithIntent}...";
             try
             {
-                await _collectorService.RunAllCollectorsForServerAsync(server);
+                await Task.Run(() => _collectorService.RunAllCollectorsForServerAsync(server));
                 StatusText.Text = $"Connected to {server.DisplayNameWithIntent} - Data loaded";
                 serverTab.RefreshData();
                 UpdateCollectorHealth();
