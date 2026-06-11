@@ -141,6 +141,10 @@ public class ArchiveService
                    views use glob (*_table.parquet) to pick up all files. */
                 var parquetPath = Path.Combine(_archivePath, $"{timestamp}_{table}.parquet")
                     .Replace("\\", "/");
+                /* Export to a .tmp first (excluded from the *_table.parquet glob), then promote.
+                   A mid-COPY failure (OOM/disk-full/process kill) must not leave a truncated
+                   parquet that matches the glob and breaks the archive view for the whole table. */
+                var tempParquetPath = parquetPath + ".tmp";
 
                 long rowCount;
 
@@ -156,23 +160,42 @@ public class ArchiveService
                         continue;
                     }
 
-                    await ExportToParquet(readConnection, table, timeColumn, cutoffDate, parquetPath);
+                    await ExportToParquet(readConnection, table, timeColumn, cutoffDate, tempParquetPath);
                 }
+
+                /* Promote the temp only after the COPY has fully succeeded. */
+                if (File.Exists(parquetPath))
+                {
+                    File.Delete(parquetPath);
+                }
+                File.Move(tempParquetPath, parquetPath);
 
                 /* Delete the archived rows under the write lock. The DELETE
                    modifies table data and the next CHECKPOINT reorganizes the
                    file — readers must not be mid-query when that happens or
                    they get "Reached the end of the file" errors — but the
                    DELETE itself is fast, so the UI stall is brief. */
-                using (_duckDb.AcquireWriteLock())
+                try
                 {
-                    using var writeConnection = _duckDb.CreateConnection();
-                    await writeConnection.OpenAsync();
+                    using (_duckDb.AcquireWriteLock())
+                    {
+                        using var writeConnection = _duckDb.CreateConnection();
+                        await writeConnection.OpenAsync();
 
-                    using var deleteCmd = writeConnection.CreateCommand();
-                    deleteCmd.CommandText = $"DELETE FROM {table} WHERE {timeColumn} < $1";
-                    deleteCmd.Parameters.Add(new DuckDBParameter { Value = cutoffDate });
-                    await deleteCmd.ExecuteNonQueryAsync();
+                        using var deleteCmd = writeConnection.CreateCommand();
+                        deleteCmd.CommandText = $"DELETE FROM {table} WHERE {timeColumn} < $1";
+                        deleteCmd.Parameters.Add(new DuckDBParameter { Value = cutoffDate });
+                        await deleteCmd.ExecuteNonQueryAsync();
+                    }
+                }
+                catch
+                {
+                    /* The rows are still in the table (DELETE failed), so they aren't lost —
+                       discard the archive file we just wrote so the same rows aren't counted in
+                       both the table and the parquet (double-counted by v_* views and re-exported
+                       next cycle). */
+                    try { File.Delete(parquetPath); } catch { /* best effort */ }
+                    throw;
                 }
 
                 _logger?.LogInformation("Archived {Count} rows from {Table} to {Path}", rowCount, table, parquetPath);
@@ -429,15 +452,13 @@ COPY (
                 continue;
             }
 
-            /* If there's exactly one file and it's already in monthly format, skip.
-               This regex matches both YYYYMM_table.parquet and YYYYMM_table_ptNNN.parquet. */
-            if (files.Count == 1)
+            /* If every file in the group is already in final monthly/part format
+               (YYYYMM_table or YYYYMM_table_ptNNN), there are no new per-cycle files to fold in,
+               so skip. Otherwise a month that legitimately split into N part files (input over
+               the per-batch budget) gets re-read and re-written on every archival cycle. */
+            if (files.All(f => Regex.IsMatch(Path.GetFileNameWithoutExtension(f), @"^\d{6}_.+?(_pt\d{3})?$")))
             {
-                var name = Path.GetFileNameWithoutExtension(files[0]);
-                if (Regex.IsMatch(name, @"^\d{6}_"))
-                {
-                    continue;
-                }
+                continue;
             }
 
             /* Resolve month for orphan files — use current month */
@@ -486,11 +507,34 @@ COPY (
                     ParquetCompaction.MergeBatchToFile(table, batches[i], batchOutputs[i].TempPath, spillDirSql);
                 }
 
-                /* All batches succeeded — delete originals, promote temps. */
+                /* All batches succeeded — promote temps to their final names FIRST, then delete
+                   the originals. Deleting first risked PERMANENT data loss: the temps hold the
+                   only merged copy of the just-deleted originals, and if a promote then failed
+                   (e.g. File.Delete(finalPath) throws because a UI reader has the monthly file
+                   open mid read_parquet) the catch below deletes those temps. Promoting first
+                   keeps the originals as a fallback until the new files are safely in place. */
+                var finalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (tempPath, finalPath) in batchOutputs)
+                {
+                    if (File.Exists(finalPath))
+                    {
+                        File.Delete(finalPath);
+                    }
+                    File.Move(tempPath, finalPath);
+                    finalPaths.Add(finalPath);
+                }
+
                 var removed = 0;
                 foreach (var f in files)
                 {
-                    var fullPath = Path.Combine(_archivePath, f);
+                    var fullPath = Path.Combine(_archivePath, f).Replace("\\", "/");
+                    /* A source file can share the name of a promoted output when the monthly file
+                       is itself re-merged; that path now holds the freshly merged data — never
+                       delete it. */
+                    if (finalPaths.Contains(fullPath))
+                    {
+                        continue;
+                    }
                     try
                     {
                         File.Delete(fullPath);
@@ -500,15 +544,6 @@ COPY (
                     {
                         _logger?.LogWarning("Could not delete {File} during compaction: {Message}", f, ex.Message);
                     }
-                }
-
-                foreach (var (tempPath, finalPath) in batchOutputs)
-                {
-                    if (File.Exists(finalPath))
-                    {
-                        File.Delete(finalPath);
-                    }
-                    File.Move(tempPath, finalPath);
                 }
 
                 totalMerged++;
