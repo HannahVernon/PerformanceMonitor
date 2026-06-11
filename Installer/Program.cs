@@ -533,8 +533,22 @@ namespace PerformanceMonitorInstaller
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Warning: Could not complete cleanup: {ex.Message}");
-                    Console.WriteLine("Continuing with installation...");
+                    Console.WriteLine();
+                    Console.WriteLine("================================================================================");
+                    WriteError($"Clean install failed: {ex.Message}");
+                    Console.WriteLine("The database was NOT dropped/reset, so continuing would install over an");
+                    Console.WriteLine("inconsistent database with neither a clean drop nor upgrade scripts. Aborting.");
+                    Console.WriteLine("Fix the error above and re-run the installer.");
+                    Console.WriteLine("================================================================================");
+
+                    string errorLogPath = WriteErrorLog(ex, serverName!, infoVersion);
+                    Console.WriteLine($"Error log written to: {errorLogPath}");
+
+                    if (!automatedMode)
+                    {
+                        WaitForExit();
+                    }
+                    return (int)InstallationResultCode.CleanInstallFailed;
                 }
             }
             else
@@ -545,7 +559,7 @@ namespace PerformanceMonitorInstaller
                 string? currentVersion = null;
                 try
                 {
-                    currentVersion = await InstallationService.GetInstalledVersionAsync(connectionString).ConfigureAwait(false);
+                    currentVersion = await InstallationService.GetInstalledVersionAsync(connectionString, throwOnError: true).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {

@@ -830,6 +830,7 @@ END;";
     public static async Task<string?> GetInstalledVersionAsync(
         string connectionString,
         IProgress<InstallationProgress>? progress = null,
+        bool throwOnError = false,
         CancellationToken cancellationToken = default)
     {
         LogDebug(progress, "GetInstalledVersionAsync: checking for existing installation");
@@ -890,11 +891,17 @@ END;";
         catch (SqlException ex)
         {
             LogDebug(progress, $"GetInstalledVersionAsync: SqlException — {ex.Number}: {ex.Message}");
+            /* The installer passes throwOnError=true so a transient/permission error can't be
+               mistaken for "database absent" and silently trigger a fresh install over an
+               existing database (no upgrades, then logged as SUCCESS — the #538 hazard). Soft
+               callers (Dashboard version column, adversarial tests) keep the null fallback. */
+            if (throwOnError) throw;
             return null;
         }
         catch (Exception ex)
         {
             LogDebug(progress, $"GetInstalledVersionAsync: {ex.GetType().Name} — {ex.Message}");
+            if (throwOnError) throw;
             return null;
         }
     }
@@ -1047,6 +1054,14 @@ END;";
 
             totalSuccessCount += success;
             totalFailureCount += failure;
+
+            /* Stop at the first failed hop. Later hops assume this one's schema changes applied;
+               running them against a partially-upgraded database compounds the damage. The caller
+               aborts the whole install when totalFailureCount > 0. */
+            if (failure > 0)
+            {
+                break;
+            }
         }
 
         return (totalSuccessCount, totalFailureCount, upgrades.Count);
