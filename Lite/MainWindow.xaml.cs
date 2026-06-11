@@ -123,6 +123,22 @@ public partial class MainWindow : Window
         ServerTabControl.SelectionChanged += ServerTabControl_SelectionChanged;
     }
 
+    /// <summary>
+    /// The one true window-restore path. Minimize-to-tray calls <see cref="Window.Hide"/>, which
+    /// sets WPF <see cref="UIElement.Visibility"/> = Hidden. Only <see cref="Window.Show"/> reconciles
+    /// that state and re-runs layout/render — a raw Win32 ShowWindow leaves the HWND visible but the
+    /// WPF tree un-arranged, i.e. a blank window (#1050). Every restore entry point — tray double-click,
+    /// the "Show Window" menu, the sleep/unlock resume guard, and the second-instance signal — routes
+    /// here so the window can never be left visible-but-blank. Must be called on the UI thread.
+    /// </summary>
+    public void RestoreFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         try
@@ -158,12 +174,12 @@ public partial class MainWindow : Window
             _ = _backgroundService.StartAsync(_backgroundCts.Token);
 
             // Initialize system tray
-            _trayService = new SystemTrayService(this, _backgroundService);
+            _trayService = new SystemTrayService(this, RestoreFromTray, _backgroundService);
             _trayService.Initialize();
 
             /* #1050: restore the window from the tray on resume/unlock if a sleep- or lock-driven
                minimize hid it. ??= so a repeated Loaded can't double-subscribe (static SystemEvents). */
-            _resumeGuard ??= new WindowResumeGuard(this, _trayService.ShowMainWindow);
+            _resumeGuard ??= new WindowResumeGuard(this, RestoreFromTray);
 
             // Initialize data service for overview
             _dataService = new LocalDataService(_databaseInitializer);
@@ -174,6 +190,7 @@ public partial class MainWindow : Window
             // Initialize alerts history tab
             AlertsHistoryContent.Initialize(_dataService);
             AlertsHistoryContent.MuteRuleService = _muteRuleService;
+            AlertsHistoryContent.AlertsDismissed += OnAlertHistoryDismissed;
 
             // Initialize FinOps tab
             FinOpsContent.Initialize(_dataService, _serverManager);
@@ -253,8 +270,21 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool _closingCleanupStarted;
+    private bool _closingCleanupDone;
+
     private async void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        /* async void Closing handler: at the first await WPF would otherwise proceed to close the
+           window — and since this is the last window, begin app shutdown — so the cleanup
+           continuations below could be abandoned mid-flight (the graceful collector stop was
+           effectively dead on the common close path). Cancel this close, run the cleanup to
+           completion, then Close() again; the second pass returns early and closes for real. */
+        if (_closingCleanupDone) return;
+        e.Cancel = true;
+        if (_closingCleanupStarted) return;
+        _closingCleanupStarted = true;
+
         // Dispose system tray
         _resumeGuard?.Dispose();
         _trayService?.Dispose();
@@ -287,6 +317,9 @@ public partial class MainWindow : Window
         }
 
         _statusTimer.Stop();
+
+        _closingCleanupDone = true;
+        Close();
     }
 
     private void ServerTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -695,6 +728,7 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
+            Cursor = Cursors.Hand,
             Child = new TextBlock
             {
                 FontSize = 10,
@@ -750,6 +784,15 @@ public partial class MainWindow : Window
         };
 
         badge.ContextMenu = contextMenu;
+
+        /* Left-click the badge to acknowledge/clear it — the right-click menu was
+           undiscoverable, so a plain click is the obvious affordance (issue #1092). */
+        badge.MouseLeftButtonUp += (s, e) =>
+        {
+            AcknowledgeServerBadge(serverId);
+            e.Handled = true;
+        };
+
         panel.Children.Add(badge);
 
         var closeButton = new Button
@@ -789,7 +832,7 @@ public partial class MainWindow : Window
                     if (border.Child is TextBlock text)
                     {
                         text.Text = totalAlerts > 99 ? "99+" : totalAlerts.ToString();
-                        text.ToolTip = $"Blocking: {blockingCount}, Deadlocks: {deadlockCount}\nRight-click to dismiss";
+                        text.ToolTip = $"Blocking: {blockingCount}, Deadlocks: {deadlockCount}\nClick to dismiss · Right-click for options";
                     }
                 }
                 else
@@ -805,19 +848,54 @@ public partial class MainWindow : Window
     {
         if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
         {
-            _alertStateService.AcknowledgeAlert(serverId);
+            AcknowledgeServerBadge(serverId);
+        }
+    }
 
-            /* Find and hide the badge for this server */
-            if (_openServerTabs.TryGetValue(serverId, out var tab) && tab.Header is StackPanel panel)
+    /// <summary>
+    /// Acknowledges a server's alerts and immediately hides its tab badge.
+    /// Shared by the badge left-click, the right-click "Acknowledge" menu, and
+    /// Alert History "Dismiss All" so every path clears the badge consistently (issue #1092).
+    /// </summary>
+    private void AcknowledgeServerBadge(string serverId)
+    {
+        _alertStateService.AcknowledgeAlert(serverId);
+        HideServerBadge(serverId);
+    }
+
+    /// <summary>
+    /// Collapses the alert badge on a server's tab header, if one is present.
+    /// </summary>
+    private void HideServerBadge(string serverId)
+    {
+        if (_openServerTabs.TryGetValue(serverId, out var tab) && tab.Header is StackPanel panel)
+        {
+            foreach (var child in panel.Children)
             {
-                foreach (var child in panel.Children)
+                if (child is System.Windows.Controls.Border border && border.Tag as string == "AlertBadge")
                 {
-                    if (child is System.Windows.Controls.Border border && border.Tag as string == "AlertBadge")
-                    {
-                        border.Visibility = Visibility.Collapsed;
-                        break;
-                    }
+                    border.Visibility = Visibility.Collapsed;
+                    break;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// When alerts are cleared from Alert History via "Dismiss All", acknowledge the matching
+    /// server tab badge(s) so the at-a-glance indicator stays consistent with the cleared list
+    /// (issue #1092). The argument is the DB server_id filter that was in effect; null means the
+    /// list spanned all servers, so every open tab is acknowledged. The badge tracks blocking/
+    /// deadlock counts (a separate system from the notification alerts the list shows), so this
+    /// uses the same acknowledge-until-new-event semantics as the badge's own context menu.
+    /// </summary>
+    private void OnAlertHistoryDismissed(int? dbServerId)
+    {
+        foreach (var kvp in _openServerTabs)
+        {
+            if (kvp.Value.Content is ServerTab st && (dbServerId == null || st.ServerId == dbServerId.Value))
+            {
+                AcknowledgeServerBadge(kvp.Key);
             }
         }
     }
@@ -1437,10 +1515,16 @@ public partial class MainWindow : Window
         else if (_activeCpuAlert.TryGetValue(key, out var wasCpu) && wasCpu)
         {
             _activeCpuAlert[key] = false;
-            _trayService.ShowNotification(
-                "CPU Resolved",
-                $"{summary.DisplayName}: {cpuMetricLabel} back to {alertCpuValue:F0}%",
-                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            /* Only announce "resolved" if the user is still watching this alert and the server
+               isn't silenced. Disabling the alert flips cpuExceeded false (it includes the enabled
+               flag) and silencing sets suppressPopups — neither means CPU actually recovered. */
+            if (!suppressPopups && App.AlertCpuEnabled)
+            {
+                _trayService.ShowNotification(
+                    "CPU Resolved",
+                    $"{summary.DisplayName}: {cpuMetricLabel} back to {alertCpuValue:F0}%",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            }
         }
 
         /* Blocking alerts */
@@ -1507,10 +1591,13 @@ public partial class MainWindow : Window
         }
         else if (!blockingDecision.Active && wasBlockingActive)
         {
-            _trayService.ShowNotification(
-                "Blocking Cleared",
-                $"{summary.DisplayName}: No active blocking",
-                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            if (!suppressPopups && App.AlertBlockingEnabled)
+            {
+                _trayService.ShowNotification(
+                    "Blocking Cleared",
+                    $"{summary.DisplayName}: No active blocking",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            }
         }
 
         /* Deadlock alerts */
@@ -1575,10 +1662,13 @@ public partial class MainWindow : Window
         }
         else if (!deadlockDecision.Active && wasDeadlockActive)
         {
-            _trayService.ShowNotification(
-                "Deadlocks Cleared",
-                $"{summary.DisplayName}: No deadlocks in the last hour",
-                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            if (!suppressPopups && App.AlertDeadlockEnabled)
+            {
+                _trayService.ShowNotification(
+                    "Deadlocks Cleared",
+                    $"{summary.DisplayName}: No deadlocks in the last hour",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            }
         }
 
         /* Poison wait alerts */
@@ -1635,10 +1725,13 @@ public partial class MainWindow : Window
                 else if (_activePoisonWaitAlert.TryGetValue(key, out var wasPoisonWait) && wasPoisonWait)
                 {
                     _activePoisonWaitAlert[key] = false;
-                    _trayService.ShowNotification(
-                        "Poison Waits Cleared",
-                        $"{summary.DisplayName}: Poison wait avg below threshold",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Poison Waits Cleared",
+                            $"{summary.DisplayName}: Poison wait avg below threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1713,10 +1806,13 @@ public partial class MainWindow : Window
                 else if (_activeLongRunningQueryAlert.TryGetValue(key, out var wasLongRunning) && wasLongRunning)
                 {
                     _activeLongRunningQueryAlert[key] = false;
-                    _trayService.ShowNotification(
-                        "Long-Running Queries Cleared",
-                        $"{summary.DisplayName}: No queries over threshold",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Long-Running Queries Cleared",
+                            $"{summary.DisplayName}: No queries over threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1771,11 +1867,14 @@ public partial class MainWindow : Window
                 else if (_activeTempDbSpaceAlert.TryGetValue(key, out var wasTempDb) && wasTempDb)
                 {
                     _activeTempDbSpaceAlert[key] = false;
-                    var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
-                    _trayService.ShowNotification(
-                        "TempDB Space Resolved",
-                        $"{summary.DisplayName}: TempDB usage back to {pct}",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
+                        _trayService.ShowNotification(
+                            "TempDB Space Resolved",
+                            $"{summary.DisplayName}: TempDB usage back to {pct}",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1790,6 +1889,17 @@ public partial class MainWindow : Window
             try
             {
                 var anomalousJobs = await _dataService.GetAnomalousJobsAsync(summary.ServerId, App.AlertLongRunningJobMultiplier);
+
+                /* _lastLongRunningJobAlert is keyed per job *run* ({server}:{jobId}:{startTime}),
+                   so unlike the per-server cooldown dicts it grows without bound. Drop entries
+                   that have aged past the cooldown each pass. */
+                foreach (var staleJobKey in _lastLongRunningJobAlert
+                             .Where(kv => now - kv.Value >= alertCooldown)
+                             .Select(kv => kv.Key)
+                             .ToList())
+                {
+                    _lastLongRunningJobAlert.Remove(staleJobKey);
+                }
 
                 if (anomalousJobs.Count > 0)
                 {
@@ -1835,10 +1945,13 @@ public partial class MainWindow : Window
                 else if (_activeLongRunningJobAlert.TryGetValue(key, out var wasJob) && wasJob)
                 {
                     _activeLongRunningJobAlert[key] = false;
-                    _trayService.ShowNotification(
-                        "Long-Running Jobs Cleared",
-                        $"{summary.DisplayName}: No jobs exceeding threshold",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Long-Running Jobs Cleared",
+                            $"{summary.DisplayName}: No jobs exceeding threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)

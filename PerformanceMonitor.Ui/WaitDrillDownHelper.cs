@@ -116,7 +116,11 @@ public static class WaitDrillDownHelper
                 continue;
 
             var head = FindHeadBlocker(waiter, sessionsAtTime);
-            if (head == null)
+            // head == waiter means the waiter is its own head: it is not blocked by another
+            // session (BlockingSessionId <= 0, blocked-by-self, or the blocker is absent from
+            // this snapshot). Recording it would render "Head SPID X blocking 1 session(s)"
+            // where that one session is X itself.
+            if (head == null || head.SessionId == waiter.SessionId)
                 continue;
 
             var key = (waiter.CollectionTime, head.SessionId);

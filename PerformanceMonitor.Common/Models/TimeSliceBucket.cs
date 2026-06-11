@@ -26,6 +26,7 @@ public class TimeSliceBucket
     public double TotalElapsed { get; set; }
     public double TotalReads { get; set; }
     public double TotalLogicalReads { get; set; }
+    public double TotalPhysicalReads { get; set; }
     public double TotalWrites { get; set; }
 
     /// <summary>The display value used by the slicer chart. Set by the caller based on sort column.</summary>

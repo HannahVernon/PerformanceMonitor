@@ -700,12 +700,23 @@ namespace PerformanceMonitorDashboard
             {
                 Style = (Style)FindResource("AlertBadge"),
                 Visibility = Visibility.Collapsed,
+                Cursor = Cursors.Hand,
+                ToolTip = "Click to dismiss · Right-click for options",
                 Child = new TextBlock
                 {
                     Text = "!",
                     FontWeight = FontWeights.Bold,
                     Foreground = Brushes.White
                 }
+            };
+
+            /* Left-click the badge to acknowledge/clear it — the right-click menu was
+               undiscoverable, so a plain click is the obvious affordance (issue #1092,
+               matching the Lite app). */
+            badge.MouseLeftButtonUp += (s, e) =>
+            {
+                AcknowledgeServerAlerts(server.Id);
+                e.Handled = true;
             };
 
             headerPanel.Children.Add(headerText);
@@ -1500,7 +1511,13 @@ namespace PerformanceMonitorDashboard
                 return;
             }
 
-            var now = ServerTimeHelper.ServerNow;
+            /* Cooldowns measure elapsed wall-clock time, so use a clock that does not shift when
+               the user switches server tabs. ServerTimeHelper.ServerNow is derived from a process-wide
+               UTC offset that is reassigned on every tab change; using it here makes (now - lastAlert)
+               jump by the timezone delta whenever the selected tab changes between alert ticks, which
+               either suppresses alerts (offset went back) or bypasses the cooldown (offset went
+               forward) for every server. UTC is offset-independent. Display strings keep server time. */
+            var now = DateTime.UtcNow;
 
             /* Blocking alerts */
             bool blockingExceeded = prefs.NotifyOnBlocking
@@ -2260,30 +2277,40 @@ namespace PerformanceMonitorDashboard
         {
             if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
             {
-                // Look up cached health status for baseline snapshot
-                _latestHealthStatus.TryGetValue(serverId, out var status);
-                _alertStateService.AcknowledgeAllAlerts(serverId, status);
+                AcknowledgeServerAlerts(serverId);
+            }
+        }
 
-                // Hide badge immediately
-                if (_tabBadges.TryGetValue(serverId, out var badge))
-                {
-                    badge.Visibility = Visibility.Collapsed;
-                }
+        /// <summary>
+        /// Acknowledges all alerts for a server and clears its tab badge (and sub-tab badges).
+        /// Shared by the tab badge left-click and the right-click "Acknowledge Alerts" menu so both
+        /// paths behave identically (issue #1092 — parity with the Lite app's clearable badge).
+        /// </summary>
+        private void AcknowledgeServerAlerts(string serverId)
+        {
+            // Look up cached health status for baseline snapshot
+            _latestHealthStatus.TryGetValue(serverId, out var status);
+            _alertStateService.AcknowledgeAllAlerts(serverId, status);
 
-                // Also update sub-tab badges in the ServerTab if it's open
-                if (_openTabs.TryGetValue(serverId, out var tabItem) && tabItem.Content is ServerTab serverTab)
-                {
-                    serverTab.UpdateBadges(null, _alertStateService);
-                }
+            // Hide badge immediately
+            if (_tabBadges.TryGetValue(serverId, out var badge))
+            {
+                badge.Visibility = Visibility.Collapsed;
+            }
 
-                // Hide alerts in the email alert log so the sidebar badge updates
-                var server = _serverManager.GetAllServers().FirstOrDefault(s => s.Id == serverId);
-                if (server != null)
-                {
-                    _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);
-                    UpdateAlertBadge();
-                    _alertsHistoryContent?.RefreshAlerts();
-                }
+            // Also update sub-tab badges in the ServerTab if it's open
+            if (_openTabs.TryGetValue(serverId, out var tabItem) && tabItem.Content is ServerTab serverTab)
+            {
+                serverTab.UpdateBadges(null, _alertStateService);
+            }
+
+            // Hide alerts in the email alert log so the sidebar badge updates
+            var server = _serverManager.GetAllServers().FirstOrDefault(s => s.Id == serverId);
+            if (server != null)
+            {
+                _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);
+                UpdateAlertBadge();
+                _alertsHistoryContent?.RefreshAlerts();
             }
         }
 

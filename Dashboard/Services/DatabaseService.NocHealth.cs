@@ -541,7 +541,9 @@ namespace PerformanceMonitorDashboard.Services
                     filtered_deadlock_count =
                         COALESCE(SUM(bds.deadlock_count_delta), 0)
                 FROM collect.blocking_deadlock_stats AS bds
-                WHERE bds.collection_time >= DATEADD(MINUTE, -5, SYSUTCDATETIME())
+                /* collection_time is server-local (SYSDATETIME default); match that clock, not UTC,
+                   or the window is hours off and the COALESCE(...,0) silently zeroes deadlock alerts. */
+                WHERE bds.collection_time >= DATEADD(MINUTE, -5, SYSDATETIME())
                 AND   bds.deadlock_count_delta IS NOT NULL
                 {dbFilter}
                 OPTION(MAXDOP 1, RECOMPILE);";

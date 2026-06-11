@@ -25,14 +25,21 @@ public class SystemTrayService : IDisposable
 {
     private TaskbarIcon? _trayIcon;
     private readonly Window _mainWindow;
+    private readonly Action _restoreWindow;
     private readonly CollectionBackgroundService? _backgroundService;
     private bool _disposed;
     private MenuItem? _pauseResumeItem;
     private TextBlock? _tooltipText;
 
-    public SystemTrayService(Window mainWindow, CollectionBackgroundService? backgroundService = null)
+    /// <param name="restoreWindow">
+    /// The window's own WPF restore (e.g. <c>MainWindow.RestoreFromTray</c>). The tray must restore
+    /// through WPF's <see cref="Window.Show"/> path, never a raw Win32 ShowWindow, or a tray-hidden
+    /// window comes back blank (#1050).
+    /// </param>
+    public SystemTrayService(Window mainWindow, Action restoreWindow, CollectionBackgroundService? backgroundService = null)
     {
         _mainWindow = mainWindow;
+        _restoreWindow = restoreWindow ?? throw new ArgumentNullException(nameof(restoreWindow));
         _backgroundService = backgroundService;
         ThemeManager.ThemeChanged += OnThemeChanged;
     }
@@ -89,7 +96,7 @@ public class SystemTrayService : IDisposable
         var contextMenu = new ContextMenu();
 
         var showItem = new MenuItem { Header = "Show Window", Icon = new TextBlock { Text = "📊", Background = Brushes.Transparent } };
-        showItem.Click += (s, e) => ShowMainWindow();
+        showItem.Click += (s, e) => _restoreWindow();
         contextMenu.Items.Add(showItem);
 
         contextMenu.Items.Add(new Separator());
@@ -107,7 +114,7 @@ public class SystemTrayService : IDisposable
         _trayIcon.ContextMenu = contextMenu;
 
         /* Double-click to show window */
-        _trayIcon.TrayMouseDoubleClick += (s, e) => ShowMainWindow();
+        _trayIcon.TrayMouseDoubleClick += (s, e) => _restoreWindow();
 
         /* Handle minimize to tray */
         _mainWindow.StateChanged += MainWindow_StateChanged;
@@ -119,18 +126,6 @@ public class SystemTrayService : IDisposable
         {
             _mainWindow.Hide();
         }
-    }
-
-    /// <summary>
-    /// Restores the main window from the tray. Also used as the #1050 resume-restore callback,
-    /// so it must set ShowInTaskbar = true (the tray-hide path only calls Hide()).
-    /// </summary>
-    internal void ShowMainWindow()
-    {
-        _mainWindow.Show();
-        _mainWindow.ShowInTaskbar = true;
-        _mainWindow.WindowState = WindowState.Normal;
-        _mainWindow.Activate();
     }
 
     private void ToggleCollection()

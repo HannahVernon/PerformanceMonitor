@@ -324,8 +324,11 @@ public partial class ServerTab : UserControl
         Helpers.ContextMenuHelper.SetupChartContextMenu(PerfmonChart, "Perfmon_Counters");
         Helpers.ContextMenuHelper.SetupChartContextMenu(CollectorDurationChart, "Collector_Duration");
 
+        /* Subscribe for the life of the tab. Do NOT unsubscribe on Unloaded — a TabControl fires
+           Unloaded when you switch to another tab, which would permanently detach this handler so
+           the charts stop following theme changes after the first tab switch. Unsubscribed in
+           DisposeChartHelpers (called from MainWindow.CloseServerTab) when the tab is closed. */
         ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
 
         ActiveQueriesSlicer.RangeChanged += OnActiveQueriesSlicerChanged;
         QueryStatsSlicer.RangeChanged += OnQueryStatsSlicerChanged;
@@ -1225,7 +1228,7 @@ public partial class ServerTab : UserControl
                 "TotalReads" => bucket.TotalReads,
                 "AvgReads" => bucket.TotalReads / n,
                 "TotalWrites" => bucket.TotalWrites,
-                "TotalPhysReads" => bucket.TotalLogicalReads,
+                "TotalPhysReads" => bucket.TotalPhysicalReads,
                 _ => bucket.TotalCpu,
             };
         }
@@ -1528,6 +1531,7 @@ public partial class ServerTab : UserControl
 
     public void DisposeChartHelpers()
     {
+        ThemeManager.ThemeChanged -= OnThemeChanged;
         _waitStatsHover?.Dispose();
         _perfmonHover?.Dispose();
         _cpuHover?.Dispose();

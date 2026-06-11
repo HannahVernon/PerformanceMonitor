@@ -362,7 +362,11 @@ public class ServerConnection : INotifyPropertyChanged
         {
             "Mandatory" => SqlConnectionEncryptOption.Mandatory,
             "Strict" => SqlConnectionEncryptOption.Strict,
-            _ => SqlConnectionEncryptOption.Optional
+            "Optional" => SqlConnectionEncryptOption.Optional,
+            // Fail closed: an unknown/blank EncryptMode (legacy or hand-edited servers.json) must
+            // not silently drop to an unencrypted, cert-unvalidated connection. The UI default is
+            // Mandatory and the Dashboard builders also default to Mandatory — match that.
+            _ => SqlConnectionEncryptOption.Mandatory
         };
 
         // The tuple is atomic: every auth field comes from the SAME source (profile or server).

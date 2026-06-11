@@ -29,9 +29,19 @@ internal static class AxesExtensions
         if (axes.Bottom.TickGenerator is ScottPlot.TickGenerators.DateTimeAutomatic gen)
         {
             DateTime? lastDate = null;
+            DateTime? prevTick = null;
             var culture = CultureInfo.CurrentCulture;
             gen.LabelFormatter = dt =>
             {
+                /* ScottPlot re-invokes this formatter from the leftmost tick on every render
+                   pass, but lastDate persists across passes. Without resetting it, the first
+                   tick stops printing its date after the first render — and a single-day window
+                   then shows no date at all. Ticks are generated left-to-right, so a tick value
+                   that does not increase marks the start of a new pass: reset there. */
+                if (prevTick is null || dt <= prevTick.Value)
+                    lastDate = null;
+                prevTick = dt;
+
                 var time = dt.ToString("t", culture);
                 if (lastDate is null || dt.Date != lastDate.Value)
                 {

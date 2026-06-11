@@ -67,8 +67,14 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
             Unit = unit
         };
 
-        chart.MouseMove += (s, e) => OnMouseMove(lane, e);
-        chart.MouseLeave += (s, e) => OnMouseLeave();
+        /* Store the lambdas so Dispose can unsubscribe them — otherwise the chart keeps the
+           manager (and every lane closure) alive after dispose. Matches ChartHoverHelper. */
+        MouseEventHandler moveHandler = (s, e) => OnMouseMove(lane, e);
+        MouseEventHandler leaveHandler = (s, e) => OnMouseLeave();
+        lane.MouseMoveHandler = moveHandler;
+        lane.MouseLeaveHandler = leaveHandler;
+        chart.MouseMove += moveHandler;
+        chart.MouseLeave += leaveHandler;
 
         /* Tab switching can leave the popup wedged: WPF unloads the parent TabItem
            without firing MouseLeave, so IsOpen stays true with a stale anchor.
@@ -400,6 +406,10 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         _tooltip.IsOpen = false;
         foreach (var lane in _lanes)
         {
+            if (lane.MouseMoveHandler != null)
+                lane.Chart.MouseMove -= lane.MouseMoveHandler;
+            if (lane.MouseLeaveHandler != null)
+                lane.Chart.MouseLeave -= lane.MouseLeaveHandler;
             lane.Chart.IsVisibleChanged -= OnLaneVisibilityChanged;
             lane.Chart.Unloaded -= OnLaneUnloaded;
             lane.Chart.Loaded -= OnLaneLoaded;
@@ -424,6 +434,8 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         public string Label { get; set; } = "";
         public string Unit { get; set; } = "";
         public ScottPlot.Plottables.VerticalLine? VLine { get; set; }
+        public MouseEventHandler? MouseMoveHandler { get; set; }
+        public MouseEventHandler? MouseLeaveHandler { get; set; }
         public List<DataSeries> Series { get; set; } = new();
         public double? BaselineUpper { get; set; }
         public double? BaselineLower { get; set; }

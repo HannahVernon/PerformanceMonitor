@@ -680,7 +680,9 @@ namespace PerformanceMonitorDashboard.Services
                             sample_time,
                             sqlserver_cpu_utilization,
                             other_process_cpu_utilization,
-                            total_cpu_utilization
+                            /* total_cpu_utilization is NULL on SQL Server on Linux; fall back to the
+                               SQL-only figure so the value isn't reported as 0 (#1048). */
+                            total_cpu_utilization = ISNULL(total_cpu_utilization, sqlserver_cpu_utilization)
                         FROM collect.cpu_utilization_stats
                         WHERE collection_time >= DATEADD(HOUR, @HoursBack, SYSDATETIME())
                         ORDER BY collection_time ASC;";
@@ -1269,7 +1271,8 @@ namespace PerformanceMonitorDashboard.Services
             event_time = cus.sample_time,
             sql_server_cpu = cus.sqlserver_cpu_utilization,
             other_process_cpu = cus.other_process_cpu_utilization,
-            total_cpu = cus.total_cpu_utilization,
+            /* total_cpu_utilization is NULL on SQL Server on Linux; fall back to SQL-only (#1048). */
+            total_cpu = ISNULL(cus.total_cpu_utilization, cus.sqlserver_cpu_utilization),
             severity =
                 CASE
                     WHEN cus.sqlserver_cpu_utilization >= 90
