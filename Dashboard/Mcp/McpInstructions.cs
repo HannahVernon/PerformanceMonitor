@@ -86,6 +86,13 @@ internal static class McpInstructions
         |------|---------|----------------|
         | `get_tempdb_trend` | TempDB space with pressure analysis and recommendations | `server_name`, `hours_back` |
 
+        ### Storage & Index Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_table_index_sizes` | Largest tables with size, growth (7d/30d/daily), and row counts | `server_name` |
+        | `get_index_usage` | Per-index seeks/scans/lookups/updates with Unused/Write-only/Active classification (drop candidates first) | `server_name` |
+        | `get_object_locking` | Per-index lock/latch waits and lock escalations, top contended objects | `server_name` |
+
         ### Performance Counter Tools
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
