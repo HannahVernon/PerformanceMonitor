@@ -189,7 +189,9 @@ public class InferenceEngine
             LeafFactValue = leafFact?.Severity,
             FactCount = path.Count,
             IsAbsolution = false,
-            RootFactMetadata = rootFact?.Metadata
+            RootFactMetadata = rootFact?.Metadata,
+            // Carry the root fact's database through so findings/recommendation cards can show it.
+            DatabaseName = rootFact?.DatabaseName
         };
     }
 

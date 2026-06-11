@@ -78,6 +78,12 @@ public class AnalysisStory
     /// Ephemeral — copied onto the finding for the notification layer, not persisted.
     /// </summary>
     public Dictionary<string, double>? RootFactMetadata { get; set; }
+
+    /// <summary>
+    /// Database the root fact pertains to, if any (e.g. BAD_ACTOR_* facts). Copied onto the
+    /// finding so recommendation cards can show a database. Null for server-scope stories.
+    /// </summary>
+    public string? DatabaseName { get; set; }
 }
 
 /// <summary>
