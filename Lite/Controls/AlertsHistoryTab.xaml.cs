@@ -38,6 +38,13 @@ public partial class AlertsHistoryTab : UserControl
 
     public MuteRuleService? MuteRuleService { get; set; }
 
+    /// <summary>
+    /// Raised after "Dismiss All" clears the visible alerts, so the host can acknowledge the
+    /// matching server tab badge(s). The argument is the server_id filter in effect at the time
+    /// (null = all servers were shown). See issue #1092.
+    /// </summary>
+    public event Action<int?>? AlertsDismissed;
+
     public AlertsHistoryTab()
     {
         InitializeComponent();
@@ -369,6 +376,9 @@ public partial class AlertsHistoryTab : UserControl
                 AppLogger.Warn("AlertsHistory", $"Dismiss all: only {affected} of {liveCount} live alert(s) were updated");
             }
             await LoadAlertsAsync();
+
+            /* Clear the matching server tab badge(s) so the indicator matches the cleared list (issue #1092). */
+            AlertsDismissed?.Invoke(serverId);
         }
         catch (TimeoutException)
         {

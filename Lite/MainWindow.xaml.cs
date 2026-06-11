@@ -166,6 +166,7 @@ public partial class MainWindow : Window
             // Initialize alerts history tab
             AlertsHistoryContent.Initialize(_dataService);
             AlertsHistoryContent.MuteRuleService = _muteRuleService;
+            AlertsHistoryContent.AlertsDismissed += OnAlertHistoryDismissed;
 
             // Initialize FinOps tab
             FinOpsContent.Initialize(_dataService, _serverManager);
@@ -687,6 +688,7 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
+            Cursor = Cursors.Hand,
             Child = new TextBlock
             {
                 FontSize = 10,
@@ -742,6 +744,15 @@ public partial class MainWindow : Window
         };
 
         badge.ContextMenu = contextMenu;
+
+        /* Left-click the badge to acknowledge/clear it — the right-click menu was
+           undiscoverable, so a plain click is the obvious affordance (issue #1092). */
+        badge.MouseLeftButtonUp += (s, e) =>
+        {
+            AcknowledgeServerBadge(serverId);
+            e.Handled = true;
+        };
+
         panel.Children.Add(badge);
 
         var closeButton = new Button
@@ -781,7 +792,7 @@ public partial class MainWindow : Window
                     if (border.Child is TextBlock text)
                     {
                         text.Text = totalAlerts > 99 ? "99+" : totalAlerts.ToString();
-                        text.ToolTip = $"Blocking: {blockingCount}, Deadlocks: {deadlockCount}\nRight-click to dismiss";
+                        text.ToolTip = $"Blocking: {blockingCount}, Deadlocks: {deadlockCount}\nClick to dismiss · Right-click for options";
                     }
                 }
                 else
@@ -797,19 +808,54 @@ public partial class MainWindow : Window
     {
         if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
         {
-            _alertStateService.AcknowledgeAlert(serverId);
+            AcknowledgeServerBadge(serverId);
+        }
+    }
 
-            /* Find and hide the badge for this server */
-            if (_openServerTabs.TryGetValue(serverId, out var tab) && tab.Header is StackPanel panel)
+    /// <summary>
+    /// Acknowledges a server's alerts and immediately hides its tab badge.
+    /// Shared by the badge left-click, the right-click "Acknowledge" menu, and
+    /// Alert History "Dismiss All" so every path clears the badge consistently (issue #1092).
+    /// </summary>
+    private void AcknowledgeServerBadge(string serverId)
+    {
+        _alertStateService.AcknowledgeAlert(serverId);
+        HideServerBadge(serverId);
+    }
+
+    /// <summary>
+    /// Collapses the alert badge on a server's tab header, if one is present.
+    /// </summary>
+    private void HideServerBadge(string serverId)
+    {
+        if (_openServerTabs.TryGetValue(serverId, out var tab) && tab.Header is StackPanel panel)
+        {
+            foreach (var child in panel.Children)
             {
-                foreach (var child in panel.Children)
+                if (child is System.Windows.Controls.Border border && border.Tag as string == "AlertBadge")
                 {
-                    if (child is System.Windows.Controls.Border border && border.Tag as string == "AlertBadge")
-                    {
-                        border.Visibility = Visibility.Collapsed;
-                        break;
-                    }
+                    border.Visibility = Visibility.Collapsed;
+                    break;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// When alerts are cleared from Alert History via "Dismiss All", acknowledge the matching
+    /// server tab badge(s) so the at-a-glance indicator stays consistent with the cleared list
+    /// (issue #1092). The argument is the DB server_id filter that was in effect; null means the
+    /// list spanned all servers, so every open tab is acknowledged. The badge tracks blocking/
+    /// deadlock counts (a separate system from the notification alerts the list shows), so this
+    /// uses the same acknowledge-until-new-event semantics as the badge's own context menu.
+    /// </summary>
+    private void OnAlertHistoryDismissed(int? dbServerId)
+    {
+        foreach (var kvp in _openServerTabs)
+        {
+            if (kvp.Value.Content is ServerTab st && (dbServerId == null || st.ServerId == dbServerId.Value))
+            {
+                AcknowledgeServerBadge(kvp.Key);
             }
         }
     }
