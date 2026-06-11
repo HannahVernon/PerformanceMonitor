@@ -79,6 +79,7 @@ ORDER BY bucket";
                 TotalReads = reader.IsDBNull(4) ? 0 : ToDouble(reader.GetValue(4)),
                 TotalWrites = reader.IsDBNull(5) ? 0 : ToDouble(reader.GetValue(5)),
                 TotalLogicalReads = reader.IsDBNull(4) ? 0 : ToDouble(reader.GetValue(4)),
+                TotalPhysicalReads = reader.IsDBNull(6) ? 0 : ToDouble(reader.GetValue(6)),
                 Value = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2)), // default: total CPU
             });
         }

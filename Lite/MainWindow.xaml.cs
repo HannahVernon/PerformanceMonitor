@@ -262,8 +262,21 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool _closingCleanupStarted;
+    private bool _closingCleanupDone;
+
     private async void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        /* async void Closing handler: at the first await WPF would otherwise proceed to close the
+           window — and since this is the last window, begin app shutdown — so the cleanup
+           continuations below could be abandoned mid-flight (the graceful collector stop was
+           effectively dead on the common close path). Cancel this close, run the cleanup to
+           completion, then Close() again; the second pass returns early and closes for real. */
+        if (_closingCleanupDone) return;
+        e.Cancel = true;
+        if (_closingCleanupStarted) return;
+        _closingCleanupStarted = true;
+
         // Dispose system tray
         _resumeGuard?.Dispose();
         _trayService?.Dispose();
@@ -296,6 +309,9 @@ public partial class MainWindow : Window
         }
 
         _statusTimer.Stop();
+
+        _closingCleanupDone = true;
+        Close();
     }
 
     private void ServerTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1491,10 +1507,16 @@ public partial class MainWindow : Window
         else if (_activeCpuAlert.TryGetValue(key, out var wasCpu) && wasCpu)
         {
             _activeCpuAlert[key] = false;
-            _trayService.ShowNotification(
-                "CPU Resolved",
-                $"{summary.DisplayName}: {cpuMetricLabel} back to {alertCpuValue:F0}%",
-                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            /* Only announce "resolved" if the user is still watching this alert and the server
+               isn't silenced. Disabling the alert flips cpuExceeded false (it includes the enabled
+               flag) and silencing sets suppressPopups — neither means CPU actually recovered. */
+            if (!suppressPopups && App.AlertCpuEnabled)
+            {
+                _trayService.ShowNotification(
+                    "CPU Resolved",
+                    $"{summary.DisplayName}: {cpuMetricLabel} back to {alertCpuValue:F0}%",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            }
         }
 
         /* Blocking alerts */
@@ -1556,10 +1578,13 @@ public partial class MainWindow : Window
         else if (_activeBlockingAlert.TryGetValue(key, out var wasBlocking) && wasBlocking)
         {
             _activeBlockingAlert[key] = false;
-            _trayService.ShowNotification(
-                "Blocking Cleared",
-                $"{summary.DisplayName}: No active blocking",
-                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            if (!suppressPopups && App.AlertBlockingEnabled)
+            {
+                _trayService.ShowNotification(
+                    "Blocking Cleared",
+                    $"{summary.DisplayName}: No active blocking",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            }
         }
 
         /* Deadlock alerts */
@@ -1619,10 +1644,13 @@ public partial class MainWindow : Window
         else if (_activeDeadlockAlert.TryGetValue(key, out var wasDeadlock) && wasDeadlock)
         {
             _activeDeadlockAlert[key] = false;
-            _trayService.ShowNotification(
-                "Deadlocks Cleared",
-                $"{summary.DisplayName}: No deadlocks in the last hour",
-                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            if (!suppressPopups && App.AlertDeadlockEnabled)
+            {
+                _trayService.ShowNotification(
+                    "Deadlocks Cleared",
+                    $"{summary.DisplayName}: No deadlocks in the last hour",
+                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+            }
         }
 
         /* Poison wait alerts */
@@ -1679,10 +1707,13 @@ public partial class MainWindow : Window
                 else if (_activePoisonWaitAlert.TryGetValue(key, out var wasPoisonWait) && wasPoisonWait)
                 {
                     _activePoisonWaitAlert[key] = false;
-                    _trayService.ShowNotification(
-                        "Poison Waits Cleared",
-                        $"{summary.DisplayName}: Poison wait avg below threshold",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Poison Waits Cleared",
+                            $"{summary.DisplayName}: Poison wait avg below threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1757,10 +1788,13 @@ public partial class MainWindow : Window
                 else if (_activeLongRunningQueryAlert.TryGetValue(key, out var wasLongRunning) && wasLongRunning)
                 {
                     _activeLongRunningQueryAlert[key] = false;
-                    _trayService.ShowNotification(
-                        "Long-Running Queries Cleared",
-                        $"{summary.DisplayName}: No queries over threshold",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Long-Running Queries Cleared",
+                            $"{summary.DisplayName}: No queries over threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1815,11 +1849,14 @@ public partial class MainWindow : Window
                 else if (_activeTempDbSpaceAlert.TryGetValue(key, out var wasTempDb) && wasTempDb)
                 {
                     _activeTempDbSpaceAlert[key] = false;
-                    var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
-                    _trayService.ShowNotification(
-                        "TempDB Space Resolved",
-                        $"{summary.DisplayName}: TempDB usage back to {pct}",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
+                        _trayService.ShowNotification(
+                            "TempDB Space Resolved",
+                            $"{summary.DisplayName}: TempDB usage back to {pct}",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
@@ -1834,6 +1871,17 @@ public partial class MainWindow : Window
             try
             {
                 var anomalousJobs = await _dataService.GetAnomalousJobsAsync(summary.ServerId, App.AlertLongRunningJobMultiplier);
+
+                /* _lastLongRunningJobAlert is keyed per job *run* ({server}:{jobId}:{startTime}),
+                   so unlike the per-server cooldown dicts it grows without bound. Drop entries
+                   that have aged past the cooldown each pass. */
+                foreach (var staleJobKey in _lastLongRunningJobAlert
+                             .Where(kv => now - kv.Value >= alertCooldown)
+                             .Select(kv => kv.Key)
+                             .ToList())
+                {
+                    _lastLongRunningJobAlert.Remove(staleJobKey);
+                }
 
                 if (anomalousJobs.Count > 0)
                 {
@@ -1879,10 +1927,13 @@ public partial class MainWindow : Window
                 else if (_activeLongRunningJobAlert.TryGetValue(key, out var wasJob) && wasJob)
                 {
                     _activeLongRunningJobAlert[key] = false;
-                    _trayService.ShowNotification(
-                        "Long-Running Jobs Cleared",
-                        $"{summary.DisplayName}: No jobs exceeding threshold",
-                        Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Long-Running Jobs Cleared",
+                            $"{summary.DisplayName}: No jobs exceeding threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
                 }
             }
             catch (Exception ex)
