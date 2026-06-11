@@ -1134,6 +1134,73 @@ BEGIN
             );
 
         END;
+        ELSE IF @table_name = N'index_object_stats'
+        BEGIN
+            CREATE TABLE
+                collect.index_object_stats
+            (
+                collection_id bigint IDENTITY NOT NULL,
+                collection_time datetime2(7) NOT NULL
+                    DEFAULT SYSDATETIME(),
+                sqlserver_start_time datetime2(7) NULL,
+                database_name sysname NOT NULL,
+                database_id integer NOT NULL,
+                schema_name sysname NOT NULL,
+                object_id integer NOT NULL,
+                table_name sysname NOT NULL,
+                index_id integer NOT NULL,
+                index_name sysname NULL,
+                index_type_desc nvarchar(60) NULL,
+                is_unique bit NULL,
+                is_primary_key bit NULL,
+                is_filtered bit NULL,
+                partition_count integer NULL,
+                reserved_mb decimal(19,2) NULL,
+                used_mb decimal(19,2) NULL,
+                in_row_data_mb decimal(19,2) NULL,
+                lob_data_mb decimal(19,2) NULL,
+                row_overflow_mb decimal(19,2) NULL,
+                total_rows bigint NULL,
+                user_seeks bigint NULL,
+                user_scans bigint NULL,
+                user_lookups bigint NULL,
+                user_updates bigint NULL,
+                last_user_seek datetime2(7) NULL,
+                last_user_scan datetime2(7) NULL,
+                last_user_lookup datetime2(7) NULL,
+                last_user_update datetime2(7) NULL,
+                leaf_insert_count bigint NULL,
+                leaf_update_count bigint NULL,
+                leaf_delete_count bigint NULL,
+                range_scan_count bigint NULL,
+                singleton_lookup_count bigint NULL,
+                row_lock_count bigint NULL,
+                row_lock_wait_count bigint NULL,
+                row_lock_wait_in_ms bigint NULL,
+                page_lock_count bigint NULL,
+                page_lock_wait_count bigint NULL,
+                page_lock_wait_in_ms bigint NULL,
+                index_lock_promotion_attempt_count bigint NULL,
+                index_lock_promotion_count bigint NULL,
+                page_latch_wait_count bigint NULL,
+                page_latch_wait_in_ms bigint NULL,
+                page_io_latch_wait_count bigint NULL,
+                page_io_latch_wait_in_ms bigint NULL,
+                total_reads AS
+                (
+                    ISNULL(user_seeks, 0) +
+                    ISNULL(user_scans, 0) +
+                    ISNULL(user_lookups, 0)
+                ),
+                CONSTRAINT
+                    PK_index_object_stats
+                PRIMARY KEY CLUSTERED
+                    (collection_time, collection_id)
+                WITH
+                    (DATA_COMPRESSION = PAGE)
+            );
+
+        END;
         ELSE IF @table_name = N'server_properties'
         BEGIN
             CREATE TABLE
@@ -1172,7 +1239,7 @@ BEGIN
         END;
         ELSE
         BEGIN
-            SET @error_message = N'Unknown table name: ' + @table_name + N'. Valid table names are: wait_stats, query_stats, memory_stats, memory_pressure_events, deadlock_xml, blocked_process_xml, procedure_stats, query_snapshots, query_store_data, trace_analysis, default_trace_events, file_io_stats, memory_grant_stats, cpu_scheduler_stats, memory_clerks_stats, perfmon_stats, cpu_utilization_stats, blocking_deadlock_stats, latch_stats, spinlock_stats, tempdb_stats, plan_cache_stats, session_stats, waiting_tasks, running_jobs, database_size_stats, server_properties';
+            SET @error_message = N'Unknown table name: ' + @table_name + N'. Valid table names are: wait_stats, query_stats, memory_stats, memory_pressure_events, deadlock_xml, blocked_process_xml, procedure_stats, query_snapshots, query_store_data, trace_analysis, default_trace_events, file_io_stats, memory_grant_stats, cpu_scheduler_stats, memory_clerks_stats, perfmon_stats, cpu_utilization_stats, blocking_deadlock_stats, latch_stats, spinlock_stats, tempdb_stats, plan_cache_stats, session_stats, waiting_tasks, running_jobs, database_size_stats, index_object_stats, server_properties';
             RAISERROR(@error_message, 16, 1);
             RETURN;
         END;

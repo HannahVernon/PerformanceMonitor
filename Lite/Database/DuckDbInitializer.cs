@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 28;
+    internal const int CurrentSchemaVersion = 29;
 
     private readonly string _archivePath;
 
@@ -116,7 +116,7 @@ public class DuckDbInitializer
         "query_snapshots", "cpu_utilization_stats", "file_io_stats", "memory_stats",
         "memory_clerks", "memory_pressure_events", "tempdb_stats", "perfmon_stats",
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
-        "running_jobs", "database_size_stats", "server_properties",
+        "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
         "session_stats", "server_config", "database_config",
         "database_scoped_config", "trace_flags", "config_alert_log",
         "collection_log"

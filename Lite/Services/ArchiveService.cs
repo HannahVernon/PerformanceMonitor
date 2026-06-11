@@ -75,6 +75,7 @@ public class ArchiveService
         ("waiting_tasks", "collection_time"),
         ("running_jobs", "collection_time"),
         ("database_size_stats", "collection_time"),
+        ("index_object_stats", "collection_time"),
         ("server_properties", "collection_time"),
         ("session_stats", "collection_time"),
         ("server_config", "capture_time"),

@@ -325,6 +325,10 @@ BEGIN
                 BEGIN
                     EXECUTE collect.database_size_stats_collector @debug = @debug;
                 END;
+                ELSE IF @collector_name = N'index_object_stats_collector'
+                BEGIN
+                    EXECUTE collect.index_object_stats_collector @debug = @debug;
+                END;
                 ELSE IF @collector_name = N'server_properties_collector'
                 BEGIN
                     EXECUTE collect.server_properties_collector @debug = @debug;
