@@ -766,14 +766,44 @@ namespace PerformanceMonitorDashboard.Services
             string miscWaitsFilter = excludeMiscWaits
                 ? "AND r.wait_type NOT IN (N'XE_LIVE_TARGET_TVF')" : "";
             // CDC capture runs continuously as a SQL Agent job (EXEC sys.sp_MScdc_capture_job -> sys.sp_cdc_scan),
-            // so it permanently exceeds the duration threshold. Filter on request text, not program_name, to stay
-            // CDC-specific and avoid hiding unrelated Agent jobs (ETL, index maintenance). Keep NULL text (encrypted
-            // modules) visible -- only drop rows we can positively identify as CDC.
-            string cdcFilter = excludeCdc
-                ? "AND (t.text IS NULL OR (t.text NOT LIKE N'%sp_MScdc_capture_job%' AND t.text NOT LIKE N'%sp_cdc_scan%'))" : "";
+            // so it permanently exceeds the duration threshold and none of the wait_type filters above catch it.
+            //
+            // Primary signal: resolve the capture job_id(s) from msdb.dbo.cdc_jobs and match the running session via
+            // its SQL Agent program_name ('SQLAgent - TSQL JobStep (Job 0x<job_id> : Step N)'). This is CDC-specific
+            // and never hides unrelated Agent jobs. The msdb reference is deferred through sp_executesql inside
+            // TRY/CATCH so a login without msdb access gets a *catchable* error (not an uncatchable cross-db 916) and
+            // cleanly falls back to a text match on the whole batch/object text.
+            string cdcSetup = excludeCdc ? @"
+                DECLARE @cdc_capture_jobs TABLE (job_id uniqueidentifier PRIMARY KEY);
+                DECLARE @cdc_readable bit = 0;
+                BEGIN TRY
+                    INSERT @cdc_capture_jobs (job_id)
+                    EXEC sys.sp_executesql N'SELECT cj.job_id FROM msdb.dbo.cdc_jobs AS cj WHERE cj.job_type = N''capture'';';
+                    SET @cdc_readable = 1;
+                END TRY
+                BEGIN CATCH
+                    SET @cdc_readable = 0;
+                END CATCH;
+" : "";
+            string cdcFilter = excludeCdc ? @"
+                    AND NOT
+                    (
+                        (
+                            @cdc_readable = 1
+                            AND s.program_name LIKE N'SQLAgent - TSQL JobStep (Job 0x%'
+                            AND TRY_CONVERT(uniqueidentifier, TRY_CONVERT(binary(16), SUBSTRING(s.program_name, 32, 32), 2))
+                                IN (SELECT j.job_id FROM @cdc_capture_jobs AS j)
+                        )
+                        OR
+                        (
+                            @cdc_readable = 0
+                            AND t.text IS NOT NULL
+                            AND (t.text LIKE N'%sp_MScdc_capture_job%' OR t.text LIKE N'%sp_cdc_scan%')
+                        )
+                    )" : "";
 
             string query = @$"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
+                {cdcSetup}
                 SELECT TOP(@maxResults)
                     r.session_id,
                     DB_NAME(r.database_id) AS database_name,
