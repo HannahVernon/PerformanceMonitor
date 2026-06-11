@@ -79,19 +79,19 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         {
             _crosshairManager?.PrepareForRefresh();
 
-            var cpuTask = _dataService.GetCpuUtilizationAsync(_serverId, hoursBack, fromDate, toDate);
-            var waitTask = _dataService.GetTotalWaitTrendAsync(_serverId, hoursBack, fromDate, toDate);
-            var blockingTask = _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate);
-            var deadlockTask = _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate);
-            var memoryTask = _dataService.GetMemoryTrendAsync(_serverId, hoursBack, fromDate, toDate);
-            var fileIoTask = _dataService.GetFileIoLatencyTrendAsync(_serverId, hoursBack, fromDate, toDate);
+            var cpuTask = Task.Run(() => _dataService.GetCpuUtilizationAsync(_serverId, hoursBack, fromDate, toDate));
+            var waitTask = Task.Run(() => _dataService.GetTotalWaitTrendAsync(_serverId, hoursBack, fromDate, toDate));
+            var blockingTask = Task.Run(() => _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate));
+            var deadlockTask = Task.Run(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate));
+            var memoryTask = Task.Run(() => _dataService.GetMemoryTrendAsync(_serverId, hoursBack, fromDate, toDate));
+            var fileIoTask = Task.Run(() => _dataService.GetFileIoLatencyTrendAsync(_serverId, hoursBack, fromDate, toDate));
 
             // Fetch baselines for band rendering — chart-unit-matched metrics
             var referenceTime = fromDate ?? DateTime.UtcNow.AddHours(-hoursBack);
-            var cpuBaselineTask = _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.Cpu, referenceTime);
-            var waitBaselineTask = _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.WaitMsPerSec, referenceTime);
-            var ioBaselineTask = _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.IoLatency, referenceTime);
-            var blockingBaselineTask = _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.BlockingPerMinute, referenceTime);
+            var cpuBaselineTask = Task.Run(() => _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.Cpu, referenceTime));
+            var waitBaselineTask = Task.Run(() => _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.WaitMsPerSec, referenceTime));
+            var ioBaselineTask = Task.Run(() => _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.IoLatency, referenceTime));
+            var blockingBaselineTask = Task.Run(() => _dataService.GetBaselineForLaneAsync(_serverId, MetricNames.BlockingPerMinute, referenceTime));
 
             try
             {
@@ -165,11 +165,11 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 // Time shift: offset to align reference data with current chart X axis
                 var timeShift = (fromDate ?? DateTime.UtcNow.AddHours(-hoursBack)) - refFrom;
 
-                var refCpuTask = _dataService.GetCpuUtilizationAsync(_serverId, 0, refFrom, refTo);
-                var refWaitTask = _dataService.GetTotalWaitTrendAsync(_serverId, 0, refFrom, refTo);
-                var refBlockingTask = _dataService.GetBlockingTrendAsync(_serverId, 0, refFrom, refTo);
-                var refMemoryTask = _dataService.GetMemoryTrendAsync(_serverId, 0, refFrom, refTo);
-                var refIoTask = _dataService.GetFileIoLatencyTrendAsync(_serverId, 0, refFrom, refTo);
+                var refCpuTask = Task.Run(() => _dataService.GetCpuUtilizationAsync(_serverId, 0, refFrom, refTo));
+                var refWaitTask = Task.Run(() => _dataService.GetTotalWaitTrendAsync(_serverId, 0, refFrom, refTo));
+                var refBlockingTask = Task.Run(() => _dataService.GetBlockingTrendAsync(_serverId, 0, refFrom, refTo));
+                var refMemoryTask = Task.Run(() => _dataService.GetMemoryTrendAsync(_serverId, 0, refFrom, refTo));
+                var refIoTask = Task.Run(() => _dataService.GetFileIoLatencyTrendAsync(_serverId, 0, refFrom, refTo));
 
                 try { await Task.WhenAll(refCpuTask, refWaitTask, refBlockingTask, refMemoryTask, refIoTask); }
                 catch (Exception ex) { AppLogger.Info("CorrelatedLanes", $"Comparison fetch failed: {ex.Message}"); }

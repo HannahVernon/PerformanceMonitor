@@ -137,8 +137,14 @@ public partial class ServerTab : UserControl
         _ = UpdateWaitStatsChartFromPickerAsync();
     }
 
+    private int _waitStatsPickerGen;
+
     private async System.Threading.Tasks.Task UpdateWaitStatsChartFromPickerAsync()
     {
+        /* Bump a generation on entry; after each (now genuinely async) query, bail if a newer
+           invocation has started — rapid checkbox toggling otherwise interleaves two runs and
+           double-plots the series. */
+        var gen = ++_waitStatsPickerGen;
         try
         {
             var selected = _waitTypeItems.Where(i => i.IsSelected).Take(20).ToList();
@@ -169,7 +175,8 @@ public partial class ServerTab : UserControl
 
             for (int i = 0; i < selected.Count; i++)
             {
-                var trend = await _dataService.GetWaitStatsTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate);
+                var trend = await Task.Run(() => _dataService.GetWaitStatsTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate));
+                if (gen != _waitStatsPickerGen) return;
                 if (trend.Count == 0) continue;
 
                 var times = trend.Select(t => t.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
@@ -284,8 +291,11 @@ public partial class ServerTab : UserControl
         _ = UpdateMemoryClerksChartFromPickerAsync();
     }
 
+    private int _memoryClerksPickerGen;
+
     private async System.Threading.Tasks.Task UpdateMemoryClerksChartFromPickerAsync()
     {
+        var gen = ++_memoryClerksPickerGen;
         try
         {
             var selected = _memoryClerkItems.Where(i => i.IsSelected).Take(20).ToList();
@@ -323,7 +333,8 @@ public partial class ServerTab : UserControl
 
             for (int i = 0; i < selected.Count; i++)
             {
-                var trend = await _dataService.GetMemoryClerkTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate);
+                var trend = await Task.Run(() => _dataService.GetMemoryClerkTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate));
+                if (gen != _memoryClerksPickerGen) return;
                 if (trend.Count == 0) continue;
 
                 var times = trend.Select(t => t.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
@@ -500,8 +511,11 @@ public partial class ServerTab : UserControl
         _ = UpdatePerfmonChartFromPickerAsync();
     }
 
+    private int _perfmonPickerGen;
+
     private async System.Threading.Tasks.Task UpdatePerfmonChartFromPickerAsync()
     {
+        var gen = ++_perfmonPickerGen;
         try
         {
             var selected = _perfmonCounterItems.Where(i => i.IsSelected).Take(12).ToList();
@@ -529,7 +543,8 @@ public partial class ServerTab : UserControl
 
             for (int i = 0; i < selected.Count; i++)
             {
-                var trend = await _dataService.GetPerfmonTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate);
+                var trend = await Task.Run(() => _dataService.GetPerfmonTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate));
+                if (gen != _perfmonPickerGen) return;
                 if (trend.Count == 0) continue;
 
                 var times = trend.Select(t => t.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
