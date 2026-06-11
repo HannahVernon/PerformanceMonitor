@@ -212,7 +212,9 @@ namespace PerformanceMonitorDashboard.Services
                 FROM config.collection_log
                 WHERE collection_status = 'SUCCESS'
                     AND duration_ms IS NOT NULL
-                    AND collection_time >= DATEADD(HOUR, -@hours_back, GETUTCDATE())
+                    /* collection_time is server-local (SYSDATETIME); match that clock, not UTC,
+                       or the requested window is truncated/widened by the server's UTC offset. */
+                    AND collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())
                 ORDER BY
                     collection_time;";
 
