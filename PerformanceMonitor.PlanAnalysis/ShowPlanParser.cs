@@ -1811,11 +1811,18 @@ public static class ShowPlanParser
         // Skip trailing hex digits (0-9, A-F, a-f)
         while (i > 0 && IsHexDigit(name[i])) i--;
 
+        // Real SQL-internal #temp names always carry underscore padding between the visible
+        // name and the hex suffix. If there is no underscore right after the hex run, this is
+        // not that pattern (e.g. a user name that is itself all hex, like "#deadbeef1") — leave
+        // it untouched rather than stripping it down to "#".
+        if (i == 0 || name[i] != '_') return name;
+
         // Skip trailing underscores (the padding)
         while (i > 0 && name[i] == '_') i--;
 
-        // Only clean if we actually removed a meaningful amount (at least 8 chars of padding+hex)
-        if (name.Length - i > 8)
+        // Only clean if we removed a meaningful amount (at least 8 chars of padding+hex) and a
+        // real name still remains — never collapse to just "#".
+        if (i > 0 && name.Length - i > 8)
             return name[..(i + 1)];
         return name;
     }
@@ -1833,6 +1840,7 @@ public static class ShowPlanParser
     private static long ParseLong(string? value)
     {
         if (string.IsNullOrEmpty(value)) return 0;
-        return long.TryParse(value, out var result) ? result : 0;
+        return long.TryParse(value, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var result) ? result : 0;
     }
 }

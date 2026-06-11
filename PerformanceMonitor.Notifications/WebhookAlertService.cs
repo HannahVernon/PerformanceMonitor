@@ -202,7 +202,7 @@ public class WebhookAlertService
         bool isTest = false,
         AlertContext? context = null)
     {
-        var (hexColor, badgeText, emoji) = GetSeverity(metricName);
+        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName);
         var themeColor = hexColor.TrimStart('#');
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
@@ -237,13 +237,16 @@ public class WebhookAlertService
                 if (!string.IsNullOrEmpty(detail.Body))
                 {
                     /* Advice prose: one "Advice" fact for the headline, then a fact per
-                       Investigation/Remediation paragraph (split on the blank line). */
+                       Investigation/Remediation paragraph (split on the blank line).
+                       Body is exclusive with Fields, matching the email and Slack surfaces
+                       which skip Fields when Body is present. */
                     facts.Add(new { name = "Advice", value = detail.Heading });
                     foreach (var para in detail.Body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
                     {
                         var (label, text) = SplitProseLabel(para);
                         facts.Add(new { name = label, value = text });
                     }
+                    continue;
                 }
 
                 foreach (var (label, value) in detail.Fields)
@@ -346,7 +349,7 @@ public class WebhookAlertService
         bool isTest = false,
         AlertContext? context = null)
     {
-        var (hexColor, badgeText, emoji) = GetSeverity(metricName);
+        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName);
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
 
@@ -444,20 +447,6 @@ public class WebhookAlertService
 
     #region Shared
 
-    private static (string HexColor, string BadgeText, string Emoji) GetSeverity(string metricName) => metricName switch
-    {
-        "Blocking Detected" => ("#D97706", "ALERT", "\U0001F7E0"),
-        "Deadlocks Detected" => ("#DC2626", "ALERT", "\U0001F534"),
-        "High CPU" => ("#F59E0B", "WARNING", "\U0001F7E1"),
-        "Poison Wait" => ("#DC2626", "CRITICAL", "\U0001F534"),
-        "Long-Running Query" => ("#D97706", "WARNING", "\U0001F7E0"),
-        "TempDB Space" => ("#D97706", "WARNING", "\U0001F7E0"),
-        "Long-Running Job" => ("#D97706", "WARNING", "\U0001F7E0"),
-        "Server Unreachable" => ("#DC2626", "CRITICAL", "\U0001F534"),
-        "Server Restored" => ("#16A34A", "RESOLVED", "\U0001F7E2"),
-        _ => ("#2eaef1", "INFO", "\U0001F535")
-    };
-
     /// <summary>
     /// Splits a synthesized advice paragraph ("Investigation: ..." / "Remediation: ...") into a
     /// (label, value) pair on the first ": ". Falls back to ("Detail", paragraph) when there is no
@@ -475,19 +464,37 @@ public class WebhookAlertService
         return ("Detail", paragraph);
     }
 
+    /* Reuse HttpClients instead of newing one (plus a handler) per send. A fresh
+       HttpClient/handler per request leaks sockets into TIME_WAIT and can exhaust
+       the ephemeral port range when many servers alert. One pooled client covers the
+       no-proxy case; proxied clients are cached per proxy address. */
+    private static readonly HttpClient s_defaultClient =
+        new(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5) })
+        { Timeout = TimeSpan.FromSeconds(30) };
+
+    private static readonly ConcurrentDictionary<string, HttpClient> s_proxyClients = new();
+
+    private static HttpClient GetHttpClient(string? proxyAddress)
+    {
+        if (string.IsNullOrWhiteSpace(proxyAddress))
+            return s_defaultClient;
+
+        return s_proxyClients.GetOrAdd(proxyAddress, addr =>
+            new HttpClient(new SocketsHttpHandler
+            {
+                Proxy = new WebProxy(addr),
+                UseProxy = true,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+            })
+            { Timeout = TimeSpan.FromSeconds(30) });
+    }
+
     /// <summary>
     /// Posts a JSON payload to a webhook URL. Returns null on success, error message on failure.
     /// </summary>
     private static async Task<string?> PostWebhookAsync(string webhookUrl, string jsonPayload, string? proxyAddress)
     {
-        var handler = new HttpClientHandler();
-        if (!string.IsNullOrWhiteSpace(proxyAddress))
-        {
-            handler.Proxy = new WebProxy(proxyAddress);
-            handler.UseProxy = true;
-        }
-
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        var client = GetHttpClient(proxyAddress);
         using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
         var response = await client.PostAsync(webhookUrl, content);
