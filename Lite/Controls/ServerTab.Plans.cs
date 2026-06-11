@@ -230,6 +230,7 @@ public partial class ServerTab : UserControl
     {
         if (sender is Button btn && btn.Tag is TabItem tab)
         {
+            (tab.Content as PlanViewerControl)?.Cleanup();
             PlanTabControl.Items.Remove(tab);
             if (PlanTabControl.Items.Count == 0)
             {

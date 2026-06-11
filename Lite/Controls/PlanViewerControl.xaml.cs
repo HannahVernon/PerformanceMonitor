@@ -68,8 +68,16 @@ public partial class PlanViewerControl : UserControl
     public PlanViewerControl()
     {
         InitializeComponent();
+        /* Subscribe for the life of the control. Do NOT unsubscribe on Unloaded — a TabControl
+           fires Unloaded when you switch tabs, permanently detaching this handler. Unsubscribed in
+           Cleanup(), called from ClosePlanTab_Click when the plan tab is actually closed. */
         ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
+    }
+
+    /// <summary>Unsubscribes from theme changes. Called when the plan tab is closed.</summary>
+    public void Cleanup()
+    {
+        ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private void OnThemeChanged(string _)
