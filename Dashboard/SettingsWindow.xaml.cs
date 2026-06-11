@@ -186,6 +186,7 @@ namespace PerformanceMonitorDashboard
             LrqExcludeWaitForCheckBox.IsChecked = prefs.LongRunningQueryExcludeWaitFor;
             LrqExcludeBackupsCheckBox.IsChecked = prefs.LongRunningQueryExcludeBackups;
             LrqExcludeMiscWaitsCheckBox.IsChecked = prefs.LongRunningQueryExcludeMiscWaits;
+            LrqExcludeCdcCheckBox.IsChecked = prefs.LongRunningQueryExcludeCdc;
             AlertExcludedDatabasesTextBox.Text = string.Join(", ", prefs.AlertExcludedDatabases);
             NotifyOnTempDbSpaceCheckBox.IsChecked = prefs.NotifyOnTempDbSpace;
             TempDbSpaceThresholdTextBox.Text = prefs.TempDbSpaceThresholdPercent.ToString(CultureInfo.InvariantCulture);
@@ -683,6 +684,7 @@ namespace PerformanceMonitorDashboard
             prefs.LongRunningQueryExcludeWaitFor = LrqExcludeWaitForCheckBox.IsChecked == true;
             prefs.LongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true;
             prefs.LongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true;
+            prefs.LongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true;
             prefs.AlertExcludedDatabases = AlertExcludedDatabasesTextBox.Text
                 .Split(',')
                 .Select(s => s.Trim())

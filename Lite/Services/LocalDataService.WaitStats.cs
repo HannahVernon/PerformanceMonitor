@@ -436,7 +436,8 @@ LIMIT 2000";
         bool excludeSpServerDiagnostics = true,
         bool excludeWaitFor = true,
         bool excludeBackups = true,
-        bool excludeMiscWaits = true)
+        bool excludeMiscWaits = true,
+        bool excludeCdc = true)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
@@ -451,6 +452,10 @@ LIMIT 2000";
             ? "AND r.wait_type NOT IN (N'BACKUPTHREAD', N'BACKUPIO')" : "";
         string miscWaitsFilter = excludeMiscWaits
             ? "AND r.wait_type NOT IN (N'XE_LIVE_TARGET_TVF')" : "";
+        // CDC capture sessions are flagged server-side by the collector (is_cdc_capture). COALESCE
+        // guards pre-migration / archived rows where the column is NULL.
+        string cdcFilter = excludeCdc
+            ? "AND COALESCE(r.is_cdc_capture, FALSE) = FALSE" : "";
         maxResults = Math.Clamp(maxResults, 1, 1000);
 
         command.CommandText = @$"
@@ -473,6 +478,7 @@ LIMIT 2000";
                     {waitForFilter}
                     {backupsFilter}
                     {miscWaitsFilter}
+                    {cdcFilter}
                     AND r.total_elapsed_time_ms >= $2
                 ORDER BY r.total_elapsed_time_ms DESC
                 LIMIT $3;";
