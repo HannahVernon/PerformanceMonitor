@@ -69,7 +69,7 @@ BEGIN
             SET @sql = N'
             IF OBJECT_ID(N''' + QUOTENAME(@procedure_database) + N'.dbo.sp_HealthParser'', N''P'') IS NOT NULL
             BEGIN
-                SELECT @healthparser_database = N''' + QUOTENAME(@procedure_database) + N''';
+                SELECT @healthparser_database = N''' + REPLACE(@procedure_database, '''', '''''') + N''';
             END;';
 
             EXECUTE sys.sp_executesql

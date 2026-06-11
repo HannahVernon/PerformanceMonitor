@@ -73,7 +73,7 @@ BEGIN
             SET @sql = N'
             IF OBJECT_ID(N''' + QUOTENAME(@procedure_database) + N'.dbo.sp_BlitzLock'', N''P'') IS NOT NULL
             BEGIN
-                SELECT @blitzlock_database = N''' + QUOTENAME(@procedure_database) + N''';
+                SELECT @blitzlock_database = N''' + REPLACE(@procedure_database, '''', '''''') + N''';
             END;';
 
             EXECUTE sys.sp_executesql
