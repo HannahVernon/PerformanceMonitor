@@ -24,9 +24,13 @@ public class SqlPlanFetcher : IPlanFetcher
     {
         if (string.IsNullOrEmpty(planHandle)) return null;
 
-        // serverId is a hash — find the server by matching the hash
+        // serverId is the deterministic FNV hash of the storage name (host[:db][:RO]) produced by
+        // RemoteCollectorService.GetServerId. Match with the same function — string.GetHashCode()
+        // is randomized per process and also ignores the db/RO suffixes, so it would never match.
         var server = _serverManager.GetAllServers()
-            .FirstOrDefault(s => s.ServerName.GetHashCode() == serverId);
+            .FirstOrDefault(s =>
+                RemoteCollectorService.GetDeterministicHashCode(
+                    RemoteCollectorService.GetServerNameForStorage(s)) == serverId);
         if (server == null) return null;
 
         try

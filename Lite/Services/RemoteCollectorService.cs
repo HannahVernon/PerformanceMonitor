@@ -109,7 +109,9 @@ public partial class RemoteCollectorService
     private static long s_idCounter = DateTime.UtcNow.Ticks;
 
     /// <summary>
-    /// Limits concurrent SQL connections to avoid overwhelming target servers.
+    /// Limits how many SQL connections are <em>opened</em> at once — the semaphore is released
+    /// when OpenAsync returns, not when the connection is disposed — smoothing the login storm
+    /// when many servers are polled together. It does not cap the number of open connections.
     /// </summary>
     private static readonly SemaphoreSlim s_connectionThrottle = new(7, 7);
 
