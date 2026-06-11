@@ -115,6 +115,22 @@ public partial class MainWindow : Window
         ServerTabControl.SelectionChanged += ServerTabControl_SelectionChanged;
     }
 
+    /// <summary>
+    /// The one true window-restore path. Minimize-to-tray calls <see cref="Window.Hide"/>, which
+    /// sets WPF <see cref="UIElement.Visibility"/> = Hidden. Only <see cref="Window.Show"/> reconciles
+    /// that state and re-runs layout/render — a raw Win32 ShowWindow leaves the HWND visible but the
+    /// WPF tree un-arranged, i.e. a blank window (#1050). Every restore entry point — tray double-click,
+    /// the "Show Window" menu, the sleep/unlock resume guard, and the second-instance signal — routes
+    /// here so the window can never be left visible-but-blank. Must be called on the UI thread.
+    /// </summary>
+    public void RestoreFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         try
@@ -150,12 +166,12 @@ public partial class MainWindow : Window
             _ = _backgroundService.StartAsync(_backgroundCts.Token);
 
             // Initialize system tray
-            _trayService = new SystemTrayService(this, _backgroundService);
+            _trayService = new SystemTrayService(this, RestoreFromTray, _backgroundService);
             _trayService.Initialize();
 
             /* #1050: restore the window from the tray on resume/unlock if a sleep- or lock-driven
                minimize hid it. ??= so a repeated Loaded can't double-subscribe (static SystemEvents). */
-            _resumeGuard ??= new WindowResumeGuard(this, _trayService.ShowMainWindow);
+            _resumeGuard ??= new WindowResumeGuard(this, RestoreFromTray);
 
             // Initialize data service for overview
             _dataService = new LocalDataService(_databaseInitializer);
