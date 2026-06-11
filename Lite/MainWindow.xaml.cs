@@ -319,7 +319,15 @@ public partial class MainWindow : Window
         _statusTimer.Stop();
 
         _closingCleanupDone = true;
-        Close();
+
+        /* Re-close on the next dispatcher cycle, not synchronously here. If the awaits above all
+           completed without ever suspending (MCP off, collector already idle), we're still inside
+           WPF's Closing event with Window._isClosing == true, and a synchronous Close() re-enters
+           InternalClose → VerifyNotClosing() throws "Cannot ... call Close ... while a Window is
+           closing" (#1050 follow-up). BeginInvoke lets this Closing event fully unwind — clearing
+           _isClosing — before the real close runs; the second pass returns early on
+           _closingCleanupDone and the window closes for real. */
+        _ = Dispatcher.BeginInvoke(new Action(Close));
     }
 
     private void ServerTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
