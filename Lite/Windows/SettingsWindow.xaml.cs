@@ -593,6 +593,7 @@ public partial class SettingsWindow : Window
         LrqExcludeWaitForCheckBox.IsChecked = App.AlertLongRunningQueryExcludeWaitFor;
         LrqExcludeBackupsCheckBox.IsChecked = App.AlertLongRunningQueryExcludeBackups;
         LrqExcludeMiscWaitsCheckBox.IsChecked = App.AlertLongRunningQueryExcludeMiscWaits;
+        LrqExcludeCdcCheckBox.IsChecked = App.AlertLongRunningQueryExcludeCdc;
         AlertExcludedDatabasesBox.Text = string.Join(", ", App.AlertExcludedDatabases);
         AlertTempDbSpaceCheckBox.IsChecked = App.AlertTempDbSpaceEnabled;
         AlertTempDbSpaceThresholdBox.Text = App.AlertTempDbSpaceThresholdPercent.ToString();
@@ -642,6 +643,7 @@ public partial class SettingsWindow : Window
         App.AlertLongRunningQueryExcludeWaitFor = LrqExcludeWaitForCheckBox.IsChecked == true;
         App.AlertLongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true;
         App.AlertLongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true;
+        App.AlertLongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true;
         App.AlertExcludedDatabases = AlertExcludedDatabasesBox.Text
             .Split(',')
             .Select(s => s.Trim())
@@ -709,6 +711,7 @@ public partial class SettingsWindow : Window
             root["alert_long_running_query_exclude_waitfor"] = App.AlertLongRunningQueryExcludeWaitFor;
             root["alert_long_running_query_exclude_backups"] = App.AlertLongRunningQueryExcludeBackups;
             root["alert_long_running_query_exclude_misc_waits"] = App.AlertLongRunningQueryExcludeMiscWaits;
+            root["alert_long_running_query_exclude_cdc"] = App.AlertLongRunningQueryExcludeCdc;
             var dbArray = new System.Text.Json.Nodes.JsonArray();
             foreach (var db in App.AlertExcludedDatabases) dbArray.Add(db);
             root["alert_excluded_databases"] = dbArray;

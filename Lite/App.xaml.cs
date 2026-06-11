@@ -107,6 +107,7 @@ public partial class App : Application
     public static bool AlertLongRunningQueryExcludeWaitFor { get; set; } = true;
     public static bool AlertLongRunningQueryExcludeBackups { get; set; } = true;
     public static bool AlertLongRunningQueryExcludeMiscWaits { get; set; } = true;
+    public static bool AlertLongRunningQueryExcludeCdc { get; set; } = true;
     public static List<string> AlertExcludedDatabases { get; set; } = new();
     public static bool AlertTempDbSpaceEnabled { get; set; } = true;
     public static int AlertTempDbSpaceThresholdPercent { get; set; } = 80;
@@ -463,6 +464,7 @@ public partial class App : Application
             if (root.TryGetProperty("alert_long_running_query_exclude_waitfor", out v)) AlertLongRunningQueryExcludeWaitFor = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_exclude_backups", out v)) AlertLongRunningQueryExcludeBackups = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_exclude_misc_waits", out v)) AlertLongRunningQueryExcludeMiscWaits = v.GetBoolean();
+            if (root.TryGetProperty("alert_long_running_query_exclude_cdc", out v)) AlertLongRunningQueryExcludeCdc = v.GetBoolean();
             if (root.TryGetProperty("alert_excluded_databases", out v) && v.ValueKind == System.Text.Json.JsonValueKind.Array)
             {
                 AlertExcludedDatabases = new List<string>();

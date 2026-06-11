@@ -346,7 +346,8 @@ CREATE TABLE IF NOT EXISTS query_snapshots (
     host_name VARCHAR,
     program_name VARCHAR,
     open_transaction_count INTEGER,
-    percent_complete DECIMAL(5,2)
+    percent_complete DECIMAL(5,2),
+    is_cdc_capture BOOLEAN DEFAULT false
 )";
 
     public const string CreateTempdbStatsTable = @"

@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 27;
+    internal const int CurrentSchemaVersion = 28;
 
     private readonly string _archivePath;
 
@@ -730,6 +730,23 @@ public class DuckDbInitializer
             {
                 _logger?.LogError(ex, "Migration to v27 failed");
                 throw;
+            }
+        }
+
+        if (fromVersion < 28)
+        {
+            /* v28: Added is_cdc_capture flag to query_snapshots so the long-running query
+                    alert can exclude CDC capture sessions. The collector computes the flag
+                    server-side (program_name -> job_id via msdb.dbo.cdc_jobs, text fallback).
+                    Appended at the end to match the DuckDB appender's positional order. */
+            _logger?.LogInformation("Running migration to v28: adding is_cdc_capture column to query_snapshots");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS is_cdc_capture BOOLEAN DEFAULT false");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v28 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }
