@@ -429,9 +429,16 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        private bool _isCheckingConnections;
+
         private async void ConnectionStatusTimer_Tick(object? sender, EventArgs e)
         {
-            await CheckAllConnectionsAsync();
+            /* Skip if the previous check is still running so slow servers don't stack overlapping
+               connection sweeps at the minimum interval. */
+            if (_isCheckingConnections) return;
+            _isCheckingConnections = true;
+            try { await CheckAllConnectionsAsync(); }
+            finally { _isCheckingConnections = false; }
         }
 
         private void ConfigureConnectionStatusTimer()
@@ -1427,14 +1434,27 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        private bool _isCheckingAlerts;
+
         private async void AlertCheckTimer_Tick(object? sender, EventArgs e)
         {
-            await CheckAllServerAlertsAsync();
+            /* Skip if the previous alert sweep is still running — otherwise slow ticks overlap and
+               pile up concurrent per-server query batches on the shared connections. */
+            if (_isCheckingAlerts) return;
+            _isCheckingAlerts = true;
+            try
+            {
+                await CheckAllServerAlertsAsync();
 
-            /* Auto-refresh alert history if the tab is open */
-            _alertsHistoryContent?.RefreshAlerts();
+                /* Auto-refresh alert history if the tab is open */
+                _alertsHistoryContent?.RefreshAlerts();
 
-            UpdateAlertBadge();
+                UpdateAlertBadge();
+            }
+            finally
+            {
+                _isCheckingAlerts = false;
+            }
         }
 
         private void UpdateAlertBadge()

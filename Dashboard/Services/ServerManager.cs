@@ -593,6 +593,12 @@ ORDER BY e.database_name;", connection);
                     status.UserCancelledMfa = false; // Clear any previous cancellation flag
 
                     /* Query installed PerformanceMonitor version */
+                    /* The installed monitor version can't change mid-session — once we've learned it
+                       for this server, carry it forward instead of re-running the installation_history
+                       query on every connection-check tick. */
+                    if (previousStatus.InstalledMonitorVersion != null)
+                        status.InstalledMonitorVersion = previousStatus.InstalledMonitorVersion;
+                    else
                     try
                     {
                         using var versionCmd = new SqlCommand(@"
