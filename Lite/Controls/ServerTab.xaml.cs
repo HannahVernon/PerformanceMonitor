@@ -1532,6 +1532,11 @@ public partial class ServerTab : UserControl
     public void DisposeChartHelpers()
     {
         ThemeManager.ThemeChanged -= OnThemeChanged;
+        /* Closing the server tab with plan tabs still open would leak each PlanViewerControl via the
+           static ThemeChanged event — clean them up here too (ClosePlanTab_Click only handles the
+           per-tab close-button path). */
+        foreach (var item in PlanTabControl.Items)
+            if (item is TabItem { Content: PlanViewerControl pv }) pv.Cleanup();
         _waitStatsHover?.Dispose();
         _perfmonHover?.Dispose();
         _cpuHover?.Dispose();

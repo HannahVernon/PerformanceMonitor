@@ -976,6 +976,7 @@ namespace PerformanceMonitorDashboard
                     {
                         ServerTabControl.Items.Remove(_alertsTab);
                         _alertsTab = null;
+                        _alertsHistoryContent?.Cleanup();
                         _alertsHistoryContent = null;
                     }
                 }
@@ -1966,6 +1967,15 @@ namespace PerformanceMonitorDashboard
             if (anomalousJobsTriggered)
             {
                 _activeLongRunningJobAlert[serverId] = true;
+                /* Prune aged-out per-run keys ({server}:{job}:{start}) — like Lite, this dict
+                   otherwise grows one entry per anomalous job run for the whole session. */
+                foreach (var staleJobKey in _lastLongRunningJobAlert
+                             .Where(kv => now - kv.Value >= alertCooldown)
+                             .Select(kv => kv.Key)
+                             .ToList())
+                {
+                    _lastLongRunningJobAlert.TryRemove(staleJobKey, out _);
+                }
                 var worst = health.AnomalousJobs[0];
                 var jobKey = $"{serverId}:{worst.JobId}:{worst.StartTime:O}";
 

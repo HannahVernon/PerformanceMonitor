@@ -57,6 +57,17 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         /// <summary>
+        /// Stops the stale-data timer. Call when the Alerts tab is closed — the timer is
+        /// Dispatcher-rooted, so without this the whole control (and its alert list) leaks on every
+        /// open/close cycle and keeps ticking forever.
+        /// </summary>
+        public void Cleanup()
+        {
+            _staleDataTimer.Stop();
+            _staleDataTimer.Tick -= StaleDataTimer_Tick;
+        }
+
+        /// <summary>
         /// Refreshes the alert history from the in-memory log.
         /// </summary>
         public void RefreshAlerts()
