@@ -62,7 +62,17 @@ public partial class ServerTab : UserControl
             }
             else
             {
-                await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
+                /* When this server tab isn't the selected one, its charts/grids aren't on screen —
+                   skip the heavy sub-tab data refresh and just keep the alert badge current. Mark
+                   dirty so the sub-tab is refreshed when the tab is selected again (IsVisibleChanged). */
+                if (IsVisible)
+                {
+                    await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
+                }
+                else
+                {
+                    _refreshPendingWhileHidden = true;
+                }
                 /* Always keep alert badge current even when Blocking tab is not visible */
                 if (MainTabControl.SelectedIndex != 8)
                     await RefreshAlertCountsAsync(hoursBack, fromDate, toDate);

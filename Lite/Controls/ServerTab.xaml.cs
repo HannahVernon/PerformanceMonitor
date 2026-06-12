@@ -42,6 +42,7 @@ public partial class ServerTab : UserControl
     public ServerConnection Server => _server;
     private readonly CredentialResolver _credentialResolver;
     private readonly DispatcherTimer _refreshTimer;
+    private bool _refreshPendingWhileHidden;
     private bool _isRefreshing;
     private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
     private List<SelectableItem> _waitTypeItems = new();
@@ -149,6 +150,17 @@ public partial class ServerTab : UserControl
             await RefreshAllDataAsync(fullRefresh: false);
         };
         _refreshTimer.Start();
+
+        /* When this tab isn't selected the timer skips its data refresh (see RefreshAllDataAsync);
+           refresh once when it becomes visible again so it isn't showing stale data on return. */
+        IsVisibleChanged += (s, e) =>
+        {
+            if (IsVisible && _refreshPendingWhileHidden)
+            {
+                _refreshPendingWhileHidden = false;
+                _ = RefreshAllDataAsync(fullRefresh: false);
+            }
+        };
 
         /* Show warning on Running Jobs tab if login lacks msdb access */
         if (!_hasMsdbAccess)
