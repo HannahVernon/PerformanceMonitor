@@ -50,6 +50,9 @@ public partial class FinOpsTab : UserControl
     private DataGridFilterManager<WaitCategorySummaryRow>? _waitCategoryFilterMgr;
     private DataGridFilterManager<ExpensiveQueryRow>? _expensiveQueriesFilterMgr;
     private DataGridFilterManager<MemoryGrantEfficiencyRow>? _memoryGrantFilterMgr;
+    private DataGridFilterManager<ObjectSizeGrowthRow>? _objectSizeGrowthFilterMgr;
+    private DataGridFilterManager<IndexUsageRow>? _indexUsageFilterMgr;
+    private DataGridFilterManager<IndexLockingRow>? _indexLockingFilterMgr;
 
     public FinOpsTab()
     {
@@ -147,6 +150,9 @@ public partial class FinOpsTab : UserControl
             LoadApplicationConnectionsAsync(serverId),
             LoadDatabaseSizesAsync(serverId),
             LoadStorageGrowthAsync(serverId),
+            LoadObjectSizeGrowthAsync(serverId),
+            LoadIndexUsageAsync(serverId),
+            LoadIndexLockingAsync(serverId),
             LoadIdleDatabasesAsync(serverId),
             LoadTempdbSummaryAsync(serverId),
             LoadWaitCategorySummaryAsync(serverId),
@@ -529,6 +535,76 @@ public partial class FinOpsTab : UserControl
         {
             AppLogger.Error("FinOps", $"Failed to load storage growth: {ex.Message}");
         }
+    }
+
+    // ============================================
+    // Object/Index stats (#1103)
+    // ============================================
+
+    private async System.Threading.Tasks.Task LoadObjectSizeGrowthAsync(int serverId)
+    {
+        if (_dataService == null) return;
+        try
+        {
+            var data = await _dataService.GetObjectSizeGrowthAsync(serverId);
+            _objectSizeGrowthFilterMgr!.UpdateData(data);
+            NoObjectSizeGrowthMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            ObjectSizeGrowthCountIndicator.Text = data.Count > 0 ? $"{data.Count} table(s)" : "";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Failed to load object size/growth: {ex.Message}");
+        }
+    }
+
+    private async System.Threading.Tasks.Task LoadIndexUsageAsync(int serverId)
+    {
+        if (_dataService == null) return;
+        try
+        {
+            var data = await _dataService.GetIndexUsageAsync(serverId);
+            _indexUsageFilterMgr!.UpdateData(data);
+            NoIndexUsageMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            IndexUsageCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Failed to load index usage: {ex.Message}");
+        }
+    }
+
+    private async System.Threading.Tasks.Task LoadIndexLockingAsync(int serverId)
+    {
+        if (_dataService == null) return;
+        try
+        {
+            var data = await _dataService.GetIndexLockingAsync(serverId);
+            _indexLockingFilterMgr!.UpdateData(data);
+            NoIndexLockingMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            IndexLockingCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("FinOps", $"Failed to load index locking: {ex.Message}");
+        }
+    }
+
+    private async void RefreshObjectSizeGrowth_Click(object sender, RoutedEventArgs e)
+    {
+        var serverId = GetSelectedServerId();
+        if (serverId != 0) await LoadObjectSizeGrowthAsync(serverId);
+    }
+
+    private async void RefreshIndexUsage_Click(object sender, RoutedEventArgs e)
+    {
+        var serverId = GetSelectedServerId();
+        if (serverId != 0) await LoadIndexUsageAsync(serverId);
+    }
+
+    private async void RefreshIndexLocking_Click(object sender, RoutedEventArgs e)
+    {
+        var serverId = GetSelectedServerId();
+        if (serverId != 0) await LoadIndexLockingAsync(serverId);
     }
 
     private async System.Threading.Tasks.Task LoadIdleDatabasesAsync(int serverId)
@@ -973,6 +1049,9 @@ public partial class FinOpsTab : UserControl
         _waitCategoryFilterMgr = new DataGridFilterManager<WaitCategorySummaryRow>(WaitCategorySummaryDataGrid);
         _expensiveQueriesFilterMgr = new DataGridFilterManager<ExpensiveQueryRow>(ExpensiveQueriesDataGrid);
         _memoryGrantFilterMgr = new DataGridFilterManager<MemoryGrantEfficiencyRow>(MemoryGrantEfficiencyDataGrid);
+        _objectSizeGrowthFilterMgr = new DataGridFilterManager<ObjectSizeGrowthRow>(ObjectSizeGrowthDataGrid);
+        _indexUsageFilterMgr = new DataGridFilterManager<IndexUsageRow>(IndexUsageDataGrid);
+        _indexLockingFilterMgr = new DataGridFilterManager<IndexLockingRow>(IndexLockingDataGrid);
 
         _filterManagers[DatabaseResourcesDataGrid] = _dbResourcesFilterMgr;
         _filterManagers[StorageGrowthDataGrid] = _storageGrowthFilterMgr;
@@ -987,6 +1066,9 @@ public partial class FinOpsTab : UserControl
         _filterManagers[WaitCategorySummaryDataGrid] = _waitCategoryFilterMgr;
         _filterManagers[ExpensiveQueriesDataGrid] = _expensiveQueriesFilterMgr;
         _filterManagers[MemoryGrantEfficiencyDataGrid] = _memoryGrantFilterMgr;
+        _filterManagers[ObjectSizeGrowthDataGrid] = _objectSizeGrowthFilterMgr;
+        _filterManagers[IndexUsageDataGrid] = _indexUsageFilterMgr;
+        _filterManagers[IndexLockingDataGrid] = _indexLockingFilterMgr;
     }
 
     private void EnsureFilterPopup()

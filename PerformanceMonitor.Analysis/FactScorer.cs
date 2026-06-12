@@ -431,6 +431,22 @@ public class FactScorer
             return 0.5 + 0.5 * Math.Min((ratio - 3.0) / 7.0, 1.0);
         }
 
+        if (fact.Key.StartsWith("ANOMALY_OBJECT_GROWTH", StringComparison.OrdinalIgnoreCase))
+        {
+            // Ratio of growth vs the trip threshold: 1x = 0.4, 5x = 1.0 (day-over-day table growth)
+            var ratio = fact.Metadata.GetValueOrDefault("growth_ratio");
+            if (ratio < 1.0) return 0.0;
+            return 0.4 + 0.6 * Math.Min((ratio - 1.0) / 4.0, 1.0);
+        }
+
+        if (fact.Key.StartsWith("ANOMALY_OBJECT_CONTENTION", StringComparison.OrdinalIgnoreCase))
+        {
+            // Ratio of new lock-wait ms vs the trip threshold: 1x = 0.4, 10x = 1.0
+            var ratio = fact.Metadata.GetValueOrDefault("contention_ratio");
+            if (ratio < 1.0) return 0.0;
+            return 0.4 + 0.6 * Math.Min((ratio - 1.0) / 9.0, 1.0);
+        }
+
         return 0.0;
     }
 

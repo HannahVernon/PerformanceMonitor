@@ -127,6 +127,9 @@ namespace PerformanceMonitorDashboard.Controls
                     LoadApplicationConnectionsAsync(),
                     LoadServerInventoryAsync(),
                     LoadStorageGrowthAsync(),
+                    LoadObjectSizeGrowthAsync(),
+                    LoadIndexUsageAsync(),
+                    LoadIndexLockingAsync(),
                     LoadIdleDatabasesAsync(),
                     LoadTempdbSummaryAsync(),
                     LoadWaitCategorySummaryAsync(),
@@ -401,6 +404,58 @@ namespace PerformanceMonitorDashboard.Controls
             catch (Exception ex)
             {
                 Logger.Error($"Error loading storage growth: {ex.Message}", ex);
+            }
+        }
+
+        // ============================================
+        // Object/Index stats (#1103)
+        // ============================================
+
+        private async Task LoadObjectSizeGrowthAsync()
+        {
+            if (_databaseService == null) return;
+            try
+            {
+                var data = await _databaseService.GetObjectSizeGrowthAsync();
+                ObjectSizeGrowthDataGrid.ItemsSource = data;
+                ObjectSizeGrowthNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                ObjectSizeGrowthCountIndicator.Text = data.Count > 0 ? $"{data.Count} table(s)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading object size/growth: {ex.Message}", ex);
+            }
+        }
+
+        private async Task LoadIndexUsageAsync()
+        {
+            if (_databaseService == null) return;
+            try
+            {
+                var data = await _databaseService.GetIndexUsageAsync();
+                IndexUsageDataGrid.ItemsSource = data;
+                IndexUsageNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                IndexUsageCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading index usage: {ex.Message}", ex);
+            }
+        }
+
+        private async Task LoadIndexLockingAsync()
+        {
+            if (_databaseService == null) return;
+            try
+            {
+                var data = await _databaseService.GetIndexLockingAsync();
+                IndexLockingDataGrid.ItemsSource = data;
+                IndexLockingNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                IndexLockingCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading index locking: {ex.Message}", ex);
             }
         }
 
@@ -849,6 +904,21 @@ namespace PerformanceMonitorDashboard.Controls
         private async void StorageGrowthRefresh_Click(object sender, RoutedEventArgs e)
         {
             await LoadStorageGrowthAsync();
+        }
+
+        private async void ObjectSizeGrowthRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadObjectSizeGrowthAsync();
+        }
+
+        private async void IndexUsageRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadIndexUsageAsync();
+        }
+
+        private async void IndexLockingRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadIndexLockingAsync();
         }
 
         private async void WaitStatsTimeRange_Changed(object sender, SelectionChangedEventArgs e)

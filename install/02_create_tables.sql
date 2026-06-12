@@ -1476,6 +1476,84 @@ BEGIN
 END;
 
 /*
+Index/Object Statistics Table (FinOps)
+Per-table and per-index size, usage, and locking stats for growth trending,
+unused-index detection, and contention analysis. Size columns are absolute
+point-in-time values; usage and locking counters are cumulative (reset on
+instance restart / DB detach / AUTO_CLOSE) - sqlserver_start_time carries the
+reset boundary so deltas can be computed safely in the read layer.
+*/
+IF OBJECT_ID(N'collect.index_object_stats', N'U') IS NULL
+BEGIN
+    CREATE TABLE
+        collect.index_object_stats
+    (
+        collection_id bigint IDENTITY NOT NULL,
+        collection_time datetime2(7) NOT NULL
+            DEFAULT SYSDATETIME(),
+        sqlserver_start_time datetime2(7) NULL,
+        database_name sysname NOT NULL,
+        database_id integer NOT NULL,
+        schema_name sysname NOT NULL,
+        object_id integer NOT NULL,
+        table_name sysname NOT NULL,
+        index_id integer NOT NULL,
+        index_name sysname NULL,
+        index_type_desc nvarchar(60) NULL,
+        is_unique bit NULL,
+        is_primary_key bit NULL,
+        is_filtered bit NULL,
+        partition_count integer NULL,
+        reserved_mb decimal(19,2) NULL,
+        used_mb decimal(19,2) NULL,
+        in_row_data_mb decimal(19,2) NULL,
+        lob_data_mb decimal(19,2) NULL,
+        row_overflow_mb decimal(19,2) NULL,
+        total_rows bigint NULL,
+        user_seeks bigint NULL,
+        user_scans bigint NULL,
+        user_lookups bigint NULL,
+        user_updates bigint NULL,
+        last_user_seek datetime2(7) NULL,
+        last_user_scan datetime2(7) NULL,
+        last_user_lookup datetime2(7) NULL,
+        last_user_update datetime2(7) NULL,
+        leaf_insert_count bigint NULL,
+        leaf_update_count bigint NULL,
+        leaf_delete_count bigint NULL,
+        range_scan_count bigint NULL,
+        singleton_lookup_count bigint NULL,
+        row_lock_count bigint NULL,
+        row_lock_wait_count bigint NULL,
+        row_lock_wait_in_ms bigint NULL,
+        page_lock_count bigint NULL,
+        page_lock_wait_count bigint NULL,
+        page_lock_wait_in_ms bigint NULL,
+        index_lock_promotion_attempt_count bigint NULL,
+        index_lock_promotion_count bigint NULL,
+        page_latch_wait_count bigint NULL,
+        page_latch_wait_in_ms bigint NULL,
+        page_io_latch_wait_count bigint NULL,
+        page_io_latch_wait_in_ms bigint NULL,
+        /*Analysis helpers - computed columns*/
+        total_reads AS
+        (
+            ISNULL(user_seeks, 0) +
+            ISNULL(user_scans, 0) +
+            ISNULL(user_lookups, 0)
+        ),
+        CONSTRAINT
+            PK_index_object_stats
+        PRIMARY KEY CLUSTERED
+            (collection_time, collection_id)
+        WITH
+            (DATA_COMPRESSION = PAGE)
+    );
+
+    PRINT 'Created collect.index_object_stats table';
+END;
+
+/*
 Server Properties Table (FinOps)
 */
 IF OBJECT_ID(N'collect.server_properties', N'U') IS NULL
@@ -1592,6 +1670,26 @@ BEGIN
         (SORT_IN_TEMPDB = ON, DATA_COMPRESSION = PAGE' + @online_option + N');';
     EXEC sys.sp_executesql @index_sql;
     PRINT 'Created collect.query_store_data.IX_query_store_data_id_lookup index';
+END;
+
+IF NOT EXISTS
+(
+    SELECT
+        1/0
+    FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'collect.index_object_stats')
+    AND   name = N'IX_index_object_stats_object_lookup'
+)
+BEGIN
+    SET @index_sql = N'
+    CREATE NONCLUSTERED INDEX
+        IX_index_object_stats_object_lookup
+    ON collect.index_object_stats
+        (database_name, object_id, index_id, collection_time DESC)
+    WITH
+        (SORT_IN_TEMPDB = ON, DATA_COMPRESSION = PAGE' + @online_option + N');';
+    EXEC sys.sp_executesql @index_sql;
+    PRINT 'Created collect.index_object_stats.IX_index_object_stats_object_lookup index';
 END;
 
 PRINT 'All collection tables created successfully';
