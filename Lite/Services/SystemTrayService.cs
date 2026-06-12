@@ -116,7 +116,9 @@ public class SystemTrayService : IDisposable
         /* Double-click to show window */
         _trayIcon.TrayMouseDoubleClick += (s, e) => _restoreWindow();
 
-        /* Handle minimize to tray */
+        /* Handle minimize to tray. Unsubscribe first: Initialize re-runs on theme change, so a
+           plain += would stack a duplicate StateChanged handler on the app-lifetime window each time. */
+        _mainWindow.StateChanged -= MainWindow_StateChanged;
         _mainWindow.StateChanged += MainWindow_StateChanged;
     }
 
