@@ -184,6 +184,12 @@ PerformanceMonitorInstaller.exe YourServerName --reinstall
 PerformanceMonitorInstaller.exe YourServerName sa YourPassword --reinstall
 ```
 
+Custom data/log file locations (applied only when the database is first created):
+
+```
+PerformanceMonitorInstaller.exe YourServerName --data-path D:\SQLData --log-path E:\SQLLogs
+```
+
 Uninstall (removes database, Agent jobs, and XE sessions):
 
 ```
@@ -208,7 +214,11 @@ The installer automatically tests the connection, checks the SQL Server version 
 | `--preserve-jobs` | Keep existing SQL Agent job schedules during upgrade |
 | `--encrypt=optional\|mandatory\|strict` | Connection encryption level (default: mandatory) |
 | `--trust-cert` | Trust server certificate without validation (default: require valid cert) |
+| `--data-path DIR` | Server-side directory for the data (`.mdf`) file (used only on first install) |
+| `--log-path DIR` | Server-side directory for the log (`.ldf`) file (used only on first install) |
 | `--help` | Show usage information and exit |
+
+> **Custom file locations:** `--data-path` / `--log-path` set where SQL Server places the PerformanceMonitor data and log files. They take effect **only when the database is first created** — if the database already exists they are ignored. Either flag may be supplied independently; an omitted one falls back to the instance default (`SERVERPROPERTY('InstanceDefaultDataPath')` / `InstanceDefaultLogPath`). The directory is a path **on the SQL Server host** and must already exist, with the SQL Server service account holding write permission. Both `--data-path D:\SQLData` and `--data-path=D:\SQLData` forms are accepted; quote paths containing spaces. Not applicable to Azure SQL Managed Instance, which always uses its managed file layout.
 
 **Environment variable:** Set `PM_SQL_PASSWORD` to avoid passing the password on the command line.
 

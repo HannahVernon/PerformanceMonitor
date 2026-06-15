@@ -46,6 +46,8 @@ namespace PerformanceMonitorInstaller
               --reinstall       Drop existing database and perform clean install
               --encrypt=X       Connection encryption: mandatory (default), optional, strict
               --trust-cert      Trust server certificate without validation (default: require valid cert)
+              --data-path DIR   Server-side directory for the data (.mdf) file (first install only)
+              --log-path DIR    Server-side directory for the log (.ldf) file (first install only)
             */
             if (args.Any(a => a.Equals("--help", StringComparison.OrdinalIgnoreCase)
                               || a.Equals("-h", StringComparison.OrdinalIgnoreCase)))
@@ -65,6 +67,8 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  --encrypt=<level>    Connection encryption: mandatory (default), optional, strict");
                 Console.WriteLine("  --trust-cert         Trust server certificate without validation");
                 Console.WriteLine("  --entra <email>      Use Microsoft Entra ID interactive authentication (MFA)");
+                Console.WriteLine("  --data-path <dir>    Server-side directory for the data (.mdf) file (first install only)");
+                Console.WriteLine("  --log-path <dir>     Server-side directory for the log (.ldf) file (first install only)");
                 Console.WriteLine();
                 Console.WriteLine("Environment Variables:");
                 Console.WriteLine("  PM_SQL_PASSWORD      SQL Auth password (avoids passing on command line)");
@@ -128,17 +132,57 @@ namespace PerformanceMonitorInstaller
                 }
             }
 
+            /*Parse optional custom database file locations (#768).
+              Supports both --data-path=<dir> and --data-path <dir> (and --log-path).
+              These are server-side directories where SQL Server places the
+              PerformanceMonitor data/log files on first creation.*/
+            string? dataPathArg = GetOptionValue(args, "--data-path");
+            string? logPathArg = GetOptionValue(args, "--log-path");
+
+            string? dataPath = null;
+            string? logPath = null;
+
+            if (dataPathArg != null)
+            {
+                if (!PathValidation.TryValidateDirectory(dataPathArg, out dataPath, out string dataPathError))
+                {
+                    Console.WriteLine($"Error: invalid --data-path: {dataPathError}");
+                    return (int)InstallationResultCode.InvalidArguments;
+                }
+            }
+
+            if (logPathArg != null)
+            {
+                if (!PathValidation.TryValidateDirectory(logPathArg, out logPath, out string logPathError))
+                {
+                    Console.WriteLine($"Error: invalid --log-path: {logPathError}");
+                    return (int)InstallationResultCode.InvalidArguments;
+                }
+            }
+
+            if (dataPath != null)
+            {
+                Console.WriteLine($"Custom data file directory: {dataPath} (used only when the database is first created)");
+            }
+            if (logPath != null)
+            {
+                Console.WriteLine($"Custom log file directory:  {logPath} (used only when the database is first created)");
+            }
+
             /*Filter out all --flags and their trailing values to get positional arguments
-              (server, username, password). Flags like --entra <email> and --encrypt <level>
-              have a following value that must also be removed.*/
+              (server, username, password). Flags like --entra <email>, --encrypt <level>,
+              --data-path <dir>, and --log-path <dir> have a following value that must also
+              be removed.*/
             var filteredArgsList = new List<string>();
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i].StartsWith("--", StringComparison.Ordinal))
                 {
-                    /*Skip flags that take a trailing value (--entra <email>, --encrypt <level>)*/
+                    /*Skip flags that take a trailing value (space-separated form)*/
                     if ((args[i].Equals("--entra", StringComparison.OrdinalIgnoreCase)
-                        || args[i].Equals("--encrypt", StringComparison.OrdinalIgnoreCase))
+                        || args[i].Equals("--encrypt", StringComparison.OrdinalIgnoreCase)
+                        || args[i].Equals("--data-path", StringComparison.OrdinalIgnoreCase)
+                        || args[i].Equals("--log-path", StringComparison.OrdinalIgnoreCase))
                         && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
                     {
                         i++; /*skip the value too*/
@@ -232,6 +276,8 @@ namespace PerformanceMonitorInstaller
                     Console.WriteLine("  --reset-schedule     Reset collection schedule to recommended defaults");
                     Console.WriteLine("  --encrypt=<level>    Connection encryption: mandatory (default), optional, strict");
                     Console.WriteLine("  --trust-cert         Trust server certificate without validation (default: require valid cert)");
+                    Console.WriteLine("  --data-path <dir>    Server-side directory for the data (.mdf) file (first install only)");
+                    Console.WriteLine("  --log-path <dir>     Server-side directory for the log (.ldf) file (first install only)");
                     return (int)InstallationResultCode.InvalidArguments;
                 }
             }
@@ -756,7 +802,10 @@ namespace PerformanceMonitorInstaller
                         Console.WriteLine($"Warning: Dependency installation encountered errors: {ex.Message}");
                         Console.WriteLine("Continuing with installation...");
                     }
-                }).ConfigureAwait(false);
+                },
+                cancellationToken: default,
+                dataPath: dataPath,
+                logPath: logPath).ConfigureAwait(false);
 
             installSuccessCount = installResult.FilesSucceeded;
             installFailureCount = installResult.FilesFailed;
@@ -1105,6 +1154,29 @@ namespace PerformanceMonitorInstaller
             File.WriteAllText(logPath, sb.ToString());
 
             return logPath;
+        }
+
+        /*
+        Read an option value supporting both "--opt=value" and "--opt value" forms.
+        Returns null when the option is absent or has no value. A value that
+        itself starts with "--" (i.e., the next flag) is treated as absent.
+        */
+        private static string? GetOptionValue(string[] args, string optionName)
+        {
+            string prefix = optionName + "=";
+            var equalsForm = args.FirstOrDefault(a => a.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+            if (equalsForm != null)
+            {
+                return equalsForm.Substring(prefix.Length);
+            }
+
+            int index = Array.FindIndex(args, a => a.Equals(optionName, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0 && index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                return args[index + 1];
+            }
+
+            return null;
         }
 
         /*
