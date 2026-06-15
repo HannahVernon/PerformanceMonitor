@@ -99,6 +99,14 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, bool> _activeTempDbSpaceAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningJobAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastFailedJobAlert = new();
+        /* Watermark of the most-recent failed-job run time already alerted per server. A failed
+           run lingers in the lookback window for the whole window, so a plain level check would
+           re-fire every cooldown; we only notify when a strictly newer failure appears. Bounded
+           by server count, so no pruning needed. (Server-local run times mean a fall-back DST hour
+           / NTP step could let one new failure tie the watermark and be skipped — a once-a-year,
+           one-hour edge.) */
+        private readonly ConcurrentDictionary<string, DateTime> _lastAlertedFailedJobTime = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, long> _previousDeadlockCounts = new();
@@ -1493,7 +1501,7 @@ namespace PerformanceMonitorDashboard
                     var connectionString = server.GetConnectionString(_credentialService);
                     var databaseService = new DatabaseService(connectionString);
                     var connStatus = _serverManager.GetConnectionStatus(server.Id);
-                    var health = await databaseService.GetAlertHealthAsync(connStatus.SqlEngineEdition, prefs.LongRunningQueryThresholdMinutes, prefs.LongRunningJobMultiplier, prefs.LongRunningQueryMaxResults, prefs.LongRunningQueryExcludeSpServerDiagnostics, prefs.LongRunningQueryExcludeWaitFor, prefs.LongRunningQueryExcludeBackups, prefs.LongRunningQueryExcludeMiscWaits, prefs.LongRunningQueryExcludeCdc, prefs.AlertExcludedDatabases);
+                    var health = await databaseService.GetAlertHealthAsync(connStatus.SqlEngineEdition, prefs.LongRunningQueryThresholdMinutes, prefs.LongRunningJobMultiplier, prefs.LongRunningQueryMaxResults, prefs.LongRunningQueryExcludeSpServerDiagnostics, prefs.LongRunningQueryExcludeWaitFor, prefs.LongRunningQueryExcludeBackups, prefs.LongRunningQueryExcludeMiscWaits, prefs.LongRunningQueryExcludeCdc, prefs.FailedJobLookbackMinutes, prefs.AlertExcludedDatabases);
 
                     if (health.IsOnline)
                     {
@@ -2023,6 +2031,56 @@ namespace PerformanceMonitorDashboard
                 _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Jobs Cleared",
                     "0", $"{prefs.LongRunningJobMultiplier}x avg", true, "tray");
             }
+
+            /* Failed Agent job alerts — live msdb query for runs that failed in the lookback window.
+               Failures are point-in-time events (not a sustained state), so there is no "cleared"
+               notification; the per-server watermark below dedups so the same failure never re-fires. */
+            if (prefs.NotifyOnFailedJobs && health.RecentlyFailedJobs.Count > 0)
+            {
+                var newestFailure = health.RecentlyFailedJobs.Max(j => j.RunDateTime);
+                bool hasWatermark = _lastAlertedFailedJobTime.TryGetValue(serverId, out var lastFailure);
+                bool hasNewFailure = !hasWatermark || newestFailure > lastFailure;
+
+                if (hasNewFailure
+                    && (!_lastFailedJobAlert.TryGetValue(serverId, out var lastFailedAlert) || (now - lastFailedAlert) >= alertCooldown))
+                {
+                    var mostRecent = health.RecentlyFailedJobs[0]; // ORDER BY run_datetime DESC
+                    var jobNames = string.Join(", ", health.RecentlyFailedJobs.Select(j => j.JobName).Distinct().Take(3));
+
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Failed Agent Job", JobName = mostRecent.JobName };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastFailedJobAlert[serverId] = now;
+                    _lastAlertedFailedJobTime[serverId] = newestFailure;
+                    var jobContext = BuildFailedJobContext(health.RecentlyFailedJobs);
+                    var detailText = ContextToDetailText(jobContext);
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Failed Agent Job",
+                            $"{serverName}: {health.RecentlyFailedJobs.Count} job failure(s) — {jobNames}",
+                            NotificationType.Warning,
+                            serverName,
+                            "Failed Agent Job",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Failed Agent Job",
+                        $"{health.RecentlyFailedJobs.Count} failure(s) — {jobNames}",
+                        $"last {prefs.FailedJobLookbackMinutes}m", !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Failed Agent Job",
+                            serverName,
+                            $"{health.RecentlyFailedJobs.Count} job failure(s) in last {prefs.FailedJobLookbackMinutes}m — {jobNames}",
+                            $"last {prefs.FailedJobLookbackMinutes}m",
+                            serverId,
+                            jobContext);
+                    }
+                }
+            }
         }
 
         private static string Truncate(string text, int maxLength = 300)
@@ -2267,6 +2325,23 @@ namespace PerformanceMonitorDashboard
                         ("Started", j.StartTime.ToString("yyyy-MM-dd HH:mm:ss"))
                     }
                 });
+            }
+            return context;
+        }
+
+        private static AlertContext? BuildFailedJobContext(List<FailedJobInfo> jobs)
+        {
+            if (jobs.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var j in jobs.GetRange(0, Math.Min(5, jobs.Count)))
+            {
+                var item = new AlertDetailItem { Heading = j.JobName, Fields = new() };
+                item.Fields.Add(("Job", j.JobName));
+                item.Fields.Add(("Failed At", j.RunDateTimeFormatted));
+                if (!string.IsNullOrEmpty(j.Message))
+                    item.Fields.Add(("Message", Truncate(j.Message, 300)));
+                context.Details.Add(item);
             }
             return context;
         }

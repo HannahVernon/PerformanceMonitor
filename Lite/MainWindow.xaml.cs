@@ -68,6 +68,13 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _activeLongRunningQueryAlert = new();
     private readonly Dictionary<string, bool> _activeTempDbSpaceAlert = new();
     private readonly Dictionary<string, bool> _activeLongRunningJobAlert = new();
+    private readonly Dictionary<string, DateTime> _lastFailedJobAlert = new();
+    /* Watermark of the most-recent failed-job run time already alerted per server. A failed run
+       lingers in the lookback window for the whole window, so a plain level check would re-fire
+       every cooldown; we only notify when a strictly newer failure appears. Bounded by server
+       count, so no pruning needed. (Server-local run times mean a fall-back DST hour / NTP step
+       could let one new failure tie the watermark and be skipped — a once-a-year, one-hour edge.) */
+    private readonly Dictionary<string, DateTime> _lastAlertedFailedJobTime = new();
 
     /* Edge-trigger watermarks (#1091): the rolling 1-hour blocking/deadlock counts stay
        above the threshold for the whole hour an event lingers in the window, so a plain
@@ -1974,6 +1981,83 @@ public partial class MainWindow : Window
                 AppLogger.Error("Alerts", $"Failed to check anomalous jobs for {summary.DisplayName}: {ex.Message}");
             }
         }
+
+        /* Failed Agent job alerts — live msdb query for runs that failed in the lookback window.
+           Failure outcomes aren't part of the collected running_jobs snapshot, so this queries the
+           monitored server directly (mirrors the long-running-query live pattern). Failures are
+           point-in-time events, so there is no "cleared" notification; the per-server watermark
+           dedups so the same failure never re-fires. */
+        if (App.AlertFailedJobEnabled && _collectorService != null)
+        {
+            try
+            {
+                var server = _serverManager.GetAllServers().FirstOrDefault(s =>
+                    RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(s)).ToString() == key);
+                var connStatus = server != null ? _serverManager.GetConnectionStatus(server.Id) : null;
+
+                /* Only query online, non-Azure-SQL-DB servers whose login has msdb access.
+                   Azure SQL DB has no SQL Agent; a login without msdb can't read sysjobhistory. */
+                if (server != null
+                    && connStatus != null
+                    && connStatus.IsOnline == true
+                    && connStatus.SqlEngineEdition != 5
+                    && connStatus.HasMsdbAccess)
+                {
+                    /* Live msdb read via the collector's connection path (async SqlClient, already
+                       off the UI thread; MFA serialization / throttle / retry handled inside). */
+                    var failedJobs = await _collectorService.GetRecentlyFailedJobsAsync(server, App.AlertFailedJobLookbackMinutes);
+
+                    if (failedJobs.Count > 0)
+                    {
+                        var newestFailure = failedJobs.Max(j => j.RunDateTime);
+                        bool hasWatermark = _lastAlertedFailedJobTime.TryGetValue(key, out var lastFailure);
+                        bool hasNewFailure = !hasWatermark || newestFailure > lastFailure;
+
+                        if (hasNewFailure && !suppressPopups &&
+                            (!_lastFailedJobAlert.TryGetValue(key, out var lastFailedAlert) || now - lastFailedAlert >= alertCooldown))
+                        {
+                            var mostRecent = failedJobs[0]; // ORDER BY run_datetime DESC
+                            var jobNames = string.Join(", ", failedJobs.Select(j => j.JobName).Distinct().Take(3));
+
+                            var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Failed Agent Job", JobName = mostRecent.JobName };
+                            bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                            _lastFailedJobAlert[key] = now;
+                            _lastAlertedFailedJobTime[key] = newestFailure;
+
+                            if (!isMuted)
+                            {
+                                _trayService.ShowSnoozableNotification(
+                                    "Failed Agent Job",
+                                    $"{summary.DisplayName}: {failedJobs.Count} job failure(s) — {jobNames}",
+                                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning,
+                                    summary.DisplayName,
+                                    "Failed Agent Job",
+                                    _muteRuleService);
+                            }
+
+                            var failedJobContext = BuildFailedJobContext(failedJobs);
+                            var detailText = ContextToDetailText(failedJobContext);
+
+                            await _emailAlertService.TrySendAlertEmailAsync(
+                                "Failed Agent Job",
+                                summary.DisplayName,
+                                $"{failedJobs.Count} job failure(s) in last {App.AlertFailedJobLookbackMinutes}m — {jobNames}",
+                                $"last {App.AlertFailedJobLookbackMinutes}m",
+                                summary.ServerId,
+                                failedJobContext,
+                                numericCurrentValue: failedJobs.Count,
+                                numericThresholdValue: 0,
+                                muted: isMuted,
+                                detailText: detailText);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Alerts", $"Failed to check failed jobs for {summary.DisplayName}: {ex.Message}");
+            }
+        }
     }
 
         private static string TruncateText(string text, int maxLength = 300)
@@ -2219,6 +2303,23 @@ public partial class MainWindow : Window
                         ("Started", j.StartTime.ToString("yyyy-MM-dd HH:mm:ss"))
                     }
                 });
+            }
+            return context;
+        }
+
+        private static AlertContext? BuildFailedJobContext(List<FailedJobInfo> jobs)
+        {
+            if (jobs.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var j in jobs.GetRange(0, Math.Min(5, jobs.Count)))
+            {
+                var item = new AlertDetailItem { Heading = j.JobName, Fields = new() };
+                item.Fields.Add(("Job", j.JobName));
+                item.Fields.Add(("Failed At", j.RunDateTimeFormatted));
+                if (!string.IsNullOrEmpty(j.Message))
+                    item.Fields.Add(("Message", TruncateText(j.Message, 300)));
+                context.Details.Add(item);
             }
             return context;
         }
