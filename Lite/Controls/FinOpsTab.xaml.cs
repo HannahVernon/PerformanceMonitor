@@ -173,7 +173,7 @@ public partial class FinOpsTab : UserControl
             if (string.IsNullOrEmpty(connectionString)) return;
 
             var utilityConnectionString = _credentialResolver.GetUtilityConnectionString(selectedServer!);
-            var data = await _dataService.GetRecommendationsAsync(serverId, connectionString, utilityConnectionString, _currentServerMonthlyCost);
+            var data = await Task.Run(() => _dataService.GetRecommendationsAsync(serverId, connectionString, utilityConnectionString, _currentServerMonthlyCost));
             RecommendationsDataGrid.ItemsSource = data;
             RecommendationsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             RecommendationsCountIndicator.Text = data.Count > 0 ? $"{data.Count} recommendation(s)" : "";
@@ -190,14 +190,14 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetUtilizationEfficiencyAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetUtilizationEfficiencyAsync(serverId));
 
             if (data != null)
             {
                 data.MonthlyCost = _currentServerMonthlyCost;
 
                 // Compute free space % for health score from database sizes
-                var dbSizes = await _dataService.GetDatabaseSizeLatestAsync(serverId);
+                var dbSizes = await Task.Run(() => _dataService.GetDatabaseSizeLatestAsync(serverId));
                 var totalStorageMb = dbSizes.Sum(d => d.TotalSizeMb);
                 var totalFreeMb = dbSizes.Sum(d => (d.FreeSpaceMb ?? 0m));
                 data.FreeSpacePct = totalStorageMb > 0 ? totalFreeMb / totalStorageMb * 100m : 100m;
@@ -209,10 +209,10 @@ public partial class FinOpsTab : UserControl
 
             if (data != null)
             {
-                TopTotalGrid.ItemsSource = await _dataService.GetTopResourceConsumersByTotalAsync(serverId);
-                TopAvgGrid.ItemsSource = await _dataService.GetTopResourceConsumersByAvgAsync(serverId);
-                DbSizeChart.ItemsSource = await _dataService.GetDatabaseSizeSummaryAsync(serverId);
-                ProvisioningTrendGrid.ItemsSource = await _dataService.GetProvisioningTrendAsync(serverId);
+                TopTotalGrid.ItemsSource = await Task.Run(() => _dataService.GetTopResourceConsumersByTotalAsync(serverId));
+                TopAvgGrid.ItemsSource = await Task.Run(() => _dataService.GetTopResourceConsumersByAvgAsync(serverId));
+                DbSizeChart.ItemsSource = await Task.Run(() => _dataService.GetDatabaseSizeSummaryAsync(serverId));
+                ProvisioningTrendGrid.ItemsSource = await Task.Run(() => _dataService.GetProvisioningTrendAsync(serverId));
             }
             else
             {
@@ -383,7 +383,7 @@ public partial class FinOpsTab : UserControl
         try
         {
             var hoursBack = GetResourceUsageHoursBack();
-            var data = await _dataService.GetDatabaseResourceUsageAsync(serverId, hoursBack);
+            var data = await Task.Run(() => _dataService.GetDatabaseResourceUsageAsync(serverId, hoursBack));
             _dbResourcesFilterMgr!.UpdateData(data);
             NoDatabaseResourcesMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             DbResourcesCountIndicator.Text = data.Count > 0 ? $"{data.Count} database(s)" : "";
@@ -400,7 +400,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetApplicationConnectionsAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetApplicationConnectionsAsync(serverId));
             _appConnectionsFilterMgr!.UpdateData(data);
             NoAppConnectionsMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             AppConnectionsCountIndicator.Text = data.Count > 0 ? $"{data.Count} application(s)" : "";
@@ -417,7 +417,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetDatabaseSizeLatestAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetDatabaseSizeLatestAsync(serverId));
 
             // Compute proportional cost shares
             if (_currentServerMonthlyCost > 0 && data.Count > 0)
@@ -475,7 +475,7 @@ public partial class FinOpsTab : UserControl
                     try
                     {
                         var serverId = RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(server));
-                        var (avgCpu, storageGb, idleDbs, status) = await _dataService!.GetServerMetricsAsync(serverId);
+                        var (avgCpu, storageGb, idleDbs, status) = await Task.Run(() => _dataService!.GetServerMetricsAsync(serverId));
                         if (avgCpu.HasValue) item.AvgCpuPct = avgCpu;
                         if (storageGb.HasValue) item.StorageTotalGb = storageGb;
                         if (idleDbs.HasValue) item.IdleDbCount = idleDbs;
@@ -526,7 +526,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetStorageGrowthAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetStorageGrowthAsync(serverId));
             _storageGrowthFilterMgr!.UpdateData(data);
             NoStorageGrowthMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             StorageGrowthCountIndicator.Text = data.Count > 0 ? $"{data.Count} database(s)" : "";
@@ -546,7 +546,7 @@ public partial class FinOpsTab : UserControl
         if (_dataService == null) return;
         try
         {
-            var data = await _dataService.GetObjectSizeGrowthAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetObjectSizeGrowthAsync(serverId));
             _objectSizeGrowthFilterMgr!.UpdateData(data);
             NoObjectSizeGrowthMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             ObjectSizeGrowthCountIndicator.Text = data.Count > 0 ? $"{data.Count} table(s)" : "";
@@ -562,7 +562,7 @@ public partial class FinOpsTab : UserControl
         if (_dataService == null) return;
         try
         {
-            var data = await _dataService.GetIndexUsageAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetIndexUsageAsync(serverId));
             _indexUsageFilterMgr!.UpdateData(data);
             NoIndexUsageMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             IndexUsageCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
@@ -578,7 +578,7 @@ public partial class FinOpsTab : UserControl
         if (_dataService == null) return;
         try
         {
-            var data = await _dataService.GetIndexLockingAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetIndexLockingAsync(serverId));
             _indexLockingFilterMgr!.UpdateData(data);
             NoIndexLockingMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             IndexLockingCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
@@ -613,7 +613,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetIdleDatabasesAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetIdleDatabasesAsync(serverId));
             _idleDbsFilterMgr!.UpdateData(data);
             IdleDatabasesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             IdleDatabasesCountIndicator.Text = data.Count > 0 ? $"{data.Count} idle database(s)" : "";
@@ -630,7 +630,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetTempdbSummaryAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetTempdbSummaryAsync(serverId));
             _tempdbFilterMgr!.UpdateData(data);
             TempdbPressureNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -660,7 +660,7 @@ public partial class FinOpsTab : UserControl
         try
         {
             var hoursBack = GetHighImpactHoursBack();
-            var data = await _dataService.GetHighImpactQueriesAsync(serverId, hoursBack);
+            var data = await Task.Run(() => _dataService.GetHighImpactQueriesAsync(serverId, hoursBack));
             _highImpactFilterMgr!.UpdateData(data);
             HighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             HighImpactCountIndicator.Text = data.Count > 0 ? $"{data.Count} high-impact query(s)" : "";
@@ -704,7 +704,7 @@ public partial class FinOpsTab : UserControl
         try
         {
             var hoursBack = GetWaitStatsHoursBack();
-            var data = await _dataService.GetWaitCategorySummaryAsync(serverId, hoursBack);
+            var data = await Task.Run(() => _dataService.GetWaitCategorySummaryAsync(serverId, hoursBack));
 
             // Compute proportional cost shares — scaled to time window
             if (_currentServerMonthlyCost > 0 && data.Count > 0)
@@ -734,7 +734,7 @@ public partial class FinOpsTab : UserControl
         try
         {
             var hoursBack = GetExpensiveQueriesHoursBack();
-            var data = await _dataService.GetExpensiveQueriesAsync(serverId, hoursBack);
+            var data = await Task.Run(() => _dataService.GetExpensiveQueriesAsync(serverId, hoursBack));
 
             // Compute proportional cost shares — scaled to time window
             if (_currentServerMonthlyCost > 0 && data.Count > 0)
@@ -764,7 +764,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var data = await _dataService.GetMemoryGrantEfficiencyAsync(serverId);
+            var data = await Task.Run(() => _dataService.GetMemoryGrantEfficiencyAsync(serverId));
             _memoryGrantFilterMgr!.UpdateData(data);
             MemoryGrantEfficiencyNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
