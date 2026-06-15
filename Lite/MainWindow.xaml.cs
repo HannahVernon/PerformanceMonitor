@@ -1549,7 +1549,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var blockingRows = await _dataService.GetRecentBlockedProcessReportsAsync(summary.ServerId, hoursBack: 1);
+                var blockingRows = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(summary.ServerId, hoursBack: 1));
                 effectiveBlockingCount = blockingRows
                     .Count(r => string.IsNullOrEmpty(r.DatabaseName) ||
                         !App.AlertExcludedDatabases.Any(e =>
@@ -1622,7 +1622,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var deadlockRows = await _dataService.GetRecentDeadlocksAsync(summary.ServerId, hoursBack: 1);
+                var deadlockRows = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(summary.ServerId, hoursBack: 1));
                 effectiveDeadlockCount = deadlockRows
                     .Count(r => !IsDeadlockExcluded(r, App.AlertExcludedDatabases));
             }
@@ -1691,7 +1691,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var poisonWaits = await _dataService.GetLatestPoisonWaitAvgsAsync(summary.ServerId);
+                var poisonWaits = await Task.Run(() => _dataService.GetLatestPoisonWaitAvgsAsync(summary.ServerId));
                 var triggered = poisonWaits.FindAll(w => w.AvgMsPerWait >= App.AlertPoisonWaitThresholdMs);
 
                 if (triggered.Count > 0)
@@ -1760,7 +1760,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var longRunning = await _dataService.GetLongRunningQueriesAsync(summary.ServerId, App.AlertLongRunningQueryThresholdMinutes, App.AlertLongRunningQueryMaxResults, App.AlertLongRunningQueryExcludeSpServerDiagnostics, App.AlertLongRunningQueryExcludeWaitFor, App.AlertLongRunningQueryExcludeBackups, App.AlertLongRunningQueryExcludeMiscWaits, App.AlertLongRunningQueryExcludeCdc);
+                var longRunning = await Task.Run(() => _dataService.GetLongRunningQueriesAsync(summary.ServerId, App.AlertLongRunningQueryThresholdMinutes, App.AlertLongRunningQueryMaxResults, App.AlertLongRunningQueryExcludeSpServerDiagnostics, App.AlertLongRunningQueryExcludeWaitFor, App.AlertLongRunningQueryExcludeBackups, App.AlertLongRunningQueryExcludeMiscWaits, App.AlertLongRunningQueryExcludeCdc));
 
                 if (App.AlertExcludedDatabases.Count > 0)
                 {
@@ -1841,7 +1841,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var tempDb = await _dataService.GetLatestTempDbSpaceAsync(summary.ServerId);
+                var tempDb = await Task.Run(() => _dataService.GetLatestTempDbSpaceAsync(summary.ServerId));
 
                 if (tempDb != null && tempDb.UsedPercent >= App.AlertTempDbSpaceThresholdPercent)
                 {
@@ -1903,7 +1903,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                var anomalousJobs = await _dataService.GetAnomalousJobsAsync(summary.ServerId, App.AlertLongRunningJobMultiplier);
+                var anomalousJobs = await Task.Run(() => _dataService.GetAnomalousJobsAsync(summary.ServerId, App.AlertLongRunningJobMultiplier));
 
                 /* _lastLongRunningJobAlert is keyed per job *run* ({server}:{jobId}:{startTime}),
                    so unlike the per-server cooldown dicts it grows without bound. Drop entries
@@ -2003,7 +2003,7 @@ public partial class MainWindow : Window
             {
                 if (_dataService == null) return null;
 
-                var events = await _dataService.GetRecentBlockedProcessReportsAsync(serverId, hoursBack: 1);
+                var events = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(serverId, hoursBack: 1));
                 if (events == null || events.Count == 0) return null;
 
                 if (App.AlertExcludedDatabases.Count > 0)
@@ -2063,7 +2063,7 @@ public partial class MainWindow : Window
             {
                 if (_dataService == null) return null;
 
-                var deadlocks = await _dataService.GetRecentDeadlocksAsync(serverId, hoursBack: 1);
+                var deadlocks = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(serverId, hoursBack: 1));
                 if (deadlocks == null || deadlocks.Count == 0) return null;
 
                 if (App.AlertExcludedDatabases.Count > 0)

@@ -121,7 +121,7 @@ public partial class ServerTab : UserControl
     {
         try
         {
-            var (blockingCount, deadlockCount, latestEventTime) = await _dataService.GetAlertCountsAsync(_serverId, hoursBack, fromDate, toDate);
+            var (blockingCount, deadlockCount, latestEventTime) = await Task.Run(() => _dataService.GetAlertCountsAsync(_serverId, hoursBack, fromDate, toDate));
             AlertCountsChanged?.Invoke(blockingCount, deadlockCount, latestEventTime);
         }
         catch (Exception ex)
