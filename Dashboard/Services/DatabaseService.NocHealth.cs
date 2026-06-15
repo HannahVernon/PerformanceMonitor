@@ -153,6 +153,7 @@ namespace PerformanceMonitorDashboard.Services
                 var poisonWaitTask = GetPoisonWaitDeltasAsync(connection);
                 var longRunningTask = GetLongRunningQueriesAsync(connection, longRunningQueryThresholdMinutes, longRunningQueryMaxResults, excludeSpServerDiagnostics, excludeWaitFor, excludeBackups, excludeMiscWaits, excludeCdc);
                 var tempDbTask = GetTempDbSpaceAsync(connection);
+                var volumeTask = GetVolumeFreeSpaceAsync(connection);
                 var anomalousJobTask = GetAnomalousJobsAsync(connection, longRunningJobMultiplier);
                 /* Azure SQL DB has no SQL Agent, so msdb.dbo.sysjobhistory doesn't exist there —
                    skip the live failed-job query entirely (the other queries already gate Azure
@@ -163,8 +164,8 @@ namespace PerformanceMonitorDashboard.Services
                 var missingCaptureTask = GetMissingCaptureSessionsAsync(connection);
 
                 var allTasks = filteredDeadlockTask != null
-                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, anomalousJobTask, failedJobTask, missingCaptureTask }
-                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, anomalousJobTask, failedJobTask, missingCaptureTask };
+                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask }
+                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask };
                 await Task.WhenAll(allTasks);
 
                 var cpuResult = await cpuTask;
@@ -181,6 +182,7 @@ namespace PerformanceMonitorDashboard.Services
                 result.PoisonWaits = await poisonWaitTask;
                 result.LongRunningQueries = await longRunningTask;
                 result.TempDbSpace = await tempDbTask;
+                result.Volumes = await volumeTask;
                 result.AnomalousJobs = await anomalousJobTask;
                 result.RecentlyFailedJobs = await failedJobTask;
                 result.MissingCaptureSessions = await missingCaptureTask;
@@ -990,13 +992,17 @@ namespace PerformanceMonitorDashboard.Services
                     });
                 }
             }
+            catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 229 or 297 or 300 or 916)
+            {
+                /* Login lacks msdb / SQLAgentReaderRole access — expected for read-only monitoring
+                   accounts; hit every alert cycle, so log at Info (not Warning) to avoid burying real warnings. */
+                Logger.Info($"Skipping recently-failed-job check (msdb/SQLAgentReaderRole access needed): {ex.Message}");
+            }
             catch (Exception ex)
             {
-                /* No msdb access / not SQLAgentReaderRole, or any other server-side error —
-                   skip silently so a single permission gap doesn't fail the whole alert cycle.
-                   Logged at Info, not Warning: a read-only monitoring login without msdb access
-                   hits this every alert cycle, so a Warning would bury real warnings. */
-                Logger.Info($"Skipping recently-failed-job check (msdb/SQLAgentReaderRole access needed): {ex.Message}");
+                /* Unexpected error (timeout, transient, etc.) — surface at Warning so a genuine read
+                   failure can't masquerade as "no failed jobs". Still returns empty so the cycle continues. */
+                Logger.Warning($"Recently-failed-job check errored: {ex.Message}");
             }
 
             return results;
@@ -1044,6 +1050,61 @@ namespace PerformanceMonitorDashboard.Services
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Returns latest free space for each distinct volume (mount point), worst (lowest free %)
+        /// first, for the low-disk alert. Files on the same volume collapse to one row. Volumes with
+        /// no mount point (Azure SQL DB has no volume stats) are excluded, so Azure yields no rows.
+        /// </summary>
+        private async Task<List<VolumeFreeSpaceInfo>> GetVolumeFreeSpaceAsync(SqlConnection connection)
+        {
+            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                SELECT
+                    volume_mount_point,
+                    volume_total_mb =
+                        MAX(volume_total_mb),
+                    volume_free_mb =
+                        MIN(volume_free_mb)
+                FROM collect.database_size_stats
+                WHERE collection_time =
+                (
+                    SELECT MAX(collection_time)
+                    FROM collect.database_size_stats
+                )
+                AND   volume_mount_point IS NOT NULL
+                AND   volume_total_mb > 0
+                GROUP BY
+                    volume_mount_point
+                ORDER BY
+                    MIN(volume_free_mb) / MAX(volume_total_mb)
+                OPTION(MAXDOP 1);";
+
+            var results = new List<VolumeFreeSpaceInfo>();
+
+            try
+            {
+                using var cmd = new SqlCommand(query, connection);
+                cmd.CommandTimeout = 10;
+                using var reader = await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    results.Add(new VolumeFreeSpaceInfo
+                    {
+                        MountPoint = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                        TotalMb = reader.IsDBNull(1) ? 0 : Convert.ToDouble(reader.GetValue(1), System.Globalization.CultureInfo.InvariantCulture),
+                        FreeMb = reader.IsDBNull(2) ? 0 : Convert.ToDouble(reader.GetValue(2), System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to get volume free space: {ex.Message}");
+            }
+
+            return results;
         }
     }
 }

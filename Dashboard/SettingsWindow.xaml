@@ -264,6 +264,25 @@
                                 <TextBlock Text="%" VerticalAlignment="Center"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnLowDiskCheckBox"
+                                          Content="Volume free space under"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnLowDiskCheckBox_Changed"
+                                          Unchecked="NotifyOnLowDiskCheckBox_Changed"/>
+                                <TextBox x:Name="LowDiskThresholdPercentTextBox"
+                                         Width="50"
+                                         Margin="8,0,4,0"
+                                         VerticalAlignment="Center"
+                                         TextAlignment="Center"/>
+                                <TextBlock Text="% or" VerticalAlignment="Center"/>
+                                <TextBox x:Name="LowDiskThresholdGbTextBox"
+                                         Width="50"
+                                         Margin="8,0,4,0"
+                                         VerticalAlignment="Center"
+                                         TextAlignment="Center"/>
+                                <TextBlock Text="GB free (Azure SQL DB excluded)" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <CheckBox x:Name="NotifyOnLongRunningJobsCheckBox"
                                           Content="Agent jobs running over"
                                           VerticalAlignment="Center"

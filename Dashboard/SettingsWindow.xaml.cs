@@ -190,6 +190,9 @@ namespace PerformanceMonitorDashboard
             AlertExcludedDatabasesTextBox.Text = string.Join(", ", prefs.AlertExcludedDatabases);
             NotifyOnTempDbSpaceCheckBox.IsChecked = prefs.NotifyOnTempDbSpace;
             TempDbSpaceThresholdTextBox.Text = prefs.TempDbSpaceThresholdPercent.ToString(CultureInfo.InvariantCulture);
+            NotifyOnLowDiskCheckBox.IsChecked = prefs.NotifyOnLowDisk;
+            LowDiskThresholdPercentTextBox.Text = prefs.LowDiskThresholdPercent.ToString(CultureInfo.InvariantCulture);
+            LowDiskThresholdGbTextBox.Text = prefs.LowDiskThresholdGb.ToString(CultureInfo.InvariantCulture);
             NotifyOnLongRunningJobsCheckBox.IsChecked = prefs.NotifyOnLongRunningJobs;
             LongRunningJobMultiplierTextBox.Text = prefs.LongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
             NotifyOnFailedJobsCheckBox.IsChecked = prefs.NotifyOnFailedJobs;
@@ -356,6 +359,12 @@ namespace PerformanceMonitorDashboard
             UpdateAlertNotificationStates();
         }
 
+        private void NotifyOnLowDiskCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
         private void NotifyOnLongRunningJobsCheckBox_Changed(object sender, RoutedEventArgs e)
         {
             if (_isLoading) return;
@@ -376,6 +385,8 @@ namespace PerformanceMonitorDashboard
             PoisonWaitThresholdTextBox.Text = "500";
             LongRunningQueryThresholdTextBox.Text = "30";
             TempDbSpaceThresholdTextBox.Text = "80";
+            LowDiskThresholdPercentTextBox.Text = "10";
+            LowDiskThresholdGbTextBox.Text = "5";
             LongRunningJobMultiplierTextBox.Text = "3";
             FailedJobLookbackTextBox.Text = "60";
             AlertCooldownTextBox.Text = "5";
@@ -408,6 +419,8 @@ namespace PerformanceMonitorDashboard
                 parts.Add($"queries > {LongRunningQueryThresholdTextBox.Text}min");
             if (NotifyOnTempDbSpaceCheckBox.IsChecked == true)
                 parts.Add($"TempDB > {TempDbSpaceThresholdTextBox.Text}%");
+            if (NotifyOnLowDiskCheckBox.IsChecked == true)
+                parts.Add($"disk free < {LowDiskThresholdPercentTextBox.Text}% or {LowDiskThresholdGbTextBox.Text}GB");
             if (NotifyOnLongRunningJobsCheckBox.IsChecked == true)
                 parts.Add($"jobs > {LongRunningJobMultiplierTextBox.Text}x avg");
             if (NotifyOnFailedJobsCheckBox.IsChecked == true)
@@ -434,6 +447,9 @@ namespace PerformanceMonitorDashboard
             LongRunningQueryThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningQueriesCheckBox.IsChecked == true;
             NotifyOnTempDbSpaceCheckBox.IsEnabled = notificationsEnabled;
             TempDbSpaceThresholdTextBox.IsEnabled = notificationsEnabled && NotifyOnTempDbSpaceCheckBox.IsChecked == true;
+            NotifyOnLowDiskCheckBox.IsEnabled = notificationsEnabled;
+            LowDiskThresholdPercentTextBox.IsEnabled = notificationsEnabled && NotifyOnLowDiskCheckBox.IsChecked == true;
+            LowDiskThresholdGbTextBox.IsEnabled = notificationsEnabled && NotifyOnLowDiskCheckBox.IsChecked == true;
             NotifyOnLongRunningJobsCheckBox.IsEnabled = notificationsEnabled;
             LongRunningJobMultiplierTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningJobsCheckBox.IsChecked == true;
             NotifyOnFailedJobsCheckBox.IsEnabled = notificationsEnabled;
@@ -709,6 +725,16 @@ namespace PerformanceMonitorDashboard
                 prefs.TempDbSpaceThresholdPercent = tempDbThreshold;
             else if (prefs.NotifyOnTempDbSpace)
                 validationErrors.Add("TempDB space threshold must be between 1 and 100");
+
+            prefs.NotifyOnLowDisk = NotifyOnLowDiskCheckBox.IsChecked == true;
+            if (int.TryParse(LowDiskThresholdPercentTextBox.Text, out int lowDiskPct) && lowDiskPct >= 0 && lowDiskPct <= 100)
+                prefs.LowDiskThresholdPercent = lowDiskPct;
+            else if (prefs.NotifyOnLowDisk)
+                validationErrors.Add("Volume free space percent threshold must be between 0 and 100");
+            if (int.TryParse(LowDiskThresholdGbTextBox.Text, out int lowDiskGb) && lowDiskGb >= 0)
+                prefs.LowDiskThresholdGb = lowDiskGb;
+            else if (prefs.NotifyOnLowDisk)
+                validationErrors.Add("Volume free space GB threshold must be 0 or greater");
 
             prefs.NotifyOnLongRunningJobs = NotifyOnLongRunningJobsCheckBox.IsChecked == true;
             if (int.TryParse(LongRunningJobMultiplierTextBox.Text, out int jobMultiplier) && jobMultiplier > 0)

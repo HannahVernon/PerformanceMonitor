@@ -51,6 +51,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, DateTime> _lastPoisonWaitAlert = new();
     private readonly Dictionary<string, DateTime> _lastLongRunningQueryAlert = new();
     private readonly Dictionary<string, DateTime> _lastTempDbSpaceAlert = new();
+    private readonly Dictionary<string, DateTime> _lastLowDiskAlert = new();
     private readonly Dictionary<string, DateTime> _lastLongRunningJobAlert = new();
     private readonly DispatcherTimer _statusTimer;
     private LocalDataService? _dataService;
@@ -67,6 +68,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _activePoisonWaitAlert = new();
     private readonly Dictionary<string, bool> _activeLongRunningQueryAlert = new();
     private readonly Dictionary<string, bool> _activeTempDbSpaceAlert = new();
+    private readonly Dictionary<string, bool> _activeLowDiskAlert = new();
     private readonly Dictionary<string, bool> _activeLongRunningJobAlert = new();
     private readonly Dictionary<string, DateTime> _lastFailedJobAlert = new();
     /* Watermark of the most-recent failed-job run time already alerted per server. A failed run
@@ -1905,6 +1907,69 @@ public partial class MainWindow : Window
             }
         }
 
+        /* Low volume free space alerts — not applicable to Azure SQL DB (no volume stats collected) */
+        if (App.AlertLowDiskEnabled && _dataService != null)
+        {
+            try
+            {
+                var volumes = await Task.Run(() => _dataService.GetVolumeFreeSpaceAsync(summary.ServerId));
+                var breached = GetBreachedVolumes(volumes);
+
+                if (breached.Count > 0)
+                {
+                    var worst = breached[0];
+                    _activeLowDiskAlert[key] = true;
+                    if (!suppressPopups && (!_lastLowDiskAlert.TryGetValue(key, out var lastLowDisk) || now - lastLowDisk >= alertCooldown))
+                    {
+                        var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Volume Free Space" };
+                        bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                        _lastLowDiskAlert[key] = now;
+
+                        if (!isMuted)
+                        {
+                            _trayService.ShowSnoozableNotification(
+                                "Volume Free Space",
+                                $"{summary.DisplayName}: {worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)",
+                                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning,
+                                summary.DisplayName,
+                                "Volume Free Space",
+                                _muteRuleService);
+                        }
+
+                        var lowDiskContext = BuildVolumeFreeSpaceContext(breached);
+                        var detailText = ContextToDetailText(lowDiskContext);
+
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Volume Free Space",
+                            summary.DisplayName,
+                            $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)",
+                            FormatLowDiskThreshold(),
+                            summary.ServerId,
+                            lowDiskContext,
+                            numericCurrentValue: worst.FreePercent,
+                            numericThresholdValue: App.AlertLowDiskThresholdPercent,
+                            muted: isMuted,
+                            detailText: detailText);
+                    }
+                }
+                else if (_activeLowDiskAlert.TryGetValue(key, out var wasLowDisk) && wasLowDisk)
+                {
+                    _activeLowDiskAlert[key] = false;
+                    if (!suppressPopups)
+                    {
+                        _trayService.ShowNotification(
+                            "Volume Free Space Resolved",
+                            $"{summary.DisplayName}: All volumes back above threshold",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Alerts", $"Failed to check volume free space for {summary.DisplayName}: {ex.Message}");
+            }
+        }
+
         /* Anomalous Agent job alerts */
         if (App.AlertLongRunningJobEnabled && _dataService != null)
         {
@@ -2259,6 +2324,47 @@ public partial class MainWindow : Window
                     item.Fields.Add(("Blocked By", $"Session #{q.BlockingSessionId.Value}"));
 
                 context.Details.Add(item);
+            }
+            return context;
+        }
+
+        /* Returns the volumes whose free space is under the configured % or GB threshold (a 0 threshold
+           disables that dimension), worst (lowest free %) first, so the alert names the tightest volume. */
+        private static List<VolumeFreeSpaceInfo> GetBreachedVolumes(List<VolumeFreeSpaceInfo> volumes)
+        {
+            int pct = App.AlertLowDiskThresholdPercent;
+            int gb = App.AlertLowDiskThresholdGb;
+            return volumes
+                .Where(v => (pct > 0 && v.FreePercent < pct) || (gb > 0 && v.FreeGb < gb))
+                .OrderBy(v => v.FreePercent)
+                .ToList();
+        }
+
+        private static string FormatLowDiskThreshold()
+        {
+            var parts = new List<string>();
+            if (App.AlertLowDiskThresholdPercent > 0) parts.Add($"{App.AlertLowDiskThresholdPercent}%");
+            if (App.AlertLowDiskThresholdGb > 0) parts.Add($"{App.AlertLowDiskThresholdGb} GB");
+            return parts.Count > 0 ? string.Join(" / ", parts) : "—";
+        }
+
+        private static AlertContext? BuildVolumeFreeSpaceContext(List<VolumeFreeSpaceInfo> volumes)
+        {
+            if (volumes.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var v in volumes.GetRange(0, Math.Min(5, volumes.Count)))
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = $"{v.MountPoint} — {v.FreePercent:F0}% Free",
+                    Fields = new()
+                    {
+                        ("Free Space", $"{v.FreeGb:F1} GB"),
+                        ("Total Size", $"{v.TotalMb / 1024.0:F1} GB"),
+                        ("Used", $"{(v.TotalMb - v.FreeMb) / 1024.0:F1} GB")
+                    }
+                });
             }
             return context;
         }

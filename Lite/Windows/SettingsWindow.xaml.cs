@@ -597,6 +597,9 @@ public partial class SettingsWindow : Window
         AlertExcludedDatabasesBox.Text = string.Join(", ", App.AlertExcludedDatabases);
         AlertTempDbSpaceCheckBox.IsChecked = App.AlertTempDbSpaceEnabled;
         AlertTempDbSpaceThresholdBox.Text = App.AlertTempDbSpaceThresholdPercent.ToString();
+        AlertLowDiskCheckBox.IsChecked = App.AlertLowDiskEnabled;
+        AlertLowDiskThresholdPercentBox.Text = App.AlertLowDiskThresholdPercent.ToString();
+        AlertLowDiskThresholdGbBox.Text = App.AlertLowDiskThresholdGb.ToString();
         AlertLongRunningJobCheckBox.IsChecked = App.AlertLongRunningJobEnabled;
         AlertLongRunningJobMultiplierBox.Text = App.AlertLongRunningJobMultiplier.ToString();
         AlertFailedJobCheckBox.IsChecked = App.AlertFailedJobEnabled;
@@ -654,6 +657,11 @@ public partial class SettingsWindow : Window
         App.AlertTempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true;
         if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb > 0 && tempDb <= 100)
             App.AlertTempDbSpaceThresholdPercent = tempDb;
+        App.AlertLowDiskEnabled = AlertLowDiskCheckBox.IsChecked == true;
+        if (int.TryParse(AlertLowDiskThresholdPercentBox.Text, out var lowDiskPct) && lowDiskPct >= 0 && lowDiskPct <= 100)
+            App.AlertLowDiskThresholdPercent = lowDiskPct;
+        if (int.TryParse(AlertLowDiskThresholdGbBox.Text, out var lowDiskGb) && lowDiskGb >= 0)
+            App.AlertLowDiskThresholdGb = lowDiskGb;
         App.AlertLongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true;
         if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult >= 2 && jobMult <= 20)
             App.AlertLongRunningJobMultiplier = jobMult;
@@ -722,6 +730,9 @@ public partial class SettingsWindow : Window
             root["alert_excluded_databases"] = dbArray;
             root["alert_tempdb_space_enabled"] = App.AlertTempDbSpaceEnabled;
             root["alert_tempdb_space_threshold_percent"] = App.AlertTempDbSpaceThresholdPercent;
+            root["alert_low_disk_enabled"] = App.AlertLowDiskEnabled;
+            root["alert_low_disk_threshold_percent"] = App.AlertLowDiskThresholdPercent;
+            root["alert_low_disk_threshold_gb"] = App.AlertLowDiskThresholdGb;
             root["alert_long_running_job_enabled"] = App.AlertLongRunningJobEnabled;
             root["alert_long_running_job_multiplier"] = App.AlertLongRunningJobMultiplier;
             root["alert_failed_job_enabled"] = App.AlertFailedJobEnabled;
@@ -769,6 +780,8 @@ public partial class SettingsWindow : Window
         AlertPoisonWaitThresholdBox.Text = "500";
         AlertLongRunningQueryThresholdBox.Text = "30";
         AlertTempDbSpaceThresholdBox.Text = "80";
+        AlertLowDiskThresholdPercentBox.Text = "10";
+        AlertLowDiskThresholdGbBox.Text = "5";
         AlertLongRunningJobMultiplierBox.Text = "3";
         AlertFailedJobLookbackBox.Text = "60";
         AlertCooldownBox.Text = "5";
@@ -806,6 +819,8 @@ public partial class SettingsWindow : Window
             parts.Add($"queries > {AlertLongRunningQueryThresholdBox.Text}min");
         if (AlertTempDbSpaceCheckBox.IsChecked == true)
             parts.Add($"TempDB > {AlertTempDbSpaceThresholdBox.Text}%");
+        if (AlertLowDiskCheckBox.IsChecked == true)
+            parts.Add($"disk free < {AlertLowDiskThresholdPercentBox.Text}% or {AlertLowDiskThresholdGbBox.Text}GB");
         if (AlertLongRunningJobCheckBox.IsChecked == true)
             parts.Add($"jobs > {AlertLongRunningJobMultiplierBox.Text}x avg");
         if (AlertFailedJobCheckBox.IsChecked == true)
@@ -833,6 +848,9 @@ public partial class SettingsWindow : Window
         AlertLongRunningQueryThresholdBox.IsEnabled = enabled;
         AlertTempDbSpaceCheckBox.IsEnabled = enabled;
         AlertTempDbSpaceThresholdBox.IsEnabled = enabled;
+        AlertLowDiskCheckBox.IsEnabled = enabled;
+        AlertLowDiskThresholdPercentBox.IsEnabled = enabled;
+        AlertLowDiskThresholdGbBox.IsEnabled = enabled;
         AlertLongRunningJobCheckBox.IsEnabled = enabled;
         AlertLongRunningJobMultiplierBox.IsEnabled = enabled;
         AlertFailedJobCheckBox.IsEnabled = enabled;

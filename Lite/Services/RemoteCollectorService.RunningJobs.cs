@@ -264,11 +264,22 @@ OPTION(RECOMPILE);";
                 });
             }
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 229 or 297 or 300 or 916)
+        {
+            /* Login lacks msdb / SQLAgentReaderRole access — expected for read-only monitoring
+               accounts; skip quietly so a permission gap doesn't fail the whole alert cycle. */
+            _logger?.LogDebug("Skipping failed-job check for '{Server}': {Message}", server.DisplayName, ex.Message);
+            return new List<FailedJobInfo>();
+        }
         catch (Exception ex)
         {
-            /* No msdb access / not SQLAgentReaderRole, or any other server-side error —
-               skip silently so a single permission gap doesn't fail the whole alert cycle. */
-            _logger?.LogDebug("Skipping failed-job check for '{Server}': {Message}", server.DisplayName, ex.Message);
+            /* Unexpected error (timeout, transient, etc.) — surface at Warning so a genuine read
+               failure can't masquerade as "no failed jobs", but still don't fault the alert cycle. */
+            _logger?.LogWarning("Failed-job check for '{Server}' errored: {Message}", server.DisplayName, ex.Message);
             return new List<FailedJobInfo>();
         }
 
