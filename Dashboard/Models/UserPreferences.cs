@@ -105,6 +105,9 @@ namespace PerformanceMonitorDashboard.Models
         public bool LongRunningQueryExcludeCdc { get; set; } = true; // Exclude CDC capture jobs (sp_MScdc_capture_job / sp_cdc_scan)
         public bool NotifyOnTempDbSpace { get; set; } = true;
         public int TempDbSpaceThresholdPercent { get; set; } = 80; // Alert when TempDB used > X%
+        public bool NotifyOnLowDisk { get; set; } = true;
+        public int LowDiskThresholdPercent { get; set; } = 10; // Alert when a volume's free space < X% (0 disables this check)
+        public int LowDiskThresholdGb { get; set; } = 5;        // Alert when a volume's free space < X GB (0 disables this check)
         public bool NotifyOnLongRunningJobs { get; set; } = true;
         public int LongRunningJobMultiplier { get; set; } = 3; // Alert when job runs > Nx historical average
         private int _alertCooldownMinutes = 5;
