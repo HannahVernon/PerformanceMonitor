@@ -37,8 +37,18 @@ BEGIN
     DECLARE
         @data_path nvarchar(512) = N'',
         @log_path nvarchar(512) = N'',
+        @data_path_override nvarchar(512) = N'',
+        @log_path_override nvarchar(512) = N'',
         @sql nvarchar(max) = N'',
         @engine_edition integer = CONVERT(integer, SERVERPROPERTY(N'EngineEdition'));
+
+    /*
+    The installer injects SET statements for custom data/log file paths here
+    when the --data-path / --log-path options are supplied (#768). When this
+    script is run without those options (or outside the installer) the line
+    below stays an inert comment, so the SERVERPROPERTY defaults are used.
+    */
+    /*__PM_FILE_PATH_OVERRIDES__*/
 
     /*
     Azure SQL Managed Instance (engine edition 8) does not support
@@ -65,17 +75,29 @@ BEGIN
             @log_size_mb integer = 256;
 
         /*
-        Get the default data and log directories from instance properties
+        Use the installer-provided directories when supplied (#768);
+        otherwise fall back to the instance default data/log directories.
+        Override paths already carry a trailing separator.
         */
-        SELECT
-            @data_path =
+        IF LEN(@data_path_override) > 0
+            SET @data_path =
+                @data_path_override +
+                N'PerformanceMonitor.mdf';
+        ELSE
+            SET @data_path =
                 CONVERT
                 (
                     nvarchar(512),
                     SERVERPROPERTY(N'InstanceDefaultDataPath')
                 ) +
-                N'PerformanceMonitor.mdf',
-            @log_path =
+                N'PerformanceMonitor.mdf';
+
+        IF LEN(@log_path_override) > 0
+            SET @log_path =
+                @log_path_override +
+                N'PerformanceMonitor_log.ldf';
+        ELSE
+            SET @log_path =
                 CONVERT
                 (
                     nvarchar(512),
@@ -128,7 +150,7 @@ BEGIN
         ON PRIMARY
         (
             NAME = N''PerformanceMonitor'',
-            FILENAME = N''' + @data_path + N''',
+            FILENAME = N''' + REPLACE(@data_path, N'''', N'''''') + N''',
             SIZE = ' + CONVERT(nvarchar(20), @data_size_mb) + N'MB,
             MAXSIZE = UNLIMITED,
             FILEGROWTH = 1024MB
@@ -136,7 +158,7 @@ BEGIN
         LOG ON
         (
             NAME = N''PerformanceMonitor_log'',
-            FILENAME = N''' + @log_path + N''',
+            FILENAME = N''' + REPLACE(@log_path, N'''', N'''''') + N''',
             SIZE = ' + CONVERT(nvarchar(20), @log_size_mb) + N'MB,
             MAXSIZE = UNLIMITED,
             FILEGROWTH = 64MB
@@ -203,7 +225,7 @@ BEGIN
                     ON PRIMARY
                     (
                         NAME = N''PerformanceMonitor'',
-                        FILENAME = N''' + @data_path + N''',
+                        FILENAME = N''' + REPLACE(@data_path, N'''', N'''''') + N''',
                         SIZE = ' + CONVERT(nvarchar(20), @data_size_mb) + N'MB,
                         MAXSIZE = UNLIMITED,
                         FILEGROWTH = 1024MB
@@ -211,7 +233,7 @@ BEGIN
                     LOG ON
                     (
                         NAME = N''PerformanceMonitor_log'',
-                        FILENAME = N''' + @log_path + N''',
+                        FILENAME = N''' + REPLACE(@log_path, N'''', N'''''') + N''',
                         SIZE = ' + CONVERT(nvarchar(20), @log_size_mb) + N'MB,
                         MAXSIZE = UNLIMITED,
                         FILEGROWTH = 64MB
