@@ -97,6 +97,8 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningQueryAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastTempDbSpaceAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeTempDbSpaceAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastLowDiskAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeLowDiskAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
@@ -1960,6 +1962,59 @@ namespace PerformanceMonitorDashboard
                     pct, $"{prefs.TempDbSpaceThresholdPercent}%", true, "tray");
             }
 
+            /* Low volume free space alerts — not applicable to Azure SQL DB (health.Volumes is empty there) */
+            var breachedVolumes = prefs.NotifyOnLowDisk
+                ? GetBreachedVolumes(health.Volumes, prefs)
+                : new List<VolumeFreeSpaceInfo>();
+
+            if (breachedVolumes.Count > 0)
+            {
+                var worst = breachedVolumes[0];
+                _activeLowDiskAlert[serverId] = true;
+                if (!_lastLowDiskAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
+                {
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Volume Free Space" };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastLowDiskAlert[serverId] = now;
+                    var lowDiskContext = BuildVolumeFreeSpaceContext(breachedVolumes);
+                    var detailText = ContextToDetailText(lowDiskContext);
+                    var currentValue = $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)";
+                    var thresholdValue = FormatLowDiskThreshold(prefs);
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Volume Free Space",
+                            $"{serverName}: {currentValue}",
+                            NotificationType.Warning,
+                            serverName,
+                            "Volume Free Space",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space",
+                        currentValue, thresholdValue, !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Volume Free Space",
+                            serverName,
+                            currentValue,
+                            thresholdValue,
+                            serverId,
+                            lowDiskContext);
+                    }
+                }
+            }
+            else if (_activeLowDiskAlert.TryRemove(serverId, out var wasLowDisk) && wasLowDisk)
+            {
+                _notificationService?.ShowNotification("Volume Free Space Resolved",
+                    $"{serverName}: All volumes back above threshold");
+                _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space Resolved",
+                    "OK", FormatLowDiskThreshold(prefs), true, "tray");
+            }
+
             /* Anomalous Agent job alerts */
             bool anomalousJobsTriggered = prefs.NotifyOnLongRunningJobs
                 && health.AnomalousJobs.Count > 0;
@@ -2276,6 +2331,47 @@ namespace PerformanceMonitorDashboard
             if (seconds < 60) return $"{seconds}s";
             if (seconds < 3600) return $"{seconds / 60}m {seconds % 60}s";
             return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
+        }
+
+        /* Returns the volumes whose free space is under the configured % or GB threshold (a 0 threshold
+           disables that dimension), worst (lowest free %) first, so the alert names the tightest volume. */
+        private static List<VolumeFreeSpaceInfo> GetBreachedVolumes(List<VolumeFreeSpaceInfo> volumes, UserPreferences prefs)
+        {
+            int pct = prefs.LowDiskThresholdPercent;
+            int gb = prefs.LowDiskThresholdGb;
+            return volumes
+                .Where(v => (pct > 0 && v.FreePercent < pct) || (gb > 0 && v.FreeGb < gb))
+                .OrderBy(v => v.FreePercent)
+                .ToList();
+        }
+
+        private static string FormatLowDiskThreshold(UserPreferences prefs)
+        {
+            var parts = new List<string>();
+            if (prefs.LowDiskThresholdPercent > 0) parts.Add($"{prefs.LowDiskThresholdPercent}%");
+            if (prefs.LowDiskThresholdGb > 0) parts.Add($"{prefs.LowDiskThresholdGb} GB");
+            return parts.Count > 0 ? string.Join(" / ", parts) : "—";
+        }
+
+        private static AlertContext? BuildVolumeFreeSpaceContext(List<VolumeFreeSpaceInfo> volumes)
+        {
+            if (volumes.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var v in volumes.GetRange(0, Math.Min(5, volumes.Count)))
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = $"{v.MountPoint} — {v.FreePercent:F0}% Free",
+                    Fields = new()
+                    {
+                        ("Free Space", $"{v.FreeGb:F1} GB"),
+                        ("Total Size", $"{v.TotalMb / 1024.0:F1} GB"),
+                        ("Used", $"{(v.TotalMb - v.FreeMb) / 1024.0:F1} GB")
+                    }
+                });
+            }
+            return context;
         }
 
         private static AlertContext? BuildTempDbSpaceContext(TempDbSpaceInfo tempDb)

@@ -34,6 +34,12 @@ namespace PerformanceMonitorDashboard.Models
         public List<PoisonWaitDelta> PoisonWaits { get; set; } = new();
         public List<LongRunningQueryInfo> LongRunningQueries { get; set; } = new();
         public TempDbSpaceInfo? TempDbSpace { get; set; }
+
+        /// <summary>
+        /// Free space per distinct volume on the server, ordered worst (lowest free %) first.
+        /// Empty on Azure SQL DB (no volume stats collected). Used by the low-disk alert.
+        /// </summary>
+        public List<VolumeFreeSpaceInfo> Volumes { get; set; } = new();
         public List<AnomalousJobInfo> AnomalousJobs { get; set; } = new();
         public bool IsOnline { get; set; } = true;
 
