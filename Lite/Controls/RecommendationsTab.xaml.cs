@@ -142,7 +142,7 @@ public partial class RecommendationsTab : UserControl
             var serverId = GetSelectedServerId();
             var serverName = server.DisplayNameWithIntent;
 
-            var items = await _reader.GetRecommendationsAsync(serverId, serverName, _hoursBack);
+            var items = await Task.Run(() => _reader.GetRecommendationsAsync(serverId, serverName, _hoursBack));
 
             ApplyViewModel(LiteRecommendationsViewModel.FromItems(items, ServerTimeHelper.UtcOffsetMinutes));
         }
@@ -186,7 +186,7 @@ public partial class RecommendationsTab : UserControl
             var planFetcher = new SqlPlanFetcher(_serverManager);
             var analysisService = new AnalysisService(_duckDb, planFetcher);
 
-            var findings = await analysisService.AnalyzeAsync(serverId, serverName, hoursBack: 4);
+            var findings = await Task.Run(() => analysisService.AnalyzeAsync(serverId, serverName, hoursBack: 4));
 
             if (analysisService.InsufficientDataMessage is { Length: > 0 } message)
             {
