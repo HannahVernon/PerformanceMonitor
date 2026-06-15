@@ -318,6 +318,12 @@ public partial class AlertsHistoryTab : UserControl
                 AppLogger.Warn("AlertsHistory", $"Dismiss selected: only {affected} of {liveAlerts.Count} live alert(s) were updated");
             }
             await LoadAlertsAsync();
+
+            /* Clear the matching server tab badge(s) for the servers whose alerts were dismissed,
+               matching Dismiss All's behavior (issue #1092). Selected rows can span servers when
+               the filter is "all", so acknowledge each distinct server rather than the filter. */
+            foreach (var dismissedServerId in liveAlerts.Select(a => a.ServerId).Distinct())
+                AlertsDismissed?.Invoke(dismissedServerId);
         }
         catch (TimeoutException)
         {
