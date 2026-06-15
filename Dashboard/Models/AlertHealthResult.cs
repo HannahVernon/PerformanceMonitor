@@ -41,6 +41,13 @@ namespace PerformanceMonitorDashboard.Models
         /// </summary>
         public List<VolumeFreeSpaceInfo> Volumes { get; set; } = new();
         public List<AnomalousJobInfo> AnomalousJobs { get; set; } = new();
+
+        /// <summary>
+        /// SQL Agent job runs that failed within the failed-job lookback window. Live
+        /// msdb query — empty on Azure SQL DB (no Agent) or when the login lacks msdb /
+        /// SQLAgentReaderRole access.
+        /// </summary>
+        public List<FailedJobInfo> RecentlyFailedJobs { get; set; } = new();
         public bool IsOnline { get; set; } = true;
 
         /// <summary>

@@ -239,6 +239,13 @@
                     <TextBlock Text="x historical average" VerticalAlignment="Center" Margin="2,0,0,0"
                                Foreground="{DynamicResource ForegroundBrush}"/>
                 </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <CheckBox x:Name="AlertFailedJobCheckBox" Content="Agent job failed in the last" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertFailedJobLookbackBox" Width="45" Text="60" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="minutes" VerticalAlignment="Center" Margin="2,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="20,10,0,0">
                     <TextBlock Text="Tray notification cooldown:" VerticalAlignment="Center" Margin="0,0,8,0"
                                Foreground="{DynamicResource ForegroundBrush}"/>

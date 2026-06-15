@@ -110,6 +110,8 @@ namespace PerformanceMonitorDashboard.Models
         public int LowDiskThresholdGb { get; set; } = 5;        // Alert when a volume's free space < X GB (0 disables this check)
         public bool NotifyOnLongRunningJobs { get; set; } = true;
         public int LongRunningJobMultiplier { get; set; } = 3; // Alert when job runs > Nx historical average
+        public bool NotifyOnFailedJobs { get; set; } = true; // Alert when a SQL Agent job has recently failed
+        public int FailedJobLookbackMinutes { get; set; } = 60; // Look back this many minutes for failed Agent job runs
         private int _alertCooldownMinutes = 5;
         public int AlertCooldownMinutes
         {

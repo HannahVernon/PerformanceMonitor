@@ -195,6 +195,8 @@ namespace PerformanceMonitorDashboard
             LowDiskThresholdGbTextBox.Text = prefs.LowDiskThresholdGb.ToString(CultureInfo.InvariantCulture);
             NotifyOnLongRunningJobsCheckBox.IsChecked = prefs.NotifyOnLongRunningJobs;
             LongRunningJobMultiplierTextBox.Text = prefs.LongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
+            NotifyOnFailedJobsCheckBox.IsChecked = prefs.NotifyOnFailedJobs;
+            FailedJobLookbackTextBox.Text = prefs.FailedJobLookbackMinutes.ToString(CultureInfo.InvariantCulture);
             AlertCooldownTextBox.Text = prefs.AlertCooldownMinutes.ToString(CultureInfo.InvariantCulture);
             EmailCooldownTextBox.Text = prefs.EmailCooldownMinutes.ToString(CultureInfo.InvariantCulture);
             MuteRuleDefaultExpirationCombo.SelectedIndex = prefs.MuteRuleDefaultExpiration switch
@@ -369,6 +371,12 @@ namespace PerformanceMonitorDashboard
             UpdateAlertNotificationStates();
         }
 
+        private void NotifyOnFailedJobsCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
         private void RestoreAlertDefaultsButton_Click(object sender, RoutedEventArgs e)
         {
             BlockingThresholdTextBox.Text = "30";
@@ -380,6 +388,7 @@ namespace PerformanceMonitorDashboard
             LowDiskThresholdPercentTextBox.Text = "10";
             LowDiskThresholdGbTextBox.Text = "5";
             LongRunningJobMultiplierTextBox.Text = "3";
+            FailedJobLookbackTextBox.Text = "60";
             AlertCooldownTextBox.Text = "5";
             EmailCooldownTextBox.Text = "15";
             AlertExcludedDatabasesTextBox.Text = "";
@@ -414,6 +423,8 @@ namespace PerformanceMonitorDashboard
                 parts.Add($"disk free < {LowDiskThresholdPercentTextBox.Text}% or {LowDiskThresholdGbTextBox.Text}GB");
             if (NotifyOnLongRunningJobsCheckBox.IsChecked == true)
                 parts.Add($"jobs > {LongRunningJobMultiplierTextBox.Text}x avg");
+            if (NotifyOnFailedJobsCheckBox.IsChecked == true)
+                parts.Add($"failed jobs (last {FailedJobLookbackTextBox.Text}m)");
 
             AlertPreviewText.Text = parts.Count > 0
                 ? $"Will alert when: {string.Join(", ", parts)}"
@@ -441,6 +452,8 @@ namespace PerformanceMonitorDashboard
             LowDiskThresholdGbTextBox.IsEnabled = notificationsEnabled && NotifyOnLowDiskCheckBox.IsChecked == true;
             NotifyOnLongRunningJobsCheckBox.IsEnabled = notificationsEnabled;
             LongRunningJobMultiplierTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningJobsCheckBox.IsChecked == true;
+            NotifyOnFailedJobsCheckBox.IsEnabled = notificationsEnabled;
+            FailedJobLookbackTextBox.IsEnabled = notificationsEnabled && NotifyOnFailedJobsCheckBox.IsChecked == true;
             UpdateAlertPreviewText();
         }
 
@@ -728,6 +741,12 @@ namespace PerformanceMonitorDashboard
                 prefs.LongRunningJobMultiplier = jobMultiplier;
             else if (prefs.NotifyOnLongRunningJobs)
                 validationErrors.Add("Job multiplier must be a positive number");
+
+            prefs.NotifyOnFailedJobs = NotifyOnFailedJobsCheckBox.IsChecked == true;
+            if (int.TryParse(FailedJobLookbackTextBox.Text, out int failedJobLookback) && failedJobLookback >= 1 && failedJobLookback <= 1440)
+                prefs.FailedJobLookbackMinutes = failedJobLookback;
+            else if (prefs.NotifyOnFailedJobs)
+                validationErrors.Add("Failed-job lookback must be between 1 and 1440 minutes");
 
             if (int.TryParse(AlertCooldownTextBox.Text, out int alertCooldown) && alertCooldown >= 1 && alertCooldown <= 120)
                 prefs.AlertCooldownMinutes = alertCooldown;

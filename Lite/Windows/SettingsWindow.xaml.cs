@@ -602,6 +602,8 @@ public partial class SettingsWindow : Window
         AlertLowDiskThresholdGbBox.Text = App.AlertLowDiskThresholdGb.ToString();
         AlertLongRunningJobCheckBox.IsChecked = App.AlertLongRunningJobEnabled;
         AlertLongRunningJobMultiplierBox.Text = App.AlertLongRunningJobMultiplier.ToString();
+        AlertFailedJobCheckBox.IsChecked = App.AlertFailedJobEnabled;
+        AlertFailedJobLookbackBox.Text = App.AlertFailedJobLookbackMinutes.ToString();
         AlertCooldownBox.Text = App.AlertCooldownMinutes.ToString();
         EmailCooldownBox.Text = App.EmailCooldownMinutes.ToString();
         MuteRuleDefaultExpirationCombo.SelectedIndex = App.MuteRuleDefaultExpiration switch
@@ -663,6 +665,9 @@ public partial class SettingsWindow : Window
         App.AlertLongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true;
         if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult >= 2 && jobMult <= 20)
             App.AlertLongRunningJobMultiplier = jobMult;
+        App.AlertFailedJobEnabled = AlertFailedJobCheckBox.IsChecked == true;
+        if (int.TryParse(AlertFailedJobLookbackBox.Text, out var failedJobLookback) && failedJobLookback >= 1 && failedJobLookback <= 1440)
+            App.AlertFailedJobLookbackMinutes = failedJobLookback;
         var validationErrors = new List<string>();
         if (int.TryParse(AlertCooldownBox.Text, out var alertCooldown) && alertCooldown >= 1 && alertCooldown <= 120)
             App.AlertCooldownMinutes = alertCooldown;
@@ -730,6 +735,8 @@ public partial class SettingsWindow : Window
             root["alert_low_disk_threshold_gb"] = App.AlertLowDiskThresholdGb;
             root["alert_long_running_job_enabled"] = App.AlertLongRunningJobEnabled;
             root["alert_long_running_job_multiplier"] = App.AlertLongRunningJobMultiplier;
+            root["alert_failed_job_enabled"] = App.AlertFailedJobEnabled;
+            root["alert_failed_job_lookback_minutes"] = App.AlertFailedJobLookbackMinutes;
             root["alert_cooldown_minutes"] = App.AlertCooldownMinutes;
             root["email_cooldown_minutes"] = App.EmailCooldownMinutes;
             root["mute_rule_default_expiration"] = App.MuteRuleDefaultExpiration;
@@ -776,6 +783,7 @@ public partial class SettingsWindow : Window
         AlertLowDiskThresholdPercentBox.Text = "10";
         AlertLowDiskThresholdGbBox.Text = "5";
         AlertLongRunningJobMultiplierBox.Text = "3";
+        AlertFailedJobLookbackBox.Text = "60";
         AlertCooldownBox.Text = "5";
         EmailCooldownBox.Text = "15";
         AnalysisIntervalBox.Text = "30";
@@ -815,6 +823,8 @@ public partial class SettingsWindow : Window
             parts.Add($"disk free < {AlertLowDiskThresholdPercentBox.Text}% or {AlertLowDiskThresholdGbBox.Text}GB");
         if (AlertLongRunningJobCheckBox.IsChecked == true)
             parts.Add($"jobs > {AlertLongRunningJobMultiplierBox.Text}x avg");
+        if (AlertFailedJobCheckBox.IsChecked == true)
+            parts.Add($"failed jobs (last {AlertFailedJobLookbackBox.Text}m)");
 
         AlertPreviewText.Text = parts.Count > 0
             ? $"Will alert when: {string.Join(", ", parts)}"
@@ -843,6 +853,8 @@ public partial class SettingsWindow : Window
         AlertLowDiskThresholdGbBox.IsEnabled = enabled;
         AlertLongRunningJobCheckBox.IsEnabled = enabled;
         AlertLongRunningJobMultiplierBox.IsEnabled = enabled;
+        AlertFailedJobCheckBox.IsEnabled = enabled;
+        AlertFailedJobLookbackBox.IsEnabled = enabled;
         UpdateAlertPreviewText();
     }
 

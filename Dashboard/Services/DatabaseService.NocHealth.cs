@@ -132,6 +132,7 @@ namespace PerformanceMonitorDashboard.Services
             bool excludeBackups = true,
             bool excludeMiscWaits = true,
             bool excludeCdc = true,
+            int failedJobLookbackMinutes = 60,
             IReadOnlyList<string>? excludedDatabases = null)
         {
             var result = new AlertHealthResult();
@@ -154,11 +155,17 @@ namespace PerformanceMonitorDashboard.Services
                 var tempDbTask = GetTempDbSpaceAsync(connection);
                 var volumeTask = GetVolumeFreeSpaceAsync(connection);
                 var anomalousJobTask = GetAnomalousJobsAsync(connection, longRunningJobMultiplier);
+                /* Azure SQL DB has no SQL Agent, so msdb.dbo.sysjobhistory doesn't exist there —
+                   skip the live failed-job query entirely (the other queries already gate Azure
+                   the same way via engineEdition). */
+                var failedJobTask = engineEdition == 5
+                    ? Task.FromResult(new List<FailedJobInfo>())
+                    : GetRecentlyFailedJobsAsync(connection, failedJobLookbackMinutes);
                 var missingCaptureTask = GetMissingCaptureSessionsAsync(connection);
 
                 var allTasks = filteredDeadlockTask != null
-                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, missingCaptureTask }
-                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, missingCaptureTask };
+                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask }
+                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask };
                 await Task.WhenAll(allTasks);
 
                 var cpuResult = await cpuTask;
@@ -177,6 +184,7 @@ namespace PerformanceMonitorDashboard.Services
                 result.TempDbSpace = await tempDbTask;
                 result.Volumes = await volumeTask;
                 result.AnomalousJobs = await anomalousJobTask;
+                result.RecentlyFailedJobs = await failedJobTask;
                 result.MissingCaptureSessions = await missingCaptureTask;
             }
             catch (Exception ex)
@@ -912,6 +920,89 @@ namespace PerformanceMonitorDashboard.Services
             catch (Exception ex)
             {
                 Logger.Warning($"Failed to get anomalous jobs: {ex.Message}");
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Live query against the monitored server's msdb for SQL Agent job runs (step_id = 0
+        /// outcome row, run_status = 0 = Failed) that failed within the lookback window.
+        /// run_date/run_time integers are converted to a server-local datetime and filtered to the
+        /// last N minutes. Degrades gracefully: a login without msdb / SQLAgentReaderRole access
+        /// raises a catchable SqlException (916/229/297/300) that returns an empty list rather than
+        /// failing the alert cycle. Azure SQL DB (no Agent) is skipped by the caller.
+        /// </summary>
+        private async Task<List<FailedJobInfo>> GetRecentlyFailedJobsAsync(SqlConnection connection, int lookbackMinutes)
+        {
+            var results = new List<FailedJobInfo>();
+
+            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                SELECT TOP (50)
+                    job_name = j.name,
+                    job_id = CONVERT(varchar(36), j.job_id),
+                    run_datetime =
+                        DATEADD
+                        (
+                            SECOND,
+                            (jh.run_time / 10000) * 3600 +
+                            ((jh.run_time / 100) % 100) * 60 +
+                            (jh.run_time % 100),
+                            CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
+                        ),
+                    step_id = jh.step_id,
+                    step_name = jh.step_name,
+                    message = jh.message
+                FROM msdb.dbo.sysjobhistory AS jh
+                JOIN msdb.dbo.sysjobs AS j
+                  ON j.job_id = jh.job_id
+                WHERE jh.step_id = 0
+                AND   jh.run_status = 0
+                AND   jh.run_date >= CONVERT(integer, CONVERT(varchar(8), DATEADD(MINUTE, -@lookback_minutes, GETDATE()), 112))
+                AND   DATEADD
+                      (
+                          SECOND,
+                          (jh.run_time / 10000) * 3600 +
+                          ((jh.run_time / 100) % 100) * 60 +
+                          (jh.run_time % 100),
+                          CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
+                      ) >= DATEADD(MINUTE, -@lookback_minutes, GETDATE())
+                ORDER BY
+                    run_datetime DESC
+                OPTION(RECOMPILE);";
+
+            try
+            {
+                using var cmd = new SqlCommand(query, connection);
+                cmd.CommandTimeout = 10;
+                cmd.Parameters.Add(new SqlParameter("@lookback_minutes", SqlDbType.Int) { Value = lookbackMinutes });
+                using var reader = await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    results.Add(new FailedJobInfo
+                    {
+                        JobName = reader.GetString(0),
+                        JobId = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                        RunDateTime = reader.GetDateTime(2),
+                        StepId = reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3), System.Globalization.CultureInfo.InvariantCulture),
+                        StepName = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                        Message = reader.IsDBNull(5) ? "" : reader.GetString(5)
+                    });
+                }
+            }
+            catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 229 or 297 or 300 or 916)
+            {
+                /* Login lacks msdb / SQLAgentReaderRole access — expected for read-only monitoring
+                   accounts; hit every alert cycle, so log at Info (not Warning) to avoid burying real warnings. */
+                Logger.Info($"Skipping recently-failed-job check (msdb/SQLAgentReaderRole access needed): {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                /* Unexpected error (timeout, transient, etc.) — surface at Warning so a genuine read
+                   failure can't masquerade as "no failed jobs". Still returns empty so the cycle continues. */
+                Logger.Warning($"Recently-failed-job check errored: {ex.Message}");
             }
 
             return results;
