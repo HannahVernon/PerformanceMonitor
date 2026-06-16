@@ -63,7 +63,7 @@ namespace PerformanceMonitorDashboard
                 StatusText.Text = GetLoadingMessage();
                 RefreshButton.IsEnabled = false;
 
-                bool connected = await _databaseService.TestConnectionAsync();
+                bool connected = await Task.Run(() => _databaseService.TestConnectionAsync());
                 if (!connected)
                 {
                     StatusText.Text = $"Failed to connect to {_serverConnection.DisplayName}";
@@ -181,24 +181,24 @@ namespace PerformanceMonitorDashboard
 
         /// <summary>
         /// Refreshes the Overview tab: Collection Health, Duration Trends, Daily Summary,
-        /// Critical Issues, Default Trace, Current Config, Config Changes, Resource Overview, Running Jobs.
+        /// Recommendations, Default Trace, Current Config, Config Changes, Resource Overview, Running Jobs.
         /// </summary>
         private async Task RefreshOverviewTabAsync()
         {
             try
             {
-                var healthTask = _databaseService.GetCollectionHealthAsync();
-                var durationLogsTask = _databaseService.GetCollectionDurationLogsAsync();
+                var healthTask = Task.Run(() => _databaseService.GetCollectionHealthAsync());
+                var durationLogsTask = Task.Run(() => _databaseService.GetCollectionDurationLogsAsync());
                 var resourceOverviewTask = RefreshResourceOverviewAsync();
                 var runningJobsTask = RefreshRunningJobsAsync();
                 var dailySummaryTask = DailySummaryTab.RefreshDataAsync();
-                var criticalIssuesTask = CriticalIssuesTab.RefreshDataAsync();
+                var recommendationsTask = RecommendationsTab.RefreshDataAsync();
                 var defaultTraceTask = DefaultTraceTab.RefreshAllDataAsync();
                 var currentConfigTask = CurrentConfigTab.RefreshAllDataAsync();
                 var configChangesTask = ConfigChangesTab.RefreshAllDataAsync();
 
                 await Task.WhenAll(healthTask, durationLogsTask, resourceOverviewTask, runningJobsTask,
-                    dailySummaryTask, criticalIssuesTask, defaultTraceTask, currentConfigTask, configChangesTask);
+                    dailySummaryTask, recommendationsTask, defaultTraceTask, currentConfigTask, configChangesTask);
 
                 var healthData = await healthTask;
                 HealthDataGrid.ItemsSource = healthData;
@@ -269,12 +269,12 @@ namespace PerformanceMonitorDashboard
         {
             try
             {
-                var blockingEventsTask = _databaseService.GetBlockingEventsAsync();
-                var deadlocksTask = _databaseService.GetDeadlocksAsync();
-                var blockingStatsTask = _databaseService.GetBlockingDeadlockStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate);
-                var lockWaitStatsTask = _databaseService.GetLockWaitStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate);
-                var currentWaitsDurationTask = _databaseService.GetWaitingTaskTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate);
-                var currentWaitsBlockedTask = _databaseService.GetBlockedSessionTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate);
+                var blockingEventsTask = Task.Run(() => _databaseService.GetBlockingEventsAsync());
+                var deadlocksTask = Task.Run(() => _databaseService.GetDeadlocksAsync());
+                var blockingStatsTask = Task.Run(() => _databaseService.GetBlockingDeadlockStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
+                var lockWaitStatsTask = Task.Run(() => _databaseService.GetLockWaitStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
+                var currentWaitsDurationTask = Task.Run(() => _databaseService.GetWaitingTaskTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
+                var currentWaitsBlockedTask = Task.Run(() => _databaseService.GetBlockedSessionTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
 
                 await Task.WhenAll(blockingEventsTask, deadlocksTask, blockingStatsTask, lockWaitStatsTask, currentWaitsDurationTask, currentWaitsBlockedTask);
 
@@ -349,10 +349,10 @@ namespace PerformanceMonitorDashboard
             try
             {
                 // Load all four charts in parallel
-                var cpuTask = _databaseService.GetCpuDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate);
-                var memoryTask = _databaseService.GetMemoryDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate);
-                var ioTask = _databaseService.GetFileIoDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate);
-                var waitTask = _databaseService.GetWaitStatsDataAsync(_resourceOverviewHoursBack, 5, _resourceOverviewFromDate, _resourceOverviewToDate);
+                var cpuTask = Task.Run(() => _databaseService.GetCpuDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate));
+                var memoryTask = Task.Run(() => _databaseService.GetMemoryDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate));
+                var ioTask = Task.Run(() => _databaseService.GetFileIoDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate));
+                var waitTask = Task.Run(() => _databaseService.GetWaitStatsDataAsync(_resourceOverviewHoursBack, 5, _resourceOverviewFromDate, _resourceOverviewToDate));
 
                 await Task.WhenAll(cpuTask, memoryTask, ioTask, waitTask);
 
@@ -380,7 +380,7 @@ namespace PerformanceMonitorDashboard
 
             try
             {
-                var runningJobs = await _databaseService.GetRunningJobsAsync();
+                var runningJobs = await Task.Run(() => _databaseService.GetRunningJobsAsync());
                 RunningJobsDataGrid.ItemsSource = runningJobs;
                 RunningJobsNoDataMessage.Visibility = runningJobs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }

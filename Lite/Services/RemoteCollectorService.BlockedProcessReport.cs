@@ -60,6 +60,10 @@ public partial class RemoteCollectorService
             _logger?.LogWarning("Failed to ensure blocked process XE session on '{Server}': {Message}",
                 server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure blocked process XE session: {ex.Message}");
+
+            /* Propagate so RunCollectorAsync marks the collector unhealthy instead
+               of letting a zero-row ring-buffer read record SUCCESS (#1086) */
+            throw new XeSessionEnsureException("blocked process", ex);
         }
     }
 
@@ -149,6 +153,7 @@ WHERE ses.name = @session_name;", connection))
                         _logger?.LogWarning("Failed to start blocked process XE session on '{Server}': {Message}",
                             server.DisplayName, ex.Message);
                         AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to start blocked process XE session: {ex.Message}");
+                        throw;
                     }
                 }
                 else
@@ -187,6 +192,7 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON SERVER STATE = START;", c
             _logger?.LogWarning("Failed to create blocked process XE session on '{Server}': {Message}",
                 server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to create blocked process XE session: {ex.Message}");
+            throw;
         }
     }
 
@@ -243,7 +249,8 @@ ADD TARGET package0.ring_buffer
 )
 WITH
 (
-    MAX_DISPATCH_LATENCY = 5 SECONDS
+    MAX_DISPATCH_LATENCY = 5 SECONDS,
+    STARTUP_STATE = ON
 );
 
 ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;", connection))

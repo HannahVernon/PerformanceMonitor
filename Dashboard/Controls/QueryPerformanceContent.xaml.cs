@@ -21,6 +21,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -104,10 +105,10 @@ namespace PerformanceMonitorDashboard.Controls
         private Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
 
         // Chart hover tooltips
-        private Helpers.ChartHoverHelper? _queryDurationHover;
-        private Helpers.ChartHoverHelper? _procDurationHover;
-        private Helpers.ChartHoverHelper? _qsDurationHover;
-        private Helpers.ChartHoverHelper? _execTrendsHover;
+        private ChartHoverHelper? _queryDurationHover;
+        private ChartHoverHelper? _procDurationHover;
+        private ChartHoverHelper? _qsDurationHover;
+        private ChartHoverHelper? _execTrendsHover;
 
         // Query heatmap
         private HeatmapResult? _lastHeatmapResult;
@@ -133,12 +134,12 @@ namespace PerformanceMonitorDashboard.Controls
                     SubTabChanged?.Invoke();
                 }
             };
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
 
-            _queryDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsQueryChart, "ms/sec");
-            _procDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsProcChart, "ms/sec");
-            _qsDurationHover = new Helpers.ChartHoverHelper(QueryPerfTrendsQsChart, "ms/sec");
-            _execTrendsHover = new Helpers.ChartHoverHelper(QueryPerfTrendsExecChart, "/sec");
+            _queryDurationHover = new ChartHoverHelper(QueryPerfTrendsQueryChart, "ms/sec");
+            _procDurationHover = new ChartHoverHelper(QueryPerfTrendsProcChart, "ms/sec");
+            _qsDurationHover = new ChartHoverHelper(QueryPerfTrendsQsChart, "ms/sec");
+            _execTrendsHover = new ChartHoverHelper(QueryPerfTrendsExecChart, "/sec");
 
             // Heatmap popup tooltip
             _heatmapPopupText = new System.Windows.Controls.TextBlock
@@ -253,7 +254,7 @@ namespace PerformanceMonitorDashboard.Controls
             _procDurationHover?.Dispose();
             _qsDurationHover?.Dispose();
             _execTrendsHover?.Dispose();
-            Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void OnThemeChanged(string _)
@@ -617,7 +618,7 @@ namespace PerformanceMonitorDashboard.Controls
         {
             try
             {
-                using var _ = Helpers.MethodProfiler.StartTiming("QueryPerformance");
+                using var profiler = Helpers.MethodProfiler.StartTiming("QueryPerformance");
 
                 if (_databaseService == null) return;
 
@@ -682,7 +683,7 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     PopulateQueryStatsGrid(await queryStatsTask);
                 }
-                LoadQueryStatsSlicerAsync().ConfigureAwait(false);
+                _ = LoadQueryStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
                 if (ProcStatsSlicer.HasNarrowedSelection)
                 {
                     var slicerProcData = await _databaseService.GetProcedureStatsAsync(0, ProcStatsSlicer.SelectionStart, ProcStatsSlicer.SelectionEnd, fromSlicer: true);
@@ -692,7 +693,7 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     PopulateProcStatsGrid(await procStatsTask);
                 }
-                LoadProcStatsSlicerAsync().ConfigureAwait(false);
+                _ = LoadProcStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
                 if (QueryStoreSlicer.HasNarrowedSelection)
                 {
                     var slicerQsData = await _databaseService.GetQueryStoreDataAsync(0, QueryStoreSlicer.SelectionStart, QueryStoreSlicer.SelectionEnd, fromSlicer: true);
@@ -702,7 +703,7 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     PopulateQueryStoreGrid(await queryStoreTask);
                 }
-                LoadQueryStoreSlicerAsync().ConfigureAwait(false);
+                _ = LoadQueryStoreSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
 
                 // Populate charts from time-series data
                 LoadDurationChart(QueryPerfTrendsQueryChart, await queryDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[0], _queryDurationHover);
@@ -749,7 +750,7 @@ namespace PerformanceMonitorDashboard.Controls
             else
                 data = await _databaseService.GetQueryStatsAsync(_queryStatsHoursBack, _queryStatsFromDate, _queryStatsToDate);
             PopulateQueryStatsGrid(data);
-            LoadQueryStatsSlicerAsync().ConfigureAwait(false);
+            _ = LoadQueryStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
 
         private async Task RefreshProcStatsGridAsync()
@@ -761,7 +762,7 @@ namespace PerformanceMonitorDashboard.Controls
             else
                 data = await _databaseService.GetProcedureStatsAsync(_procStatsHoursBack, _procStatsFromDate, _procStatsToDate);
             PopulateProcStatsGrid(data);
-            LoadProcStatsSlicerAsync().ConfigureAwait(false);
+            _ = LoadProcStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
 
         private async Task RefreshQueryStoreGridAsync()
@@ -773,7 +774,7 @@ namespace PerformanceMonitorDashboard.Controls
             else
                 data = await _databaseService.GetQueryStoreDataAsync(_queryStoreHoursBack, _queryStoreFromDate, _queryStoreToDate);
             PopulateQueryStoreGrid(data);
-            LoadQueryStoreSlicerAsync().ConfigureAwait(false);
+            _ = LoadQueryStoreSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
 
         private void PopulateQueryStatsGrid(List<QueryStatsItem> data)
@@ -851,7 +852,7 @@ namespace PerformanceMonitorDashboard.Controls
 
         private async Task RefreshActiveQueriesAsync()
         {
-            using var _ = Helpers.MethodProfiler.StartTiming("QueryPerf-ActiveQueries");
+            using var profiler = Helpers.MethodProfiler.StartTiming("QueryPerf-ActiveQueries");
             if (_databaseService == null) return;
             if (_isDrillDownActive) return;
 
@@ -879,7 +880,7 @@ namespace PerformanceMonitorDashboard.Controls
                 SetItemsSourcePreservingSort(ActiveQueriesDataGrid, data);
                 ActiveQueriesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 SetStatus($"Loaded {data.Count} query snapshots");
-                LoadActiveQueriesSlicerAsync().ConfigureAwait(false);
+                _ = LoadActiveQueriesSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
             }
             catch (Exception ex)
             {
@@ -1156,7 +1157,7 @@ namespace PerformanceMonitorDashboard.Controls
         /// Renders a duration trend chart from time-series data (per-collection_time aggregation).
         /// Replaces the old per-query-summary approach that produced too few data points.
         /// </summary>
-        private void LoadDurationChart(WpfPlot chart, IEnumerable<DurationTrendItem> trendData, int hoursBack, DateTime? fromDate, DateTime? toDate, string legendText, ScottPlot.Color color, Helpers.ChartHoverHelper? hover = null)
+        private void LoadDurationChart(WpfPlot chart, IEnumerable<DurationTrendItem> trendData, int hoursBack, DateTime? fromDate, DateTime? toDate, string legendText, ScottPlot.Color color, ChartHoverHelper? hover = null)
         {
             try
             {
@@ -1263,6 +1264,17 @@ namespace PerformanceMonitorDashboard.Controls
             QueryPerfTrendsExecChart.Refresh();
         }
 
+        /// <summary>
+        /// Selects the Active Queries sub-tab and scopes it to [<paramref name="from"/>,
+        /// <paramref name="to"/>] (server-local time). Public entry point for a deep-link from the
+        /// Recommendations surface (WS1b-1); reuses the same range-refresh the chart drill-down uses.
+        /// </summary>
+        public async Task ShowActiveQueriesForRange(DateTime from, DateTime to)
+        {
+            SubTabControl.SelectedIndex = 1; // Active Queries
+            await RefreshActiveQueriesWithRangeAsync(from, to);
+        }
+
         private async Task RefreshActiveQueriesWithRangeAsync(DateTime from, DateTime to)
         {
             if (_databaseService == null) return;
@@ -1276,7 +1288,7 @@ namespace PerformanceMonitorDashboard.Controls
             var snapshots = await _databaseService.GetQuerySnapshotsAsync(0, from, to);
             SetItemsSourcePreservingSort(ActiveQueriesDataGrid, snapshots);
             ActiveQueriesNoDataMessage.Visibility = snapshots.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            LoadActiveQueriesSlicerAsync().ConfigureAwait(false);
+            _ = LoadActiveQueriesSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
         }
     }
 }

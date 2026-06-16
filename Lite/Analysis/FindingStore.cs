@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Analysis;
@@ -29,9 +30,18 @@ public class FindingStore
     public async Task<List<AnalysisFinding>> SaveFindingsAsync(
         List<AnalysisStory> stories, AnalysisContext context)
     {
-        var mutedHashes = await GetMutedHashesAsync(context.ServerId);
         var analysisTime = DateTime.UtcNow;
         var saved = new List<AnalysisFinding>();
+
+        /* One read lock + one connection per save call, reused for the mute-filter read
+           and every insert. The previous per-finding pattern acquired the lock and opened
+           a fresh connection for each row. The lock is NoRecursion, so the helpers below
+           operate on the passed connection and must NOT re-acquire it. */
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        var mutedHashes = await GetMutedHashesAsync(connection, context.ServerId);
 
         foreach (var story in stories)
         {
@@ -48,6 +58,7 @@ public class FindingStore
                 AnalysisTime = analysisTime,
                 ServerId = context.ServerId,
                 ServerName = context.ServerName,
+                DatabaseName = story.DatabaseName,
                 TimeRangeStart = context.TimeRangeStart,
                 TimeRangeEnd = context.TimeRangeEnd,
                 Severity = story.Severity,
@@ -64,7 +75,7 @@ public class FindingStore
                 RootFactMetadata = story.RootFactMetadata
             };
 
-            await InsertFindingAsync(finding);
+            await InsertFindingAsync(connection, finding);
             saved.Add(finding);
         }
 
@@ -237,13 +248,14 @@ VALUES ($1, $2, $3, $4, $5, $6)";
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private async Task<HashSet<string>> GetMutedHashesAsync(int serverId)
+    /// <summary>
+    /// Reads muted story hashes on an already-open connection. The caller owns the read
+    /// lock and connection (NoRecursion lock — do not re-acquire here). Used by
+    /// SaveFindingsAsync so the mute-filter read reuses the save connection.
+    /// </summary>
+    private static async Task<HashSet<string>> GetMutedHashesAsync(DuckDBConnection connection, int serverId)
     {
         var hashes = new HashSet<string>();
-
-        using var readLock = _duckDb.AcquireReadLock();
-        using var connection = _duckDb.CreateConnection();
-        await connection.OpenAsync();
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
@@ -259,12 +271,13 @@ WHERE server_id = $1 OR server_id IS NULL";
         return hashes;
     }
 
-    private async Task InsertFindingAsync(AnalysisFinding finding)
+    /// <summary>
+    /// Inserts one finding on an already-open connection. The caller owns the read lock
+    /// and connection, so a batch of inserts in one SaveFindingsAsync call shares a
+    /// single lock acquisition and connection.
+    /// </summary>
+    private static async Task InsertFindingAsync(DuckDBConnection connection, AnalysisFinding finding)
     {
-        using var readLock = _duckDb.AcquireReadLock();
-        using var connection = _duckDb.CreateConnection();
-        await connection.OpenAsync();
-
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
 INSERT INTO analysis_findings

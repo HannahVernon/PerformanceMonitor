@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Controls;
 

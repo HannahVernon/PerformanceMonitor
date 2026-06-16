@@ -46,11 +46,15 @@ namespace PerformanceMonitorDashboard
             PerformanceTab.CancelActualPlan();
         }
 
-        private void OpenPlanTab(string planXml, string label, string? queryText = null)
+        private async void OpenPlanTab(string planXml, string label, string? queryText = null)
         {
+            HidePlanLoading();
+            var viewer = new Controls.PlanViewerControl();
             try
             {
-                System.Xml.Linq.XDocument.Parse(planXml);
+                /* LoadPlan parses+analyzes off the UI thread; it throws XmlException for malformed
+                   plan XML, replacing the redundant up-front XDocument.Parse validation. */
+                await viewer.LoadPlan(planXml, label, queryText);
             }
             catch (System.Xml.XmlException ex)
             {
@@ -61,10 +65,15 @@ namespace PerformanceMonitorDashboard
                     MessageBoxImage.Warning);
                 return;
             }
-
-            HidePlanLoading();
-            var viewer = new Controls.PlanViewerControl();
-            viewer.LoadPlan(planXml, label, queryText);
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Failed to load the execution plan:\n\n{ex.Message}",
+                    "Plan Load Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
 
             var header = new StackPanel { Orientation = Orientation.Horizontal };
             header.Children.Add(new TextBlock

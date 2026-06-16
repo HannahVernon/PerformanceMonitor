@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -132,8 +133,8 @@ public partial class TimeRangeSlicerControl : UserControl
 
     // ── Time mapping ──
 
-    private DateTime DataStartUtc => _requestedStartUtc ?? _data[0].BucketTimeUtc;
-    private DateTime DataEndUtc => _requestedEndUtc ?? _data[^1].BucketTimeUtc.AddHours(1);
+    private DateTime DataStartUtc => _requestedStartUtc ?? _data[0].BucketTime;
+    private DateTime DataEndUtc => _requestedEndUtc ?? _data[^1].BucketTime.AddHours(1);
 
     /// <summary>
     /// Fills in zero-value buckets for hours with no data so the slicer
@@ -151,7 +152,7 @@ public partial class TimeRangeSlicerControl : UserControl
 
         var existing = new Dictionary<long, TimeSliceBucket>();
         foreach (var b in data)
-            existing[FloorToHour(b.BucketTimeUtc).Ticks] = b;
+            existing[FloorToHour(b.BucketTime).Ticks] = b;
 
         var result = new List<TimeSliceBucket>();
         for (var t = floorStart; t <= floorEnd; t = t.AddHours(1))
@@ -159,7 +160,7 @@ public partial class TimeRangeSlicerControl : UserControl
             if (existing.TryGetValue(t.Ticks, out var bucket))
                 result.Add(bucket);
             else
-                result.Add(new TimeSliceBucket { BucketTimeUtc = t });
+                result.Add(new TimeSliceBucket { BucketTime = t });
         }
 
         return result;
@@ -204,7 +205,7 @@ public partial class TimeRangeSlicerControl : UserControl
         var linePoints = new List<Point>(n);
         for (int i = 0; i < n; i++)
         {
-            var x = NormAtUtc(_data[i].BucketTimeUtc) * w;
+            var x = NormAtUtc(_data[i].BucketTime) * w;
             var y = chartBottom - (values[i] / max) * chartHeight;
             linePoints.Add(new Point(x, y));
         }
@@ -280,8 +281,8 @@ public partial class TimeRangeSlicerControl : UserControl
             if (overlayMax <= 0) overlayMax = 1;
 
             var dotBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF6F00"));
-            var firstBucket = _data[0].BucketTimeUtc;
-            var lastBucket = _data[^1].BucketTimeUtc;
+            var firstBucket = _data[0].BucketTime;
+            var lastBucket = _data[^1].BucketTime;
             foreach (var pt in _overlayData)
             {
                 if (pt.TimeUtc < firstBucket || pt.TimeUtc > lastBucket) continue;

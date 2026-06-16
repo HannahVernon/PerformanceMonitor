@@ -6,8 +6,10 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using Microsoft.Win32;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls;
 
@@ -58,8 +60,8 @@ public partial class PlanViewerControl : UserControl
     public PlanViewerControl()
     {
         InitializeComponent();
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+        Unloaded += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private void OnThemeChanged(string _)
@@ -82,7 +84,7 @@ public partial class PlanViewerControl : UserControl
         }
     }
 
-    public void LoadPlan(string planXml, string label, string? queryText = null)
+    public async System.Threading.Tasks.Task LoadPlan(string planXml, string label, string? queryText = null)
     {
         _label = label;
 
@@ -95,8 +97,15 @@ public partial class PlanViewerControl : UserControl
         {
             QueryTextExpander.Visibility = Visibility.Collapsed;
         }
-        _currentPlan = ShowPlanParser.Parse(planXml);
-        PlanAnalyzer.Analyze(_currentPlan);
+        /* Parse + analyze off the UI thread — a multi-MB showplan is two heavy passes that would
+           otherwise freeze the window for seconds. Only the render below touches the UI. Throws
+           XmlException for malformed plan XML; callers handle it. */
+        _currentPlan = await System.Threading.Tasks.Task.Run(() =>
+        {
+            var plan = ShowPlanParser.Parse(planXml);
+            PlanAnalyzer.Analyze(plan);
+            return plan;
+        });
 
         var allStatements = _currentPlan.Batches
             .SelectMany(b => b.Statements)

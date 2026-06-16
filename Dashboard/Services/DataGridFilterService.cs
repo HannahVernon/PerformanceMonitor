@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Services
 {

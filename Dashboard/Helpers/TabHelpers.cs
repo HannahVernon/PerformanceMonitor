@@ -19,6 +19,7 @@ using System.Windows.Data;
 using System.Windows.Media;
 using Microsoft.Win32;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Helpers
 {

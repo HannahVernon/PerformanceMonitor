@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorDashboard.Models;
 
 namespace PerformanceMonitorDashboard.Controls;
@@ -159,7 +160,7 @@ public partial class PlanViewerControl
         return null;
     }
 
-    private void PlanViewerControl_PreviewKeyDown(object sender, KeyEventArgs e)
+    private async void PlanViewerControl_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control
             && e.OriginalSource is not TextBox)
@@ -170,7 +171,9 @@ public partial class PlanViewerControl
                 e.Handled = true;
                 try
                 {
-                    System.Xml.Linq.XDocument.Parse(text);
+                    /* LoadPlan parses+analyzes off the UI thread and throws XmlException for
+                       malformed XML, replacing the redundant up-front XDocument.Parse. */
+                    await LoadPlan(text, "Pasted Plan");
                 }
                 catch (System.Xml.XmlException ex)
                 {
@@ -179,9 +182,15 @@ public partial class PlanViewerControl
                         "Invalid Plan XML",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning);
-                    return;
                 }
-                LoadPlan(text, "Pasted Plan");
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        $"Failed to load the execution plan:\n\n{ex.Message}",
+                        "Plan Load Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
             }
         }
     }

@@ -23,6 +23,7 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitorDashboard.Helpers;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 
 namespace PerformanceMonitorDashboard.Controls

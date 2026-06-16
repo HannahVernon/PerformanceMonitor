@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 

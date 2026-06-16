@@ -5,8 +5,10 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 #pragma warning disable CA1707 // MCP tools use snake_case naming convention
 

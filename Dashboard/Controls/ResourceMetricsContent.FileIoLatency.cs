@@ -23,6 +23,7 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitorDashboard.Helpers;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 
 namespace PerformanceMonitorDashboard.Controls
@@ -48,7 +49,7 @@ namespace PerformanceMonitorDashboard.Controls
             LoadFileIoChart(UserDbWriteLatencyChart, userDbData, d => d.WriteLatencyMs, "Write Latency (ms)", colors, xMin, xMax, _fileIoWriteHover, d => d.WriteQueuedLatencyMs);
         }
 
-        private void LoadFileIoChart(ScottPlot.WPF.WpfPlot chart, List<FileIoLatencyTimeSeriesItem> data, Func<FileIoLatencyTimeSeriesItem, decimal> latencySelector, string yLabel, ScottPlot.Color[] colors, double xMin, double xMax, Helpers.ChartHoverHelper? hover = null, Func<FileIoLatencyTimeSeriesItem, decimal>? queuedSelector = null)
+        private void LoadFileIoChart(ScottPlot.WPF.WpfPlot chart, List<FileIoLatencyTimeSeriesItem> data, Func<FileIoLatencyTimeSeriesItem, decimal> latencySelector, string yLabel, ScottPlot.Color[] colors, double xMin, double xMax, ChartHoverHelper? hover = null, Func<FileIoLatencyTimeSeriesItem, decimal>? queuedSelector = null)
         {
             DateTime rangeStart = DateTime.FromOADate(xMin);
             DateTime rangeEnd = DateTime.FromOADate(xMax);

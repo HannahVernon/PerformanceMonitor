@@ -16,9 +16,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls;
 
@@ -57,7 +59,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         }
 
         _crosshairManager = new CorrelatedCrosshairManager();
-        _crosshairManager.AddLane(CpuChart, "CPU", "%");
+        _crosshairManager.AddLane(CpuChart, "SQL CPU", "%");
         _crosshairManager.AddLane(WaitStatsChart, "Wait Stats", "ms/sec");
         _crosshairManager.AddLane(BlockingChart, "Blocking", "events");
         _crosshairManager.AddLane(MemoryChart, "Buffer Pool", "MB");
@@ -126,10 +128,12 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         // minAnomalyValue: absolute floor below which dots/arrows are suppressed even if outside band.
         // Prevents "1% CPU above 0.5% baseline" false alarms on idle servers.
         if (cpuTask.IsCompletedSuccessfully)
-            UpdateLane(CpuChart, "CPU %",
-                cpuTask.Result.OrderBy(d => d.SampleTime)
-                    .Select(d => (d.SampleTime.ToOADate(), (double)d.SqlServerCpuUtilization)).ToList(),
-                "#4FC3F7", 0, 105, cpuBaseline, minAnomalyValue: 10);
+        {
+            var ordered = cpuTask.Result.OrderBy(d => d.SampleTime).ToList();
+            var sqlSeries = ordered.Select(d => (d.SampleTime.ToOADate(), (double)d.SqlServerCpuUtilization)).ToList();
+            var totalSeries = ordered.Select(d => (d.SampleTime.ToOADate(), (double)d.TotalCpuUtilization)).ToList();
+            UpdateCpuLane(sqlSeries, totalSeries, cpuBaseline);
+        }
         else
             ShowEmpty(CpuChart, "CPU %");
 
@@ -199,7 +203,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
             if (refCpuTask.IsCompletedSuccessfully)
                 AddGhostLine(CpuChart, refCpuTask.Result
-                    .Select(d => (d.SampleTime.Add(timeShift).ToOADate(), (double)d.SqlServerCpuUtilization)).ToList(), "#4FC3F7");
+                    .Select(d => (d.SampleTime.Add(timeShift).ToOADate(), (double)d.TotalCpuUtilization)).ToList(), "#FF7043");
 
             if (refWaitTask.IsCompletedSuccessfully)
                 AddGhostLine(WaitStatsChart, refWaitTask.Result
@@ -347,6 +351,102 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         BlockingChart.Plot.Legend.IsVisible = false;
         BlockingChart.Plot.Axes.Margins(bottom: 0);
         BlockingChart.Plot.Axes.SetLimitsY(0, Math.Max(maxCount * 1.3, 2));
+    }
+
+    /* Two-series CPU lane: SQL CPU (blue) + Total non-idle CPU (orange).
+       Total is what the Lite alert evaluates by default (see CpuAlertMode in Lite/App.xaml.cs),
+       so plotting it directly avoids the "alert says 95% but chart shows 60%" confusion (PM #1004).
+       Baseline band + anomaly markers stay on SQL because that's the metric the CPU baseline
+       was computed from. Dashboard does not yet have its own CpuAlertMode (deferred follow-up). */
+    private void UpdateCpuLane(
+        List<(double Time, double Value)> sqlData,
+        List<(double Time, double Value)> totalData,
+        BaselineBucket? baseline = null)
+    {
+        ClearChart(CpuChart);
+        TabHelpers.ApplyThemeToChart(CpuChart);
+
+        if (sqlData.Count == 0 && totalData.Count == 0)
+        {
+            ShowEmpty(CpuChart, "CPU %");
+            return;
+        }
+
+        var sqlTimes = sqlData.Select(d => d.Time).ToArray();
+        var sqlValues = sqlData.Select(d => d.Value).ToArray();
+        var totalTimes = totalData.Select(d => d.Time).ToArray();
+        var totalValues = totalData.Select(d => d.Value).ToArray();
+
+        _crosshairManager?.SetLaneData(CpuChart, sqlTimes, sqlValues);
+        _crosshairManager?.AddLaneSeries(CpuChart, "Total", "%", totalTimes, totalValues);
+
+        // Baseline band — applies to SQL CPU (what the baseline was computed on)
+        if (baseline != null && baseline.SampleCount > 0 && baseline.EffectiveStdDev > 0)
+        {
+            var upper = baseline.Mean + 2 * baseline.EffectiveStdDev;
+            var lower = Math.Max(0, baseline.Mean - 2 * baseline.EffectiveStdDev);
+
+            _crosshairManager?.SetLaneBaseline(CpuChart, lower, upper, 10);
+
+            var band = CpuChart.Plot.Add.HorizontalSpan(lower, upper);
+            band.FillStyle.Color = ScottPlot.Color.FromHex("#4FC3F7").WithAlpha(25);
+            band.LineStyle.Width = 0;
+
+            var meanLine = CpuChart.Plot.Add.HorizontalLine(baseline.Mean);
+            meanLine.Color = ScottPlot.Color.FromHex("#4FC3F7").WithAlpha(60);
+            meanLine.LinePattern = ScottPlot.LinePattern.Dashed;
+            meanLine.LineWidth = 1;
+
+            var anomalyIndices = new List<int>();
+            for (int i = 0; i < sqlValues.Length; i++)
+            {
+                if ((sqlValues[i] > upper && sqlValues[i] >= 10) || sqlValues[i] < lower)
+                    anomalyIndices.Add(i);
+            }
+
+            if (anomalyIndices.Count > 0)
+            {
+                var anomalyTimes = anomalyIndices.Select(i => sqlTimes[i]).ToArray();
+                var anomalyVals = anomalyIndices.Select(i => sqlValues[i]).ToArray();
+                var anomalyScatter = CpuChart.Plot.Add.Scatter(anomalyTimes, anomalyVals);
+                anomalyScatter.Color = ScottPlot.Color.FromHex("#FF5252");
+                anomalyScatter.MarkerSize = 6;
+                anomalyScatter.MarkerShape = ScottPlot.MarkerShape.FilledCircle;
+                anomalyScatter.LineWidth = 0;
+            }
+        }
+
+        if (totalValues.Length > 0)
+        {
+            var totalScatter = CpuChart.Plot.Add.Scatter(totalTimes, totalValues);
+            totalScatter.Color = ScottPlot.Color.FromHex("#FF7043");
+            totalScatter.MarkerSize = 0;
+            totalScatter.LineWidth = 1.5f;
+            totalScatter.LegendText = "Total";
+            totalScatter.ConnectStyle = ScottPlot.ConnectStyle.Straight;
+        }
+
+        if (sqlValues.Length > 0)
+        {
+            var sqlScatter = CpuChart.Plot.Add.Scatter(sqlTimes, sqlValues);
+            sqlScatter.Color = ScottPlot.Color.FromHex("#4FC3F7");
+            sqlScatter.MarkerSize = 0;
+            sqlScatter.LineWidth = 1.5f;
+            sqlScatter.LegendText = "SQL";
+            sqlScatter.ConnectStyle = ScottPlot.ConnectStyle.Straight;
+        }
+
+        CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        if (CpuChart != FileIoChart)
+            CpuChart.Plot.Axes.Bottom.TickLabelStyle.IsVisible = false;
+
+        TabHelpers.ReapplyAxisColors(CpuChart);
+
+        CpuChart.Plot.Title("");
+        CpuChart.Plot.YLabel("");
+        CpuChart.Plot.Legend.IsVisible = false;
+        CpuChart.Plot.Axes.Margins(bottom: 0);
+        CpuChart.Plot.Axes.SetLimitsY(0, 105);
     }
 
     private void UpdateLane(ScottPlot.WPF.WpfPlot chart, string title,

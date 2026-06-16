@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
@@ -62,20 +64,39 @@ public sealed class McpAnalysisTools
                     start = findings[0].TimeRangeStart?.ToString("o"),
                     end = findings[0].TimeRangeEnd?.ToString("o")
                 },
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    drill_down = f.DrillDown,
-                    next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath)
+                    var advice = FactAdvice.GetForFinding(f);
+                    return new
+                    {
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        drill_down = f.DrillDown,
+                        next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        },
+                        suggested_remediation_sql = advice?.RemediationTsql,
+                        // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
+                        // remediation, read-only (Lite has no Apply path; its RCSI fields
+                        // are null/0 so the inaction side shows the weak-case baseline).
+                        destructive_risk_disclosure = advice?.Risks is null ? null : new
+                        {
+                            risks_of_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfChanging, r => r.Text)),
+                            risks_of_not_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfNotChanging, r => r.Text))
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
@@ -197,8 +218,8 @@ public sealed class McpAnalysisTools
                 baselineStart, baselineEnd,
                 comparisonStart, comparisonEnd);
 
-            var baselineByKey = baselineFacts.ToDictionary(f => f.Key, f => f);
-            var comparisonByKey = comparisonFacts.ToDictionary(f => f.Key, f => f);
+            var baselineByKey = baselineFacts.ToFactLookup();
+            var comparisonByKey = comparisonFacts.ToFactLookup();
             var allKeys = baselineByKey.Keys.Union(comparisonByKey.Keys).ToHashSet();
 
             var comparisons = allKeys
@@ -272,7 +293,7 @@ public sealed class McpAnalysisTools
             var facts = await analysisService.CollectAndScoreFactsAsync(
                 resolved.Value.ServerId, resolved.Value.ServerName, 1);
 
-            var factsByKey = facts.ToDictionary(f => f.Key, f => f);
+            var factsByKey = facts.ToFactLookup();
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
@@ -514,25 +535,40 @@ public sealed class McpAnalysisTools
             {
                 server = resolved.Value.ServerName,
                 finding_count = findings.Count,
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    finding_id = f.FindingId,
-                    analysis_time = f.AnalysisTime.ToString("o"),
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    time_range = new
+                    // Persisted findings carry no drill-down (it is ephemeral —
+                    // see AnalysisModels.cs), so generate advice prose only.
+                    // suggested_remediation_sql is intentionally omitted: it
+                    // would always be null here. The operator re-runs
+                    // analyze_server when they need the copy-paste T-SQL.
+                    var advice = FactAdvice.GetForFactKey(f.RootFactKey);
+                    return new
                     {
-                        start = f.TimeRangeStart?.ToString("o"),
-                        end = f.TimeRangeEnd?.ToString("o")
-                    }
+                        finding_id = f.FindingId,
+                        analysis_time = f.AnalysisTime.ToString("o"),
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        time_range = new
+                        {
+                            start = f.TimeRangeStart?.ToString("o"),
+                            end = f.TimeRangeEnd?.ToString("o")
+                        },
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
@@ -624,7 +660,8 @@ internal static class ToolRecommendations
         [
             new("get_file_io_stats", "Check I/O latency per database file"),
             new("get_file_io_trend", "Track I/O latency trend"),
-            new("get_memory_stats", "Check buffer pool and memory pressure")
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_tempdb_trend", "Check whether tempdb I/O is driving the EX-mode waits")
         ],
         ["RESOURCE_SEMAPHORE"] =
         [
@@ -635,7 +672,8 @@ internal static class ToolRecommendations
         ["WRITELOG"] =
         [
             new("get_file_io_stats", "Check transaction log file latency"),
-            new("get_file_io_trend", "Track log I/O latency over time")
+            new("get_file_io_trend", "Track log I/O latency over time"),
+            new("get_perfmon_trend", "Check Transactions/sec to see commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })
         ],
         ["LCK"] =
         [
@@ -668,7 +706,8 @@ internal static class ToolRecommendations
         ["SCH_M"] =
         [
             new("get_waiting_tasks", "See what's waiting on schema locks"),
-            new("get_blocked_process_reports", "Check if DDL operations are causing blocking")
+            new("get_blocked_process_reports", "Check if DDL operations are causing blocking"),
+            new("get_running_jobs", "See whether maintenance jobs (index rebuilds, stats updates) are taking schema-modification locks")
         ],
         ["CPU_SQL_PERCENT"] =
         [
@@ -715,6 +754,19 @@ internal static class ToolRecommendations
             new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" }),
             new("audit_config", "Check CTFP and MAXDOP settings")
         ],
+        ["PARAMETER_SENSITIVITY"] =
+        [
+            new("get_top_queries_by_cpu", "Find the sensitive query in the plan cache and see its current cached parameters"),
+            new("analyze_query_plan", "Examine the plan for the operators driving the runtime variance (seek vs scan, grant size, join type)"),
+            new("get_query_trend", "Confirm the bimodal duration pattern across executions over time"),
+            new("get_memory_grants", "Check whether the bad-parameter executions are also blowing up memory grants")
+        ],
+        ["PLAN_REGRESSION"] =
+        [
+            new("analyze_query_store_plan", "Compare the regressed plan against the prior plan to see what the optimizer changed"),
+            new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
+            new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
+        ],
         ["PERFMON_PLE"] =
         [
             new("get_memory_stats", "Check buffer pool and memory allocation"),
@@ -736,6 +788,11 @@ internal static class ToolRecommendations
         [
             new("audit_config", "Check server-level configuration"),
             new("get_blocked_process_reports", "Check if RCSI-off databases have blocking")
+        ],
+        ["FILE_AUTOGROWTH_PERCENT"] =
+        [
+            new("get_database_sizes", "See per-file sizes and autogrowth settings"),
+            new("get_file_io_stats", "Check per-file growth and latency")
         ],
         ["RUNNING_JOBS"] =
         [
@@ -765,6 +822,31 @@ internal static class ToolRecommendations
             new("get_file_io_stats", "Check per-file I/O latency"),
             new("get_file_io_trend", "Track I/O latency over time"),
             new("get_memory_stats", "Check if buffer pool is undersized")
+        ],
+        ["ANOMALY_SESSION_SPIKE"] =
+        [
+            new("get_session_stats", "See which application is driving the session-count spike"),
+            new("get_active_queries", "Find what those sessions were doing at the spike"),
+            new("get_waiting_tasks", "Check whether the new sessions are piling up on a shared wait")
+        ],
+        ["ANOMALY_QUERY_DURATION"] =
+        [
+            new("get_query_duration_trend", "Confirm the duration shift across the analysis window"),
+            new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"),
+            new("analyze_query_plan", "Examine the plan for the queries that slowed down")
+        ],
+        ["ANOMALY_MEMORY_PRESSURE"] =
+        [
+            new("get_memory_stats", "See current memory allocation and target vs total"),
+            new("get_memory_clerks", "Find which clerks are growing"),
+            new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"),
+            new("get_memory_grants", "Check whether query grants are competing with buffer pool")
+        ],
+        ["ANOMALY_BATCH_REQUESTS"] =
+        [
+            new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }),
+            new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"),
+            new("get_active_queries", "See what's actually running at the elevated rate")
         ],
         ["BAD_ACTOR"] =
         [
@@ -834,47 +916,6 @@ internal static class ToolRecommendations
         return result;
     }
 
-    private static readonly string[] DayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-    /// <summary>
-    /// Formats baseline context from anomaly fact metadata into a human-readable object
-    /// for MCP output. Example: "4.1σ above baseline for Tue 14:00, mean 68.2"
-    /// </summary>
-    private static Dictionary<string, object>? FormatBaselineContext(Dictionary<string, double> metadata)
-    {
-        var result = new Dictionary<string, object>();
-
-        if (metadata.TryGetValue("deviation_sigma", out var sigma))
-            result["deviation"] = $"{sigma:F1}σ";
-
-        if (metadata.TryGetValue("ratio", out var ratio))
-            result["ratio"] = $"{ratio:F1}x";
-
-        if (metadata.TryGetValue("baseline_mean", out var mean))
-            result["baseline_mean"] = Math.Round(mean, 2);
-
-        if (metadata.TryGetValue("baseline_mean_ms", out var meanMs))
-            result["baseline_mean"] = Math.Round(meanMs, 2);
-
-        if (metadata.TryGetValue("baseline_stddev", out var stddev))
-            result["baseline_stddev"] = Math.Round(stddev, 2);
-
-        if (metadata.TryGetValue("baseline_hour", out var hour) &&
-            metadata.TryGetValue("baseline_dow", out var dow))
-        {
-            var dowIdx = (int)dow;
-            var dayName = dowIdx >= 0 && dowIdx < DayNames.Length ? DayNames[dowIdx] : "?";
-            result["bucket"] = hour >= 0 ? $"{dayName} {(int)hour:00}:00" : "flat";
-        }
-
-        if (metadata.TryGetValue("baseline_tier", out var tier))
-            result["tier"] = tier switch { 0 => "full", 1 => "hour_only", _ => "flat" };
-
-        if (metadata.TryGetValue("baseline_samples", out var samples))
-            result["baseline_samples"] = (int)samples;
-
-        return result.Count > 0 ? result : null;
-    }
 }
 
 internal record ToolRecommendation(

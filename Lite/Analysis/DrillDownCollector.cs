@@ -3,10 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Analysis;
 
@@ -37,18 +40,51 @@ public class DrillDownCollector
     {
         foreach (var finding in findings)
         {
-            if (finding.Severity < 0.5) continue;
-
             try
             {
                 finding.DrillDown = new Dictionary<string, object>();
                 var pathKeys = finding.StoryPath.Split(" → ", StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+
+                /* D7: the config drill-down is a single cheap config-table read and is
+                   required to build config/RCSI/db-config advice, which legitimately scores
+                   below 0.5 (RCSI-off base severity is 0.3). Collect it regardless of the
+                   0.5 display gate. (Lite is advise/copy-paste only — no Apply — but still
+                   needs the config drill-down to render the recommendation.) */
+                if (pathKeys.Contains("DB_CONFIG"))
+                    await CollectConfigIssues(finding, context);
+
+                /* WS3: the percent-autogrowth drill-down is a single cheap config-table read
+                   and is required to render the copy-paste MODIFY FILE fix for a
+                   FILE_AUTOGROWTH_PERCENT finding, which scores 0.3 (advisory). Collect it
+                   regardless of the 0.5 display gate, like the config drill-down above. (Lite
+                   is advise/copy-paste only — the fix lives in this drill-down, not an Apply.) */
+                if (pathKeys.Contains("FILE_AUTOGROWTH_PERCENT"))
+                    await CollectAutogrowthPercentFiles(finding, context);
+
+                /* WS4: re-parse the top collected query plans to render the specific missing
+                   indexes / warnings for a MISSING_INDEX or PLAN_WARNING finding, which scores 0.4
+                   (advisory). Run regardless of the 0.5 display gate, like the config drill-downs
+                   above — the fact carries only counts, so the strings live here. */
+                if (pathKeys.Contains("MISSING_INDEX") || pathKeys.Contains("PLAN_WARNING"))
+                    await CollectPlanAdvisoryDetail(finding, context, pathKeys);
+
+                // Below the 0.5 display gate, only the cheap config drill-down above runs;
+                // the expensive collectors (plan fetches, multi-row reads) are skipped.
+                if (finding.Severity < 0.5)
+                {
+                    if (finding.DrillDown.Count == 0)
+                        finding.DrillDown = null;
+                    continue;
+                }
 
                 if (pathKeys.Contains("DEADLOCKS"))
                     await CollectTopDeadlocks(finding, context);
 
                 if (pathKeys.Contains("BLOCKING_EVENTS"))
                     await CollectTopBlockingChains(finding, context);
+
+                if (pathKeys.Contains("BLOCKING_CHAIN"))
+                    await CollectReconstructedBlockingChains(finding, context);
 
                 if (pathKeys.Contains("CPU_SPIKE"))
                     await CollectQueriesAtSpike(finding, context);
@@ -65,9 +101,6 @@ public class DrillDownCollector
                 if (pathKeys.Contains("LCK") || pathKeys.Contains("LCK_M_S") || pathKeys.Contains("LCK_M_IS"))
                     await CollectLockModeBreakdown(finding, context);
 
-                if (pathKeys.Contains("DB_CONFIG"))
-                    await CollectConfigIssues(finding, context);
-
                 if (pathKeys.Contains("TEMPDB_USAGE"))
                     await CollectTempDbBreakdown(finding, context);
 
@@ -76,6 +109,12 @@ public class DrillDownCollector
 
                 if (pathKeys.Any(k => k.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase)))
                     await CollectBadActorDetail(finding, context);
+
+                if (pathKeys.Contains("PARAMETER_SENSITIVITY"))
+                    await CollectParameterSensitiveQueries(finding, context);
+
+                if (pathKeys.Contains("PLAN_REGRESSION"))
+                    await CollectRegressedQueries(finding, context);
 
                 // Plan analysis: for findings with top queries, analyze their cached plans
                 await CollectPlanAnalysis(finding, context);
@@ -169,6 +208,325 @@ LIMIT 5";
 
         if (items.Count > 0)
             finding.DrillDown!["top_blocking_chains"] = items;
+    }
+
+    /// <summary>
+    /// Reconstructs blocking chains (same logic as the collector) and surfaces the top 3
+    /// by magnitude — apex, depth, victim count, and the level-by-level structure that the
+    /// flat top_blocking_chains list cannot show.
+    /// </summary>
+    private async Task CollectReconstructedBlockingChains(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SELECT
+    event_time, database_name,
+    blocked_spid, blocked_last_tran_started,
+    blocking_spid, blocking_last_tran_started,
+    wait_time_ms, lock_mode, blocking_status,
+    LEFT(blocked_sql_text, 500) AS blocked_sql,
+    LEFT(blocking_sql_text, 500) AS blocking_sql
+FROM v_blocked_process_reports
+WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+ORDER BY event_time DESC
+LIMIT 5000";
+
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+        var rows = new List<BlockingPairRow>();
+        using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                rows.Add(new BlockingPairRow
+                {
+                    EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
+                    DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
+                    BlockedTranStarted = reader.IsDBNull(3) ? null : reader.GetDateTime(3),
+                    BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                    BlockingTranStarted = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                    WaitTimeMs = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                    LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                    BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+                });
+            }
+        }
+
+        if (rows.Count == 0) return;
+
+        var reconstruction = BlockingChainReconstructor.Reconstruct(
+            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
+
+        var items = new List<object>();
+        foreach (var chain in reconstruction.Chains.Take(3))
+        {
+            items.Add(new
+            {
+                apex_spid = chain.ApexSpid,
+                apex_sleeping = chain.ApexSleeping,
+                depth = chain.Depth,
+                // Distinct sessions blocked under this apex over the window — cumulative, not peak-concurrent.
+                victim_count = chain.VictimCount,
+                max_wait_ms = chain.MaxWaitMs,
+                levels = chain.Levels.Select(l => new
+                {
+                    level = l.Level,
+                    blocking_spid = l.BlockingSpid,
+                    blocked_spid = l.BlockedSpid,
+                    lock_mode = l.LockMode,
+                    wait_time_ms = l.WaitTimeMs,
+                    blocking_sql = l.BlockingSqlText,
+                    blocked_sql = l.BlockedSqlText
+                }).ToList()
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["reconstructed_blocking_chains"] = items;
+    }
+
+    /// <summary>
+    /// Top parameter-sensitive plans behind a PARAMETER_SENSITIVITY finding.
+    /// Re-runs Detector A's detection (standard analysis window) for the top 5 offenders.
+    /// </summary>
+    private async Task CollectParameterSensitiveQueries(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+WITH latest AS
+(
+    SELECT
+        database_name,
+        query_hash,
+        query_plan_hash,
+        execution_count,
+        creation_time,
+        min_worker_time,
+        max_worker_time,
+        min_grant_kb,
+        max_grant_kb,
+        min_spills,
+        max_spills,
+        query_text,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY database_name, query_hash, query_plan_hash
+            ORDER BY collection_time DESC
+        ) AS rn
+    FROM v_query_stats
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   delta_execution_count > 0
+)
+SELECT
+    database_name,
+    query_hash,
+    query_plan_hash,
+    execution_count,
+    min_worker_time,
+    max_worker_time,
+    max_worker_time::DOUBLE / NULLIF(min_worker_time, 0) AS worker_ratio,
+    max_grant_kb::DOUBLE / NULLIF(min_grant_kb, 0) AS grant_ratio,
+    CASE WHEN max_spills > 0 AND min_spills = 0 THEN 1 ELSE 0 END AS spill_divergence,
+    LEFT(query_text, 500) AS query_text
+FROM latest
+WHERE rn = 1
+AND   min_worker_time >= 10000
+AND   max_worker_time >= 250000
+AND   execution_count >= 20
+AND   creation_time <= $2
+AND   max_worker_time::DOUBLE / NULLIF(min_worker_time, 0) >= 10
+ORDER BY worker_ratio DESC
+LIMIT 5";
+
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new
+            {
+                database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                query_hash = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                query_plan_hash = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                execution_count = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3)),
+                min_worker_time_us = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4)),
+                max_worker_time_us = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5)),
+                worker_ratio = reader.IsDBNull(6) ? 0.0 : Convert.ToDouble(reader.GetValue(6)),
+                grant_ratio = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7)),
+                spills_on_some_inputs = !reader.IsDBNull(8) && Convert.ToInt32(reader.GetValue(8)) == 1,
+                query_text = reader.IsDBNull(9) ? "" : reader.GetString(9)
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["parameter_sensitive_queries"] = items;
+    }
+
+    /// <summary>
+    /// Top regressed queries behind a PLAN_REGRESSION finding.
+    /// Re-runs Detector B's detection for the top 5 offenders. Uses the same 14-day
+    /// last_execution_time comparison window as the detector — NOT the standard analysis
+    /// window — so the days-old "best plan" baseline is present.
+    /// </summary>
+    private async Task CollectRegressedQueries(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+WITH deduped AS
+(
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        query_plan_hash,
+        execution_count,
+        avg_cpu_time_us,
+        avg_duration_us,
+        last_execution_time,
+        query_text,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY database_name, query_id, plan_id, first_execution_time
+            ORDER BY collection_time DESC
+        ) AS rn
+    FROM v_query_store_stats
+    WHERE server_id = $1
+    AND   execution_type_desc = 'Regular'
+    AND   last_execution_time >= $2
+),
+plan_agg AS
+(
+    SELECT
+        database_name,
+        query_id,
+        plan_id,
+        any_value(query_plan_hash) AS query_plan_hash,
+        any_value(query_text) AS query_text,
+        SUM(execution_count) AS execs,
+        SUM(avg_cpu_time_us * execution_count) / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
+        SUM(avg_duration_us * execution_count) / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
+        MAX(last_execution_time) AS last_exec
+    FROM deduped
+    WHERE rn = 1
+    GROUP BY database_name, query_id, plan_id
+),
+plan_dedup AS
+(
+    -- MAX(plan_id) carries the most recently observed plan_id in the hash partition
+    -- forward — newer plans are less likely evicted by Query Store retention.
+    -- Functionally any plan_id sharing the hash forces the same execution shape.
+    SELECT
+        database_name,
+        query_id,
+        query_plan_hash,
+        MAX(plan_id) AS plan_id,
+        any_value(query_text) AS query_text,
+        SUM(execs) AS execs,
+        SUM(cpu_per_exec * execs) / NULLIF(SUM(execs), 0) AS cpu_per_exec,
+        SUM(dur_per_exec * execs) / NULLIF(SUM(execs), 0) AS dur_per_exec,
+        MAX(last_exec) AS last_exec
+    FROM plan_agg
+    GROUP BY database_name, query_id, query_plan_hash
+    HAVING SUM(execs) >= 25
+),
+ranked AS
+(
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY last_exec DESC) AS recency,
+        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY cpu_per_exec ASC) AS cheapness
+    FROM plan_dedup
+),
+compared AS
+(
+    SELECT
+        l.database_name,
+        l.query_id,
+        l.query_plan_hash AS latest_plan_hash,
+        l.cpu_per_exec AS latest_cpu,
+        l.dur_per_exec AS latest_dur,
+        b.query_plan_hash AS best_plan_hash,
+        b.plan_id AS best_plan_id,
+        b.cpu_per_exec AS best_cpu,
+        b.dur_per_exec AS best_dur,
+        l.query_text,
+        GREATEST
+        (
+            l.cpu_per_exec / NULLIF(b.cpu_per_exec, 0),
+            l.dur_per_exec / NULLIF(b.dur_per_exec, 0)
+        ) AS regression_factor
+    FROM ranked AS l
+    JOIN ranked AS b
+      ON  b.database_name = l.database_name
+      AND b.query_id = l.query_id
+      AND b.cheapness = 1
+    WHERE l.recency = 1
+    AND   l.query_plan_hash <> b.query_plan_hash
+)
+SELECT
+    database_name,
+    query_id,
+    latest_plan_hash,
+    latest_cpu,
+    latest_dur,
+    best_plan_hash,
+    best_plan_id,
+    best_cpu,
+    best_dur,
+    regression_factor,
+    LEFT(query_text, 500) AS query_text
+FROM compared
+WHERE regression_factor >= 2
+ORDER BY regression_factor DESC
+LIMIT 5";
+
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart.AddDays(-14) });
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new
+            {
+                database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                query_id = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1)),
+                latest_plan_hash = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                latest_cpu_per_exec_us = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3)),
+                latest_duration_per_exec_us = reader.IsDBNull(4) ? 0.0 : Convert.ToDouble(reader.GetValue(4)),
+                best_plan_hash = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                best_plan_id = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+                best_cpu_per_exec_us = reader.IsDBNull(7) ? 0.0 : Convert.ToDouble(reader.GetValue(7)),
+                best_duration_per_exec_us = reader.IsDBNull(8) ? 0.0 : Convert.ToDouble(reader.GetValue(8)),
+                regression_factor = reader.IsDBNull(9) ? 0.0 : Convert.ToDouble(reader.GetValue(9)),
+                query_text = reader.IsDBNull(10) ? "" : reader.GetString(10)
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["regressed_queries"] = items;
     }
 
     private async Task CollectQueriesAtSpike(AnalysisFinding finding, AnalysisContext context)
@@ -450,22 +808,116 @@ ORDER BY database_name";
             var issues = new List<string>();
             if (!reader.IsDBNull(2) && reader.GetBoolean(2)) issues.Add("auto_shrink ON");
             if (!reader.IsDBNull(3) && reader.GetBoolean(3)) issues.Add("auto_close ON");
-            if (!reader.IsDBNull(4) && !reader.GetBoolean(4)) issues.Add("RCSI OFF");
+            var rcsiOn = !reader.IsDBNull(4) && reader.GetBoolean(4);
+            if (!rcsiOn) issues.Add("RCSI OFF");
             var pageVerify = reader.IsDBNull(5) ? "" : reader.GetString(5);
             if (!string.IsNullOrEmpty(pageVerify) && pageVerify != "CHECKSUM") issues.Add($"page_verify={pageVerify}");
 
-            items.Add(new
+            // RCSI-off rows carry the three structured inaction-risk fields with the
+            // SAME JSON names + types as the Dashboard collector (M-2): Lite emits them
+            // null/0 because it has no collect.blocking_deadlock_stats aggregate and the
+            // per-DB counts would not be parity-clean. Lite has no Apply path, so the
+            // disclosure simply shows the weak-case baseline. The parity test asserts
+            // TYPES only (int / int / nullable-int) for these three fields.
+            if (!rcsiOn)
             {
-                database = reader.IsDBNull(0) ? "" : reader.GetString(0),
-                recovery_model = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                rcsi = !reader.IsDBNull(4) && reader.GetBoolean(4),
-                query_store = !reader.IsDBNull(6) && reader.GetBoolean(6),
-                issues
-            });
+                items.Add(new
+                {
+                    database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                    recovery_model = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    rcsi = rcsiOn,
+                    query_store = !reader.IsDBNull(6) && reader.GetBoolean(6),
+                    issues,
+                    auto_shrink = !reader.IsDBNull(2) && reader.GetBoolean(2),
+                    auto_close = !reader.IsDBNull(3) && reader.GetBoolean(3),
+                    page_verify = pageVerify,
+                    rcsi_blocking_events = 0,
+                    rcsi_deadlocks = 0,
+                    rcsi_reader_writer_pct = (int?)null
+                });
+            }
+            else
+            {
+                items.Add(new
+                {
+                    database = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                    recovery_model = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    rcsi = rcsiOn,
+                    query_store = !reader.IsDBNull(6) && reader.GetBoolean(6),
+                    issues,
+                    // §4.1: structured, wording-independent fields the shared extractor
+                    // (FactRemediation.ExtractDbConfigTargets) reads. Identical JSON names
+                    // and types to the Dashboard collector (bool / bool / string).
+                    auto_shrink = !reader.IsDBNull(2) && reader.GetBoolean(2),
+                    auto_close = !reader.IsDBNull(3) && reader.GetBoolean(3),
+                    page_verify = pageVerify
+                });
+            }
         }
 
         if (items.Count > 0)
             finding.DrillDown!["config_issues"] = items;
+    }
+
+    /// <summary>
+    /// Lists the large (>= 10 GB) data/log files on PERCENTAGE autogrowth (WS3), latest
+    /// snapshot per file, excluding system databases — and attaches a copy-paste
+    /// ALTER DATABASE ... MODIFY FILE fix per file (FILEGROWTH set to a size-tiered fixed MB).
+    /// Same structured fields + SHARED renderer as the Dashboard collector so the copy-paste
+    /// is byte-identical across apps. Lite is advise/copy-paste only — there is no Apply, so
+    /// this drill-down IS the fix surface.
+    /// </summary>
+    private async Task CollectAutogrowthPercentFiles(AnalysisFinding finding, AnalysisContext context)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+WITH latest AS (
+    SELECT database_name, file_id, file_type_desc, file_name, total_size_mb, is_percent_growth, growth_pct,
+           ROW_NUMBER() OVER (PARTITION BY database_name, file_id ORDER BY collection_time DESC) AS rn
+    FROM v_database_size_stats
+    WHERE server_id = $1
+)
+SELECT database_name, file_type_desc, file_name, total_size_mb, growth_pct
+FROM latest
+WHERE rn = 1
+AND   is_percent_growth = true
+AND   total_size_mb >= 10240
+AND   database_name NOT IN ('master', 'msdb', 'model', 'tempdb')
+ORDER BY total_size_mb DESC
+LIMIT 50";
+
+        cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+
+        var items = new List<object>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var database = reader.IsDBNull(0) ? "" : reader.GetString(0);
+            var fileType = reader.IsDBNull(1) ? "" : reader.GetString(1);
+            var logical = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            var sizeMb = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3));
+            var growthPct = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4));
+            if (string.IsNullOrEmpty(database) || string.IsNullOrEmpty(logical)) continue;
+
+            var growthMb = FactRemediation.RecommendedGrowthMbFor(fileType);
+            items.Add(new
+            {
+                database,
+                logical_file_name = logical,
+                file_type = fileType,
+                total_size_mb = sizeMb,
+                growth_pct = growthPct,
+                issue = $"{growthPct}% autogrowth on {sizeMb / 1024.0:N1} GB {fileType} file",
+                alter_statement = FactRemediation.BuildModifyFileStatement(database, logical, growthMb)
+            });
+        }
+
+        if (items.Count > 0)
+            finding.DrillDown!["autogrowth_percent_files"] = items;
     }
 
     private async Task CollectTempDbBreakdown(AnalysisFinding finding, AnalysisContext context)
@@ -655,6 +1107,85 @@ LIMIT 1";
         nodes.Add(node);
         foreach (var child in node.Children)
             CollectPlanNodes(child, nodes);
+    }
+
+    /// <summary>
+    /// WS4: re-parses the top collected query plans (the same top-10-by-cost set the fact collector
+    /// summarized) and attaches the specific missing indexes / plan warnings to a MISSING_INDEX or
+    /// PLAN_WARNING finding's drill-down. The fact carries only counts (Fact.Metadata is numeric),
+    /// so the strings — CREATE statements, warning messages — are rendered here. Mirrors the
+    /// Dashboard SqlServerDrillDownCollector. Best-effort: a read/parse failure leaves no detail.
+    /// </summary>
+    private async Task CollectPlanAdvisoryDetail(AnalysisFinding finding, AnalysisContext context, HashSet<string> pathKeys)
+    {
+        try
+        {
+            var planXmls = new List<string>();
+
+            using (var readLock = _duckDb.AcquireReadLock())
+            using (var connection = _duckDb.CreateConnection())
+            {
+                await connection.OpenAsync();
+
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = @"
+SELECT query_plan_xml
+FROM query_stats
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3
+AND   query_plan_xml IS NOT NULL
+ORDER BY delta_worker_time DESC
+LIMIT 10";
+                cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+                cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+                cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    if (!reader.IsDBNull(0))
+                        planXmls.Add(reader.GetString(0));
+                }
+            }
+
+            if (planXmls.Count == 0)
+                return;
+
+            var details = PlanAdvisoryAggregator.Extract(planXmls);
+
+            if (pathKeys.Contains("MISSING_INDEX") && details.MissingIndexes.Count > 0)
+            {
+                finding.DrillDown!["missing_indexes"] = details.MissingIndexes
+                    .OrderByDescending(i => i.Impact)
+                    .Take(5)
+                    .Select(i => new
+                    {
+                        table = $"{i.Schema}.{i.Table}",
+                        impact = Math.Round(i.Impact, 1),
+                        create_statement = i.CreateStatement
+                    })
+                    .ToList();
+            }
+
+            if (pathKeys.Contains("PLAN_WARNING") && details.Warnings.Count > 0)
+            {
+                finding.DrillDown!["plan_warnings"] = details.Warnings
+                    .OrderByDescending(w => w.Severity)
+                    .Take(5)
+                    .Select(w => new
+                    {
+                        type = w.WarningType,
+                        severity = w.Severity.ToString(),
+                        message = McpHelpers.Truncate(w.Message, 300)
+                    })
+                    .ToList();
+            }
+        }
+        catch
+        {
+            // Plan read/parse can fail on malformed XML — skip, the detail is best-effort.
+        }
     }
 
     private async Task CollectBadActorDetail(AnalysisFinding finding, AnalysisContext context)

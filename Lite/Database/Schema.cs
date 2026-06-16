@@ -346,7 +346,8 @@ CREATE TABLE IF NOT EXISTS query_snapshots (
     host_name VARCHAR,
     program_name VARCHAR,
     open_transaction_count INTEGER,
-    percent_complete DECIMAL(5,2)
+    percent_complete DECIMAL(5,2),
+    is_cdc_capture BOOLEAN DEFAULT false
 )";
 
     public const string CreateTempdbStatsTable = @"
@@ -638,6 +639,65 @@ CREATE TABLE IF NOT EXISTS database_size_stats (
     public const string CreateDatabaseSizeStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_database_size_stats_time ON database_size_stats(server_id, collection_time)";
 
+    // Per-table/per-index size, usage, and locking stats. Sizes are point-in-time;
+    // usage/locking counters are cumulative (reset boundary in sqlserver_start_time).
+    // Column order MUST match the appender in RemoteCollectorService.IndexObjectStats.cs
+    // and the data columns in install/02_create_tables.sql (Dashboard parity).
+    public const string CreateIndexObjectStatsTable = @"
+CREATE TABLE IF NOT EXISTS index_object_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    sqlserver_start_time TIMESTAMP,
+    database_name VARCHAR NOT NULL,
+    database_id INTEGER NOT NULL,
+    schema_name VARCHAR NOT NULL,
+    object_id INTEGER NOT NULL,
+    table_name VARCHAR NOT NULL,
+    index_id INTEGER NOT NULL,
+    index_name VARCHAR,
+    index_type_desc VARCHAR,
+    is_unique BOOLEAN,
+    is_primary_key BOOLEAN,
+    is_filtered BOOLEAN,
+    partition_count INTEGER,
+    reserved_mb DECIMAL(19,2),
+    used_mb DECIMAL(19,2),
+    in_row_data_mb DECIMAL(19,2),
+    lob_data_mb DECIMAL(19,2),
+    row_overflow_mb DECIMAL(19,2),
+    total_rows BIGINT,
+    user_seeks BIGINT,
+    user_scans BIGINT,
+    user_lookups BIGINT,
+    user_updates BIGINT,
+    last_user_seek TIMESTAMP,
+    last_user_scan TIMESTAMP,
+    last_user_lookup TIMESTAMP,
+    last_user_update TIMESTAMP,
+    leaf_insert_count BIGINT,
+    leaf_update_count BIGINT,
+    leaf_delete_count BIGINT,
+    range_scan_count BIGINT,
+    singleton_lookup_count BIGINT,
+    row_lock_count BIGINT,
+    row_lock_wait_count BIGINT,
+    row_lock_wait_in_ms BIGINT,
+    page_lock_count BIGINT,
+    page_lock_wait_count BIGINT,
+    page_lock_wait_in_ms BIGINT,
+    index_lock_promotion_attempt_count BIGINT,
+    index_lock_promotion_count BIGINT,
+    page_latch_wait_count BIGINT,
+    page_latch_wait_in_ms BIGINT,
+    page_io_latch_wait_count BIGINT,
+    page_io_latch_wait_in_ms BIGINT
+)";
+
+    public const string CreateIndexObjectStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_index_object_stats_object ON index_object_stats(server_id, database_name, object_id, index_id, collection_time)";
+
     public const string CreateServerPropertiesTable = @"
 CREATE TABLE IF NOT EXISTS server_properties (
     collection_id BIGINT PRIMARY KEY,
@@ -658,7 +718,10 @@ CREATE TABLE IF NOT EXISTS server_properties (
     is_clustered BOOLEAN,
     enterprise_features VARCHAR,
     service_objective VARCHAR,
-    vcore_count INTEGER
+    vcore_count INTEGER,
+    lock_pages_in_memory BOOLEAN,
+    instant_file_initialization_enabled BOOLEAN,
+    memory_dump_count INTEGER
 )";
 
     public const string CreateServerPropertiesIndex = @"
@@ -697,7 +760,8 @@ CREATE TABLE IF NOT EXISTS config_alert_log (
     send_error VARCHAR,
     dismissed BOOLEAN NOT NULL DEFAULT false,
     muted BOOLEAN NOT NULL DEFAULT false,
-    detail_text VARCHAR
+    detail_text VARCHAR,
+    context_json VARCHAR
 )";
 
     public const string CreateMuteRulesTable = @"
@@ -757,6 +821,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateTraceFlagsTable;
         yield return CreateRunningJobsTable;
         yield return CreateDatabaseSizeStatsTable;
+        yield return CreateIndexObjectStatsTable;
         yield return CreateServerPropertiesTable;
         yield return CreateSessionStatsTable;
         yield return CreateAlertLogTable;
@@ -790,6 +855,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateTraceFlagsIndex;
         yield return CreateRunningJobsIndex;
         yield return CreateDatabaseSizeStatsIndex;
+        yield return CreateIndexObjectStatsIndex;
         yield return CreateServerPropertiesIndex;
         yield return CreateSessionStatsIndex;
         yield return CreateDismissedArchiveAlertsIndex;

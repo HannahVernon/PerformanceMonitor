@@ -20,6 +20,7 @@ using System.Windows.Threading;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Mcp;
 using PerformanceMonitorDashboard.Models;
 using System.Reflection;
@@ -29,6 +30,8 @@ using PerformanceMonitorDashboard.Services;
 using System.ComponentModel;
 using System.Windows.Data;
 using System.Xml.Linq;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard
 {
@@ -41,6 +44,7 @@ namespace PerformanceMonitorDashboard
         private readonly DispatcherTimer _displayRefreshTimer;
         private readonly DispatcherTimer _connectionStatusTimer;
         private NotificationService? _notificationService;
+        private WindowResumeGuard? _resumeGuard;
         private readonly AlertStateService _alertStateService;
         private readonly MuteRuleService _muteRuleService;
         private readonly Dictionary<string, bool> _previousConnectionStates;
@@ -64,7 +68,23 @@ namespace PerformanceMonitorDashboard
         // Independent alert engine - runs regardless of which tab is active
         private readonly DispatcherTimer _alertCheckTimer;
         private readonly EmailAlertService _emailAlertService;
+        private readonly WebhookAlertService _webhookAlertService;
+        private readonly JsonAlertHistoryStore _alertHistoryStore;
         private readonly CredentialService _credentialService;
+
+        /// <summary>
+        /// Gated Apply Fix orchestrator (PR-B). The only non-core holder of the
+        /// remediation machinery; threaded into the Alerts history UI so the alert
+        /// detail dialog can drive a confirmed, audited apply/un-apply.
+        /// </summary>
+        private readonly Services.Remediation.RemediationApplyService _remediationApplyService;
+
+        // Scheduled analysis-finding notifications — separate cadence and gating from
+        // the threshold-alert engine above. Owns its own DispatcherTimer internally;
+        // re-Configured after every settings save. Field name avoids colliding with
+        // _notificationService (the tray-notification service constructed in Loaded).
+        private readonly AnalysisNotificationService _analysisNotificationService;
+        private readonly AnalysisScheduler _analysisScheduler;
         private readonly ConcurrentDictionary<string, DateTime> _lastBlockingAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastDeadlockAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastHighCpuAlert = new();
@@ -77,9 +97,37 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningQueryAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastTempDbSpaceAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeTempDbSpaceAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastLowDiskAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeLowDiskAlert = new();
+        /* Worst free-% captured at the last low-disk alert per server (#754 follow-up): a full
+           volume is a standing condition, so without this the alert re-fired — and re-recorded an
+           alert-history row, defeating Dismiss — every cooldown. Gated by LowDiskAlertGate to notify
+           only on a fresh or worsening breach; removed when the condition resolves. */
+        private readonly ConcurrentDictionary<string, double> _lastAlertedLowDiskPercent = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningJobAlert = new();
+        /* Whether a failed Agent job sits in the lookback window for this server, for the server
+           tab badge (#749). Set each alert cycle (true while a failure is in-window, false once it
+           ages out), so the badge auto-resolves. Read by UpdateTabBadge. */
+        private readonly ConcurrentDictionary<string, bool> _activeFailedJobAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastFailedJobAlert = new();
+        /* Watermark of the most-recent failed-job run time already alerted per server. A failed
+           run lingers in the lookback window for the whole window, so a plain level check would
+           re-fire every cooldown; we only notify when a strictly newer failure appears. Bounded
+           by server count, so no pruning needed. (Server-local run times mean a fall-back DST hour
+           / NTP step could let one new failure tie the watermark and be skipped — a once-a-year,
+           one-hour edge.) */
+        private readonly ConcurrentDictionary<string, DateTime> _lastAlertedFailedJobTime = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, long> _previousDeadlockCounts = new();
+        /* Time of the last NEW deadlock per server, used to de-flap the "Deadlocks Cleared"
+           notification (#1091): deadlock detection is edge-triggered off a delta, so the check
+           right after a deadlock has a zero delta and would otherwise immediately fire "Cleared".
+           We instead keep the alert active until a deadlock-quiet window has elapsed, matching
+           Lite's "no deadlocks in the last hour" semantics. */
+        private readonly ConcurrentDictionary<string, DateTime> _lastDeadlockActivity = new();
+        private static readonly TimeSpan DeadlockQuietWindow = TimeSpan.FromHours(1);
 
         private const double ExpandedWidth = 250;
         private const double CollapsedWidth = 52;
@@ -96,7 +144,11 @@ namespace PerformanceMonitorDashboard
             _openTabs = new Dictionary<string, TabItem>();
             _preferencesService = new UserPreferencesService();
             _alertStateService = new AlertStateService();
-            _muteRuleService = new MuteRuleService();
+            _muteRuleService = new MuteRuleService(new JsonMuteRuleStore(), new LoggerAdapter<MuteRuleService>());
+            /* Shared MuteRuleService no longer loads in its ctor (Plan E E3b). The store
+               sync-loads its file in its own ctor, so this LoadAsync completes synchronously
+               here — preserving Dashboard's prior load-then-purge-in-ctor startup timing. */
+            _muteRuleService.LoadAsync().GetAwaiter().GetResult();
             _serverListItems = new ObservableCollection<ServerListItem>();
             _previousConnectionStates = new Dictionary<string, bool>();
             _tabBadges = new Dictionary<string, Border>();
@@ -105,11 +157,50 @@ namespace PerformanceMonitorDashboard
             ServerListView.ItemsSource = _serverListItems;
 
             _credentialService = new CredentialService();
-            _emailAlertService = new EmailAlertService(_preferencesService);
-            _ = new WebhookAlertService(_preferencesService);
+            /* Gated Apply Fix orchestrator (PR-B): registry + executor + audit over the
+               existing per-server monitoring connection. No elevation — reuses the
+               same credentials the rest of the Dashboard already holds. */
+            _remediationApplyService = new Services.Remediation.RemediationApplyService(_serverManager, _credentialService);
+            /* Saved-prefs settings adapter shared by the three alert services (Plan E E1). */
+            var alertSettings = new DashboardAlertSettings(_preferencesService);
+            /* Alert-history store owns the alert_history.json list + management API (Plan E E2).
+               Held as a field so SaveAlertLog (and the Alerts UI / MCP via its Current static)
+               reach it directly rather than forwarding through EmailAlertService (E3c Phase 6). */
+            _alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
+            /* Webhook service is constructed first and injected into the email service
+               (Plan E E3c): the shared lib service carries no Current static, so Dashboard
+               keeps this handle for the email fan-out and any MCP/health consumers. */
+            _webhookAlertService = new WebhookAlertService(alertSettings, EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>());
+            _emailAlertService = new EmailAlertService(alertSettings, _alertHistoryStore, _webhookAlertService, new LoggerAdapter<EmailAlertService>());
 
             _alertCheckTimer = new DispatcherTimer();
             _alertCheckTimer.Tick += AlertCheckTimer_Tick;
+
+            /* Scheduled analysis-finding notifications. Constructed alongside the
+               alert engine (all dependencies exist by this point); started by
+               _analysisScheduler.Configure() in MainWindow_Loaded. */
+            /* serverId resolver (Plan E E3c): use the matching ServerConnection.Id (GUID string)
+               so alert_history.json keys stay consistent with the threshold-alert engine; fall
+               back to the finding's stable int id if the lookup misses (server removed mid-cycle). */
+            _analysisNotificationService = new AnalysisNotificationService(
+                _emailAlertService,
+                alertSettings,
+                finding => _serverManager.GetAllServers()
+                    .FirstOrDefault(s => string.Equals(s.ServerName, finding.ServerName, StringComparison.OrdinalIgnoreCase))
+                    ?.Id ?? finding.ServerId.ToString(),
+                new LoggerAdapter<AnalysisNotificationService>(),
+                /* Suppress analysis-finding emails for servers the user silenced via
+                   "Silence All Alerts" — matches the threshold-alert guard. */
+                _alertStateService.IsAnySilencingActive,
+                /* WS2: always pop a tray balloon for a notify-worthy finding — the same visible
+                   signal threshold alerts already raise, so a local-only user with no email/webhook
+                   still sees findings. Late-bound to the _notificationService field (built later in
+                   Loaded); ShowNotification honors the notifications-enabled pref + marshals to the
+                   UI thread, so it is safe to invoke from the analysis cycle. */
+                showTrayNotification: (title, message) =>
+                    _notificationService?.ShowNotification(title, message, NotificationType.Warning));
+            _analysisScheduler = new AnalysisScheduler(
+                _serverManager, _credentialService, _preferencesService, _analysisNotificationService);
 
             _displayRefreshTimer = new DispatcherTimer
             {
@@ -159,7 +250,13 @@ namespace PerformanceMonitorDashboard
             MuteRuleDialog.DefaultExpiration = startupPrefs.MuteRuleDefaultExpiration;
             // Charts always render in server time; force the dropdown to match on startup
             // so the display isn't misleading. The preference is still saved when changed.
-            Helpers.ServerTimeHelper.CurrentDisplayMode = Helpers.TimeDisplayMode.ServerTime;
+            Helpers.ServerTimeHelper.CurrentDisplayMode = TimeDisplayMode.ServerTime;
+
+            // Wire the shared-UI time conversion hook before any chart/crosshair can
+            // render (ahead of the tab-opening awaits below). The lambda reads
+            // CurrentDisplayMode at call time, so later display-mode switches are honored.
+            PerformanceMonitor.Ui.UiTimeContext.ConvertForDisplay =
+                t => Helpers.ServerTimeHelper.ConvertForDisplay(t, Helpers.ServerTimeHelper.CurrentDisplayMode);
 
             await LoadServerListAsync();
             InitializeNotificationService();
@@ -169,6 +266,7 @@ namespace PerformanceMonitorDashboard
             LoadSidebarState();
             ConfigureConnectionStatusTimer();
             ConfigureAlertCheckTimer();
+            _analysisScheduler.Configure();
             UpdateAlertBadge();
             StartMcpServerIfEnabled();
 
@@ -287,6 +385,10 @@ namespace PerformanceMonitorDashboard
         {
             _notificationService = new NotificationService(this, _preferencesService);
             _notificationService.Initialize();
+
+            /* #1050: restore the window from the tray on resume/unlock if a sleep- or lock-driven
+               minimize hid it. ??= so a repeated Loaded can't double-subscribe (static SystemEvents). */
+            _resumeGuard ??= new WindowResumeGuard(this, _notificationService.ShowMainWindow);
         }
 
         private void MainWindow_StateChanged(object? sender, EventArgs e)
@@ -318,10 +420,17 @@ namespace PerformanceMonitorDashboard
             try { Task.Run(StopMcpServerAsync).Wait(TimeSpan.FromSeconds(10)); }
             catch { /* shutdown best-effort */ }
 
-            // Save alert history to disk
-            _emailAlertService?.SaveAlertLog();
+            // Stop the scheduled-analysis timer + cancel its in-flight cycle so the
+            // per-server Task.Delay timers can drop out cleanly instead of waiting
+            // out their full timeout during shutdown.
+            _analysisScheduler?.Stop();
 
-            // Clean up notification service
+            // Save alert history to disk
+            _alertHistoryStore?.SaveAlertLog();
+
+            // Clean up notification service (real-close path only — the X-button minimize-to-tray
+            // branch above returns early, so the resume guard stays alive while the app runs)
+            _resumeGuard?.Dispose();
             _notificationService?.Dispose();
         }
 
@@ -339,9 +448,16 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        private bool _isCheckingConnections;
+
         private async void ConnectionStatusTimer_Tick(object? sender, EventArgs e)
         {
-            await CheckAllConnectionsAsync();
+            /* Skip if the previous check is still running so slow servers don't stack overlapping
+               connection sweeps at the minimum interval. */
+            if (_isCheckingConnections) return;
+            _isCheckingConnections = true;
+            try { await CheckAllConnectionsAsync(); }
+            finally { _isCheckingConnections = false; }
         }
 
         private void ConfigureConnectionStatusTimer()
@@ -450,7 +566,13 @@ namespace PerformanceMonitorDashboard
                     // Send notifications on status changes (skip first check)
                     if (_previousConnectionStates.ContainsKey(item.Id))
                     {
-                        if (wasOnline && !isOnline && prefs.NotifyOnConnectionLost)
+                        /* "Silence All Alerts" suppresses connection up/down notifications too —
+                           match the threshold-alert guard so a silenced server produces no tray,
+                           email, or history row. State tracking below still runs unconditionally,
+                           so unsilencing resumes from the correct baseline. */
+                        bool silenced = _alertStateService.IsAnySilencingActive(item.Id);
+
+                        if (!silenced && wasOnline && !isOnline && prefs.NotifyOnConnectionLost)
                         {
                             _notificationService?.ShowServerOfflineNotification(
                                 item.DisplayName,
@@ -466,7 +588,7 @@ namespace PerformanceMonitorDashboard
                                 "Online",
                                 item.Id);
                         }
-                        else if (!wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
+                        else if (!silenced && !wasOnline && isOnline && prefs.NotifyOnConnectionRestored)
                         {
                             _notificationService?.ShowConnectionRestoredNotification(item.DisplayName);
 
@@ -573,9 +695,14 @@ namespace PerformanceMonitorDashboard
                     System.Windows.MessageBoxImage.Error);
                 return;
             }
+
+            // WS1b-2: thread the shared gated remediation service to the Recommendations sub-tab
+            // (the same instance the Alerts tab uses), enabling Apply + the informed-consent gate.
+            serverTab.RemediationApplyService = _remediationApplyService;
+
             EventHandler alertHandler = (_, _) =>
             {
-                _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
+                _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);
                 UpdateAlertBadge();
                 _alertsHistoryContent?.RefreshAlerts();
             };
@@ -599,12 +726,23 @@ namespace PerformanceMonitorDashboard
             {
                 Style = (Style)FindResource("AlertBadge"),
                 Visibility = Visibility.Collapsed,
+                Cursor = Cursors.Hand,
+                ToolTip = "Click to dismiss · Right-click for options",
                 Child = new TextBlock
                 {
                     Text = "!",
                     FontWeight = FontWeights.Bold,
                     Foreground = Brushes.White
                 }
+            };
+
+            /* Left-click the badge to acknowledge/clear it — the right-click menu was
+               undiscoverable, so a plain click is the obvious affordance (issue #1092,
+               matching the Lite app). */
+            badge.MouseLeftButtonUp += (s, e) =>
+            {
+                AcknowledgeServerAlerts(server.Id);
+                e.Handled = true;
             };
 
             headerPanel.Children.Add(headerText);
@@ -748,6 +886,7 @@ namespace PerformanceMonitorDashboard
 
             _alertsHistoryContent = new AlertsHistoryContent();
             _alertsHistoryContent.MuteRuleService = _muteRuleService;
+            _alertsHistoryContent.RemediationApplyService = _remediationApplyService;
             _alertsHistoryContent.AlertsDismissed += (_, _) => UpdateAlertBadge();
 
             var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
@@ -856,6 +995,7 @@ namespace PerformanceMonitorDashboard
                     {
                         ServerTabControl.Items.Remove(_alertsTab);
                         _alertsTab = null;
+                        _alertsHistoryContent?.Cleanup();
                         _alertsHistoryContent = null;
                     }
                 }
@@ -928,7 +1068,7 @@ namespace PerformanceMonitorDashboard
 
                     MessageBox.Show(
                         $"Server '{server.DisplayNameWithIntent}' added successfully!\n\n" +
-                        (server.AuthenticationType == Models.AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {server.AuthenticationDisplay} — credentials saved securely to Windows Credential Manager"),
+                        (server.AuthenticationType == AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {server.AuthenticationDisplay} — credentials saved securely to Windows Credential Manager"),
                         "Server Added",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information
@@ -974,7 +1114,7 @@ namespace PerformanceMonitorDashboard
 
                         MessageBox.Show(
                             $"Server '{updatedServer.DisplayNameWithIntent}' updated successfully!\n\n" +
-                            (updatedServer.AuthenticationType == Models.AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {updatedServer.AuthenticationDisplay} — credentials updated securely in Windows Credential Manager"),
+                            (updatedServer.AuthenticationType == AuthenticationTypes.Windows ? "Using Windows Authentication" : $"Using {updatedServer.AuthenticationDisplay} — credentials updated securely in Windows Credential Manager"),
                             "Server Updated",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information
@@ -1157,6 +1297,7 @@ namespace PerformanceMonitorDashboard
             {
                 ConfigureConnectionStatusTimer();
                 ConfigureAlertCheckTimer();
+                _analysisScheduler.Configure();
                 _landingPage?.RefreshAutoRefreshSettings();
 
                 foreach (TabItem tab in ServerTabControl.Items)
@@ -1217,6 +1358,16 @@ namespace PerformanceMonitorDashboard
         /// </summary>
         public void UpdateTabBadge(string serverId, ServerHealthStatus? status)
         {
+            /* Fold the alert engine's per-server low-disk / failed-job state into the status so the
+               Overview badge reflects them too (#754/#749). Both badge-update paths (the alert engine
+               and the LandingPage refresh) funnel through here, so injecting once keeps them
+               consistent — a path that lacks disk/job data can't blank the badge. */
+            if (status != null)
+            {
+                status.HasLowDiskAlert = _activeLowDiskAlert.TryGetValue(serverId, out var ldActive) && ldActive;
+                status.HasFailedJobAlert = _activeFailedJobAlert.TryGetValue(serverId, out var fjActive) && fjActive;
+            }
+
             // Cache latest health status for acknowledge baseline snapshots
             if (status != null)
                 _latestHealthStatus[serverId] = status;
@@ -1313,19 +1464,32 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        private bool _isCheckingAlerts;
+
         private async void AlertCheckTimer_Tick(object? sender, EventArgs e)
         {
-            await CheckAllServerAlertsAsync();
+            /* Skip if the previous alert sweep is still running — otherwise slow ticks overlap and
+               pile up concurrent per-server query batches on the shared connections. */
+            if (_isCheckingAlerts) return;
+            _isCheckingAlerts = true;
+            try
+            {
+                await CheckAllServerAlertsAsync();
 
-            /* Auto-refresh alert history if the tab is open */
-            _alertsHistoryContent?.RefreshAlerts();
+                /* Auto-refresh alert history if the tab is open */
+                _alertsHistoryContent?.RefreshAlerts();
 
-            UpdateAlertBadge();
+                UpdateAlertBadge();
+            }
+            finally
+            {
+                _isCheckingAlerts = false;
+            }
         }
 
         private void UpdateAlertBadge()
         {
-            var alerts = _emailAlertService.GetAlertHistory(hoursBack: 24, limit: 100);
+            var alerts = _alertHistoryStore.GetAlertHistory(hoursBack: 24, limit: 100);
             var count = alerts.Count;
 
             if (count > 0)
@@ -1358,7 +1522,7 @@ namespace PerformanceMonitorDashboard
                     var connectionString = server.GetConnectionString(_credentialService);
                     var databaseService = new DatabaseService(connectionString);
                     var connStatus = _serverManager.GetConnectionStatus(server.Id);
-                    var health = await databaseService.GetAlertHealthAsync(connStatus.SqlEngineEdition, prefs.LongRunningQueryThresholdMinutes, prefs.LongRunningJobMultiplier, prefs.LongRunningQueryMaxResults, prefs.LongRunningQueryExcludeSpServerDiagnostics, prefs.LongRunningQueryExcludeWaitFor, prefs.LongRunningQueryExcludeBackups, prefs.LongRunningQueryExcludeMiscWaits, prefs.AlertExcludedDatabases);
+                    var health = await databaseService.GetAlertHealthAsync(connStatus.SqlEngineEdition, prefs.LongRunningQueryThresholdMinutes, prefs.LongRunningJobMultiplier, prefs.LongRunningQueryMaxResults, prefs.LongRunningQueryExcludeSpServerDiagnostics, prefs.LongRunningQueryExcludeWaitFor, prefs.LongRunningQueryExcludeBackups, prefs.LongRunningQueryExcludeMiscWaits, prefs.LongRunningQueryExcludeCdc, prefs.FailedJobLookbackMinutes, prefs.AlertExcludedDatabases);
 
                     if (health.IsOnline)
                     {
@@ -1397,7 +1561,13 @@ namespace PerformanceMonitorDashboard
                 return;
             }
 
-            var now = ServerTimeHelper.ServerNow;
+            /* Cooldowns measure elapsed wall-clock time, so use a clock that does not shift when
+               the user switches server tabs. ServerTimeHelper.ServerNow is derived from a process-wide
+               UTC offset that is reassigned on every tab change; using it here makes (now - lastAlert)
+               jump by the timezone delta whenever the selected tab changes between alert ticks, which
+               either suppresses alerts (offset went back) or bypasses the cooldown (offset went
+               forward) for every server. UTC is offset-independent. Display strings keep server time. */
+            var now = DateTime.UtcNow;
 
             /* Blocking alerts */
             bool blockingExceeded = prefs.NotifyOnBlocking
@@ -1418,10 +1588,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowBlockingNotification(
+                        _notificationService?.ShowSnoozableNotification(
+                            "Blocking Detected",
+                            $"{serverName}: {(int)health.TotalBlocked} blocked session(s), longest {(int)health.LongestBlockedSeconds}s",
+                            NotificationType.Warning,
                             serverName,
-                            (int)health.TotalBlocked,
-                            (int)health.LongestBlockedSeconds);
+                            "Blocking Detected",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Blocking Detected",
@@ -1468,6 +1641,7 @@ namespace PerformanceMonitorDashboard
             if (deadlocksExceeded)
             {
                 _activeDeadlockAlert[serverId] = true;
+                _lastDeadlockActivity[serverId] = now;
                 if (!_lastDeadlockAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
                 {
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Deadlocks Detected" };
@@ -1480,9 +1654,14 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowDeadlockNotification(
+                        var deadlockPlural = effectiveDeadlockDelta == 1 ? "" : "s";
+                        _notificationService?.ShowSnoozableNotification(
+                            "Deadlock Detected",
+                            $"{serverName}: {(int)effectiveDeadlockDelta} deadlock{deadlockPlural} detected",
+                            NotificationType.Error,
                             serverName,
-                            (int)effectiveDeadlockDelta);
+                            "Deadlocks Detected",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Detected",
@@ -1501,22 +1680,92 @@ namespace PerformanceMonitorDashboard
                     }
                 }
             }
-            else if (_activeDeadlockAlert.TryRemove(serverId, out var wasDeadlock) && wasDeadlock)
+            else
             {
-                _notificationService?.ShowNotification("Deadlocks Cleared",
-                    $"{serverName}: No deadlocks since last check");
-                _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
-                    "0", prefs.DeadlockThreshold.ToString(), true, "tray");
+                /* Don't flap: deadlock detection is edge-triggered, so the check right after a
+                   deadlock sees a zero delta. Only clear once the deadlock-quiet window has
+                   elapsed since the last new deadlock, matching Lite's window semantics (#1091). */
+                bool wasDeadlockActive = _activeDeadlockAlert.TryGetValue(serverId, out var wasDeadlock) && wasDeadlock;
+                DateTime? lastDeadlockActivity = _lastDeadlockActivity.TryGetValue(serverId, out var lda) ? lda : null;
+                if (DeadlockAlertClearPolicy.ShouldClear(wasDeadlockActive, lastDeadlockActivity, now, DeadlockQuietWindow))
+                {
+                    _activeDeadlockAlert.TryRemove(serverId, out _);
+                    _lastDeadlockActivity.TryRemove(serverId, out _);
+                    _notificationService?.ShowNotification("Deadlocks Cleared",
+                        $"{serverName}: No deadlocks in the last hour");
+                    _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
+                        "0", prefs.DeadlockThreshold.ToString(), true, "tray");
+                }
             }
 
-            /* High CPU alerts */
+            /* Capture Down alerts — the blocking/deadlock XE session is missing and the
+               collector couldn't create it, so capture is silently non-functional (#1086).
+               Gated on the blocking/deadlock notification prefs: if the user wants those
+               alerts, they need to know when the data feeding them stops existing. */
+            bool captureDown = (prefs.NotifyOnBlocking || prefs.NotifyOnDeadlock)
+                && health.MissingCaptureSessions.Count > 0;
+
+            if (captureDown)
+            {
+                _activeCaptureDownAlert[serverId] = true;
+                if (!_lastCaptureDownAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
+                {
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Capture Down" };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastCaptureDownAlert[serverId] = now;
+
+                    var captureList = string.Join(" and ", health.MissingCaptureSessions);
+                    var detailText = $"The {captureList} Extended Events session(s) are missing and could not be created. " +
+                        "Blocking/deadlock data is NOT being captured. " +
+                        "Check the collection log for the SESSION_MISSING error detail (usually a permissions problem: " +
+                        "ALTER ANY EVENT SESSION on-prem, CREATE ANY DATABASE EVENT SESSION on Azure SQL DB).";
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Capture Down",
+                            $"{serverName}: {captureList} capture is not running — XE session missing",
+                            NotificationType.Error,
+                            serverName,
+                            "Capture Down",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Capture Down",
+                        captureList, "session running", !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Capture Down",
+                            serverName,
+                            captureList,
+                            "session running",
+                            serverId);
+                    }
+                }
+            }
+            else if (_activeCaptureDownAlert.TryRemove(serverId, out var wasCaptureDown) && wasCaptureDown)
+            {
+                _notificationService?.ShowNotification("Capture Restored",
+                    $"{serverName}: Blocking/deadlock capture is running again");
+                _emailAlertService.RecordAlert(serverId, serverName, "Capture Restored",
+                    "running", "session running", true, "tray");
+            }
+
+            /* High CPU alerts — evaluator picks Total or SQL based on prefs.CpuAlertMode */
+            int? alertCpuValue = prefs.CpuAlertMode == CpuAlertMode.Total
+                ? health.TotalCpuPercent
+                : health.CpuPercent;
+            string cpuMetricLabel = prefs.CpuAlertMode == CpuAlertMode.Total ? "Total CPU" : "SQL CPU";
+
             bool cpuExceeded = prefs.NotifyOnHighCpu
-                && health.TotalCpuPercent.HasValue
-                && health.TotalCpuPercent.Value >= prefs.CpuThresholdPercent;
+                && alertCpuValue.HasValue
+                && alertCpuValue.Value >= prefs.CpuThresholdPercent;
 
             if (cpuExceeded)
             {
-                var totalCpu = health.TotalCpuPercent!.Value;
+                var cpuValue = alertCpuValue!.Value;
                 _activeHighCpuAlert[serverId] = true;
                 if (!_lastHighCpuAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
                 {
@@ -1526,22 +1775,26 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowHighCpuNotification(
+                        _notificationService?.ShowSnoozableNotification(
+                            "High CPU",
+                            $"{serverName}: {cpuMetricLabel} at {cpuValue}% (threshold: {prefs.CpuThresholdPercent}%)",
+                            NotificationType.Warning,
                             serverName,
-                            totalCpu);
+                            "High CPU",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "High CPU",
-                        $"{totalCpu:F0}%",
+                        $"{cpuValue:F0}% ({cpuMetricLabel})",
                         $"{prefs.CpuThresholdPercent}%", !isMuted, isMuted ? "muted" : "tray", muted: isMuted,
-                        detailText: $"  CPU: {totalCpu:F0}%\n  Threshold: {prefs.CpuThresholdPercent}%");
+                        detailText: $"  {cpuMetricLabel}: {cpuValue:F0}%\n  Threshold: {prefs.CpuThresholdPercent}%");
 
                     if (!isMuted)
                     {
                         await _emailAlertService.TrySendAlertEmailAsync(
                             "High CPU",
                             serverName,
-                            $"{totalCpu:F0}%",
+                            $"{cpuValue:F0}% ({cpuMetricLabel})",
                             $"{prefs.CpuThresholdPercent}%",
                             serverId);
                     }
@@ -1549,9 +1802,9 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeHighCpuAlert.TryRemove(serverId, out var wasCpu) && wasCpu)
             {
-                var cpuText = health.TotalCpuPercent.HasValue ? $"{health.TotalCpuPercent.Value:F0}%" : "N/A";
+                var cpuText = alertCpuValue.HasValue ? $"{alertCpuValue.Value:F0}%" : "N/A";
                 _notificationService?.ShowNotification("CPU Resolved",
-                    $"{serverName}: CPU back to {cpuText}");
+                    $"{serverName}: {cpuMetricLabel} back to {cpuText}");
                 _emailAlertService.RecordAlert(serverId, serverName, "CPU Resolved",
                     cpuText, $"{prefs.CpuThresholdPercent}%", true, "tray");
             }
@@ -1581,7 +1834,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowPoisonWaitNotification(serverName, worst.WaitType, worst.AvgMsPerWait);
+                        _notificationService?.ShowSnoozableNotification(
+                            "Poison Wait",
+                            $"{serverName}: {worst.WaitType} avg {worst.AvgMsPerWait:F0}ms/wait",
+                            NotificationType.Error,
+                            serverName,
+                            "Poison Wait",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Poison Wait",
@@ -1643,8 +1902,14 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowLongRunningQueryNotification(
-                            serverName, worst.SessionId, elapsedMinutes, preview);
+                        var lrqPreview = string.IsNullOrEmpty(preview) ? "" : $" — {preview}";
+                        _notificationService?.ShowSnoozableNotification(
+                            "Long-Running Query",
+                            $"{serverName}: Session #{worst.SessionId} running {elapsedMinutes}m{lrqPreview}",
+                            NotificationType.Warning,
+                            serverName,
+                            "Long-Running Query",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Query",
@@ -1690,7 +1955,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowTempDbSpaceNotification(serverName, tempDb.UsedPercent);
+                        _notificationService?.ShowSnoozableNotification(
+                            "TempDB Space",
+                            $"{serverName}: TempDB {tempDb.UsedPercent:F0}% used",
+                            NotificationType.Warning,
+                            serverName,
+                            "TempDB Space",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "TempDB Space",
@@ -1718,6 +1989,66 @@ namespace PerformanceMonitorDashboard
                     pct, $"{prefs.TempDbSpaceThresholdPercent}%", true, "tray");
             }
 
+            /* Low volume free space alerts — not applicable to Azure SQL DB (health.Volumes is empty there) */
+            var breachedVolumes = prefs.NotifyOnLowDisk
+                ? GetBreachedVolumes(health.Volumes, prefs)
+                : new List<VolumeFreeSpaceInfo>();
+
+            if (breachedVolumes.Count > 0)
+            {
+                var worst = breachedVolumes[0];
+                _activeLowDiskAlert[serverId] = true;
+                double? lastLowDiskPercent =
+                    _lastAlertedLowDiskPercent.TryGetValue(serverId, out var lowDiskPct) ? lowDiskPct : (double?)null;
+                /* #754 follow-up: notify only on a fresh or worsening breach, not every cooldown for a
+                   standing full volume (which also re-recorded a history row and made Dismiss feel broken). */
+                if (LowDiskAlertGate.ShouldAlert(worst.FreePercent, lastLowDiskPercent)
+                    && (!_lastLowDiskAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown))
+                {
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Volume Free Space" };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastLowDiskAlert[serverId] = now;
+                    _lastAlertedLowDiskPercent[serverId] = worst.FreePercent;
+                    var lowDiskContext = BuildVolumeFreeSpaceContext(breachedVolumes);
+                    var detailText = ContextToDetailText(lowDiskContext);
+                    var currentValue = $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)";
+                    var thresholdValue = FormatLowDiskThreshold(prefs);
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Volume Free Space",
+                            $"{serverName}: {currentValue}",
+                            NotificationType.Warning,
+                            serverName,
+                            "Volume Free Space",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space",
+                        currentValue, thresholdValue, !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Volume Free Space",
+                            serverName,
+                            currentValue,
+                            thresholdValue,
+                            serverId,
+                            lowDiskContext);
+                    }
+                }
+            }
+            else if (_activeLowDiskAlert.TryRemove(serverId, out var wasLowDisk) && wasLowDisk)
+            {
+                _lastAlertedLowDiskPercent.TryRemove(serverId, out _);
+                _notificationService?.ShowNotification("Volume Free Space Resolved",
+                    $"{serverName}: All volumes back above threshold");
+                _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space Resolved",
+                    "OK", FormatLowDiskThreshold(prefs), true, "tray");
+            }
+
             /* Anomalous Agent job alerts */
             bool anomalousJobsTriggered = prefs.NotifyOnLongRunningJobs
                 && health.AnomalousJobs.Count > 0;
@@ -1725,6 +2056,15 @@ namespace PerformanceMonitorDashboard
             if (anomalousJobsTriggered)
             {
                 _activeLongRunningJobAlert[serverId] = true;
+                /* Prune aged-out per-run keys ({server}:{job}:{start}) — like Lite, this dict
+                   otherwise grows one entry per anomalous job run for the whole session. */
+                foreach (var staleJobKey in _lastLongRunningJobAlert
+                             .Where(kv => now - kv.Value >= alertCooldown)
+                             .Select(kv => kv.Key)
+                             .ToList())
+                {
+                    _lastLongRunningJobAlert.TryRemove(staleJobKey, out _);
+                }
                 var worst = health.AnomalousJobs[0];
                 var jobKey = $"{serverId}:{worst.JobId}:{worst.StartTime:O}";
 
@@ -1740,8 +2080,13 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        _notificationService?.ShowLongRunningJobNotification(
-                            serverName, worst.JobName, currentMinutes, worst.PercentOfAverage ?? 0);
+                        _notificationService?.ShowSnoozableNotification(
+                            "Long-Running Job",
+                            $"{serverName}: {worst.JobName} at {(worst.PercentOfAverage ?? 0):F0}% of avg ({currentMinutes}m)",
+                            NotificationType.Warning,
+                            serverName,
+                            "Long-Running Job",
+                            _muteRuleService);
                     }
 
                     _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Job",
@@ -1766,6 +2111,59 @@ namespace PerformanceMonitorDashboard
                     $"{serverName}: No jobs exceeding threshold");
                 _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Jobs Cleared",
                     "0", $"{prefs.LongRunningJobMultiplier}x avg", true, "tray");
+            }
+
+            /* Failed Agent job alerts — live msdb query for runs that failed in the lookback window.
+               Failures are point-in-time events (not a sustained state), so there is no "cleared"
+               notification; the per-server watermark below dedups so the same failure never re-fires. */
+            /* Track failed-job presence for the server tab badge (#749): active while a failure sits
+               in the lookback window, cleared when it ages out, so the badge auto-resolves. */
+            _activeFailedJobAlert[serverId] = prefs.NotifyOnFailedJobs && health.RecentlyFailedJobs.Count > 0;
+            if (prefs.NotifyOnFailedJobs && health.RecentlyFailedJobs.Count > 0)
+            {
+                var newestFailure = health.RecentlyFailedJobs.Max(j => j.RunDateTime);
+                bool hasWatermark = _lastAlertedFailedJobTime.TryGetValue(serverId, out var lastFailure);
+                bool hasNewFailure = !hasWatermark || newestFailure > lastFailure;
+
+                if (hasNewFailure
+                    && (!_lastFailedJobAlert.TryGetValue(serverId, out var lastFailedAlert) || (now - lastFailedAlert) >= alertCooldown))
+                {
+                    var mostRecent = health.RecentlyFailedJobs[0]; // ORDER BY run_datetime DESC
+                    var jobNames = string.Join(", ", health.RecentlyFailedJobs.Select(j => j.JobName).Distinct().Take(3));
+
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Failed Agent Job", JobName = mostRecent.JobName };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastFailedJobAlert[serverId] = now;
+                    _lastAlertedFailedJobTime[serverId] = newestFailure;
+                    var jobContext = BuildFailedJobContext(health.RecentlyFailedJobs);
+                    var detailText = ContextToDetailText(jobContext);
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Failed Agent Job",
+                            $"{serverName}: {health.RecentlyFailedJobs.Count} job failure(s) — {jobNames}",
+                            NotificationType.Warning,
+                            serverName,
+                            "Failed Agent Job",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Failed Agent Job",
+                        $"{health.RecentlyFailedJobs.Count} failure(s) — {jobNames}",
+                        $"last {prefs.FailedJobLookbackMinutes}m", !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Failed Agent Job",
+                            serverName,
+                            $"{health.RecentlyFailedJobs.Count} job failure(s) in last {prefs.FailedJobLookbackMinutes}m — {jobNames}",
+                            $"last {prefs.FailedJobLookbackMinutes}m",
+                            serverId,
+                            jobContext);
+                    }
+                }
             }
         }
 
@@ -2015,11 +2413,69 @@ namespace PerformanceMonitorDashboard
             return context;
         }
 
+        private static AlertContext? BuildFailedJobContext(List<FailedJobInfo> jobs)
+        {
+            if (jobs.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var j in jobs.GetRange(0, Math.Min(5, jobs.Count)))
+            {
+                var item = new AlertDetailItem { Heading = j.JobName, Fields = new() };
+                item.Fields.Add(("Job", j.JobName));
+                item.Fields.Add(("Failed At", j.RunDateTimeFormatted));
+                if (!string.IsNullOrEmpty(j.Message))
+                    item.Fields.Add(("Message", Truncate(j.Message, 300)));
+                context.Details.Add(item);
+            }
+            return context;
+        }
+
         private static string FormatDuration(long seconds)
         {
             if (seconds < 60) return $"{seconds}s";
             if (seconds < 3600) return $"{seconds / 60}m {seconds % 60}s";
             return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
+        }
+
+        /* Returns the volumes whose free space is under the configured % or GB threshold (a 0 threshold
+           disables that dimension), worst (lowest free %) first, so the alert names the tightest volume. */
+        private static List<VolumeFreeSpaceInfo> GetBreachedVolumes(List<VolumeFreeSpaceInfo> volumes, UserPreferences prefs)
+        {
+            int pct = prefs.LowDiskThresholdPercent;
+            int gb = prefs.LowDiskThresholdGb;
+            return volumes
+                .Where(v => (pct > 0 && v.FreePercent < pct) || (gb > 0 && v.FreeGb < gb))
+                .OrderBy(v => v.FreePercent)
+                .ToList();
+        }
+
+        private static string FormatLowDiskThreshold(UserPreferences prefs)
+        {
+            var parts = new List<string>();
+            if (prefs.LowDiskThresholdPercent > 0) parts.Add($"{prefs.LowDiskThresholdPercent}%");
+            if (prefs.LowDiskThresholdGb > 0) parts.Add($"{prefs.LowDiskThresholdGb} GB");
+            return parts.Count > 0 ? string.Join(" / ", parts) : "—";
+        }
+
+        private static AlertContext? BuildVolumeFreeSpaceContext(List<VolumeFreeSpaceInfo> volumes)
+        {
+            if (volumes.Count == 0) return null;
+
+            var context = new AlertContext();
+            foreach (var v in volumes.GetRange(0, Math.Min(5, volumes.Count)))
+            {
+                context.Details.Add(new AlertDetailItem
+                {
+                    Heading = $"{v.MountPoint} — {v.FreePercent:F0}% Free",
+                    Fields = new()
+                    {
+                        ("Free Space", $"{v.FreeGb:F1} GB"),
+                        ("Total Size", $"{v.TotalMb / 1024.0:F1} GB"),
+                        ("Used", $"{(v.TotalMb - v.FreeMb) / 1024.0:F1} GB")
+                    }
+                });
+            }
+            return context;
         }
 
         private static AlertContext? BuildTempDbSpaceContext(TempDbSpaceInfo tempDb)
@@ -2051,30 +2507,40 @@ namespace PerformanceMonitorDashboard
         {
             if (sender is MenuItem menuItem && menuItem.Tag is string serverId)
             {
-                // Look up cached health status for baseline snapshot
-                _latestHealthStatus.TryGetValue(serverId, out var status);
-                _alertStateService.AcknowledgeAllAlerts(serverId, status);
+                AcknowledgeServerAlerts(serverId);
+            }
+        }
 
-                // Hide badge immediately
-                if (_tabBadges.TryGetValue(serverId, out var badge))
-                {
-                    badge.Visibility = Visibility.Collapsed;
-                }
+        /// <summary>
+        /// Acknowledges all alerts for a server and clears its tab badge (and sub-tab badges).
+        /// Shared by the tab badge left-click and the right-click "Acknowledge Alerts" menu so both
+        /// paths behave identically (issue #1092 — parity with the Lite app's clearable badge).
+        /// </summary>
+        private void AcknowledgeServerAlerts(string serverId)
+        {
+            // Look up cached health status for baseline snapshot
+            _latestHealthStatus.TryGetValue(serverId, out var status);
+            _alertStateService.AcknowledgeAllAlerts(serverId, status);
 
-                // Also update sub-tab badges in the ServerTab if it's open
-                if (_openTabs.TryGetValue(serverId, out var tabItem) && tabItem.Content is ServerTab serverTab)
-                {
-                    serverTab.UpdateBadges(null, _alertStateService);
-                }
+            // Hide badge immediately
+            if (_tabBadges.TryGetValue(serverId, out var badge))
+            {
+                badge.Visibility = Visibility.Collapsed;
+            }
 
-                // Hide alerts in the email alert log so the sidebar badge updates
-                var server = _serverManager.GetAllServers().FirstOrDefault(s => s.Id == serverId);
-                if (server != null)
-                {
-                    _emailAlertService.HideAllAlerts(8760, server.DisplayNameWithIntent);
-                    UpdateAlertBadge();
-                    _alertsHistoryContent?.RefreshAlerts();
-                }
+            // Also update sub-tab badges in the ServerTab if it's open
+            if (_openTabs.TryGetValue(serverId, out var tabItem) && tabItem.Content is ServerTab serverTab)
+            {
+                serverTab.UpdateBadges(null, _alertStateService);
+            }
+
+            // Hide alerts in the email alert log so the sidebar badge updates
+            var server = _serverManager.GetAllServers().FirstOrDefault(s => s.Id == serverId);
+            if (server != null)
+            {
+                _alertHistoryStore.HideAllAlerts(8760, server.DisplayNameWithIntent);
+                UpdateAlertBadge();
+                _alertsHistoryContent?.RefreshAlerts();
             }
         }
 

@@ -49,7 +49,7 @@ public partial class ServerTab : UserControl
             // Fall back to live server
             if (string.IsNullOrEmpty(plan))
             {
-                var connStr = _server.GetConnectionString(_credentialService);
+                var connStr = _credentialResolver.GetConnectionString(_server);
                 plan = await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, row.QueryHash);
                 source = "live server";
             }
@@ -104,7 +104,7 @@ public partial class ServerTab : UserControl
             // Fall back to live server
             if (string.IsNullOrEmpty(plan))
             {
-                var connStr = _server.GetConnectionString(_credentialService);
+                var connStr = _credentialResolver.GetConnectionString(_server);
                 plan = await LocalDataService.FetchProcedurePlanOnDemandAsync(connStr, row.DatabaseName, row.SchemaName, row.ObjectName);
                 source = "live server";
             }
@@ -230,6 +230,7 @@ public partial class ServerTab : UserControl
     {
         if (sender is Button btn && btn.Tag is TabItem tab)
         {
+            (tab.Content as PlanViewerControl)?.Cleanup();
             PlanTabControl.Items.Remove(tab);
             if (PlanTabControl.Items.Count == 0)
             {
@@ -280,7 +281,7 @@ public partial class ServerTab : UserControl
                 queryText = proc.FullName;
                 try
                 {
-                    var connStr = _server.GetConnectionString(_credentialService);
+                    var connStr = _credentialResolver.GetConnectionString(_server);
                     planXml = await LocalDataService.FetchProcedurePlanOnDemandAsync(
                         connStr, proc.DatabaseName, proc.SchemaName, proc.ObjectName);
                 }
@@ -293,7 +294,7 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
                     catch { }
@@ -355,7 +356,7 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
                     catch { }
@@ -388,7 +389,7 @@ public partial class ServerTab : UserControl
 
         try
         {
-            var connectionString = _server.GetConnectionString(_credentialService);
+            var connectionString = _credentialResolver.GetConnectionString(_server);
 
             var actualPlanXml = await ActualPlanExecutor.ExecuteForActualPlanAsync(
                 connectionString,
@@ -442,7 +443,7 @@ public partial class ServerTab : UserControl
         // Fall back to live server
         try
         {
-            var connStr = _server.GetConnectionString(_credentialService);
+            var connStr = _credentialResolver.GetConnectionString(_server);
             return await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, queryHash);
         }
         catch { return null; }
@@ -486,7 +487,7 @@ public partial class ServerTab : UserControl
         string? planXml = null;
         try
         {
-            var connStr = _server.GetConnectionString(_credentialService);
+            var connStr = _credentialResolver.GetConnectionString(_server);
             foreach (var f in frames)
             {
                 planXml = await LocalDataService.FetchPlanBySqlHandleAsync(
@@ -575,7 +576,7 @@ public partial class ServerTab : UserControl
         string? planXml = null;
         try
         {
-            var connStr = _server.GetConnectionString(_credentialService);
+            var connStr = _credentialResolver.GetConnectionString(_server);
             foreach (var f in frames)
             {
                 planXml = await LocalDataService.FetchPlanBySqlHandleAsync(

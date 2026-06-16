@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Database;
 using Xunit;
@@ -483,5 +484,41 @@ public class FactCollectorTests : IDisposable
             var f = facts[key];
             output.WriteLine($"  {key}: value={f.Value:F2} source={f.Source} metadata_keys={string.Join(",", f.Metadata.Keys)}");
         }
+    }
+
+    /* ── WS3: percent-autogrowth-on-large-files collector smoke test ── */
+
+    // The Lite collector emits FILE_AUTOGROWTH_PERCENT ONLY for large (>= 10 GB) percent-growth
+    // files in non-system databases. Small files, fixed-MB-growth files, and system databases
+    // are excluded. This is the fact-emission smoke test that would have caught a dead fact.
+    [Fact]
+    public async Task CollectFacts_PercentAutogrowthOnLargeFiles_FiresForQualifyingFilesOnly()
+    {
+        var facts = await SeedAndCollectAsync(s => s.SeedPercentAutogrowthFilesAsync(
+            ("AppDb",   "AppDb_log",  "LOG",  200000, true,  10),  // 200 GB %-growth  -> qualifies
+            ("AppDb",   "AppDb_data", "ROWS",  60000, true,  10),  // 60 GB  %-growth  -> qualifies
+            ("ReportDb", "Rep_data",  "ROWS",   5000, true,  25),  // 5 GB   %-growth  -> too small
+            ("AppDb",   "AppDb_fix",  "ROWS",  50000, false, 0),   // 50 GB  fixed     -> excluded
+            ("master",  "master",     "ROWS", 100000, true,  10))); // system DB       -> excluded
+
+        Assert.True(facts.ContainsKey("FILE_AUTOGROWTH_PERCENT"),
+            "FILE_AUTOGROWTH_PERCENT should be collected when a large percent-growth file exists");
+        var fact = facts["FILE_AUTOGROWTH_PERCENT"];
+        Assert.Equal("config", fact.Source);
+        Assert.Equal(2, fact.Value);                              // the two qualifying AppDb files
+        Assert.Equal(2, fact.Metadata["file_count"]);
+        Assert.Equal(1, fact.Metadata["database_count"]);          // both qualifying files are in AppDb
+    }
+
+    // No qualifying file -> the fact is not emitted at all (collector returns before Add).
+    [Fact]
+    public async Task CollectFacts_PercentAutogrowthOnLargeFiles_AbsentWhenNoQualifyingFile()
+    {
+        var facts = await SeedAndCollectAsync(s => s.SeedPercentAutogrowthFilesAsync(
+            ("AppDb", "AppDb_data", "ROWS", 5000, true,  10),   // too small
+            ("AppDb", "AppDb_fix",  "ROWS", 80000, false, 0)));  // fixed growth
+
+        Assert.False(facts.ContainsKey("FILE_AUTOGROWTH_PERCENT"),
+            "FILE_AUTOGROWTH_PERCENT should not be emitted when no large percent-growth file exists");
     }
 }

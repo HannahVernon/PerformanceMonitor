@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 #pragma warning disable CA1707 // MCP tools use snake_case naming convention
 
@@ -93,7 +95,7 @@ public sealed class McpPlanTools
             if (server == null)
                 return $"Could not find connection details for server '{resolved.Value.ServerName}'.";
 
-            var connectionString = server.GetConnectionString(serverManager.CredentialService);
+            var connectionString = serverManager.CredentialResolver.GetConnectionString(server);
             var xml = await LocalDataService.FetchQueryStorePlanAsync(connectionString, database_name, plan_id);
 
             if (string.IsNullOrEmpty(xml))

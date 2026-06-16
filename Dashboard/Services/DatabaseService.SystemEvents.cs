@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Services
 {
@@ -127,10 +128,10 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetDefaultTraceSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetDefaultTraceSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -160,7 +161,7 @@ ORDER BY bucket_hour;";
                     while (await reader.ReadAsync())
                     {
                         var count = Convert.ToInt64(reader.GetValue(1));
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = count,

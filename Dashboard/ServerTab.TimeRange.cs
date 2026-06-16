@@ -15,6 +15,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using PerformanceMonitorDashboard.Helpers;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -229,7 +230,7 @@ namespace PerformanceMonitorDashboard
                 MemoryTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 ResourceMetricsContent.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                 SystemEventsContent.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
-                CriticalIssuesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
+                RecommendationsTab.SetTimeRange(_globalHoursBack);
                 DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
 
                 // Refresh all data
@@ -291,20 +292,20 @@ namespace PerformanceMonitorDashboard
             var displayFrom = Helpers.ServerTimeHelper.ConvertForDisplay(from, Helpers.ServerTimeHelper.CurrentDisplayMode);
             var displayTo = Helpers.ServerTimeHelper.ConvertForDisplay(to, Helpers.ServerTimeHelper.CurrentDisplayMode);
 
-            // Same day: "Feb 7, 2:15 PM – 3:15 PM (PST)"
+            // Same day: "Feb 7, 14:15 – 15:15 (PST)"
             if (displayFrom.Date == displayTo.Date)
             {
-                return $"{prefix}: {displayFrom:MMM d, h:mm tt} – {displayTo:h:mm tt} ({tz})";
+                return $"{prefix}: {displayFrom:MMM d, HH:mm} – {displayTo:HH:mm} ({tz})";
             }
 
-            // Same year, different days: "Feb 6, 3:15 PM – Feb 7, 3:15 PM (PST)"
+            // Same year, different days: "Feb 6, 15:15 – Feb 7, 15:15 (PST)"
             if (displayFrom.Year == displayTo.Year)
             {
-                return $"{prefix}: {displayFrom:MMM d, h:mm tt} – {displayTo:MMM d, h:mm tt} ({tz})";
+                return $"{prefix}: {displayFrom:MMM d, HH:mm} – {displayTo:MMM d, HH:mm} ({tz})";
             }
 
-            // Different years: "Dec 31, 2025, 11:00 PM – Jan 1, 2026, 11:00 PM (PST)"
-            return $"{prefix}: {displayFrom:MMM d, yyyy, h:mm tt} – {displayTo:MMM d, yyyy, h:mm tt} ({tz})";
+            // Different years: "Dec 31, 2025, 23:00 – Jan 1, 2026, 23:00 (PST)"
+            return $"{prefix}: {displayFrom:MMM d, yyyy, HH:mm} – {displayTo:MMM d, yyyy, HH:mm} ({tz})";
         }
 
         private void StoreOriginalRangeIfNeeded()
@@ -525,18 +526,18 @@ namespace PerformanceMonitorDashboard
                 switch (tabHeader)
                 {
                     case "Overview":
-                        // Overview tab has Collection Health, Daily Summary, Critical Issues, Resource Overview sub-tabs
+                        // Overview tab has Collection Health, Daily Summary, Recommendations, Resource Overview sub-tabs
                         _collectionHealthHoursBack = _globalHoursBack;
                         _collectionHealthFromDate = _globalFromDate;
                         _collectionHealthToDate = _globalToDate;
                         _resourceOverviewHoursBack = _globalHoursBack;
                         _resourceOverviewFromDate = _globalFromDate;
                         _resourceOverviewToDate = _globalToDate;
-                        CriticalIssuesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
+                        RecommendationsTab.SetTimeRange(_globalHoursBack);
                         DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                         ConfigChangesTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
                         CollectionHealth_Refresh_Click(null, new RoutedEventArgs());
-                        await CriticalIssuesTab.RefreshDataAsync();
+                        await RecommendationsTab.RefreshDataAsync();
                         await DefaultTraceTab.RefreshAllDataAsync();
                         await CurrentConfigTab.RefreshAllDataAsync();
                         await ConfigChangesTab.RefreshAllDataAsync();

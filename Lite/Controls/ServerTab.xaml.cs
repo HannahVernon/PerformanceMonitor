@@ -28,6 +28,8 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -38,36 +40,37 @@ public partial class ServerTab : UserControl
     private readonly int _serverId;
     public int ServerId => _serverId;
     public ServerConnection Server => _server;
-    private readonly CredentialService _credentialService;
+    private readonly CredentialResolver _credentialResolver;
     private readonly DispatcherTimer _refreshTimer;
+    private bool _refreshPendingWhileHidden;
     private bool _isRefreshing;
     private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
     private List<SelectableItem> _waitTypeItems = new();
     private List<SelectableItem> _perfmonCounterItems = new();
-    private Helpers.ChartHoverHelper? _waitStatsHover;
-    private Helpers.ChartHoverHelper? _perfmonHover;
-    private Helpers.ChartHoverHelper? _cpuHover;
-    private Helpers.ChartHoverHelper? _memoryHover;
-    private Helpers.ChartHoverHelper? _tempDbHover;
-    private Helpers.ChartHoverHelper? _tempDbFileIoHover;
-    private Helpers.ChartHoverHelper? _fileIoReadHover;
-    private Helpers.ChartHoverHelper? _fileIoWriteHover;
-    private Helpers.ChartHoverHelper? _fileIoReadThroughputHover;
-    private Helpers.ChartHoverHelper? _fileIoWriteThroughputHover;
-    private Helpers.ChartHoverHelper? _collectorDurationHover;
-    private Helpers.ChartHoverHelper? _queryDurationTrendHover;
-    private Helpers.ChartHoverHelper? _procDurationTrendHover;
-    private Helpers.ChartHoverHelper? _queryStoreDurationTrendHover;
-    private Helpers.ChartHoverHelper? _executionCountTrendHover;
-    private Helpers.ChartHoverHelper? _lockWaitTrendHover;
-    private Helpers.ChartHoverHelper? _blockingTrendHover;
-    private Helpers.ChartHoverHelper? _deadlockTrendHover;
-    private Helpers.ChartHoverHelper? _memoryClerksHover;
-    private Helpers.ChartHoverHelper? _memoryGrantSizingHover;
-    private Helpers.ChartHoverHelper? _memoryGrantActivityHover;
-    private Helpers.ChartHoverHelper? _memoryPressureEventsHover;
-    private Helpers.ChartHoverHelper? _currentWaitsDurationHover;
-    private Helpers.ChartHoverHelper? _currentWaitsBlockedHover;
+    private ChartHoverHelper? _waitStatsHover;
+    private ChartHoverHelper? _perfmonHover;
+    private ChartHoverHelper? _cpuHover;
+    private ChartHoverHelper? _memoryHover;
+    private ChartHoverHelper? _tempDbHover;
+    private ChartHoverHelper? _tempDbFileIoHover;
+    private ChartHoverHelper? _fileIoReadHover;
+    private ChartHoverHelper? _fileIoWriteHover;
+    private ChartHoverHelper? _fileIoReadThroughputHover;
+    private ChartHoverHelper? _fileIoWriteThroughputHover;
+    private ChartHoverHelper? _collectorDurationHover;
+    private ChartHoverHelper? _queryDurationTrendHover;
+    private ChartHoverHelper? _procDurationTrendHover;
+    private ChartHoverHelper? _queryStoreDurationTrendHover;
+    private ChartHoverHelper? _executionCountTrendHover;
+    private ChartHoverHelper? _lockWaitTrendHover;
+    private ChartHoverHelper? _blockingTrendHover;
+    private ChartHoverHelper? _deadlockTrendHover;
+    private ChartHoverHelper? _memoryClerksHover;
+    private ChartHoverHelper? _memoryGrantSizingHover;
+    private ChartHoverHelper? _memoryGrantActivityHover;
+    private ChartHoverHelper? _memoryPressureEventsHover;
+    private ChartHoverHelper? _currentWaitsDurationHover;
+    private ChartHoverHelper? _currentWaitsBlockedHover;
 
     /* Query heatmap */
     private HeatmapResult? _lastHeatmapResult;
@@ -110,14 +113,14 @@ public partial class ServerTab : UserControl
     public event Action<int>? ApplyTimeRangeRequested; /* selectedIndex */
     public event Func<Task>? ManualRefreshRequested;
 
-    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialService credentialService, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
+    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
     {
         InitializeComponent();
 
         _server = server;
         _dataService = new LocalDataService(duckDb);
         _serverId = RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(server));
-        _credentialService = credentialService;
+        _credentialResolver = credentialResolver;
         UtcOffsetMinutes = utcOffsetMinutes;
         _hasMsdbAccess = hasMsdbAccess;
         _isAzureSqlDatabase = isAzureSqlDatabase;
@@ -148,6 +151,17 @@ public partial class ServerTab : UserControl
         };
         _refreshTimer.Start();
 
+        /* When this tab isn't selected the timer skips its data refresh (see RefreshAllDataAsync);
+           refresh once when it becomes visible again so it isn't showing stale data on return. */
+        IsVisibleChanged += (s, e) =>
+        {
+            if (IsVisible && _refreshPendingWhileHidden)
+            {
+                _refreshPendingWhileHidden = false;
+                _ = RefreshAllDataAsync(fullRefresh: false);
+            }
+        };
+
         /* Show warning on Running Jobs tab if login lacks msdb access */
         if (!_hasMsdbAccess)
         {
@@ -177,7 +191,7 @@ public partial class ServerTab : UserControl
             ServerConfigGrid, DatabaseConfigGrid, DatabaseScopedConfigGrid, TraceFlagsGrid,
             CollectionHealthGrid, CollectionLogGrid })
         {
-            grid.CopyingRowClipboardContent += Helpers.DataGridClipboardBehavior.FixHeaderCopy;
+            grid.CopyingRowClipboardContent += DataGridClipboardBehavior.FixHeaderCopy;
         }
 
         /* Apply theme immediately so charts don't flash white before data loads */
@@ -209,30 +223,30 @@ public partial class ServerTab : UserControl
 
         /* Chart hover tooltips */
         CorrelatedLanes.Initialize(_dataService, _serverId);
-        _waitStatsHover = new Helpers.ChartHoverHelper(WaitStatsChart, "ms/sec");
-        _perfmonHover = new Helpers.ChartHoverHelper(PerfmonChart, "");
-        _cpuHover = new Helpers.ChartHoverHelper(CpuChart, "%");
-        _memoryHover = new Helpers.ChartHoverHelper(MemoryChart, "GB");
-        _tempDbHover = new Helpers.ChartHoverHelper(TempDbChart, "MB");
-        _tempDbFileIoHover = new Helpers.ChartHoverHelper(TempDbFileIoChart, "ms");
-        _fileIoReadHover = new Helpers.ChartHoverHelper(FileIoReadChart, "ms");
-        _fileIoWriteHover = new Helpers.ChartHoverHelper(FileIoWriteChart, "ms");
-        _fileIoReadThroughputHover = new Helpers.ChartHoverHelper(FileIoReadThroughputChart, "MB/s");
-        _fileIoWriteThroughputHover = new Helpers.ChartHoverHelper(FileIoWriteThroughputChart, "MB/s");
-        _collectorDurationHover = new Helpers.ChartHoverHelper(CollectorDurationChart, "ms");
-        _queryDurationTrendHover = new Helpers.ChartHoverHelper(QueryDurationTrendChart, "ms/sec");
-        _procDurationTrendHover = new Helpers.ChartHoverHelper(ProcDurationTrendChart, "ms/sec");
-        _queryStoreDurationTrendHover = new Helpers.ChartHoverHelper(QueryStoreDurationTrendChart, "ms/sec");
-        _executionCountTrendHover = new Helpers.ChartHoverHelper(ExecutionCountTrendChart, "/sec");
-        _lockWaitTrendHover = new Helpers.ChartHoverHelper(LockWaitTrendChart, "ms/sec");
-        _blockingTrendHover = new Helpers.ChartHoverHelper(BlockingTrendChart, "incidents");
-        _deadlockTrendHover = new Helpers.ChartHoverHelper(DeadlockTrendChart, "deadlocks");
-        _memoryClerksHover = new Helpers.ChartHoverHelper(MemoryClerksChart, "MB");
-        _memoryGrantSizingHover = new Helpers.ChartHoverHelper(MemoryGrantSizingChart, "MB");
-        _memoryGrantActivityHover = new Helpers.ChartHoverHelper(MemoryGrantActivityChart, "");
-        _memoryPressureEventsHover = new Helpers.ChartHoverHelper(MemoryPressureEventsChart, "events");
-        _currentWaitsDurationHover = new Helpers.ChartHoverHelper(CurrentWaitsDurationChart, "ms");
-        _currentWaitsBlockedHover = new Helpers.ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
+        _waitStatsHover = new ChartHoverHelper(WaitStatsChart, "ms/sec");
+        _perfmonHover = new ChartHoverHelper(PerfmonChart, "");
+        _cpuHover = new ChartHoverHelper(CpuChart, "%");
+        _memoryHover = new ChartHoverHelper(MemoryChart, "GB");
+        _tempDbHover = new ChartHoverHelper(TempDbChart, "MB");
+        _tempDbFileIoHover = new ChartHoverHelper(TempDbFileIoChart, "ms");
+        _fileIoReadHover = new ChartHoverHelper(FileIoReadChart, "ms");
+        _fileIoWriteHover = new ChartHoverHelper(FileIoWriteChart, "ms");
+        _fileIoReadThroughputHover = new ChartHoverHelper(FileIoReadThroughputChart, "MB/s");
+        _fileIoWriteThroughputHover = new ChartHoverHelper(FileIoWriteThroughputChart, "MB/s");
+        _collectorDurationHover = new ChartHoverHelper(CollectorDurationChart, "ms");
+        _queryDurationTrendHover = new ChartHoverHelper(QueryDurationTrendChart, "ms/sec");
+        _procDurationTrendHover = new ChartHoverHelper(ProcDurationTrendChart, "ms/sec");
+        _queryStoreDurationTrendHover = new ChartHoverHelper(QueryStoreDurationTrendChart, "ms/sec");
+        _executionCountTrendHover = new ChartHoverHelper(ExecutionCountTrendChart, "/sec");
+        _lockWaitTrendHover = new ChartHoverHelper(LockWaitTrendChart, "ms/sec");
+        _blockingTrendHover = new ChartHoverHelper(BlockingTrendChart, "incidents");
+        _deadlockTrendHover = new ChartHoverHelper(DeadlockTrendChart, "deadlocks");
+        _memoryClerksHover = new ChartHoverHelper(MemoryClerksChart, "MB");
+        _memoryGrantSizingHover = new ChartHoverHelper(MemoryGrantSizingChart, "MB");
+        _memoryGrantActivityHover = new ChartHoverHelper(MemoryGrantActivityChart, "");
+        _memoryPressureEventsHover = new ChartHoverHelper(MemoryPressureEventsChart, "events");
+        _currentWaitsDurationHover = new ChartHoverHelper(CurrentWaitsDurationChart, "ms");
+        _currentWaitsBlockedHover = new ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
 
         /* Query heatmap hover popup */
         _heatmapPopupText = new TextBlock
@@ -322,8 +336,11 @@ public partial class ServerTab : UserControl
         Helpers.ContextMenuHelper.SetupChartContextMenu(PerfmonChart, "Perfmon_Counters");
         Helpers.ContextMenuHelper.SetupChartContextMenu(CollectorDurationChart, "Collector_Duration");
 
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        /* Subscribe for the life of the tab. Do NOT unsubscribe on Unloaded — a TabControl fires
+           Unloaded when you switch to another tab, which would permanently detach this handler so
+           the charts stop following theme changes after the first tab switch. Unsubscribed in
+           DisposeChartHelpers (called from MainWindow.CloseServerTab) when the tab is closed. */
+        ThemeManager.ThemeChanged += OnThemeChanged;
 
         ActiveQueriesSlicer.RangeChanged += OnActiveQueriesSlicerChanged;
         QueryStatsSlicer.RangeChanged += OnQueryStatsSlicerChanged;
@@ -641,13 +658,13 @@ public partial class ServerTab : UserControl
     {
         SolidColorBrush primaryBg, fg, borderBrush;
 
-        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
+        if (ThemeManager.CurrentTheme == "CoolBreeze")
         {
             primaryBg   = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#EEF4FA")!);
             fg          = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#1A2A3A")!);
             borderBrush = new SolidColorBrush((System.Windows.Media.Color)ColorConverter.ConvertFromString("#A8BDD0")!);
         }
-        else if (Helpers.ThemeManager.HasLightBackground)
+        else if (ThemeManager.HasLightBackground)
         {
             primaryBg   = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF));
             fg          = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1A, 0x1D, 0x23));
@@ -669,7 +686,7 @@ public partial class ServerTab : UserControl
 
     private void ApplyThemeRecursively(DependencyObject parent, Brush primaryBg, Brush fg)
     {
-        bool HasLightBackground = Helpers.ThemeManager.HasLightBackground;
+        bool HasLightBackground = ThemeManager.HasLightBackground;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
         {
             var child = VisualTreeHelper.GetChild(parent, i);
@@ -961,7 +978,7 @@ public partial class ServerTab : UserControl
         if (QueryStatsGrid.SelectedItem is not QueryStatsRow item) return;
         if (string.IsNullOrEmpty(item.DatabaseName) || string.IsNullOrEmpty(item.QueryHash)) return;
 
-        var connStr = _server.GetConnectionString(_credentialService);
+        var connStr = _credentialResolver.GetConnectionString(_server);
         var window = new Windows.QueryStatsHistoryWindow(_dataService, _serverId, item.DatabaseName, item.QueryHash, GetHoursBack(), connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
@@ -972,7 +989,7 @@ public partial class ServerTab : UserControl
         if (ProcedureStatsGrid.SelectedItem is not ProcedureStatsRow item) return;
         if (string.IsNullOrEmpty(item.DatabaseName) || string.IsNullOrEmpty(item.ObjectName)) return;
 
-        var connStr = _server.GetConnectionString(_credentialService);
+        var connStr = _credentialResolver.GetConnectionString(_server);
         var window = new Windows.ProcedureHistoryWindow(_dataService, _serverId, item.DatabaseName, item.SchemaName, item.ObjectName, GetHoursBack(), connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
@@ -983,7 +1000,7 @@ public partial class ServerTab : UserControl
         if (QueryStoreGrid.SelectedItem is not QueryStoreRow item) return;
         if (string.IsNullOrEmpty(item.DatabaseName) || item.QueryId == 0) return;
 
-        var connStr = _server.GetConnectionString(_credentialService);
+        var connStr = _credentialResolver.GetConnectionString(_server);
         var window = new Windows.QueryStoreHistoryWindow(_dataService, _serverId, item.DatabaseName, item.QueryId, item.PlanId, item.QueryText, GetHoursBack(), connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
@@ -1076,7 +1093,7 @@ public partial class ServerTab : UserControl
     }
 
     private string _activeQueriesSlicerMetric = "Sessions";
-    private List<Models.TimeSliceBucket>? _activeQueriesSlicerData;
+    private List<TimeSliceBucket>? _activeQueriesSlicerData;
 
     private void QuerySnapshotsGrid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -1139,7 +1156,7 @@ public partial class ServerTab : UserControl
     // ── Query Stats Slicer ──
 
     private string _queryStatsSlicerMetric = "TotalCpu";
-    private List<Models.TimeSliceBucket>? _queryStatsSlicerData;
+    private List<TimeSliceBucket>? _queryStatsSlicerData;
 
     private async System.Threading.Tasks.Task LoadQueryStatsSlicerAsync()
     {
@@ -1223,7 +1240,7 @@ public partial class ServerTab : UserControl
                 "TotalReads" => bucket.TotalReads,
                 "AvgReads" => bucket.TotalReads / n,
                 "TotalWrites" => bucket.TotalWrites,
-                "TotalPhysReads" => bucket.TotalLogicalReads,
+                "TotalPhysReads" => bucket.TotalPhysicalReads,
                 _ => bucket.TotalCpu,
             };
         }
@@ -1238,7 +1255,7 @@ public partial class ServerTab : UserControl
     // ── Query Store Slicer ──
 
     private string _queryStoreSlicerMetric = "TotalCpu";
-    private List<Models.TimeSliceBucket>? _queryStoreSlicerData;
+    private List<TimeSliceBucket>? _queryStoreSlicerData;
 
     private async System.Threading.Tasks.Task LoadQueryStoreSlicerAsync()
     {
@@ -1335,7 +1352,7 @@ public partial class ServerTab : UserControl
     // ── Procedure Stats Slicer ──
 
     private string _procStatsSlicerMetric = "TotalCpu";
-    private List<Models.TimeSliceBucket>? _procStatsSlicerData;
+    private List<TimeSliceBucket>? _procStatsSlicerData;
 
     private async System.Threading.Tasks.Task LoadProcStatsSlicerAsync()
     {
@@ -1434,7 +1451,7 @@ public partial class ServerTab : UserControl
 
         try
         {
-            var connectionString = _server.GetConnectionString(_credentialService);
+            var connectionString = _credentialResolver.GetConnectionString(_server);
             var builder = new SqlConnectionStringBuilder(connectionString)
             {
                 ConnectTimeout = 15
@@ -1526,6 +1543,12 @@ public partial class ServerTab : UserControl
 
     public void DisposeChartHelpers()
     {
+        ThemeManager.ThemeChanged -= OnThemeChanged;
+        /* Closing the server tab with plan tabs still open would leak each PlanViewerControl via the
+           static ThemeChanged event — clean them up here too (ClosePlanTab_Click only handles the
+           per-tab close-button path). */
+        foreach (var item in PlanTabControl.Items)
+            if (item is TabItem { Content: PlanViewerControl pv }) pv.Cleanup();
         _waitStatsHover?.Dispose();
         _perfmonHover?.Dispose();
         _cpuHover?.Dispose();

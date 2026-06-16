@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -45,8 +46,8 @@ public partial class QueryStoreHistoryWindow : Window
         QueryIdentifierText.Text = $"Query Store History: Query {queryId}, Plan {planId} in [{databaseName}]";
         SummaryText.Text = displayText;
         Loaded += async (_, _) => await LoadHistoryAsync();
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+        Closed += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private async System.Threading.Tasks.Task LoadHistoryAsync()
@@ -161,14 +162,14 @@ public partial class QueryStoreHistoryWindow : Window
     private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
         ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
+        if (ThemeManager.CurrentTheme == "CoolBreeze")
         {
             figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
             dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
             textColor        = ScottPlot.Color.FromHex("#1A2A3A");
             gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
         }
-        else if (Helpers.ThemeManager.HasLightBackground)
+        else if (ThemeManager.HasLightBackground)
         {
             figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
             dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");

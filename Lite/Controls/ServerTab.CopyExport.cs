@@ -16,6 +16,7 @@ using Microsoft.Win32;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -112,7 +113,7 @@ public partial class ServerTab : UserControl
         /* Header */
         foreach (var col in grid.Columns)
         {
-            sb.Append(Helpers.DataGridClipboardBehavior.GetHeaderText(col));
+            sb.Append(DataGridClipboardBehavior.GetHeaderText(col));
             sb.Append('\t');
         }
         sb.AppendLine();
@@ -162,7 +163,7 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, stats.QueryHash);
                     }
                     catch { /* Plan fetch failed — continue without plan */ }
@@ -178,7 +179,7 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
                     catch { /* Plan fetch failed — continue without plan */ }

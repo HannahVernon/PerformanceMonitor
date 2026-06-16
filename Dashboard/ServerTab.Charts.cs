@@ -13,24 +13,25 @@ using System.Windows.Controls;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using ScottPlot.WPF;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
     public partial class ServerTab : UserControl
     {
         // Chart hover tooltips
-        private Helpers.ChartHoverHelper? _resourceOverviewCpuHover;
-        private Helpers.ChartHoverHelper? _resourceOverviewMemoryHover;
-        private Helpers.ChartHoverHelper? _resourceOverviewIoHover;
-        private Helpers.ChartHoverHelper? _resourceOverviewWaitHover;
-        private Helpers.ChartHoverHelper? _lockWaitStatsHover;
-        private Helpers.ChartHoverHelper? _blockingEventsHover;
-        private Helpers.ChartHoverHelper? _blockingDurationHover;
-        private Helpers.ChartHoverHelper? _deadlocksHover;
-        private Helpers.ChartHoverHelper? _deadlockWaitTimeHover;
-        private Helpers.ChartHoverHelper? _collectorDurationHover;
-        private Helpers.ChartHoverHelper? _currentWaitsDurationHover;
-        private Helpers.ChartHoverHelper? _currentWaitsBlockedHover;
+        private ChartHoverHelper? _resourceOverviewCpuHover;
+        private ChartHoverHelper? _resourceOverviewMemoryHover;
+        private ChartHoverHelper? _resourceOverviewIoHover;
+        private ChartHoverHelper? _resourceOverviewWaitHover;
+        private ChartHoverHelper? _lockWaitStatsHover;
+        private ChartHoverHelper? _blockingEventsHover;
+        private ChartHoverHelper? _blockingDurationHover;
+        private ChartHoverHelper? _deadlocksHover;
+        private ChartHoverHelper? _deadlockWaitTimeHover;
+        private ChartHoverHelper? _collectorDurationHover;
+        private ChartHoverHelper? _currentWaitsDurationHover;
+        private ChartHoverHelper? _currentWaitsBlockedHover;
 
         private void OnThemeChanged(string _)
         {
@@ -469,19 +470,30 @@ namespace PerformanceMonitorDashboard
 
             var dataList = cpuData?.OrderBy(d => d.SampleTime).ToList() ?? new List<CpuDataPoint>();
 
-            // Build time series with boundary points for continuous lines
-            var (xs, ys) = TabHelpers.FillTimeSeriesGaps(
+            // Build time series with boundary points for continuous lines.
+            // Two series: SQL CPU (blue) + Total non-idle CPU (orange) — matches the alert metric (PM#1004).
+            var (xsTotal, ysTotal) = TabHelpers.FillTimeSeriesGaps(
+                dataList.Select(d => d.SampleTime),
+                dataList.Select(d => (double)d.TotalCpu));
+            var (xsSql, ysSql) = TabHelpers.FillTimeSeriesGaps(
                 dataList.Select(d => d.SampleTime),
                 dataList.Select(d => (double)d.SqlServerCpu));
 
-            if (xs.Length > 0)
+            if (xsTotal.Length > 0)
             {
-                var scatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[0];
-                scatter.LegendText = "SQL CPU %";
-                _resourceOverviewCpuHover?.Add(scatter, "SQL CPU %");
+                var totalScatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xsTotal, ysTotal);
+                totalScatter.LineWidth = 2;
+                totalScatter.MarkerSize = 5;
+                totalScatter.Color = ScottPlot.Color.FromHex("#FF7043");
+                totalScatter.LegendText = "Total CPU %";
+                _resourceOverviewCpuHover?.Add(totalScatter, "Total CPU %");
+
+                var sqlScatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xsSql, ysSql);
+                sqlScatter.LineWidth = 2;
+                sqlScatter.MarkerSize = 5;
+                sqlScatter.Color = TabHelpers.ChartColors[0];
+                sqlScatter.LegendText = "SQL CPU %";
+                _resourceOverviewCpuHover?.Add(sqlScatter, "SQL CPU %");
 
                 _legendPanels[ResourceOverviewCpuChart] = ResourceOverviewCpuChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
                 ResourceOverviewCpuChart.Plot.Legend.FontSize = 12;

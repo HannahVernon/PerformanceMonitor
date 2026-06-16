@@ -16,6 +16,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite;
 
@@ -32,24 +33,18 @@ public partial class App : Application
     [DllImport("shell32.dll", SetLastError = true)]
     private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsIconic(IntPtr hWnd);
-
-    private const int SW_RESTORE = 9;
-
     private const string MutexName = "PerformanceMonitorLite_SingleInstance";
     private Mutex? _singleInstanceMutex;
     private bool _ownsMutex;
+
+    /* Single-instance "surface the window" channel (#769, #1050). A second launch signals this named
+       event and exits; the owning instance restores its window through WPF's own Show() path
+       (MainWindow.RestoreFromTray). The old approach poked the HWND with raw Win32 ShowWindow, which
+       leaves a tray-hidden (WPF Visibility.Hidden) window visible but blank — the root cause of the
+       "blank window after relaunch" reports. */
+    private const string ShowWindowEventName = "PerformanceMonitorLite_ShowWindow";
+    private SingleInstanceSignal? _instanceSignal;
+    private MainWindow? _mainWindow;
 
     /// <summary>
     /// Gets the application data directory where config and data files are stored.
@@ -106,15 +101,33 @@ public partial class App : Application
     public static bool AlertLongRunningQueryExcludeWaitFor { get; set; } = true;
     public static bool AlertLongRunningQueryExcludeBackups { get; set; } = true;
     public static bool AlertLongRunningQueryExcludeMiscWaits { get; set; } = true;
+    public static bool AlertLongRunningQueryExcludeCdc { get; set; } = true;
     public static List<string> AlertExcludedDatabases { get; set; } = new();
     public static bool AlertTempDbSpaceEnabled { get; set; } = true;
     public static int AlertTempDbSpaceThresholdPercent { get; set; } = 80;
+    public static bool AlertLowDiskEnabled { get; set; } = true;
+    public static int AlertLowDiskThresholdPercent { get; set; } = 10; // Alert when a volume's free space < X% (0 disables this check)
+    public static int AlertLowDiskThresholdGb { get; set; } = 5;        // Alert when a volume's free space < X GB (0 disables this check)
     public static bool AlertLongRunningJobEnabled { get; set; } = true;
     public static int AlertLongRunningJobMultiplier { get; set; } = 3;
+    public static bool AlertFailedJobEnabled { get; set; } = true;
+    public static int AlertFailedJobLookbackMinutes { get; set; } = 60;  // Look back this many minutes for failed Agent job runs
     public static int AlertCooldownMinutes { get; set; } = 5;  // Tray notification cooldown between repeated alerts
     public static int EmailCooldownMinutes { get; set; } = 15; // Email cooldown between repeated alerts
     public static string MuteRuleDefaultExpiration { get; set; } = "24 hours"; // Default expiration for new mute rules
     public static bool LogAlertDismissals { get; set; } = true; // Log alert dismiss/mute actions to file
+
+    /* Automated analysis production (D0): run the triage engine and persist findings on
+       the independent AnalysisIntervalMinutes cadence. Decoupled from notification delivery
+       (AnalysisNotificationsEnabled). Default ON so the recommendations data exists. */
+    public static bool AnalysisEnabled { get; set; } = true;
+
+    /* Automated analysis notifications (scheduled triage) */
+    public static bool AnalysisNotificationsEnabled { get; set; } = false;  // Delivery gate — analysis runs regardless
+    public static int AnalysisIntervalMinutes { get; set; } = 30;           // How often scheduled analysis runs
+    public static double AnalysisNotifySeverity { get; set; } = 1.5;        // Minimum finding severity (0.0-2.0) to notify on
+    public static int AnalysisNotifyCooldownMinutes { get; set; } = 360;    // Re-notify gap per finding (keyed by StoryPathHash)
+    public static int AnalysisTimeoutSeconds { get; set; } = 120;           // Per-server analysis timeout
 
     /* Connection settings */
     public static int ConnectionTimeoutSeconds { get; set; } = 5;
@@ -248,19 +261,28 @@ public partial class App : Application
 
         if (!_ownsMutex)
         {
-            /* Bring the existing instance's window to the foreground instead of showing an error (#769) */
-            var hWnd = FindWindow(null, "Performance Monitor Lite");
-            if (hWnd != IntPtr.Zero)
-            {
-                if (IsIconic(hWnd))
-                    ShowWindow(hWnd, SW_RESTORE);
-                SetForegroundWindow(hWnd);
-            }
+            /* Ask the running instance to surface its window, then exit (#769). We signal a named
+               event rather than poking its HWND with Win32 ShowWindow: the owning instance restores
+               through WPF's own Show() path, which is the only thing that un-blanks a tray-hidden
+               window (#1050). Best-effort — if the first instance is still mid-startup the channel
+               may not exist yet, but it's already coming up visible anyway. */
+            SingleInstanceSignal.TrySignal(ShowWindowEventName);
             Shutdown();
             return;
         }
 
+        /* Own the "surface me" channel before anything slow runs, so a fast second launch finds it.
+           The callback null-checks _mainWindow, so a signal that lands before the window exists is a
+           harmless no-op (the window is about to show regardless). */
+        _instanceSignal = new SingleInstanceSignal(ShowWindowEventName, OnSurfaceWindowRequested);
+
         base.OnStartup(e);
+
+        // #1050: WPF's GPU render thread can zombie its surface across sleep/wake or RDP, leaving a
+        // live-but-blank window. Software rendering removes the GPU dependency entirely. Charts are
+        // unaffected — ScottPlot renders via SkiaSharp (CPU) into a bitmap, not WPF's GPU path.
+        System.Windows.Media.RenderOptions.ProcessRenderMode =
+            System.Windows.Interop.RenderMode.SoftwareOnly;
 
         // Initialize paths — store data in %LOCALAPPDATA% so Velopack updates
         // can replace the app directory without losing data
@@ -280,8 +302,14 @@ public partial class App : Application
         LoadDefaultTimeRange();
         LoadAlertSettings();
 
+        // Wire the shared-UI time conversion hook before any chart/crosshair can
+        // render. The lambda reads CurrentDisplayMode at call time, so later
+        // display-mode switches are honored. Must precede the first window/chart.
+        PerformanceMonitor.Ui.UiTimeContext.ConvertForDisplay =
+            t => Services.ServerTimeHelper.ConvertForDisplay(t, Services.ServerTimeHelper.CurrentDisplayMode);
+
         // Apply saved color theme before the main window is shown
-        Helpers.ThemeManager.Apply(ColorTheme);
+        ThemeManager.Apply(ColorTheme);
 
         // Initialize logging
         var logDirectory = Path.Combine(appDataRoot, "logs");
@@ -300,13 +328,25 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         // Create and show main window (StartupUri removed for Velopack custom Main)
-        var mainWindow = new MainWindow();
-        mainWindow.Show();
+        _mainWindow = new MainWindow();
+        _mainWindow.Show();
+    }
+
+    /// <summary>
+    /// Invoked on <see cref="SingleInstanceSignal"/>'s background thread when a second launch asks us
+    /// to surface the window. Marshals to the UI thread and restores via WPF's Show() path (#1050).
+    /// </summary>
+    private void OnSurfaceWindowRequested()
+    {
+        Dispatcher.BeginInvoke(new Action(() => _mainWindow?.RestoreFromTray()));
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         AppLogger.Info("App", "Shutting down");
+
+        _instanceSignal?.Dispose();
+
         AppLogger.Shutdown();
 
         if (_ownsMutex)
@@ -438,6 +478,7 @@ public partial class App : Application
             if (root.TryGetProperty("alert_long_running_query_exclude_waitfor", out v)) AlertLongRunningQueryExcludeWaitFor = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_exclude_backups", out v)) AlertLongRunningQueryExcludeBackups = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_exclude_misc_waits", out v)) AlertLongRunningQueryExcludeMiscWaits = v.GetBoolean();
+            if (root.TryGetProperty("alert_long_running_query_exclude_cdc", out v)) AlertLongRunningQueryExcludeCdc = v.GetBoolean();
             if (root.TryGetProperty("alert_excluded_databases", out v) && v.ValueKind == System.Text.Json.JsonValueKind.Array)
             {
                 AlertExcludedDatabases = new List<string>();
@@ -449,8 +490,13 @@ public partial class App : Application
             }
             if (root.TryGetProperty("alert_tempdb_space_enabled", out v)) AlertTempDbSpaceEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_tempdb_space_threshold_percent", out v)) AlertTempDbSpaceThresholdPercent = v.GetInt32();
+            if (root.TryGetProperty("alert_low_disk_enabled", out v)) AlertLowDiskEnabled = v.GetBoolean();
+            if (root.TryGetProperty("alert_low_disk_threshold_percent", out v)) AlertLowDiskThresholdPercent = (int)Math.Clamp(v.GetInt64(), 0, 100);
+            if (root.TryGetProperty("alert_low_disk_threshold_gb", out v)) AlertLowDiskThresholdGb = (int)Math.Max(0, v.GetInt64());
             if (root.TryGetProperty("alert_long_running_job_enabled", out v)) AlertLongRunningJobEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_job_multiplier", out v)) AlertLongRunningJobMultiplier = v.GetInt32();
+            if (root.TryGetProperty("alert_failed_job_enabled", out v)) AlertFailedJobEnabled = v.GetBoolean();
+            if (root.TryGetProperty("alert_failed_job_lookback_minutes", out v)) AlertFailedJobLookbackMinutes = (int)Math.Clamp(v.GetInt64(), 1, 1440);
             if (root.TryGetProperty("alert_cooldown_minutes", out v)) AlertCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
             if (root.TryGetProperty("email_cooldown_minutes", out v)) EmailCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
             if (root.TryGetProperty("mute_rule_default_expiration", out v))
@@ -485,7 +531,7 @@ public partial class App : Application
                 if (t == "ServerTime" || t == "LocalTime" || t == "UTC")
                 {
                     TimeDisplayMode = t;
-                    if (Enum.TryParse<Helpers.TimeDisplayMode>(t, out var tdm))
+                    if (Enum.TryParse<TimeDisplayMode>(t, out var tdm))
                         Services.ServerTimeHelper.CurrentDisplayMode = tdm;
                 }
             }
@@ -538,6 +584,13 @@ public partial class App : Application
             if (root.TryGetProperty("smtp_username", out v)) SmtpUsername = v.GetString() ?? "";
             if (root.TryGetProperty("smtp_from_address", out v)) SmtpFromAddress = v.GetString() ?? "";
             if (root.TryGetProperty("smtp_recipients", out v)) SmtpRecipients = v.GetString() ?? "";
+
+            if (root.TryGetProperty("analysis_enabled", out v)) AnalysisEnabled = v.GetBoolean();
+            if (root.TryGetProperty("analysis_notifications_enabled", out v)) AnalysisNotificationsEnabled = v.GetBoolean();
+            if (root.TryGetProperty("analysis_interval_minutes", out v)) AnalysisIntervalMinutes = (int)Math.Clamp(v.GetInt64(), 5, 360);
+            if (root.TryGetProperty("analysis_notify_severity", out v)) AnalysisNotifySeverity = Math.Clamp(v.GetDouble(), 0.0, 2.0);
+            if (root.TryGetProperty("analysis_notify_cooldown_minutes", out v)) AnalysisNotifyCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 30, 10080);
+            if (root.TryGetProperty("analysis_timeout_seconds", out v)) AnalysisTimeoutSeconds = (int)Math.Clamp(v.GetInt64(), 30, 600);
         }
         catch { /* Use defaults */ }
     }

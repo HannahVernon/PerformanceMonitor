@@ -12,8 +12,10 @@ using System.Data;
 using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Ui;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Services
 {
@@ -184,10 +186,10 @@ namespace PerformanceMonitorDashboard.Services
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetBlockingSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetBlockingSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -218,7 +220,7 @@ ORDER BY bucket_hour;";
                     while (await reader.ReadAsync())
                     {
                         var eventCount = Convert.ToInt64(reader.GetValue(1));
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = eventCount,
@@ -232,10 +234,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetDeadlockSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetDeadlockSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -263,7 +265,7 @@ ORDER BY bucket_hour;";
                     while (await reader.ReadAsync())
                     {
                         var count = Convert.ToInt64(reader.GetValue(1));
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = count,
@@ -274,10 +276,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -310,7 +312,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -325,10 +327,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -361,7 +363,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -376,10 +378,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetProcStatsSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetProcStatsSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -412,7 +414,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -427,10 +429,10 @@ ORDER BY bucket_hour;";
                     return items;
                 }
 
-                public async Task<List<Models.TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
+                public async Task<List<TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
                     int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
                 {
-                    var items = new List<Models.TimeSliceBucket>();
+                    var items = new List<TimeSliceBucket>();
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
@@ -463,7 +465,7 @@ ORDER BY bucket_hour;";
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
                     {
-                        items.Add(new Models.TimeSliceBucket
+                        items.Add(new TimeSliceBucket
                         {
                             BucketTime = reader.GetDateTime(0),
                             SessionCount = Convert.ToInt64(reader.GetValue(1)),
@@ -864,11 +866,11 @@ ORDER BY
         /// Gets query stats comparison between a current time range and a baseline range.
         /// Uses delta columns for accurate period-level aggregation.
         /// </summary>
-        public async Task<List<Models.QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
+        public async Task<List<QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
             DateTime currentStart, DateTime currentEnd,
             DateTime baselineStart, DateTime baselineEnd)
         {
-            var items = new List<Models.QueryStatsComparisonItem>();
+            var items = new List<QueryStatsComparisonItem>();
 
             await using var tc = await OpenThrottledConnectionAsync();
             var connection = tc.Connection;
@@ -959,7 +961,7 @@ FULL OUTER JOIN baseline_period b
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                items.Add(new Models.QueryStatsComparisonItem
+                items.Add(new QueryStatsComparisonItem
                 {
                     DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     QueryHash = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -984,11 +986,11 @@ FULL OUTER JOIN baseline_period b
         /// <summary>
         /// Gets procedure stats comparison between a current time range and a baseline range.
         /// </summary>
-        public async Task<List<Models.ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
+        public async Task<List<ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
             DateTime currentStart, DateTime currentEnd,
             DateTime baselineStart, DateTime baselineEnd)
         {
-            var items = new List<Models.ProcedureStatsComparisonItem>();
+            var items = new List<ProcedureStatsComparisonItem>();
 
             await using var tc = await OpenThrottledConnectionAsync();
             var connection = tc.Connection;
@@ -1068,7 +1070,7 @@ FULL OUTER JOIN baseline_period b
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                items.Add(new Models.ProcedureStatsComparisonItem
+                items.Add(new ProcedureStatsComparisonItem
                 {
                     DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     SchemaName = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -1091,11 +1093,11 @@ FULL OUTER JOIN baseline_period b
         /// Gets query store comparison between a current time range and a baseline range.
         /// Reuses QueryStatsComparisonItem model (same identity: database + query_hash).
         /// </summary>
-        public async Task<List<Models.QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
+        public async Task<List<QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
             DateTime currentStart, DateTime currentEnd,
             DateTime baselineStart, DateTime baselineEnd)
         {
-            var items = new List<Models.QueryStatsComparisonItem>();
+            var items = new List<QueryStatsComparisonItem>();
 
             await using var tc = await OpenThrottledConnectionAsync();
             var connection = tc.Connection;
@@ -1176,7 +1178,7 @@ FULL OUTER JOIN baseline_period b
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
-                items.Add(new Models.QueryStatsComparisonItem
+                items.Add(new QueryStatsComparisonItem
                 {
                     DatabaseName = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     QueryHash = reader.IsDBNull(1) ? "" : reader.GetString(1),
