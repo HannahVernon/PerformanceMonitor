@@ -232,33 +232,41 @@ BEGIN
             AND   d.event_date <= @end_date_local
             OPTION(RECOMPILE);
 
-            IF @rows_parsed > 0
+            /*
+            Mark the raw XML rows we handed to sp_BlitzLock as processed -
+            UNCONDITIONALLY after a clean parse run, not only when
+            @rows_parsed > 0. sp_BlitzLock legitimately returns zero rows for
+            deadlock graphs it cannot parse (malformed/partial graphs, or
+            non-deadlock events captured by the session). Gating the mark on
+            @rows_parsed > 0 left those unprocessed forever - the processor
+            re-ran sp_BlitzLock over the same dead events every cycle and
+            re-logged NO_RESULTS indefinitely. Genuine failures never reach
+            here: the XACT_STATE() = -1 check and the CATCH block both roll back
+            without marking, so a real parse failure still retries next run. Raw
+            XML is retained (is_processed = 1, not deleted); data-retention
+            handles cleanup. The +1s pad on @end_date above guarantees the parse
+            window covers every unprocessed event, so we never mark a row
+            sp_BlitzLock did not get to see. event_time is UTC, matching
+            @start_date / @end_date.
+            */
+            IF @rows_parsed = 0 AND @debug = 1
             BEGIN
-                /*
-                Mark raw XML rows as processed
-                Only mark the rows in the date range we just processed
-                */
-                UPDATE dx
-                SET    dx.is_processed = 1
-                FROM collect.deadlock_xml AS dx
-                WHERE dx.is_processed = 0
-                AND   (@start_date IS NULL OR dx.event_time >= @start_date)
-                AND   (@end_date IS NULL OR dx.event_time <= @end_date);
-
-                SELECT
-                    @rows_marked = ROWCOUNT_BIG();
-
-                IF @debug = 1
-                BEGIN
-                    RAISERROR(N'Marked %I64d raw XML rows as processed (%I64d parsed deadlocks)', 0, 1, @rows_marked, @rows_parsed) WITH NOWAIT;
-                END;
+                RAISERROR(N'sp_BlitzLock produced 0 parsed results for %d XML event(s) - no parseable deadlock graphs; events still marked processed', 0, 1, @rows_available) WITH NOWAIT;
             END;
-            ELSE
+
+            UPDATE dx
+            SET    dx.is_processed = 1
+            FROM collect.deadlock_xml AS dx
+            WHERE dx.is_processed = 0
+            AND   (@start_date IS NULL OR dx.event_time >= @start_date)
+            AND   (@end_date IS NULL OR dx.event_time <= @end_date);
+
+            SELECT
+                @rows_marked = ROWCOUNT_BIG();
+
+            IF @debug = 1
             BEGIN
-                IF @debug = 1
-                BEGIN
-                    RAISERROR(N'sp_BlitzLock produced 0 parsed results for %d XML events - rows left unprocessed for retry', 0, 1, @rows_available) WITH NOWAIT;
-                END;
+                RAISERROR(N'Marked %I64d raw XML rows as processed (%I64d parsed deadlocks)', 0, 1, @rows_marked, @rows_parsed) WITH NOWAIT;
             END;
         END;
 
