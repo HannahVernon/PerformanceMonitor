@@ -14,7 +14,7 @@
         files at all (xp_delete_file only handles backups / maintenance-plan
         reports), and in fact failed the job outright.
 
-    Version 2.12.0 fixes the source: collect.trace_management_collector now
+    Version 3.0.0 fixes the source: collect.trace_management_collector now
     keeps a single long-running trace bounded with a rollover file-count cap
     (@filecount), so SQL Server deletes its own old files going forward. This
     script is the one-time sweep for the files already on disk.

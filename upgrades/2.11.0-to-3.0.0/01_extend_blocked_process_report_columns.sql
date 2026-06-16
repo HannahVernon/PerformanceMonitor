@@ -2,7 +2,7 @@
 Copyright 2026 Darling Data, LLC
 https://www.erikdarling.com/
 
-Upgrade from 2.11.0 to 2.12.0
+Upgrade from 2.11.0 to 3.0.0
 Adds typed blocker-side columns to collect.blocking_BlockedProcessReport so
 the Dashboard analysis path (BLOCKING_CHAIN fact + drill-down) can read
 structured columns instead of re-parsing blocked_process_report_xml on every

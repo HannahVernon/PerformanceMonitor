@@ -2,7 +2,7 @@
 Copyright 2026 Darling Data, LLC
 https://www.erikdarling.com/
 
-Upgrade from 2.11.0 to 2.12.0
+Upgrade from 2.11.0 to 3.0.0
 Issue #1048: Linux host CPU pinned at 100%.
 
 On SQL Server on Linux the RING_BUFFER_SCHEDULER_MONITOR ring buffer reports

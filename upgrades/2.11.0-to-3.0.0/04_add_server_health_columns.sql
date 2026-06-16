@@ -2,7 +2,7 @@
 Copyright 2026 Darling Data, LLC
 https://www.erikdarling.com/
 
-Upgrade from 2.11.0 to 2.12.0
+Upgrade from 2.11.0 to 3.0.0
 WS5: surface Lock Pages in Memory (LPIM), Instant File Initialization (IFI),
 and SQL Server memory dumps as advise-only server-health recommendations.
 

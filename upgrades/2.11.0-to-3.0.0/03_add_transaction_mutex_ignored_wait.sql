@@ -2,7 +2,7 @@
 Copyright 2026 Darling Data, LLC
 https://www.erikdarling.com/
 
-Upgrade from 2.11.0 to 2.12.0
+Upgrade from 2.11.0 to 3.0.0
 Add TRANSACTION_MUTEX to config.ignored_wait_types. It is an internal synchronization
 wait (multiple requests sharing one transaction / MARS / app pattern), not a DBA-tunable
 condition -- it belongs with the other *_MUTEX waits already ignored

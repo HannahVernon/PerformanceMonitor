@@ -209,7 +209,7 @@ public class RemediationTests
             Assert.Equal(RemediationStatus.Blocked, o.Status);
             Assert.False(o.AuditWritten);
             Assert.False(o.AppliedButUnlogged);
-            Assert.Contains("2.12.0", o.Message);
+            Assert.Contains("3.0.0", o.Message);
         });
         Assert.Equal(0, exec.ForceCalls);
         Assert.Empty(exec.AuditRecords);
@@ -517,7 +517,7 @@ public class RemediationTests
         {
             Assert.Equal(RemediationStatus.Blocked, o.Status);
             Assert.False(o.AuditWritten);
-            Assert.Contains("2.12.0", o.Message);
+            Assert.Contains("3.0.0", o.Message);
         });
         Assert.Equal(0, exec.SetDbCalls);
         Assert.Empty(exec.AuditRecords);
