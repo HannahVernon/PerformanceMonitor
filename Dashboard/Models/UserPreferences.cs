@@ -212,5 +212,10 @@ namespace PerformanceMonitorDashboard.Models
         public long DeadlocksSinceLastCheck { get; set; }
         public int RequestsWaitingForMemory { get; set; }
         public int? TotalCpuPercent { get; set; }
+
+        /* Snapshot of the disk/failed-job badge conditions at acknowledge time (#754/#749), so the
+           Overview badge stays hidden after ack until a NEW such condition appears (false -> true). */
+        public bool HasLowDiskAlert { get; set; }
+        public bool HasFailedJobAlert { get; set; }
     }
 }

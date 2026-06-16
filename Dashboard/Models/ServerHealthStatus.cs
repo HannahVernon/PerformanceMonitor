@@ -513,6 +513,12 @@ namespace PerformanceMonitorDashboard.Models
 
         public string CollectorDetailText => $"Healthy: {_healthyCollectorCount}, Failing: {_failedCollectorCount}";
 
+        /* Low-disk / failed-job alert presence, for the server-level tab badge (#754/#749).
+           Injected from the alert engine's per-server state in UpdateTabBadge; not bound (the
+           badge reads them directly), so no change notification is needed. */
+        public bool HasLowDiskAlert { get; set; }
+        public bool HasFailedJobAlert { get; set; }
+
         // Top waits
         public string? TopWaitType
         {
