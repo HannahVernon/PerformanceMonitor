@@ -97,6 +97,24 @@ namespace PerformanceMonitorLite.Services
         }
 
         /// <summary>
+        /// Clears a server's acknowledgement when a genuinely new badge condition (a fresh low-disk
+        /// breach or failed Agent job) appears. Those booleans have no event timestamp of their own,
+        /// so the timestamp-based clear in <see cref="UpdateAlertCounts"/> never fires for them; the
+        /// caller detects the false-&gt;true transition and calls this so the badge re-lights —
+        /// matching the Dashboard's re-show on a new disk/job condition (#1128 review).
+        /// </summary>
+        public void ClearAcknowledgementForNewCondition(string serverId)
+        {
+            bool changed;
+            lock (_lock)
+            {
+                changed = _acknowledgedAlerts.Remove(serverId);
+                if (changed) Save();
+            }
+            if (changed) SuppressionStateChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
         /// Silences a server entirely (no badges until unsilenced). Persisted across restarts.
         /// </summary>
         public void SilenceServer(string serverId)

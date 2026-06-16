@@ -1027,6 +1027,12 @@ public partial class MainWindow : Window
             /* Clean up alert state for this server */
             _alertStateService.RemoveServerState(serverId);
 
+            /* #1128 review fix: drop the per-server badge state so a stale low-disk / failed-job flag
+               doesn't flash on reopen, and the dicts don't grow with tab churn. */
+            _badgeLowDisk.Remove(serverId);
+            _badgeFailedJob.Remove(serverId);
+            _lastBadgeCounts.Remove(serverId);
+
             // Show empty state if no tabs open
             if (_openServerTabs.Count == 0)
             {
@@ -1542,6 +1548,15 @@ public partial class MainWindow : Window
            failed-job conditions (#754/#749); null when the server isn't in the list. */
         var badgeServer = _serverManager.GetAllServers().FirstOrDefault(s =>
             RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(s)).ToString() == key);
+
+        /* #1128 review fix: snapshot the prior badge flags, recompute them as locals through the
+           sweep, and write them ONCE at the end — so a disabled feature / offline server clears a
+           stale badge (not just the active branch), and a false->true transition clears the ack. */
+        bool prevBadgeLowDisk = badgeServer != null && _badgeLowDisk.TryGetValue(badgeServer.Id, out var _pBadgeLd) && _pBadgeLd;
+        bool prevBadgeFailedJob = badgeServer != null && _badgeFailedJob.TryGetValue(badgeServer.Id, out var _pBadgeFj) && _pBadgeFj;
+        bool curBadgeLowDisk = false;
+        bool curBadgeFailedJob = false;
+
         var alertCooldown = TimeSpan.FromMinutes(App.AlertCooldownMinutes);
 
         /* Skip popup/email alerts if user has acknowledged or silenced this server */
@@ -1965,12 +1980,9 @@ public partial class MainWindow : Window
                 var volumes = await Task.Run(() => _dataService.GetVolumeFreeSpaceAsync(summary.ServerId));
                 var breached = GetBreachedVolumes(volumes);
 
-                /* Drive the server tab badge — a breached volume is a standing condition (#754). */
-                if (badgeServer != null)
-                {
-                    _badgeLowDisk[badgeServer.Id] = breached.Count > 0;
-                    RefreshServerBadgeExtras(badgeServer.Id);
-                }
+                /* Drive the server tab badge — a breached volume is a standing condition (#754).
+                   Recorded as a local; the flags are written once at the end of the sweep (#1128 review). */
+                curBadgeLowDisk = breached.Count > 0;
 
                 if (breached.Count > 0)
                 {
@@ -2137,12 +2149,9 @@ public partial class MainWindow : Window
                        off the UI thread; MFA serialization / throttle / retry handled inside). */
                     var failedJobs = await _collectorService.GetRecentlyFailedJobsAsync(server, App.AlertFailedJobLookbackMinutes);
 
-                    /* Drive the server tab badge — a failure in the lookback window (#749). */
-                    if (badgeServer != null)
-                    {
-                        _badgeFailedJob[badgeServer.Id] = failedJobs.Count > 0;
-                        RefreshServerBadgeExtras(badgeServer.Id);
-                    }
+                    /* Drive the server tab badge — a failure in the lookback window (#749). Recorded
+                       as a local; written once at the end of the sweep (#1128 review). */
+                    curBadgeFailedJob = failedJobs.Count > 0;
 
                     if (failedJobs.Count > 0)
                     {
@@ -2194,6 +2203,21 @@ public partial class MainWindow : Window
             {
                 AppLogger.Error("Alerts", $"Failed to check failed jobs for {summary.DisplayName}: {ex.Message}");
             }
+        }
+
+        /* #1128 review fix: write the badge's low-disk / failed-job flags ONCE per sweep from the
+           values computed above. Doing it here (not only inside the feature-enabled / online / msdb
+           branches) means a disabled feature or an offline server clears a previously-lit badge
+           instead of leaving it stale. A false->true transition is a genuinely new condition, so it
+           clears any acknowledgement — matching the Dashboard, whose IsWorseThanBaseline re-shows on
+           a new disk/job condition. RefreshServerBadgeExtras re-renders once (no-op without a tab). */
+        if (badgeServer != null)
+        {
+            _badgeLowDisk[badgeServer.Id] = curBadgeLowDisk;
+            _badgeFailedJob[badgeServer.Id] = curBadgeFailedJob;
+            if ((curBadgeLowDisk && !prevBadgeLowDisk) || (curBadgeFailedJob && !prevBadgeFailedJob))
+                _alertStateService.ClearAcknowledgementForNewCondition(badgeServer.Id);
+            RefreshServerBadgeExtras(badgeServer.Id);
         }
     }
 
