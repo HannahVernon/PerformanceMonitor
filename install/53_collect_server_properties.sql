@@ -319,6 +319,13 @@ BEGIN
                     CONCAT
                     (
                         CONVERT(nvarchar(128), SERVERPROPERTY(N'Edition')), N'|',
+                        /* Include the Azure tier inputs that drive the normalized edition /
+                           service_objective columns. SERVERPROPERTY('Edition') is the constant
+                           'SQL Azure' on Azure SQL DB, so without these a pure tier/SLO change with
+                           no vCore/memory delta would not change the hash and the collector would
+                           SKIP, never recording the new tier. NULL (on-prem) concats as empty. */
+                        CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), N'Edition')), N'|',
+                        CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), N'ServiceObjective')), N'|',
                         CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')), N'|',
                         CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductLevel')), N'|',
                         @engine_edition, N'|',

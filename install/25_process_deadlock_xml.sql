@@ -132,7 +132,7 @@ BEGIN
             BEGIN
                 SELECT
                     @start_date = MIN(dx.event_time),
-                    @end_date = DATEADD(SECOND, 1, MAX(dx.event_time))
+                    @end_date = MAX(dx.event_time)
                 FROM collect.deadlock_xml AS dx
                 WHERE dx.is_processed = 0
                 AND   dx.event_time IS NOT NULL
@@ -153,7 +153,11 @@ BEGIN
             */
             SELECT
                 @start_date_local = DATEADD(MINUTE, @utc_offset_minutes, @start_date),
-                @end_date_local = DATEADD(MINUTE, @utc_offset_minutes, @end_date);
+                /* +1s on the PARSER's local upper bound (not on @end_date itself) so sp_BlitzLock
+                   includes events at exactly @end_date, while the mark below uses the un-padded UTC
+                   @end_date — so a deadlock inserted concurrently in that extra second is left for the
+                   next run rather than marked unparsed. Mirrors process_blocked_process_xml. */
+                @end_date_local = DATEADD(SECOND, 1, DATEADD(MINUTE, @utc_offset_minutes, @end_date));
 
             IF @debug = 1
             BEGIN
@@ -244,10 +248,11 @@ BEGIN
             here: the XACT_STATE() = -1 check and the CATCH block both roll back
             without marking, so a real parse failure still retries next run. Raw
             XML is retained (is_processed = 1, not deleted); data-retention
-            handles cleanup. The +1s pad on @end_date above guarantees the parse
-            window covers every unprocessed event, so we never mark a row
-            sp_BlitzLock did not get to see. event_time is UTC, matching
-            @start_date / @end_date.
+            handles cleanup. The +1s pad on @end_date_local (the parser's local bound,
+            set above) guarantees sp_BlitzLock sees every event up to and including
+            @end_date, while this mark uses the un-padded UTC @end_date so a row inserted
+            concurrently after @end_date is left for the next run. event_time is UTC,
+            matching @start_date / @end_date.
             */
             IF @rows_parsed = 0 AND @debug = 1
             BEGIN
@@ -285,18 +290,22 @@ BEGIN
         VALUES
         (
             N'process_deadlock_xml',
-            CASE WHEN @rows_available = 0 THEN N'SUCCESS'
-                 WHEN @rows_parsed > 0 THEN N'SUCCESS'
-                 ELSE N'NO_RESULTS'
-            END,
+            /*
+            A clean parse run is SUCCESS even when sp_BlitzLock produced 0 parsed
+            deadlocks: the events were processed and marked (above), they simply held
+            no reconstructable deadlock graph (un-parseable-by-design). Genuine failures
+            take the CATCH path and log ERROR. This ends the perpetual NO_RESULTS this
+            collector used to emit and mirrors process_blocked_process_xml exactly
+            (previously this proc still logged NO_RESULTS + "left unprocessed for retry"
+            after it had already marked the rows processed — a false signal).
+            Tradeoff: a silent sp_BlitzLock failure that returns 0 rows with no error and
+            a committable transaction is indistinguishable from "nothing to parse", so
+            those events are marked processed — an accepted cost of ending the retry loop.
+            */
+            N'SUCCESS',
             @rows_available,
             DATEDIFF(MILLISECOND, @start_time, SYSDATETIME()),
-            CASE WHEN @rows_available > 0 AND @rows_parsed = 0
-                 THEN N'sp_BlitzLock returned 0 parsed results for '
-                      + CAST(@rows_available AS nvarchar(20))
-                      + N' XML events - rows left unprocessed for retry'
-                 ELSE NULL
-            END
+            NULL
         );
 
         IF @debug = 1
