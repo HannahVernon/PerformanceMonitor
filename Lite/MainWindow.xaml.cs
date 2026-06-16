@@ -69,6 +69,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _activeLongRunningQueryAlert = new();
     private readonly Dictionary<string, bool> _activeTempDbSpaceAlert = new();
     private readonly Dictionary<string, bool> _activeLowDiskAlert = new();
+    /* Worst free-% captured at the last low-disk alert per server (#754 follow-up): see the
+       Dashboard counterpart. Without it a standing full volume re-fired — and re-recorded an
+       alert-history row, defeating Dismiss — every cooldown. Gated by LowDiskAlertGate; removed on resolve. */
+    private readonly Dictionary<string, double> _lastAlertedLowDiskPercent = new();
     private readonly Dictionary<string, bool> _activeLongRunningJobAlert = new();
     private readonly Dictionary<string, DateTime> _lastFailedJobAlert = new();
     /* Watermark of the most-recent failed-job run time already alerted per server. A failed run
@@ -1919,11 +1923,18 @@ public partial class MainWindow : Window
                 {
                     var worst = breached[0];
                     _activeLowDiskAlert[key] = true;
-                    if (!suppressPopups && (!_lastLowDiskAlert.TryGetValue(key, out var lastLowDisk) || now - lastLowDisk >= alertCooldown))
+                    double? lastLowDiskPercent =
+                        _lastAlertedLowDiskPercent.TryGetValue(key, out var lowDiskPct) ? lowDiskPct : (double?)null;
+                    /* #754 follow-up: notify only on a fresh or worsening breach, not every cooldown for a
+                       standing full volume (which also re-recorded a history row and made Dismiss feel broken). */
+                    if (!suppressPopups
+                        && LowDiskAlertGate.ShouldAlert(worst.FreePercent, lastLowDiskPercent)
+                        && (!_lastLowDiskAlert.TryGetValue(key, out var lastLowDisk) || now - lastLowDisk >= alertCooldown))
                     {
                         var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "Volume Free Space" };
                         bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                         _lastLowDiskAlert[key] = now;
+                        _lastAlertedLowDiskPercent[key] = worst.FreePercent;
 
                         if (!isMuted)
                         {
@@ -1955,6 +1966,7 @@ public partial class MainWindow : Window
                 else if (_activeLowDiskAlert.TryGetValue(key, out var wasLowDisk) && wasLowDisk)
                 {
                     _activeLowDiskAlert[key] = false;
+                    _lastAlertedLowDiskPercent.Remove(key);
                     if (!suppressPopups)
                     {
                         _trayService.ShowNotification(

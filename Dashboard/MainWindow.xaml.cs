@@ -99,6 +99,11 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, bool> _activeTempDbSpaceAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLowDiskAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLowDiskAlert = new();
+        /* Worst free-% captured at the last low-disk alert per server (#754 follow-up): a full
+           volume is a standing condition, so without this the alert re-fired — and re-recorded an
+           alert-history row, defeating Dismiss — every cooldown. Gated by LowDiskAlertGate to notify
+           only on a fresh or worsening breach; removed when the condition resolves. */
+        private readonly ConcurrentDictionary<string, double> _lastAlertedLowDiskPercent = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastFailedJobAlert = new();
@@ -1979,11 +1984,17 @@ namespace PerformanceMonitorDashboard
             {
                 var worst = breachedVolumes[0];
                 _activeLowDiskAlert[serverId] = true;
-                if (!_lastLowDiskAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
+                double? lastLowDiskPercent =
+                    _lastAlertedLowDiskPercent.TryGetValue(serverId, out var lowDiskPct) ? lowDiskPct : (double?)null;
+                /* #754 follow-up: notify only on a fresh or worsening breach, not every cooldown for a
+                   standing full volume (which also re-recorded a history row and made Dismiss feel broken). */
+                if (LowDiskAlertGate.ShouldAlert(worst.FreePercent, lastLowDiskPercent)
+                    && (!_lastLowDiskAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown))
                 {
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Volume Free Space" };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLowDiskAlert[serverId] = now;
+                    _lastAlertedLowDiskPercent[serverId] = worst.FreePercent;
                     var lowDiskContext = BuildVolumeFreeSpaceContext(breachedVolumes);
                     var detailText = ContextToDetailText(lowDiskContext);
                     var currentValue = $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)";
@@ -2017,6 +2028,7 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeLowDiskAlert.TryRemove(serverId, out var wasLowDisk) && wasLowDisk)
             {
+                _lastAlertedLowDiskPercent.TryRemove(serverId, out _);
                 _notificationService?.ShowNotification("Volume Free Space Resolved",
                     $"{serverName}: All volumes back above threshold");
                 _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space Resolved",
