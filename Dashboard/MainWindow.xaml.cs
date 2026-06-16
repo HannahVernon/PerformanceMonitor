@@ -106,6 +106,10 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, double> _lastAlertedLowDiskPercent = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastLongRunningJobAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeLongRunningJobAlert = new();
+        /* Whether a failed Agent job sits in the lookback window for this server, for the server
+           tab badge (#749). Set each alert cycle (true while a failure is in-window, false once it
+           ages out), so the badge auto-resolves. Read by UpdateTabBadge. */
+        private readonly ConcurrentDictionary<string, bool> _activeFailedJobAlert = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastFailedJobAlert = new();
         /* Watermark of the most-recent failed-job run time already alerted per server. A failed
            run lingers in the lookback window for the whole window, so a plain level check would
@@ -1354,6 +1358,16 @@ namespace PerformanceMonitorDashboard
         /// </summary>
         public void UpdateTabBadge(string serverId, ServerHealthStatus? status)
         {
+            /* Fold the alert engine's per-server low-disk / failed-job state into the status so the
+               Overview badge reflects them too (#754/#749). Both badge-update paths (the alert engine
+               and the LandingPage refresh) funnel through here, so injecting once keeps them
+               consistent — a path that lacks disk/job data can't blank the badge. */
+            if (status != null)
+            {
+                status.HasLowDiskAlert = _activeLowDiskAlert.TryGetValue(serverId, out var ldActive) && ldActive;
+                status.HasFailedJobAlert = _activeFailedJobAlert.TryGetValue(serverId, out var fjActive) && fjActive;
+            }
+
             // Cache latest health status for acknowledge baseline snapshots
             if (status != null)
                 _latestHealthStatus[serverId] = status;
@@ -2102,6 +2116,9 @@ namespace PerformanceMonitorDashboard
             /* Failed Agent job alerts — live msdb query for runs that failed in the lookback window.
                Failures are point-in-time events (not a sustained state), so there is no "cleared"
                notification; the per-server watermark below dedups so the same failure never re-fires. */
+            /* Track failed-job presence for the server tab badge (#749): active while a failure sits
+               in the lookback window, cleared when it ages out, so the badge auto-resolves. */
+            _activeFailedJobAlert[serverId] = prefs.NotifyOnFailedJobs && health.RecentlyFailedJobs.Count > 0;
             if (prefs.NotifyOnFailedJobs && health.RecentlyFailedJobs.Count > 0)
             {
                 var newestFailure = health.RecentlyFailedJobs.Max(j => j.RunDateTime);

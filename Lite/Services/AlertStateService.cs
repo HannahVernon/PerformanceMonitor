@@ -60,9 +60,11 @@ namespace PerformanceMonitorLite.Services
         /// <summary>
         /// Updates alert counts and returns whether the badge should be shown.
         /// Clears acknowledgement only if latestEventTime is newer than the ack timestamp,
-        /// meaning genuinely new events arrived (not just a time-range change).
+        /// meaning genuinely new events arrived (not just a time-range change). The badge also
+        /// shows for a standing low-disk breach or a failed Agent job in the lookback window
+        /// (#754/#749), not just blocking/deadlock events.
         /// </summary>
-        public bool UpdateAlertCounts(string serverId, int blockingCount, int deadlockCount, DateTime? latestEventTimeUtc)
+        public bool UpdateAlertCounts(string serverId, int blockingCount, int deadlockCount, bool hasLowDisk, bool hasFailedJob, DateTime? latestEventTimeUtc)
         {
             lock (_lock)
             {
@@ -75,8 +77,8 @@ namespace PerformanceMonitorLite.Services
                     Save();
                 }
 
-                int totalAlerts = blockingCount + deadlockCount;
-                return totalAlerts > 0 && ShouldShowAlertsInternal(serverId);
+                bool hasAny = (blockingCount + deadlockCount) > 0 || hasLowDisk || hasFailedJob;
+                return hasAny && ShouldShowAlertsInternal(serverId);
             }
         }
 

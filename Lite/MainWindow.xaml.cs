@@ -42,6 +42,14 @@ public partial class MainWindow : Window
     private WindowResumeGuard? _resumeGuard;
     private readonly Dictionary<string, TabItem> _openServerTabs = new();
     private readonly Dictionary<string, (Action<int, int, DateTime?> AlertCounts, Action<int> ApplyTimeRange, Func<Task> ManualRefresh)> _tabEventHandlers = new();
+    /* Server tab badge state for the non-blocking/deadlock conditions (#754/#749), keyed by the
+       ServerConnection GUID (the same key as _openServerTabs). The alert sweep sets these; both the
+       blocking/deadlock tab refresh and the sweep funnel through UpdateTabBadge, so the badge
+       reflects all conditions. _lastBadgeCounts lets the sweep re-render with the last-known
+       blocking/deadlock counts seen by the tab refresh. */
+    private readonly Dictionary<string, bool> _badgeLowDisk = new();
+    private readonly Dictionary<string, bool> _badgeFailedJob = new();
+    private readonly Dictionary<string, (int Blocking, int Deadlock, DateTime? LatestEvent)> _lastBadgeCounts = new();
     private readonly Dictionary<string, bool> _previousConnectionStates = new();
     private readonly Dictionary<string, bool> _previousCollectorErrorStates = new();
     private readonly Dictionary<string, bool> _previousXeSessionFailureStates = new();
@@ -841,10 +849,17 @@ public partial class MainWindow : Window
     {
         var totalAlerts = blockingCount + deadlockCount;
 
+        /* Remember the blocking/deadlock counts so the alert sweep can re-render this badge with
+           them when it updates the low-disk / failed-job state (#754/#749). */
+        _lastBadgeCounts[serverId] = (blockingCount, deadlockCount, latestEventTime);
+
+        bool hasLowDisk = _badgeLowDisk.TryGetValue(serverId, out var ld) && ld;
+        bool hasFailedJob = _badgeFailedJob.TryGetValue(serverId, out var fj) && fj;
+
         /* Delegate count tracking and acknowledgement clearing to AlertStateService.
            Uses latestEventTime to only clear ack when genuinely new events arrive,
            not when the user just switches time ranges. */
-        bool shouldShow = _alertStateService.UpdateAlertCounts(serverId, blockingCount, deadlockCount, latestEventTime);
+        bool shouldShow = _alertStateService.UpdateAlertCounts(serverId, blockingCount, deadlockCount, hasLowDisk, hasFailedJob, latestEventTime);
 
         foreach (var child in tabHeader.Children)
         {
@@ -859,8 +874,17 @@ public partial class MainWindow : Window
 
                     if (border.Child is TextBlock text)
                     {
-                        text.Text = totalAlerts > 99 ? "99+" : totalAlerts.ToString();
-                        text.ToolTip = $"Blocking: {blockingCount}, Deadlocks: {deadlockCount}\nClick to dismiss · Right-click for options";
+                        /* Blocking+deadlock count, or "!" when the only live condition is a low-disk
+                           breach / failed job (those aren't counts). */
+                        text.Text = totalAlerts > 0
+                            ? (totalAlerts > 99 ? "99+" : totalAlerts.ToString())
+                            : "!";
+
+                        var extras = new System.Collections.Generic.List<string>();
+                        if (hasLowDisk) extras.Add("low disk");
+                        if (hasFailedJob) extras.Add("failed job");
+                        var extraLine = extras.Count > 0 ? $"\n{string.Join(", ", extras)}" : "";
+                        text.ToolTip = $"Blocking: {blockingCount}, Deadlocks: {deadlockCount}{extraLine}\nClick to dismiss · Right-click for options";
                     }
                 }
                 else
@@ -870,6 +894,22 @@ public partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Re-renders a server's tab badge from the alert sweep after its low-disk / failed-job state
+    /// changed (#754/#749), reusing the last blocking/deadlock counts the tab refresh saw so the two
+    /// inputs stay combined. No-op when the server has no open tab. Keyed by ServerConnection GUID.
+    /// </summary>
+    private void RefreshServerBadgeExtras(string serverId)
+    {
+        if (!_openServerTabs.TryGetValue(serverId, out var tab) || tab.Header is not StackPanel tabHeader)
+            return;
+
+        var (b, d, ev) = _lastBadgeCounts.TryGetValue(serverId, out var counts)
+            ? counts
+            : (0, 0, (DateTime?)null);
+        UpdateTabBadge(tabHeader, serverId, b, d, ev);
     }
 
     private void AcknowledgeServerAlert_Click(object sender, RoutedEventArgs e)
@@ -1496,6 +1536,12 @@ public partial class MainWindow : Window
 
         var key = summary.ServerId.ToString();
         var now = DateTime.UtcNow;
+
+        /* Resolve the ServerConnection (the GUID identity used by the tabs/badges) for this summary,
+           which carries the int DuckDB server_id. Drives the server tab badge for the low-disk /
+           failed-job conditions (#754/#749); null when the server isn't in the list. */
+        var badgeServer = _serverManager.GetAllServers().FirstOrDefault(s =>
+            RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(s)).ToString() == key);
         var alertCooldown = TimeSpan.FromMinutes(App.AlertCooldownMinutes);
 
         /* Skip popup/email alerts if user has acknowledged or silenced this server */
@@ -1919,6 +1965,13 @@ public partial class MainWindow : Window
                 var volumes = await Task.Run(() => _dataService.GetVolumeFreeSpaceAsync(summary.ServerId));
                 var breached = GetBreachedVolumes(volumes);
 
+                /* Drive the server tab badge — a breached volume is a standing condition (#754). */
+                if (badgeServer != null)
+                {
+                    _badgeLowDisk[badgeServer.Id] = breached.Count > 0;
+                    RefreshServerBadgeExtras(badgeServer.Id);
+                }
+
                 if (breached.Count > 0)
                 {
                     var worst = breached[0];
@@ -2083,6 +2136,13 @@ public partial class MainWindow : Window
                     /* Live msdb read via the collector's connection path (async SqlClient, already
                        off the UI thread; MFA serialization / throttle / retry handled inside). */
                     var failedJobs = await _collectorService.GetRecentlyFailedJobsAsync(server, App.AlertFailedJobLookbackMinutes);
+
+                    /* Drive the server tab badge — a failure in the lookback window (#749). */
+                    if (badgeServer != null)
+                    {
+                        _badgeFailedJob[badgeServer.Id] = failedJobs.Count > 0;
+                        RefreshServerBadgeExtras(badgeServer.Id);
+                    }
 
                     if (failedJobs.Count > 0)
                     {
