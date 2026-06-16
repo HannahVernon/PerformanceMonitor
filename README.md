@@ -7,7 +7,7 @@
   <a href="https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest"><img src="https://img.shields.io/github/v/release/erikdarlingdata/PerformanceMonitor?style=for-the-badge" alt="Latest Release"></a>
   <a href="https://github.com/erikdarlingdata/PerformanceMonitor/issues"><img src="https://img.shields.io/github/issues/erikdarlingdata/PerformanceMonitor?style=for-the-badge" alt="Open Issues"></a>
   <a href="https://github.com/erikdarlingdata/PerformanceMonitor/commits/main"><img src="https://img.shields.io/github/last-commit/erikdarlingdata/PerformanceMonitor?style=for-the-badge" alt="Last Commit"></a>
-  <a href="https://github.com/erikdarlingdata/PerformanceMonitor/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/erikdarlingdata/PerformanceMonitor/ci.yml?style=for-the-badge&label=CI" alt="CI"></a>
+  <a href="https://github.com/erikdarlingdata/PerformanceMonitor/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/erikdarlingdata/PerformanceMonitor/build.yml?style=for-the-badge&label=CI" alt="CI"></a>
 </p>
 <p align="center">
   <a href="https://x.com/erikdarlingdata"><img src="https://img.shields.io/badge/Follow_%40ErikDarlingData-black?style=for-the-badge&logo=x&logoColor=white" alt="Follow @ErikDarlingData on X"></a>
@@ -33,7 +33,7 @@
 
 | | **[Full Edition](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** | **[Lite Edition](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** |
 |---|---|---|
-| **What it does** | Installs a `PerformanceMonitor` database with 30 T-SQL collectors running via SQL Agent. Separate dashboard app connects to view everything. | Single desktop app that monitors remotely. Stores data locally in DuckDB + Parquet. Nothing touches your server. |
+| **What it does** | Installs a `PerformanceMonitor` database with 33 T-SQL collectors running via SQL Agent. Separate dashboard app connects to view everything. | Single desktop app that monitors remotely. Stores data locally in DuckDB + Parquet. Nothing touches your server. |
 | **Best for** | Production 24/7 monitoring, long-term baselining | Quick triage, Azure SQL DB, locked-down servers, consultants, firefighting |
 | **Requires** | SQL Agent running ([see permissions](#permissions)) | `VIEW SERVER STATE` ([see permissions](#permissions)) |
 | **Get started** | Run the installer, open the dashboard | Download, run, add a server, done |
@@ -64,7 +64,9 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 📋 **Graphical plan viewer** with native ShowPlan rendering, 30-rule PlanAnalyzer, operator-level cost breakdown, and a standalone mode for opening `.sqlplan` files without a server connection
 
-🤖 **Built-in MCP server** with 51-63 read-only tools for AI analysis — ask Claude Code or Cursor "what are the top wait types on my server?" and get answers from your actual monitoring data
+💡 **Recommendations engine (advise-and-act)** — a dedicated Recommendations tab surfaces prioritized findings from your own monitoring data with the reasoning behind each one, and can apply selected fixes directly. Destructive changes (like enabling Read Committed Snapshot Isolation) are gated behind an informed-consent dialog that spells out both the risk of acting and the risk of doing nothing.
+
+🤖 **Built-in MCP server** with 55-66 read-only tools for AI analysis — ask Claude Code or Cursor "what are the top wait types on my server?" and get answers from your actual monitoring data
 
 🧰 **Community tools installed automatically** — sp_WhoIsActive, sp_BlitzLock, sp_HealthParser, sp_HumanEventsBlockViewer
 
@@ -325,7 +327,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | AWS RDS for SQL Server | Supported | Supported |
 | Azure SQL Database | Not supported | Supported |
 | Multi-server from one seat | Per-server install | Built-in |
-| Collectors | 32 | 24 |
+| Collectors | 33 | 25 |
 | Agent job monitoring | Duration vs historical avg/p95 | Duration vs historical avg/p95 |
 | Data storage | SQL Server (on target) | DuckDB + Parquet (local) |
 | Execution plans | Collected and stored (can be disabled per-collector) | Download on demand |
@@ -336,7 +338,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Dashboard | Separate app | Built-in |
 | Themes | Dark and light | Dark and light |
 | Portability | Server-bound | Single executable |
-| MCP server (LLM integration) | Built into Dashboard (63 tools) | Built-in (52 tools) |
+| MCP server (LLM integration) | Built into Dashboard (66 tools) | Built-in (55 tools) |
 
 ---
 
@@ -346,7 +348,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 
 | Tab | Contents |
 |---|---|
-| **Overview** | Resource overview, daily summary, critical issues, server config changes, database config changes, trace flag changes, collection health |
+| **Overview** | Resource overview, daily summary, critical issues, recommendations, server config changes, database config changes, trace flag changes, collection health |
 | **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns, query heatmap |
 | **Resource Metrics** | Server trends, wait stats, TempDB, file I/O latency, perfmon counters, default trace events, trace analysis, session stats, latch stats, spinlock stats |
 | **Memory** | Memory overview, grants, clerks, plan cache, memory pressure events |
@@ -371,6 +373,7 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Perfmon** | Selectable SQL Server performance counters over time |
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
 | **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, per-object table/index size, growth, usage, and locking/contention analysis, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
+| **Recommendations** | Prioritized findings drawn from collected metrics, grouped by severity, each card showing the affected database, the recommendation, the reasoning behind it, and a copyable MCP investigation prompt |
 
 Both editions feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
 
@@ -391,6 +394,8 @@ Both editions include a real-time alert engine that monitors for performance iss
 | **TempDB space** | 80% | Fires when TempDB usage exceeds the percentage threshold |
 | **Long-running agent jobs** | 3× average | Fires when a job's current duration exceeds a multiple of its historical average |
 | **High CPU** | 90% (Full), 80% (Lite) | Fires when total CPU (SQL + other) exceeds the threshold |
+| **Volume free space** | 10% or 5 GB free | Fires when a monitored volume's free space drops below the percentage or absolute threshold (either check can be disabled). Never fires on Azure SQL Database. |
+| **Failed agent job** | 60-minute lookback | Fires when a SQL Agent job run fails within the lookback window. Skipped on Azure SQL Database. |
 | **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online (tray + email) |
 
 All thresholds are configurable in Settings.
@@ -466,7 +471,7 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 
 ### Available Tools
 
-Full Edition exposes 63 tools, Lite Edition exposes 52. Core tools are shared across both editions.
+Full Edition exposes 66 tools, Lite Edition exposes 55. Core tools are shared across both editions.
 
 | Category | Tools |
 |---|---|
@@ -486,6 +491,7 @@ Full Edition exposes 63 tools, Lite Edition exposes 52. Core tools are shared ac
 | Configuration | `get_server_config`\*, `get_database_config`\*, `get_database_scoped_config`\*, `get_trace_flags`\* |
 | Config History | `get_server_config_changes`\*\*, `get_database_config_changes`\*\*, `get_trace_flag_changes`\*\* |
 | Server Info | `get_server_properties`, `get_database_sizes` |
+| Object/Index Stats | `get_table_index_sizes`, `get_index_usage`, `get_object_locking` |
 | Sessions | `get_session_stats` |
 | Scheduler | `get_cpu_scheduler_pressure`\*\* |
 | Latch/Spinlock | `get_latch_stats`\*\*, `get_spinlock_stats`\*\* |
@@ -493,7 +499,7 @@ Full Edition exposes 63 tools, Lite Edition exposes 52. Core tools are shared ac
 | System Events | `get_default_trace_events`\*\*, `get_trace_analysis`\*\*, `get_memory_pressure_events` |
 | Health Parser | `get_health_parser_system_health`\*\*, `get_health_parser_severe_errors`\*\*, `get_health_parser_io_issues`\*\*, `get_health_parser_scheduler_issues`\*\*, `get_health_parser_memory_conditions`\*\*, `get_health_parser_cpu_tasks`\*\*, `get_health_parser_memory_broker`\*\*, `get_health_parser_memory_node_oom`\*\* |
 | Plan Analysis | `analyze_query_plan`, `analyze_procedure_plan`, `analyze_query_store_plan`, `analyze_plan_xml`, `get_plan_xml` |
-| Diagnostic Analysis | `analyze_server`\*, `get_analysis_facts`\*, `compare_analysis`\*, `audit_config`\*, `get_analysis_findings`\*, `mute_analysis_finding`\* |
+| Diagnostic Analysis | `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding` |
 
 \* Lite only | \*\* Full only
 
@@ -677,7 +683,7 @@ Use the RDS master user for installation. The master user has the necessary perm
 Monitor/
 │
 │   Full Edition (server-installed collectors + separate dashboard)
-├── install/          # 58 SQL installation scripts
+├── install/          # 59 SQL installation scripts
 ├── upgrades/         # Version-specific upgrade scripts
 ├── Installer/        # CLI installer for Full Edition database (C#)
 ├── Installer.Core/   # Shared installation library (CLI + Dashboard)
