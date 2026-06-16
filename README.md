@@ -56,7 +56,7 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 ## What You Get
 
-🔍 **32 specialized T-SQL collectors** running on configurable schedules with named presets (Off, Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments. Switch presets with a pair of SQL Agent jobs to get quiet-hours / overnight windows without writing any code.
+🔍 **33 specialized T-SQL collectors** running on configurable schedules with named presets (Off, Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments. Switch presets with a pair of SQL Agent jobs to get quiet-hours / overnight windows without writing any code.
 
 🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications, styled HTML emails with full XML attachments, and webhook notifications for external integrations
 
@@ -104,7 +104,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 
 ### Lite Collectors
 
-24 collectors run on independent, configurable schedules:
+25 collectors run on independent, configurable schedules:
 
 | Collector | Default | Source |
 |---|---|---|
@@ -128,6 +128,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | running_jobs | 5 min | `msdb` job history with duration vs avg/p95 |
 | database_size_stats | 15 min | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
 | server_properties | 15 min | `SERVERPROPERTY()` hardware and licensing metadata |
+| index_object_stats | Daily | `sys.dm_db_partition_stats` + `sys.dm_db_index_usage_stats` + `sys.dm_db_index_operational_stats` |
 | server_config | On connect | `sys.configurations` |
 | database_config | On connect | `sys.databases` |
 | database_scoped_config | On connect | Database-scoped configurations |
@@ -254,7 +255,7 @@ ORDER BY collection_time DESC;
 ### What Gets Installed
 
 - **PerformanceMonitor database** with collection tables and reporting views
-- **32 collector stored procedures** for gathering metrics (including SQL Agent job monitoring)
+- **33 collector stored procedures** for gathering metrics (including SQL Agent job monitoring)
 - **Configurable collection** — query text and execution plan capture can be disabled per-collector via `config.collection_schedule` (`collect_query`, `collect_plan` columns) for sensitive or high-volume environments
 - **Delta framework** for calculating per-second rates from cumulative DMVs
 - **Community dependencies:** sp_WhoIsActive, sp_HealthParser, sp_HumanEventsBlockViewer, sp_BlitzLock
@@ -369,7 +370,7 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history |
 | **Perfmon** | Selectable SQL Server performance counters over time |
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
-| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
+| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, per-object table/index size, growth, usage, and locking/contention analysis, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
 
 Both editions feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
 

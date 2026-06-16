@@ -40,7 +40,19 @@ SELECT
     server_name =
         CONVERT(nvarchar(128), SERVERPROPERTY(N'ServerName')),
     edition =
-        CONVERT(nvarchar(128), SERVERPROPERTY(N'Edition')),
+        /* Azure SQL DB reports the legacy 'SQL Azure' for SERVERPROPERTY('Edition');
+           store the actual product name + service tier instead. */
+        CASE
+            WHEN CONVERT(int, SERVERPROPERTY(N'EngineEdition')) = 5
+            THEN N'Azure SQL Database'
+                 + ISNULL(N' (' +
+                     CASE CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), N'Edition'))
+                         WHEN N'GeneralPurpose'   THEN N'General Purpose'
+                         WHEN N'BusinessCritical' THEN N'Business Critical'
+                         ELSE CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), N'Edition'))
+                     END + N')', N'')
+            ELSE CONVERT(nvarchar(128), SERVERPROPERTY(N'Edition'))
+        END,
     product_version =
         CONVERT(nvarchar(128), SERVERPROPERTY(N'ProductVersion')),
     product_level =

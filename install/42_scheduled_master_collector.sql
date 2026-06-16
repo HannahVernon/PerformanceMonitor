@@ -121,7 +121,20 @@ BEGIN
                 sql_version =
                     CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')) + N' - ' +
                     CONVERT(nvarchar(128), SERVERPROPERTY('ProductLevel')),
-                edition = CONVERT(nvarchar(128), SERVERPROPERTY('Edition')),
+                edition =
+                    /* Azure SQL DB reports the legacy 'SQL Azure' for SERVERPROPERTY('Edition');
+                       store the actual product name + service tier instead. */
+                    CASE
+                        WHEN CONVERT(int, SERVERPROPERTY('EngineEdition')) = 5
+                        THEN N'Azure SQL Database'
+                             + ISNULL(N' (' +
+                                 CASE CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Edition'))
+                                     WHEN N'GeneralPurpose'   THEN N'General Purpose'
+                                     WHEN N'BusinessCritical' THEN N'Business Critical'
+                                     ELSE CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Edition'))
+                                 END + N')', N'')
+                        ELSE CONVERT(nvarchar(128), SERVERPROPERTY('Edition'))
+                    END,
                 physical_memory_mb = osi.physical_memory_kb / 1024,
                 cpu_count = osi.cpu_count,
                 environment_type =
