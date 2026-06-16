@@ -98,7 +98,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
         /// <summary>
         /// Whether <c>config.remediation_action_log</c> exists on the monitoring
         /// server. When false, every target is hard-blocked at apply time (no
-        /// mutation) — the server is on pre-2.12.0 schema.
+        /// mutation) — the server is on pre-3.0.0 schema.
         /// </summary>
         public bool AuditTableExists { get; init; }
     }

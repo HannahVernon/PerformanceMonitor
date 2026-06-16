@@ -135,9 +135,9 @@ namespace PerformanceMonitorDashboard
             {
                 AuditAbsentBanner.Visibility = Visibility.Visible;
                 AuditAbsentText.Text =
-                    "This server is not on the 2.12.0 schema (config.remediation_action_log is absent). "
+                    "This server is not on the 3.0.0 schema (config.remediation_action_log is absent). "
                     + "Apply Fix is hard-blocked here — no change will be made. Upgrade this server to "
-                    + "2.12.0 to enable audited Apply Fix.";
+                    + "3.0.0 to enable audited Apply Fix.";
                 ConfirmButton.Content = request.IsUnapply ? "Un-apply" : "Apply";
                 _baseActionable = false;
                 ConfirmButton.ToolTip = AuditAbsentText.Text;
@@ -314,7 +314,7 @@ namespace PerformanceMonitorDashboard
                     RemediationDisposition.BlockQueryStoreOff => "Query Store is not READ_WRITE — cannot force.",
                     RemediationDisposition.BlockNoAlter => "Monitoring login lacks ALTER — will fail closed (no change).",
                     RemediationDisposition.BlockWrongDatabase => "Connected DB does not match the target — will not proceed.",
-                    RemediationDisposition.BlockAuditTableAbsent => "Audit table absent (pre-2.12.0) — hard-blocked.",
+                    RemediationDisposition.BlockAuditTableAbsent => "Audit table absent (pre-3.0.0) — hard-blocked.",
                     RemediationDisposition.AlreadyInDesiredState => "Already in the desired state — will be skipped.",
                     RemediationDisposition.BlockDatabaseNotFound => "Database not found on the server — will not proceed.",
                     _ => t.DispositionMessage ?? "Unable to determine target state."

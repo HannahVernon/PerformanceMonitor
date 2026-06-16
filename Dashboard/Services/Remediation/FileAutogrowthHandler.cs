@@ -255,7 +255,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
             action.FileGrowthTargets ?? Array.Empty<FileGrowthTarget>();
 
         private const string AuditAbsentMessage =
-            "This server is not on the 2.12.0 schema (config.remediation_action_log is absent). " +
-            "Upgrade this server to 2.12.0 to enable audited Apply Fix; no change was made.";
+            "This server is not on the 3.0.0 schema (config.remediation_action_log is absent). " +
+            "Upgrade this server to 3.0.0 to enable audited Apply Fix; no change was made.";
     }
 }

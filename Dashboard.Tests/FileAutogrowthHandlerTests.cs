@@ -92,7 +92,7 @@ public class FileAutogrowthHandlerTests
         {
             Assert.Equal(RemediationStatus.Blocked, o.Status);
             Assert.False(o.AuditWritten);
-            Assert.Contains("2.12.0", o.Message);
+            Assert.Contains("3.0.0", o.Message);
         });
         Assert.Equal(0, exec.SetFileCalls);          // NOT mutated
         Assert.Empty(exec.AuditRecords);             // nowhere to write

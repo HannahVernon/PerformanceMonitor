@@ -139,7 +139,7 @@ namespace PerformanceMonitorDashboard.Services.Remediation
 
         public IReadOnlyList<RemediationConfirmTarget> Targets { get; init; } = new List<RemediationConfirmTarget>();
 
-        /// <summary>False when the target server is pre-2.12.0 schema — apply will hard-block.</summary>
+        /// <summary>False when the target server is pre-3.0.0 schema — apply will hard-block.</summary>
         public bool AuditTableExists { get; init; }
 
         /// <summary>
