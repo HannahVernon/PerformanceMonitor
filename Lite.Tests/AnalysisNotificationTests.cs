@@ -84,6 +84,84 @@ public class AnalysisNotificationTests : IDisposable
         };
     }
 
+    /* ── #1140: finding-path dedup incidents (BuildContext derives them from the drill-down) ── */
+
+    [Fact]
+    public void BuildContext_DeadlockDrillDown_EmitsObjectSetIncident()
+    {
+        var finding = MakeFinding("dlfp000000000001", category: "deadlocks", rootFactKey: "DEADLOCKS",
+            drillDown: new Dictionary<string, object>
+            {
+                ["top_deadlocks"] = new List<object>
+                {
+                    new { time = "t1", victim_sql = "x", objects = "SalesDB.dbo.Orders, SalesDB.dbo.LineItems" },
+                    new { time = "t2", victim_sql = "y", objects = "SalesDB.dbo.LineItems, SalesDB.dbo.Orders" } // same set, swapped order
+                }
+            });
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        Assert.NotNull(context.Incidents);
+        var incident = Assert.Single(context.Incidents!);
+        Assert.Equal(new[] { "SalesDB.dbo.LineItems", "SalesDB.dbo.Orders" }, incident.InvolvedObjects);
+        Assert.Equal(2, incident.OccurrenceCount);
+        Assert.Contains(context.Details, d => d.Fields.Any(f => f.Label == "Dedup Key" && f.Value == incident.DedupKey));
+    }
+
+    [Fact]
+    public void BuildContext_BlockingDrillDown_EmitsContentiousObjectIncident()
+    {
+        var finding = MakeFinding("blfp000000000001", category: "blocking_events", rootFactKey: "BLOCKING_EVENTS",
+            drillDown: new Dictionary<string, object>
+            {
+                ["top_blocking_chains"] = new List<object>
+                {
+                    new { database = "DB", contentious_object = "DB.dbo.Orders", blocked_sql = "a", blocking_sql = "b", wait_time_ms = 5000L },
+                    new { database = "DB", contentious_object = "DB.dbo.Orders", blocked_sql = "c", blocking_sql = "d", wait_time_ms = 9000L }
+                }
+            });
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        var incident = Assert.Single(context.Incidents!);
+        Assert.Equal(new[] { "DB.dbo.Orders" }, incident.InvolvedObjects);
+        Assert.Equal(2, incident.OccurrenceCount);
+    }
+
+    [Fact]
+    public void BuildContext_CpuDrillDown_EmitsDistinctQueryHashIncidents()
+    {
+        var finding = MakeFinding("cpufp00000000001", rootFactKey: "CPU_SPIKE",
+            drillDown: new Dictionary<string, object>
+            {
+                ["top_cpu_queries"] = new List<object>
+                {
+                    new { database = "DB", query_hash = "0xAAA", total_cpu_ms = 1L },
+                    new { database = "DB", query_hash = "0xAAA", total_cpu_ms = 2L }, // duplicate hash -> one incident
+                    new { database = "DB", query_hash = "0xBBB", total_cpu_ms = 3L }
+                }
+            });
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        Assert.NotNull(context.Incidents);
+        Assert.Equal(2, context.Incidents!.Count); // one per distinct query_hash
+    }
+
+    [Fact]
+    public void BuildContext_NoFingerprintableDrillDown_LeavesIncidentsNull()
+    {
+        var finding = MakeFinding("nonefp0000000001",
+            drillDown: new Dictionary<string, object>
+            {
+                ["some_metric"] = new List<object> { new { foo = "bar", count = 3 } }
+            });
+
+        var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
+
+        Assert.Null(context.Incidents);
+    }
+
     /* ── FindingMessageFormatter ── */
 
     [Fact]
@@ -139,8 +217,9 @@ public class AnalysisNotificationTests : IDisposable
 
         var context = FindingMessageFormatter.BuildContext(finding, notifyThreshold: 1.5);
 
-        // Details[0] = Diagnosis, [1] = Advice (CPU_SPIKE has an advice block), then the two drill-downs.
-        Assert.Equal(4, context.Details.Count);
+        // Details[0] = Diagnosis, [1] = Advice (CPU_SPIKE has an advice block), then the two drill-downs,
+        // then (#1140) one appended incident detail per distinct query_hash in the drill-down.
+        Assert.Equal(6, context.Details.Count);
         Assert.Equal("Diagnosis", context.Details[0].Heading);
         Assert.NotNull(context.Details[1].Body);
         Assert.False(context.Details[1].IsCodeBlock);
@@ -150,6 +229,10 @@ public class AnalysisNotificationTests : IDisposable
 
         var peak = context.Details.Single(d => d.Heading == "Spike Peak");
         Assert.Contains(peak.Fields, f => f.Label == "Cpu Percent" && f.Value == "99");
+
+        // #1140: the two distinct query_hash values became dedup incidents on the finding path.
+        Assert.NotNull(context.Incidents);
+        Assert.Equal(2, context.Incidents!.Count);
     }
 
     [Fact]

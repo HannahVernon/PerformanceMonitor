@@ -10,6 +10,7 @@ using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorLite.Analysis;
 
@@ -141,7 +142,8 @@ public class DrillDownCollector
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
 SELECT collection_time, deadlock_time, victim_process_id,
-       LEFT(victim_sql_text, 500) AS victim_sql
+       LEFT(victim_sql_text, 500) AS victim_sql,
+       deadlock_graph_xml
 FROM v_deadlocks
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
 ORDER BY collection_time DESC
@@ -155,12 +157,16 @@ LIMIT 3";
         using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
+            /* #1140: parse the involved objects from the graph for the dedup fingerprint + a readable
+               Objects field. The raw graph XML is NOT surfaced (it would bloat the alert detail). */
+            var objects = DeadlockObjectExtractor.FromGraphXml(reader.IsDBNull(4) ? null : reader.GetString(4));
             items.Add(new
             {
                 time = reader.IsDBNull(0) ? "" : reader.GetDateTime(0).ToString("o"),
                 deadlock_time = reader.IsDBNull(1) ? "" : reader.GetDateTime(1).ToString("o"),
                 victim = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                victim_sql = reader.IsDBNull(3) ? "" : reader.GetString(3)
+                victim_sql = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                objects = string.Join(", ", objects)
             });
         }
 
@@ -179,7 +185,8 @@ LIMIT 3";
 SELECT collection_time, database_name, blocked_spid, blocking_spid,
        wait_time_ms, lock_mode,
        LEFT(blocked_sql_text, 500) AS blocked_sql,
-       LEFT(blocking_sql_text, 500) AS blocking_sql
+       LEFT(blocking_sql_text, 500) AS blocking_sql,
+       contentious_object
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
 ORDER BY wait_time_ms DESC
@@ -202,7 +209,8 @@ LIMIT 5";
                 wait_time_ms = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4)),
                 lock_mode = reader.IsDBNull(5) ? "" : reader.GetString(5),
                 blocked_sql = reader.IsDBNull(6) ? "" : reader.GetString(6),
-                blocking_sql = reader.IsDBNull(7) ? "" : reader.GetString(7)
+                blocking_sql = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                contentious_object = reader.IsDBNull(8) ? "" : reader.GetString(8)
             });
         }
 

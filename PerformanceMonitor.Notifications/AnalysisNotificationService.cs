@@ -430,8 +430,112 @@ internal static class FindingMessageFormatter
             }
         }
 
+        /* #1140: derive dedup incidents from the drill-down so this (secondary, anomaly) alert path
+           carries the SAME fingerprints as the live "Detected" path. Deadlock -> involved-object set,
+           blocking -> contentious object / query pair, query/CPU -> query_hash. Appended after the
+           detail items, so the existing Diagnosis->Advice->drill-down order is preserved. */
+        AlertIncidentRenderer.Apply(context, BuildIncidents(finding));
+
         return context;
     }
+
+    /// <summary>
+    /// #1140: derives the dedup incidents for the anomaly-finding alert path from the finding's
+    /// drill-down, reusing the same shared groupers/fingerprint as the live builders so a deadlock,
+    /// blocking chain, or long-running query produces an identical key on either path. Returns an
+    /// empty list when the drill-down carries no fingerprintable identity.
+    /// </summary>
+    private static List<AlertIncident> BuildIncidents(AnalysisFinding finding)
+    {
+        var result = new List<AlertIncident>();
+        if (finding.DrillDown is not { Count: > 0 })
+            return result;
+
+        var server = finding.ServerName ?? string.Empty;
+
+        if (TryGetRows(finding.DrillDown, "top_deadlocks", out var deadlockRows))
+        {
+            var events = deadlockRows.Select(r =>
+                new DeadlockIncidentGrouper.DeadlockEvent(SplitObjects(GetField(r, "objects"))));
+            result.AddRange(DeadlockIncidentGrouper.Group(server, events).Select(g => g.Incident));
+            return result;
+        }
+
+        if (TryGetRows(finding.DrillDown, "top_blocking_chains", out var blockingRows))
+        {
+            var events = blockingRows.Select(r => new BlockingIncidentGrouper.BlockedEvent(
+                GetField(r, "database"), GetField(r, "contentious_object"),
+                GetField(r, "blocked_sql"), GetField(r, "blocking_sql"), GetLongField(r, "wait_time_ms")));
+            result.AddRange(BlockingIncidentGrouper.Group(server, events).Select(g => g.Incident));
+            return result;
+        }
+
+        /* Query / CPU findings: one incident per distinct query_hash across any drill-down section. */
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (_, value) in finding.DrillDown)
+        {
+            if (value is null)
+                continue;
+            foreach (var row in AsRows(value))
+            {
+                var queryHash = GetField(row, "query_hash");
+                if (string.IsNullOrEmpty(queryHash) || !seen.Add(queryHash))
+                    continue;
+                var db = GetField(row, "database");
+                var incident = AlertFingerprint.ForKey(server, AlertFingerprint.Query, queryHash,
+                    string.IsNullOrEmpty(db) ? System.Array.Empty<string>() : new[] { db });
+                if (incident is not null)
+                    result.Add(incident);
+            }
+        }
+        return result;
+    }
+
+    private static bool TryGetRows(Dictionary<string, object> drillDown, string key, out List<JsonElement> rows)
+    {
+        rows = (drillDown.TryGetValue(key, out var value) && value is not null)
+            ? AsRows(value)
+            : new List<JsonElement>();
+        return rows.Count > 0;
+    }
+
+    /// <summary>Round-trips a drill-down value (anonymous object or List&lt;object&gt;) through JSON and
+    /// returns its object rows — the same robust shape-walk <see cref="FlattenInto"/> relies on.</summary>
+    private static List<JsonElement> AsRows(object value)
+    {
+        var rows = new List<JsonElement>();
+        try
+        {
+            var element = JsonSerializer.SerializeToElement(value);
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray())
+                    if (item.ValueKind == JsonValueKind.Object)
+                        rows.Add(item);
+            }
+            else if (element.ValueKind == JsonValueKind.Object)
+            {
+                rows.Add(element);
+            }
+        }
+        catch { /* unexpected shape -> no rows */ }
+        return rows;
+    }
+
+    private static string GetField(JsonElement row, string name) =>
+        row.ValueKind == JsonValueKind.Object && row.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String
+            ? p.GetString() ?? string.Empty
+            : string.Empty;
+
+    private static long GetLongField(JsonElement row, string name) =>
+        row.ValueKind == JsonValueKind.Object && row.TryGetProperty(name, out var p)
+            && p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var v)
+            ? v : 0L;
+
+    private static string[] SplitObjects(string joined) =>
+        string.IsNullOrWhiteSpace(joined)
+            ? System.Array.Empty<string>()
+            : joined.Split(", ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     /// <summary>
     /// Renders the two-sided <see cref="RiskDisclosure"/> as read-only prose for the

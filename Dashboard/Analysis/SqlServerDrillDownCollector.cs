@@ -10,6 +10,7 @@ using PerformanceMonitorDashboard.Mcp;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorDashboard.Analysis;
 
@@ -163,7 +164,8 @@ SELECT TOP 3
     collection_time,
     event_date,
     spid,
-    LEFT(CAST(query AS NVARCHAR(MAX)), 500) AS victim_sql
+    LEFT(CAST(query AS NVARCHAR(MAX)), 500) AS victim_sql,
+    CAST(deadlock_graph AS NVARCHAR(MAX)) AS deadlock_graph
 FROM collect.deadlocks
 WHERE collection_time >= @startTime AND collection_time <= @endTime
 ORDER BY collection_time DESC;";
@@ -175,12 +177,16 @@ ORDER BY collection_time DESC;";
         using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
+            /* #1140: parse the involved objects from the graph for the dedup fingerprint + a readable
+               Objects field. The raw graph XML is NOT surfaced (it would bloat the alert detail). */
+            var objects = DeadlockObjectExtractor.FromGraphXml(reader.IsDBNull(4) ? null : reader.GetString(4));
             items.Add(new
             {
                 time = reader.IsDBNull(0) ? "" : reader.GetDateTime(0).ToString("o"),
                 deadlock_time = reader.IsDBNull(1) ? "" : reader.GetDateTime(1).ToString("o"),
                 victim = reader.IsDBNull(2) ? "" : reader.GetValue(2).ToString(),
-                victim_sql = reader.IsDBNull(3) ? "" : reader.GetString(3)
+                victim_sql = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                objects = string.Join(", ", objects)
             });
         }
 
@@ -205,7 +211,8 @@ SELECT TOP 5
     wait_time_ms,
     lock_mode,
     LEFT(CAST(query_text AS NVARCHAR(MAX)), 500) AS blocked_sql,
-    LEFT(blocking_tree, 500) AS blocking_sql
+    LEFT(blocking_tree, 500) AS blocking_sql,
+    contentious_object
 FROM collect.blocking_BlockedProcessReport
 WHERE collection_time >= @startTime AND collection_time <= @endTime
 ORDER BY wait_time_ms DESC;";
@@ -226,7 +233,8 @@ ORDER BY wait_time_ms DESC;";
                 wait_time_ms = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4)),
                 lock_mode = reader.IsDBNull(5) ? "" : reader.GetString(5),
                 blocked_sql = reader.IsDBNull(6) ? "" : reader.GetString(6),
-                blocking_sql = reader.IsDBNull(7) ? "" : reader.GetString(7)
+                blocking_sql = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                contentious_object = reader.IsDBNull(8) ? "" : reader.GetString(8)
             });
         }
 
