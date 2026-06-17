@@ -1876,7 +1876,7 @@ public partial class MainWindow : Window
                                 _muteRuleService);
                         }
 
-                        var lrqContext = BuildLongRunningQueryContext(longRunning);
+                        var lrqContext = BuildLongRunningQueryContext(summary.DisplayName, longRunning);
                         var detailText = ContextToDetailText(lrqContext);
 
                         await _emailAlertService.TrySendAlertEmailAsync(
@@ -2270,12 +2270,12 @@ public partial class MainWindow : Window
 
                 /* #1140/#1141: collapse samples of the same chain into one group (true occurrence count
                    + wait range) instead of listing it once per sample, and attach the dedup fingerprint.
-                   ContentiousObject is null until Lite's blocked-process collector resolves it (plan
-                   §5.3), so identity currently falls back to database + literal-stripped query pair. */
+                   Identity is the resolved contentious object (collected server-side, §5.3), falling back
+                   to database + literal-stripped query pair only when the object did not resolve. */
                 var groups = BlockingIncidentGrouper.Group(
                     serverName,
                     events.Select(e => new BlockingIncidentGrouper.BlockedEvent(
-                        e.DatabaseName, null, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs)));
+                        e.DatabaseName, e.ContentiousObject, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs)));
 
                 const int maxGroups = 10;
                 var shown = groups.Take(maxGroups).ToList();
@@ -2427,12 +2427,13 @@ public partial class MainWindow : Window
             return context;
         }
 
-        private static AlertContext? BuildLongRunningQueryContext(List<LongRunningQueryInfo> queries)
+        private static AlertContext? BuildLongRunningQueryContext(string serverName, List<LongRunningQueryInfo> queries)
         {
             if (queries.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var q in queries.GetRange(0, Math.Min(3, queries.Count)))
+            var shown = queries.GetRange(0, Math.Min(3, queries.Count));
+            foreach (var q in shown)
             {
                 var item = new AlertDetailItem
                 {
@@ -2454,6 +2455,12 @@ public partial class MainWindow : Window
 
                 context.Details.Add(item);
             }
+
+            /* #1140: dedup key = query_hash (stable across literals/plans). Null hash -> no incident. */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(q => AlertFingerprint.ForKey(serverName, AlertFingerprint.Query, q.QueryHash ?? "",
+                    string.IsNullOrEmpty(q.DatabaseName) ? System.Array.Empty<string>() : new[] { q.DatabaseName }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 

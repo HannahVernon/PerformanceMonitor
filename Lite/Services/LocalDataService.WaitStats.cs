@@ -468,7 +468,8 @@ LIMIT 2000";
                     r.reads,
                     r.writes,
                     r.wait_type,
-                    r.blocking_session_id
+                    r.blocking_session_id,
+                    r.query_hash
                 FROM v_query_snapshots AS r
                 WHERE r.server_id = $1
                     AND r.collection_time = (SELECT MAX(vqs.collection_time) FROM v_query_snapshots AS vqs WHERE vqs.server_id = $1)
@@ -501,7 +502,8 @@ LIMIT 2000";
                 Reads = reader.IsDBNull(5) ? 0 : reader.GetInt64(5),
                 Writes = reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
                 WaitType = reader.IsDBNull(7) ? null : reader.GetString(7),
-                BlockingSessionId = reader.IsDBNull(8) ? null : (int?)reader.GetInt32(8)
+                BlockingSessionId = reader.IsDBNull(8) ? null : (int?)reader.GetInt32(8),
+                QueryHash = reader.IsDBNull(9) ? null : reader.GetString(9)
             });
         }
 
@@ -521,6 +523,7 @@ public class LongRunningQueryInfo
     public long Writes { get; set; }
     public string? WaitType { get; set; }
     public int? BlockingSessionId { get; set; }
+    public string? QueryHash { get; set; }
 }
 
 public class PoisonWaitDelta
