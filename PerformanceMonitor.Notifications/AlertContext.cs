@@ -31,7 +31,28 @@ public class AlertContext
     /// JSON projection (<see cref="AlertContextSerializer"/>) need not carry it.
     /// </summary>
     public AlertSeverityLevel? SeverityOverride { get; set; }
+
+    /// <summary>
+    /// One entry per distinct grouped incident this alert covers (#1140). Carries the stable
+    /// dedup fingerprint + human-readable involved objects that downstream automation uses to
+    /// collapse recurrences of the same incident. <c>null</c>/empty = no fingerprintable incident
+    /// (alert type not wired, or no objects resolvable). Persisted in the alert-history context JSON.
+    /// </summary>
+    public List<AlertIncident>? Incidents { get; set; }
 }
+
+/// <summary>
+/// A single dedup-able incident within an alert (#1140): a stable fingerprint, the fully-qualified
+/// objects it involves (human-readable, for the ticket body), the grouped occurrence count, and an
+/// optional display-only wait range. Volatile per-sample fields (wait time, durations, SPIDs) are
+/// never part of <see cref="DedupKey"/> — only the identity members hashed by
+/// <see cref="AlertFingerprint"/>.
+/// </summary>
+public sealed record AlertIncident(
+    string DedupKey,
+    IReadOnlyList<string> InvolvedObjects,
+    int OccurrenceCount = 1,
+    string? WaitRange = null);
 
 /// <summary>
 /// A single detail item (e.g., one blocking chain or one deadlock participant).
@@ -75,9 +96,16 @@ public class AlertDetailItem
 /// <see cref="AlertContext.AttachmentXml"/>/<see cref="AlertContext.AttachmentFileName"/>
 /// are deliberately not persisted (the dialog has no attachment surface).
 /// </summary>
-public record AlertContextDto(List<AlertDetailItemDto> Details);
+public record AlertContextDto(List<AlertDetailItemDto> Details, List<AlertIncidentDto>? Incidents = null);
 public record AlertDetailItemDto(string Heading, List<FieldDto> Fields, string? Body, bool IsCodeBlock, RemediationActionDto? Remediation = null);
 public record FieldDto(string Label, string Value);
+
+/// <summary>
+/// JSON mirror of <see cref="AlertIncident"/> (#1140). The trailing optional <c>Incidents</c>
+/// member on <see cref="AlertContextDto"/> keeps the round-trip backward-compatible: legacy
+/// contextJson written before this field existed deserializes <c>Incidents</c> to null.
+/// </summary>
+public record AlertIncidentDto(string DedupKey, List<string> InvolvedObjects, int OccurrenceCount = 1, string? WaitRange = null);
 
 /// <summary>
 /// JSON mirror of <see cref="RemediationAction"/> / <see cref="ForcePlanTarget"/>
@@ -228,7 +256,12 @@ public static class AlertContextSerializer
                 d.Fields.ConvertAll(f => new FieldDto(f.Label, f.Value)),
                 d.Body,
                 d.IsCodeBlock,
-                ToDto(d.Remediation))));
+                ToDto(d.Remediation))),
+            context.Incidents?.ConvertAll(i => new AlertIncidentDto(
+                i.DedupKey,
+                new List<string>(i.InvolvedObjects),
+                i.OccurrenceCount,
+                i.WaitRange)));
         return JsonSerializer.Serialize(dto);
     }
 
@@ -295,6 +328,21 @@ public static class AlertContextSerializer
                         item.Fields.Add((f.Label, f.Value));
                 }
                 context.Details.Add(item);
+            }
+
+            /* #1140: rehydrate the dedup incidents. Legacy contextJson without the field leaves
+               dto.Incidents null -> context.Incidents stays null (backward-compatible). */
+            if (dto.Incidents is { Count: > 0 })
+            {
+                context.Incidents = new List<AlertIncident>(dto.Incidents.Count);
+                foreach (var i in dto.Incidents)
+                {
+                    context.Incidents.Add(new AlertIncident(
+                        i.DedupKey ?? string.Empty,
+                        i.InvolvedObjects ?? new List<string>(),
+                        i.OccurrenceCount,
+                        i.WaitRange));
+                }
             }
             return true;
         }

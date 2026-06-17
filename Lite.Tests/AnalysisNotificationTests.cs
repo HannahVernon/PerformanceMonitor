@@ -306,6 +306,38 @@ public class AnalysisNotificationTests : IDisposable
         Assert.Contains("sp_query_store_force_plan", tsql.Body);
     }
 
+    [Fact]
+    public void AlertContext_RoundTripsIncidents_AndLegacyJsonHasNullIncidents()
+    {
+        // #1140: the dedup incidents must survive the context_json round-trip (so the alert-history
+        // UI / MCP can show the key), and legacy contextJson written before the field existed must
+        // still deserialize with Incidents == null.
+        var context = new AlertContext
+        {
+            Incidents = new List<AlertIncident>
+            {
+                new("abc123", new[] { "SalesDB.dbo.Orders", "SalesDB.dbo.LineItems" }, OccurrenceCount: 8, WaitRange: "80.8-90.8 s"),
+                new("def456", new[] { "SalesDB.dbo.Inventory" })
+            }
+        };
+
+        var json = AlertContextSerializer.Serialize(context);
+        Assert.True(AlertContextSerializer.TryDeserialize(json, out var restored));
+
+        Assert.NotNull(restored.Incidents);
+        Assert.Equal(2, restored.Incidents!.Count);
+        Assert.Equal("abc123", restored.Incidents[0].DedupKey);
+        Assert.Equal(new[] { "SalesDB.dbo.Orders", "SalesDB.dbo.LineItems" }, restored.Incidents[0].InvolvedObjects);
+        Assert.Equal(8, restored.Incidents[0].OccurrenceCount);
+        Assert.Equal("80.8-90.8 s", restored.Incidents[0].WaitRange);
+        Assert.Equal("def456", restored.Incidents[1].DedupKey);
+        Assert.Equal(1, restored.Incidents[1].OccurrenceCount);
+
+        // Backward-compat: legacy contextJson written before #1140 has no "Incidents" property.
+        Assert.True(AlertContextSerializer.TryDeserialize("{\"Details\":[]}", out var legacy));
+        Assert.Null(legacy.Incidents);
+    }
+
     /* ── AnalysisNotificationService: severity filter + cooldown ── */
     /* TrySendAlertEmailAsync writes one config_alert_log row per call (regardless of
        whether a channel is configured), so the row count is an observable proxy for
