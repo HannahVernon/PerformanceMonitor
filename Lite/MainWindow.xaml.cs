@@ -1665,7 +1665,7 @@ public partial class MainWindow : Window
                     _muteRuleService);
             }
 
-            var blockingContext = await BuildBlockingContextAsync(summary.ServerId);
+            var blockingContext = await BuildBlockingContextAsync(summary.ServerId, summary.DisplayName);
             var detailText = ContextToDetailText(blockingContext);
 
             await _emailAlertService.TrySendAlertEmailAsync(
@@ -1736,7 +1736,7 @@ public partial class MainWindow : Window
                     _muteRuleService);
             }
 
-            var deadlockContext = await BuildDeadlockContextAsync(summary.ServerId);
+            var deadlockContext = await BuildDeadlockContextAsync(summary.ServerId, summary.DisplayName);
             var detailText = ContextToDetailText(deadlockContext);
 
             await _emailAlertService.TrySendAlertEmailAsync(
@@ -2012,7 +2012,7 @@ public partial class MainWindow : Window
                                 _muteRuleService);
                         }
 
-                        var lowDiskContext = BuildVolumeFreeSpaceContext(breached);
+                        var lowDiskContext = BuildVolumeFreeSpaceContext(summary.DisplayName, breached);
                         /* #1136: grade the alert — WARNING normally, CRITICAL when the worst volume is
                            critically low — so the email/webhook badge reflects how dire the breach is.
                            (lowDiskContext is non-null here — breached.Count > 0 — but typed nullable.) */
@@ -2097,7 +2097,7 @@ public partial class MainWindow : Window
                                 _muteRuleService);
                         }
 
-                        var jobContext = BuildAnomalousJobContext(anomalousJobs);
+                        var jobContext = BuildAnomalousJobContext(summary.DisplayName, anomalousJobs);
                         var detailText = ContextToDetailText(jobContext);
 
                         await _emailAlertService.TrySendAlertEmailAsync(
@@ -2249,7 +2249,7 @@ public partial class MainWindow : Window
             return sb.ToString().TrimEnd();
         }
 
-        private async Task<AlertContext?> BuildBlockingContextAsync(int serverId)
+        private async Task<AlertContext?> BuildBlockingContextAsync(int serverId, string serverName)
         {
             try
             {
@@ -2268,39 +2268,56 @@ public partial class MainWindow : Window
                     if (events.Count == 0) return null;
                 }
 
-                var context = new AlertContext();
-                var firstXml = (string?)null;
+                /* #1140/#1141: collapse samples of the same chain into one group (true occurrence count
+                   + wait range) instead of listing it once per sample, and attach the dedup fingerprint.
+                   ContentiousObject is null until Lite's blocked-process collector resolves it (plan
+                   §5.3), so identity currently falls back to database + literal-stripped query pair. */
+                var groups = BlockingIncidentGrouper.Group(
+                    serverName,
+                    events.Select(e => new BlockingIncidentGrouper.BlockedEvent(
+                        e.DatabaseName, null, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs)));
 
-                foreach (var e in events.Take(3))
+                const int maxGroups = 10;
+                var shown = groups.Take(maxGroups).ToList();
+
+                var context = new AlertContext();
+                foreach (var g in shown)
                 {
                     var item = new AlertDetailItem
                     {
-                        Heading = $"Blocked #{e.BlockedSpid} by #{e.BlockingSpid}",
+                        Heading = g.OccurrenceCount > 1 ? $"Blocking chain (x{g.OccurrenceCount})" : "Blocking chain",
                         Fields = new()
                     };
-
-                    if (!string.IsNullOrEmpty(e.DatabaseName))
-                        item.Fields.Add(("Database", e.DatabaseName));
-                    if (!string.IsNullOrEmpty(e.BlockedSqlText))
-                        item.Fields.Add(("Blocked Query", TruncateText(e.BlockedSqlText)));
-                    if (!string.IsNullOrEmpty(e.BlockingSqlText))
-                        item.Fields.Add(("Blocking Query", TruncateText(e.BlockingSqlText)));
-                    item.Fields.Add(("Wait Time", e.WaitTimeFormatted));
-                    if (!string.IsNullOrEmpty(e.LockMode))
-                        item.Fields.Add(("Lock Mode", e.LockMode));
-
+                    if (!string.IsNullOrEmpty(g.Database))
+                        item.Fields.Add(("Database", g.Database));
+                    if (!string.IsNullOrEmpty(g.BlockedQuery))
+                        item.Fields.Add(("Blocked Query", TruncateText(g.BlockedQuery)));
+                    if (!string.IsNullOrEmpty(g.BlockingQuery))
+                        item.Fields.Add(("Blocking Query", TruncateText(g.BlockingQuery)));
+                    item.Fields.Add(("Wait Range", g.Incident.WaitRange ?? g.MaxWaitMs.ToString()));
                     context.Details.Add(item);
-                    if (firstXml == null && e.HasReportXml)
-                        firstXml = e.BlockedProcessReportXml;
                 }
 
+                /* Surface the true total instead of silently dropping (gotqn's report). */
+                if (groups.Count > maxGroups)
+                {
+                    context.Details.Add(new AlertDetailItem
+                    {
+                        Heading = $"+{groups.Count - maxGroups} more distinct blocking incident(s)",
+                        Fields = new()
+                    });
+                }
+
+                var firstXml = events.FirstOrDefault(e => e.HasReportXml)?.BlockedProcessReportXml;
                 if (!string.IsNullOrEmpty(firstXml))
                 {
                     context.AttachmentXml = firstXml;
                     context.AttachmentFileName = "blocked_process_report.xml";
                 }
 
-                return context;
+                AlertIncidentRenderer.Apply(context, shown.Select(g => g.Incident).ToList());
+
+                return context.Details.Count == 0 ? null : context;
             }
             catch (Exception ex)
             {
@@ -2309,7 +2326,7 @@ public partial class MainWindow : Window
             }
         }
 
-        private async Task<AlertContext?> BuildDeadlockContextAsync(int serverId)
+        private async Task<AlertContext?> BuildDeadlockContextAsync(int serverId, string serverName)
         {
             try
             {
@@ -2352,6 +2369,15 @@ public partial class MainWindow : Window
                     context.AttachmentXml = firstGraph;
                     context.AttachmentFileName = "deadlock_graph.xml";
                 }
+
+                /* #1140: fingerprint each deadlock by its sorted involved-object set (parsed from the
+                   graph), across ALL deadlocks in the window — not just the 3 displayed — grouped so
+                   recurrences over the same objects collapse to one incident with a count. */
+                var groups = DeadlockIncidentGrouper.Group(
+                    serverName,
+                    deadlocks.Select(d => new DeadlockIncidentGrouper.DeadlockEvent(
+                        DeadlockObjectExtractor.FromGraphXml(d.DeadlockGraphXml))));
+                AlertIncidentRenderer.Apply(context, groups.Select(g => g.Incident).ToList());
 
                 return context;
             }
@@ -2451,12 +2477,13 @@ public partial class MainWindow : Window
             return parts.Count > 0 ? string.Join(" / ", parts) : "—";
         }
 
-        private static AlertContext? BuildVolumeFreeSpaceContext(List<VolumeFreeSpaceInfo> volumes)
+        private static AlertContext? BuildVolumeFreeSpaceContext(string serverName, List<VolumeFreeSpaceInfo> volumes)
         {
             if (volumes.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var v in volumes.GetRange(0, Math.Min(5, volumes.Count)))
+            var shown = volumes.GetRange(0, Math.Min(5, volumes.Count));
+            foreach (var v in shown)
             {
                 context.Details.Add(new AlertDetailItem
                 {
@@ -2469,6 +2496,11 @@ public partial class MainWindow : Window
                     }
                 });
             }
+
+            /* #1140: dedup key per volume (the drive/mount point). */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(v => AlertFingerprint.ForKey(serverName, AlertFingerprint.Disk, v.MountPoint, new[] { v.MountPoint }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 
@@ -2493,12 +2525,13 @@ public partial class MainWindow : Window
             return context;
         }
 
-        private static AlertContext? BuildAnomalousJobContext(List<AnomalousJobInfo> jobs)
+        private static AlertContext? BuildAnomalousJobContext(string serverName, List<AnomalousJobInfo> jobs)
         {
             if (jobs.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var j in jobs.GetRange(0, Math.Min(3, jobs.Count)))
+            var shown = jobs.GetRange(0, Math.Min(3, jobs.Count));
+            foreach (var j in shown)
             {
                 context.Details.Add(new AlertDetailItem
                 {
@@ -2513,6 +2546,11 @@ public partial class MainWindow : Window
                     }
                 });
             }
+
+            /* #1140: dedup key per job (job name, scoped to the instance via serverName). */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(j => AlertFingerprint.ForKey(serverName, AlertFingerprint.Job, j.JobName, new[] { j.JobName }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 
