@@ -2013,6 +2013,13 @@ public partial class MainWindow : Window
                         }
 
                         var lowDiskContext = BuildVolumeFreeSpaceContext(breached);
+                        /* #1136: grade the alert — WARNING normally, CRITICAL when the worst volume is
+                           critically low — so the email/webhook badge reflects how dire the breach is.
+                           (lowDiskContext is non-null here — breached.Count > 0 — but typed nullable.) */
+                        if (lowDiskContext is not null && LowDiskAlertGate.IsCriticallyLow(worst.FreePercent, worst.FreeGb))
+                        {
+                            lowDiskContext.SeverityOverride = AlertSeverityLevel.Critical;
+                        }
                         var detailText = ContextToDetailText(lowDiskContext);
 
                         await _emailAlertService.TrySendAlertEmailAsync(

@@ -21,6 +21,16 @@ public class AlertContext
     public List<AlertDetailItem> Details { get; set; } = new();
     public string? AttachmentXml { get; set; }
     public string? AttachmentFileName { get; set; }
+
+    /// <summary>
+    /// Forces the rendered severity tier (email badge/color, Teams/Slack accent) regardless of
+    /// metric name, for metrics graded at runtime — low-disk fires WARNING normally and CRITICAL
+    /// when critically low (#1136). <c>null</c> = use the per-metric <see cref="AlertSeverity"/>
+    /// map. Deliberately not persisted (like <see cref="AttachmentXml"/>): it drives the live
+    /// email/webhook render only, and the alert-history UI does not re-derive severity, so the
+    /// JSON projection (<see cref="AlertContextSerializer"/>) need not carry it.
+    /// </summary>
+    public AlertSeverityLevel? SeverityOverride { get; set; }
 }
 
 /// <summary>

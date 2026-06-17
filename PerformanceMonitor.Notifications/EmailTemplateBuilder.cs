@@ -35,7 +35,7 @@ internal static class EmailTemplateBuilder
     {
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
-        var (accentColor, badgeText, _) = AlertSeverity.ForMetric(metricName);
+        var (accentColor, badgeText, _) = AlertSeverity.ForMetric(metricName, context?.SeverityOverride);
 
         var html = BuildHtmlBody(metricName, serverName, currentValue,
             thresholdValue, utcNow, localNow, accentColor, badgeText, branding, context: context, emailCooldownMinutes: emailCooldownMinutes);

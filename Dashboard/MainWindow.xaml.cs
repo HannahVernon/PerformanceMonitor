@@ -2010,6 +2010,13 @@ namespace PerformanceMonitorDashboard
                     _lastLowDiskAlert[serverId] = now;
                     _lastAlertedLowDiskPercent[serverId] = worst.FreePercent;
                     var lowDiskContext = BuildVolumeFreeSpaceContext(breachedVolumes);
+                    /* #1136: grade the alert — WARNING normally, CRITICAL when the worst volume is
+                       critically low — so the email/webhook badge reflects how dire the breach is.
+                       (lowDiskContext is non-null here — breachedVolumes.Count > 0 — but typed nullable.) */
+                    if (lowDiskContext is not null && LowDiskAlertGate.IsCriticallyLow(worst.FreePercent, worst.FreeGb))
+                    {
+                        lowDiskContext.SeverityOverride = AlertSeverityLevel.Critical;
+                    }
                     var detailText = ContextToDetailText(lowDiskContext);
                     var currentValue = $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)";
                     var thresholdValue = FormatLowDiskThreshold(prefs);

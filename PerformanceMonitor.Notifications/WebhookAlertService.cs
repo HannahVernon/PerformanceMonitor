@@ -202,7 +202,7 @@ public class WebhookAlertService
         bool isTest = false,
         AlertContext? context = null)
     {
-        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName);
+        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName, context?.SeverityOverride);
         var themeColor = hexColor.TrimStart('#');
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
@@ -349,7 +349,7 @@ public class WebhookAlertService
         bool isTest = false,
         AlertContext? context = null)
     {
-        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName);
+        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName, context?.SeverityOverride);
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
 

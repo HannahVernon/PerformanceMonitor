@@ -58,4 +58,20 @@ public class LowDiskAlertGateTests
     {
         Assert.Equal(expected, LowDiskAlertGate.ShouldAlert(current, last, margin));
     }
+
+    /// <summary>
+    /// #1136: the critical tier is graded on EITHER dimension (OR semantics, matching the breach
+    /// test) — a low percentage on a huge volume OR a few GB free on any volume is CRITICAL.
+    /// </summary>
+    [Theory]
+    [InlineData(2.0, 100.0, true)]  // 2% <= 3% floor (huge volume, low %) -> critical
+    [InlineData(3.0, 100.0, true)]  // exactly at the percent floor
+    [InlineData(4.0, 100.0, false)] // 4% above floor, plenty of GB -> warning tier
+    [InlineData(8.0, 1.5, true)]    // healthy %, but 1.5 GB <= 2 GB floor -> critical
+    [InlineData(8.0, 2.0, true)]    // exactly at the GB floor
+    [InlineData(8.0, 5.0, false)]   // above both floors -> warning tier
+    public void IsCriticallyLow_GradesEitherDimension(double freePercent, double freeGb, bool expected)
+    {
+        Assert.Equal(expected, LowDiskAlertGate.IsCriticallyLow(freePercent, freeGb));
+    }
 }
