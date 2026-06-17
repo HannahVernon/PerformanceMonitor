@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Lite and Dashboard: the low-disk (Volume Free Space) alert is now severity-graded instead of always INFO** ([#1136]) — the metric name was absent from the shared severity map, so every low-disk alert fell through to the default INFO tier (blue, lowest severity) regardless of how full the volume was. A volume nearing full stops data/log file growth — transactions fail and the database can go into recovery/suspect — so this under-prioritized a potentially critical condition, including for downstream severity-based webhook routing (Teams/Slack). The alert now renders **WARNING** for a normal breach and **CRITICAL** when the worst breached volume is critically low (≤ 3% free **or** ≤ 2 GB free — a second, lower tier beneath the user-configured fire threshold). The critical grading lives in the shared `LowDiskAlertGate.IsCriticallyLow`, and the tier rides through to the email badge/accent, Teams card, and Slack sidebar via an `AlertContext.SeverityOverride`, so the metric name (hence mute rules, cooldown, and Alert-History matching) is unchanged. The existing "notify only on a fresh or worsening breach" firing rule is untouched — this is purely the severity classification. Fixed identically in both apps. Covered by `AlertSeverityTests` and `LowDiskAlertGateTests`
+
 ### Fixed
 
 - **Lite: the `index_object_stats` collector no longer times out and returns zero index data on larger estates** ([#1135]) — the v3.0.0 collector ran its entire multi-database sweep as **one** `SqlCommand` under the global 30s `CommandTimeoutSeconds`, cursoring over every online database into a `#temp` and returning a single final `SELECT`. Because nothing streamed back until the end, the 30s was a *cumulative, all-or-nothing* budget across every database — on a server with sizable/many databases the sweep blew past 30s, failed with `Execution Timeout Expired` (SQL `#-2`), and discarded results from **every** database, not just the slow one. Enabled by default and "never-run = due immediately," it failed on first connect right after upgrade and kept retrying the timeout. Now the collector runs **one command per database** (mirroring the Query Store collector): on-prem enumerates databases then sends each through `[db].sys.sp_executesql`, Azure SQL DB connects to each database individually, and each database has its own command, timeout, and `try/catch` — so a slow or inaccessible database fails only itself and the rest still persist. Within each database the three DMVs (`sys.dm_db_partition_stats`, `sys.dm_db_index_usage_stats`, `sys.dm_db_index_operational_stats`) are staged into `#temp` tables with single scans and then joined, giving the optimizer real cardinality and avoiding the bad plans the old single monolithic multi-DMV join produced on large databases (the `sp_IndexCleanup` technique). The collector also gets a dedicated 300s timeout (matching the FinOps `sp_IndexCleanup` path) instead of the 30s meant for lightweight DMV reads. The Dashboard's equivalent SQL collector (`install/55`) — which was not subject to the bug (it runs under SQL Agent and persists per database) — was brought to parity with the same DMV-staging technique for plan quality on large databases
@@ -88,6 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1121]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1121
 [#1122]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1122
 [#1135]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1135
+[#1136]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1136
 
 ## [2.11.0] - 2026-05-19
 
