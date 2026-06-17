@@ -369,7 +369,8 @@ SELECT
     blocked_last_batch_completed,
     blocking_last_batch_completed,
     blocked_priority,
-    blocking_priority
+    blocking_priority,
+    contentious_object
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -421,7 +422,8 @@ LIMIT 200";
                 BlockedLastBatchCompleted = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
                 BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
                 BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
-                BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34)
+                BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
+                ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35)
             });
         }
 
@@ -932,6 +934,7 @@ public class BlockedProcessReportRow
     public string BlockingLoginName { get; set; } = "";
     public string BlockingSqlText { get; set; } = "";
     public string BlockedProcessReportXml { get; set; } = "";
+    public string ContentiousObject { get; set; } = "";
     public string BlockedTransactionName { get; set; } = "";
     public string BlockingTransactionName { get; set; } = "";
     public DateTime? BlockedLastTranStarted { get; set; }

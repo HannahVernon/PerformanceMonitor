@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 29;
+    internal const int CurrentSchemaVersion = 30;
 
     private readonly string _archivePath;
 
@@ -747,6 +747,27 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v28 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 30)
+        {
+            /* v30 (#1140): dedup-fingerprint support. blocked_process_reports gains the contentious
+               object the blocked_process_report event already carries (object_id/database_id) plus the
+               resolved name; query_snapshots gains query_hash for the long-running-query dedup key.
+               Appended at the end to keep the positional appender aligned; the v_ views union BY NAME
+               so old parquet reads back NULL for these. */
+            _logger?.LogInformation("Running migration to v30: dedup fingerprint columns (#1140)");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS object_id INTEGER");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS database_id INTEGER");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS contentious_object VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS query_hash VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v30 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

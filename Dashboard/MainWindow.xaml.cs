@@ -1582,7 +1582,7 @@ namespace PerformanceMonitorDashboard
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastBlockingAlert[serverId] = now;
 
-                    var blockingContext = await BuildBlockingContextAsync(databaseService, prefs.AlertExcludedDatabases);
+                    var blockingContext = await BuildBlockingContextAsync(serverName, databaseService, prefs.AlertExcludedDatabases);
                     var detailText = ContextToDetailText(blockingContext)
                         ?? $"Blocked Sessions: {(int)health.TotalBlocked}\nLongest Wait: {(int)health.LongestBlockedSeconds}s";
 
@@ -1648,7 +1648,7 @@ namespace PerformanceMonitorDashboard
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastDeadlockAlert[serverId] = now;
 
-                    var deadlockContext = await BuildDeadlockContextAsync(databaseService, prefs.AlertExcludedDatabases);
+                    var deadlockContext = await BuildDeadlockContextAsync(serverName, databaseService, prefs.AlertExcludedDatabases);
                     var detailText = ContextToDetailText(deadlockContext)
                         ?? $"New Deadlocks: {effectiveDeadlockDelta}";
 
@@ -1897,7 +1897,7 @@ namespace PerformanceMonitorDashboard
                     };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLongRunningQueryAlert[serverId] = now;
-                    var lrqContext = BuildLongRunningQueryContext(lrqList);
+                    var lrqContext = BuildLongRunningQueryContext(serverName, lrqList);
                     var detailText = ContextToDetailText(lrqContext);
 
                     if (!isMuted)
@@ -2009,7 +2009,7 @@ namespace PerformanceMonitorDashboard
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLowDiskAlert[serverId] = now;
                     _lastAlertedLowDiskPercent[serverId] = worst.FreePercent;
-                    var lowDiskContext = BuildVolumeFreeSpaceContext(breachedVolumes);
+                    var lowDiskContext = BuildVolumeFreeSpaceContext(serverName, breachedVolumes);
                     /* #1136: grade the alert — WARNING normally, CRITICAL when the worst volume is
                        critically low — so the email/webhook badge reflects how dire the breach is.
                        (lowDiskContext is non-null here — breachedVolumes.Count > 0 — but typed nullable.) */
@@ -2082,7 +2082,7 @@ namespace PerformanceMonitorDashboard
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Long-Running Job", JobName = worst.JobName };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLongRunningJobAlert[jobKey] = now;
-                    var jobContext = BuildAnomalousJobContext(health.AnomalousJobs);
+                    var jobContext = BuildAnomalousJobContext(serverName, health.AnomalousJobs);
                     var detailText = ContextToDetailText(jobContext);
 
                     if (!isMuted)
@@ -2195,7 +2195,7 @@ namespace PerformanceMonitorDashboard
             return sb.ToString().TrimEnd();
         }
 
-        private static async Task<AlertContext?> BuildBlockingContextAsync(DatabaseService databaseService, List<string>? excludedDatabases = null)
+        private static async Task<AlertContext?> BuildBlockingContextAsync(string serverName, DatabaseService databaseService, List<string>? excludedDatabases = null)
         {
             try
             {
@@ -2244,6 +2244,15 @@ namespace PerformanceMonitorDashboard
                     context.AttachmentFileName = "blocked_process_report.xml";
                 }
 
+                /* #1140: dedup by the resolved contentious object across the blocked-process rows
+                   (already populated by sp_HumanEventsBlockViewer); falls back to db+query-pair only
+                   when an object did not resolve. Computed over ALL events, not just the 3 displayed. */
+                AlertIncidentRenderer.Apply(context, BlockingIncidentGrouper.Group(
+                    serverName,
+                    events.Select(e => new BlockingIncidentGrouper.BlockedEvent(
+                        e.DatabaseName, e.ContentiousObject, e.QueryText, null, e.WaitTimeMs ?? 0)))
+                    .Select(g => g.Incident).ToList());
+
                 return context;
             }
             catch (Exception ex)
@@ -2253,7 +2262,7 @@ namespace PerformanceMonitorDashboard
             }
         }
 
-        private static async Task<AlertContext?> BuildDeadlockContextAsync(DatabaseService databaseService, List<string>? excludedDatabases = null)
+        private static async Task<AlertContext?> BuildDeadlockContextAsync(string serverName, DatabaseService databaseService, List<string>? excludedDatabases = null)
         {
             try
             {
@@ -2312,6 +2321,16 @@ namespace PerformanceMonitorDashboard
                     context.AttachmentFileName = "deadlock_graph.xml";
                 }
 
+                /* #1140: fingerprint each deadlock by its sorted involved-object set, parsed from the
+                   deadlock graph (same DeadlockObjectExtractor Lite uses, for parity), grouped per
+                   deadlock event across ALL events in the window. */
+                AlertIncidentRenderer.Apply(context, DeadlockIncidentGrouper.Group(
+                    serverName,
+                    deadlocks.GroupBy(d => d.EventDate).Select(g => new DeadlockIncidentGrouper.DeadlockEvent(
+                        DeadlockObjectExtractor.FromGraphXml(
+                            g.Select(x => x.DeadlockGraph).FirstOrDefault(x => !string.IsNullOrEmpty(x))))))
+                    .Select(g => g.Incident).ToList());
+
                 return context;
             }
             catch (Exception ex)
@@ -2365,12 +2384,13 @@ namespace PerformanceMonitorDashboard
             return context;
         }
 
-        private static AlertContext? BuildLongRunningQueryContext(List<LongRunningQueryInfo> queries)
+        private static AlertContext? BuildLongRunningQueryContext(string serverName, List<LongRunningQueryInfo> queries)
         {
             if (queries.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var q in queries.GetRange(0, Math.Min(3, queries.Count)))
+            var shown = queries.GetRange(0, Math.Min(3, queries.Count));
+            foreach (var q in shown)
             {
                 var item = new AlertDetailItem
                 {
@@ -2394,15 +2414,22 @@ namespace PerformanceMonitorDashboard
 
                 context.Details.Add(item);
             }
+
+            /* #1140: dedup key = query_hash (stable across literals/plans). Null hash -> no incident. */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(q => AlertFingerprint.ForKey(serverName, AlertFingerprint.Query, q.QueryHash ?? "",
+                    string.IsNullOrEmpty(q.DatabaseName) ? System.Array.Empty<string>() : new[] { q.DatabaseName }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 
-        private static AlertContext? BuildAnomalousJobContext(List<AnomalousJobInfo> jobs)
+        private static AlertContext? BuildAnomalousJobContext(string serverName, List<AnomalousJobInfo> jobs)
         {
             if (jobs.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var j in jobs.GetRange(0, Math.Min(3, jobs.Count)))
+            var shown = jobs.GetRange(0, Math.Min(3, jobs.Count));
+            foreach (var j in shown)
             {
                 context.Details.Add(new AlertDetailItem
                 {
@@ -2417,6 +2444,11 @@ namespace PerformanceMonitorDashboard
                     }
                 });
             }
+
+            /* #1140: dedup key per job (job name, scoped to the instance via serverName). */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(j => AlertFingerprint.ForKey(serverName, AlertFingerprint.Job, j.JobName, new[] { j.JobName }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 
@@ -2464,12 +2496,13 @@ namespace PerformanceMonitorDashboard
             return parts.Count > 0 ? string.Join(" / ", parts) : "—";
         }
 
-        private static AlertContext? BuildVolumeFreeSpaceContext(List<VolumeFreeSpaceInfo> volumes)
+        private static AlertContext? BuildVolumeFreeSpaceContext(string serverName, List<VolumeFreeSpaceInfo> volumes)
         {
             if (volumes.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var v in volumes.GetRange(0, Math.Min(5, volumes.Count)))
+            var shown = volumes.GetRange(0, Math.Min(5, volumes.Count));
+            foreach (var v in shown)
             {
                 context.Details.Add(new AlertDetailItem
                 {
@@ -2482,6 +2515,11 @@ namespace PerformanceMonitorDashboard
                     }
                 });
             }
+
+            /* #1140: dedup key per volume (the drive/mount point). */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(v => AlertFingerprint.ForKey(serverName, AlertFingerprint.Disk, v.MountPoint, new[] { v.MountPoint }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 

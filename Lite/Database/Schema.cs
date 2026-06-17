@@ -347,7 +347,8 @@ CREATE TABLE IF NOT EXISTS query_snapshots (
     program_name VARCHAR,
     open_transaction_count INTEGER,
     percent_complete DECIMAL(5,2),
-    is_cdc_capture BOOLEAN DEFAULT false
+    is_cdc_capture BOOLEAN DEFAULT false,
+    query_hash VARCHAR
 )";
 
     public const string CreateTempdbStatsTable = @"
@@ -468,7 +469,10 @@ CREATE TABLE IF NOT EXISTS blocked_process_reports (
     blocking_last_batch_completed TIMESTAMP,
     blocked_priority INTEGER,
     blocking_priority INTEGER,
-    blocked_process_report_xml VARCHAR
+    blocked_process_report_xml VARCHAR,
+    object_id INTEGER,
+    database_id INTEGER,
+    contentious_object VARCHAR
 )";
 
     public const string CreateDatabaseConfigTable = @"

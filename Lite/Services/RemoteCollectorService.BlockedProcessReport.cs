@@ -302,16 +302,38 @@ AND   xet.target_name = N'ring_buffer'
 OPTION(RECOMPILE);
 
 SELECT
-    event_time = evt.value('(@timestamp)[1]', 'datetime2'),
-    blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report'))
+    x.event_time,
+    x.blocked_process_report_xml,
+    x.object_id,
+    x.database_id,
+    /* #1140: resolve the contentious object the blocked_process_report event already carries
+       (object_id/database_id). Mirrors sp_HumanEventsBlockViewer's contentious_object EXACTLY
+       (2-part schema.object + the same 'Unresolved: ...' fallback) so the dedup fingerprint
+       matches the Dashboard for the same object. OBJECT_NAME with the database_id arg resolves
+       cross-DB with no USE; NULL (cross-db perms / dropped object) -> the stable id fallback. */
+    contentious_object =
+        ISNULL
+        (
+            OBJECT_SCHEMA_NAME(x.object_id, x.database_id) + N'.' + OBJECT_NAME(x.object_id, x.database_id),
+            N'Unresolved: database: ' + ISNULL(DB_NAME(x.database_id), N'unknown') +
+            N' object_id: ' + ISNULL(CONVERT(nvarchar(20), x.object_id), N'unknown')
+        )
 FROM
 (
     SELECT
-        pmd.ring_buffer
-    FROM @PerformanceMonitor_BlockedProcess AS pmd
-) AS rb
-CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
-WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
+        event_time = evt.value('(@timestamp)[1]', 'datetime2'),
+        blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report')),
+        object_id = evt.value('(data[@name=""object_id""]/value/text())[1]', 'integer'),
+        database_id = evt.value('(data[@name=""database_id""]/value/text())[1]', 'integer')
+    FROM
+    (
+        SELECT
+            pmd.ring_buffer
+        FROM @PerformanceMonitor_BlockedProcess AS pmd
+    ) AS rb
+    CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
+    WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
+) AS x
 OPTION(RECOMPILE);";
         }
         else
@@ -342,16 +364,38 @@ AND   xet.target_name = N'ring_buffer'
 OPTION(RECOMPILE);
 
 SELECT
-    event_time = evt.value('(@timestamp)[1]', 'datetime2'),
-    blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report'))
+    x.event_time,
+    x.blocked_process_report_xml,
+    x.object_id,
+    x.database_id,
+    /* #1140: resolve the contentious object the blocked_process_report event already carries
+       (object_id/database_id). Mirrors sp_HumanEventsBlockViewer's contentious_object EXACTLY
+       (2-part schema.object + the same 'Unresolved: ...' fallback) so the dedup fingerprint
+       matches the Dashboard for the same object. OBJECT_NAME with the database_id arg resolves
+       cross-DB with no USE; NULL (cross-db perms / dropped object) -> the stable id fallback. */
+    contentious_object =
+        ISNULL
+        (
+            OBJECT_SCHEMA_NAME(x.object_id, x.database_id) + N'.' + OBJECT_NAME(x.object_id, x.database_id),
+            N'Unresolved: database: ' + ISNULL(DB_NAME(x.database_id), N'unknown') +
+            N' object_id: ' + ISNULL(CONVERT(nvarchar(20), x.object_id), N'unknown')
+        )
 FROM
 (
     SELECT
-        pmd.ring_buffer
-    FROM @PerformanceMonitor_BlockedProcess AS pmd
-) AS rb
-CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
-WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
+        event_time = evt.value('(@timestamp)[1]', 'datetime2'),
+        blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report')),
+        object_id = evt.value('(data[@name=""object_id""]/value/text())[1]', 'integer'),
+        database_id = evt.value('(data[@name=""database_id""]/value/text())[1]', 'integer')
+    FROM
+    (
+        SELECT
+            pmd.ring_buffer
+        FROM @PerformanceMonitor_BlockedProcess AS pmd
+    ) AS rb
+    CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
+    WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
+) AS x
 OPTION(RECOMPILE);";
         }
 
@@ -408,6 +452,11 @@ OPTION(RECOMPILE);";
                     {
                         var eventTime = reader.IsDBNull(0) ? (DateTime?)null : reader.GetDateTime(0);
                         var reportXml = reader.IsDBNull(1) ? null : reader.GetString(1);
+                        /* #1140: object_id/database_id are the event's own data fields and contentious_object
+                           is resolved server-side in the collection query (cols 2-4), not parsed from the XML. */
+                        var objectId = reader.IsDBNull(2) ? (int?)null : reader.GetInt32(2);
+                        var databaseId = reader.IsDBNull(3) ? (int?)null : reader.GetInt32(3);
+                        var contentiousObject = reader.IsDBNull(4) ? null : reader.GetString(4);
 
                         if (string.IsNullOrEmpty(reportXml))
                         {
@@ -460,6 +509,9 @@ OPTION(RECOMPILE);";
                            .AppendValue(parsed.BlockedPriority)
                            .AppendValue(parsed.BlockingPriority)
                            .AppendValue(reportXml)
+                           .AppendValue(objectId)
+                           .AppendValue(databaseId)
+                           .AppendValue(contentiousObject)
                            .EndRow();
 
                         rowsCollected++;
