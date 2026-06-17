@@ -824,7 +824,8 @@ namespace PerformanceMonitorDashboard.Services
                     r.reads,
                     r.writes,
                     r.wait_type,
-                    r.blocking_session_id
+                    r.blocking_session_id,
+                    CONVERT(varchar(18), r.query_hash, 1) AS query_hash
                 FROM sys.dm_exec_requests AS r
                 CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
                 JOIN sys.dm_exec_sessions AS s ON s.session_id = r.session_id
@@ -862,7 +863,8 @@ namespace PerformanceMonitorDashboard.Services
                         Reads = Convert.ToInt64(reader.GetValue(6), System.Globalization.CultureInfo.InvariantCulture),
                         Writes = Convert.ToInt64(reader.GetValue(7), System.Globalization.CultureInfo.InvariantCulture),
                         WaitType = reader.IsDBNull(8) ? null : reader.GetString(8),
-                        BlockingSessionId = reader.IsDBNull(9) ? null : (int?)Convert.ToInt32(reader.GetValue(9), System.Globalization.CultureInfo.InvariantCulture)
+                        BlockingSessionId = reader.IsDBNull(9) ? null : (int?)Convert.ToInt32(reader.GetValue(9), System.Globalization.CultureInfo.InvariantCulture),
+                        QueryHash = reader.IsDBNull(10) ? null : reader.GetString(10)
                     });
                 }
             }
