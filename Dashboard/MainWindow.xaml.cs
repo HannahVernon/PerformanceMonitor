@@ -1603,7 +1603,7 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        await _emailAlertService.TrySendAlertEmailAsync(
+                        await SendDetectedAlertAsync(prefs,
                             "Blocking Detected",
                             serverName,
                             $"{(int)health.TotalBlocked} session(s), longest {(int)health.LongestBlockedSeconds}s",
@@ -1670,7 +1670,7 @@ namespace PerformanceMonitorDashboard
 
                     if (!isMuted)
                     {
-                        await _emailAlertService.TrySendAlertEmailAsync(
+                        await SendDetectedAlertAsync(prefs,
                             "Deadlocks Detected",
                             serverName,
                             effectiveDeadlockDelta.ToString(),
@@ -2179,6 +2179,29 @@ namespace PerformanceMonitorDashboard
             if (string.IsNullOrEmpty(text)) return "";
             text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
             return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
+        }
+
+        /* #1141: in Per-event mode, deliver one notification per distinct incident (capped at
+           AlertPerEventMaxPerCycle, with a trailing "+N more" carrying the remaining fingerprints)
+           instead of one batched summary card. Falls back to the single summary send in Summary mode
+           or when there are no incidents. Recording to alert history is left to the one RecordAlert
+           call at the firing site; this only shapes the outbound send. */
+        private async Task SendDetectedAlertAsync(
+            UserPreferences prefs, string metricName, string serverName, string summaryCurrentValue,
+            string thresholdValue, string serverId, AlertContext? context)
+        {
+            if (prefs.AlertDeliveryMode == AlertNotificationMode.PerEvent && context?.Incidents is { Count: > 0 })
+            {
+                foreach (var msg in PerEventNotification.Split(context, prefs.AlertPerEventMaxPerCycle))
+                {
+                    await _emailAlertService.TrySendAlertEmailAsync(
+                        metricName, serverName, msg.CurrentValue, thresholdValue, serverId, msg.Context);
+                }
+                return;
+            }
+
+            await _emailAlertService.TrySendAlertEmailAsync(
+                metricName, serverName, summaryCurrentValue, thresholdValue, serverId, context);
         }
 
         private static string? ContextToDetailText(AlertContext? context)

@@ -199,6 +199,8 @@ namespace PerformanceMonitorDashboard
             FailedJobLookbackTextBox.Text = prefs.FailedJobLookbackMinutes.ToString(CultureInfo.InvariantCulture);
             AlertCooldownTextBox.Text = prefs.AlertCooldownMinutes.ToString(CultureInfo.InvariantCulture);
             EmailCooldownTextBox.Text = prefs.EmailCooldownMinutes.ToString(CultureInfo.InvariantCulture);
+            AlertDeliveryModeCombo.SelectedIndex = prefs.AlertDeliveryMode == AlertNotificationMode.PerEvent ? 1 : 0;
+            AlertPerEventMaxTextBox.Text = prefs.AlertPerEventMaxPerCycle.ToString(CultureInfo.InvariantCulture);
             MuteRuleDefaultExpirationCombo.SelectedIndex = prefs.MuteRuleDefaultExpiration switch
             {
                 "1 hour" => 0,
@@ -391,6 +393,8 @@ namespace PerformanceMonitorDashboard
             FailedJobLookbackTextBox.Text = "60";
             AlertCooldownTextBox.Text = "5";
             EmailCooldownTextBox.Text = "15";
+            AlertDeliveryModeCombo.SelectedIndex = 0;
+            AlertPerEventMaxTextBox.Text = "10";
             AlertExcludedDatabasesTextBox.Text = "";
             MuteRuleDefaultExpirationCombo.SelectedIndex = 1; // 24 hours
             UpdateAlertPreviewText();
@@ -757,6 +761,12 @@ namespace PerformanceMonitorDashboard
                 prefs.EmailCooldownMinutes = emailCooldown;
             else
                 validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes");
+
+            prefs.AlertDeliveryMode = AlertDeliveryModeCombo.SelectedIndex == 1 ? AlertNotificationMode.PerEvent : AlertNotificationMode.Summary;
+            if (int.TryParse(AlertPerEventMaxTextBox.Text, out int perEventMax) && perEventMax >= 1 && perEventMax <= 100)
+                prefs.AlertPerEventMaxPerCycle = perEventMax;
+            else
+                validationErrors.Add("Per-event max-per-cycle must be between 1 and 100");
 
             prefs.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
             MuteRuleDialog.DefaultExpiration = prefs.MuteRuleDefaultExpiration;

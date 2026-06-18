@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorDashboard.Models
 {
@@ -124,6 +125,16 @@ namespace PerformanceMonitorDashboard.Models
         {
             get => _emailCooldownMinutes;
             set => _emailCooldownMinutes = Math.Clamp(value, 1, 120);
+        }
+
+        /* #1141: deadlock/blocking notification delivery — Summary (one batched card per cycle, the
+           default) or PerEvent (one notification per distinct incident, capped). */
+        public AlertNotificationMode AlertDeliveryMode { get; set; } = AlertNotificationMode.Summary;
+        private int _alertPerEventMaxPerCycle = 10;
+        public int AlertPerEventMaxPerCycle
+        {
+            get => _alertPerEventMaxPerCycle;
+            set => _alertPerEventMaxPerCycle = Math.Clamp(value, 1, 100);
         }
 
         // SMTP email alert settings
