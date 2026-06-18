@@ -35,7 +35,8 @@ public static class BlockingIncidentGrouper
         string? ContentiousObject,
         string? BlockedQuery,
         string? BlockingQuery,
-        long WaitTimeMs);
+        long WaitTimeMs,
+        string? LockMode = null);
 
     /// <summary>One distinct blocking incident: a representative chain, its true occurrence count and
     /// wait range, and the dedup <see cref="AlertIncident"/>.</summary>
@@ -98,10 +99,14 @@ public static class BlockingIncidentGrouper
             if (incident is null)
                 continue;
 
+            // #1141: carry the chain's forensic detail on the incident so per-event cards keep it
+            // (Summary already shows it via the builder's items; this travels for the per-event split).
+            var enriched = incident with { DetailFields = BlockingDetail(representative) };
+
             groups.Add(new BlockingGroup(
                 representative.Database, representative.ContentiousObject,
                 representative.BlockedQuery, representative.BlockingQuery,
-                rows.Count, minWait, maxWait, incident));
+                rows.Count, minWait, maxWait, enriched));
         }
 
         groups.Sort((a, b) => b.OccurrenceCount.CompareTo(a.OccurrenceCount));
@@ -138,6 +143,21 @@ public static class BlockingIncidentGrouper
         string Sec(long ms) => (ms / 1000.0).ToString("F1", CultureInfo.InvariantCulture) + "s";
         return minMs == maxMs ? Sec(maxMs) : Sec(minMs) + "-" + Sec(maxMs);
     }
+
+    // Forensic detail for a blocking incident's per-event card (#1141): the representative chain's
+    // database, contentious object, the blocked/blocking query pair (truncated), and lock mode.
+    private static List<AlertIncidentField> BlockingDetail(BlockedEvent e)
+    {
+        var f = new List<AlertIncidentField>();
+        if (!string.IsNullOrWhiteSpace(e.Database)) f.Add(new AlertIncidentField("Database", e.Database!));
+        if (!string.IsNullOrWhiteSpace(e.ContentiousObject)) f.Add(new AlertIncidentField("Contentious Object", e.ContentiousObject!));
+        if (!string.IsNullOrWhiteSpace(e.BlockedQuery)) f.Add(new AlertIncidentField("Blocked Query", Truncate(e.BlockedQuery!)));
+        if (!string.IsNullOrWhiteSpace(e.BlockingQuery)) f.Add(new AlertIncidentField("Blocking Query", Truncate(e.BlockingQuery!)));
+        if (!string.IsNullOrWhiteSpace(e.LockMode)) f.Add(new AlertIncidentField("Lock Mode", e.LockMode!));
+        return f;
+    }
+
+    private static string Truncate(string s) => s.Length <= 300 ? s : s.Substring(0, 300) + "…";
 }
 
 /// <summary>
@@ -149,8 +169,11 @@ public static class BlockingIncidentGrouper
 /// </summary>
 public static class DeadlockIncidentGrouper
 {
-    /// <summary>One deadlock event projected to the distinct fully-qualified objects it involved.</summary>
-    public readonly record struct DeadlockEvent(IReadOnlyList<string> Objects);
+    /// <summary>One deadlock event projected to the distinct fully-qualified objects it involved, plus
+    /// optional forensic detail (Victim SQL / Processes) carried onto the incident for per-event cards.</summary>
+    public readonly record struct DeadlockEvent(
+        IReadOnlyList<string> Objects,
+        IReadOnlyList<AlertIncidentField>? DetailFields = null);
 
     /// <summary>One distinct deadlock incident: the involved object set, occurrence count, and fingerprint.</summary>
     public sealed record DeadlockGroup(IReadOnlyList<string> Objects, int OccurrenceCount, AlertIncident Incident);
@@ -165,6 +188,7 @@ public static class DeadlockIncidentGrouper
         var order = new List<string>();
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         var incidents = new Dictionary<string, AlertIncident>(StringComparer.Ordinal);
+        var details = new Dictionary<string, IReadOnlyList<AlertIncidentField>?>(StringComparer.Ordinal);
 
         foreach (var e in events ?? Enumerable.Empty<DeadlockEvent>())
         {
@@ -178,6 +202,7 @@ public static class DeadlockIncidentGrouper
             {
                 order.Add(key);
                 incidents[key] = probe;
+                details[key] = e.DetailFields; // first event of the group is the representative
                 current = 0;
             }
             counts[key] = current + 1;
@@ -188,8 +213,8 @@ public static class DeadlockIncidentGrouper
         {
             var count = counts[key];
             var baseIncident = incidents[key];
-            // Re-stamp the occurrence count onto the incident (the probe used count 1).
-            var incident = baseIncident with { OccurrenceCount = count };
+            // Re-stamp the occurrence count + carry the representative's forensic detail (#1141).
+            var incident = baseIncident with { OccurrenceCount = count, DetailFields = details[key] };
             groups.Add(new DeadlockGroup(incident.InvolvedObjects, count, incident));
         }
 

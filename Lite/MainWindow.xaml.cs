@@ -2300,7 +2300,7 @@ public partial class MainWindow : Window
                 var groups = BlockingIncidentGrouper.Group(
                     serverName,
                     events.Select(e => new BlockingIncidentGrouper.BlockedEvent(
-                        e.DatabaseName, e.ContentiousObject, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs)));
+                        e.DatabaseName, e.ContentiousObject, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs, e.LockMode)));
 
                 const int maxGroups = 10;
                 var shown = groups.Take(maxGroups).ToList();
@@ -2401,7 +2401,8 @@ public partial class MainWindow : Window
                 var groups = DeadlockIncidentGrouper.Group(
                     serverName,
                     deadlocks.Select(d => new DeadlockIncidentGrouper.DeadlockEvent(
-                        DeadlockObjectExtractor.FromGraphXml(d.DeadlockGraphXml))));
+                        DeadlockObjectExtractor.FromGraphXml(d.DeadlockGraphXml),
+                        DeadlockDetailFields(d.VictimSqlText, d.ProcessSummary))));
                 AlertIncidentRenderer.Apply(context, groups.Select(g => g.Incident).ToList());
 
                 return context;
@@ -2411,6 +2412,16 @@ public partial class MainWindow : Window
                 AppLogger.Error("EmailAlert", $"Failed to fetch deadlock detail for email: {ex.Message}");
                 return null;
             }
+        }
+
+        /* #1141: forensic detail carried on a deadlock incident so per-event cards keep the victim SQL
+           + process summary (Summary mode shows them via the builder's own items). */
+        private static List<AlertIncidentField>? DeadlockDetailFields(string? victimSql, string? processes)
+        {
+            var f = new List<AlertIncidentField>();
+            if (!string.IsNullOrWhiteSpace(victimSql)) f.Add(new AlertIncidentField("Victim SQL", TruncateText(victimSql)));
+            if (!string.IsNullOrWhiteSpace(processes)) f.Add(new AlertIncidentField("Processes", processes!));
+            return f.Count > 0 ? f : null;
         }
 
         private static bool IsDeadlockExcluded(DeadlockRow row, List<string> excludedDatabases)

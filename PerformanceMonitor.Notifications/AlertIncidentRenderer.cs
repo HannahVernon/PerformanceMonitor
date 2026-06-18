@@ -37,22 +37,34 @@ public static class AlertIncidentRenderer
 
         for (int n = 0; n < incidents.Count; n++)
         {
-            var incident = incidents[n];
-            var item = new AlertDetailItem
-            {
-                Heading = incidents.Count == 1 ? "Incident" : $"Incident {n + 1} of {incidents.Count}"
-            };
-            item.Fields.Add(("Dedup Key", incident.DedupKey));
-            item.Fields.Add(("Involved Objects",
-                incident.InvolvedObjects.Count > 0
-                    ? string.Join(", ", incident.InvolvedObjects)
-                    : "(unresolved)"));
-            if (incident.OccurrenceCount > 1)
-                item.Fields.Add(("Occurrences", incident.OccurrenceCount.ToString()));
-            if (!string.IsNullOrEmpty(incident.WaitRange))
-                item.Fields.Add(("Wait Range", incident.WaitRange));
-
-            context.Details.Add(item);
+            var heading = incidents.Count == 1 ? "Incident" : $"Incident {n + 1} of {incidents.Count}";
+            // Summary mode leaves the forensic DetailFields off — the builder already lists the
+            // per-incident detail in its own items, so including them here would duplicate.
+            context.Details.Add(BuildItem(incidents[n], heading, includeDetailFields: false));
         }
+    }
+
+    /// <summary>
+    /// Builds one detail item for an incident. When <paramref name="includeDetailFields"/> is true the
+    /// incident's forensic <see cref="AlertIncident.DetailFields"/> are emitted first — used by #1141
+    /// Per-event delivery, where each card carries a single incident and has room for its full detail
+    /// (Victim SQL / Processes / queries) rather than only the dedup metadata.
+    /// </summary>
+    public static AlertDetailItem BuildItem(AlertIncident incident, string heading, bool includeDetailFields)
+    {
+        var item = new AlertDetailItem { Heading = heading };
+        if (includeDetailFields && incident.DetailFields is { Count: > 0 })
+        {
+            foreach (var f in incident.DetailFields)
+                item.Fields.Add((f.Label, f.Value));
+        }
+        item.Fields.Add(("Dedup Key", incident.DedupKey));
+        item.Fields.Add(("Involved Objects",
+            incident.InvolvedObjects.Count > 0 ? string.Join(", ", incident.InvolvedObjects) : "(unresolved)"));
+        if (incident.OccurrenceCount > 1)
+            item.Fields.Add(("Occurrences", incident.OccurrenceCount.ToString()));
+        if (!string.IsNullOrEmpty(incident.WaitRange))
+            item.Fields.Add(("Wait Range", incident.WaitRange));
+        return item;
     }
 }

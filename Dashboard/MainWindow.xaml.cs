@@ -2273,7 +2273,7 @@ namespace PerformanceMonitorDashboard
                 AlertIncidentRenderer.Apply(context, BlockingIncidentGrouper.Group(
                     serverName,
                     events.Select(e => new BlockingIncidentGrouper.BlockedEvent(
-                        e.DatabaseName, e.ContentiousObject, e.QueryText, null, e.WaitTimeMs ?? 0)))
+                        e.DatabaseName, e.ContentiousObject, e.QueryText, null, e.WaitTimeMs ?? 0, e.LockMode)))
                     .Select(g => g.Incident).ToList());
 
                 return context;
@@ -2351,7 +2351,8 @@ namespace PerformanceMonitorDashboard
                     serverName,
                     deadlocks.GroupBy(d => d.EventDate).Select(g => new DeadlockIncidentGrouper.DeadlockEvent(
                         DeadlockObjectExtractor.FromGraphXml(
-                            g.Select(x => x.DeadlockGraph).FirstOrDefault(x => !string.IsNullOrEmpty(x))))))
+                            g.Select(x => x.DeadlockGraph).FirstOrDefault(x => !string.IsNullOrEmpty(x))),
+                        DeadlockDetailFields(g))))
                     .Select(g => g.Incident).ToList());
 
                 return context;
@@ -2368,6 +2369,20 @@ namespace PerformanceMonitorDashboard
         /// A deadlock is only excluded when ALL process nodes have a currentdbname in the excluded list.
         /// Cross-database deadlocks involving any non-excluded database will still be reported.
         /// </summary>
+        /* #1141: forensic detail carried on a deadlock incident so per-event cards keep the query +
+           wait resource + lock mode (Summary mode shows them via the builder's own items). */
+        private static List<AlertIncidentField>? DeadlockDetailFields(IEnumerable<DeadlockItem> participants)
+        {
+            var rep = participants.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Query)) ?? participants.FirstOrDefault();
+            if (rep is null) return null;
+            var f = new List<AlertIncidentField>();
+            if (!string.IsNullOrWhiteSpace(rep.DatabaseName)) f.Add(new AlertIncidentField("Database", rep.DatabaseName));
+            if (!string.IsNullOrWhiteSpace(rep.Query)) f.Add(new AlertIncidentField("Query", Truncate(rep.Query)));
+            if (!string.IsNullOrWhiteSpace(rep.WaitResource)) f.Add(new AlertIncidentField("Wait Resource", rep.WaitResource));
+            if (!string.IsNullOrWhiteSpace(rep.LockMode)) f.Add(new AlertIncidentField("Lock Mode", rep.LockMode));
+            return f.Count > 0 ? f : null;
+        }
+
         private static bool IsDeadlockExcluded(DeadlockItem deadlock, List<string> excludedDatabases)
         {
             if (string.IsNullOrEmpty(deadlock.DeadlockGraph)) return false;
