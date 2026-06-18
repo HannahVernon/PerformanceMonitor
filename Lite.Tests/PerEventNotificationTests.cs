@@ -34,7 +34,44 @@ public class PerEventNotificationTests
         Assert.Equal(3, messages.Count);
         Assert.All(messages, m => Assert.False(m.IsOverflow));
         Assert.All(messages, m => Assert.Single(m.Context.Incidents!));
-        Assert.Equal("db.dbo.T0", messages[0].CurrentValue);
+        Assert.Equal("1", messages[0].CurrentValue); // Current Value = occurrence count (incident 0 => 1), not the object list
+    }
+
+    [Fact]
+    public void Split_PerEventCard_CarriesIncidentDetailFields()
+    {
+        var ctx = new AlertContext();
+        var incident = new AlertIncident("k", new[] { "db.dbo.Orders" }, OccurrenceCount: 3,
+            DetailFields: new[] { new AlertIncidentField("Victim SQL", "UPDATE x"), new AlertIncidentField("Processes", "spids 51,52") });
+        AlertIncidentRenderer.Apply(ctx, new[] { incident });
+
+        var msg = Assert.Single(PerEventNotification.Split(ctx, 10));
+        var item = Assert.Single(msg.Context.Details);
+        Assert.Contains(item.Fields, f => f.Label == "Victim SQL" && f.Value == "UPDATE x");
+        Assert.Contains(item.Fields, f => f.Label == "Processes" && f.Value == "spids 51,52");
+        Assert.Contains(item.Fields, f => f.Label == "Dedup Key" && f.Value == "k");
+    }
+
+    [Fact]
+    public void Split_CarriesSourceAttachment()
+    {
+        var ctx = WithIncidents(2);
+        ctx.AttachmentXml = "<deadlock/>";
+        ctx.AttachmentFileName = "deadlock_graph.xml";
+        foreach (var m in PerEventNotification.Split(ctx, 10))
+        {
+            Assert.Equal("<deadlock/>", m.Context.AttachmentXml);
+            Assert.Equal("deadlock_graph.xml", m.Context.AttachmentFileName);
+        }
+    }
+
+    [Fact]
+    public void Split_CurrentValueIsOccurrenceCount()
+    {
+        var ctx = new AlertContext();
+        AlertIncidentRenderer.Apply(ctx, new[] { new AlertIncident("k", new[] { "db.dbo.A" }, OccurrenceCount: 7) });
+        var msg = Assert.Single(PerEventNotification.Split(ctx, 10));
+        Assert.Equal("7", msg.CurrentValue);
     }
 
     [Fact]

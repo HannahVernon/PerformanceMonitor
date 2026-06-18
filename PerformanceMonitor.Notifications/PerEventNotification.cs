@@ -53,28 +53,38 @@ public static class PerEventNotification
 
         foreach (var incident in incidents.Take(cap))
         {
-            var ctx = new AlertContext { SeverityOverride = source.SeverityOverride };
-            AlertIncidentRenderer.Apply(ctx, new[] { incident });
+            var ctx = NewContext(source);
+            ctx.Incidents = new List<AlertIncident> { incident };
+            // includeDetailFields: true — the per-event card has room for this one incident's full
+            // forensic detail (Victim SQL / Processes / queries), which Summary's batched card splits
+            // across the builder's own items.
+            ctx.Details.Add(AlertIncidentRenderer.BuildItem(incident, "Incident", includeDetailFields: true));
             messages.Add(new Message(ctx, DescribeIncident(incident), IsOverflow: false));
         }
 
         var overflow = incidents.Skip(cap).ToList();
         if (overflow.Count > 0)
         {
-            var ctx = new AlertContext { SeverityOverride = source.SeverityOverride };
-            AlertIncidentRenderer.Apply(ctx, overflow);
+            var ctx = NewContext(source);
+            ctx.Incidents = new List<AlertIncident>(overflow);
+            for (int n = 0; n < overflow.Count; n++)
+                ctx.Details.Add(AlertIncidentRenderer.BuildItem(overflow[n], $"Incident {n + 1} of {overflow.Count}", includeDetailFields: true));
             messages.Add(new Message(ctx, $"+{overflow.Count} more incident(s) this cycle", IsOverflow: true));
         }
 
         return messages;
     }
 
-    // The alert's "current value" string for a single-incident message: the involved objects, or the
-    // dedup key when no objects resolved, so the notification headline names what the incident is about.
-    private static string DescribeIncident(AlertIncident incident)
+    // A fresh per-incident context that carries over the source's severity override AND the attachment
+    // (deadlock_graph.xml / blocked_process_report.xml) so per-event email keeps the forensic file.
+    private static AlertContext NewContext(AlertContext source) => new()
     {
-        if (incident.InvolvedObjects.Count > 0)
-            return string.Join(", ", incident.InvolvedObjects);
-        return incident.DedupKey;
-    }
+        SeverityOverride = source.SeverityOverride,
+        AttachmentXml = source.AttachmentXml,
+        AttachmentFileName = source.AttachmentFileName
+    };
+
+    // The alert's "current value" for a single-incident card: the occurrence count (a number, matching
+    // the Summary card's count), not the involved-objects string (which already shows as its own fact).
+    private static string DescribeIncident(AlertIncident incident) => incident.OccurrenceCount.ToString();
 }

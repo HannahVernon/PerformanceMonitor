@@ -52,7 +52,18 @@ public sealed record AlertIncident(
     string DedupKey,
     IReadOnlyList<string> InvolvedObjects,
     int OccurrenceCount = 1,
-    string? WaitRange = null);
+    string? WaitRange = null,
+    IReadOnlyList<AlertIncidentField>? DetailFields = null);
+
+/// <summary>
+/// A forensic label/value pair carried on an <see cref="AlertIncident"/> for #1141 Per-event delivery
+/// (e.g. Victim SQL / Processes for a deadlock; Database / Blocked Query / Blocking Query / Lock Mode
+/// for a blocking chain). Transient: populated by the incident groupers, rendered into the per-event
+/// card by <see cref="PerEventNotification"/>, and deliberately NOT persisted (the Summary card already
+/// lists the per-incident detail via the builders, and the per-event card's rendered Details are what
+/// get saved). Summary rendering ignores it, so that path is unchanged.
+/// </summary>
+public sealed record AlertIncidentField(string Label, string Value);
 
 /// <summary>
 /// A single detail item (e.g., one blocking chain or one deadlock participant).
