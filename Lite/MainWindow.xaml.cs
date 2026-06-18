@@ -68,6 +68,8 @@ public partial class MainWindow : Window
     private readonly IAlertSettings _alertSettings = new AppAlertSettings();
     private readonly MuteRuleService _muteRuleService;
     private EmailAlertService _emailAlertService;
+    /* Held so the edge-trigger watermark seed/persist (#1145) can reach the store directly. */
+    private readonly DuckDbAlertHistoryStore _alertHistoryStore;
 
     /* Track active alert states for resolved notifications */
     private readonly Dictionary<string, bool> _activeCpuAlert = new();
@@ -98,6 +100,14 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, int> _lastAlertedBlockingCount = new();
     private readonly Dictionary<string, int> _lastAlertedDeadlockCount = new();
 
+    /* Persistence for the two watermarks above (#1145): seeded from the alert store at
+       startup (SeedEdgeTriggerWatermarksAsync) and upserted on change, so a restart does
+       not reset the watermark to 0 and re-fire / re-post a webhook for events still
+       lingering in the rolling 1-hour lookback window. The metric_name values are the
+       persisted-row keys; they need not match the alert "Detected" metric names. */
+    private const string BlockingWatermarkMetric = "Blocking Detected";
+    private const string DeadlockWatermarkMetric = "Deadlocks Detected";
+
     public MainWindow()
     {
         InitializeComponent();
@@ -105,12 +115,14 @@ public partial class MainWindow : Window
         // Initialize services (with loggers wired to AppLogger)
         _databaseInitializer = new DuckDbInitializer(App.DatabasePath, new AppLoggerAdapter<DuckDbInitializer>());
         /* Webhook service is constructed first and injected into the email service
-           (Plan E E3c): the shared send core fans out to it. */
+           (Plan E E3c): the shared send core fans out to it. The history store is shared
+           by both so the webhook service can seed its cooldown across restart (#1145). */
+        _alertHistoryStore = new DuckDbAlertHistoryStore(_databaseInitializer);
         var webhookAlertService = new WebhookAlertService(
-            _alertSettings, EmailAlertService.Branding, new AppLoggerAdapter<WebhookAlertService>());
+            _alertSettings, EmailAlertService.Branding, new AppLoggerAdapter<WebhookAlertService>(), _alertHistoryStore);
         _emailAlertService = new EmailAlertService(
             _alertSettings,
-            new DuckDbAlertHistoryStore(_databaseInitializer),
+            _alertHistoryStore,
             webhookAlertService,
             new AppLoggerAdapter<EmailAlertService>());
         _muteRuleService = new MuteRuleService(
@@ -168,6 +180,14 @@ public partial class MainWindow : Window
 
             // Initialize the DuckDB database
             await _databaseInitializer.InitializeAsync();
+
+            /* Restore edge-trigger watermarks now — after the DB (and the watermark table)
+               exist, but before ANY alert sweep can read the watermark dicts. RefreshServerList()
+               below ends in a fire-and-forget RefreshOverviewAsync() → CheckPerformanceAlerts, so
+               seeding here (not just before the explicit RefreshOverviewAsync later) keeps a
+               restart from re-firing / re-posting alerts for events still in the lookback
+               window (#1145), independent of whether the DuckDB reads ever yield. */
+            await SeedEdgeTriggerWatermarksAsync();
 
             // Initialize the collection engine (with loggers wired to AppLogger)
             _collectorService = new RemoteCollectorService(
@@ -1536,6 +1556,36 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Seeds the in-memory edge-trigger watermarks from the persisted store (#1145) so a
+    /// restart does not reset them to 0 and re-fire / re-post a webhook for blocking/deadlock
+    /// events still lingering in the rolling 1-hour lookback window. Runs once at startup,
+    /// after the DB is initialized and before the first alert sweep.
+    /// </summary>
+    private async Task SeedEdgeTriggerWatermarksAsync()
+    {
+        try
+        {
+            var rows = await _alertHistoryStore.LoadEdgeTriggerWatermarksAsync();
+            foreach (var (serverId, metricName, watermark) in rows)
+            {
+                var key = serverId.ToString();
+                if (metricName == BlockingWatermarkMetric)
+                {
+                    _lastAlertedBlockingCount[key] = watermark;
+                }
+                else if (metricName == DeadlockWatermarkMetric)
+                {
+                    _lastAlertedDeadlockCount[key] = watermark;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Alerts", $"Failed to seed edge-trigger watermarks: {ex.Message}");
+        }
+    }
+
     private async void CheckPerformanceAlerts(ServerSummaryItem summary)
     {
         if (!App.AlertsEnabled || _trayService == null) return;
@@ -1644,6 +1694,13 @@ public partial class MainWindow : Window
             ? RollingCountAlertGate.Evaluate(effectiveBlockingCount, App.AlertBlockingThreshold, blockingWatermark, blockingCooldownElapsed, suppressPopups)
             : new RollingCountAlertGate.Decision(false, false, 0);
         _lastAlertedBlockingCount[key] = blockingDecision.Watermark;
+        /* Persist the watermark across restart so the same blocked-process reports aren't
+           re-alerted (and re-posted to Teams/Slack) on the first post-restart sweep (#1145).
+           On-change only — the gate returns the same watermark on most sweeps. */
+        if (blockingDecision.Watermark != blockingWatermark)
+        {
+            await _alertHistoryStore.SaveEdgeTriggerWatermarkAsync(summary.ServerId, BlockingWatermarkMetric, blockingDecision.Watermark);
+        }
 
         bool wasBlockingActive = _activeBlockingAlert.TryGetValue(key, out var wasBlocking) && wasBlocking;
         _activeBlockingAlert[key] = blockingDecision.Active;
@@ -1715,6 +1772,12 @@ public partial class MainWindow : Window
             ? RollingCountAlertGate.Evaluate(effectiveDeadlockCount, App.AlertDeadlockThreshold, deadlockWatermark, deadlockCooldownElapsed, suppressPopups)
             : new RollingCountAlertGate.Decision(false, false, 0);
         _lastAlertedDeadlockCount[key] = deadlockDecision.Watermark;
+        /* Persist the watermark across restart so the same deadlocks aren't re-alerted (and
+           re-posted to Teams/Slack) on the first post-restart sweep (#1145). On-change only. */
+        if (deadlockDecision.Watermark != deadlockWatermark)
+        {
+            await _alertHistoryStore.SaveEdgeTriggerWatermarkAsync(summary.ServerId, DeadlockWatermarkMetric, deadlockDecision.Watermark);
+        }
 
         bool wasDeadlockActive = _activeDeadlockAlert.TryGetValue(key, out var wasDeadlock) && wasDeadlock;
         _activeDeadlockAlert[key] = deadlockDecision.Active;

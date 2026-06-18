@@ -42,6 +42,16 @@ public interface IAlertHistoryStore
     Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName);
 
     /// <summary>
+    /// MAX(alert_time) filtered to a *successful webhook send* — seeds the webhook
+    /// cooldown across restart so a Teams/Slack alert delivered shortly before a restart
+    /// is not re-posted afterward (#1145, mirroring the email seed #981). The
+    /// notification_type already implies the webhook delivered (it's only written on a
+    /// successful post), and send_error tracks the EMAIL channel, so it is NOT filtered on.
+    /// Lite: notification_type IN ('webhook','email+webhook'). Dash: NotificationType == "webhook".
+    /// </summary>
+    Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName);
+
+    /// <summary>
     /// MAX(alert_time) UNFILTERED (any channel/result) — seeds the analysis
     /// per-finding cooldown across restart. Stamped unconditionally upstream.
     /// </summary>

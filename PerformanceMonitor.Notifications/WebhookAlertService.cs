@@ -41,17 +41,28 @@ public class WebhookAlertService
     private readonly IAlertSettings _settings;
     private readonly AlertBranding _branding;
     private readonly ILogger<WebhookAlertService> _logger;
+    private readonly IAlertHistoryStore? _historyStore;
 
     private int _consecutiveTeamsFailures;
     private string? _lastTeamsError;
     private int _consecutiveSlackFailures;
     private string? _lastSlackError;
 
-    public WebhookAlertService(IAlertSettings settings, AlertBranding branding, ILogger<WebhookAlertService> logger)
+    /// <param name="historyStore">
+    /// Optional alert-history store used to seed the per-(serverId, metricName) webhook
+    /// cooldown across an app restart (#1145, mirroring the email seed #981). When null the
+    /// cooldown is purely in-memory (the pre-#1145 behavior) — the test call sites pass null.
+    /// </param>
+    public WebhookAlertService(
+        IAlertSettings settings,
+        AlertBranding branding,
+        ILogger<WebhookAlertService> logger,
+        IAlertHistoryStore? historyStore = null)
     {
         _settings = settings;
         _branding = branding;
         _logger = logger;
+        _historyStore = historyStore;
     }
 
     /// <summary>
@@ -69,6 +80,20 @@ public class WebhookAlertService
         try
         {
             var cooldownKey = $"webhook:{serverId}:{metricName}";
+
+            /* Seed the in-memory cooldown from the alert log the first time this key is
+               seen, so a Teams/Slack alert posted shortly before an app restart is not
+               immediately re-posted afterward (#1145, mirroring the email seed #981). The
+               in-memory dictionary is authoritative once seeded. */
+            if (_historyStore is not null && !_cooldowns.ContainsKey(cooldownKey))
+            {
+                var lastPersistedSend = await _historyStore.GetLastWebhookSentUtcAsync(serverId, metricName);
+                if (lastPersistedSend.HasValue)
+                {
+                    _cooldowns.TryAdd(cooldownKey, lastPersistedSend.Value);
+                }
+            }
+
             if (_cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
                 DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes))
             {

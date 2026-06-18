@@ -125,6 +125,70 @@ public class StoreRoundTripTests : IDisposable
     }
 
     [Fact]
+    public async Task GetLastWebhookSentUtc_FiltersToWebhookRows_IncludingEmailWebhook()
+    {
+        await _duckDb.InitializeAsync();
+        var store = new DuckDbAlertHistoryStore(_duckDb);
+
+        /* #1145: only rows whose notification_type implies a webhook delivered seed the webhook
+           cooldown. email-only / tray rows must NOT; an 'email+webhook' row counts even though its
+           send_error is the EMAIL failure (the webhook still delivered), because send_error tracks
+           the email channel, not the webhook. */
+        await RecordAsync(store, "5", "Blocking Detected", "email", null);          // email only
+        await RecordAsync(store, "5", "Blocking Detected", "tray", null);           // tray only
+        await RecordAsync(store, "5", "Blocking Detected", "webhook", null);        // webhook
+        await RecordAsync(store, "5", "Blocking Detected", "email+webhook", "smtp boom"); // webhook sent, email failed (latest)
+
+        var lastWebhook = await store.GetLastWebhookSentUtcAsync("5", "Blocking Detected");
+        var lastAny = await store.GetLastAlertTimeAsync("5", "Blocking Detected");
+
+        Assert.NotNull(lastWebhook);
+        /* The email+webhook row is the last written, so it is both the unfiltered max and the
+           webhook-filtered max. */
+        Assert.Equal(lastAny!.Value, lastWebhook!.Value);
+
+        /* A metric with only email/tray rows → no webhook seed. */
+        await RecordAsync(store, "5", "EmailOnly", "email", null);
+        await RecordAsync(store, "5", "EmailOnly", "tray", null);
+        Assert.Null(await store.GetLastWebhookSentUtcAsync("5", "EmailOnly"));
+
+        /* Unknown metric → null. */
+        Assert.Null(await store.GetLastWebhookSentUtcAsync("5", "Missing"));
+    }
+
+    [Fact]
+    public async Task EdgeTriggerWatermark_SaveLoad_RoundTripsAndUpserts()
+    {
+        await _duckDb.InitializeAsync();
+        var store = new DuckDbAlertHistoryStore(_duckDb);
+
+        /* #1145: empty table → empty load. */
+        Assert.Empty(await store.LoadEdgeTriggerWatermarksAsync());
+
+        await store.SaveEdgeTriggerWatermarkAsync(1, "Blocking Detected", 4);
+        await store.SaveEdgeTriggerWatermarkAsync(1, "Deadlocks Detected", 2);
+        await store.SaveEdgeTriggerWatermarkAsync(2, "Blocking Detected", 7);
+
+        var loaded = await store.LoadEdgeTriggerWatermarksAsync();
+        Assert.Equal(3, loaded.Count);
+        Assert.Contains(loaded, r => r.ServerId == 1 && r.MetricName == "Blocking Detected" && r.Watermark == 4);
+        Assert.Contains(loaded, r => r.ServerId == 1 && r.MetricName == "Deadlocks Detected" && r.Watermark == 2);
+        Assert.Contains(loaded, r => r.ServerId == 2 && r.MetricName == "Blocking Detected" && r.Watermark == 7);
+
+        /* Upsert on the (server_id, metric_name) primary key: same key overwrites, no dup row. */
+        await store.SaveEdgeTriggerWatermarkAsync(1, "Blocking Detected", 9);
+        loaded = await store.LoadEdgeTriggerWatermarksAsync();
+        Assert.Equal(3, loaded.Count);
+        Assert.Contains(loaded, r => r.ServerId == 1 && r.MetricName == "Blocking Detected" && r.Watermark == 9);
+
+        /* A reset to 0 (the window drained) persists too — so a restart restores 0, not a stale count. */
+        await store.SaveEdgeTriggerWatermarkAsync(1, "Blocking Detected", 0);
+        loaded = await store.LoadEdgeTriggerWatermarksAsync();
+        Assert.Equal(3, loaded.Count);
+        Assert.Contains(loaded, r => r.ServerId == 1 && r.MetricName == "Blocking Detected" && r.Watermark == 0);
+    }
+
+    [Fact]
     public async Task MuteRuleStore_InsertUpdateSetEnabledDeleteExpire_RoundTrips()
     {
         await _duckDb.InitializeAsync();

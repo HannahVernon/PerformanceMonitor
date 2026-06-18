@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Database;
@@ -156,6 +157,60 @@ AND   send_error IS NULL";
     }
 
     /// <summary>
+    /// Returns the UTC time the most recent alert webhook was successfully sent
+    /// for this server/metric, read from config_alert_log — or null if none.
+    /// Seeds the webhook cooldown after restart so a Teams/Slack alert posted
+    /// shortly before a restart is not re-posted afterward (#1145, mirroring the
+    /// email seed #981).
+    /// </summary>
+    public async Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName)
+    {
+        var sid = int.TryParse(serverId, out var s) ? s : 0;
+        try
+        {
+            /* Use injected initializer, fall back to creating one from App.DatabasePath */
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return null;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var readLock = duckDb.AcquireReadLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            /* A successful webhook send is logged with a notification_type of
+               'webhook' / 'email+webhook' — those types are only ever written
+               when WebhookSent is true, so the type alone implies success.
+               send_error tracks the EMAIL channel, so it is NOT filtered on:
+               an email-failed-but-webhook-sent row must still seed the cooldown. */
+            command.CommandText = @"
+SELECT MAX(alert_time)
+FROM config_alert_log
+WHERE server_id = $1
+AND   metric_name = $2
+AND   notification_type IN ('webhook', 'email+webhook')";
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = sid });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
+
+            var result = await command.ExecuteScalarAsync();
+            if (result == null || result == DBNull.Value) return null;
+
+            /* alert_time is written as DateTime.UtcNow; tag it UTC so the kind
+               is explicit (the cooldown subtraction is tick math regardless). */
+            return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("WebhookAlert", $"Could not read persisted webhook cooldown: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Returns the UTC time of the most recent alert_log row for this
     /// (serverId, metricName), regardless of notification channel or
     /// delivery result. Used by <see cref="AnalysisNotificationService"/>
@@ -205,6 +260,88 @@ AND   metric_name = $2";
         {
             AppLogger.Error("AnalysisNotify", $"Could not read persisted analysis cooldown: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Loads all persisted edge-trigger watermarks (#1145), one entry per
+    /// (server_id, metric_name). The caller seeds its in-memory watermark dicts
+    /// from these at startup, before the first alert sweep, so a restart does not
+    /// reset the watermark to 0 and re-fire (and re-post a webhook for) events
+    /// still lingering in the rolling lookback window.
+    /// </summary>
+    public async Task<List<(int ServerId, string MetricName, int Watermark)>> LoadEdgeTriggerWatermarksAsync()
+    {
+        var result = new List<(int, string, int)>();
+        try
+        {
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return result;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var readLock = duckDb.AcquireReadLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT server_id, metric_name, watermark
+FROM config_edge_trigger_watermarks";
+
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                result.Add((Convert.ToInt32(reader.GetValue(0)), reader.GetString(1), Convert.ToInt32(reader.GetValue(2))));
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Alerts", $"Could not load edge-trigger watermarks: {ex.Message}");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Upserts one edge-trigger watermark (#1145). Called on-change only — the gate
+    /// returns the same watermark on the vast majority of sweeps — so this is a
+    /// low-frequency write that piggybacks on the existing alert-store write lock.
+    /// </summary>
+    public async Task SaveEdgeTriggerWatermarkAsync(int serverId, string metricName, int watermark)
+    {
+        try
+        {
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var writeLock = duckDb.AcquireWriteLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            /* INSERT OR REPLACE upserts on the (server_id, metric_name) primary key —
+               one stable row per server/metric, overwritten each time the watermark moves. */
+            command.CommandText = @"
+INSERT OR REPLACE INTO config_edge_trigger_watermarks (server_id, metric_name, watermark, updated_at)
+VALUES ($1, $2, $3, $4)";
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = metricName });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = watermark });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = DateTime.UtcNow });
+
+            await command.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Alerts", $"Could not persist edge-trigger watermark ({metricName}): {ex.Message}");
         }
     }
 }
