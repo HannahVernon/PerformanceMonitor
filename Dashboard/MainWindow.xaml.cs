@@ -169,8 +169,11 @@ namespace PerformanceMonitorDashboard
             _alertHistoryStore = new JsonAlertHistoryStore(_preferencesService);
             /* Webhook service is constructed first and injected into the email service
                (Plan E E3c): the shared lib service carries no Current static, so Dashboard
-               keeps this handle for the email fan-out and any MCP/health consumers. */
-            _webhookAlertService = new WebhookAlertService(alertSettings, EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>());
+               keeps this handle for the email fan-out and any MCP/health consumers. The
+               history store (built at line above) is passed so the webhook cooldown is seeded
+               across restart (#1145) — without it a restart inside the cooldown window
+               re-posts a Teams/Slack alert delivered just before the restart. */
+            _webhookAlertService = new WebhookAlertService(alertSettings, EmailAlertService.Branding, new LoggerAdapter<WebhookAlertService>(), _alertHistoryStore);
             _emailAlertService = new EmailAlertService(alertSettings, _alertHistoryStore, _webhookAlertService, new LoggerAdapter<EmailAlertService>());
 
             _alertCheckTimer = new DispatcherTimer();

@@ -768,6 +768,20 @@ CREATE TABLE IF NOT EXISTS config_alert_log (
     context_json VARCHAR
 )";
 
+    /* Edge-trigger watermarks for the rolling-count blocking/deadlock alert gate (#1091).
+       Persisted so the watermark survives an app restart (#1145): without it the in-memory
+       watermark resets to 0 and the first post-restart sweep re-fires the same alert (and
+       re-posts the same webhook) for events still lingering in the 1-hour lookback window.
+       Keyed (server_id, metric_name); one short row per server/metric, upserted on change. */
+    public const string CreateEdgeTriggerWatermarksTable = @"
+CREATE TABLE IF NOT EXISTS config_edge_trigger_watermarks (
+    server_id INTEGER NOT NULL,
+    metric_name VARCHAR NOT NULL,
+    watermark INTEGER NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (server_id, metric_name)
+)";
+
     public const string CreateMuteRulesTable = @"
 CREATE TABLE IF NOT EXISTS config_mute_rules (
     id VARCHAR NOT NULL PRIMARY KEY,
@@ -829,6 +843,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateServerPropertiesTable;
         yield return CreateSessionStatsTable;
         yield return CreateAlertLogTable;
+        yield return CreateEdgeTriggerWatermarksTable;
         yield return CreateMuteRulesTable;
         yield return CreateDismissedArchiveAlertsTable;
     }

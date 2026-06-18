@@ -125,6 +125,35 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
+        /// Returns the UTC time the most recent alert webhook was successfully
+        /// sent for this server/metric, scanned from the in-memory alert log
+        /// (loaded from alert_history.json on startup) — or null if none. Seeds
+        /// the webhook cooldown after restart so a Teams/Slack alert posted
+        /// shortly before a restart is not re-posted afterward (#1145, mirroring
+        /// the email seed #981).
+        /// </summary>
+        /// <remarks>
+        /// Dashboard records webhook deliveries as their own alert-log rows with
+        /// NotificationType == "webhook" (written only on a successful post), so
+        /// the type alone implies success — no SendError filter is needed.
+        /// </remarks>
+        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName)
+        {
+            lock (_alertLogLock)
+            {
+                DateTime? max = null;
+                foreach (var entry in _alertLog)
+                {
+                    if (entry.ServerId != serverId) continue;
+                    if (entry.MetricName != metricName) continue;
+                    if (entry.NotificationType != "webhook") continue;
+                    if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
+                }
+                return Task.FromResult(max);
+            }
+        }
+
+        /// <summary>
         /// Returns the AlertTime of the most recent log entry for the given
         /// (serverId, metricName), regardless of notification channel or send
         /// result. Used by <see cref="AnalysisNotificationService"/> to seed
