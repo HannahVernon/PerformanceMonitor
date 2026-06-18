@@ -1668,15 +1668,15 @@ public partial class MainWindow : Window
             var blockingContext = await BuildBlockingContextAsync(summary.ServerId, summary.DisplayName);
             var detailText = ContextToDetailText(blockingContext);
 
-            await _emailAlertService.TrySendAlertEmailAsync(
+            await SendDetectedAlertAsync(
                 "Blocking Detected",
                 summary.DisplayName,
                 effectiveBlockingCount.ToString(),
                 App.AlertBlockingThreshold.ToString(),
                 summary.ServerId,
                 blockingContext,
-                muted: isMuted,
-                detailText: detailText);
+                isMuted,
+                detailText);
         }
         else if (!blockingDecision.Active && wasBlockingActive)
         {
@@ -1739,15 +1739,15 @@ public partial class MainWindow : Window
             var deadlockContext = await BuildDeadlockContextAsync(summary.ServerId, summary.DisplayName);
             var detailText = ContextToDetailText(deadlockContext);
 
-            await _emailAlertService.TrySendAlertEmailAsync(
+            await SendDetectedAlertAsync(
                 "Deadlocks Detected",
                 summary.DisplayName,
                 effectiveDeadlockCount.ToString(),
                 App.AlertDeadlockThreshold.ToString(),
                 summary.ServerId,
                 deadlockContext,
-                muted: isMuted,
-                detailText: detailText);
+                isMuted,
+                detailText);
         }
         else if (!deadlockDecision.Active && wasDeadlockActive)
         {
@@ -2233,6 +2233,31 @@ public partial class MainWindow : Window
             if (string.IsNullOrEmpty(text)) return "";
             text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
             return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
+        }
+
+        /* #1141: in Per-event mode, deliver one notification per distinct incident (capped at
+           AlertPerEventMaxPerCycle, with a trailing "+N more" that still carries the remaining
+           fingerprints) instead of one batched summary card. Falls back to the single summary send in
+           Summary mode or when there are no incidents. The existing edge-triggered gating still decides
+           whether to fire; this only shapes delivery. */
+        private async Task SendDetectedAlertAsync(
+            string metricName, string serverName, string summaryCurrentValue, string thresholdValue,
+            int serverId, AlertContext? context, bool isMuted, string? summaryDetailText)
+        {
+            if (App.AlertDeliveryMode == AlertNotificationMode.PerEvent && context?.Incidents is { Count: > 0 })
+            {
+                foreach (var msg in PerEventNotification.Split(context, App.AlertPerEventMaxPerCycle))
+                {
+                    await _emailAlertService.TrySendAlertEmailAsync(
+                        metricName, serverName, msg.CurrentValue, thresholdValue, serverId,
+                        msg.Context, muted: isMuted, detailText: ContextToDetailText(msg.Context));
+                }
+                return;
+            }
+
+            await _emailAlertService.TrySendAlertEmailAsync(
+                metricName, serverName, summaryCurrentValue, thresholdValue, serverId,
+                context, muted: isMuted, detailText: summaryDetailText);
         }
 
         private static string? ContextToDetailText(AlertContext? context)

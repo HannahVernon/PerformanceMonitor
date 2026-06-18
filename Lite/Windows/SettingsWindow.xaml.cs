@@ -606,6 +606,8 @@ public partial class SettingsWindow : Window
         AlertFailedJobLookbackBox.Text = App.AlertFailedJobLookbackMinutes.ToString();
         AlertCooldownBox.Text = App.AlertCooldownMinutes.ToString();
         EmailCooldownBox.Text = App.EmailCooldownMinutes.ToString();
+        AlertDeliveryModeBox.SelectedIndex = App.AlertDeliveryMode == AlertNotificationMode.PerEvent ? 1 : 0;
+        AlertPerEventMaxBox.Text = App.AlertPerEventMaxPerCycle.ToString();
         MuteRuleDefaultExpirationCombo.SelectedIndex = App.MuteRuleDefaultExpiration switch
         {
             "1 hour" => 0,
@@ -677,6 +679,11 @@ public partial class SettingsWindow : Window
             App.EmailCooldownMinutes = emailCooldown;
         else
             validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes.");
+        App.AlertDeliveryMode = AlertDeliveryModeBox.SelectedIndex == 1 ? AlertNotificationMode.PerEvent : AlertNotificationMode.Summary;
+        if (int.TryParse(AlertPerEventMaxBox.Text, out var perEventMax) && perEventMax >= 1 && perEventMax <= 100)
+            App.AlertPerEventMaxPerCycle = perEventMax;
+        else
+            validationErrors.Add("Per-event max-per-cycle must be between 1 and 100.");
         App.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         App.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
         App.AnalysisEnabled = AnalysisEnabledCheckBox.IsChecked == true;
@@ -739,6 +746,8 @@ public partial class SettingsWindow : Window
             root["alert_failed_job_lookback_minutes"] = App.AlertFailedJobLookbackMinutes;
             root["alert_cooldown_minutes"] = App.AlertCooldownMinutes;
             root["email_cooldown_minutes"] = App.EmailCooldownMinutes;
+            root["alert_delivery_mode"] = App.AlertDeliveryMode.ToString();
+            root["alert_per_event_max_per_cycle"] = App.AlertPerEventMaxPerCycle;
             root["mute_rule_default_expiration"] = App.MuteRuleDefaultExpiration;
             root["log_alert_dismissals"] = App.LogAlertDismissals;
             root["analysis_enabled"] = App.AnalysisEnabled;
@@ -786,6 +795,8 @@ public partial class SettingsWindow : Window
         AlertFailedJobLookbackBox.Text = "60";
         AlertCooldownBox.Text = "5";
         EmailCooldownBox.Text = "15";
+        AlertDeliveryModeBox.SelectedIndex = 0;
+        AlertPerEventMaxBox.Text = "10";
         AnalysisIntervalBox.Text = "30";
         AnalysisNotifySeverityBox.Text = "1.5";
         AlertExcludedDatabasesBox.Text = "";
