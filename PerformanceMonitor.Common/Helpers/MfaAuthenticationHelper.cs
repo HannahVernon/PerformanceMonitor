@@ -1,14 +1,14 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
 using System;
 
-namespace PerformanceMonitorLite.Helpers;
+namespace PerformanceMonitor.Common;
 
 /// <summary>
 /// Helper utilities for Microsoft Entra MFA authentication.
@@ -23,7 +23,7 @@ public static class MfaAuthenticationHelper
     public static bool IsMfaCancelledException(Exception ex)
     {
         var message = ex.Message?.ToLowerInvariant() ?? string.Empty;
-        
+
         // Only treat explicit user cancellation messages as cancellation
         // Do NOT treat authentication errors (wrong password, account selection, etc.) as cancellation
         return message.Contains("user canceled") ||
