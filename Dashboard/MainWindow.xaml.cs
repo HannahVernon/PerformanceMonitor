@@ -277,6 +277,11 @@ namespace PerformanceMonitorDashboard
 
             await CheckAllConnectionsAsync();
 
+            /* Past startup init (MCP bound, services configured) — open the single-instance "exit for
+               upgrade" channel so a newer build can ask us to step aside cleanly
+               (#single-instance-upgrade-handoff). */
+            (Application.Current as App)?.EnableUpgradeHandoff();
+
             _ = CheckForUpdatesOnStartupAsync();
         }
 
