@@ -35,8 +35,12 @@ public partial class App : Application
     private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
 
     private const string MutexName = "PerformanceMonitorLite_SingleInstance";
-    private Mutex? _singleInstanceMutex;
-    private bool _ownsMutex;
+    /* Version-aware single-instance + upgrade handoff (plans/single-instance-upgrade-handoff.md):
+       a newer build launched over an older tray-resident one closes it and takes over instead of
+       being handed back the stale in-memory version. The coordinator owns the mutex + the exit
+       listener for the life of the owning process. */
+    private const string ExitForUpgradeEventName = "PerformanceMonitorLite_ExitForUpgrade";
+    private SingleInstanceCoordinator? _instanceCoordinator;
 
     /* Single-instance "surface the window" channel (#769, #1050). A second launch signals this named
        event and exits; the owning instance restores its window through WPF's own Show() path
@@ -261,17 +265,25 @@ public partial class App : Application
     {
         SetCurrentProcessExplicitAppUserModelID("DarlingData.PerformanceMonitor.Lite");
 
-        // Check for existing instance
-        _singleInstanceMutex = new Mutex(true, MutexName, out _ownsMutex);
-
-        if (!_ownsMutex)
+        /* Single-instance with upgrade handoff. Runs synchronously, at the top of OnStartup before
+           base.OnStartup and any window/data init, so we only open the shared DuckDB / bind the MCP
+           port after any older instance has released them. A newer build closes an older tray-resident
+           one and takes over; a same/newer one just surfaces the existing instance (today's behavior);
+           an older-but-elevated one raises an actionable error. */
+        _instanceCoordinator = new SingleInstanceCoordinator(new SingleInstanceOptions
         {
-            /* Ask the running instance to surface its window, then exit (#769). We signal a named
-               event rather than poking its HWND with Win32 ShowWindow: the owning instance restores
-               through WPF's own Show() path, which is the only thing that un-blanks a tray-hidden
-               window (#1050). Best-effort — if the first instance is still mid-startup the channel
-               may not exist yet, but it's already coming up visible anyway. */
-            SingleInstanceSignal.TrySignal(ShowWindowEventName);
+            MutexName = MutexName,
+            ProcessName = "PerformanceMonitorLite",
+            ExitEventName = ExitForUpgradeEventName,
+            SurfaceRunningInstance = () => SingleInstanceSignal.TrySignal(ShowWindowEventName),
+            GracefulSelfExit = () => Dispatcher.BeginInvoke(new Action(Shutdown)),
+            Prompts = new MessageBoxHandoffPrompts("Performance Monitor Lite"),
+            AutoConfirm = Array.Exists(e.Args, a => string.Equals(a, HandoffArgs.AutoConfirm, StringComparison.OrdinalIgnoreCase)),
+            Log = msg => { try { AppLogger.Info("SingleInstance", msg); } catch { /* logger not yet initialized */ } },
+        });
+
+        if (!_instanceCoordinator.TryBecomeOwner())
+        {
             Shutdown();
             return;
         }
@@ -346,6 +358,13 @@ public partial class App : Application
         Dispatcher.BeginInvoke(new Action(() => _mainWindow?.RestoreFromTray()));
     }
 
+    /// <summary>
+    /// Opens the upgrade-handoff "exit" channel once startup is past its risky init (DuckDB ready).
+    /// Called by <see cref="MainWindow"/> after initialization so a newer build won't signal/kill us
+    /// mid-init (#single-instance-upgrade-handoff). Safe to call more than once.
+    /// </summary>
+    public void EnableUpgradeHandoff() => _instanceCoordinator?.EnableUpgradeHandoff();
+
     protected override void OnExit(ExitEventArgs e)
     {
         AppLogger.Info("App", "Shutting down");
@@ -354,11 +373,8 @@ public partial class App : Application
 
         AppLogger.Shutdown();
 
-        if (_ownsMutex)
-        {
-            _singleInstanceMutex?.ReleaseMutex();
-        }
-        _singleInstanceMutex?.Dispose();
+        /* Releases the mutex + disposes the exit-for-upgrade listener. */
+        _instanceCoordinator?.Dispose();
 
         base.OnExit(e);
     }

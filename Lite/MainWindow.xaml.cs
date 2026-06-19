@@ -259,6 +259,10 @@ public partial class MainWindow : Window
             await RefreshOverviewAsync();
             StatusText.Text = "Ready - Collection active";
 
+            /* Now past the risky DuckDB init — open the single-instance "exit for upgrade" channel so a
+               newer build can ask us to step aside cleanly (#single-instance-upgrade-handoff). */
+            (Application.Current as App)?.EnableUpgradeHandoff();
+
             _ = CheckForUpdatesOnStartupAsync();
         }
         catch (Exception ex)
