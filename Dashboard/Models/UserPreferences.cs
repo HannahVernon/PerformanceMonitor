@@ -210,6 +210,13 @@ namespace PerformanceMonitorDashboard.Models
 
         // Acknowledged alert baselines (persisted, keyed by "serverId:tabName")
         public Dictionary<string, AlertBaseline> AcknowledgedBaselines { get; set; } = new();
+
+        /* Failed-Agent-job tray watermark (persisted, keyed by serverId): the newest already-alerted
+           failure's server-local run time, stored as DateTime.Ticks. Seeds the in-memory watermark
+           on restart so a reopen does not re-fire toasts for failures still inside the lookback window
+           that the user already saw and dismissed (the failed-job equivalent of #1145). Ticks keep the
+           value basis-exact across JSON round-trips, free of DateTimeKind ambiguity. */
+        public Dictionary<string, long> FailedJobAlertWatermarkTicks { get; set; } = new();
     }
 
     /// <summary>

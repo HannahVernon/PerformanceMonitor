@@ -2137,6 +2137,15 @@ namespace PerformanceMonitorDashboard
             if (prefs.NotifyOnFailedJobs && health.RecentlyFailedJobs.Count > 0)
             {
                 var newestFailure = health.RecentlyFailedJobs.Max(j => j.RunDateTime);
+                /* Lazy restart-seed: the in-memory watermark is empty after a reopen, so failures
+                   still in the lookback window would re-fire toasts the user already saw and
+                   dismissed. Seed once per server from the persisted watermark (server-local basis,
+                   stored as Ticks) — the failed-job equivalent of the #1145 blocking/deadlock seed. */
+                if (!_lastAlertedFailedJobTime.ContainsKey(serverId)
+                    && prefs.FailedJobAlertWatermarkTicks.TryGetValue(serverId, out var seededTicks))
+                {
+                    _lastAlertedFailedJobTime[serverId] = new DateTime(seededTicks);
+                }
                 bool hasWatermark = _lastAlertedFailedJobTime.TryGetValue(serverId, out var lastFailure);
                 bool hasNewFailure = !hasWatermark || newestFailure > lastFailure;
 
@@ -2150,6 +2159,11 @@ namespace PerformanceMonitorDashboard
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastFailedJobAlert[serverId] = now;
                     _lastAlertedFailedJobTime[serverId] = newestFailure;
+                    /* Persist so the watermark survives a reopen (#1145 parity): a restart must not
+                       re-fire toasts for these failures while they linger in the lookback window.
+                       On-change only — only when a failed-job toast actually fires. */
+                    prefs.FailedJobAlertWatermarkTicks[serverId] = newestFailure.Ticks;
+                    _preferencesService.SavePreferences(prefs);
                     var jobContext = BuildFailedJobContext(serverName, health.RecentlyFailedJobs);
                     var detailText = ContextToDetailText(jobContext);
 

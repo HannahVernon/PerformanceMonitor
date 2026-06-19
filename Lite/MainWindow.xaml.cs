@@ -1583,6 +1583,15 @@ public partial class MainWindow : Window
                     _lastAlertedDeadlockCount[key] = watermark;
                 }
             }
+
+            /* Failed-job watermark (time-based): seed so a restart does not re-fire tray toasts
+               for failures still inside the lookback window that the user already saw and dismissed
+               before the restart — the failed-job equivalent of the blocking/deadlock seed above. */
+            var failedJobRows = await _alertHistoryStore.LoadFailedJobWatermarksAsync();
+            foreach (var (serverId, watermark) in failedJobRows)
+            {
+                _lastAlertedFailedJobTime[serverId.ToString()] = watermark;
+            }
         }
         catch (Exception ex)
         {
@@ -2243,6 +2252,10 @@ public partial class MainWindow : Window
                             bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                             _lastFailedJobAlert[key] = now;
                             _lastAlertedFailedJobTime[key] = newestFailure;
+                            /* Persist the watermark so the same failures don't re-fire on the first
+                               post-restart sweep while they linger in the lookback window (#1145
+                               parity). On-change only — only when a failed-job toast actually fires. */
+                            await _alertHistoryStore.SaveFailedJobWatermarkAsync(summary.ServerId, newestFailure);
 
                             if (!isMuted)
                             {

@@ -768,16 +768,20 @@ CREATE TABLE IF NOT EXISTS config_alert_log (
     context_json VARCHAR
 )";
 
-    /* Edge-trigger watermarks for the rolling-count blocking/deadlock alert gate (#1091).
-       Persisted so the watermark survives an app restart (#1145): without it the in-memory
-       watermark resets to 0 and the first post-restart sweep re-fires the same alert (and
-       re-posts the same webhook) for events still lingering in the 1-hour lookback window.
-       Keyed (server_id, metric_name); one short row per server/metric, upserted on change. */
+    /* Edge-trigger watermarks for the rolling-count blocking/deadlock alert gate (#1091) and the
+       time-based failed-Agent-job watermark. Persisted so the watermark survives an app restart
+       (#1145): without it the in-memory watermark resets and the first post-restart sweep re-fires
+       the same alert (and re-posts the same webhook) for events still lingering in the lookback
+       window — including failed-job toasts the user already saw and dismissed before the restart.
+       Keyed (server_id, metric_name); one short row per server/metric, upserted on change.
+       Count metrics (blocking/deadlock) use the INTEGER watermark column; the failed-job metric
+       uses watermark_time (the newest already-alerted failure's server-local run time). */
     public const string CreateEdgeTriggerWatermarksTable = @"
 CREATE TABLE IF NOT EXISTS config_edge_trigger_watermarks (
     server_id INTEGER NOT NULL,
     metric_name VARCHAR NOT NULL,
     watermark INTEGER NOT NULL,
+    watermark_time TIMESTAMP,
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (server_id, metric_name)
 )";

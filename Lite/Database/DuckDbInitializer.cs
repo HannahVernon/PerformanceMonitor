@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 30;
+    internal const int CurrentSchemaVersion = 31;
 
     private readonly string _archivePath;
 
@@ -768,6 +768,26 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v30 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 31)
+        {
+            /* v31: failed-Agent-job watermark persistence. The blocking/deadlock edge-trigger
+               watermarks already survive restart (#1145); the failed-job watermark did not, so a
+               reopen re-fired tray toasts for failures still inside the lookback window that the
+               user had already seen and dismissed. Adds a nullable watermark_time column to the
+               existing watermark table to hold the newest already-alerted failure's server-local
+               run time. Only ALTER if the table exists — fresh installs get the column from
+               GetAllTableStatements(). */
+            _logger?.LogInformation("Running migration to v31: failed-job watermark column");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE config_edge_trigger_watermarks ADD COLUMN IF NOT EXISTS watermark_time TIMESTAMP");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v31 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

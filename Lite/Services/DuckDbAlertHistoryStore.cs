@@ -303,9 +303,13 @@ AND   metric_name = $2";
             await connection.OpenAsync();
 
             using var command = connection.CreateCommand();
+            /* Count-based rows only (blocking/deadlock). The time-based failed-job rows live in the
+               same table but set watermark_time (NULL here) and are loaded by
+               LoadFailedJobWatermarksAsync, so they never bleed into the count seed. */
             command.CommandText = @"
 SELECT server_id, metric_name, watermark
-FROM config_edge_trigger_watermarks";
+FROM config_edge_trigger_watermarks
+WHERE watermark_time IS NULL";
 
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
@@ -357,6 +361,96 @@ VALUES ($1, $2, $3, $4)";
         catch (Exception ex)
         {
             AppLogger.Error("Alerts", $"Could not persist edge-trigger watermark ({metricName}): {ex.Message}");
+        }
+    }
+
+    /* The failed-Agent-job watermark shares the edge-trigger table but is time-based, not a count:
+       it holds the newest already-alerted failure's server-local run time (stored in watermark_time,
+       not the INTEGER watermark column). One reserved metric_name row per server. */
+    private const string FailedJobWatermarkMetric = "Failed Agent Job";
+
+    /// <summary>
+    /// Loads the persisted failed-job watermarks (#1145 parity for the failed-job toast). The caller
+    /// seeds <c>_lastAlertedFailedJobTime</c> from these at startup so a restart does not re-fire tray
+    /// toasts for failures still inside the lookback window that the user already saw and dismissed.
+    /// The value is the server-local run time of the newest already-alerted failure, returned in its
+    /// native basis (NOT coerced to UTC) so it compares directly against <c>FailedJobInfo.RunDateTime</c>.
+    /// </summary>
+    public async Task<List<(int ServerId, DateTime Watermark)>> LoadFailedJobWatermarksAsync()
+    {
+        var result = new List<(int, DateTime)>();
+        try
+        {
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return result;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var readLock = duckDb.AcquireReadLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT server_id, watermark_time
+FROM config_edge_trigger_watermarks
+WHERE metric_name = $1
+AND   watermark_time IS NOT NULL";
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = FailedJobWatermarkMetric });
+
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                result.Add((Convert.ToInt32(reader.GetValue(0)), Convert.ToDateTime(reader.GetValue(1))));
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Alerts", $"Could not load failed-job watermarks: {ex.Message}");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Upserts one failed-job watermark — the newest already-alerted failure's server-local run time.
+    /// Called on-change only (when a failed-job toast fires), so it is a low-frequency write that
+    /// piggybacks on the existing alert-store write lock, mirroring <see cref="SaveEdgeTriggerWatermarkAsync"/>.
+    /// </summary>
+    public async Task SaveFailedJobWatermarkAsync(int serverId, DateTime watermark)
+    {
+        try
+        {
+            var duckDb = _duckDb;
+            if (duckDb == null)
+            {
+                var dbPath = App.DatabasePath;
+                if (string.IsNullOrEmpty(dbPath)) return;
+                duckDb = new DuckDbInitializer(dbPath);
+            }
+
+            using var writeLock = duckDb.AcquireWriteLock();
+            using var connection = duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var command = connection.CreateCommand();
+            /* watermark (the INTEGER count column) is unused for the time-based failed-job row;
+               it is non-nullable, so write 0. The meaningful value lives in watermark_time. */
+            command.CommandText = @"
+INSERT OR REPLACE INTO config_edge_trigger_watermarks (server_id, metric_name, watermark, watermark_time, updated_at)
+VALUES ($1, $2, 0, $3, $4)";
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = FailedJobWatermarkMetric });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = watermark });
+            command.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = DateTime.UtcNow });
+
+            await command.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Alerts", $"Could not persist failed-job watermark: {ex.Message}");
         }
     }
 }
