@@ -70,6 +70,5 @@
 
   <ItemGroup>
     <Resource Include="EDD.ico" />
-    <Resource Include="Resources\PlanIcons\*.png" />
   </ItemGroup>
 </Project>

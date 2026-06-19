@@ -1,9 +1,22 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
 using System;
 using System.Collections.Generic;
 using System.Windows.Media.Imaging;
 
-namespace PerformanceMonitorDashboard.Services;
+namespace PerformanceMonitor.Ui;
 
+/// <summary>
+/// Maps plan-operator icon names to their PNG resources, shared by Lite and Dashboard.
+/// The PlanIcons PNGs now live in (and are compiled as Resource into) this assembly, so the
+/// pack URI is component-qualified to PerformanceMonitor.Ui rather than the host application.
+/// </summary>
 public static class PlanIconMapper
 {
     private static readonly Dictionary<string, BitmapImage> _iconCache = new();
@@ -15,7 +28,7 @@ public static class PlanIconMapper
 
         try
         {
-            var uri = new Uri($"pack://application:,,,/Resources/PlanIcons/{iconName}.png", UriKind.Absolute);
+            var uri = new Uri($"pack://application:,,,/PerformanceMonitor.Ui;component/Resources/PlanIcons/{iconName}.png", UriKind.Absolute);
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.UriSource = uri;
