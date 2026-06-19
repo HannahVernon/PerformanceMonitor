@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Database;
@@ -219,6 +220,42 @@ public class StoreRoundTripTests : IDisposable
         loaded = await store.LoadEdgeTriggerWatermarksAsync();
         Assert.Equal(3, loaded.Count);
         Assert.Contains(loaded, r => r.ServerId == 1 && r.MetricName == "Blocking Detected" && r.Watermark == 0);
+    }
+
+    [Fact]
+    public async Task FailedJobWatermark_SaveLoad_RoundTripsExactValue_AndUpserts()
+    {
+        await _duckDb.InitializeAsync();
+        var store = new DuckDbAlertHistoryStore(_duckDb);
+
+        /* Empty table → empty load. */
+        Assert.Empty(await store.LoadFailedJobWatermarksAsync());
+
+        /* Server-local run times (Kind=Unspecified) must round-trip byte-for-byte: the watermark is
+           compared directly against FailedJobInfo.RunDateTime, so any UTC coercion would corrupt it. */
+        var server1 = new DateTime(2026, 6, 19, 14, 30, 15);
+        var server2 = new DateTime(2026, 6, 19, 9, 5, 0);
+        await store.SaveFailedJobWatermarkAsync(1, server1);
+        await store.SaveFailedJobWatermarkAsync(2, server2);
+
+        var loaded = await store.LoadFailedJobWatermarksAsync();
+        Assert.Equal(2, loaded.Count);
+        Assert.Equal(server1, loaded.Single(r => r.ServerId == 1).Watermark);
+        Assert.Equal(server2, loaded.Single(r => r.ServerId == 2).Watermark);
+
+        /* Upsert on the (server_id, metric_name) primary key: a newer failure overwrites, no dup row. */
+        var server1Newer = new DateTime(2026, 6, 19, 16, 45, 0);
+        await store.SaveFailedJobWatermarkAsync(1, server1Newer);
+        loaded = await store.LoadFailedJobWatermarksAsync();
+        Assert.Equal(2, loaded.Count);
+        Assert.Equal(server1Newer, loaded.Single(r => r.ServerId == 1).Watermark);
+
+        /* The time-based failed-job rows and the count-based blocking/deadlock rows share the table
+           but never bleed into each other's load. */
+        await store.SaveEdgeTriggerWatermarkAsync(1, "Blocking Detected", 5);
+        Assert.Equal(2, (await store.LoadFailedJobWatermarksAsync()).Count);          // unchanged by the count row
+        Assert.DoesNotContain(await store.LoadEdgeTriggerWatermarksAsync(),
+            r => r.MetricName == "Failed Agent Job");                                 // failed-job row absent from count load
     }
 
     [Fact]
