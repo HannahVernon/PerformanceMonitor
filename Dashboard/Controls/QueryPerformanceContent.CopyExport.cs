@@ -17,6 +17,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
