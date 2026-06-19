@@ -2150,7 +2150,7 @@ namespace PerformanceMonitorDashboard
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastFailedJobAlert[serverId] = now;
                     _lastAlertedFailedJobTime[serverId] = newestFailure;
-                    var jobContext = BuildFailedJobContext(health.RecentlyFailedJobs);
+                    var jobContext = BuildFailedJobContext(serverName, health.RecentlyFailedJobs);
                     var detailText = ContextToDetailText(jobContext);
 
                     if (!isMuted)
@@ -2498,12 +2498,13 @@ namespace PerformanceMonitorDashboard
             return context;
         }
 
-        private static AlertContext? BuildFailedJobContext(List<FailedJobInfo> jobs)
+        private static AlertContext? BuildFailedJobContext(string serverName, List<FailedJobInfo> jobs)
         {
             if (jobs.Count == 0) return null;
 
             var context = new AlertContext();
-            foreach (var j in jobs.GetRange(0, Math.Min(5, jobs.Count)))
+            var shown = jobs.GetRange(0, Math.Min(5, jobs.Count));
+            foreach (var j in shown)
             {
                 var item = new AlertDetailItem { Heading = j.JobName, Fields = new() };
                 item.Fields.Add(("Job", j.JobName));
@@ -2512,6 +2513,13 @@ namespace PerformanceMonitorDashboard
                     item.Fields.Add(("Message", Truncate(j.Message, 300)));
                 context.Details.Add(item);
             }
+
+            /* #1140: dedup key per job (job name, scoped to the instance via serverName) — mirrors
+               BuildAnomalousJobContext so two distinct failed jobs are distinct incidents under the
+               #1154 per-fingerprint cooldown instead of coalescing on the metric key. */
+            AlertIncidentRenderer.Apply(context, shown
+                .Select(j => AlertFingerprint.ForKey(serverName, AlertFingerprint.Job, j.JobName, new[] { j.JobName }))
+                .Where(i => i is not null).Select(i => i!).ToList());
             return context;
         }
 
