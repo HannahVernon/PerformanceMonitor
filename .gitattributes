@@ -1,5 +1,8 @@
 * text=auto eol=crlf
 
+# Shell scripts must stay LF (this repo uses Git Bash) — CRLF breaks them.
+*.sh text eol=lf
+
 # Explicit binary markers (prevent text mis-detection / corruption):
 *.png binary
 *.jpg binary
