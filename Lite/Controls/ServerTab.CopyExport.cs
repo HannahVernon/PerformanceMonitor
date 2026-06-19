@@ -16,6 +16,7 @@ using Microsoft.Win32;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
@@ -204,7 +205,7 @@ public partial class ServerTab : UserControl
             return;
         }
 
-        var script = ReproScriptBuilder.BuildReproScript(queryText, databaseName, planXml, isolationLevel, source);
+        var script = ReproScriptBuilder.BuildReproScript(queryText, databaseName, planXml, isolationLevel, source, productName: "SQL Server Performance Monitor Lite");
 
         /* Use SetDataObject with copy=false to avoid WPF's problematic Clipboard.Flush() operation.
            See: https://github.com/dotnet/wpf/issues/9901 */
