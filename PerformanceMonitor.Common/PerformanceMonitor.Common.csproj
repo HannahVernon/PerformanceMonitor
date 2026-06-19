@@ -16,7 +16,7 @@
   <ItemGroup>
     <!-- MCP SDK: required by Mcp/McpSchemaCompat.cs (Gemini-compatible tool registration, issue #1074).
          Brings ModelContextProtocol.Core + Microsoft.Extensions.AI.Abstractions transitively. -->
-    <PackageReference Include="ModelContextProtocol" Version="1.3.0" />
+    <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
   </ItemGroup>
 
   <ItemGroup>
