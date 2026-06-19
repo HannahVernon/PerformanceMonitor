@@ -911,6 +911,7 @@
       "performancemonitor.ui": {
         "type": "Project",
         "dependencies": {
+          "PerformanceMonitor.Common": "[1.0.0, )",
           "ScottPlot.WPF": "[5.1.58, )"
         }
       },

@@ -6,16 +6,16 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
-using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
-using PerformanceMonitorDashboard.Models;
 using PerformanceMonitor.Common;
 
-namespace PerformanceMonitorDashboard.Services;
+namespace PerformanceMonitor.Ui;
 
 /// <summary>
 /// Non-generic interface for looking up filter state from a shared dictionary.
@@ -29,7 +29,8 @@ public interface IDataGridFilterManager
 
 /// <summary>
 /// Manages column filter state, unfiltered data capture, and filter application
-/// for a single DataGrid. Eliminates per-grid boilerplate code.
+/// for a single DataGrid. Eliminates per-grid boilerplate code. Preserves the user's
+/// sort order across refresh/filter cycles. Shared by Lite and Dashboard.
 /// </summary>
 public class DataGridFilterManager<T> : IDataGridFilterManager
 {
@@ -46,7 +47,7 @@ public class DataGridFilterManager<T> : IDataGridFilterManager
 
     /// <summary>
     /// Called when new data arrives (refresh cycle). Captures unfiltered data,
-    /// then re-applies any active filters.
+    /// then re-applies any active filters. Preserves user sort order.
     /// </summary>
     public void UpdateData(List<T> newData)
     {
@@ -54,7 +55,7 @@ public class DataGridFilterManager<T> : IDataGridFilterManager
 
         if (!HasActiveFilters())
         {
-            _dataGrid.ItemsSource = newData;
+            SetItemsSourcePreservingSort(newData);
             return;
         }
 
@@ -86,7 +87,7 @@ public class DataGridFilterManager<T> : IDataGridFilterManager
 
         if (!HasActiveFilters())
         {
-            _dataGrid.ItemsSource = _unfilteredData;
+            SetItemsSourcePreservingSort(_unfilteredData);
             return;
         }
 
@@ -94,13 +95,36 @@ public class DataGridFilterManager<T> : IDataGridFilterManager
         {
             foreach (var filter in _filters.Values)
             {
-                if (filter.IsActive && !DataGridFilterService.MatchesFilter(item!, filter))
+                if (filter.IsActive && !ColumnFilterMatcher.MatchesFilter(item!, filter))
                     return false;
             }
             return true;
         }).ToList();
 
-        _dataGrid.ItemsSource = filteredData;
+        SetItemsSourcePreservingSort(filteredData);
+    }
+
+    private void SetItemsSourcePreservingSort(System.Collections.IEnumerable? newSource)
+    {
+        var savedSorts = _dataGrid.Items.SortDescriptions.ToList();
+
+        _dataGrid.ItemsSource = newSource;
+
+        if (savedSorts.Count > 0)
+        {
+            foreach (var sort in savedSorts)
+                _dataGrid.Items.SortDescriptions.Add(sort);
+
+            foreach (var column in _dataGrid.Columns)
+            {
+                if (column is DataGridBoundColumn bc &&
+                    bc.Binding is Binding b)
+                {
+                    var match = savedSorts.FirstOrDefault(s => s.PropertyName == b.Path.Path);
+                    column.SortDirection = match.PropertyName != null ? match.Direction : null;
+                }
+            }
+        }
     }
 
     /// <summary>
