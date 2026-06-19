@@ -1,18 +1,23 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
 using System;
 
-namespace PerformanceMonitorLite.Models;
+namespace PerformanceMonitor.Common;
 
 /// <summary>
 /// Represents the runtime connection status of a server.
 /// This is transient state that is not persisted to disk.
+///
+/// Shared by Lite and Dashboard. A few fields are only populated by one app (Dashboard sets
+/// <see cref="InstalledMonitorVersion"/>; Lite sets <see cref="SqlServerVersion"/>,
+/// <see cref="SqlMajorVersion"/>, and <see cref="HasMsdbAccess"/>) — the other app simply leaves
+/// them at their defaults.
 /// </summary>
 public class ServerConnectionStatus
 {
@@ -57,13 +62,12 @@ public class ServerConnectionStatus
     public DateTime? ServerStartTime { get; set; }
 
     /// <summary>
-    /// The SQL Server version string.
-    /// Only populated when server is online.
+    /// The SQL Server version string. (Lite) Only populated when server is online.
     /// </summary>
     public string? SqlServerVersion { get; set; }
 
     /// <summary>
-    /// SQL Server major product version (e.g., 13 = 2016, 14 = 2017, 15 = 2019, 16 = 2022).
+    /// SQL Server major product version (e.g., 13 = 2016, 14 = 2017, 15 = 2019, 16 = 2022). (Lite)
     /// Used for version-gating collectors that require specific DMV columns.
     /// </summary>
     public int SqlMajorVersion { get; set; }
@@ -77,25 +81,31 @@ public class ServerConnectionStatus
 
     /// <summary>
     /// Whether this server is an AWS RDS instance (detected by presence of rdsadmin database).
-    /// Used for gating collectors that require msdb permissions unavailable on RDS.
+    /// Used for gating features that require msdb permissions unavailable on RDS.
     /// </summary>
     public bool IsAwsRds { get; set; }
 
     /// <summary>
-    /// Whether the connected login has access to msdb.
+    /// Whether the connected login has access to msdb. (Lite)
     /// Used for gating collectors that query msdb system tables (e.g., running jobs).
     /// </summary>
     public bool HasMsdbAccess { get; set; } = true;
 
     /// <summary>
+    /// The installed PerformanceMonitor version on the server (e.g., "2.5.0"). (Dashboard)
+    /// Null if the PerformanceMonitor database is not installed.
+    /// </summary>
+    public string? InstalledMonitorVersion { get; set; }
+
+    /// <summary>
     /// The server's UTC offset in minutes, queried via DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()).
-    /// Used to convert UTC collection_time values to server-local time for display.
+    /// Used to convert UTC-stored collection_time values to server-local time for display.
     /// </summary>
     public int? UtcOffsetMinutes { get; set; }
 
     /// <summary>
-    /// Indicates whether the user has cancelled MFA authentication for this server.
-    /// When true, MFA popups will not be shown until the user explicitly tries to connect again.
+    /// Whether the user cancelled MFA authentication for this server.
+    /// When true, background connectivity checks are skipped to avoid repeated authentication popups.
     /// </summary>
     public bool UserCancelledMfa { get; set; }
 
@@ -126,7 +136,7 @@ public class ServerConnectionStatus
             if (!LastChecked.HasValue)
                 return "?";
 
-            return IsOnline == true ? "\u2713" : "\u2717"; // checkmark or X
+            return IsOnline == true ? "✓" : "✗"; // checkmark or X
         }
     }
 
