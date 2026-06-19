@@ -619,11 +619,6 @@
         "resolved": "13.0.3",
         "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
       },
-      "NuGet.Versioning": {
-        "type": "Transitive",
-        "resolved": "6.14.0",
-        "contentHash": "4v4blkhCv8mpKtfx+z0G/X0daVCzdIaHSC51GkUspugi5JIMn2Bo8xm5PdZYF0U68gOBfz/+aPWMnpRd85Jbow=="
-      },
       "OpenTK": {
         "type": "Transitive",
         "resolved": "4.9.4",
@@ -821,11 +816,8 @@
       },
       "Velopack": {
         "type": "Transitive",
-        "resolved": "0.0.1298",
-        "contentHash": "PJ6Nm28qJ4ChsHYzgHUJ8g+DGyyHes2+bwxY709+znMhgi8fMp8M1FTF8x6pZMjnsPCWVwoMlxVEyq0NLeRZtA==",
-        "dependencies": {
-          "NuGet.Versioning": "6.14.0"
-        }
+        "resolved": "1.2.0",
+        "contentHash": "Rz67gJL619fSBS6omaSINUxyDuwhIxkm5mmubf7uLd5Qgi6LLKaKCha+QFP6n+Bw/UjA0vutnH4JQfYzn6ANtw=="
       },
       "xunit.analyzers": {
         "type": "Transitive",
@@ -938,7 +930,7 @@
           "PerformanceMonitor.PlanAnalysis": "[1.0.0, )",
           "PerformanceMonitor.Ui": "[1.0.0, )",
           "ScottPlot.WPF": "[5.1.58, )",
-          "Velopack": "[0.0.1298, )"
+          "Velopack": "[1.2.0, )"
         }
       }
     }
