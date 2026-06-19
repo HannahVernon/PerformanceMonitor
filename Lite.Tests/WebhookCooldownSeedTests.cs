@@ -98,13 +98,56 @@ public class WebhookCooldownSeedTests
         public DateTime? LastWebhookSent { get; set; }
         public int GetLastWebhookSentCallCount { get; private set; }
 
+        /// <summary>When set (#1154), the seed applies ONLY to this dedup key; other keys seed null.
+        /// Null (default) returns <see cref="LastWebhookSent"/> for any call — the pre-#1154 shape.</summary>
+        public string? SeededDedupKey { get; set; }
+
         public Task RecordAlertAsync(AlertHistoryRecord record) => Task.CompletedTask;
-        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName) => Task.FromResult<DateTime?>(null);
-        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName)
+        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName, string? dedupKey = null) => Task.FromResult<DateTime?>(null);
+        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName, string? dedupKey = null)
         {
             GetLastWebhookSentCallCount++;
+            if (SeededDedupKey is not null && dedupKey != SeededDedupKey)
+                return Task.FromResult<DateTime?>(null);
             return Task.FromResult(LastWebhookSent);
         }
         public Task<DateTime?> GetLastAlertTimeAsync(string serverId, string metricName) => Task.FromResult<DateTime?>(null);
+    }
+
+    private static AlertContext ContextWith(string dedupKey) => new()
+    {
+        Incidents = new System.Collections.Generic.List<AlertIncident>
+        {
+            new(dedupKey, new[] { "db.dbo.T" })
+        }
+    };
+
+    [Fact]
+    public async Task DistinctFingerprint_NotSuppressedByAnotherIncidentsCooldown()
+    {
+        // #1154: incident X was delivered "just now"; a DISTINCT incident Y arrives within the window.
+        // Y must be attempted (it fails against the dead URL) — not throttled by X's cooldown.
+        var history = new FakeHistoryStore { LastWebhookSent = DateTime.UtcNow, SeededDedupKey = "X" };
+        var svc = MakeService(history, EnabledTeamsSettings());
+
+        var sent = await svc.TrySendWebhookAlertsAsync(
+            "Deadlocks Detected", "Srv", "4", "1", "1", ContextWith("Y"));
+
+        Assert.False(sent);                                        // dead URL -> attempted, failed
+        Assert.Equal(1, svc.GetTeamsHealth().ConsecutiveFailures); // ATTEMPTED, not suppressed
+    }
+
+    [Fact]
+    public async Task SameFingerprint_SuppressedByItsOwnSeededCooldown()
+    {
+        // The same incident X, seeded "just now" -> suppressed (no network touch).
+        var history = new FakeHistoryStore { LastWebhookSent = DateTime.UtcNow, SeededDedupKey = "X" };
+        var svc = MakeService(history, EnabledTeamsSettings());
+
+        var sent = await svc.TrySendWebhookAlertsAsync(
+            "Deadlocks Detected", "Srv", "4", "1", "1", ContextWith("X"));
+
+        Assert.False(sent);                                        // suppressed
+        Assert.Equal(0, svc.GetTeamsHealth().ConsecutiveFailures); // NOT attempted
     }
 }
