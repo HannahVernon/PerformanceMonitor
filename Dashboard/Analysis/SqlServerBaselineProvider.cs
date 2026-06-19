@@ -169,9 +169,11 @@ public class SqlServerBaselineProvider
                     Mean = mean,
                     StdDev = stddev,
                     SampleCount = count,
-                    Tier = count >= RestoreThreshold ? BaselineTier.Full
-                         : count >= CollapseThreshold ? BaselineTier.Full
-                         : BaselineTier.HourOnly
+                    // Every bucket here is a full (hour, day-of-week) bucket; the HourOnly/Flat
+                    // tiers are assigned only on the collapse/flat paths below. A sparse full
+                    // bucket is still Full, just low-sample. (Was a copy-paste of two identical
+                    // Full branches that mislabeled sparse buckets HourOnly in baseline_tier.)
+                    Tier = BaselineTier.Full
                 };
             }
 
