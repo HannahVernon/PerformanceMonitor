@@ -14,6 +14,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using PerformanceMonitor.PlanAnalysis;
+using PerformanceMonitor.Ui;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 
