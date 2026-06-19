@@ -6,6 +6,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using PerformanceMonitor.Analysis;
@@ -259,6 +260,23 @@ public record MissingIndexTargetDto(
 /// </summary>
 public static class AlertContextSerializer
 {
+    /// <summary>
+    /// True when the persisted <paramref name="contextJson"/> carries the given #1140 dedup fingerprint
+    /// (#1154 per-fingerprint cooldown seed). Anchored substring match on the serialized
+    /// <c>"DedupKey":"&lt;hex&gt;"</c> property — safe because the key is lowercase SHA-256 hex (no JSON
+    /// escaping, no collision with any other serialized field) and <see cref="Serialize"/> emits PascalCase
+    /// with default options. Returns false on null/blank input — the Dashboard scan visits many rows whose
+    /// <c>ContextJson</c> is null (tray/muted/server-reachability rows), and an un-guarded match would NRE.
+    /// Centralizes the JSON shape so the Dashboard store cannot drift; the Lite store re-states the same
+    /// anchor in its SQL <c>LIKE</c> for push-down and is guarded by a store round-trip test.
+    /// </summary>
+    public static bool ContextJsonContainsDedupKey(string? contextJson, string? dedupKey)
+    {
+        if (string.IsNullOrEmpty(contextJson) || string.IsNullOrEmpty(dedupKey))
+            return false;
+        return contextJson.Contains("\"DedupKey\":\"" + dedupKey + "\"", StringComparison.Ordinal);
+    }
+
     public static string Serialize(AlertContext context)
     {
         var dto = new AlertContextDto(

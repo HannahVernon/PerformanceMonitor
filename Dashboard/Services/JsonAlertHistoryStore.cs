@@ -106,8 +106,11 @@ namespace PerformanceMonitorDashboard.Services
         /// Dashboard records email and webhook deliveries as separate alert-log
         /// rows, so the filter is just NotificationType == "email" — Lite's
         /// combined "email+webhook" notification_type never appears here.
+        /// When <paramref name="dedupKey"/> is non-null (#1154), the scan is additionally
+        /// restricted to rows whose ContextJson carries that #1140 fingerprint (the helper
+        /// null-guards the many tray/muted rows whose ContextJson is null).
         /// </remarks>
-        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName)
+        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName, string? dedupKey = null)
         {
             lock (_alertLogLock)
             {
@@ -118,6 +121,7 @@ namespace PerformanceMonitorDashboard.Services
                     if (entry.MetricName != metricName) continue;
                     if (entry.NotificationType != "email") continue;
                     if (!string.IsNullOrEmpty(entry.SendError)) continue;
+                    if (dedupKey is not null && !AlertContextSerializer.ContextJsonContainsDedupKey(entry.ContextJson, dedupKey)) continue;
                     if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
                 }
                 return Task.FromResult(max);
@@ -136,8 +140,10 @@ namespace PerformanceMonitorDashboard.Services
         /// Dashboard records webhook deliveries as their own alert-log rows with
         /// NotificationType == "webhook" (written only on a successful post), so
         /// the type alone implies success — no SendError filter is needed.
+        /// When <paramref name="dedupKey"/> is non-null (#1154), the scan is additionally
+        /// restricted to rows whose ContextJson carries that #1140 fingerprint.
         /// </remarks>
-        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName)
+        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName, string? dedupKey = null)
         {
             lock (_alertLogLock)
             {
@@ -147,6 +153,7 @@ namespace PerformanceMonitorDashboard.Services
                     if (entry.ServerId != serverId) continue;
                     if (entry.MetricName != metricName) continue;
                     if (entry.NotificationType != "webhook") continue;
+                    if (dedupKey is not null && !AlertContextSerializer.ContextJsonContainsDedupKey(entry.ContextJson, dedupKey)) continue;
                     if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
                 }
                 return Task.FromResult(max);

@@ -157,6 +157,39 @@ public class StoreRoundTripTests : IDisposable
     }
 
     [Fact]
+    public async Task GetLastSentUtc_WithDedupKey_FiltersToContextJsonFingerprint()
+    {
+        await _duckDb.InitializeAsync();
+        var store = new DuckDbAlertHistoryStore(_duckDb);
+
+        /* #1154: two distinct deadlock incidents recorded as successful email rows (AAA earlier,
+           BBB later) carrying real serialized #1140 context, plus a later null-context row that
+           any dedupKey filter must exclude (it would NRE/over-match a naive scan). */
+        await RecordWithContextAsync(store, "9", "Deadlocks Detected", "email", JsonWith("aaaa1111"));
+        await Task.Delay(10, TestContext.Current.CancellationToken);
+        await RecordWithContextAsync(store, "9", "Deadlocks Detected", "email", JsonWith("bbbb2222"));
+        await Task.Delay(10, TestContext.Current.CancellationToken);
+        await RecordAsync(store, "9", "Deadlocks Detected", "email", null); // null context, latest row
+
+        var lastAaa = await store.GetLastEmailSentUtcAsync("9", "Deadlocks Detected", "aaaa1111");
+        var lastBbb = await store.GetLastEmailSentUtcAsync("9", "Deadlocks Detected", "bbbb2222");
+        var lastCcc = await store.GetLastEmailSentUtcAsync("9", "Deadlocks Detected", "cccc3333");
+        var lastMetric = await store.GetLastEmailSentUtcAsync("9", "Deadlocks Detected"); // metric-level (null key)
+
+        Assert.NotNull(lastAaa);
+        Assert.NotNull(lastBbb);
+        Assert.Null(lastCcc);                            // no such fingerprint
+        Assert.True(lastAaa!.Value < lastBbb!.Value);    // the filter isolates per-fingerprint (AAA is earlier)
+        Assert.NotNull(lastMetric);
+        Assert.True(lastMetric!.Value >= lastBbb.Value); // metric-level still sees the later null-context row
+
+        /* Webhook channel uses the identical filter — prove it too. */
+        await RecordWithContextAsync(store, "9", "Blocking Detected", "webhook", JsonWith("dddd4444"));
+        Assert.NotNull(await store.GetLastWebhookSentUtcAsync("9", "Blocking Detected", "dddd4444"));
+        Assert.Null(await store.GetLastWebhookSentUtcAsync("9", "Blocking Detected", "eeee5555"));
+    }
+
+    [Fact]
     public async Task EdgeTriggerWatermark_SaveLoad_RoundTripsAndUpserts()
     {
         await _duckDb.InitializeAsync();
@@ -249,6 +282,21 @@ public class StoreRoundTripTests : IDisposable
         => store.RecordAlertAsync(new AlertHistoryRecord(
             serverId, "Srv", metric, "90", "80", 90, 80,
             true, type, error, false, null, null));
+
+    private static Task RecordWithContextAsync(IAlertHistoryStore store, string serverId, string metric, string type, string? contextJson)
+        => store.RecordAlertAsync(new AlertHistoryRecord(
+            serverId, "Srv", metric, "90", "80", 90, 80,
+            true, type, null, false, null, contextJson));
+
+    /// <summary>Real serialized #1140 context carrying a single incident with the given dedup key.</summary>
+    private static string JsonWith(string dedupKey)
+    {
+        var ctx = new AlertContext
+        {
+            Incidents = new List<AlertIncident> { new(dedupKey, new[] { "db.dbo.T" }) }
+        };
+        return AlertContextSerializer.Serialize(ctx);
+    }
 
     private sealed record AlertRow(
         DateTime AlertTime, int ServerId, string ServerName, string MetricName,
