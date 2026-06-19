@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="PerformanceMonitor.PlanAnalysis" />
     <InternalsVisibleTo Include="PerformanceMonitorLite" />
     <InternalsVisibleTo Include="PerformanceMonitorDashboard" />
     <InternalsVisibleTo Include="Lite.Tests" />

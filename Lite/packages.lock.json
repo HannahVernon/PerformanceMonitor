@@ -759,7 +759,10 @@
         }
       },
       "performancemonitor.plananalysis": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "PerformanceMonitor.Common": "[1.0.0, )"
+        }
       },
       "performancemonitor.ui": {
         "type": "Project",
