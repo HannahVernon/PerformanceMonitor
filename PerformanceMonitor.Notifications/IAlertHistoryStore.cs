@@ -38,8 +38,14 @@ public interface IAlertHistoryStore
     /// cooldown across restart (#981). Lite: notification_type IN
     /// ('email','email+webhook') AND send_error IS NULL. Dash: NotificationType
     /// == "email" AND SendError empty.
+    /// <para>
+    /// When <paramref name="dedupKey"/> is non-null (#1154 per-fingerprint cooldown), the result is
+    /// additionally restricted to rows whose persisted <c>ContextJson</c> carries that #1140 dedup
+    /// fingerprint, so the seed reconstructs the per-incident last-sent time. Null = the metric-level
+    /// seed (the pre-#1154 behavior, used by the non-fingerprinted fallback).
+    /// </para>
     /// </summary>
-    Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName);
+    Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName, string? dedupKey = null);
 
     /// <summary>
     /// MAX(alert_time) filtered to a *successful webhook send* — seeds the webhook
@@ -48,8 +54,13 @@ public interface IAlertHistoryStore
     /// notification_type already implies the webhook delivered (it's only written on a
     /// successful post), and send_error tracks the EMAIL channel, so it is NOT filtered on.
     /// Lite: notification_type IN ('webhook','email+webhook'). Dash: NotificationType == "webhook".
+    /// <para>
+    /// When <paramref name="dedupKey"/> is non-null (#1154 per-fingerprint cooldown), the result is
+    /// additionally restricted to rows whose persisted <c>ContextJson</c> carries that #1140 dedup
+    /// fingerprint. Null = the metric-level seed (the pre-#1154 behavior).
+    /// </para>
     /// </summary>
-    Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName);
+    Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName, string? dedupKey = null);
 
     /// <summary>
     /// MAX(alert_time) UNFILTERED (any channel/result) — seeds the analysis

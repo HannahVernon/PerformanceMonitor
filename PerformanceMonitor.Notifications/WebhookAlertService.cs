@@ -37,11 +37,14 @@ public class WebhookAlertService
     private const string TsqlWebhookHint = "See email or in-app Alert Details for the copy-paste T-SQL.";
     private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
 
-    private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
+    /* #1154: per-incident-fingerprint cooldown (was a per-(serverId, metricName)
+       ConcurrentDictionary). Keyed per #1140 dedup fingerprint so a distinct incident in the
+       window is delivered; falls back to the metric-level key when an alert carries no
+       fingerprintable incident. */
+    private readonly IncidentCooldown _cooldown;
     private readonly IAlertSettings _settings;
     private readonly AlertBranding _branding;
     private readonly ILogger<WebhookAlertService> _logger;
-    private readonly IAlertHistoryStore? _historyStore;
 
     private int _consecutiveTeamsFailures;
     private string? _lastTeamsError;
@@ -49,9 +52,9 @@ public class WebhookAlertService
     private string? _lastSlackError;
 
     /// <param name="historyStore">
-    /// Optional alert-history store used to seed the per-(serverId, metricName) webhook
-    /// cooldown across an app restart (#1145, mirroring the email seed #981). When null the
-    /// cooldown is purely in-memory (the pre-#1145 behavior) — the test call sites pass null.
+    /// Optional alert-history store used to seed the per-fingerprint webhook cooldown across an app
+    /// restart (#1145, mirroring the email seed #981). When null the cooldown is purely in-memory
+    /// (the pre-#1145 behavior, seeding disabled) — the test call sites pass null.
     /// </param>
     public WebhookAlertService(
         IAlertSettings settings,
@@ -62,7 +65,13 @@ public class WebhookAlertService
         _settings = settings;
         _branding = branding;
         _logger = logger;
-        _historyStore = historyStore;
+        _cooldown = new IncidentCooldown(
+            keyPrefix: "webhook:",
+            // Null store -> null seed delegate -> no restart seeding (preserves the pre-#1145 in-memory path).
+            seedLastSentUtc: historyStore is null
+                ? null
+                : (serverId, metricName, dedupKey) =>
+                    historyStore.GetLastWebhookSentUtcAsync(serverId, metricName, dedupKey));
     }
 
     /// <summary>
@@ -79,23 +88,16 @@ public class WebhookAlertService
     {
         try
         {
-            var cooldownKey = $"webhook:{serverId}:{metricName}";
+            /* #1154: per-fingerprint cooldown. Post if any incident in this alert is outside its
+               window (a distinct fingerprint is not throttled by an unrelated prior incident); stamp
+               every candidate key only after a successful post. Seeds the webhook last-sent time from
+               the alert log on first touch per key (#1145), unless the store is null (no seeding). No
+               incidents -> the metric-level fallback key (today's behavior). */
+            var decision = await _cooldown.EvaluateAsync(
+                serverId, metricName, context?.Incidents,
+                TimeSpan.FromMinutes(_settings.EmailCooldownMinutes));
 
-            /* Seed the in-memory cooldown from the alert log the first time this key is
-               seen, so a Teams/Slack alert posted shortly before an app restart is not
-               immediately re-posted afterward (#1145, mirroring the email seed #981). The
-               in-memory dictionary is authoritative once seeded. */
-            if (_historyStore is not null && !_cooldowns.ContainsKey(cooldownKey))
-            {
-                var lastPersistedSend = await _historyStore.GetLastWebhookSentUtcAsync(serverId, metricName);
-                if (lastPersistedSend.HasValue)
-                {
-                    _cooldowns.TryAdd(cooldownKey, lastPersistedSend.Value);
-                }
-            }
-
-            if (_cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes))
+            if (!decision.ShouldSend)
             {
                 return false;
             }
@@ -114,7 +116,7 @@ public class WebhookAlertService
 
             if (sent)
             {
-                _cooldowns[cooldownKey] = DateTime.UtcNow;
+                _cooldown.Stamp(decision);
             }
 
             return sent;
