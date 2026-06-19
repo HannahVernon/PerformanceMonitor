@@ -1943,7 +1943,6 @@ public class RemediationTests
         public bool AuditWriteResult = true;
         public Func<string, long, long, TargetPreflight>? PreflightFunc;
         public Func<string, long, long, ForcePlanOutcome>? ForceFunc;
-        public Func<string, long, long, ForcePlanOutcome>? UnforceFunc;
 
         public int ForceCalls;
         public int UnforceCalls;
@@ -1974,7 +1973,7 @@ public class RemediationTests
         public Task<ForcePlanOutcome> UnforcePlanAsync(string database, long queryId, long planId, RemediationIdentity identity, CancellationToken ct)
         {
             UnforceCalls++;
-            return Task.FromResult(UnforceFunc?.Invoke(database, queryId, planId) ?? new ForcePlanOutcome
+            return Task.FromResult(new ForcePlanOutcome
             {
                 Database = database, QueryId = queryId, PlanId = planId,
                 Status = RemediationStatus.Success, Forced = true, ExecutingLogin = "sa", GateSpid = 55, ExecSpid = 55
