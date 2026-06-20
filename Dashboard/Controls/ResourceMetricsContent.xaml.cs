@@ -291,15 +291,15 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     // Run all independent refreshes in parallel for initial load / manual refresh
                     await Task.WhenAll(
-                        RefreshLatchStatsAsync(),
-                        RefreshSpinlockStatsAsync(),
-                        RefreshTempdbStatsAsync(),
-                        RefreshSessionStatsAsync(),
-                        LoadFileIoLatencyChartsAsync(),
-                        LoadFileIoThroughputChartsAsync(),
-                        RefreshServerTrendsAsync(),
-                        RefreshPerfmonCountersTabAsync(),
-                        RefreshWaitStatsDetailTabAsync()
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.LatchStats", () => RefreshLatchStatsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.SpinlockStats", () => RefreshSpinlockStatsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.TempdbStats", () => RefreshTempdbStatsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.SessionStats", () => RefreshSessionStatsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.FileIoLatency", () => LoadFileIoLatencyChartsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.FileIoThroughput", () => LoadFileIoThroughputChartsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.ServerTrends", () => RefreshServerTrendsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.PerfmonCounters", () => RefreshPerfmonCountersTabAsync()),
+                        Helpers.MethodProfiler.TimeAsync("ResourceMetrics.WaitStatsDetail", () => RefreshWaitStatsDetailTabAsync())
                     );
                 }
                 else

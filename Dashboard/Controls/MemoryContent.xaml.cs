@@ -228,11 +228,11 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     // Run all independent refreshes in parallel for initial load / manual refresh
                     await Task.WhenAll(
-                        RefreshMemoryStatsAsync(),
-                        RefreshMemoryGrantsAsync(),
-                        RefreshMemoryClerksAsync(),
-                        RefreshPlanCacheAsync(),
-                        RefreshMemoryPressureEventsAsync()
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryStats", () => RefreshMemoryStatsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryGrants", () => RefreshMemoryGrantsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryClerks", () => RefreshMemoryClerksAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.PlanCache", () => RefreshPlanCacheAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryPressureEvents", () => RefreshMemoryPressureEventsAsync())
                     );
                 }
                 else
