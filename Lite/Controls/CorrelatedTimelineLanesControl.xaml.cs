@@ -601,55 +601,30 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
     private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
-        ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-
-        if (ThemeManager.CurrentTheme == "CoolBreeze")
-        {
-            figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
-            dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
-            textColor        = ScottPlot.Color.FromHex("#1A2A3A");
-            gridColor        = ScottPlot.Color.FromHex("#A8BDD0").WithAlpha(120);
-        }
-        else if (ThemeManager.HasLightBackground)
-        {
-            figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
-            dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
-            textColor        = ScottPlot.Color.FromHex("#1A1D23");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else
-        {
-            figureBackground = ScottPlot.Color.FromHex("#22252b");
-            dataBackground   = ScottPlot.Color.FromHex("#111217");
-            textColor        = ScottPlot.Color.FromHex("#E4E6EB");
-            gridColor        = ScottPlot.Colors.White.WithAlpha(40);
-        }
-
-        chart.Plot.FigureBackground.Color = figureBackground;
-        chart.Plot.DataBackground.Color = dataBackground;
-        chart.Plot.Axes.Color(textColor);
-        chart.Plot.Grid.MajorLineColor = gridColor;
+        // Lanes are a deliberately stripped chrome variant (legend hidden, no font-size / first-render
+        // hook). Colors come from the shared ChartStyle so the per-theme hexes can't drift.
+        var c = ChartStyle.GetThemeColors();
+        chart.Plot.FigureBackground.Color = c.FigureBackground;
+        chart.Plot.DataBackground.Color = c.DataBackground;
+        chart.Plot.Axes.Color(c.Text);
+        chart.Plot.Grid.MajorLineColor = c.Grid;
         chart.Plot.Legend.IsVisible = false;
         chart.Plot.Axes.Margins(bottom: 0);
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Bottom.Label.ForeColor = textColor;
-        chart.Plot.Axes.Left.Label.ForeColor = textColor;
+        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = c.Text;
+        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = c.Text;
+        chart.Plot.Axes.Bottom.Label.ForeColor = c.Text;
+        chart.Plot.Axes.Left.Label.ForeColor = c.Text;
 
         chart.Background = new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromRgb(figureBackground.R, figureBackground.G, figureBackground.B));
+            System.Windows.Media.Color.FromRgb(c.FigureBackground.R, c.FigureBackground.G, c.FigureBackground.B));
     }
 
     private static void ReapplyAxisColors(ScottPlot.WPF.WpfPlot chart)
     {
-        var textColor = ThemeManager.CurrentTheme == "CoolBreeze"
-            ? ScottPlot.Color.FromHex("#1A2A3A")
-            : ThemeManager.HasLightBackground
-                ? ScottPlot.Color.FromHex("#1A1D23")
-                : ScottPlot.Color.FromHex("#E4E6EB");
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Bottom.Label.ForeColor = textColor;
-        chart.Plot.Axes.Left.Label.ForeColor = textColor;
+        var text = ChartStyle.GetThemeColors().Text;
+        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = text;
+        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = text;
+        chart.Plot.Axes.Bottom.Label.ForeColor = text;
+        chart.Plot.Axes.Left.Label.ForeColor = text;
     }
 }

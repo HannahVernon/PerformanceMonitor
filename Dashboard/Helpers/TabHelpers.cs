@@ -176,53 +176,18 @@ namespace PerformanceMonitorDashboard.Helpers
         }
 
         /// <summary>
-        /// Locks the vertical axis of a chart so mouse wheel zooming only affects the time (X) axis.
-        /// Also reapplies dark mode axis colors after DateTimeTicksBottom() modifications.
+        /// Locks the vertical axis so mouse-wheel zoom only affects the time (X) axis.
+        /// Delegates to the shared <see cref="ChartStyle"/>.
         /// </summary>
-        public static void LockChartVerticalAxis(WpfPlot chart)
-        {
-            var limits = chart.Plot.Axes.GetLimits();
-            var rule = new ScottPlot.AxisRules.LockedVertical(
-                chart.Plot.Axes.Left,
-                limits.Bottom,
-                limits.Top);
-            chart.Plot.Axes.Rules.Clear();
-            chart.Plot.Axes.Rules.Add(rule);
-
-            // Reapply axis colors after DateTimeTicksBottom() may have reset them
-            ReapplyAxisColors(chart);
-        }
+        public static void LockChartVerticalAxis(WpfPlot chart) => ChartStyle.LockChartVerticalAxis(chart);
 
         /// <summary>
-        /// Sets Y-axis limits with appropriate padding for charts with horizontal legends at bottom.
-        /// Call this BEFORE LockChartVerticalAxis.
+        /// Sets Y-axis limits with padding for a bottom legend. Delegates to the shared
+        /// <see cref="ChartStyle"/> (canonical behavior keeps a small margin below a zero baseline
+        /// so flat-at-zero lines stay visible).
         /// </summary>
         public static void SetChartYLimitsWithLegendPadding(WpfPlot chart, double dataYMin = 0, double dataYMax = 0)
-        {
-            // If no explicit values provided, use auto-calculated limits
-            if (dataYMin == 0 && dataYMax == 0)
-            {
-                var limits = chart.Plot.Axes.GetLimits();
-                dataYMin = limits.Bottom;
-                dataYMax = limits.Top;
-            }
-
-            // Handle edge cases
-            if (dataYMax <= dataYMin)
-            {
-                dataYMax = dataYMin + 100;
-            }
-
-            // Calculate padding: 5% above for breathing room
-            double range = dataYMax - dataYMin;
-            double topPadding = range * 0.05;
-
-            /* Only add bottom padding if dataYMin is above zero - don't go negative */
-            double yMin = dataYMin >= 0 ? 0 : dataYMin - (range * 0.10);
-            double yMax = dataYMax + topPadding;
-
-            chart.Plot.Axes.SetLimitsY(yMin, yMax);
-        }
+            => ChartStyle.SetChartYLimitsWithLegendPadding(chart, dataYMin, dataYMax);
 
         /// <summary>
         /// Applies theme-appropriate styling to a WPF Calendar control (used by DatePicker popup).

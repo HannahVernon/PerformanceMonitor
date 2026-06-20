@@ -1335,26 +1335,10 @@ public partial class ServerTab : UserControl
 
     /// <summary>
     /// Sets Y-axis limits with padding for bottom legend and top breathing room.
+    /// Delegates to the shared <see cref="ChartStyle"/>.
     /// </summary>
     private static void SetChartYLimitsWithLegendPadding(ScottPlot.WPF.WpfPlot chart, double dataYMin = 0, double dataYMax = 0)
-    {
-        if (dataYMin == 0 && dataYMax == 0)
-        {
-            var limits = chart.Plot.Axes.GetLimits();
-            dataYMin = limits.Bottom;
-            dataYMax = limits.Top;
-        }
-        if (dataYMax <= dataYMin) dataYMax = dataYMin + 1;
-
-        double range = dataYMax - dataYMin;
-        double topPadding = range * 0.05;
-
-        /* Add small bottom margin when dataYMin is zero so flat lines at Y=0 are visible above the axis */
-        double yMin = dataYMin > 0 ? 0 : dataYMin == 0 ? -(range * 0.05) : dataYMin - (range * 0.10);
-        double yMax = dataYMax + topPadding;
-
-        chart.Plot.Axes.SetLimitsY(yMin, yMax);
-    }
+        => ChartStyle.SetChartYLimitsWithLegendPadding(chart, dataYMin, dataYMax);
 
     /* ========== Collection Health ========== */
 
