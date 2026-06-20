@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -93,7 +94,7 @@ namespace PerformanceMonitorDashboard.Controls
                     if (maxWorkersValue > 0)
                     {
                         var hLine = CPUTasksChart.Plot.Add.HorizontalLine(maxWorkersValue);
-                        hLine.Color = TabHelpers.ChartColors[2];
+                        hLine.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Threshold"));
                         hLine.LineWidth = 2;
                         hLine.LinePattern = ScottPlot.LinePattern.Dashed;
                         hLine.LegendText = $"Max Workers ({maxWorkersValue})";

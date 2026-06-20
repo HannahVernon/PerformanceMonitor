@@ -162,7 +162,7 @@ namespace PerformanceMonitorDashboard.Controls
 
                     if (item.BufferPoolPressureWarning && item.PlanCachePressureWarning)
                     {
-                        vline.Color = TabHelpers.ChartColors[3].WithAlpha(0.5);
+                        vline.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("PressureSevere")).WithAlpha(0.5);
                         // Add legend entry for BP pressure (covers "both" case too)
                         if (!bpLegendAdded)
                         {
@@ -172,7 +172,7 @@ namespace PerformanceMonitorDashboard.Controls
                     }
                     else if (item.BufferPoolPressureWarning)
                     {
-                        vline.Color = TabHelpers.ChartColors[3].WithAlpha(0.3);
+                        vline.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("PressureSevere")).WithAlpha(0.3);
                         if (!bpLegendAdded)
                         {
                             vline.LegendText = "BP Pressure";
@@ -181,7 +181,7 @@ namespace PerformanceMonitorDashboard.Controls
                     }
                     else
                     {
-                        vline.Color = TabHelpers.ChartColors[2].WithAlpha(0.3);
+                        vline.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("PressureMedium")).WithAlpha(0.3);
                         if (!pcLegendAdded)
                         {
                             vline.LegendText = "PC Pressure";
