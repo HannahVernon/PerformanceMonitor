@@ -34,6 +34,8 @@ namespace PerformanceMonitorDashboard
         private readonly int _hoursBack;
         private readonly DateTime? _fromDate;
         private readonly DateTime? _toDate;
+        private readonly string? _queryText;
+        private readonly PlanNavigationController _planActions;
         private List<QueryStatsHistoryItem> _historyData = new();
         private ChartHoverHelper? _chartHover;
 
@@ -49,7 +51,8 @@ namespace PerformanceMonitorDashboard
             string queryHash,
             int hoursBack = 24,
             DateTime? fromDate = null,
-            DateTime? toDate = null)
+            DateTime? toDate = null,
+            string? queryText = null)
         {
             InitializeComponent();
 
@@ -59,6 +62,14 @@ namespace PerformanceMonitorDashboard
             _hoursBack = hoursBack;
             _fromDate = fromDate;
             _toDate = toDate;
+            _queryText = queryText;
+
+            _planActions = new PlanNavigationController(
+                this,
+                (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+                (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                    _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                "the monitored server");
 
             QueryIdentifierText.Text = $"Query Stats History: {queryHash} in [{databaseName}]";
 
@@ -473,6 +484,33 @@ namespace PerformanceMonitorDashboard
                     }
                 }
             }
+        }
+
+        #endregion
+
+        #region Plan Actions
+
+        private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (GetHistoryItem(sender) is not { } item) return;
+            await _planActions.ViewPlanAsync(
+                () => _databaseService.GetQueryStatsPlanXmlByCollectionIdAsync(item.CollectionId),
+                $"Est Plan - {_queryHash}", _queryText);
+        }
+
+        private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        {
+            await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - {_queryHash}");
+        }
+
+        private static QueryStatsHistoryItem? GetHistoryItem(object sender)
+        {
+            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+            {
+                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
+                return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as QueryStatsHistoryItem;
+            }
+            return null;
         }
 
         #endregion

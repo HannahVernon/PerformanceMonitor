@@ -19,6 +19,7 @@ using Microsoft.Win32;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -300,6 +301,22 @@ public partial class ServerTab : UserControl
                     catch { }
                 }
                 break;
+            case QueryStatsComparisonItem comp:
+                queryText = comp.QueryText;
+                label = $"Est Plan - {comp.QueryHash}";
+                if (!string.IsNullOrEmpty(comp.QueryHash))
+                    planXml = await FetchPlanByHash(comp.QueryHash);
+                break;
+            case ProcedureStatsComparisonItem procComp:
+                label = $"Est Plan - {procComp.FullName}";
+                queryText = procComp.FullName;
+                try
+                {
+                    var procConnStr = _credentialResolver.GetConnectionString(_server);
+                    planXml = await LocalDataService.FetchProcedurePlanOnDemandAsync(procConnStr, procComp.DatabaseName, procComp.SchemaName, procComp.ObjectName);
+                }
+                catch { }
+                break;
         }
 
         if (!string.IsNullOrEmpty(planXml))
@@ -359,6 +376,16 @@ public partial class ServerTab : UserControl
                         var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
+                    catch { }
+                }
+                break;
+            case QueryStatsComparisonItem comp:
+                queryText = comp.QueryText;
+                databaseName = comp.DatabaseName;
+                label = $"Actual Plan - {comp.QueryHash}";
+                if (!string.IsNullOrEmpty(comp.QueryHash))
+                {
+                    try { planXml = await FetchPlanByHash(comp.QueryHash); }
                     catch { }
                 }
                 break;

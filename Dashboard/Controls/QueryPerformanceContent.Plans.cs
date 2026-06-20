@@ -16,6 +16,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -190,6 +191,18 @@ namespace PerformanceMonitorDashboard.Controls
                     queryText = reg.QueryTextSample;
                     label = $"Est Plan - QS {reg.QueryId}";
                     break;
+                case QueryStatsComparisonItem comp:
+                    queryText = comp.QueryText;
+                    label = $"Est Plan - {comp.QueryHash}";
+                    if (_databaseService != null && !string.IsNullOrEmpty(comp.QueryHash))
+                        planXml = await _databaseService.GetQueryStatsPlanXmlAsync(comp.DatabaseName, comp.QueryHash);
+                    break;
+                case ProcedureStatsComparisonItem procComp:
+                    queryText = procComp.FullName;
+                    label = $"Est Plan - {procComp.FullName}";
+                    if (_databaseService != null && !string.IsNullOrEmpty(procComp.ObjectName))
+                        planXml = await _databaseService.GetProcedureStatsPlanXmlByNameAsync(procComp.DatabaseName, procComp.SchemaName, procComp.ObjectName);
+                    break;
             }
 
             if (planXml == null && item is LongRunningQueryPatternItem)
@@ -273,6 +286,11 @@ namespace PerformanceMonitorDashboard.Controls
                     queryText = lrq.SampleQueryText;
                     databaseName = lrq.DatabaseName;
                     label = $"Actual Plan - Pattern";
+                    break;
+                case QueryStatsComparisonItem comp:
+                    queryText = comp.QueryText;
+                    databaseName = comp.DatabaseName;
+                    label = $"Actual Plan - {comp.QueryHash}";
                     break;
             }
 

@@ -117,6 +117,72 @@ public partial class FinOpsTab : UserControl
         return 0;
     }
 
+    // ── Plan navigation for the query-identifying FinOps grids ──
+    // Lazy: executeActual reads the current selected-server connection string, and Window.GetWindow(this)
+    // is only valid once the control is in the visual tree.
+    private PlanNavigationController? _planActions;
+    private PlanNavigationController PlanActions => _planActions ??= new PlanNavigationController(
+        Window.GetWindow(this)!,
+        (xml, label, qt) => Windows.PlanViewerWindow.ShowPlanAsync(Window.GetWindow(this)!, xml, label, qt),
+        (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+            GetSelectedConnectionString() ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+        "the monitored server");
+
+    private string? GetSelectedConnectionString()
+        => ServerSelector.SelectedItem is ServerConnection s && _credentialResolver != null
+            ? _credentialResolver.GetConnectionString(s)
+            : null;
+
+    private async System.Threading.Tasks.Task<string?> FetchFinOpsHighImpactPlanAsync(string queryHash)
+    {
+        if (string.IsNullOrEmpty(queryHash)) return null;
+        var serverId = GetSelectedServerId();
+        string? plan = null;
+        if (serverId != 0 && _dataService != null)
+        {
+            try { plan = await _dataService.GetCachedQueryPlanAsync(serverId, queryHash); }
+            catch { /* fall through to the live server */ }
+        }
+        if (string.IsNullOrEmpty(plan))
+        {
+            var connStr = GetSelectedConnectionString();
+            if (!string.IsNullOrEmpty(connStr))
+                plan = await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, queryHash);
+        }
+        return plan;
+    }
+
+    private async void FinOpsViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetFinOpsRow(sender) is HighImpactQueryRow row)
+            await PlanActions.ViewPlanAsync(
+                () => FetchFinOpsHighImpactPlanAsync(row.QueryHash),
+                $"Est Plan - {row.QueryHash}", row.FullQueryText);
+    }
+
+    private async void FinOpsGetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        switch (GetFinOpsRow(sender))
+        {
+            case HighImpactQueryRow hi:
+                await PlanActions.GetActualPlanAsync(hi.FullQueryText, hi.DatabaseName, $"Actual Plan - {hi.QueryHash}");
+                break;
+            case ExpensiveQueryRow ex:
+                await PlanActions.GetActualPlanAsync(ex.FullQueryText, ex.DatabaseName, "Actual Plan - Expensive Query");
+                break;
+        }
+    }
+
+    private static object? GetFinOpsRow(object sender)
+    {
+        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+        {
+            if (contextMenu.PlacementTarget is DataGridRow row) return row.DataContext;
+            if (contextMenu.PlacementTarget is DataGrid grid) return grid.CurrentCell.Item ?? grid.SelectedItem;
+        }
+        return null;
+    }
+
     /// <summary>
     /// Refreshes all FinOps data.
     /// </summary>

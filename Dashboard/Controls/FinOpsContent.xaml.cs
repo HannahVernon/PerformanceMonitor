@@ -51,6 +51,50 @@ namespace PerformanceMonitorDashboard.Controls
             Loaded += OnLoaded;
         }
 
+        // ── Plan navigation for the query-identifying FinOps grids ──
+        // Lazy: the controller's executeActual reads the current _databaseService (set on server-select),
+        // and Window.GetWindow(this) is only valid once the control is in the visual tree.
+        private PlanNavigationController? _planActions;
+        private PlanNavigationController PlanActions => _planActions ??= new PlanNavigationController(
+            Window.GetWindow(this)!,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(Window.GetWindow(this)!, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _databaseService!.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            "the monitored server");
+
+        private async void FinOpsViewPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (_databaseService == null) return;
+            if (GetFinOpsRow(sender) is FinOpsHighImpactQuery row)
+                await PlanActions.ViewPlanAsync(
+                    () => _databaseService.GetQueryStatsPlanXmlAsync(row.DatabaseName, row.QueryHashDisplay),
+                    $"Est Plan - {row.QueryHashDisplay}", row.FullQueryText);
+        }
+
+        private async void FinOpsGetActualPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (_databaseService == null) return;
+            switch (GetFinOpsRow(sender))
+            {
+                case FinOpsHighImpactQuery hi:
+                    await PlanActions.GetActualPlanAsync(hi.FullQueryText, hi.DatabaseName, $"Actual Plan - {hi.QueryHashDisplay}");
+                    break;
+                case FinOpsExpensiveQuery ex:
+                    await PlanActions.GetActualPlanAsync(ex.FullQueryText, ex.DatabaseName, "Actual Plan - Expensive Query");
+                    break;
+            }
+        }
+
+        private static object? GetFinOpsRow(object sender)
+        {
+            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+            {
+                if (contextMenu.PlacementTarget is DataGridRow row) return row.DataContext;
+                if (contextMenu.PlacementTarget is DataGrid grid) return grid.CurrentCell.Item ?? grid.SelectedItem;
+            }
+            return null;
+        }
+
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
             TabHelpers.AutoSizeColumnMinWidths(RecommendationsDataGrid);

@@ -37,6 +37,7 @@ namespace PerformanceMonitorDashboard
         private readonly int _hoursBack;
         private readonly DateTime? _fromDate;
         private readonly DateTime? _toDate;
+        private readonly PlanNavigationController _planActions;
         private List<ProcedureExecutionHistoryItem> _historyData = new();
         private ChartHoverHelper? _chartHover;
 
@@ -68,6 +69,13 @@ namespace PerformanceMonitorDashboard
             _hoursBack = hoursBack;
             _fromDate = fromDate;
             _toDate = toDate;
+
+            _planActions = new PlanNavigationController(
+                this,
+                (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+                (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                    _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                "the monitored server");
 
             ProcedureIdentifierText.Text = $"Procedure Execution History: {objectName} in [{databaseName}]";
 
@@ -481,6 +489,30 @@ namespace PerformanceMonitorDashboard
                     }
                 }
             }
+        }
+
+        #endregion
+
+        #region Plan Actions
+
+        // Procedures are View Plan only — re-executing a proc without parameter values is unsafe,
+        // matching the main Procedure grid (no Get Actual case in its switch).
+        private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (GetHistoryItem(sender) is not { } item) return;
+            await _planActions.ViewPlanAsync(
+                () => _databaseService.GetProcedureStatsPlanXmlByCollectionIdAsync(item.CollectionId),
+                $"Est Plan - {_objectName}", queryText: null);
+        }
+
+        private static ProcedureExecutionHistoryItem? GetHistoryItem(object sender)
+        {
+            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+            {
+                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
+                return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as ProcedureExecutionHistoryItem;
+            }
+            return null;
         }
 
         #endregion

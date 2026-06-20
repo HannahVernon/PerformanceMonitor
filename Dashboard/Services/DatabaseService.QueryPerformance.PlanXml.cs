@@ -144,5 +144,36 @@ namespace PerformanceMonitorDashboard.Services
             var result = await command.ExecuteScalarAsync();
             return result == DBNull.Value || result == null ? null : (string)result;
         }
+
+        /// <summary>
+        /// Fetches the collected plan XML for a procedure identified by database + schema + object name.
+        /// Used by the Procedure Stats comparison grid, whose rows carry only the name (no plan_handle
+        /// or collection_id). Reads the already-materialized plan from report.procedure_stats_summary.
+        /// </summary>
+        public async Task<string?> GetProcedureStatsPlanXmlByNameAsync(string databaseName, string schemaName, string objectName)
+        {
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            query_plan_xml = CONVERT(nvarchar(max), ps.query_plan_xml)
+        FROM report.procedure_stats_summary AS ps
+        WHERE ps.database_name = @databaseName
+        AND   ps.schema_name = @schemaName
+        AND   ps.procedure_name = @objectName  /* bare name; the view's object_name is bracketed [schema].[object] */
+        AND   ps.query_plan_xml IS NOT NULL;";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+            command.Parameters.Add(new SqlParameter("@databaseName", SqlDbType.NVarChar, 128) { Value = databaseName });
+            command.Parameters.Add(new SqlParameter("@schemaName", SqlDbType.NVarChar, 128) { Value = schemaName });
+            command.Parameters.Add(new SqlParameter("@objectName", SqlDbType.NVarChar, 128) { Value = objectName });
+
+            var result = await command.ExecuteScalarAsync();
+            return result == DBNull.Value || result == null ? null : (string)result;
+        }
     }
 }
