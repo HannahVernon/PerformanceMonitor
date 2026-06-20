@@ -244,15 +244,11 @@ public class FactCollectorTests : IDisposable
     }
 
     [Fact]
-    public async Task CollectFacts_Perfmon_ReturnsPleAndRateCounters()
+    public async Task CollectFacts_Perfmon_ReturnsRateCounters()
     {
         var facts = await SeedAndCollectAsync(s => s.SeedEverythingOnFireServerAsync());
 
-        Assert.True(facts.ContainsKey("PERFMON_PLE"), "PERFMON_PLE should be collected");
         Assert.True(facts.ContainsKey("PERFMON_BATCH_REQ_SEC"), "PERFMON_BATCH_REQ_SEC should be collected");
-
-        // PLE uses cntr_value (absolute), seeded as 45
-        Assert.Equal(45, facts["PERFMON_PLE"].Value);
     }
 
     [Fact]
@@ -377,15 +373,6 @@ public class FactCollectorTests : IDisposable
     }
 
     [Fact]
-    public async Task CollectFacts_CleanServer_PleIsHealthy()
-    {
-        var facts = await SeedAndCollectAsync(s => s.SeedCleanServerAsync());
-
-        Assert.True(facts.ContainsKey("PERFMON_PLE"));
-        Assert.Equal(5_000, facts["PERFMON_PLE"].Value);
-    }
-
-    [Fact]
     public async Task CollectFacts_CleanServer_IoLatencyIsLow()
     {
         var facts = await SeedAndCollectAsync(s => s.SeedCleanServerAsync());
@@ -413,13 +400,10 @@ public class FactCollectorTests : IDisposable
         // Memory-starved server should have corroborating evidence
         Assert.True(facts.ContainsKey("CPU_SQL_PERCENT"));
         Assert.True(facts.ContainsKey("IO_READ_LATENCY_MS"));
-        Assert.True(facts.ContainsKey("PERFMON_PLE"));
         Assert.True(facts.ContainsKey("MEMORY_CLERKS"));
 
         // CPU should be high (85%)
         Assert.True(facts["CPU_SQL_PERCENT"].Value > 80);
-        // PLE should be low (120)
-        Assert.Equal(120, facts["PERFMON_PLE"].Value);
         // Read latency should be high (35ms)
         Assert.True(facts["IO_READ_LATENCY_MS"].Value > 30);
     }
@@ -445,11 +429,9 @@ public class FactCollectorTests : IDisposable
 
         Assert.True(facts.ContainsKey("MEMORY_GRANT_PENDING"));
         Assert.True(facts.ContainsKey("QUERY_SPILLS"));
-        Assert.True(facts.ContainsKey("PERFMON_PLE"));
 
         Assert.Equal(5, facts["MEMORY_GRANT_PENDING"].Value);
         Assert.True(facts["QUERY_SPILLS"].Value >= 1_500); // ~2000 spills
-        Assert.Equal(200, facts["PERFMON_PLE"].Value);
     }
 
     [Fact]
@@ -473,7 +455,7 @@ public class FactCollectorTests : IDisposable
         {
             "CPU_SQL_PERCENT", "IO_READ_LATENCY_MS", "IO_WRITE_LATENCY_MS",
             "TEMPDB_USAGE", "MEMORY_GRANT_PENDING", "QUERY_SPILLS", "QUERY_HIGH_DOP",
-            "PERFMON_PLE", "PERFMON_BATCH_REQ_SEC", "MEMORY_CLERKS", "DB_CONFIG",
+            "PERFMON_BATCH_REQ_SEC", "MEMORY_CLERKS", "DB_CONFIG",
             "PROCEDURE_STATS", "ACTIVE_QUERIES", "RUNNING_JOBS", "SESSION_STATS",
             "TRACE_FLAGS", "SERVER_HARDWARE", "DISK_SPACE"
         };

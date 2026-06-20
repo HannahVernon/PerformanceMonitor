@@ -767,12 +767,6 @@ internal static class ToolRecommendations
             new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
             new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
         ],
-        ["PERFMON_PLE"] =
-        [
-            new("get_memory_stats", "Check buffer pool and memory allocation"),
-            new("get_memory_clerks", "See where memory is allocated"),
-            new("get_memory_trend", "Track memory usage over time")
-        ],
         ["LATCH_EX"] =
         [
             new("get_tempdb_trend", "Check TempDB for allocation contention"),
