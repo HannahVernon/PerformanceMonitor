@@ -23,13 +23,9 @@ namespace PerformanceMonitorLite.Controls;
 
 public partial class ServerTab : UserControl
 {
-    private static readonly string[] SeriesColors = new[]
-    {
-        "#4FC3F7", "#E57373", "#81C784", "#FFD54F", "#BA68C8",
-        "#FFB74D", "#4DD0E1", "#F06292", "#AED581", "#7986CB",
-        "#FFF176", "#A1887F", "#FF7043", "#80DEEA", "#FFE082",
-        "#CE93D8", "#EF9A9A", "#C5E1A5", "#FFCC80", "#B0BEC5"
-    };
+    // Cycling palette sourced from the shared ChartPalette so Lite and Dashboard cycle through the
+    // SAME colors in the same order (Lite's old array was reordered, breaking cross-app parity).
+    private static readonly string[] SeriesColors = ChartPalette.CyclingPalette.ToArray();
 
     private void UpdateMemorySummary(MemoryStatsRow? stats)
     {

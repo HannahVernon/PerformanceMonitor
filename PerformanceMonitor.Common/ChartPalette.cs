@@ -45,6 +45,9 @@ namespace PerformanceMonitor.Common
         public static string CyclingColor(int index)
             => Cycling[((index % Cycling.Length) + Cycling.Length) % Cycling.Length];
 
+        /// <summary>The raw cycling palette (hex), for callers that build their own color arrays.</summary>
+        public static IReadOnlyList<string> CyclingPalette => Cycling;
+
         // ── Fixed-meaning data series ──────────────────────────────────────────────────────
         // Defines ONE color per named series, applied identically in both apps. This is the fix
         // for "Buffer Pool is three different colors today" (green in Lite, blue and purple in two

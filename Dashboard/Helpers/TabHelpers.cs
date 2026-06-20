@@ -19,6 +19,7 @@ using System.Windows.Data;
 using System.Windows.Media;
 using Microsoft.Win32;
 using ScottPlot.WPF;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Helpers
@@ -53,33 +54,13 @@ namespace PerformanceMonitorDashboard.Helpers
         }
 
         /// <summary>
-        /// Material Design 300-level color palette for chart data series.
-        /// Soft pastels optimized for dark backgrounds, ordered to map 1:1
-        /// with common ScottPlot stock colors (Blue→[0], Green→[1], etc.).
+        /// Material Design 300/200 cycling palette for arbitrary/data-driven chart series (per-DB,
+        /// per-wait-type lists, etc.), indexed by encounter order. Sourced from the shared
+        /// <see cref="ChartPalette"/> so Dashboard and Lite cycle through the SAME colors in the
+        /// same order (named fixed-meaning series use ChartPalette.SeriesColor instead).
         /// </summary>
-        public static readonly ScottPlot.Color[] ChartColors = new[]
-        {
-            ScottPlot.Color.FromHex("#4FC3F7"), // [0]  Light Blue 300
-            ScottPlot.Color.FromHex("#81C784"), // [1]  Green 300
-            ScottPlot.Color.FromHex("#FFB74D"), // [2]  Orange 300
-            ScottPlot.Color.FromHex("#E57373"), // [3]  Red 300
-            ScottPlot.Color.FromHex("#BA68C8"), // [4]  Purple 300
-            ScottPlot.Color.FromHex("#4DD0E1"), // [5]  Cyan 300
-            ScottPlot.Color.FromHex("#FFF176"), // [6]  Yellow 300
-            ScottPlot.Color.FromHex("#F06292"), // [7]  Pink 300
-            ScottPlot.Color.FromHex("#AED581"), // [8]  Light Green 300
-            ScottPlot.Color.FromHex("#90A4AE"), // [9]  Blue Grey 300
-            ScottPlot.Color.FromHex("#A1887F"), // [10] Brown 300
-            ScottPlot.Color.FromHex("#7986CB"), // [11] Indigo 300
-            ScottPlot.Color.FromHex("#FF7043"), // [12] Deep Orange 300
-            ScottPlot.Color.FromHex("#80DEEA"), // [13] Cyan 200
-            ScottPlot.Color.FromHex("#FFE082"), // [14] Amber 200
-            ScottPlot.Color.FromHex("#CE93D8"), // [15] Purple 200
-            ScottPlot.Color.FromHex("#EF9A9A"), // [16] Red 200
-            ScottPlot.Color.FromHex("#C5E1A5"), // [17] Light Green 200
-            ScottPlot.Color.FromHex("#FFCC80"), // [18] Orange 200
-            ScottPlot.Color.FromHex("#B0BEC5"), // [19] Blue Grey 200
-        };
+        public static readonly ScottPlot.Color[] ChartColors =
+            ChartPalette.CyclingPalette.Select(ScottPlot.Color.FromHex).ToArray();
 
         /// <summary>
         /// Poison waits — always selected by default. These indicate critical resource exhaustion.
