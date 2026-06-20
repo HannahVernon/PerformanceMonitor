@@ -137,7 +137,13 @@ namespace PerformanceMonitorDashboard.Controls
 
             switch (item)
             {
-                case QuerySnapshotItem snap when !string.IsNullOrEmpty(snap.QueryPlan):
+                case QuerySnapshotItem snap:
+                    // Active-query plans are fetched on demand (not loaded with the grid), so pull it
+                    // here the same way the Download button does — otherwise View Plan silently no-ops.
+                    if (string.IsNullOrEmpty(snap.QueryPlan) && _databaseService != null)
+                    {
+                        snap.QueryPlan = await _databaseService.GetQuerySnapshotPlanAsync(snap.CollectionTime, snap.SessionId);
+                    }
                     planXml = snap.QueryPlan;
                     queryText = snap.QueryText;
                     label = $"Est Plan - SPID {snap.SessionId}";
@@ -152,7 +158,11 @@ namespace PerformanceMonitorDashboard.Controls
                     queryText = live.QueryText;
                     label = $"Est Plan - SPID {live.SessionId}";
                     break;
-                case QueryStatsItem stats when !string.IsNullOrEmpty(stats.QueryPlanXml):
+                case QueryStatsItem stats:
+                    if (string.IsNullOrEmpty(stats.QueryPlanXml) && _databaseService != null && !string.IsNullOrEmpty(stats.QueryHash))
+                    {
+                        stats.QueryPlanXml = await _databaseService.GetQueryStatsPlanXmlAsync(stats.DatabaseName, stats.QueryHash);
+                    }
                     planXml = stats.QueryPlanXml;
                     queryText = stats.QueryText;
                     label = $"Est Plan - {stats.QueryHash}";
@@ -236,6 +246,10 @@ namespace PerformanceMonitorDashboard.Controls
                 case QueryStatsItem stats:
                     queryText = stats.QueryText;
                     databaseName = stats.DatabaseName;
+                    if (string.IsNullOrEmpty(stats.QueryPlanXml) && _databaseService != null && !string.IsNullOrEmpty(stats.QueryHash))
+                    {
+                        stats.QueryPlanXml = await _databaseService.GetQueryStatsPlanXmlAsync(stats.DatabaseName, stats.QueryHash);
+                    }
                     planXml = stats.QueryPlanXml;
                     label = $"Actual Plan - {stats.QueryHash}";
                     break;

@@ -194,7 +194,10 @@ namespace PerformanceMonitorDashboard.Services
             tr.min_spills,
             tr.max_spills,
             qt.query_text,
-            qp.query_plan_xml,
+            /* query_plan_xml is hydrated on demand via GetQueryStatsPlanXmlAsync (when a plan is
+               opened) — DECOMPRESSing plan XML for all TOP (500) rows cost ~7s of CPU and the grid
+               never displays it. */
+            query_plan_xml = CONVERT(nvarchar(max), NULL),
             tr.query_plan_hash,
             tr.sql_handle,
             tr.plan_handle
@@ -208,16 +211,6 @@ namespace PerformanceMonitorDashboard.Services
             AND   qs2.database_name = tr.database_name
             ORDER BY qs2.collection_time DESC
         ) AS qt
-        OUTER APPLY
-        (
-            SELECT TOP (1)
-                query_plan_xml = CAST(DECOMPRESS(qs3.query_plan_text) AS nvarchar(max))
-            FROM collect.query_stats AS qs3
-            WHERE qs3.query_hash = tr.query_hash
-            AND   qs3.database_name = tr.database_name
-            AND   qs3.query_plan_text IS NOT NULL
-            ORDER BY qs3.collection_time DESC
-        ) AS qp
         ORDER BY
             tr.avg_worker_time_ms DESC;";
 
