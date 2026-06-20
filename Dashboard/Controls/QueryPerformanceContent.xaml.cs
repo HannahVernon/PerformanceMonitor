@@ -650,15 +650,15 @@ namespace PerformanceMonitorDashboard.Controls
                 }
 
                 // Fetch grid data (summary views aggregated per query/procedure)
-                var queryStatsTask = _databaseService.GetQueryStatsAsync(_queryStatsHoursBack, _queryStatsFromDate, _queryStatsToDate);
-                var procStatsTask = _databaseService.GetProcedureStatsAsync(_procStatsHoursBack, _procStatsFromDate, _procStatsToDate);
-                var queryStoreTask = _databaseService.GetQueryStoreDataAsync(_queryStoreHoursBack, _queryStoreFromDate, _queryStoreToDate);
+                var queryStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStats", () => _databaseService.GetQueryStatsAsync(_queryStatsHoursBack, _queryStatsFromDate, _queryStatsToDate));
+                var procStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcStats", () => _databaseService.GetProcedureStatsAsync(_procStatsHoursBack, _procStatsFromDate, _procStatsToDate));
+                var queryStoreTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStore", () => _databaseService.GetQueryStoreDataAsync(_queryStoreHoursBack, _queryStoreFromDate, _queryStoreToDate));
 
                 // Fetch chart data (time-series aggregated per collection_time)
-                var queryDurationTrendsTask = _databaseService.GetQueryDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate);
-                var procDurationTrendsTask = _databaseService.GetProcedureDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate);
-                var qsDurationTrendsTask = _databaseService.GetQueryStoreDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate);
-                var execTrendsTask = _databaseService.GetExecutionTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate);
+                var queryDurationTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryDurationTrends", () => _databaseService.GetQueryDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
+                var procDurationTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcDurationTrends", () => _databaseService.GetProcedureDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
+                var qsDurationTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => _databaseService.GetQueryStoreDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
+                var execTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExecutionTrends", () => _databaseService.GetExecutionTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
 
                 // Fetch grid-only data in parallel
                 var activeTask = RefreshActiveQueriesAsync();

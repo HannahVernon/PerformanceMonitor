@@ -187,15 +187,15 @@ namespace PerformanceMonitorDashboard
         {
             try
             {
-                var healthTask = Task.Run(() => _databaseService.GetCollectionHealthAsync());
-                var durationLogsTask = Task.Run(() => _databaseService.GetCollectionDurationLogsAsync());
-                var resourceOverviewTask = RefreshResourceOverviewAsync();
-                var runningJobsTask = RefreshRunningJobsAsync();
-                var dailySummaryTask = DailySummaryTab.RefreshDataAsync();
-                var recommendationsTask = RecommendationsTab.RefreshDataAsync();
-                var defaultTraceTask = DefaultTraceTab.RefreshAllDataAsync();
-                var currentConfigTask = CurrentConfigTab.RefreshAllDataAsync();
-                var configChangesTask = ConfigChangesTab.RefreshAllDataAsync();
+                var healthTask = Helpers.MethodProfiler.TimeAsync("Overview.Health", () => Task.Run(() => _databaseService.GetCollectionHealthAsync()));
+                var durationLogsTask = Helpers.MethodProfiler.TimeAsync("Overview.DurationLogs", () => Task.Run(() => _databaseService.GetCollectionDurationLogsAsync()));
+                var resourceOverviewTask = Helpers.MethodProfiler.TimeAsync("Overview.ResourceOverview", () => RefreshResourceOverviewAsync());
+                var runningJobsTask = Helpers.MethodProfiler.TimeAsync("Overview.RunningJobs", () => RefreshRunningJobsAsync());
+                var dailySummaryTask = Helpers.MethodProfiler.TimeAsync("Overview.DailySummary", () => DailySummaryTab.RefreshDataAsync());
+                var recommendationsTask = Helpers.MethodProfiler.TimeAsync("Overview.Recommendations", () => RecommendationsTab.RefreshDataAsync());
+                var defaultTraceTask = Helpers.MethodProfiler.TimeAsync("Overview.DefaultTrace", () => DefaultTraceTab.RefreshAllDataAsync());
+                var currentConfigTask = Helpers.MethodProfiler.TimeAsync("Overview.CurrentConfig", () => CurrentConfigTab.RefreshAllDataAsync());
+                var configChangesTask = Helpers.MethodProfiler.TimeAsync("Overview.ConfigChanges", () => ConfigChangesTab.RefreshAllDataAsync());
 
                 await Task.WhenAll(healthTask, durationLogsTask, resourceOverviewTask, runningJobsTask,
                     dailySummaryTask, recommendationsTask, defaultTraceTask, currentConfigTask, configChangesTask);
@@ -269,12 +269,12 @@ namespace PerformanceMonitorDashboard
         {
             try
             {
-                var blockingEventsTask = Task.Run(() => _databaseService.GetBlockingEventsAsync());
-                var deadlocksTask = Task.Run(() => _databaseService.GetDeadlocksAsync());
-                var blockingStatsTask = Task.Run(() => _databaseService.GetBlockingDeadlockStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
-                var lockWaitStatsTask = Task.Run(() => _databaseService.GetLockWaitStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
-                var currentWaitsDurationTask = Task.Run(() => _databaseService.GetWaitingTaskTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
-                var currentWaitsBlockedTask = Task.Run(() => _databaseService.GetBlockedSessionTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate));
+                var blockingEventsTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingEvents", () => Task.Run(() => _databaseService.GetBlockingEventsAsync()));
+                var deadlocksTask = Helpers.MethodProfiler.TimeAsync("Locking.Deadlocks", () => Task.Run(() => _databaseService.GetDeadlocksAsync()));
+                var blockingStatsTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingStats", () => Task.Run(() => _databaseService.GetBlockingDeadlockStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
+                var lockWaitStatsTask = Helpers.MethodProfiler.TimeAsync("Locking.LockWaitStats", () => Task.Run(() => _databaseService.GetLockWaitStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
+                var currentWaitsDurationTask = Helpers.MethodProfiler.TimeAsync("Locking.WaitingTaskTrend", () => Task.Run(() => _databaseService.GetWaitingTaskTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
+                var currentWaitsBlockedTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockedSessionTrend", () => Task.Run(() => _databaseService.GetBlockedSessionTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
 
                 await Task.WhenAll(blockingEventsTask, deadlocksTask, blockingStatsTask, lockWaitStatsTask, currentWaitsDurationTask, currentWaitsBlockedTask);
 
@@ -349,10 +349,10 @@ namespace PerformanceMonitorDashboard
             try
             {
                 // Load all four charts in parallel
-                var cpuTask = Task.Run(() => _databaseService.GetCpuDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate));
-                var memoryTask = Task.Run(() => _databaseService.GetMemoryDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate));
-                var ioTask = Task.Run(() => _databaseService.GetFileIoDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate));
-                var waitTask = Task.Run(() => _databaseService.GetWaitStatsDataAsync(_resourceOverviewHoursBack, 5, _resourceOverviewFromDate, _resourceOverviewToDate));
+                var cpuTask = Helpers.MethodProfiler.TimeAsync("Overview.ResourceOverview.Cpu", () => Task.Run(() => _databaseService.GetCpuDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate)));
+                var memoryTask = Helpers.MethodProfiler.TimeAsync("Overview.ResourceOverview.Memory", () => Task.Run(() => _databaseService.GetMemoryDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate)));
+                var ioTask = Helpers.MethodProfiler.TimeAsync("Overview.ResourceOverview.FileIo", () => Task.Run(() => _databaseService.GetFileIoDataAsync(_resourceOverviewHoursBack, _resourceOverviewFromDate, _resourceOverviewToDate)));
+                var waitTask = Helpers.MethodProfiler.TimeAsync("Overview.ResourceOverview.Waits", () => Task.Run(() => _databaseService.GetWaitStatsDataAsync(_resourceOverviewHoursBack, 5, _resourceOverviewFromDate, _resourceOverviewToDate)));
 
                 await Task.WhenAll(cpuTask, memoryTask, ioTask, waitTask);
 
