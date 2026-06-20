@@ -90,9 +90,8 @@ namespace PerformanceMonitorDashboard.Controls
                         grouped.Select(g => (double)g.Sum(i => ParseNonYield(i.NonYieldingTimeMs))));
 
                     var scatter = SchedulerIssuesChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Total Non-Yield Time";
                     _schedulerIssuesHover?.Add(scatter, "Total Non-Yield Time");
 

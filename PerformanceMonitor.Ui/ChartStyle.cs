@@ -189,5 +189,36 @@ namespace PerformanceMonitor.Ui
 
             chart.Plot.Axes.SetLimitsY(yMin, yMax);
         }
+
+        /// <summary>
+        /// Applies the shared line-series polish to a <see cref="ScottPlot.Plottables.Scatter"/>:
+        /// a consistent line width, a slight line transparency so overlapping series read clearly
+        /// (markers stay fully opaque so peaks stay crisp), and a marker size scaled to point
+        /// density — dense series collapse to a clean line, sparse series keep visible markers.
+        /// Call this AFTER setting the scatter's <c>Color</c>. Deliberately typed to Scatter so
+        /// Bars / lines / heatmaps can't be mis-fed. Sites that intentionally use MarkerSize 0
+        /// (line-only reference lines) or a fixed anomaly marker (6) set their own and must NOT
+        /// call this (the density rule would override their intent).
+        /// </summary>
+        public static void StyleScatter(ScottPlot.Plottables.Scatter scatter)
+        {
+            int pointCount = scatter.Data.GetScatterPoints().Count;
+            scatter.LineWidth = 2;
+            scatter.MarkerSize = MarkerSizeForDensity(pointCount);
+            // Soften only the connecting line; keep markers fully opaque so peaks stay legible.
+            scatter.LineColor = scatter.LineColor.WithAlpha(210);
+        }
+
+        /// <summary>
+        /// Marker size chosen by point density (see <see cref="StyleScatter"/>). Public so callers
+        /// that build scatters in a non-standard way can reuse the same density curve.
+        /// </summary>
+        public static float MarkerSizeForDensity(int pointCount) => pointCount switch
+        {
+            <= 1   => 7f,   // a lone sample has no line to anchor it — needs a visible dot
+            <= 50  => 5f,   // sparse: full markers
+            <= 120 => 3f,   // medium: small markers
+            _      => 0f,   // dense: line only — markers would be a wall of dots
+        };
     }
 }

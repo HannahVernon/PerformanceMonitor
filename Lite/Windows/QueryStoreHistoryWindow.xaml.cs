@@ -108,9 +108,8 @@ public partial class QueryStoreHistoryWindow : Window
         var ys = _historyData.Select(r => GetMetricValue(r, tag)).ToArray();
 
         var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
-        scatter.LineWidth = 2;
-        scatter.MarkerSize = 5;
         scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
+        ChartStyle.StyleScatter(scatter);
         scatter.LegendText = label;
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();

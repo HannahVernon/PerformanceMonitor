@@ -69,9 +69,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.BadPagesDetected ?? 0)));
                 var scatter = BadPagesChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                ChartStyle.StyleScatter(scatter);
                 _badPagesHover?.Add(scatter, "Bad Pages");
             }
             else
@@ -98,9 +97,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.IntervalDumpRequests ?? 0)));
                 var scatter = DumpRequestsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                ChartStyle.StyleScatter(scatter);
                 _dumpRequestsHover?.Add(scatter, "Dump Requests");
             }
             else
@@ -127,9 +125,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.IsAccessViolationOccurred ?? 0)));
                 var scatter = AccessViolationsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(4));
+                ChartStyle.StyleScatter(scatter);
                 _accessViolationsHover?.Add(scatter, "Access Violations");
             }
             else
@@ -156,9 +153,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.WriteAccessViolationCount ?? 0)));
                 var scatter = WriteAccessViolationsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                ChartStyle.StyleScatter(scatter);
                 _writeAccessViolationsHover?.Add(scatter, "Write Access Violations");
             }
             else
@@ -197,9 +193,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.NonYieldingTasksReported ?? 0)));
                 var scatter = NonYieldingTasksChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                ChartStyle.StyleScatter(scatter);
                 _nonYieldingTasksHover?.Add(scatter, "Non-Yielding Tasks");
             }
             else
@@ -226,9 +221,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.LatchWarnings ?? 0)));
                 var scatter = LatchWarningsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                ChartStyle.StyleScatter(scatter);
                 _latchWarningsHover?.Add(scatter, "Latch Warnings");
             }
             else
@@ -279,9 +273,8 @@ namespace PerformanceMonitorDashboard.Controls
                             typeData.Select(d => d.CollectionTime),
                             typeData.Select(d => (double)(d.SpinlockBackoffs ?? 1))); // Use backoffs count or 1 if null
                         var scatter = SickSpinlocksChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = colors[colorIndex % colors.Length];
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = spinlockType ?? "Unknown";
                         _sickSpinlocksHover?.Add(scatter, spinlockType ?? "Unknown");
                         colorIndex++;
@@ -324,9 +317,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.SystemCpuUtilization ?? 0)));
                 var sysScatter = CpuComparisonChart.Plot.Add.Scatter(sysXs, sysYs);
-                sysScatter.LineWidth = 2;
-                sysScatter.MarkerSize = 5;
                 sysScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                ChartStyle.StyleScatter(sysScatter);
                 sysScatter.LegendText = "System CPU %";
                 _cpuComparisonHover?.Add(sysScatter, "System CPU %");
 
@@ -335,9 +327,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.SqlCpuUtilization ?? 0)));
                 var sqlScatter = CpuComparisonChart.Plot.Add.Scatter(sqlXs, sqlYs);
-                sqlScatter.LineWidth = 2;
-                sqlScatter.MarkerSize = 5;
                 sqlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
+                ChartStyle.StyleScatter(sqlScatter);
                 sqlScatter.LegendText = "SQL CPU %";
                 _cpuComparisonHover?.Add(sqlScatter, "SQL CPU %");
 

@@ -99,9 +99,8 @@ namespace PerformanceMonitorDashboard.Controls
                     aggregated.Select(d => d.Time),
                     aggregated.Select(d => d.AvgReadLatency));
                 var readScatter = TempDbLatencyChart.Plot.Add.Scatter(readXs, readYs);
-                readScatter.LineWidth = 2;
-                readScatter.MarkerSize = 5;
                 readScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("ReadLatency"));
+                ChartStyle.StyleScatter(readScatter);
                 readScatter.LegendText = "Read Latency";
                 _tempDbLatencyHover?.Add(readScatter, "Read Latency");
 
@@ -110,9 +109,8 @@ namespace PerformanceMonitorDashboard.Controls
                     aggregated.Select(d => d.Time),
                     aggregated.Select(d => d.AvgWriteLatency));
                 var writeScatter = TempDbLatencyChart.Plot.Add.Scatter(writeXs, writeYs);
-                writeScatter.LineWidth = 2;
-                writeScatter.MarkerSize = 5;
                 writeScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("WriteLatency"));
+                ChartStyle.StyleScatter(writeScatter);
                 writeScatter.LegendText = "Write Latency";
                 _tempDbLatencyHover?.Add(writeScatter, "Write Latency");
 
@@ -161,9 +159,8 @@ namespace PerformanceMonitorDashboard.Controls
                     dataList.Select(d => d.CollectionTime),
                     dataList.Select(d => (double)d.UserObjectReservedMb));
                 var userScatter = TempdbStatsChart.Plot.Add.Scatter(userXs, userYs);
-                userScatter.LineWidth = 2;
-                userScatter.MarkerSize = 5;
                 userScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UserObjects"));
+                ChartStyle.StyleScatter(userScatter);
                 userScatter.LegendText = "User Objects";
                 _tempdbStatsHover?.Add(userScatter, "User Objects");
 
@@ -172,9 +169,8 @@ namespace PerformanceMonitorDashboard.Controls
                     dataList.Select(d => d.CollectionTime),
                     dataList.Select(d => (double)d.VersionStoreReservedMb));
                 var versionScatter = TempdbStatsChart.Plot.Add.Scatter(versionXs, versionYs);
-                versionScatter.LineWidth = 2;
-                versionScatter.MarkerSize = 5;
                 versionScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("VersionStore"));
+                ChartStyle.StyleScatter(versionScatter);
                 versionScatter.LegendText = "Version Store";
                 _tempdbStatsHover?.Add(versionScatter, "Version Store");
 
@@ -183,9 +179,8 @@ namespace PerformanceMonitorDashboard.Controls
                     dataList.Select(d => d.CollectionTime),
                     dataList.Select(d => (double)d.InternalObjectReservedMb));
                 var internalScatter = TempdbStatsChart.Plot.Add.Scatter(internalXs, internalYs);
-                internalScatter.LineWidth = 2;
-                internalScatter.MarkerSize = 5;
                 internalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("InternalObjects"));
+                ChartStyle.StyleScatter(internalScatter);
                 internalScatter.LegendText = "Internal Objects";
                 _tempdbStatsHover?.Add(internalScatter, "Internal Objects");
 
@@ -196,9 +191,8 @@ namespace PerformanceMonitorDashboard.Controls
                 if (unallocYs.Any(y => y > 0))
                 {
                     var unallocScatter = TempdbStatsChart.Plot.Add.Scatter(unallocXs, unallocYs);
-                    unallocScatter.LineWidth = 2;
-                    unallocScatter.MarkerSize = 5;
                     unallocScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
+                    ChartStyle.StyleScatter(unallocScatter);
                     unallocScatter.LegendText = "Unallocated";
                     _tempdbStatsHover?.Add(unallocScatter, "Unallocated");
                 }
@@ -211,9 +205,8 @@ namespace PerformanceMonitorDashboard.Controls
                         dataList.Select(d => d.CollectionTime),
                         topTaskValues);
                     var topTaskScatter = TempdbStatsChart.Plot.Add.Scatter(topTaskXs, topTaskYs);
-                    topTaskScatter.LineWidth = 2;
-                    topTaskScatter.MarkerSize = 5;
                     topTaskScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TopTempdbTask"));
+                    ChartStyle.StyleScatter(topTaskScatter);
                     topTaskScatter.LegendText = "Top Task";
                 }
 

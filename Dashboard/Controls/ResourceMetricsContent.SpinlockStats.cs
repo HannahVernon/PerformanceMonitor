@@ -91,9 +91,8 @@ namespace PerformanceMonitorDashboard.Controls
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                         var scatter = SpinlockStatsChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = colors[colorIndex % colors.Length];
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = spinlock?.Length > 20 ? spinlock.Substring(0, 20) + "..." : spinlock ?? "";
                         _spinlockStatsHover?.Add(scatter, spinlock ?? "");
                         colorIndex++;

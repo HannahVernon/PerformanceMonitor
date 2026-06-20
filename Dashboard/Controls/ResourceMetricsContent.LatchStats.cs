@@ -91,9 +91,8 @@ namespace PerformanceMonitorDashboard.Controls
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                         var scatter = LatchStatsChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = colors[colorIndex % colors.Length];
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = latchClass?.Length > 20 ? latchClass.Substring(0, 20) + "..." : latchClass ?? "";
                         _latchStatsHover?.Add(scatter, latchClass ?? "");
                         colorIndex++;

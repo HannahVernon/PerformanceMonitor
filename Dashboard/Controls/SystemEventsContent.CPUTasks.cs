@@ -83,9 +83,8 @@ namespace PerformanceMonitorDashboard.Controls
                     double[] workersCreated = grouped.Select(g => (double)g.Max(i => i.WorkersCreated ?? 0)).ToArray();
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, workersCreated.Select(c => c));
                     var scatter = CPUTasksChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Workers Created";
                     _cpuTasksHover?.Add(scatter, "Workers Created");
 

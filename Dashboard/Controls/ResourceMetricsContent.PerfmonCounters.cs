@@ -303,9 +303,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                     var scatter = PerfmonCountersChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5; // Show small markers to ensure visibility
                     scatter.Color = colors[colorIndex % colors.Length];
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = counter.CounterName;
                     _perfmonHover?.Add(scatter, counter.CounterName);
 

@@ -82,9 +82,8 @@ namespace PerformanceMonitorDashboard.Controls
                         grouped.Select(d => (double)d.SingleUseSizeMb));
 
                     var singleScatter = PlanCacheChart.Plot.Add.Scatter(singleXs, singleYs);
-                    singleScatter.LineWidth = 2;
-                    singleScatter.MarkerSize = 5;
                     singleScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SinglePagePlans"));
+                    ChartStyle.StyleScatter(singleScatter);
                     singleScatter.LegendText = "Single-Use";
                     _planCacheHover?.Add(singleScatter, "Single-Use");
 
@@ -94,9 +93,8 @@ namespace PerformanceMonitorDashboard.Controls
                         grouped.Select(d => (double)d.MultiUseSizeMb));
 
                     var multiScatter = PlanCacheChart.Plot.Add.Scatter(multiXs, multiYs);
-                    multiScatter.LineWidth = 2;
-                    multiScatter.MarkerSize = 5;
                     multiScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MultiPagePlans"));
+                    ChartStyle.StyleScatter(multiScatter);
                     multiScatter.LegendText = "Multi-Use";
                     _planCacheHover?.Add(multiScatter, "Multi-Use");
 

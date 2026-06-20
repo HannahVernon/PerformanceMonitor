@@ -96,9 +96,8 @@ namespace PerformanceMonitorDashboard.Controls
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                         var scatter = MemoryBrokerChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = colors[colorIndex % colors.Length];
+                        ChartStyle.StyleScatter(scatter);
                         var brokerLabel = brokerGroup.Key.Length > 25 ? brokerGroup.Key.Substring(0, 25) + "..." : brokerGroup.Key;
                         scatter.LegendText = brokerLabel;
                         _memoryBrokerHover?.Add(scatter, brokerLabel);
@@ -124,9 +123,8 @@ namespace PerformanceMonitorDashboard.Controls
                         ratioData.Select(d => (double)(d.MemoryRatio ?? 0)));
 
                     var scatter = MemoryBrokerRatioChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Memory Ratio";
                     _memoryBrokerRatioHover?.Add(scatter, "Memory Ratio");
                 }
@@ -139,9 +137,8 @@ namespace PerformanceMonitorDashboard.Controls
                         overallData.Select(d => (double)(d.Overall ?? 0)));
 
                     var scatter = MemoryBrokerRatioChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Overall";
                     _memoryBrokerRatioHover?.Add(scatter, "Overall");
                 }

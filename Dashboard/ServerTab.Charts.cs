@@ -121,9 +121,8 @@ namespace PerformanceMonitorDashboard
             if (blockingXs.Length > 0)
             {
                 var scatter = BlockingStatsBlockingEventsChart.Plot.Add.Scatter(blockingXs, blockingYs);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking"));
+                ChartStyle.StyleScatter(scatter);
                 _blockingEventsHover?.Add(scatter, "Blocking Events");
             }
             else
@@ -150,9 +149,8 @@ namespace PerformanceMonitorDashboard
             if (durationXs.Length > 0)
             {
                 var scatter = BlockingStatsDurationChart.Plot.Add.Scatter(durationXs, durationYs);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BlockingDuration"));
+                ChartStyle.StyleScatter(scatter);
                 _blockingDurationHover?.Add(scatter, "Blocking Duration");
             }
             else
@@ -179,9 +177,8 @@ namespace PerformanceMonitorDashboard
             if (deadlockXs.Length > 0)
             {
                 var scatter = BlockingStatsDeadlocksChart.Plot.Add.Scatter(deadlockXs, deadlockYs);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks"));
+                ChartStyle.StyleScatter(scatter);
                 _deadlocksHover?.Add(scatter, "Deadlocks");
             }
             else
@@ -208,9 +205,8 @@ namespace PerformanceMonitorDashboard
             if (deadlockWaitXs.Length > 0)
             {
                 var scatter = BlockingStatsDeadlockWaitTimeChart.Plot.Add.Scatter(deadlockWaitXs, deadlockWaitYs);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("DeadlockWaitTime"));
+                ChartStyle.StyleScatter(scatter);
                 _deadlockWaitTimeHover?.Add(scatter, "Deadlock Wait Time");
             }
             else
@@ -311,9 +307,8 @@ namespace PerformanceMonitorDashboard
                         waitTypeData.Select(d => (double)d.WaitTimeMsPerSecond));
 
                     var scatter = LockWaitStatsChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
+                    ChartStyle.StyleScatter(scatter);
                     var lockLabel = waitType.Replace("LCK_M_", "").Replace("LCK_", "");
                     scatter.LegendText = lockLabel;
                     _lockWaitStatsHover?.Add(scatter, lockLabel);
@@ -369,9 +364,8 @@ namespace PerformanceMonitorDashboard
                         waitTypeData.Select(d => (double)d.TotalWaitMs));
 
                     var scatter = CurrentWaitsDurationChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = waitType;
                     _currentWaitsDurationHover?.Add(scatter, waitType);
                     colorIndex++;
@@ -426,9 +420,8 @@ namespace PerformanceMonitorDashboard
                         dbData.Select(d => (double)d.BlockedCount));
 
                     var scatter = CurrentWaitsBlockedChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = db;
                     _currentWaitsBlockedHover?.Add(scatter, db);
                     colorIndex++;
@@ -483,16 +476,14 @@ namespace PerformanceMonitorDashboard
             if (xsTotal.Length > 0)
             {
                 var totalScatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xsTotal, ysTotal);
-                totalScatter.LineWidth = 2;
-                totalScatter.MarkerSize = 5;
                 totalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalCpu"));
+                ChartStyle.StyleScatter(totalScatter);
                 totalScatter.LegendText = "Total CPU %";
                 _resourceOverviewCpuHover?.Add(totalScatter, "Total CPU %");
 
                 var sqlScatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xsSql, ysSql);
-                sqlScatter.LineWidth = 2;
-                sqlScatter.MarkerSize = 5;
                 sqlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
+                ChartStyle.StyleScatter(sqlScatter);
                 sqlScatter.LegendText = "SQL CPU %";
                 _resourceOverviewCpuHover?.Add(sqlScatter, "SQL CPU %");
 
@@ -546,16 +537,14 @@ namespace PerformanceMonitorDashboard
             if (bufferXs.Length > 0)
             {
                 var bufferScatter = ResourceOverviewMemoryChart.Plot.Add.Scatter(bufferXs, bufferYs);
-                bufferScatter.LineWidth = 2;
-                bufferScatter.MarkerSize = 5;
                 bufferScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BufferPool"));
+                ChartStyle.StyleScatter(bufferScatter);
                 bufferScatter.LegendText = "Buffer Pool";
                 _resourceOverviewMemoryHover?.Add(bufferScatter, "Buffer Pool");
 
                 var grantsScatter = ResourceOverviewMemoryChart.Plot.Add.Scatter(grantsXs, grantsYs);
-                grantsScatter.LineWidth = 2;
-                grantsScatter.MarkerSize = 5;
                 grantsScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MemoryGrants"));
+                ChartStyle.StyleScatter(grantsScatter);
                 grantsScatter.LegendText = "Memory Grants";
                 _resourceOverviewMemoryHover?.Add(grantsScatter, "Memory Grants");
 
@@ -623,16 +612,14 @@ namespace PerformanceMonitorDashboard
             if (readXs.Length > 0)
             {
                 var readScatter = ResourceOverviewIoChart.Plot.Add.Scatter(readXs, readYs);
-                readScatter.LineWidth = 2;
-                readScatter.MarkerSize = 5;
                 readScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("ReadLatency"));
+                ChartStyle.StyleScatter(readScatter);
                 readScatter.LegendText = "Read ms";
                 _resourceOverviewIoHover?.Add(readScatter, "Read ms");
 
                 var writeScatter = ResourceOverviewIoChart.Plot.Add.Scatter(writeXs, writeYs);
-                writeScatter.LineWidth = 2;
-                writeScatter.MarkerSize = 5;
                 writeScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("WriteLatency"));
+                ChartStyle.StyleScatter(writeScatter);
                 writeScatter.LegendText = "Write ms";
                 _resourceOverviewIoHover?.Add(writeScatter, "Write ms");
 
@@ -699,9 +686,8 @@ namespace PerformanceMonitorDashboard
                         waitTypeData.Select(d => (double)d.WaitTimeMsPerSecond));
 
                     var scatter = ResourceOverviewWaitChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
+                    ChartStyle.StyleScatter(scatter);
                     var waitLabel = waitType.Length > 15 ? waitType.Substring(0, 15) + "..." : waitType;
                     scatter.LegendText = waitLabel;
                     _resourceOverviewWaitHover?.Add(scatter, waitLabel);

@@ -202,18 +202,7 @@ namespace PerformanceMonitorDashboard
             var color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
             var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
             scatter.Color = color;
-
-            // Sparse data: show only markers to avoid misleading interpolated lines
-            if (dates.Length <= 1)
-            {
-                scatter.LineWidth = 0;
-                scatter.MarkerSize = 8;
-            }
-            else
-            {
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 4;
-            }
+            ChartStyle.StyleScatter(scatter);
 
             HistoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
             Helpers.TabHelpers.ReapplyAxisColors(HistoryChart);

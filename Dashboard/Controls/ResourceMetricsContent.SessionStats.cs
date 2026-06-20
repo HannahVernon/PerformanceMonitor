@@ -76,9 +76,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, totalCounts.Select(c => c));
                     var totalScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    totalScatter.LineWidth = 2;
-                    totalScatter.MarkerSize = 5;
                     totalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionTotal"));
+                    ChartStyle.StyleScatter(totalScatter);
                     totalScatter.LegendText = "Total";
                     _sessionStatsHover?.Add(totalScatter, "Total");
                 }
@@ -87,9 +86,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, runningCounts.Select(c => c));
                     var runningScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    runningScatter.LineWidth = 2;
-                    runningScatter.MarkerSize = 5;
                     runningScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionRunning"));
+                    ChartStyle.StyleScatter(runningScatter);
                     runningScatter.LegendText = "Running";
                     _sessionStatsHover?.Add(runningScatter, "Running");
                 }
@@ -98,9 +96,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, sleepingCounts.Select(c => c));
                     var sleepingScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    sleepingScatter.LineWidth = 2;
-                    sleepingScatter.MarkerSize = 5;
                     sleepingScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionSleeping"));
+                    ChartStyle.StyleScatter(sleepingScatter);
                     sleepingScatter.LegendText = "Sleeping";
                     _sessionStatsHover?.Add(sleepingScatter, "Sleeping");
                 }
@@ -110,9 +107,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, backgroundCounts.Select(c => c));
                     var backgroundScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    backgroundScatter.LineWidth = 2;
-                    backgroundScatter.MarkerSize = 5;
                     backgroundScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionBackground"));
+                    ChartStyle.StyleScatter(backgroundScatter);
                     backgroundScatter.LegendText = "Background";
                     _sessionStatsHover?.Add(backgroundScatter, "Background");
                 }
@@ -122,9 +118,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, dormantCounts.Select(c => c));
                     var dormantScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    dormantScatter.LineWidth = 2;
-                    dormantScatter.MarkerSize = 5;
                     dormantScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionDormant"));
+                    ChartStyle.StyleScatter(dormantScatter);
                     dormantScatter.LegendText = "Dormant";
                     _sessionStatsHover?.Add(dormantScatter, "Dormant");
                 }
@@ -134,9 +129,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, idleOver30MinCounts.Select(c => c));
                     var idleScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    idleScatter.LineWidth = 2;
-                    idleScatter.MarkerSize = 5;
                     idleScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionIdle"));
+                    ChartStyle.StyleScatter(idleScatter);
                     idleScatter.LegendText = "Idle >30m";
                     _sessionStatsHover?.Add(idleScatter, "Idle >30m");
                 }
@@ -146,9 +140,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, waitingForMemoryCounts.Select(c => c));
                     var waitingScatter = SessionStatsChart.Plot.Add.Scatter(xs, ys);
-                    waitingScatter.LineWidth = 2;
-                    waitingScatter.MarkerSize = 5;
                     waitingScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SessionWaiting"));
+                    ChartStyle.StyleScatter(waitingScatter);
                     waitingScatter.LegendText = "Waiting for Memory";
                     _sessionStatsHover?.Add(waitingScatter, "Waiting for Memory");
                 }

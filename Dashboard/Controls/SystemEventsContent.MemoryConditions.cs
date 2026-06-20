@@ -83,9 +83,8 @@ namespace PerformanceMonitorDashboard.Controls
                     {
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, oomCounts.Select(c => c));
                         var scatter = MemoryConditionsChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = "OOM Exceptions";
                         _memoryConditionsHover?.Add(scatter, "OOM Exceptions");
                         hasData = true;

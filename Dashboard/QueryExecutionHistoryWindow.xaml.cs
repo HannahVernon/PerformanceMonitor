@@ -209,21 +209,9 @@ namespace PerformanceMonitorDashboard
                 var color = colors[colorIndex % colors.Length];
                 var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
                 scatter.Color = color;
+                ChartStyle.StyleScatter(scatter);
                 var label = $"Plan {planGroup.Key}";
                 scatter.LegendText = label;
-
-                // Sparse data: use total dataset size, not per-plan size, since
-                // data is split across plan groups
-                if (_historyData.Count <= 1)
-                {
-                    scatter.LineWidth = 0;
-                    scatter.MarkerSize = 8;
-                }
-                else
-                {
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 4;
-                }
 
                 scatterSeries.Add((scatter, label));
                 colorIndex++;

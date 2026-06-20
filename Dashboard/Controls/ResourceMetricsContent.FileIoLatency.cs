@@ -89,10 +89,9 @@ namespace PerformanceMonitorDashboard.Controls
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                         var scatter = chart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         var color = colors[colorIndex % colors.Length];
                         scatter.Color = color;
+                        ChartStyle.StyleScatter(scatter);
 
                         // Use just the filename for legend (not database.filename which is redundant)
                         var fileName = fileData.First().FileName;

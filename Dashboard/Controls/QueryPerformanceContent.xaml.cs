@@ -1219,9 +1219,8 @@ namespace PerformanceMonitorDashboard.Controls
                     dataList.Select(d => d.AvgDurationMs));
 
                 var scatter = chart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = color;
+                ChartStyle.StyleScatter(scatter);
                 scatter.LegendText = legendText;
                 hover?.Add(scatter, legendText);
 
@@ -1274,9 +1273,8 @@ namespace PerformanceMonitorDashboard.Controls
                 dataList.Select(d => (double)d.ExecutionsPerSecond));
 
             var scatter = QueryPerfTrendsExecChart.Plot.Add.Scatter(xs, ys);
-            scatter.LineWidth = 2;
-            scatter.MarkerSize = 5;
             scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
+            ChartStyle.StyleScatter(scatter);
             scatter.LegendText = "Executions/sec";
             _execTrendsHover?.Add(scatter, "Executions/sec");
 

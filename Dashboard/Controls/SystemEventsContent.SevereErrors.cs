@@ -84,9 +84,8 @@ namespace PerformanceMonitorDashboard.Controls
                         grouped.Select(g => (double)g.Count()));
 
                     var scatter = SevereErrorsChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Error Count";
                     _severeErrorsHover?.Add(scatter, "Error Count");
 

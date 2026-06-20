@@ -86,9 +86,8 @@ namespace PerformanceMonitorDashboard.Controls
                     {
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, latchTimeouts.Select(c => c));
                         var scatter = IOIssuesChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = "Latch Timeouts";
                         _ioIssuesHover?.Add(scatter, "Latch Timeouts");
                     }
@@ -97,9 +96,8 @@ namespace PerformanceMonitorDashboard.Controls
                     {
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, longIos.Select(c => c));
                         var scatter = IOIssuesChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = "Long IOs";
                         _ioIssuesHover?.Add(scatter, "Long IOs");
                     }
@@ -189,9 +187,8 @@ namespace PerformanceMonitorDashboard.Controls
                                 durations.Select(d => d));
 
                             var scatter = LongestPendingIOChart.Plot.Add.Scatter(xs, ys);
-                            scatter.LineWidth = 2;
-                            scatter.MarkerSize = 5;
                             scatter.Color = colors[colorIndex % colors.Length];
+                            ChartStyle.StyleScatter(scatter);
                             scatter.LegendText = fileName;
                             _longestPendingIoHover?.Add(scatter, fileName);
                             colorIndex++;

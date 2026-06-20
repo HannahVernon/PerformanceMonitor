@@ -323,9 +323,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                     var scatter = WaitStatsDetailChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = colors[colorIndex % colors.Length];
+                    ChartStyle.StyleScatter(scatter);
 
                     // Truncate legend text if too long
                     string legendText = waitType.WaitType;

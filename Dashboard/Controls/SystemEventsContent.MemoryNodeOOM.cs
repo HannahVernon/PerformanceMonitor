@@ -88,9 +88,8 @@ namespace PerformanceMonitorDashboard.Controls
                         grouped.Select(g => (double)g.Count()));
 
                     var scatter = MemoryNodeOOMChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "OOM Event Count";
                     _memoryNodeOomHover?.Add(scatter, "OOM Event Count");
 
@@ -142,9 +141,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     hasData = true;
                     var scatter = MemoryNodeOOMUtilChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                    ChartStyle.StyleScatter(scatter);
                     _memoryNodeOomUtilHover?.Add(scatter, "Memory Utilization %");
                 }
             }
@@ -193,9 +191,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = targetData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = targetData.Select(d => (double)d.TargetKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(1));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Target";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Target");
                 }
@@ -208,9 +205,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = committedData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = committedData.Select(d => (double)d.CommittedKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Committed";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Committed");
                 }
@@ -223,9 +219,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = totalPFData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = totalPFData.Select(d => (double)d.TotalPageFileKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(4));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Total Page File";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Total Page File");
                 }
@@ -238,9 +233,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = availPFData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = availPFData.Select(d => (double)d.AvailablePageFileKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
                     scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(5));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Avail Page File";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Avail Page File");
                 }

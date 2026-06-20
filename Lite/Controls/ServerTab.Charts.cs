@@ -77,11 +77,13 @@ public partial class ServerTab : UserControl
         var sqlPlot = CpuChart.Plot.Add.Scatter(times, sqlCpu);
         sqlPlot.LegendText = "SQL Server";
         sqlPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
+        ChartStyle.StyleScatter(sqlPlot);
         _cpuHover?.Add(sqlPlot, "SQL Server");
 
         var otherPlot = CpuChart.Plot.Add.Scatter(times, otherCpu);
         otherPlot.LegendText = "Other";
         otherPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OtherCpu"));
+        ChartStyle.StyleScatter(otherPlot);
         _cpuHover?.Add(otherPlot, "Other");
 
         CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -109,17 +111,20 @@ public partial class ServerTab : UserControl
         var totalPlot = MemoryChart.Plot.Add.Scatter(times, totalMem);
         totalPlot.LegendText = "Total Server Memory";
         totalPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalServerMemory"));
+        ChartStyle.StyleScatter(totalPlot);
         _memoryHover?.Add(totalPlot, "Total Server Memory");
 
         var targetPlot = MemoryChart.Plot.Add.Scatter(times, targetMem);
         targetPlot.LegendText = "Target Memory";
         targetPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TargetMemory"));
+        ChartStyle.StyleScatter(targetPlot);
         targetPlot.LineStyle.Pattern = LinePattern.Dashed;
         _memoryHover?.Add(targetPlot, "Target Memory");
 
         var bpPlot = MemoryChart.Plot.Add.Scatter(times, bufferPool);
         bpPlot.LegendText = "Buffer Pool";
         bpPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BufferPool"));
+        ChartStyle.StyleScatter(bpPlot);
         _memoryHover?.Add(bpPlot, "Buffer Pool");
 
         /* Memory grants trend line — show zero line when no grant data */
@@ -138,6 +143,7 @@ public partial class ServerTab : UserControl
         var grantPlot = MemoryChart.Plot.Add.Scatter(grantTimes, grantMb);
         grantPlot.LegendText = "Memory Grants";
         grantPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MemoryGrants"));
+        ChartStyle.StyleScatter(grantPlot);
         _memoryHover?.Add(grantPlot, "Memory Grants");
 
         MemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -191,6 +197,7 @@ public partial class ServerTab : UserControl
                 var label = $"Pool {poolId}: {metric.Name}";
                 plot.LegendText = label;
                 plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIndex % SeriesColors.Length]);
+                ChartStyle.StyleScatter(plot);
                 _memoryGrantSizingHover?.Add(plot, label);
                 if (values.Length > 0) sizingMax = Math.Max(sizingMax, values.Max());
                 colorIndex++;
@@ -227,6 +234,7 @@ public partial class ServerTab : UserControl
                 var label = $"Pool {poolId}: {metric.Name}";
                 plot.LegendText = label;
                 plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIndex % SeriesColors.Length]);
+                ChartStyle.StyleScatter(plot);
                 _memoryGrantActivityHover?.Add(plot, label);
                 if (values.Length > 0) activityMax = Math.Max(activityMax, values.Max());
                 colorIndex++;
@@ -370,16 +378,19 @@ public partial class ServerTab : UserControl
         var userPlot = TempDbChart.Plot.Add.Scatter(times, userObj);
         userPlot.LegendText = "User Objects";
         userPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UserObjects"));
+        ChartStyle.StyleScatter(userPlot);
         _tempDbHover?.Add(userPlot, "User Objects");
 
         var internalPlot = TempDbChart.Plot.Add.Scatter(times, internalObj);
         internalPlot.LegendText = "Internal Objects";
         internalPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("InternalObjects"));
+        ChartStyle.StyleScatter(internalPlot);
         _tempDbHover?.Add(internalPlot, "Internal Objects");
 
         var vsPlot = TempDbChart.Plot.Add.Scatter(times, versionStore);
         vsPlot.LegendText = "Version Store";
         vsPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("VersionStore"));
+        ChartStyle.StyleScatter(vsPlot);
         _tempDbHover?.Add(vsPlot, "Version Store");
 
         TempDbChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -423,6 +434,7 @@ public partial class ServerTab : UserControl
                 var plot = TempDbFileIoChart.Plot.Add.Scatter(times, latency);
                 plot.LegendText = fileGroup.Key;
                 plot.Color = color;
+                ChartStyle.StyleScatter(plot);
                 _tempDbFileIoHover?.Add(plot, fileGroup.Key);
                 maxLatency = Math.Max(maxLatency, latency.Max());
             }
@@ -473,6 +485,7 @@ public partial class ServerTab : UserControl
                 var readPlot = FileIoReadChart.Plot.Add.Scatter(times, readLatency);
                 readPlot.LegendText = dbGroup.Key;
                 readPlot.Color = color;
+                ChartStyle.StyleScatter(readPlot);
                 _fileIoReadHover?.Add(readPlot, dbGroup.Key);
                 readMax = Math.Max(readMax, readLatency.Max());
             }
@@ -482,6 +495,7 @@ public partial class ServerTab : UserControl
                 var writePlot = FileIoWriteChart.Plot.Add.Scatter(times, writeLatency);
                 writePlot.LegendText = dbGroup.Key;
                 writePlot.Color = color;
+                ChartStyle.StyleScatter(writePlot);
                 _fileIoWriteHover?.Add(writePlot, dbGroup.Key);
                 writeMax = Math.Max(writeMax, writeLatency.Max());
             }
@@ -497,6 +511,7 @@ public partial class ServerTab : UserControl
                     var qReadPlot = FileIoReadChart.Plot.Add.Scatter(times, queuedReadLatency);
                     qReadPlot.LegendText = $"{dbGroup.Key} (queued)";
                     qReadPlot.Color = color;
+                    ChartStyle.StyleScatter(qReadPlot);
                     qReadPlot.LinePattern = ScottPlot.LinePattern.Dashed;
                     _fileIoReadHover?.Add(qReadPlot, $"{dbGroup.Key} (queued)");
                 }
@@ -506,6 +521,7 @@ public partial class ServerTab : UserControl
                     var qWritePlot = FileIoWriteChart.Plot.Add.Scatter(times, queuedWriteLatency);
                     qWritePlot.LegendText = $"{dbGroup.Key} (queued)";
                     qWritePlot.Color = color;
+                    ChartStyle.StyleScatter(qWritePlot);
                     qWritePlot.LinePattern = ScottPlot.LinePattern.Dashed;
                     _fileIoWriteHover?.Add(qWritePlot, $"{dbGroup.Key} (queued)");
                 }
@@ -562,6 +578,7 @@ public partial class ServerTab : UserControl
                 var readPlot = FileIoReadThroughputChart.Plot.Add.Scatter(times, readThroughput);
                 readPlot.LegendText = fileGroup.Key;
                 readPlot.Color = color;
+                ChartStyle.StyleScatter(readPlot);
                 _fileIoReadThroughputHover?.Add(readPlot, fileGroup.Key);
                 readMax = Math.Max(readMax, readThroughput.Max());
             }
@@ -571,6 +588,7 @@ public partial class ServerTab : UserControl
                 var writePlot = FileIoWriteThroughputChart.Plot.Add.Scatter(times, writeThroughput);
                 writePlot.LegendText = fileGroup.Key;
                 writePlot.Color = color;
+                ChartStyle.StyleScatter(writePlot);
                 _fileIoWriteThroughputHover?.Add(writePlot, fileGroup.Key);
                 writeMax = Math.Max(writeMax, writeThroughput.Max());
             }
@@ -641,6 +659,7 @@ public partial class ServerTab : UserControl
             var plot = LockWaitTrendChart.Plot.Add.Scatter(times, values);
             plot.LegendText = group.Key;
             plot.Color = ScottPlot.Color.FromHex(SeriesColors[i % SeriesColors.Length]);
+            ChartStyle.StyleScatter(plot);
             _lockWaitTrendHover?.Add(plot, group.Key);
 
             if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
@@ -863,9 +882,8 @@ public partial class ServerTab : UserControl
 
             var plot = CurrentWaitsDurationChart.Plot.Add.Scatter(times, values);
             plot.LegendText = group.Key;
-            plot.LineWidth = 2;
-            plot.MarkerSize = 5;
             plot.Color = ScottPlot.Color.FromHex(SeriesColors[i % SeriesColors.Length]);
+            ChartStyle.StyleScatter(plot);
             _currentWaitsDurationHover?.Add(plot, group.Key);
 
             if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
@@ -928,9 +946,8 @@ public partial class ServerTab : UserControl
 
             var plot = CurrentWaitsBlockedChart.Plot.Add.Scatter(times, values);
             plot.LegendText = group.Key;
-            plot.LineWidth = 2;
-            plot.MarkerSize = 5;
             plot.Color = ScottPlot.Color.FromHex(SeriesColors[i % SeriesColors.Length]);
+            ChartStyle.StyleScatter(plot);
             _currentWaitsBlockedHover?.Add(plot, group.Key);
 
             if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
@@ -961,6 +978,7 @@ public partial class ServerTab : UserControl
         var plot = QueryDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Query Duration";
         plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("QueryDuration"));
+        ChartStyle.StyleScatter(plot);
         _queryDurationTrendHover?.Add(plot, "Query Duration");
 
         QueryDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -985,6 +1003,7 @@ public partial class ServerTab : UserControl
         var plot = ProcDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Procedure Duration";
         plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("ProcedureDuration"));
+        ChartStyle.StyleScatter(plot);
         _procDurationTrendHover?.Add(plot, "Procedure Duration");
 
         ProcDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -1009,6 +1028,7 @@ public partial class ServerTab : UserControl
         var plot = QueryStoreDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Query Store Duration";
         plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("QueryStoreDuration"));
+        ChartStyle.StyleScatter(plot);
         _queryStoreDurationTrendHover?.Add(plot, "Query Store Duration");
 
         QueryStoreDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -1033,6 +1053,7 @@ public partial class ServerTab : UserControl
         var plot = ExecutionCountTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Executions";
         plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Executions"));
+        ChartStyle.StyleScatter(plot);
         _executionCountTrendHover?.Add(plot, "Executions");
 
         ExecutionCountTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();

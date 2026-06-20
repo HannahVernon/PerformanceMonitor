@@ -89,30 +89,26 @@ namespace PerformanceMonitorDashboard.Controls
                 AddPressureWarningSpans(dataList);
 
                 var totalScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(totalXs, totalYs);
-                totalScatter.LineWidth = 2;
-                totalScatter.MarkerSize = 5;
                 totalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalMemory"));
+                ChartStyle.StyleScatter(totalScatter);
                 totalScatter.LegendText = "Total Memory";
                 _memoryStatsOverviewHover?.Add(totalScatter, "Total Memory");
 
                 var bufferScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(bufferXs, bufferYs);
-                bufferScatter.LineWidth = 2;
-                bufferScatter.MarkerSize = 5;
                 bufferScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BufferPool"));
+                ChartStyle.StyleScatter(bufferScatter);
                 bufferScatter.LegendText = "Buffer Pool";
                 _memoryStatsOverviewHover?.Add(bufferScatter, "Buffer Pool");
 
                 var cacheScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(cacheXs, cacheYs);
-                cacheScatter.LineWidth = 2;
-                cacheScatter.MarkerSize = 5;
                 cacheScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("CacheMemory"));
+                ChartStyle.StyleScatter(cacheScatter);
                 cacheScatter.LegendText = "Plan Cache";
                 _memoryStatsOverviewHover?.Add(cacheScatter, "Plan Cache");
 
                 var availScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(availXs, availYs);
-                availScatter.LineWidth = 2;
-                availScatter.MarkerSize = 5;
                 availScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("AvailableMemory"));
+                ChartStyle.StyleScatter(availScatter);
                 availScatter.LegendText = "Available Physical";
                 _memoryStatsOverviewHover?.Add(availScatter, "Available Physical");
 
