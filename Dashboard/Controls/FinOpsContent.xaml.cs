@@ -42,6 +42,12 @@ namespace PerformanceMonitorDashboard.Controls
         public FinOpsContent()
         {
             InitializeComponent();
+            // Create the Database Sizes filter manager here, NOT in OnLoaded: Initialize() sets
+            // ServerSelector.SelectedIndex = 0, which fires RefreshDataAsync -> LoadDatabaseSizesAsync,
+            // and that can run before the Loaded event. If the manager isn't set yet, the loader
+            // fetches the data then silently discards it at its null-guard (Database Sizes stays
+            // empty until a manual refresh). Creating it here removes that init-order race.
+            _dbSizesFilterMgr = new DataGridFilterManager<FinOpsDatabaseSizeStats>(DatabaseSizesDataGrid);
             Loaded += OnLoaded;
         }
 
@@ -76,8 +82,6 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.FreezeColumns(ExpensiveQueriesDataGrid, 1);
             TabHelpers.FreezeColumns(IndexAnalysisDetailGrid, 1);
             TabHelpers.FreezeColumns(HighImpactDataGrid, 1);
-
-            _dbSizesFilterMgr = new DataGridFilterManager<FinOpsDatabaseSizeStats>(DatabaseSizesDataGrid);
         }
 
         /// <summary>
