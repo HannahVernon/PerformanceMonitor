@@ -105,6 +105,7 @@ namespace PerformanceMonitor.Common
                 ["Tran Log IO"]      = "#0984E3",
                 ["Network IO"]       = "#75BBF8",
                 ["Parallelism"]      = "#7B4FFF",
+                ["Batch Mode"]       = "#00CEC9",
                 ["Memory"]           = "#FDCB6E",
                 ["Tracing"]          = "#B2BEC3",
                 ["Full Text Search"] = "#DFE6E9",
@@ -149,13 +150,20 @@ namespace PerformanceMonitor.Common
 
             bool Starts(string p) => w.StartsWith(p, StringComparison.Ordinal);
 
-            // Parallelism (exchange / bitmap / hash-build), incl. the CX* family
-            if (Starts("CXPACKET") || Starts("CXCONSUMER") || Starts("CXSYNC_") || Starts("EXCHANGE") ||
-                Starts("HTBUILD") || Starts("HTREPARTITION") || Starts("HTDELETE") || Starts("HTMEMO") ||
-                Starts("BMPBUILD") || Starts("BMPREPARTITION") || Starts("BMPALLOCATION") || Starts("BPSORT"))
+            // Parallelism — exchange-iterator / CX* family (genuine parallel-plan exchange waits).
+            if (Starts("CXPACKET") || Starts("CXCONSUMER") || Starts("CXSYNC_") || Starts("EXCHANGE"))
                 return "Parallelism";
 
-            if (w == "SOS_SCHEDULER_YIELD" || w == "SOS_WORK_DISPATCHER")
+            // Batch mode — hash-table / bitmap-filter / batch-sort operator waits (verified vs SQLskills
+            // + sys.dm_os_wait_stats docs). BMPALLOCATION IS documented (MS docs: batch-mode bitmap
+            // allocation) even though SQLskills' page is a stub, so it belongs here with its siblings.
+            if (Starts("HTBUILD") || Starts("HTREPARTITION") || Starts("HTDELETE") || Starts("HTMEMO") ||
+                Starts("BMPBUILD") || Starts("BMPREPARTITION") || Starts("BMPALLOCATION") || Starts("BPSORT"))
+                return "Batch Mode";
+
+            // SOS_WORK_DISPATCHER is deliberately NOT classified as CPU: it is an idle/benign
+            // "waiting for something to do" wait (per SQLskills), not CPU pressure -> falls to Unknown.
+            if (w == "SOS_SCHEDULER_YIELD")
                 return "CPU";
 
             if (w == "THREADPOOL")
@@ -189,7 +197,7 @@ namespace PerformanceMonitor.Common
                 return "Memory";
 
             if (w == "ASYNC_NETWORK_IO" || w == "NET_WAITFOR_PACKET" || w == "PROXY_NETWORK_IO" ||
-                w == "EXTERNAL_SCRIPT_NETWORK_IOF")
+                w == "EXTERNAL_SCRIPT_NETWORK_IO")
                 return "Network IO";
 
             if (Starts("SQLCLR") || Starts("CLR_"))
@@ -207,7 +215,9 @@ namespace PerformanceMonitor.Common
             if (Starts("FT_") || Starts("FULLTEXT") || Starts("MSSEARCH"))
                 return "Full Text Search";
 
-            if (Starts("DTC") || Starts("XACT") || Starts("TRANSACTION_") || w == "MSQL_XP")
+            // MSQL_XP is NOT here: it's an extended-stored-procedure wait (per SQLskills), unrelated
+            // to transactions -> falls through to Unknown.
+            if (Starts("DTC") || Starts("XACT") || Starts("TRANSACTION_"))
                 return "Transaction";
 
             if (Starts("TRACE") || Starts("SQLTRACE") || w == "QUERY_TRACEOUT")
