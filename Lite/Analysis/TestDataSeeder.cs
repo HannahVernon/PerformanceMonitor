@@ -97,7 +97,7 @@ public class TestDataSeeder
         await SeedCpuUtilizationAsync(85, 5);
         await SeedIoLatencyAsync(totalReads: 1_000_000, stallReadMs: 35_000_000, // 35ms avg read
                                   totalWrites: 200_000, stallWriteMs: 2_000_000); // 10ms avg write
-        await SeedPerfmonAsync(ple: 120); // Low PLE — buffer pool under pressure
+        await SeedPerfmonAsync();
         await SeedMemoryClerksAsync(new Dictionary<string, double>
         {
             ["MEMORYCLERK_SQLBUFFERPOOL"] = 54_000,
@@ -144,7 +144,7 @@ public class TestDataSeeder
         await SeedQueryStatsAsync(totalSpills: 500, highDopQueryCount: 15);
         await SeedServerPropertiesAsync(cpuCount: 32, htRatio: 2, physicalMemMb: 131_072,
             edition: "Enterprise Edition");
-        await SeedPerfmonAsync(ple: 800);
+        await SeedPerfmonAsync();
     }
 
     /// <summary>
@@ -178,7 +178,7 @@ public class TestDataSeeder
         await SeedIoLatencyAsync(totalReads: 500_000, stallReadMs: 500_000, // 1ms avg read
                                   totalWrites: 200_000, stallWriteMs: 100_000); // 0.5ms avg write
         await SeedTempDbAsync(reservedMb: 100, unallocatedMb: 900); // 10% — healthy
-        await SeedPerfmonAsync(ple: 5_000); // Excellent PLE
+        await SeedPerfmonAsync();
         await SeedDatabaseConfigAsync(
             ("AppDB1", true, false, false, "CHECKSUM"),
             ("AppDB2", true, false, false, "CHECKSUM"));
@@ -421,12 +421,12 @@ public class TestDataSeeder
         await SeedFileSizeAsync(totalDataSizeMb: 307_200); // 300GB
         await SeedServerEditionAsync(edition: 2, majorVersion: 16); // Standard 2022
 
-        // Cascade evidence: grant waiters + spills + I/O + low PLE
+        // Cascade evidence: grant waiters + spills + I/O
         await SeedMemoryGrantsAsync(maxWaiters: 5, timeoutErrors: 3);
         await SeedQueryStatsAsync(totalSpills: 2_000, highDopQueryCount: 5);
         await SeedIoLatencyAsync(totalReads: 800_000, stallReadMs: 28_000_000, // 35ms avg read
                                   totalWrites: 200_000, stallWriteMs: 3_000_000);
-        await SeedPerfmonAsync(ple: 200);
+        await SeedPerfmonAsync();
         await SeedServerPropertiesAsync(cpuCount: 16, htRatio: 2, physicalMemMb: 65_536);
     }
 
@@ -599,7 +599,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         await SeedTempDbAsync(reservedMb: 9_000, unallocatedMb: 1_000); // 90% full
         await SeedMemoryGrantsAsync(maxWaiters: 8, maxGrantees: 5, timeoutErrors: 10, forcedGrants: 5);
         await SeedQueryStatsAsync(totalSpills: 5_000, highDopQueryCount: 20);
-        await SeedPerfmonAsync(ple: 45); // Critically low PLE
+        await SeedPerfmonAsync();
         await SeedMemoryClerksAsync(new Dictionary<string, double>
         {
             ["MEMORYCLERK_SQLBUFFERPOOL"] = 50_000,
@@ -1457,10 +1457,10 @@ VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)";
     }
 
     /// <summary>
-    /// Seeds perfmon_stats with key counters. PLE uses cntr_value (absolute);
-    /// rate counters use delta_cntr_value.
+    /// Seeds perfmon_stats with the collected rate counters (batch requests, compilations,
+    /// recompilations); all use delta_cntr_value.
     /// </summary>
-    internal async Task SeedPerfmonAsync(long ple, long batchReqSec = 500,
+    internal async Task SeedPerfmonAsync(long batchReqSec = 500,
         long compilationsSec = 50, long recompilationsSec = 5)
     {
         using var readLock = _duckDb.AcquireReadLock();
@@ -1469,7 +1469,6 @@ VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)";
 
         var counters = new (string name, long cntrValue, long deltaValue)[]
         {
-            ("Page life expectancy", ple, 0),
             ("Batch Requests/sec", batchReqSec * 60, batchReqSec), // cntr = cumulative, delta = rate
             ("SQL Compilations/sec", compilationsSec * 60, compilationsSec),
             ("SQL Re-Compilations/sec", recompilationsSec * 60, recompilationsSec)
