@@ -219,7 +219,7 @@ public partial class ServerTab : UserControl
         if (string.IsNullOrEmpty(item.DatabaseName) || string.IsNullOrEmpty(item.QueryHash)) return;
 
         var connStr = _credentialResolver.GetConnectionString(_server);
-        var window = new Windows.QueryStatsHistoryWindow(_dataService, _serverId, item.DatabaseName, item.QueryHash, GetHoursBack(), connStr);
+        var window = new Windows.QueryStatsHistoryWindow(_dataService, _serverId, item.DatabaseName, item.QueryHash, GetHoursBack(), item.QueryText, connStr);
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
     }

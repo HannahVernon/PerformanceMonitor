@@ -29,6 +29,7 @@ public partial class ProcedureHistoryWindow : Window
     private readonly string _objectName;
     private readonly int _hoursBack;
     private readonly string? _connectionString;
+    private readonly PlanNavigationController _planActions;
     private List<ProcedureStatsHistoryRow> _historyData = new();
 
     public ProcedureHistoryWindow(LocalDataService dataService, int serverId, string databaseName, string schemaName, string objectName, int hoursBack, string? connectionString = null)
@@ -41,6 +42,13 @@ public partial class ProcedureHistoryWindow : Window
         _objectName = objectName;
         _hoursBack = hoursBack;
         _connectionString = connectionString;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            "the monitored server");
 
         var fullName = string.IsNullOrEmpty(schemaName) ? objectName : $"{schemaName}.{objectName}";
         ProcIdentifierText.Text = $"Procedure History: {fullName} in [{databaseName}]";
@@ -200,6 +208,20 @@ public partial class ProcedureHistoryWindow : Window
     private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "procedure_history");
+
+    // Procedures are View Plan only — re-executing a proc without parameter values is unsafe,
+    // matching the main Procedure grid (no Get Actual case in its switch).
+    private async System.Threading.Tasks.Task<string?> FetchPlanAsync()
+    {
+        if (string.IsNullOrEmpty(_connectionString) || string.IsNullOrEmpty(_objectName)) return null;
+        return await LocalDataService.FetchProcedurePlanOnDemandAsync(_connectionString, _databaseName, _schemaName, _objectName);
+    }
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        var fullName = string.IsNullOrEmpty(_schemaName) ? _objectName : $"{_schemaName}.{_objectName}";
+        await _planActions.ViewPlanAsync(FetchPlanAsync, $"Est Plan - {fullName}", queryText: null);
+    }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

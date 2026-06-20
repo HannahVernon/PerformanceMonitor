@@ -26,6 +26,37 @@
             <Style x:Key="DefaultRowStyle" TargetType="DataGridRow">
                 <Setter Property="ContextMenu" Value="{StaticResource DataGridContextMenu}"/>
             </Style>
+
+            <!-- Plan-navigation menus for the query-identifying FinOps grids (a dedicated menu so the
+                 plan items don't leak onto the non-query FinOps grids that share DataGridContextMenu). -->
+            <ContextMenu x:Key="HighImpactPlanContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click"><MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon></MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click"><MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon></MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click"><MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon></MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click"><MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon></MenuItem>
+                <Separator/>
+                <MenuItem Header="View Plan" Click="FinOpsViewPlan_Click"><MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon></MenuItem>
+                <MenuItem Header="Get Actual Plan" Click="FinOpsGetActualPlan_Click"><MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon></MenuItem>
+            </ContextMenu>
+            <Style x:Key="HighImpactRowStyle" TargetType="DataGridRow">
+                <Setter Property="ContextMenu" Value="{StaticResource HighImpactPlanContextMenu}"/>
+            </Style>
+
+            <!-- Expensive Queries carry only the full query text (no query_hash / plan_id), so they get
+                 Get Actual Plan only — there is no stored plan key to fetch a collected plan with. -->
+            <ContextMenu x:Key="ExpensiveQueryPlanContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click"><MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon></MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click"><MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon></MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click"><MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon></MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click"><MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon></MenuItem>
+                <Separator/>
+                <MenuItem Header="Get Actual Plan" Click="FinOpsGetActualPlan_Click"><MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon></MenuItem>
+            </ContextMenu>
+            <Style x:Key="ExpensiveQueryRowStyle" TargetType="DataGridRow">
+                <Setter Property="ContextMenu" Value="{StaticResource ExpensiveQueryPlanContextMenu}"/>
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -1944,7 +1975,7 @@
                                       HeadersVisibility="Column"
                                       SelectionMode="Extended"
                                       MaxHeight="350"
-                                      RowStyle="{StaticResource DefaultRowStyle}">
+                                      RowStyle="{StaticResource ExpensiveQueryRowStyle}">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Binding="{Binding DatabaseName}" Width="140">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
@@ -2098,7 +2129,7 @@
                           AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserSortColumns="True" CanUserResizeColumns="True"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                          RowStyle="{StaticResource DefaultRowStyle}"
+                          RowStyle="{StaticResource HighImpactRowStyle}"
                           Background="Transparent" BorderThickness="0"
                           RowBackground="Transparent"
                           AlternatingRowBackground="{DynamicResource DataGridAlternatingRowBrush}">

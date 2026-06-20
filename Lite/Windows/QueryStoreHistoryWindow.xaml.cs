@@ -29,6 +29,8 @@ public partial class QueryStoreHistoryWindow : Window
     private readonly long _planId;
     private readonly int _hoursBack;
     private readonly string? _connectionString;
+    private readonly string _queryText;
+    private readonly PlanNavigationController _planActions;
     private List<QueryStoreHistoryRow> _historyData = new();
 
     public QueryStoreHistoryWindow(LocalDataService dataService, int serverId, string databaseName, long queryId, long planId, string queryText, int hoursBack, string? connectionString = null)
@@ -41,6 +43,14 @@ public partial class QueryStoreHistoryWindow : Window
         _planId = planId;
         _hoursBack = hoursBack;
         _connectionString = connectionString;
+        _queryText = queryText;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            "the monitored server");
 
         var displayText = queryText.Length > 120 ? queryText[..120] + "..." : queryText;
         QueryIdentifierText.Text = $"Query Store History: Query {queryId}, Plan {planId} in [{databaseName}]";
@@ -201,6 +211,18 @@ public partial class QueryStoreHistoryWindow : Window
     private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "query_store_history");
+
+    private async System.Threading.Tasks.Task<string?> FetchPlanAsync()
+    {
+        if (string.IsNullOrEmpty(_connectionString) || _planId == 0) return null;
+        return await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, _planId);
+    }
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.ViewPlanAsync(FetchPlanAsync, $"Est Plan - QS {_queryId}/{_planId}", _queryText);
+
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - QS {_queryId}");
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

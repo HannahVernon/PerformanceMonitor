@@ -28,9 +28,11 @@ public partial class QueryStatsHistoryWindow : Window
     private readonly string _queryHash;
     private readonly int _hoursBack;
     private readonly string? _connectionString;
+    private readonly string? _queryText;
+    private readonly PlanNavigationController _planActions;
     private List<QueryStatsHistoryRow> _historyData = new();
 
-    public QueryStatsHistoryWindow(LocalDataService dataService, int serverId, string databaseName, string queryHash, int hoursBack, string? connectionString = null)
+    public QueryStatsHistoryWindow(LocalDataService dataService, int serverId, string databaseName, string queryHash, int hoursBack, string? queryText = null, string? connectionString = null)
     {
         InitializeComponent();
         _dataService = dataService;
@@ -38,7 +40,15 @@ public partial class QueryStatsHistoryWindow : Window
         _databaseName = databaseName;
         _queryHash = queryHash;
         _hoursBack = hoursBack;
+        _queryText = queryText;
         _connectionString = connectionString;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            "the monitored server");
 
         QueryIdentifierText.Text = $"Query Stats History: {queryHash} in [{databaseName}]";
         Loaded += async (_, _) => await LoadHistoryAsync();
@@ -220,6 +230,23 @@ public partial class QueryStatsHistoryWindow : Window
     private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "query_stats_history");
+
+    private async System.Threading.Tasks.Task<string?> FetchPlanAsync()
+    {
+        if (string.IsNullOrEmpty(_queryHash)) return null;
+        string? plan = null;
+        try { plan = await _dataService.GetCachedQueryPlanAsync(_serverId, _queryHash); }
+        catch { /* DuckDB lookup failed — fall through to the live server */ }
+        if (string.IsNullOrEmpty(plan) && !string.IsNullOrEmpty(_connectionString))
+            plan = await LocalDataService.FetchQueryPlanOnDemandAsync(_connectionString, _queryHash);
+        return plan;
+    }
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.ViewPlanAsync(FetchPlanAsync, $"Est Plan - {_queryHash}", _queryText);
+
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - {_queryHash}");
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

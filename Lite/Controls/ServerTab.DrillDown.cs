@@ -55,7 +55,8 @@ public partial class ServerTab : UserControl
         var toDate = time.AddMinutes(30);
 
         var window = new Windows.WaitDrillDownWindow(
-            _dataService, _serverId, waitType, 1, fromDate, toDate);
+            _dataService, _serverId, waitType, 1, fromDate, toDate,
+            _credentialResolver.GetConnectionString(_server));
         window.Owner = Window.GetWindow(this);
         window.ShowDialog();
     }

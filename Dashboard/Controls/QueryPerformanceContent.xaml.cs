@@ -999,7 +999,8 @@ namespace PerformanceMonitorDashboard.Controls
                     "Query Store",
                     _queryStoreHoursBack,
                     _queryStoreFromDate,
-                    _queryStoreToDate
+                    _queryStoreToDate,
+                    item.QueryText
                 );
                 historyWindow.Owner = Window.GetWindow(this);
                 historyWindow.ShowDialog();
@@ -1031,7 +1032,8 @@ namespace PerformanceMonitorDashboard.Controls
                     "Query Store",
                     _queryStoreHoursBack,
                     _queryStoreFromDate,
-                    _queryStoreToDate
+                    _queryStoreToDate,
+                    item.QueryTextSample
                 );
                 historyWindow.Owner = Window.GetWindow(this);
                 historyWindow.ShowDialog();
@@ -1098,7 +1100,8 @@ namespace PerformanceMonitorDashboard.Controls
                     item.QueryHash,
                     _queryStatsHoursBack,
                     _queryStatsFromDate,
-                    _queryStatsToDate
+                    _queryStatsToDate,
+                    item.QueryText
                 );
                 historyWindow.Owner = Window.GetWindow(this);
                 historyWindow.ShowDialog();
