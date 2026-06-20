@@ -16,6 +16,7 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
@@ -79,12 +80,12 @@ public partial class ServerTab : UserControl
 
         var sqlPlot = CpuChart.Plot.Add.Scatter(times, sqlCpu);
         sqlPlot.LegendText = "SQL Server";
-        sqlPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        sqlPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
         _cpuHover?.Add(sqlPlot, "SQL Server");
 
         var otherPlot = CpuChart.Plot.Add.Scatter(times, otherCpu);
         otherPlot.LegendText = "Other";
-        otherPlot.Color = ScottPlot.Color.FromHex("#E57373");
+        otherPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OtherCpu"));
         _cpuHover?.Add(otherPlot, "Other");
 
         CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -111,7 +112,7 @@ public partial class ServerTab : UserControl
 
         var totalPlot = MemoryChart.Plot.Add.Scatter(times, totalMem);
         totalPlot.LegendText = "Total Server Memory";
-        totalPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        totalPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalServerMemory"));
         _memoryHover?.Add(totalPlot, "Total Server Memory");
 
         var targetPlot = MemoryChart.Plot.Add.Scatter(times, targetMem);
@@ -122,7 +123,7 @@ public partial class ServerTab : UserControl
 
         var bpPlot = MemoryChart.Plot.Add.Scatter(times, bufferPool);
         bpPlot.LegendText = "Buffer Pool";
-        bpPlot.Color = ScottPlot.Color.FromHex("#81C784");
+        bpPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BufferPool"));
         _memoryHover?.Add(bpPlot, "Buffer Pool");
 
         /* Memory grants trend line — show zero line when no grant data */
@@ -140,7 +141,7 @@ public partial class ServerTab : UserControl
 
         var grantPlot = MemoryChart.Plot.Add.Scatter(grantTimes, grantMb);
         grantPlot.LegendText = "Memory Grants";
-        grantPlot.Color = ScottPlot.Color.FromHex("#FFB74D");
+        grantPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MemoryGrants"));
         _memoryHover?.Add(grantPlot, "Memory Grants");
 
         MemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();

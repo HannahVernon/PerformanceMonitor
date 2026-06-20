@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using ScottPlot.WPF;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
@@ -484,14 +485,14 @@ namespace PerformanceMonitorDashboard
                 var totalScatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xsTotal, ysTotal);
                 totalScatter.LineWidth = 2;
                 totalScatter.MarkerSize = 5;
-                totalScatter.Color = ScottPlot.Color.FromHex("#FF7043");
+                totalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalCpu"));
                 totalScatter.LegendText = "Total CPU %";
                 _resourceOverviewCpuHover?.Add(totalScatter, "Total CPU %");
 
                 var sqlScatter = ResourceOverviewCpuChart.Plot.Add.Scatter(xsSql, ysSql);
                 sqlScatter.LineWidth = 2;
                 sqlScatter.MarkerSize = 5;
-                sqlScatter.Color = TabHelpers.ChartColors[0];
+                sqlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
                 sqlScatter.LegendText = "SQL CPU %";
                 _resourceOverviewCpuHover?.Add(sqlScatter, "SQL CPU %");
 
@@ -547,14 +548,14 @@ namespace PerformanceMonitorDashboard
                 var bufferScatter = ResourceOverviewMemoryChart.Plot.Add.Scatter(bufferXs, bufferYs);
                 bufferScatter.LineWidth = 2;
                 bufferScatter.MarkerSize = 5;
-                bufferScatter.Color = TabHelpers.ChartColors[4];
+                bufferScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BufferPool"));
                 bufferScatter.LegendText = "Buffer Pool";
                 _resourceOverviewMemoryHover?.Add(bufferScatter, "Buffer Pool");
 
                 var grantsScatter = ResourceOverviewMemoryChart.Plot.Add.Scatter(grantsXs, grantsYs);
                 grantsScatter.LineWidth = 2;
                 grantsScatter.MarkerSize = 5;
-                grantsScatter.Color = TabHelpers.ChartColors[2];
+                grantsScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MemoryGrants"));
                 grantsScatter.LegendText = "Memory Grants";
                 _resourceOverviewMemoryHover?.Add(grantsScatter, "Memory Grants");
 
@@ -624,14 +625,14 @@ namespace PerformanceMonitorDashboard
                 var readScatter = ResourceOverviewIoChart.Plot.Add.Scatter(readXs, readYs);
                 readScatter.LineWidth = 2;
                 readScatter.MarkerSize = 5;
-                readScatter.Color = TabHelpers.ChartColors[1];
+                readScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("ReadLatency"));
                 readScatter.LegendText = "Read ms";
                 _resourceOverviewIoHover?.Add(readScatter, "Read ms");
 
                 var writeScatter = ResourceOverviewIoChart.Plot.Add.Scatter(writeXs, writeYs);
                 writeScatter.LineWidth = 2;
                 writeScatter.MarkerSize = 5;
-                writeScatter.Color = TabHelpers.ChartColors[2];
+                writeScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("WriteLatency"));
                 writeScatter.LegendText = "Write ms";
                 _resourceOverviewIoHover?.Add(writeScatter, "Write ms");
 

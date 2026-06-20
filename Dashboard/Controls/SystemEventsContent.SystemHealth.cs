@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -336,7 +337,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var sqlScatter = CpuComparisonChart.Plot.Add.Scatter(sqlXs, sqlYs);
                 sqlScatter.LineWidth = 2;
                 sqlScatter.MarkerSize = 5;
-                sqlScatter.Color = TabHelpers.ChartColors[1];
+                sqlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
                 sqlScatter.LegendText = "SQL CPU %";
                 _cpuComparisonHover?.Add(sqlScatter, "SQL CPU %");
 

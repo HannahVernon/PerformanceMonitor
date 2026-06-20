@@ -56,6 +56,8 @@ namespace PerformanceMonitor.Common
                 ["TotalCpu"]      = "#FF7043", // Total (non-idle) CPU %
                 ["BufferPool"]    = "#81C784", // Buffer pool MB
                 ["MemoryGrants"]  = "#FFB74D", // Granted memory MB
+                ["OtherCpu"]          = "#E57373", // Other (non-SQL) process CPU %
+                ["TotalServerMemory"] = "#4FC3F7", // Total server memory GB
                 ["ReadLatency"]   = "#4DD0E1", // Avg read latency ms
                 ["WriteLatency"]  = "#F06292", // Avg write latency ms
                 ["Reads"]         = "#4DD0E1", // Logical/physical reads

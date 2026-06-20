@@ -23,6 +23,7 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitorDashboard.Helpers;
 using ScottPlot.WPF;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -100,7 +101,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var readScatter = TempDbLatencyChart.Plot.Add.Scatter(readXs, readYs);
                 readScatter.LineWidth = 2;
                 readScatter.MarkerSize = 5;
-                readScatter.Color = TabHelpers.ChartColors[0];
+                readScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("ReadLatency"));
                 readScatter.LegendText = "Read Latency";
                 _tempDbLatencyHover?.Add(readScatter, "Read Latency");
 
@@ -111,7 +112,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var writeScatter = TempDbLatencyChart.Plot.Add.Scatter(writeXs, writeYs);
                 writeScatter.LineWidth = 2;
                 writeScatter.MarkerSize = 5;
-                writeScatter.Color = TabHelpers.ChartColors[2];
+                writeScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("WriteLatency"));
                 writeScatter.LegendText = "Write Latency";
                 _tempDbLatencyHover?.Add(writeScatter, "Write Latency");
 

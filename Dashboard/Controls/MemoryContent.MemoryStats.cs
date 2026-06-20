@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
@@ -97,7 +98,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var bufferScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(bufferXs, bufferYs);
                 bufferScatter.LineWidth = 2;
                 bufferScatter.MarkerSize = 5;
-                bufferScatter.Color = TabHelpers.ChartColors[0];
+                bufferScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BufferPool"));
                 bufferScatter.LegendText = "Buffer Pool";
                 _memoryStatsOverviewHover?.Add(bufferScatter, "Buffer Pool");
 
