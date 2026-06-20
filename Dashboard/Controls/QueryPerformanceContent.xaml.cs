@@ -70,6 +70,10 @@ namespace PerformanceMonitorDashboard.Controls
         private DateTime? _activeQueriesFromDate;
         private DateTime? _activeQueriesToDate;
         private bool _isDrillDownActive;
+        // Guards the Active Queries auto-refresh: SelectActiveQueriesForDrillDown() sets this before
+        // a drill-down flips the sub-tab to Active Queries, so the SelectionChanged handler skips its
+        // refresh and doesn't clobber the filtered snapshot the drill-down loads next (async race).
+        private bool _suppressActiveQueriesAutoRefresh;
 
         // Sub-tabs whose heavy summary grid has been lazily loaded in the current refresh cycle.
         // Query Stats (3) / Proc Stats (4) / Query Store (5) are deferred out of the full refresh —
@@ -134,12 +138,21 @@ namespace PerformanceMonitorDashboard.Controls
             Unloaded += OnUnloaded;
             SubTabControl.SelectionChanged += async (s, e) =>
             {
-                if (e.Source == SubTabControl)
+                if (e.Source != SubTabControl) return;
+
+                _isDrillDownActive = false;
+                SubTabChanged?.Invoke();
+
+                // Lazily load the heavy summary grid the first time its sub-tab is viewed.
+                await EnsureHeavyGridLoadedAsync(SubTabControl.SelectedIndex);
+
+                // Re-run Active Queries whenever it becomes the active sub-tab so the live snapshot
+                // grid is fresh on view. Drill-downs route through SelectActiveQueriesForDrillDown(),
+                // which sets _suppressActiveQueriesAutoRefresh first so this doesn't clobber the
+                // filtered snapshot they load via an async race.
+                if (SubTabControl.SelectedIndex == 1 && !_suppressActiveQueriesAutoRefresh)
                 {
-                    _isDrillDownActive = false;
-                    SubTabChanged?.Invoke();
-                    // Lazily load the heavy summary grid the first time its sub-tab is viewed.
-                    await EnsureHeavyGridLoadedAsync(SubTabControl.SelectedIndex);
+                    await RefreshActiveQueriesAsync();
                 }
             };
             ThemeManager.ThemeChanged += OnThemeChanged;
@@ -214,7 +227,7 @@ namespace PerformanceMonitorDashboard.Controls
                     // Query also uses server time (same as collection_time in SQL Server)
                     var queryFrom = serverFrom;
                     var queryTo = serverTo;
-                    SubTabControl.SelectedIndex = 1; // Active Queries
+                    SelectActiveQueriesForDrillDown();
                     await RefreshActiveQueriesWithRangeAsync(queryFrom, queryTo);
                 }
             };
@@ -579,9 +592,21 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         /// <summary>
-        /// Sets the time range for all sub-tabs.
+        /// Switches to the Active Queries sub-tab for a drill-down, suppressing the SelectionChanged
+        /// auto-refresh so it doesn't clobber the filtered snapshot the caller loads next (async race).
         /// </summary>
-        public void SelectSubTab(int index) => SubTabControl.SelectedIndex = index;
+        public void SelectActiveQueriesForDrillDown()
+        {
+            _suppressActiveQueriesAutoRefresh = true;
+            try
+            {
+                SubTabControl.SelectedIndex = 1; // Active Queries
+            }
+            finally
+            {
+                _suppressActiveQueriesAutoRefresh = false;
+            }
+        }
 
         public void SetTimeRange(int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
         {
@@ -1277,7 +1302,7 @@ namespace PerformanceMonitorDashboard.Controls
         /// </summary>
         public async Task ShowActiveQueriesForRange(DateTime from, DateTime to)
         {
-            SubTabControl.SelectedIndex = 1; // Active Queries
+            SelectActiveQueriesForDrillDown();
             await RefreshActiveQueriesWithRangeAsync(from, to);
         }
 

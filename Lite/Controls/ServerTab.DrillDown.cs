@@ -93,6 +93,25 @@ public partial class ServerTab : UserControl
         };
     }
 
+    /// <summary>
+    /// Navigates to Queries → Active Queries for a drill-down without triggering the
+    /// MainTabControl_SelectionChanged auto-refresh (the caller loads its own filtered snapshot
+    /// next; the auto-refresh would clobber it via an async race).
+    /// </summary>
+    private void SelectActiveQueriesForDrillDown()
+    {
+        _suppressActiveQueriesAutoRefresh = true;
+        try
+        {
+            MainTabControl.SelectedIndex = 2; // Queries
+            QueriesSubTabControl.SelectedIndex = 1; // Active Queries
+        }
+        finally
+        {
+            _suppressActiveQueriesAutoRefresh = false;
+        }
+    }
+
     private async void OnCpuDrillDown(DateTime time)
     {
         var fromDate = time.AddMinutes(-30);
@@ -102,8 +121,7 @@ public partial class ServerTab : UserControl
         SetDrillDownTimeRange(fromDate, toDate);
 
         // Navigate to Queries > Active Queries with ±15 min window
-        MainTabControl.SelectedIndex = 2; // Queries
-        QueriesSubTabControl.SelectedIndex = 1; // Active Queries
+        SelectActiveQueriesForDrillDown();
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
@@ -116,8 +134,7 @@ public partial class ServerTab : UserControl
         var toDate = time.AddMinutes(30);
         SetDrillDownTimeRange(fromDate, toDate);
 
-        MainTabControl.SelectedIndex = 2; // Queries
-        QueriesSubTabControl.SelectedIndex = 1; // Active Queries
+        SelectActiveQueriesForDrillDown();
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
@@ -131,8 +148,7 @@ public partial class ServerTab : UserControl
         SetDrillDownTimeRange(fromDate, toDate);
 
         // Navigate to Active Queries — TempDB spills are visible there
-        MainTabControl.SelectedIndex = 2; // Queries
-        QueriesSubTabControl.SelectedIndex = 1; // Active Queries
+        SelectActiveQueriesForDrillDown();
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
@@ -173,8 +189,7 @@ public partial class ServerTab : UserControl
 
         SetDrillDownTimeRange(fromDate, toDate);
 
-        MainTabControl.SelectedIndex = 2; // Queries
-        QueriesSubTabControl.SelectedIndex = 1; // Active Queries
+        SelectActiveQueriesForDrillDown();
 
         AppLogger.Info("DrillDown", $"Calling GetLatestQuerySnapshotsAsync with fromDate={fromDate:O}, toDate={toDate:O}");
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
