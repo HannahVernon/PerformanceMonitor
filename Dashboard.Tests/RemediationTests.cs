@@ -1646,7 +1646,12 @@ public class RemediationTests
     public void Detector_CpuPercent_IsRealWindowShare_NotHardcodedZero()
     {
         var dir = FindDashboardSourceDir();
-        var src = File.ReadAllText(Path.Combine(dir, "Analysis", "SqlServerDrillDownCollector.cs"));
+        // CollectAbnormalCpuPlans lives in a per-domain partial (SqlServerDrillDownCollector.Queries.cs)
+        // after the partial-class split; read every partial so the assertions hold wherever it sits.
+        var src = string.Concat(
+            Directory.GetFiles(Path.Combine(dir, "Analysis"), "SqlServerDrillDownCollector*.cs")
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .Select(File.ReadAllText));
 
         // The CollectAbnormalCpuPlans detector must NO LONGER hardcode cpu_percent = 0.
         Assert.DoesNotContain("cpu_percent = 0,", src);
