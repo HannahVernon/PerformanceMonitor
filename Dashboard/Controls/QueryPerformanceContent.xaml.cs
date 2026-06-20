@@ -71,6 +71,12 @@ namespace PerformanceMonitorDashboard.Controls
         private DateTime? _activeQueriesToDate;
         private bool _isDrillDownActive;
 
+        // Sub-tabs whose heavy summary grid has been lazily loaded in the current refresh cycle.
+        // Query Stats (3) / Proc Stats (4) / Query Store (5) are deferred out of the full refresh —
+        // their per-row plan/text DECOMPRESS dominated the Queries-tab open cost — and load only when
+        // their sub-tab is viewed. Cleared on each full refresh so manual refresh re-fetches.
+        private readonly HashSet<int> _lazyLoadedGridTabs = new();
+
         // Query Stats state
         private int _queryStatsHoursBack = 24;
         private DateTime? _queryStatsFromDate;
@@ -126,12 +132,14 @@ namespace PerformanceMonitorDashboard.Controls
             SetupChartSaveMenus();
             Loaded += OnLoaded;
             Unloaded += OnUnloaded;
-            SubTabControl.SelectionChanged += (s, e) =>
+            SubTabControl.SelectionChanged += async (s, e) =>
             {
                 if (e.Source == SubTabControl)
                 {
                     _isDrillDownActive = false;
                     SubTabChanged?.Invoke();
+                    // Lazily load the heavy summary grid the first time its sub-tab is viewed.
+                    await EnsureHeavyGridLoadedAsync(SubTabControl.SelectedIndex);
                 }
             };
             ThemeManager.ThemeChanged += OnThemeChanged;
@@ -640,19 +648,12 @@ namespace PerformanceMonitorDashboard.Controls
                     return;
                 }
 
-                // Full refresh — all sub-tabs in parallel
-
-                // Only show loading overlay on initial load (no existing data)
-                if (QueryStatsDataGrid.ItemsSource == null)
-                {
-                    QueryStatsLoading.IsLoading = true;
-                    QueryStatsNoDataMessage.Visibility = Visibility.Collapsed;
-                }
-
-                // Fetch grid data (summary views aggregated per query/procedure)
-                var queryStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStats", () => _databaseService.GetQueryStatsAsync(_queryStatsHoursBack, _queryStatsFromDate, _queryStatsToDate));
-                var procStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcStats", () => _databaseService.GetProcedureStatsAsync(_procStatsHoursBack, _procStatsFromDate, _procStatsToDate));
-                var queryStoreTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStore", () => _databaseService.GetQueryStoreDataAsync(_queryStoreHoursBack, _queryStoreFromDate, _queryStoreToDate));
+                // Full refresh. The three heavy summary grids (Query Stats / Proc Stats / Query Store)
+                // are NOT loaded here — their per-row DECOMPRESS dominates the tab-open cost and each is
+                // only one sub-tab's data. They load lazily when their sub-tab is viewed
+                // (EnsureHeavyGridLoadedAsync), so opening the Queries tab only pays for the charts and
+                // the lighter grids. The currently-visible heavy grid (if any) is loaded at the end.
+                _lazyLoadedGridTabs.Clear();
 
                 // Fetch chart data (time-series aggregated per collection_time)
                 var queryDurationTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryDurationTrends", () => _databaseService.GetQueryDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
@@ -660,50 +661,15 @@ namespace PerformanceMonitorDashboard.Controls
                 var qsDurationTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => _databaseService.GetQueryStoreDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
                 var execTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExecutionTrends", () => _databaseService.GetExecutionTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
 
-                // Fetch grid-only data in parallel
+                // Fetch grid-only data in parallel (these are light)
                 var activeTask = RefreshActiveQueriesAsync();
                 var regressionsTask = RefreshQueryStoreRegressionsAsync();
                 var patternsTask = RefreshLongRunningPatternsAsync();
 
-                // Wait for all fetches to complete
                 await Task.WhenAll(
-                    queryStatsTask, procStatsTask, queryStoreTask,
                     queryDurationTrendsTask, procDurationTrendsTask, qsDurationTrendsTask, execTrendsTask,
                     activeTask, regressionsTask, patternsTask
                 );
-
-                // Populate grids from summary data
-                // If slicer is narrowed, re-query with slicer dates instead of global range
-                if (QueryStatsSlicer.HasNarrowedSelection)
-                {
-                    var slicerData = await _databaseService.GetQueryStatsAsync(0, QueryStatsSlicer.SelectionStart, QueryStatsSlicer.SelectionEnd, fromSlicer: true);
-                    PopulateQueryStatsGrid(slicerData);
-                }
-                else
-                {
-                    PopulateQueryStatsGrid(await queryStatsTask);
-                }
-                _ = LoadQueryStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
-                if (ProcStatsSlicer.HasNarrowedSelection)
-                {
-                    var slicerProcData = await _databaseService.GetProcedureStatsAsync(0, ProcStatsSlicer.SelectionStart, ProcStatsSlicer.SelectionEnd, fromSlicer: true);
-                    PopulateProcStatsGrid(slicerProcData);
-                }
-                else
-                {
-                    PopulateProcStatsGrid(await procStatsTask);
-                }
-                _ = LoadProcStatsSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
-                if (QueryStoreSlicer.HasNarrowedSelection)
-                {
-                    var slicerQsData = await _databaseService.GetQueryStoreDataAsync(0, QueryStoreSlicer.SelectionStart, QueryStoreSlicer.SelectionEnd, fromSlicer: true);
-                    PopulateQueryStoreGrid(slicerQsData);
-                }
-                else
-                {
-                    PopulateQueryStoreGrid(await queryStoreTask);
-                }
-                _ = LoadQueryStoreSlicerAsync(); // fire-and-forget: detached slicer refresh, self-handles errors
 
                 // Populate charts from time-series data
                 LoadDurationChart(QueryPerfTrendsQueryChart, await queryDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[0], _queryDurationHover);
@@ -713,10 +679,50 @@ namespace PerformanceMonitorDashboard.Controls
 
                 // Heatmap
                 await RefreshQueryHeatmapAsync();
+
+                // Load the heavy summary grid only if its sub-tab is the one currently in view.
+                await EnsureHeavyGridLoadedAsync(SubTabControl.SelectedIndex);
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error refreshing QueryPerformance data: {ex.Message}", ex);
+            }
+            finally
+            {
+                QueryStatsLoading.IsLoading = false;
+            }
+        }
+
+        /// <summary>
+        /// Loads one of the heavy summary grids (Query Stats / Proc Stats / Query Store) the first time
+        /// its sub-tab is viewed in the current refresh cycle. Deferred out of the full refresh because
+        /// their per-row plan/text DECOMPRESS dominated the Queries-tab open time.
+        /// </summary>
+        private async Task EnsureHeavyGridLoadedAsync(int subTabIndex)
+        {
+            if (subTabIndex is not (3 or 4 or 5)) return;        // only the three heavy grids are deferred
+            if (_databaseService == null) return;
+            if (!_lazyLoadedGridTabs.Add(subTabIndex)) return;   // already loaded this refresh cycle
+
+            try
+            {
+                if (subTabIndex == 3 && QueryStatsDataGrid.ItemsSource == null)
+                {
+                    QueryStatsLoading.IsLoading = true;
+                    QueryStatsNoDataMessage.Visibility = Visibility.Collapsed;
+                }
+
+                switch (subTabIndex)
+                {
+                    case 3: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStats", () => RefreshQueryStatsGridAsync()); break;
+                    case 4: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcStats", () => RefreshProcStatsGridAsync()); break;
+                    case 5: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStore", () => RefreshQueryStoreGridAsync()); break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading Query Performance grid (sub-tab {subTabIndex}): {ex.Message}", ex);
+                _lazyLoadedGridTabs.Remove(subTabIndex);          // allow a retry next time the sub-tab is viewed
             }
             finally
             {
