@@ -104,10 +104,10 @@ public partial class MainWindow : Window
                flag) and silencing sets suppressPopups — neither means CPU actually recovered. */
             if (!suppressPopups && App.AlertCpuEnabled)
             {
-                _trayService.ShowNotification(
+                _trayService.ShowStyledNotification(
                     "CPU Resolved",
                     $"{summary.DisplayName}: {cpuMetricLabel} back to {alertCpuValue:F0}%",
-                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    ToastSeverity.Success);
             }
         }
 
@@ -184,10 +184,10 @@ public partial class MainWindow : Window
         {
             if (!suppressPopups && App.AlertBlockingEnabled)
             {
-                _trayService.ShowNotification(
+                _trayService.ShowStyledNotification(
                     "Blocking Cleared",
                     $"{summary.DisplayName}: No active blocking",
-                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    ToastSeverity.Success);
             }
         }
 
@@ -261,10 +261,10 @@ public partial class MainWindow : Window
         {
             if (!suppressPopups && App.AlertDeadlockEnabled)
             {
-                _trayService.ShowNotification(
+                _trayService.ShowStyledNotification(
                     "Deadlocks Cleared",
                     $"{summary.DisplayName}: No deadlocks in the last hour",
-                    Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                    ToastSeverity.Success);
             }
         }
 
@@ -324,10 +324,10 @@ public partial class MainWindow : Window
                     _activePoisonWaitAlert[key] = false;
                     if (!suppressPopups)
                     {
-                        _trayService.ShowNotification(
+                        _trayService.ShowStyledNotification(
                             "Poison Waits Cleared",
                             $"{summary.DisplayName}: Poison wait avg below threshold",
-                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                            ToastSeverity.Success);
                     }
                 }
             }
@@ -405,10 +405,10 @@ public partial class MainWindow : Window
                     _activeLongRunningQueryAlert[key] = false;
                     if (!suppressPopups)
                     {
-                        _trayService.ShowNotification(
+                        _trayService.ShowStyledNotification(
                             "Long-Running Queries Cleared",
                             $"{summary.DisplayName}: No queries over threshold",
-                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                            ToastSeverity.Success);
                     }
                 }
             }
@@ -467,10 +467,10 @@ public partial class MainWindow : Window
                     if (!suppressPopups)
                     {
                         var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
-                        _trayService.ShowNotification(
+                        _trayService.ShowStyledNotification(
                             "TempDB Space Resolved",
                             $"{summary.DisplayName}: TempDB usage back to {pct}",
-                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                            ToastSeverity.Success);
                     }
                 }
             }
@@ -549,10 +549,10 @@ public partial class MainWindow : Window
                     _lastAlertedLowDiskPercent.Remove(key);
                     if (!suppressPopups)
                     {
-                        _trayService.ShowNotification(
+                        _trayService.ShowStyledNotification(
                             "Volume Free Space Resolved",
                             $"{summary.DisplayName}: All volumes back above threshold",
-                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                            ToastSeverity.Success);
                     }
                 }
             }
@@ -626,10 +626,10 @@ public partial class MainWindow : Window
                     _activeLongRunningJobAlert[key] = false;
                     if (!suppressPopups)
                     {
-                        _trayService.ShowNotification(
+                        _trayService.ShowStyledNotification(
                             "Long-Running Jobs Cleared",
                             $"{summary.DisplayName}: No jobs exceeding threshold",
-                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+                            ToastSeverity.Success);
                     }
                 }
             }

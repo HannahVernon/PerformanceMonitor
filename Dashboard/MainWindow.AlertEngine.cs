@@ -209,8 +209,8 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeBlockingAlert.TryRemove(serverId, out var wasBlocking) && wasBlocking)
             {
-                _notificationService?.ShowNotification("Blocking Cleared",
-                    $"{serverName}: No active blocking");
+                _notificationService?.ShowStyledNotification("Blocking Cleared",
+                    $"{serverName}: No active blocking", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Blocking Cleared",
                     "0", $"{prefs.BlockingThresholdSeconds}s", true, "tray");
             }
@@ -285,8 +285,8 @@ namespace PerformanceMonitorDashboard
                 {
                     _activeDeadlockAlert.TryRemove(serverId, out _);
                     _lastDeadlockActivity.TryRemove(serverId, out _);
-                    _notificationService?.ShowNotification("Deadlocks Cleared",
-                        $"{serverName}: No deadlocks in the last hour");
+                    _notificationService?.ShowStyledNotification("Deadlocks Cleared",
+                        $"{serverName}: No deadlocks in the last hour", ToastSeverity.Success);
                     _emailAlertService.RecordAlert(serverId, serverName, "Deadlocks Cleared",
                         "0", prefs.DeadlockThreshold.ToString(), true, "tray");
                 }
@@ -341,8 +341,8 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeCaptureDownAlert.TryRemove(serverId, out var wasCaptureDown) && wasCaptureDown)
             {
-                _notificationService?.ShowNotification("Capture Restored",
-                    $"{serverName}: Blocking/deadlock capture is running again");
+                _notificationService?.ShowStyledNotification("Capture Restored",
+                    $"{serverName}: Blocking/deadlock capture is running again", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Capture Restored",
                     "running", "session running", true, "tray");
             }
@@ -397,8 +397,8 @@ namespace PerformanceMonitorDashboard
             else if (_activeHighCpuAlert.TryRemove(serverId, out var wasCpu) && wasCpu)
             {
                 var cpuText = alertCpuValue.HasValue ? $"{alertCpuValue.Value:F0}%" : "N/A";
-                _notificationService?.ShowNotification("CPU Resolved",
-                    $"{serverName}: {cpuMetricLabel} back to {cpuText}");
+                _notificationService?.ShowStyledNotification("CPU Resolved",
+                    $"{serverName}: {cpuMetricLabel} back to {cpuText}", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "CPU Resolved",
                     cpuText, $"{prefs.CpuThresholdPercent}%", true, "tray");
             }
@@ -455,8 +455,8 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activePoisonWaitAlert.TryRemove(serverId, out var wasPoisonWait) && wasPoisonWait)
             {
-                _notificationService?.ShowNotification("Poison Waits Cleared",
-                    $"{serverName}: Poison wait avg below threshold");
+                _notificationService?.ShowStyledNotification("Poison Waits Cleared",
+                    $"{serverName}: Poison wait avg below threshold", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Poison Waits Cleared",
                     "0", $"{prefs.PoisonWaitThresholdMs}ms avg", true, "tray");
             }
@@ -524,8 +524,8 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeLongRunningQueryAlert.TryRemove(serverId, out var wasLongRunning) && wasLongRunning)
             {
-                _notificationService?.ShowNotification("Long-Running Queries Cleared",
-                    $"{serverName}: No queries over threshold");
+                _notificationService?.ShowStyledNotification("Long-Running Queries Cleared",
+                    $"{serverName}: No queries over threshold", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Queries Cleared",
                     "0", $"{prefs.LongRunningQueryThresholdMinutes}m", true, "tray");
             }
@@ -577,8 +577,8 @@ namespace PerformanceMonitorDashboard
             else if (_activeTempDbSpaceAlert.TryRemove(serverId, out var wasTempDb) && wasTempDb)
             {
                 var pct = health.TempDbSpace != null ? $"{health.TempDbSpace.UsedPercent:F0}%" : "N/A";
-                _notificationService?.ShowNotification("TempDB Space Resolved",
-                    $"{serverName}: TempDB usage back to {pct}");
+                _notificationService?.ShowStyledNotification("TempDB Space Resolved",
+                    $"{serverName}: TempDB usage back to {pct}", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "TempDB Space Resolved",
                     pct, $"{prefs.TempDbSpaceThresholdPercent}%", true, "tray");
             }
@@ -644,8 +644,8 @@ namespace PerformanceMonitorDashboard
             else if (_activeLowDiskAlert.TryRemove(serverId, out var wasLowDisk) && wasLowDisk)
             {
                 _lastAlertedLowDiskPercent.TryRemove(serverId, out _);
-                _notificationService?.ShowNotification("Volume Free Space Resolved",
-                    $"{serverName}: All volumes back above threshold");
+                _notificationService?.ShowStyledNotification("Volume Free Space Resolved",
+                    $"{serverName}: All volumes back above threshold", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space Resolved",
                     "OK", FormatLowDiskThreshold(prefs), true, "tray");
             }
@@ -708,8 +708,8 @@ namespace PerformanceMonitorDashboard
             }
             else if (_activeLongRunningJobAlert.TryRemove(serverId, out var wasJob) && wasJob)
             {
-                _notificationService?.ShowNotification("Long-Running Jobs Cleared",
-                    $"{serverName}: No jobs exceeding threshold");
+                _notificationService?.ShowStyledNotification("Long-Running Jobs Cleared",
+                    $"{serverName}: No jobs exceeding threshold", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Long-Running Jobs Cleared",
                     "0", $"{prefs.LongRunningJobMultiplier}x avg", true, "tray");
             }

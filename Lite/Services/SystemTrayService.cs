@@ -164,6 +164,21 @@ public class SystemTrayService : IDisposable
     }
 
     /// <summary>
+    /// Shows a themed, button-less balloon (the same card chrome as the snoozable condition cards)
+    /// for resolved/cleared conditions, so an "all clear" toast no longer renders as a plain, unthemed
+    /// Windows balloon. Pass <see cref="ToastSeverity.Success"/> for a green-check "resolved" accent.
+    /// No-op if the tray icon hasn't been initialized.
+    /// </summary>
+    public void ShowStyledNotification(string title, string message, ToastSeverity severity)
+    {
+        if (_trayIcon == null)
+            return;
+
+        var balloon = new StyledBalloon(title, message, severity);
+        _trayIcon.ShowCustomBalloon(balloon, System.Windows.Controls.Primitives.PopupAnimation.Slide, 10000);
+    }
+
+    /// <summary>
     /// Shows a custom interactive balloon with snooze buttons that create a temporary
     /// mute rule scoped to <paramref name="serverName"/> + <paramref name="metricName"/>.
     /// Falls back to a plain balloon if the tray icon hasn't been initialized.
