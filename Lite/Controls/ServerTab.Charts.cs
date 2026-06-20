@@ -721,7 +721,7 @@ public partial class ServerTab : UserControl
 
         var plot = BlockingTrendChart.Plot.Add.Scatter(expandedTimes.ToArray(), expandedCounts.ToArray());
         plot.LegendText = "Blocking Incidents";
-        plot.Color = ScottPlot.Color.FromHex("#E57373");
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking"));
         plot.MarkerSize = 0; /* No markers, just lines */
         _blockingTrendHover?.Add(plot, "Blocking Incidents");
 
@@ -800,7 +800,7 @@ public partial class ServerTab : UserControl
 
         var plot = DeadlockTrendChart.Plot.Add.Scatter(expandedTimes.ToArray(), expandedCounts.ToArray());
         plot.LegendText = "Deadlocks";
-        plot.Color = ScottPlot.Color.FromHex("#FFB74D");
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks"));
         plot.MarkerSize = 0; /* No markers, just lines */
         _deadlockTrendHover?.Add(plot, "Deadlocks");
 
@@ -904,7 +904,7 @@ public partial class ServerTab : UserControl
                 new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
                 new[] { 0.0, 0.0 });
             zeroLine.LegendText = "Blocked Sessions";
-            zeroLine.Color = ScottPlot.Color.FromHex("#E57373");
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BlockedSessions"));
             zeroLine.MarkerSize = 0;
             CurrentWaitsBlockedChart.Plot.Axes.DateTimeTicksBottomDateChange();
             CurrentWaitsBlockedChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());

@@ -123,7 +123,7 @@ namespace PerformanceMonitorDashboard
                 var scatter = BlockingStatsBlockingEventsChart.Plot.Add.Scatter(blockingXs, blockingYs);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[0];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking"));
                 _blockingEventsHover?.Add(scatter, "Blocking Events");
             }
             else
@@ -152,7 +152,7 @@ namespace PerformanceMonitorDashboard
                 var scatter = BlockingStatsDurationChart.Plot.Add.Scatter(durationXs, durationYs);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[2];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("BlockingDuration"));
                 _blockingDurationHover?.Add(scatter, "Blocking Duration");
             }
             else
@@ -181,7 +181,7 @@ namespace PerformanceMonitorDashboard
                 var scatter = BlockingStatsDeadlocksChart.Plot.Add.Scatter(deadlockXs, deadlockYs);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[3];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks"));
                 _deadlocksHover?.Add(scatter, "Deadlocks");
             }
             else
@@ -210,7 +210,7 @@ namespace PerformanceMonitorDashboard
                 var scatter = BlockingStatsDeadlockWaitTimeChart.Plot.Add.Scatter(deadlockWaitXs, deadlockWaitYs);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[4];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("DeadlockWaitTime"));
                 _deadlockWaitTimeHover?.Add(scatter, "Deadlock Wait Time");
             }
             else

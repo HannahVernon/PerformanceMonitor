@@ -61,6 +61,11 @@ namespace PerformanceMonitor.Common
                 ["MemoryGrants"]  = "#FFB74D", // Granted memory MB
                 ["OtherCpu"]          = "#E57373", // Other (non-SQL) process CPU %
                 ["TotalServerMemory"] = "#4FC3F7", // Total server memory GB
+                ["Blocking"]          = "#FFB74D", // blocking count / incidents
+                ["BlockingDuration"]  = "#FF7043", // total blocking duration
+                ["Deadlocks"]         = "#E57373", // deadlock count
+                ["DeadlockWaitTime"]  = "#BA68C8", // total deadlock wait time
+                ["BlockedSessions"]   = "#EF9A9A", // blocked session count
                 ["ReadLatency"]   = "#4DD0E1", // Avg read latency ms
                 ["WriteLatency"]  = "#F06292", // Avg write latency ms
                 ["Reads"]         = "#4DD0E1", // Logical/physical reads
