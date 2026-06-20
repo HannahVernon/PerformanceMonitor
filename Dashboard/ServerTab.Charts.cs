@@ -131,7 +131,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = BlockingStatsBlockingEventsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             BlockingStatsBlockingEventsChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -160,7 +160,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = BlockingStatsDurationChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             BlockingStatsDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -189,7 +189,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = BlockingStatsDeadlocksChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             BlockingStatsDeadlocksChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -218,7 +218,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = BlockingStatsDeadlockWaitTimeChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             BlockingStatsDeadlockWaitTimeChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -326,7 +326,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = LockWaitStatsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -383,7 +383,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = CurrentWaitsDurationChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -440,7 +440,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = CurrentWaitsBlockedChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -504,7 +504,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = ResourceOverviewCpuChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -567,7 +567,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = ResourceOverviewMemoryChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -644,7 +644,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = ResourceOverviewIoChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -716,7 +716,7 @@ namespace PerformanceMonitorDashboard
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = ResourceOverviewWaitChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 

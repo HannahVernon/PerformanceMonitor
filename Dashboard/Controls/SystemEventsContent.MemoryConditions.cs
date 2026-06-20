@@ -101,7 +101,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = MemoryConditionsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 

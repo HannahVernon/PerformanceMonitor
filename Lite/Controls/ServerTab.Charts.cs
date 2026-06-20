@@ -113,7 +113,7 @@ public partial class ServerTab : UserControl
 
         var targetPlot = MemoryChart.Plot.Add.Scatter(times, targetMem);
         targetPlot.LegendText = "Target Memory";
-        targetPlot.Color = ScottPlot.Colors.Gray;
+        targetPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TargetMemory"));
         targetPlot.LineStyle.Pattern = LinePattern.Dashed;
         _memoryHover?.Add(targetPlot, "Target Memory");
 
@@ -276,10 +276,10 @@ public partial class ServerTab : UserControl
             double barSize = hourWidth * 0.4;
             double barOffset = hourWidth * 0.22;
 
-            var sqlMediumColor = ScottPlot.Color.FromHex("#FFB74D"); // orange 300
-            var sqlSevereColor = ScottPlot.Color.FromHex("#E65100"); // orange 900
-            var osMediumColor = ScottPlot.Color.FromHex("#E57373");  // red 300
-            var osSevereColor = ScottPlot.Color.FromHex("#B71C1C");  // red 900
+            var sqlMediumColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlPressureMedium"));
+            var sqlSevereColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlPressureSevere"));
+            var osMediumColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OsPressureMedium"));
+            var osSevereColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OsPressureSevere"));
 
             var sqlMediumBars = new List<ScottPlot.Bar>();
             var sqlSevereBars = new List<ScottPlot.Bar>();
@@ -1266,7 +1266,7 @@ public partial class ServerTab : UserControl
 
         /* Add centered "No Data" text */
         var text = chart.Plot.Add.Text($"{legendText}\nNo Data", 0, 0);
-        text.LabelFontColor = ScottPlot.Color.FromHex("#888888");
+        text.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
         text.LabelFontSize = 14;
         text.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
 

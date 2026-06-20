@@ -199,7 +199,7 @@ namespace PerformanceMonitorDashboard
             var dates = orderedData.Select(h => h.CollectionTime.ToOADate()).ToArray();
             var values = orderedData.Select(h => GetMetricValue(h, metricTag)).ToArray();
 
-            var color = ScottPlot.Color.FromHex("#4FC3F7");
+            var color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
             var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
             scatter.Color = color;
 

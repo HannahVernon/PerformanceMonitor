@@ -263,14 +263,14 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 Position = d.Time,
                 Value = d.Value,
                 Size = barWidth,
-                FillColor = ScottPlot.Color.FromHex("#E57373"),
+                FillColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking")),
                 LineWidth = 0
             }).ToArray();
             BlockingChart.Plot.Add.Bars(bars);
             maxCount = Math.Max(maxCount, blockingData.Max(d => d.Value));
         }
 
-        // Deadlock bars — yellow/amber, slightly narrower so both are visible
+        // Deadlock bars — slightly narrower so both are visible over the blocking bars
         if (deadlockData.Count > 0)
         {
             var bars = deadlockData.Select(d => new ScottPlot.Bar
@@ -278,7 +278,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 Position = d.Time,
                 Value = d.Value,
                 Size = barWidth * 0.6,
-                FillColor = ScottPlot.Color.FromHex("#FFD54F"),
+                FillColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks")),
                 LineWidth = 0
             }).ToArray();
             BlockingChart.Plot.Add.Bars(bars);
@@ -546,7 +546,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
         var scatter = chart.Plot.Add.Scatter(times, values);
         // White-ish ghost line — distinct from the primary colored line
-        scatter.Color = ScottPlot.Colors.White.WithAlpha(140);
+        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("GhostLine")).WithAlpha(140);
         scatter.MarkerSize = 0;
         scatter.LineWidth = 1.5f;
         scatter.LinePattern = ScottPlot.LinePattern.Dashed;
@@ -575,7 +575,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
     {
         ReapplyAxisColors(chart);
         var text = chart.Plot.Add.Text($"{title}\nNo Data", 0, 0);
-        text.LabelFontColor = ScottPlot.Color.FromHex("#888888");
+        text.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
         text.LabelFontSize = 12;
         text.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
         chart.Plot.HideGrid();

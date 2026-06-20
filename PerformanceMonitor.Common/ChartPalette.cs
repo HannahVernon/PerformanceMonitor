@@ -61,6 +61,7 @@ namespace PerformanceMonitor.Common
                 ["MemoryGrants"]  = "#FFB74D", // Granted memory MB
                 ["OtherCpu"]          = "#E57373", // Other (non-SQL) process CPU %
                 ["TotalServerMemory"] = "#4FC3F7", // Total server memory GB
+                ["TargetMemory"]      = "#808080", // Target server memory (dashed grey reference line)
                 ["Blocking"]          = "#FFB74D", // blocking count / incidents
                 ["BlockingDuration"]  = "#FF7043", // total blocking duration
                 ["Deadlocks"]         = "#E57373", // deadlock count
@@ -84,6 +85,11 @@ namespace PerformanceMonitor.Common
                 ["TotalMemory"]       = "#90A4AE",
                 ["CacheMemory"]       = "#81C784",
                 ["AvailableMemory"]   = "#FFB74D",
+                // Memory pressure event severity (stacked event-count bars; SQL = orange family, OS = red family)
+                ["SqlPressureMedium"] = "#FFB74D",
+                ["SqlPressureSevere"] = "#E65100",
+                ["OsPressureMedium"]  = "#E57373",
+                ["OsPressureSevere"]  = "#B71C1C",
                 // Plan cache size buckets
                 ["SinglePagePlans"]   = "#E57373",
                 ["MultiPagePlans"]    = "#81C784",
@@ -118,6 +124,7 @@ namespace PerformanceMonitor.Common
                 ["BaselineCpu"]      = "#4FC3F7", // CPU-lane baseline band / mean tint
                 ["BaselineBlocking"] = "#E57373", // blocking-lane baseline band / mean tint
                 ["Crosshair"]        = "#FFFFFF", // correlated-charts crosshair vline
+                ["GhostLine"]        = "#FFFFFF", // comparison-overlay ghost line (rendered semi-transparent)
                 ["Placeholder"]      = "#888888", // no-data placeholder line
             };
 
