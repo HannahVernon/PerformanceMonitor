@@ -291,6 +291,8 @@ public sealed class McpAnalysisTools
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var editionName = edition switch
             {
@@ -299,8 +301,6 @@ public sealed class McpAnalysisTools
                 4 => "Express",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
 
             var recommendations = new System.Collections.Generic.List<object>();
 
@@ -315,8 +315,9 @@ public sealed class McpAnalysisTools
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
-                var suggested = maxdop == 0 ? (isExpress ? 1 : isEnterprise ? 8 : 4) : maxdop;
-                var status = maxdop == 0 ? "warning" : maxdop == 1 && !isExpress ? "review" : "ok";
+                // Topology-based (min(cores-per-socket, 8)), NOT edition-based — see FactRemediation.RecommendedMaxdop.
+                var suggested = maxdop == 0 ? (int)FactRemediation.RecommendedMaxdop(coresPerSocket) : maxdop;
+                var status = maxdop == 0 ? "warning" : maxdop == 1 ? "review" : "ok";
                 recommendations.Add(new { setting = "max degree of parallelism", current_value = maxdop, suggested_value = suggested, status });
             }
 

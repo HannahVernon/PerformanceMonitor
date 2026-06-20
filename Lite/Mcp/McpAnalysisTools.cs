@@ -313,8 +313,8 @@ public sealed class McpAnalysisTools
                 11 => "Azure Synapse serverless",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var recommendations = new List<ConfigRecommendation>();
 
@@ -347,39 +347,37 @@ public sealed class McpAnalysisTools
                 }
             }
 
-            // MAXDOP audit
+            // MAXDOP audit — topology-based (min(cores-per-socket, 8)), NOT edition-based.
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
+                var recommended = (int)FactRemediation.RecommendedMaxdop(coresPerSocket);
 
                 if (maxdop == 0)
                 {
-                    var suggested = isExpress ? 1 : isEnterprise ? 8 : 4;
-                    recommendations.Add(new("max degree of parallelism", maxdop, suggested, "warning",
-                        $"MAXDOP is 0 (unlimited). This allows queries to use all schedulers, " +
-                        $"leading to CXPACKET waits and thread exhaustion under load. " +
-                        $"For {editionName} edition, start with MAXDOP {suggested} and adjust based on workload."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "warning",
+                        $"MAXDOP is 0 (unlimited). This lets one query fan out across all schedulers, " +
+                        $"leading to CXPACKET waits and thread exhaustion under load. Microsoft's guidance is " +
+                        $"topology-based: keep MAXDOP at or under the logical processors in a single NUMA node, capped at 8. " +
+                        $"Start with {recommended} (this server's cores-per-socket, capped at 8) and adjust to the workload."));
                 }
-                else if (maxdop == 1)
+                else if (maxdop == 1 && recommended > 1)
                 {
-                    var suggested = isExpress ? 1 : 4;
-                    recommendations.Add(new("max degree of parallelism", maxdop, suggested,
-                        isExpress ? "ok" : "review",
-                        isExpress
-                            ? "MAXDOP 1 is appropriate for Express edition."
-                            : $"MAXDOP 1 forces all queries serial. Large analytical queries, index rebuilds, and DBCC operations " +
-                              $"will be significantly slower. Consider MAXDOP {suggested} unless this was set to fix a specific parallelism problem."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "review",
+                        $"MAXDOP 1 forces every query serial. Large analytical queries, index rebuilds, and DBCC operations " +
+                        $"will be significantly slower. Consider {recommended} unless this was set to fix a specific parallelism problem."));
                 }
-                else if (maxdop > 8 && !isEnterprise)
+                else if (maxdop > recommended)
                 {
-                    recommendations.Add(new("max degree of parallelism", maxdop, 4, "review",
-                        $"MAXDOP {maxdop} is high for {editionName} edition. Standard edition is limited to " +
-                        $"fewer schedulers. Consider MAXDOP 4."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "review",
+                        $"MAXDOP {maxdop} is above the topology-based guidance of {recommended} " +
+                        $"(logical processors in a single NUMA node, capped at 8). Review whether queries here genuinely " +
+                        $"benefit from the higher degree, or lower it to {recommended}."));
                 }
                 else
                 {
                     recommendations.Add(new("max degree of parallelism", maxdop, maxdop, "ok",
-                        $"MAXDOP {maxdop} is in a reasonable range for {editionName} edition."));
+                        $"MAXDOP {maxdop} is within the topology-based guidance (≤ {recommended})."));
                 }
             }
 
