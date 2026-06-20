@@ -150,31 +150,23 @@ public static class FactRemediation
     /// <summary>The "max server memory (MB)" default (~2 PB) WS3 flags as unconfigured.</summary>
     public const long UnconfiguredMaxMemoryMb = 2147483647;
 
-    /// <summary>
-    /// The edition-aware recommended MAXDOP starting point, BEFORE the cores-per-socket cap:
-    /// Enterprise (engine_edition 3) → 8, Express (4) → 1, everything else (incl. Standard 2 /
-    /// unknown) → 4. Mirrors the AuditConfig MAXDOP suggestion exactly.
-    /// </summary>
-    public static long RecommendedMaxdopForEdition(int engineEdition) => engineEdition switch
-    {
-        3 => 8,   // Enterprise
-        4 => 1,   // Express
-        _ => 4    // Standard / unknown
-    };
+    /// <summary>The MAXDOP cap Microsoft's guidance applies to a single NUMA node.</summary>
+    public const long MaxdopCap = 8;
 
     /// <summary>
-    /// The recommended MAXDOP value: the edition-aware starting point
-    /// (<see cref="RecommendedMaxdopForEdition"/>) capped at cores-per-socket when that is
-    /// known (&gt; 0). On a 2-core box "MAXDOP 8" is nonsense, so cap to the socket's core
-    /// count — the same guidance AuditConfig gives. With cores unknown (0) the edition value
-    /// stands.
+    /// The recommended MAXDOP, derived from CPU topology — NOT from edition. Microsoft's guidance is
+    /// driven by logical processors per NUMA node, not the SQL Server SKU: keep MAXDOP at or under
+    /// the processors in a single NUMA node, capped at 8 (only large multi-NUMA hardware with
+    /// &gt; 16 logical processors per node goes higher — half the per-node count, max 16 — which we
+    /// can't detect without NUMA topology). We use cores-per-socket as the best available proxy for
+    /// NUMA-node size (numa_node_count isn't collected) and apply the cap: MAXDOP =
+    /// min(cores-per-socket, 8). With cores unknown (0) the safe general cap of 8 stands.
     /// </summary>
-    public static long RecommendedMaxdop(int engineEdition, int coresPerSocket)
+    public static long RecommendedMaxdop(int coresPerSocket)
     {
-        var byEdition = RecommendedMaxdopForEdition(engineEdition);
-        if (coresPerSocket > 0 && coresPerSocket < byEdition)
-            return coresPerSocket;
-        return byEdition;
+        if (coresPerSocket <= 0)
+            return MaxdopCap;
+        return Math.Min(coresPerSocket, MaxdopCap);
     }
 
     /// <summary>
@@ -200,10 +192,10 @@ public static class FactRemediation
     /// <summary>
     /// Extracts the server-config target(s) from a CONFIG_* finding's drill-down
     /// <c>server_config</c> array. Each row carries the structured fields <c>setting</c>
-    /// (canonical id), <c>current_value</c>, and (for MAXDOP) <c>edition</c> +
-    /// <c>cores_per_socket</c> — never parsing human prose. The recommended value is computed
-    /// per setting (edition-aware capped MAXDOP / flat CTFP / current for the advise-only memory
-    /// settings). A defensive cap of 8 mirrors the other extractors.
+    /// (canonical id), <c>current_value</c>, and (for MAXDOP) <c>cores_per_socket</c> — never
+    /// parsing human prose. The recommended value is computed per setting (topology-based MAXDOP =
+    /// min(cores-per-socket, 8) / flat CTFP 50 / current for the advise-only memory settings). A
+    /// defensive cap of 8 mirrors the other extractors.
     /// </summary>
     public static IReadOnlyList<ServerConfigTarget> ExtractServerConfigTargets(AnalysisFinding finding)
     {
@@ -237,14 +229,13 @@ public static class FactRemediation
                 continue;
 
             var current = GetInt64(row, "current_value");
-            var edition = GetInt(row, "edition");
             var cores = GetInt(row, "cores_per_socket");
 
             switch (settingId)
             {
                 case "maxdop":
                     targets.Add(new ServerConfigTarget(
-                        ServerConfigSetting.Maxdop, current, RecommendedMaxdop(edition, cores)));
+                        ServerConfigSetting.Maxdop, current, RecommendedMaxdop(cores)));
                     break;
                 case "ctfp":
                     targets.Add(new ServerConfigTarget(
