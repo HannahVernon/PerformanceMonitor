@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -87,7 +88,7 @@ namespace PerformanceMonitorDashboard.Controls
                         var scatter = IOIssuesChart.Plot.Add.Scatter(xs, ys);
                         scatter.LineWidth = 2;
                         scatter.MarkerSize = 5;
-                        scatter.Color = TabHelpers.ChartColors[3];
+                        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
                         scatter.LegendText = "Latch Timeouts";
                         _ioIssuesHover?.Add(scatter, "Latch Timeouts");
                     }
@@ -98,7 +99,7 @@ namespace PerformanceMonitorDashboard.Controls
                         var scatter = IOIssuesChart.Plot.Add.Scatter(xs, ys);
                         scatter.LineWidth = 2;
                         scatter.MarkerSize = 5;
-                        scatter.Color = TabHelpers.ChartColors[2];
+                        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                         scatter.LegendText = "Long IOs";
                         _ioIssuesHover?.Add(scatter, "Long IOs");
                     }

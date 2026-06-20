@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Windows;
@@ -107,7 +108,7 @@ public partial class ProcedureHistoryWindow : Window
         var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
         scatter.LineWidth = 2;
         scatter.MarkerSize = 5;
-        scatter.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
         scatter.LegendText = label;
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();

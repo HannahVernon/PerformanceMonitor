@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -125,7 +126,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryBrokerRatioChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[0];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
                     scatter.LegendText = "Memory Ratio";
                     _memoryBrokerRatioHover?.Add(scatter, "Memory Ratio");
                 }
@@ -140,7 +141,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryBrokerRatioChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[2];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                     scatter.LegendText = "Overall";
                     _memoryBrokerRatioHover?.Add(scatter, "Overall");
                 }

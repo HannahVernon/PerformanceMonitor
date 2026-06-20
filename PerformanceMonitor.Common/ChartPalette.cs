@@ -71,7 +71,35 @@ namespace PerformanceMonitor.Common
                 ["Reads"]         = "#4DD0E1", // Logical/physical reads
                 ["Writes"]        = "#F06292", // Logical/physical writes
                 ["Duration"]      = "#4FC3F7", // Elapsed/duration
-                ["Executions"]    = "#AED581", // Execution count
+                ["Executions"]    = "#BA68C8", // Execution count
+                // Session states (co-occur in the Sessions chart)
+                ["SessionTotal"]      = "#4FC3F7",
+                ["SessionRunning"]    = "#81C784",
+                ["SessionSleeping"]   = "#FFB74D",
+                ["SessionBackground"] = "#BA68C8",
+                ["SessionDormant"]    = "#4DD0E1",
+                ["SessionIdle"]       = "#90A4AE",
+                ["SessionWaiting"]    = "#E57373",
+                // Memory overview (total / plan cache / available)
+                ["TotalMemory"]       = "#90A4AE",
+                ["CacheMemory"]       = "#81C784",
+                ["AvailableMemory"]   = "#FFB74D",
+                // Plan cache size buckets
+                ["SinglePagePlans"]   = "#E57373",
+                ["MultiPagePlans"]    = "#81C784",
+                // Tempdb object types
+                ["UserObjects"]       = "#4FC3F7",
+                ["VersionStore"]      = "#81C784",
+                ["InternalObjects"]   = "#FFB74D",
+                ["UnallocatedTempdb"] = "#90A4AE",
+                ["TopTempdbTask"]     = "#E57373",
+                // Duration trend charts (history windows / per-type)
+                ["QueryDuration"]     = "#4FC3F7",
+                ["ProcedureDuration"] = "#81C784",
+                ["QueryStoreDuration"]= "#FFB74D",
+                ["MetricTrend"]       = "#4FC3F7", // generic single-metric history trend
+                ["LockWaits"]         = "#4FC3F7",
+                ["CurrentWaits"]      = "#4FC3F7",
             };
 
         /// <summary>Color for a fixed-meaning series (e.g. "BufferPool"); falls back to cycling.</summary>
@@ -85,8 +113,12 @@ namespace PerformanceMonitor.Common
                 ["Threshold"]      = "#FFD54F", // generic threshold / target line (yellow)
                 ["PressureMedium"] = "#FFB74D", // medium pressure zone (orange)
                 ["PressureSevere"] = "#E57373", // severe pressure zone (red)
-                ["Anomaly"]        = "#FF7043", // anomaly dot
+                ["Anomaly"]        = "#FF5252", // anomaly dot
                 ["Average"]        = "#FFD54F", // mean / average line
+                ["BaselineCpu"]      = "#4FC3F7", // CPU-lane baseline band / mean tint
+                ["BaselineBlocking"] = "#E57373", // blocking-lane baseline band / mean tint
+                ["Crosshair"]        = "#FFFFFF", // correlated-charts crosshair vline
+                ["Placeholder"]      = "#888888", // no-data placeholder line
             };
 
         /// <summary>Color for a threshold / pressure-zone / anomaly accent.</summary>

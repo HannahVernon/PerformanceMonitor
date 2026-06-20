@@ -71,7 +71,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var scatter = BadPagesChart.Plot.Add.Scatter(xs, ys);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[3];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
                 _badPagesHover?.Add(scatter, "Bad Pages");
             }
             else
@@ -100,7 +100,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var scatter = DumpRequestsChart.Plot.Add.Scatter(xs, ys);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[2];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                 _dumpRequestsHover?.Add(scatter, "Dump Requests");
             }
             else
@@ -129,7 +129,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var scatter = AccessViolationsChart.Plot.Add.Scatter(xs, ys);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[4];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(4));
                 _accessViolationsHover?.Add(scatter, "Access Violations");
             }
             else
@@ -158,7 +158,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var scatter = WriteAccessViolationsChart.Plot.Add.Scatter(xs, ys);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[0];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
                 _writeAccessViolationsHover?.Add(scatter, "Write Access Violations");
             }
             else
@@ -199,7 +199,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var scatter = NonYieldingTasksChart.Plot.Add.Scatter(xs, ys);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[3];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
                 _nonYieldingTasksHover?.Add(scatter, "Non-Yielding Tasks");
             }
             else
@@ -228,7 +228,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var scatter = LatchWarningsChart.Plot.Add.Scatter(xs, ys);
                 scatter.LineWidth = 2;
                 scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[2];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                 _latchWarningsHover?.Add(scatter, "Latch Warnings");
             }
             else
@@ -326,7 +326,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var sysScatter = CpuComparisonChart.Plot.Add.Scatter(sysXs, sysYs);
                 sysScatter.LineWidth = 2;
                 sysScatter.MarkerSize = 5;
-                sysScatter.Color = TabHelpers.ChartColors[0];
+                sysScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
                 sysScatter.LegendText = "System CPU %";
                 _cpuComparisonHover?.Add(sysScatter, "System CPU %");
 

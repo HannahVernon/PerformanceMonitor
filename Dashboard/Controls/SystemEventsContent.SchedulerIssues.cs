@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -91,7 +92,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = SchedulerIssuesChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[2];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                     scatter.LegendText = "Total Non-Yield Time";
                     _schedulerIssuesHover?.Add(scatter, "Total Non-Yield Time");
 

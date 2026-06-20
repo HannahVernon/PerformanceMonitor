@@ -85,7 +85,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = CPUTasksChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[0];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
                     scatter.LegendText = "Workers Created";
                     _cpuTasksHover?.Add(scatter, "Workers Created");
 
@@ -114,7 +114,7 @@ namespace PerformanceMonitorDashboard.Controls
                         var dlYs = unresolvableDLByHour.Select(b => 0.0).ToArray();
                         var dlScatter = CPUTasksChart.Plot.Add.Scatter(dlXs, dlYs);
                         dlScatter.LineWidth = 0;
-                        dlScatter.Color = TabHelpers.ChartColors[3];
+                        dlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
                         dlScatter.LegendText = "Unresolvable DL";
                         dlScatter.MarkerSize = 10;
                         dlScatter.MarkerShape = ScottPlot.MarkerShape.FilledCircle;
@@ -133,7 +133,7 @@ namespace PerformanceMonitorDashboard.Controls
                         var schedYs = schedDLByHour.Select(b => 0.0).ToArray();
                         var schedScatter = CPUTasksChart.Plot.Add.Scatter(schedXs, schedYs);
                         schedScatter.LineWidth = 0;
-                        schedScatter.Color = TabHelpers.ChartColors[2];
+                        schedScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                         schedScatter.LegendText = "Sched Deadlock";
                         schedScatter.MarkerSize = 10;
                         schedScatter.MarkerShape = ScottPlot.MarkerShape.FilledCircle;
@@ -153,7 +153,7 @@ namespace PerformanceMonitorDashboard.Controls
                         var blockingYs = blockingByHour.Select(b => 0.0).ToArray(); // At bottom
                         var blockingScatter = CPUTasksChart.Plot.Add.Scatter(blockingXs, blockingYs);
                         blockingScatter.LineWidth = 0; // No connecting line
-                        blockingScatter.Color = TabHelpers.ChartColors[6];
+                        blockingScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(6));
                         blockingScatter.LegendText = "Blocking";
                         // Size points based on count - min 8, max 20, scaled by count
                         var maxCount = blockingByHour.Max(b => b.Count);

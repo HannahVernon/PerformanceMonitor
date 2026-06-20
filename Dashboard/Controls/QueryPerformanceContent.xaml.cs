@@ -21,6 +21,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot.WPF;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
@@ -1275,7 +1276,7 @@ namespace PerformanceMonitorDashboard.Controls
             var scatter = QueryPerfTrendsExecChart.Plot.Add.Scatter(xs, ys);
             scatter.LineWidth = 2;
             scatter.MarkerSize = 5;
-            scatter.Color = TabHelpers.ChartColors[0];
+            scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
             scatter.LegendText = "Executions/sec";
             _execTrendsHover?.Add(scatter, "Executions/sec");
 

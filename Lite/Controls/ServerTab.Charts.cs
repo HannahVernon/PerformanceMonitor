@@ -369,17 +369,17 @@ public partial class ServerTab : UserControl
 
         var userPlot = TempDbChart.Plot.Add.Scatter(times, userObj);
         userPlot.LegendText = "User Objects";
-        userPlot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        userPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UserObjects"));
         _tempDbHover?.Add(userPlot, "User Objects");
 
         var internalPlot = TempDbChart.Plot.Add.Scatter(times, internalObj);
         internalPlot.LegendText = "Internal Objects";
-        internalPlot.Color = ScottPlot.Color.FromHex("#FFD54F");
+        internalPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("InternalObjects"));
         _tempDbHover?.Add(internalPlot, "Internal Objects");
 
         var vsPlot = TempDbChart.Plot.Add.Scatter(times, versionStore);
         vsPlot.LegendText = "Version Store";
-        vsPlot.Color = ScottPlot.Color.FromHex("#81C784");
+        vsPlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("VersionStore"));
         _tempDbHover?.Add(vsPlot, "Version Store");
 
         TempDbChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -617,7 +617,7 @@ public partial class ServerTab : UserControl
                 new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
                 new[] { 0.0, 0.0 });
             zeroLine.LegendText = "Lock Waits";
-            zeroLine.Color = ScottPlot.Color.FromHex("#4FC3F7");
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("LockWaits"));
             zeroLine.MarkerSize = 0;
             LockWaitTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
             LockWaitTrendChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
@@ -681,7 +681,7 @@ public partial class ServerTab : UserControl
                 new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
                 new[] { 0.0, 0.0 });
             zeroLine.LegendText = "Blocking Incidents";
-            zeroLine.Color = ScottPlot.Color.FromHex("#E57373");
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking"));
             zeroLine.MarkerSize = 0;
             BlockingTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
             BlockingTrendChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
@@ -760,7 +760,7 @@ public partial class ServerTab : UserControl
                 new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
                 new[] { 0.0, 0.0 });
             zeroLine.LegendText = "Deadlocks";
-            zeroLine.Color = ScottPlot.Color.FromHex("#FFB74D");
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks"));
             zeroLine.MarkerSize = 0;
             DeadlockTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
             DeadlockTrendChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
@@ -839,7 +839,7 @@ public partial class ServerTab : UserControl
                 new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
                 new[] { 0.0, 0.0 });
             zeroLine.LegendText = "Current Waits";
-            zeroLine.Color = ScottPlot.Color.FromHex("#4FC3F7");
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("CurrentWaits"));
             zeroLine.MarkerSize = 0;
             CurrentWaitsDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
             CurrentWaitsDurationChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
@@ -960,7 +960,7 @@ public partial class ServerTab : UserControl
         _queryDurationTrendHover?.Clear();
         var plot = QueryDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Query Duration";
-        plot.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("QueryDuration"));
         _queryDurationTrendHover?.Add(plot, "Query Duration");
 
         QueryDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -984,7 +984,7 @@ public partial class ServerTab : UserControl
         _procDurationTrendHover?.Clear();
         var plot = ProcDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Procedure Duration";
-        plot.Color = ScottPlot.Color.FromHex("#81C784");
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("ProcedureDuration"));
         _procDurationTrendHover?.Add(plot, "Procedure Duration");
 
         ProcDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -1008,7 +1008,7 @@ public partial class ServerTab : UserControl
         _queryStoreDurationTrendHover?.Clear();
         var plot = QueryStoreDurationTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Query Store Duration";
-        plot.Color = ScottPlot.Color.FromHex("#FFB74D");
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("QueryStoreDuration"));
         _queryStoreDurationTrendHover?.Add(plot, "Query Store Duration");
 
         QueryStoreDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -1032,7 +1032,7 @@ public partial class ServerTab : UserControl
         _executionCountTrendHover?.Clear();
         var plot = ExecutionCountTrendChart.Plot.Add.Scatter(times, values);
         plot.LegendText = "Executions";
-        plot.Color = ScottPlot.Color.FromHex("#BA68C8");
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Executions"));
         _executionCountTrendHover?.Add(plot, "Executions");
 
         ExecutionCountTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -1260,7 +1260,7 @@ public partial class ServerTab : UserControl
         /* Add invisible scatter to create legend entry (matches data chart layout) */
         var placeholder = chart.Plot.Add.Scatter(new double[] { 0 }, new double[] { 0 });
         placeholder.LegendText = legendText;
-        placeholder.Color = ScottPlot.Color.FromHex("#888888");
+        placeholder.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
         placeholder.MarkerSize = 0;
         placeholder.LineWidth = 0;
 

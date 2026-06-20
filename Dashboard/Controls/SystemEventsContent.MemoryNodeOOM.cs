@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 
@@ -89,7 +90,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryNodeOOMChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[3];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
                     scatter.LegendText = "OOM Event Count";
                     _memoryNodeOomHover?.Add(scatter, "OOM Event Count");
 
@@ -143,7 +144,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryNodeOOMUtilChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[0];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
                     _memoryNodeOomUtilHover?.Add(scatter, "Memory Utilization %");
                 }
             }
@@ -194,7 +195,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[1];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(1));
                     scatter.LegendText = "Target";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Target");
                 }
@@ -209,7 +210,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[2];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
                     scatter.LegendText = "Committed";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Committed");
                 }
@@ -224,7 +225,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[4];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(4));
                     scatter.LegendText = "Total Page File";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Total Page File");
                 }
@@ -239,7 +240,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
                     scatter.LineWidth = 2;
                     scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[5];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(5));
                     scatter.LegendText = "Avail Page File";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Avail Page File");
                 }

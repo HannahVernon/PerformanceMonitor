@@ -163,7 +163,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var userScatter = TempdbStatsChart.Plot.Add.Scatter(userXs, userYs);
                 userScatter.LineWidth = 2;
                 userScatter.MarkerSize = 5;
-                userScatter.Color = TabHelpers.ChartColors[0];
+                userScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UserObjects"));
                 userScatter.LegendText = "User Objects";
                 _tempdbStatsHover?.Add(userScatter, "User Objects");
 
@@ -174,7 +174,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var versionScatter = TempdbStatsChart.Plot.Add.Scatter(versionXs, versionYs);
                 versionScatter.LineWidth = 2;
                 versionScatter.MarkerSize = 5;
-                versionScatter.Color = TabHelpers.ChartColors[1];
+                versionScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("VersionStore"));
                 versionScatter.LegendText = "Version Store";
                 _tempdbStatsHover?.Add(versionScatter, "Version Store");
 
@@ -185,7 +185,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var internalScatter = TempdbStatsChart.Plot.Add.Scatter(internalXs, internalYs);
                 internalScatter.LineWidth = 2;
                 internalScatter.MarkerSize = 5;
-                internalScatter.Color = TabHelpers.ChartColors[2];
+                internalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("InternalObjects"));
                 internalScatter.LegendText = "Internal Objects";
                 _tempdbStatsHover?.Add(internalScatter, "Internal Objects");
 
@@ -198,7 +198,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var unallocScatter = TempdbStatsChart.Plot.Add.Scatter(unallocXs, unallocYs);
                     unallocScatter.LineWidth = 2;
                     unallocScatter.MarkerSize = 5;
-                    unallocScatter.Color = TabHelpers.ChartColors[9];
+                    unallocScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
                     unallocScatter.LegendText = "Unallocated";
                     _tempdbStatsHover?.Add(unallocScatter, "Unallocated");
                 }
@@ -213,7 +213,7 @@ namespace PerformanceMonitorDashboard.Controls
                     var topTaskScatter = TempdbStatsChart.Plot.Add.Scatter(topTaskXs, topTaskYs);
                     topTaskScatter.LineWidth = 2;
                     topTaskScatter.MarkerSize = 5;
-                    topTaskScatter.Color = TabHelpers.ChartColors[3];
+                    topTaskScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TopTempdbTask"));
                     topTaskScatter.LegendText = "Top Task";
                 }
 

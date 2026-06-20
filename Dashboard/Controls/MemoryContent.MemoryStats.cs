@@ -91,7 +91,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var totalScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(totalXs, totalYs);
                 totalScatter.LineWidth = 2;
                 totalScatter.MarkerSize = 5;
-                totalScatter.Color = TabHelpers.ChartColors[9];
+                totalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalMemory"));
                 totalScatter.LegendText = "Total Memory";
                 _memoryStatsOverviewHover?.Add(totalScatter, "Total Memory");
 
@@ -105,14 +105,14 @@ namespace PerformanceMonitorDashboard.Controls
                 var cacheScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(cacheXs, cacheYs);
                 cacheScatter.LineWidth = 2;
                 cacheScatter.MarkerSize = 5;
-                cacheScatter.Color = TabHelpers.ChartColors[1];
+                cacheScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("CacheMemory"));
                 cacheScatter.LegendText = "Plan Cache";
                 _memoryStatsOverviewHover?.Add(cacheScatter, "Plan Cache");
 
                 var availScatter = MemoryStatsOverviewChart.Plot.Add.Scatter(availXs, availYs);
                 availScatter.LineWidth = 2;
                 availScatter.MarkerSize = 5;
-                availScatter.Color = TabHelpers.ChartColors[2];
+                availScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("AvailableMemory"));
                 availScatter.LegendText = "Available Physical";
                 _memoryStatsOverviewHover?.Add(availScatter, "Available Physical");
 

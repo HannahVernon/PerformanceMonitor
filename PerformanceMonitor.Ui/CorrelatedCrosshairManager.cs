@@ -15,6 +15,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitor.Ui;
 
@@ -219,7 +220,7 @@ internal sealed class CorrelatedCrosshairManager : IDisposable
         try
         {
             var vline = chart.Plot.Add.VerticalLine(0);
-            vline.Color = ScottPlot.Color.FromHex("#FFFFFF").WithAlpha(100);
+            vline.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Crosshair")).WithAlpha(100);
             vline.LineWidth = 1;
             vline.LinePattern = ScottPlot.LinePattern.Dashed;
             vline.IsVisible = false;
