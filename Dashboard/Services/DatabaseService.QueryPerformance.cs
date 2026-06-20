@@ -507,6 +507,37 @@ ORDER BY bucket_hour;";
                     return result == DBNull.Value ? null : result as string;
                 }
 
+                /// <summary>
+                /// Fetches (and DECOMPRESSes) the cached plan XML for a single query_stats row on demand.
+                /// GetQueryStatsAsync deliberately does NOT hydrate plan XML for its TOP (500) grid rows
+                /// (that DECOMPRESS cost ~7s of CPU); the plan is fetched here only when a plan is opened.
+                /// </summary>
+                public async Task<string?> GetQueryStatsPlanXmlAsync(string databaseName, string queryHash)
+                {
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    string query = @"
+        SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+        SELECT TOP (1)
+            query_plan_xml = CAST(DECOMPRESS(qs.query_plan_text) AS nvarchar(max))
+        FROM collect.query_stats AS qs
+        WHERE qs.query_hash = CONVERT(binary(8), @queryHash, 1)
+        AND   qs.database_name = @databaseName
+        AND   qs.query_plan_text IS NOT NULL
+        ORDER BY qs.collection_time DESC;";
+
+                    using var command = new SqlCommand(query, connection);
+                    command.CommandTimeout = 120;
+
+                    command.Parameters.Add(new SqlParameter("@databaseName", SqlDbType.NVarChar, 128) { Value = databaseName });
+                    command.Parameters.Add(new SqlParameter("@queryHash", SqlDbType.NVarChar, 20) { Value = queryHash });
+
+                    var result = await command.ExecuteScalarAsync();
+                    return result == DBNull.Value ? null : result as string;
+                }
+
                 public async Task<List<SessionStatsItem>> GetSessionStatsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
                 {
                     var items = new List<SessionStatsItem>();
