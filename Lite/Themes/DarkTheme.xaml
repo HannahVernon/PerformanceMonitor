@@ -1271,6 +1271,7 @@
     <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#99000000"/>
     <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#22FFFFFF"/>
     <SolidColorBrush x:Key="SlicerHandleBrush" Color="#E4E6EB"/>
+    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="#2EAEF1"/>
     <SolidColorBrush x:Key="SlicerBorderBrush" Color="#3A3D45"/>
     <SolidColorBrush x:Key="SlicerLabelBrush" Color="#E4E6EB"/>
     <SolidColorBrush x:Key="SlicerToggleBrush" Color="#E4E6EB"/>
