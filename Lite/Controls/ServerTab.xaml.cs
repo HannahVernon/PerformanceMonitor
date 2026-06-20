@@ -44,6 +44,11 @@ public partial class ServerTab : UserControl
     private readonly DispatcherTimer _refreshTimer;
     private bool _refreshPendingWhileHidden;
     private bool _isRefreshing;
+    // Guards the visible-tab auto-refresh during an Active Queries drill-down:
+    // SelectActiveQueriesForDrillDown() sets this before flipping to Queries → Active Queries so
+    // MainTabControl_SelectionChanged skips its refresh and doesn't clobber the filtered snapshot
+    // the drill-down loads next (async race).
+    private bool _suppressActiveQueriesAutoRefresh;
     private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
     private List<SelectableItem> _waitTypeItems = new();
     private List<SelectableItem> _perfmonCounterItems = new();
@@ -393,6 +398,11 @@ public partial class ServerTab : UserControl
             && e.Source != MemorySubTabControl && e.Source != BlockingSubTabControl) return;
 
         UpdateCompareDropdownState();
+
+        // A drill-down navigates here programmatically and loads its own filtered snapshot;
+        // skip the auto-refresh so it doesn't clobber that data via an async race. The flag is
+        // set/cleared around the tab switch in SelectActiveQueriesForDrillDown().
+        if (_suppressActiveQueriesAutoRefresh) return;
 
         var hoursBack = GetHoursBack();
         DateTime? fromDate = null, toDate = null;
