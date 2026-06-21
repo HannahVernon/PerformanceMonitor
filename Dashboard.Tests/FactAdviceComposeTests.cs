@@ -180,4 +180,32 @@ public class FactAdviceComposeTests
         FactAdvice.PopulateStoryText(new[] { story }, new List<Fact>());
         Assert.Equal("", story.StoryText);
     }
+
+    // ── B1: parallelism value-gap blocks state the server's actual MAXDOP/CTFP ──
+
+    [Theory]
+    [InlineData("CXPACKET")]
+    [InlineData("QUERY_HIGH_DOP")]
+    [InlineData("THREADPOOL")]
+    public void ParallelismBlocks_StateCurrentMaxdopCtfp(string key)
+    {
+        var facts = Facts(F("CONFIG_MAXDOP", 16), F("CONFIG_CTFP", 5), Hardware(8));
+        var advice = FactAdvice.Compose(key, facts);
+        Assert.Contains("MAXDOP is 16", advice!.Remediation);
+        Assert.Contains("cost threshold for parallelism is 5", advice.Remediation);
+        Assert.Contains("lower MAXDOP from 16 to 8", advice.Remediation);
+    }
+
+    [Fact]
+    public void ParallelismBlocks_NoConfigFacts_FallBackToStatic()
+    {
+        Assert.Equal(FactAdvice.GetForFactKey("CXPACKET"), FactAdvice.Compose("CXPACKET", Facts()));
+    }
+
+    [Fact]
+    public void Cxpacket_Investigation_DropsAuditConfigDeferral()
+    {
+        Assert.DoesNotContain("call `audit_config` to check CTFP and MAXDOP",
+            FactAdvice.GetForFactKey("CXPACKET")!.Investigation);
+    }
 }

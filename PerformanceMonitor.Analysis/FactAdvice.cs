@@ -136,6 +136,12 @@ public static class FactAdvice
             "THREADPOOL_MIXED" => ComposeThreadpoolMixed(factsByKey),
             "CONFIG_MAXDOP" => ComposeConfigMaxdop(factsByKey),
             "CONFIG_CTFP" => ComposeConfigCtfp(factsByKey),
+            // Parallelism value-gap blocks: state the server's actual MAXDOP/CTFP instead of the
+            // generic "raise CTFP to 50, cap MAXDOP" guidance (or, for CXPACKET, an audit_config
+            // deferral). All three reuse the same current-values prefix.
+            "THREADPOOL" => ComposeWithMaxdopCtfpPrefix("THREADPOOL", factsByKey),
+            "CXPACKET" => ComposeWithMaxdopCtfpPrefix("CXPACKET", factsByKey),
+            "QUERY_HIGH_DOP" => ComposeWithMaxdopCtfpPrefix("QUERY_HIGH_DOP", factsByKey),
             _ => GetForFactKey(rootFactKey)
         };
     }
@@ -401,6 +407,59 @@ public static class FactAdvice
     }
 
     /// <summary>
+    /// A current-MAXDOP/CTFP sentence for the parallelism wait blocks (CXPACKET, QUERY_HIGH_DOP,
+    /// generic THREADPOOL) — states the server's actual values and names the specific change where
+    /// either is off topology guidance, so the card stops saying a generic "raise CTFP to 50, cap
+    /// MAXDOP" (or deferring to audit_config). Empty when neither config fact was collected.
+    /// </summary>
+    private static string MaxdopCtfpClause(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var maxdop = FactValue(facts, "CONFIG_MAXDOP");
+        var ctfp = FactValue(facts, "CONFIG_CTFP");
+        if (maxdop is null && ctfp is null)
+            return string.Empty;
+
+        var cores = CoresPerSocket(facts);
+        var rec = FactRemediation.RecommendedMaxdop(cores);
+        var sb = new StringBuilder("This server's MAXDOP is ")
+            .Append(maxdop?.ToString() ?? "not readable this window")
+            .Append(" and cost threshold for parallelism is ")
+            .Append(ctfp?.ToString() ?? "not readable this window")
+            .Append(". ");
+
+        var recs = new List<string>();
+        if (ctfp is not null && ctfp <= 5)
+            recs.Add("raise cost threshold for parallelism to 50");
+        else if (ctfp is not null && ctfp < 50)
+            recs.Add($"raise cost threshold for parallelism from {ctfp} toward 50");
+        if (maxdop is 0)
+            recs.Add($"cap MAXDOP at {rec} (the per-NUMA-node processor count, ≤ 8)");
+        else if (maxdop is not null && maxdop > rec)
+            recs.Add($"lower MAXDOP from {maxdop} to {rec}");
+
+        if (recs.Count > 0)
+            sb.Append("Bring them to guidance: ").Append(string.Join(", ", recs)).Append(". ");
+        else if (maxdop is not null && ctfp is not null)
+            sb.Append("Both are within topology guidance, so the parallelism is coming from the plans themselves (below). ");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Returns the static block for <paramref name="key"/> with the current-MAXDOP/CTFP clause
+    /// prepended to its remediation (CXPACKET / QUERY_HIGH_DOP / generic THREADPOOL). Falls back to
+    /// the static block unchanged when the config facts were not collected this window.
+    /// </summary>
+    private static AdviceBlock ComposeWithMaxdopCtfpPrefix(string key, IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey[key];
+        var clause = MaxdopCtfpClause(facts);
+        return clause.Length == 0
+            ? fallback
+            : fallback with { Remediation = clause + fallback.Remediation };
+    }
+
+    /// <summary>
     /// Wraps the inner wait-type's advice with an anomaly-framing prelude so
     /// an ANOMALY_WAIT_THREADPOOL finding reads as "this wait is anomalously
     /// elevated vs. baseline" rather than "this wait crossed a static
@@ -495,7 +554,7 @@ public static class FactAdvice
             Headline:
                 "Parallelism waits — queries are spending real time waiting for their parallel workers to synchronize",
             Investigation:
-                "The collector groups every CX* wait (CXPACKET, CXCONSUMER, CXSYNC_PORT, CXSYNC_CONSUMER) into one CXPACKET fact (`DuckDbFactCollector.GroupParallelismWaits` in Lite, `SqlServerFactCollector.GroupParallelismWaits` in Dashboard). That grouping hides producer/consumer skew — CXCONSUMER on its own specifically means one branch is doing the work while siblings stall waiting for rows. If the per-execution duration of the offending queries is closer to their CPU time than CPU÷DOP would predict, parallelism is mostly contending with itself, not paying for itself. Open the Wait Stats tab to see the breakdown over the analysis window, and call `audit_config` to check CTFP and MAXDOP. The QUERY_HIGH_DOP amplifier flags queries running at DOP > 8 — `get_top_queries_by_cpu` with `parallel_only=true` ranks them.",
+                "The collector groups every CX* wait (CXPACKET, CXCONSUMER, CXSYNC_PORT, CXSYNC_CONSUMER) into one CXPACKET fact (`DuckDbFactCollector.GroupParallelismWaits` in Lite, `SqlServerFactCollector.GroupParallelismWaits` in Dashboard). That grouping hides producer/consumer skew — CXCONSUMER on its own specifically means one branch is doing the work while siblings stall waiting for rows. If the per-execution duration of the offending queries is closer to their CPU time than CPU÷DOP would predict, parallelism is mostly contending with itself, not paying for itself. Open the Wait Stats tab to see the breakdown over the analysis window (the server's current CTFP and MAXDOP are stated in the remediation below). The QUERY_HIGH_DOP amplifier flags queries running at DOP > 8 — `get_top_queries_by_cpu` with `parallel_only=true` ranks them.",
             Remediation:
                 "Most OLTP queries should not go parallel — raise `cost threshold for parallelism` to 50 and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). When that's already done and CXPACKET persists, the problem is the underlying plan: a parallel scan of a large table, a hash join with bad row estimates, or a skewed plan where one branch does everything. Pull the plan via `analyze_query_plan` for the offending `query_hash` and look for missing indexes or operator-level row-count divergence — fix the plan and the wait disappears.");
 
