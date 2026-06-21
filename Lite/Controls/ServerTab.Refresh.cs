@@ -31,6 +31,12 @@ public partial class ServerTab : UserControl
         await RefreshAllDataAsync(fullRefresh: false);
     }
 
+    /* Deadlock-graph XML parsing (XElement.Parse + deep Descendants traversal per row) is heavy
+       enough to hitch the dispatcher on the Blocking tab; run it on the thread pool so only the
+       grid bind stays on the UI thread. */
+    private static Task<List<DeadlockProcessDetail>> ParseDeadlocksOffUiThreadAsync(List<DeadlockRow> rows)
+        => Task.Run(() => DeadlockProcessDetail.ParseFromRows(rows));
+
     private async System.Threading.Tasks.Task RefreshAllDataAsync(bool fullRefresh = false)
     {
         if (_isRefreshing) return;
@@ -224,7 +230,7 @@ public partial class ServerTab : UserControl
             await RefreshProcStatsComparisonAsync(cStart2, cEnd2);
         }
         _blockedProcessFilterMgr!.UpdateData(blockedProcessTask.Result);
-        _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(deadlockTask.Result));
+        _deadlockFilterMgr!.UpdateData(await ParseDeadlocksOffUiThreadAsync(deadlockTask.Result));
         _queryStoreFilterMgr!.UpdateData(queryStoreTask.Result);
         SetDefaultSortIfNone(QueryStoreGrid, "TotalDurationMs", ListSortDirection.Descending);
         {
@@ -595,12 +601,15 @@ public partial class ServerTab : UserControl
                         break;
                     case 2: // Blocked Process Reports
                         var bpr = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, hoursBack, fromDate, toDate));
-                        _blockedProcessFilterMgr!.UpdateData(bpr);
+                        using (Helpers.MethodProfiler.StartTiming("Locking.BindBlockedGrid"))
+                            _blockedProcessFilterMgr!.UpdateData(bpr);
                         await LoadBlockingSlicerAsync();
                         break;
                     case 3: // Deadlocks
                         var dlr = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, hoursBack, fromDate, toDate));
-                        _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(dlr));
+                        var dlrDetails = await ParseDeadlocksOffUiThreadAsync(dlr);
+                        using (Helpers.MethodProfiler.StartTiming("Locking.BindDeadlockGrid"))
+                            _deadlockFilterMgr!.UpdateData(dlrDetails);
                         await LoadDeadlockSlicerAsync();
                         break;
                 }
@@ -623,14 +632,22 @@ public partial class ServerTab : UserControl
                 lockWaitTrendTask, blockingTrendTask, deadlockTrendTask,
                 currentWaitsDurationTask, currentWaitsBlockedTask);
 
-            _blockedProcessFilterMgr!.UpdateData(blockedProcessTask.Result);
-            _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(deadlockTask.Result));
+            /* Parse deadlock graphs off the UI thread (this was the Blocking-tab hitch). Time the
+               remaining UI-thread render steps so any new hot spot is pinpointed (bind vs charts). */
+            var deadlockDetails = await ParseDeadlocksOffUiThreadAsync(deadlockTask.Result);
+            using (Helpers.MethodProfiler.StartTiming("Locking.BindBlockedGrid"))
+                _blockedProcessFilterMgr!.UpdateData(blockedProcessTask.Result);
+            using (Helpers.MethodProfiler.StartTiming("Locking.BindDeadlockGrid"))
+                _deadlockFilterMgr!.UpdateData(deadlockDetails);
 
-            UpdateLockWaitTrendChart(lockWaitTrendTask.Result, hoursBack, fromDate, toDate);
-            UpdateBlockingTrendChart(blockingTrendTask.Result, hoursBack, fromDate, toDate);
-            UpdateDeadlockTrendChart(deadlockTrendTask.Result, hoursBack, fromDate, toDate);
-            UpdateCurrentWaitsDurationChart(currentWaitsDurationTask.Result, hoursBack, fromDate, toDate);
-            UpdateCurrentWaitsBlockedChart(currentWaitsBlockedTask.Result, hoursBack, fromDate, toDate);
+            using (Helpers.MethodProfiler.StartTiming("Locking.RenderTrendCharts"))
+            {
+                UpdateLockWaitTrendChart(lockWaitTrendTask.Result, hoursBack, fromDate, toDate);
+                UpdateBlockingTrendChart(blockingTrendTask.Result, hoursBack, fromDate, toDate);
+                UpdateDeadlockTrendChart(deadlockTrendTask.Result, hoursBack, fromDate, toDate);
+                UpdateCurrentWaitsDurationChart(currentWaitsDurationTask.Result, hoursBack, fromDate, toDate);
+                UpdateCurrentWaitsBlockedChart(currentWaitsBlockedTask.Result, hoursBack, fromDate, toDate);
+            }
 
             await LoadBlockingSlicerAsync();
             await LoadDeadlockSlicerAsync();

@@ -177,7 +177,7 @@ public partial class ServerTab : UserControl
         MainTabControl.SelectedIndex = 8; // Blocking
         BlockingSubTabControl.SelectedIndex = 3; // Deadlocks
         var dlr = await _dataService.GetRecentDeadlocksAsync(_serverId, 0, fromDate, toDate);
-        _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(dlr));
+        _deadlockFilterMgr!.UpdateData(await ParseDeadlocksOffUiThreadAsync(dlr));
     }
 
     private async void OnHeatmapDrillDown(DateTime bucketTimeUtc)
