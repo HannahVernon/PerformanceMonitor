@@ -19,6 +19,7 @@ using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
@@ -262,14 +263,14 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 Position = d.Time,
                 Value = d.Value,
                 Size = barWidth,
-                FillColor = ScottPlot.Color.FromHex("#E57373"),
+                FillColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking")),
                 LineWidth = 0
             }).ToArray();
             BlockingChart.Plot.Add.Bars(bars);
             maxCount = Math.Max(maxCount, blockingData.Max(d => d.Value));
         }
 
-        // Deadlock bars — yellow/amber, slightly narrower so both are visible
+        // Deadlock bars — slightly narrower so both are visible over the blocking bars
         if (deadlockData.Count > 0)
         {
             var bars = deadlockData.Select(d => new ScottPlot.Bar
@@ -277,7 +278,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 Position = d.Time,
                 Value = d.Value,
                 Size = barWidth * 0.6,
-                FillColor = ScottPlot.Color.FromHex("#FFD54F"),
+                FillColor = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks")),
                 LineWidth = 0
             }).ToArray();
             BlockingChart.Plot.Add.Bars(bars);
@@ -293,11 +294,11 @@ public partial class CorrelatedTimelineLanesControl : UserControl
             _crosshairManager?.SetLaneBaseline(BlockingChart, lower, upper, isEventBased: true);
 
             var band = BlockingChart.Plot.Add.HorizontalSpan(lower, upper);
-            band.FillStyle.Color = ScottPlot.Color.FromHex("#E57373").WithAlpha(25);
+            band.FillStyle.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("BaselineBlocking")).WithAlpha(25);
             band.LineStyle.Width = 0;
 
             var meanLine = BlockingChart.Plot.Add.HorizontalLine(baseline.Mean);
-            meanLine.Color = ScottPlot.Color.FromHex("#E57373").WithAlpha(60);
+            meanLine.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("BaselineBlocking")).WithAlpha(60);
             meanLine.LinePattern = ScottPlot.LinePattern.Dashed;
             meanLine.LineWidth = 1;
         }
@@ -352,11 +353,11 @@ public partial class CorrelatedTimelineLanesControl : UserControl
             _crosshairManager?.SetLaneBaseline(CpuChart, lower, upper, 10);
 
             var band = CpuChart.Plot.Add.HorizontalSpan(lower, upper);
-            band.FillStyle.Color = ScottPlot.Color.FromHex("#4FC3F7").WithAlpha(25);
+            band.FillStyle.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("BaselineCpu")).WithAlpha(25);
             band.LineStyle.Width = 0;
 
             var meanLine = CpuChart.Plot.Add.HorizontalLine(baseline.Mean);
-            meanLine.Color = ScottPlot.Color.FromHex("#4FC3F7").WithAlpha(60);
+            meanLine.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("BaselineCpu")).WithAlpha(60);
             meanLine.LinePattern = ScottPlot.LinePattern.Dashed;
             meanLine.LineWidth = 1;
 
@@ -373,7 +374,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 var anomalyTimes = anomalyIndices.Select(i => sqlTimes[i]).ToArray();
                 var anomalyVals = anomalyIndices.Select(i => sqlValues[i]).ToArray();
                 var anomalyScatter = CpuChart.Plot.Add.Scatter(anomalyTimes, anomalyVals);
-                anomalyScatter.Color = ScottPlot.Color.FromHex("#FF5252");
+                anomalyScatter.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Anomaly"));
                 anomalyScatter.MarkerSize = 6;
                 anomalyScatter.MarkerShape = ScottPlot.MarkerShape.FilledCircle;
                 anomalyScatter.LineWidth = 0;
@@ -383,7 +384,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         if (totalValues.Length > 0)
         {
             var totalScatter = CpuChart.Plot.Add.Scatter(totalTimes, totalValues);
-            totalScatter.Color = ScottPlot.Color.FromHex("#FF7043");
+            totalScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("TotalCpu"));
             totalScatter.MarkerSize = 0;
             totalScatter.LineWidth = 1.5f;
             totalScatter.LegendText = "Total";
@@ -393,7 +394,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         if (sqlValues.Length > 0)
         {
             var sqlScatter = CpuChart.Plot.Add.Scatter(sqlTimes, sqlValues);
-            sqlScatter.Color = ScottPlot.Color.FromHex("#4FC3F7");
+            sqlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
             sqlScatter.MarkerSize = 0;
             sqlScatter.LineWidth = 1.5f;
             sqlScatter.LegendText = "SQL";
@@ -462,7 +463,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 var anomalyTimes = anomalyIndices.Select(i => times[i]).ToArray();
                 var anomalyValues = anomalyIndices.Select(i => values[i]).ToArray();
                 var anomalyScatter = chart.Plot.Add.Scatter(anomalyTimes, anomalyValues);
-                anomalyScatter.Color = ScottPlot.Color.FromHex("#FF5252");
+                anomalyScatter.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Anomaly"));
                 anomalyScatter.MarkerSize = 6;
                 anomalyScatter.MarkerShape = ScottPlot.MarkerShape.FilledCircle;
                 anomalyScatter.LineWidth = 0;
@@ -545,7 +546,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
         var scatter = chart.Plot.Add.Scatter(times, values);
         // White-ish ghost line — distinct from the primary colored line
-        scatter.Color = ScottPlot.Colors.White.WithAlpha(140);
+        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("GhostLine")).WithAlpha(140);
         scatter.MarkerSize = 0;
         scatter.LineWidth = 1.5f;
         scatter.LinePattern = ScottPlot.LinePattern.Dashed;
@@ -574,7 +575,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
     {
         ReapplyAxisColors(chart);
         var text = chart.Plot.Add.Text($"{title}\nNo Data", 0, 0);
-        text.LabelFontColor = ScottPlot.Color.FromHex("#888888");
+        text.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
         text.LabelFontSize = 12;
         text.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
         chart.Plot.HideGrid();
@@ -601,55 +602,30 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
     private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
     {
-        ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-
-        if (ThemeManager.CurrentTheme == "CoolBreeze")
-        {
-            figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
-            dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
-            textColor        = ScottPlot.Color.FromHex("#1A2A3A");
-            gridColor        = ScottPlot.Color.FromHex("#A8BDD0").WithAlpha(120);
-        }
-        else if (ThemeManager.HasLightBackground)
-        {
-            figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
-            dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
-            textColor        = ScottPlot.Color.FromHex("#1A1D23");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else
-        {
-            figureBackground = ScottPlot.Color.FromHex("#22252b");
-            dataBackground   = ScottPlot.Color.FromHex("#111217");
-            textColor        = ScottPlot.Color.FromHex("#E4E6EB");
-            gridColor        = ScottPlot.Colors.White.WithAlpha(40);
-        }
-
-        chart.Plot.FigureBackground.Color = figureBackground;
-        chart.Plot.DataBackground.Color = dataBackground;
-        chart.Plot.Axes.Color(textColor);
-        chart.Plot.Grid.MajorLineColor = gridColor;
+        // Lanes are a deliberately stripped chrome variant (legend hidden, no font-size / first-render
+        // hook). Colors come from the shared ChartStyle so the per-theme hexes can't drift.
+        var c = ChartStyle.GetThemeColors();
+        chart.Plot.FigureBackground.Color = c.FigureBackground;
+        chart.Plot.DataBackground.Color = c.DataBackground;
+        chart.Plot.Axes.Color(c.Text);
+        chart.Plot.Grid.MajorLineColor = c.Grid;
         chart.Plot.Legend.IsVisible = false;
         chart.Plot.Axes.Margins(bottom: 0);
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Bottom.Label.ForeColor = textColor;
-        chart.Plot.Axes.Left.Label.ForeColor = textColor;
+        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = c.Text;
+        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = c.Text;
+        chart.Plot.Axes.Bottom.Label.ForeColor = c.Text;
+        chart.Plot.Axes.Left.Label.ForeColor = c.Text;
 
         chart.Background = new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromRgb(figureBackground.R, figureBackground.G, figureBackground.B));
+            System.Windows.Media.Color.FromRgb(c.FigureBackground.R, c.FigureBackground.G, c.FigureBackground.B));
     }
 
     private static void ReapplyAxisColors(ScottPlot.WPF.WpfPlot chart)
     {
-        var textColor = ThemeManager.CurrentTheme == "CoolBreeze"
-            ? ScottPlot.Color.FromHex("#1A2A3A")
-            : ThemeManager.HasLightBackground
-                ? ScottPlot.Color.FromHex("#1A1D23")
-                : ScottPlot.Color.FromHex("#E4E6EB");
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Bottom.Label.ForeColor = textColor;
-        chart.Plot.Axes.Left.Label.ForeColor = textColor;
+        var text = ChartStyle.GetThemeColors().Text;
+        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = text;
+        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = text;
+        chart.Plot.Axes.Bottom.Label.ForeColor = text;
+        chart.Plot.Axes.Left.Label.ForeColor = text;
     }
 }

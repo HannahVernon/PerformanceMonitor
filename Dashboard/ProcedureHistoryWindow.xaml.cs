@@ -204,21 +204,10 @@ namespace PerformanceMonitorDashboard
             var dates = orderedData.Select(h => h.CollectionTime.ToOADate()).ToArray();
             var values = orderedData.Select(h => GetMetricValue(h, metricTag)).ToArray();
 
-            var color = ScottPlot.Color.FromHex("#4FC3F7");
+            var color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
             var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
             scatter.Color = color;
-
-            // Sparse data: show only markers to avoid misleading interpolated lines
-            if (dates.Length <= 1)
-            {
-                scatter.LineWidth = 0;
-                scatter.MarkerSize = 8;
-            }
-            else
-            {
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 4;
-            }
+            ChartStyle.StyleScatter(scatter);
 
             HistoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
             Helpers.TabHelpers.ReapplyAxisColors(HistoryChart);

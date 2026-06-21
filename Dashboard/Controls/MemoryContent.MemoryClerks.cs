@@ -173,9 +173,8 @@ namespace PerformanceMonitorDashboard.Controls
                                 var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                                 var scatter = MemoryClerksChart.Plot.Add.Scatter(xs, ys);
-                                scatter.LineWidth = 2;
-                                scatter.MarkerSize = 5;
                                 scatter.Color = colors[colorIndex % colors.Length];
+                                ChartStyle.StyleScatter(scatter);
                                 var label = clerkType.Length > 20 ? clerkType.Substring(0, 20) + "..." : clerkType;
                                 scatter.LegendText = label;
                                 _memoryClerksHover?.Add(scatter, label);

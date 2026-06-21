@@ -11,7 +11,9 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.PlanAnalysis;
+using PerformanceMonitor.Ui;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 
@@ -1104,45 +1106,12 @@ public partial class PlanViewerControl : UserControl
         WaitStatsContent.Children.Add(grid);
     }
 
-    private static string GetWaitCategory(string waitType)
-    {
-        if (waitType.StartsWith("SOS_SCHEDULER_YIELD", StringComparison.Ordinal) ||
-            waitType.StartsWith("CXPACKET", StringComparison.Ordinal) ||
-            waitType.StartsWith("CXCONSUMER", StringComparison.Ordinal) ||
-            waitType.StartsWith("CXSYNC_PORT", StringComparison.Ordinal) ||
-            waitType.StartsWith("CXSYNC_CONSUMER", StringComparison.Ordinal))
-            return "CPU";
-
-        if (waitType.StartsWith("PAGEIOLATCH", StringComparison.Ordinal) ||
-            waitType.StartsWith("WRITELOG", StringComparison.Ordinal) ||
-            waitType.StartsWith("IO_COMPLETION", StringComparison.Ordinal) ||
-            waitType.StartsWith("ASYNC_IO_COMPLETION", StringComparison.Ordinal))
-            return "I/O";
-
-        if (waitType.StartsWith("LCK_M_", StringComparison.Ordinal))
-            return "Lock";
-
-        if (waitType == "RESOURCE_SEMAPHORE" || waitType == "CMEMTHREAD")
-            return "Memory";
-
-        if (waitType == "ASYNC_NETWORK_IO")
-            return "Network";
-
-        return "Other";
-    }
+    // Wait category + color come from the shared ChartPalette (PerformanceStudio's ~21-category
+    // taxonomy + palette), with a light-theme override for the near-invisible pale colors (D3).
+    private static string GetWaitCategory(string waitType) => ChartPalette.WaitCategory(waitType);
 
     private static string GetWaitCategoryColor(string category)
-    {
-        return category switch
-        {
-            "CPU" => "#4FA3FF",
-            "I/O" => "#FFB347",
-            "Lock" => "#E57373",
-            "Memory" => "#9B59B6",
-            "Network" => "#2ECC71",
-            _ => "#6BB5FF"
-        };
-    }
+        => ChartPalette.WaitColor(category, ThemeManager.HasLightBackground);
 
     private void ShowRuntimeSummary(PlanStatement statement)
     {

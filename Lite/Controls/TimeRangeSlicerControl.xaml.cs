@@ -36,6 +36,9 @@ public partial class TimeRangeSlicerControl : UserControl
 
     private enum DragMode { None, MoveRange, DragStart, DragEnd }
     private DragMode _dragMode = DragMode.None;
+
+    private enum HandleHover { None, Start, End }
+    private HandleHover _hoveredHandle = HandleHover.None;
     private double _dragOriginX;
     private double _dragOriginRangeStart;
     private double _dragOriginRangeEnd;
@@ -260,6 +263,7 @@ public partial class TimeRangeSlicerControl : UserControl
         var overlayBrush = FindBrush("SlicerOverlayBrush", "#99000000");
         var selectedBrush = FindBrush("SlicerSelectedBrush", "#22FFFFFF");
         var handleBrush = FindBrush("SlicerHandleBrush", "#E4E6EB");
+        var handleHoverBrush = FindBrush("SlicerHandleHoverBrush", "#2EAEF1");
 
         var selLeft = _rangeStart * w;
         var selRight = _rangeEnd * w;
@@ -268,8 +272,8 @@ public partial class TimeRangeSlicerControl : UserControl
         if (selRight < w) AddRect(selRight, 0, w - selRight, h, overlayBrush);
         AddRect(selLeft, 0, Math.Max(0, selRight - selLeft), h, selectedBrush);
 
-        DrawHandle(selLeft, h, handleBrush);
-        DrawHandle(selRight - HandleWidthPx, h, handleBrush);
+        DrawHandle(selLeft, h, _hoveredHandle == HandleHover.Start ? handleHoverBrush : handleBrush);
+        DrawHandle(selRight - HandleWidthPx, h, _hoveredHandle == HandleHover.End ? handleHoverBrush : handleBrush);
 
         AddLine(selLeft, 0, selRight, 0, handleBrush, 0.5);
         AddLine(selLeft, h, selRight, h, handleBrush, 0.5);
@@ -397,12 +401,16 @@ public partial class TimeRangeSlicerControl : UserControl
         {
             var selLeft = _rangeStart * w;
             var selRight = _rangeEnd * w;
-            if (Math.Abs(pos.X - selLeft) <= HandleGripWidthPx || Math.Abs(pos.X - selRight) <= HandleGripWidthPx)
-                SlicerCanvas.Cursor = Cursors.SizeWE;
+            HandleHover newHover = HandleHover.None;
+            if (Math.Abs(pos.X - selLeft) <= HandleGripWidthPx)
+            { SlicerCanvas.Cursor = Cursors.SizeWE; newHover = HandleHover.Start; }
+            else if (Math.Abs(pos.X - selRight) <= HandleGripWidthPx)
+            { SlicerCanvas.Cursor = Cursors.SizeWE; newHover = HandleHover.End; }
             else if (pos.X >= selLeft && pos.X <= selRight)
                 SlicerCanvas.Cursor = Cursors.SizeAll;
             else
                 SlicerCanvas.Cursor = Cursors.Arrow;
+            if (newHover != _hoveredHandle) { _hoveredHandle = newHover; Redraw(); }
             return;
         }
 
@@ -429,6 +437,15 @@ public partial class TimeRangeSlicerControl : UserControl
         UpdateRangeLabel();
         Redraw();
         e.Handled = true;
+    }
+
+    private void Canvas_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (_dragMode == DragMode.None && _hoveredHandle != HandleHover.None)
+        {
+            _hoveredHandle = HandleHover.None;
+            Redraw();
+        }
     }
 
     private void Canvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)

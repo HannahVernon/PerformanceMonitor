@@ -187,6 +187,7 @@ public partial class ServerTab : UserControl
                 var plot = WaitStatsChart.Plot.Add.Scatter(times, values);
                 plot.LegendText = selected[i].DisplayName;
                 plot.Color = ScottPlot.Color.FromHex(SeriesColors[i % SeriesColors.Length]);
+                ChartStyle.StyleScatter(plot);
                 _waitStatsHover?.Add(plot, selected[i].DisplayName);
 
                 if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
@@ -343,6 +344,7 @@ public partial class ServerTab : UserControl
                 var plot = MemoryClerksChart.Plot.Add.Scatter(times, values);
                 plot.LegendText = selected[i].DisplayName;
                 plot.Color = ScottPlot.Color.FromHex(SeriesColors[i % SeriesColors.Length]);
+                ChartStyle.StyleScatter(plot);
                 _memoryClerksHover?.Add(plot, selected[i].DisplayName);
 
                 if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
@@ -553,6 +555,7 @@ public partial class ServerTab : UserControl
                 var plot = PerfmonChart.Plot.Add.Scatter(times, values);
                 plot.LegendText = selected[i].DisplayName;
                 plot.Color = ScottPlot.Color.FromHex(SeriesColors[i % SeriesColors.Length]);
+                ChartStyle.StyleScatter(plot);
                 _perfmonHover?.Add(plot, selected[i].DisplayName);
 
                 if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());

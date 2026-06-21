@@ -190,18 +190,8 @@ namespace PerformanceMonitorDashboard
                 .OrderBy(g => g.Key)
                 .ToList();
 
-            // Color palette for different plans
-            var colors = new[]
-            {
-                ScottPlot.Color.FromHex("#4FC3F7"),
-                ScottPlot.Color.FromHex("#81C784"),
-                ScottPlot.Color.FromHex("#FFB74D"),
-                ScottPlot.Color.FromHex("#F06292"),
-                ScottPlot.Color.FromHex("#BA68C8"),
-                ScottPlot.Color.FromHex("#4DB6AC"),
-                ScottPlot.Color.FromHex("#FF8A65"),
-                ScottPlot.Color.FromHex("#A1887F")
-            };
+            // Color palette for different plans — shared cross-app cycling palette
+            var colors = ChartPalette.CyclingPalette.Select(ScottPlot.Color.FromHex).ToArray();
 
             int colorIndex = 0;
             var scatterSeries = new List<(ScottPlot.Plottables.Scatter Scatter, string Label)>();
@@ -219,21 +209,9 @@ namespace PerformanceMonitorDashboard
                 var color = colors[colorIndex % colors.Length];
                 var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
                 scatter.Color = color;
+                ChartStyle.StyleScatter(scatter);
                 var label = $"Plan {planGroup.Key}";
                 scatter.LegendText = label;
-
-                // Sparse data: use total dataset size, not per-plan size, since
-                // data is split across plan groups
-                if (_historyData.Count <= 1)
-                {
-                    scatter.LineWidth = 0;
-                    scatter.MarkerSize = 8;
-                }
-                else
-                {
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 4;
-                }
 
                 scatterSeries.Add((scatter, label));
                 colorIndex++;

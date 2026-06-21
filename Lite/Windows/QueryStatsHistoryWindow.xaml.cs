@@ -16,6 +16,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Windows;
@@ -104,9 +105,8 @@ public partial class QueryStatsHistoryWindow : Window
         var ys = _historyData.Select(r => GetMetricValue(r, tag)).ToArray();
 
         var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
-        scatter.LineWidth = 2;
-        scatter.MarkerSize = 5;
-        scatter.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
+        ChartStyle.StyleScatter(scatter);
         scatter.LegendText = label;
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
@@ -188,37 +188,7 @@ public partial class QueryStatsHistoryWindow : Window
         }
     }
 
-    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
-    {
-        ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-        if (ThemeManager.CurrentTheme == "CoolBreeze")
-        {
-            figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
-            dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
-            textColor        = ScottPlot.Color.FromHex("#1A2A3A");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else if (ThemeManager.HasLightBackground)
-        {
-            figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
-            dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
-            textColor        = ScottPlot.Color.FromHex("#1A1D23");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else
-        {
-            figureBackground = ScottPlot.Color.FromHex("#22252b");
-            dataBackground   = ScottPlot.Color.FromHex("#111217");
-            textColor        = ScottPlot.Color.FromHex("#E4E6EB");
-            gridColor        = ScottPlot.Colors.White.WithAlpha(40);
-        }
-        chart.Plot.FigureBackground.Color = figureBackground;
-        chart.Plot.DataBackground.Color = dataBackground;
-        chart.Plot.Axes.Color(textColor);
-        chart.Plot.Grid.MajorLineColor = gridColor;
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-    }
+    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart) => ChartStyle.ApplyMinimalChartTheme(chart);
 
     private void OnThemeChanged(string _)
     {

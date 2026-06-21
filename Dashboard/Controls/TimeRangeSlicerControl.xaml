@@ -28,7 +28,7 @@
                                VerticalAlignment="Center" Margin="12,0,0,0"/>
                 </StackPanel>
             </Button>
-            <Border x:Name="SlicerBorder" Grid.Row="1" Height="150" Margin="8,0,8,6"
+            <Border x:Name="SlicerBorder" Grid.Row="1" Height="130" Margin="8,0,8,6"
                     Background="{DynamicResource SlicerBackgroundBrush}"
                     CornerRadius="4" ClipToBounds="True">
                 <Canvas x:Name="SlicerCanvas"
@@ -36,6 +36,7 @@
                         MouseLeftButtonDown="Canvas_MouseLeftButtonDown"
                         MouseMove="Canvas_MouseMove"
                         MouseLeftButtonUp="Canvas_MouseLeftButtonUp"
+                        MouseLeave="Canvas_MouseLeave"
                         MouseWheel="Canvas_MouseWheel"/>
             </Border>
         </Grid>

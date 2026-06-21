@@ -36,6 +36,7 @@
                         MouseLeftButtonDown="Canvas_MouseLeftButtonDown"
                         MouseMove="Canvas_MouseMove"
                         MouseLeftButtonUp="Canvas_MouseLeftButtonUp"
+                        MouseLeave="Canvas_MouseLeave"
                         MouseWheel="Canvas_MouseWheel"/>
             </Border>
         </Grid>

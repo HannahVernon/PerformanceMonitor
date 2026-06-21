@@ -21,6 +21,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot.WPF;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
@@ -134,6 +135,7 @@ namespace PerformanceMonitorDashboard.Controls
         {
             InitializeComponent();
             SetupChartSaveMenus();
+            SetupBarCellMaxes();
             Loaded += OnLoaded;
             Unloaded += OnUnloaded;
             SubTabControl.SelectionChanged += async (s, e) =>
@@ -1218,9 +1220,8 @@ namespace PerformanceMonitorDashboard.Controls
                     dataList.Select(d => d.AvgDurationMs));
 
                 var scatter = chart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
                 scatter.Color = color;
+                ChartStyle.StyleScatter(scatter);
                 scatter.LegendText = legendText;
                 hover?.Add(scatter, legendText);
 
@@ -1229,7 +1230,7 @@ namespace PerformanceMonitorDashboard.Controls
                     double xCenter = xMin + (xMax - xMin) / 2;
                     var noDataText = chart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                     noDataText.LabelFontSize = 14;
-                    noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                    noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                     noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
                 }
 
@@ -1273,9 +1274,8 @@ namespace PerformanceMonitorDashboard.Controls
                 dataList.Select(d => (double)d.ExecutionsPerSecond));
 
             var scatter = QueryPerfTrendsExecChart.Plot.Add.Scatter(xs, ys);
-            scatter.LineWidth = 2;
-            scatter.MarkerSize = 5;
-            scatter.Color = TabHelpers.ChartColors[0];
+            scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
+            ChartStyle.StyleScatter(scatter);
             scatter.LegendText = "Executions/sec";
             _execTrendsHover?.Add(scatter, "Executions/sec");
 
@@ -1284,7 +1284,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = QueryPerfTrendsExecChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
