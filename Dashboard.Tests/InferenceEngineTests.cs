@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using PerformanceMonitor.Analysis;
 using Xunit;
 
@@ -217,5 +218,31 @@ public class InferenceEngineTests
         var ex = Record.Exception(() => engine.BuildStories(facts));
 
         Assert.Null(ex);
+    }
+
+    // C (workload-aware MAXDOP/CTFP): a THREADPOOL root is relabeled by its co-elevated cause so the
+    // persisted root key carries parallel-vs-blocking — only the parallel flavor is a MAXDOP/CTFP
+    // problem. CXPACKET/high-DOP co-fired -> _PARALLEL; blocking co-fired -> _BLOCKING; both ->
+    // _MIXED; neither -> generic THREADPOOL. Co-causes are seeded below 0.5 so only THREADPOOL roots.
+    [Fact]
+    public void Threadpool_RootIsAttributedByCoElevatedCause()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+
+        string ThreadpoolRoot(params Fact[] facts) =>
+            engine.BuildStories(facts.ToList())
+                  .First(s => s.RootFactKey.StartsWith("THREADPOOL"))
+                  .RootFactKey;
+
+        Fact Tp() => new() { Key = "THREADPOOL", Source = "waits", Value = 0.5, Severity = 0.9 };
+        Fact Cx() => new() { Key = "CXPACKET", Source = "waits", Value = 0.3, Severity = 0.3 };
+        Fact Dop() => new() { Key = "QUERY_HIGH_DOP", Source = "queries", Value = 6, Severity = 0.3 };
+        Fact Blk() => new() { Key = "BLOCKING_EVENTS", Source = "blocking", Value = 20, Severity = 0.3 };
+
+        Assert.Equal("THREADPOOL_PARALLEL", ThreadpoolRoot(Tp(), Cx()));
+        Assert.Equal("THREADPOOL_PARALLEL", ThreadpoolRoot(Tp(), Dop()));
+        Assert.Equal("THREADPOOL_BLOCKING", ThreadpoolRoot(Tp(), Blk()));
+        Assert.Equal("THREADPOOL_MIXED", ThreadpoolRoot(Tp(), Cx(), Blk()));
+        Assert.Equal("THREADPOOL", ThreadpoolRoot(Tp()));
     }
 }

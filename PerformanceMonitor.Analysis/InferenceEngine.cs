@@ -167,7 +167,18 @@ public class InferenceEngine
         var leafKey = path.Count > 1 ? path[^1] : null;
         var leafFact = leafKey != null ? factsByKey.GetValueOrDefault(leafKey) : null;
 
-        var storyPath = string.Join(" → ", path);
+        // Attribute THREADPOOL (thread exhaustion) by its co-elevated cause, so the finding's ROOT
+        // KEY — the thing that persists and that FactAdvice is keyed on — carries parallel-vs-blocking.
+        // Only parallel-driven exhaustion is a MAXDOP/CTFP problem; blocking-driven exhaustion pins
+        // workers on blocked (not running) sessions and is fixed by clearing the blocking. The fact
+        // object keeps its "THREADPOOL" key (relationship graph + amplifiers untouched); only the
+        // finding's root key and story path are relabeled to the attribution variant.
+        var rootKey = path[0] == "THREADPOOL" ? ClassifyThreadpool(factsByKey) : path[0];
+        var effectivePath = rootKey == path[0]
+            ? path
+            : path.Select((k, i) => i == 0 ? rootKey : k).ToList();
+
+        var storyPath = string.Join(" → ", effectivePath);
         var category = rootFact?.Source ?? "unknown";
 
         // Confidence = what fraction of edge destinations had matching facts
@@ -176,12 +187,12 @@ public class InferenceEngine
 
         return new AnalysisStory
         {
-            RootFactKey = path[0],
+            RootFactKey = rootKey,
             RootFactValue = rootFact?.Severity ?? 0,
             Severity = rootFact?.Severity ?? 0,
             Confidence = confidence,
             Category = category,
-            Path = path,
+            Path = effectivePath,
             StoryPath = storyPath,
             StoryPathHash = ComputeHash(storyPath),
             StoryText = string.Empty,
@@ -192,6 +203,31 @@ public class InferenceEngine
             RootFactMetadata = rootFact?.Metadata,
             // Carry the root fact's database through so findings/recommendation cards can show it.
             DatabaseName = rootFact?.DatabaseName
+        };
+    }
+
+    /// <summary>
+    /// Classifies a THREADPOOL (thread-exhaustion) root by its co-elevated cause so the persisted,
+    /// read-back root key carries the attribution that FactAdvice routes on. Parallel-driven
+    /// (CXPACKET / high-DOP co-fired) is the only flavor MAXDOP/CTFP fixes; blocking-driven
+    /// (blocked sessions pinning workers) is fixed by clearing the blocking. Mirrors the THREADPOOL
+    /// amplifier peers (CXPACKET, blocking/LCK). Returns the generic "THREADPOOL" when neither
+    /// co-fired (unattributed — the advice then tells the operator how to tell which it is).
+    /// factsByKey here contains only facts that scored above zero, so presence == fired.
+    /// </summary>
+    private static string ClassifyThreadpool(Dictionary<string, Fact> factsByKey)
+    {
+        var parallel = factsByKey.ContainsKey("CXPACKET")
+                    || factsByKey.ContainsKey("QUERY_HIGH_DOP");
+        var blocking = factsByKey.ContainsKey("BLOCKING_EVENTS")
+                    || factsByKey.ContainsKey("BLOCKING_CHAIN")
+                    || factsByKey.ContainsKey("LCK");
+        return (parallel, blocking) switch
+        {
+            (true, true) => "THREADPOOL_MIXED",
+            (true, false) => "THREADPOOL_PARALLEL",
+            (false, true) => "THREADPOOL_BLOCKING",
+            _ => "THREADPOOL"
         };
     }
 

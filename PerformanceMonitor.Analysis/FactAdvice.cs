@@ -152,13 +152,41 @@ public static class FactAdvice
             Remediation:
                 "Tune the queries in `top_cpu_queries` before sizing more hardware — scheduler yield means CPU demand exceeds supply, and demand is almost always the cheaper variable. Fix the missing indexes, scans, and parameter sniffing the plan analysis surfaces. If CXPACKET is co-elevated, run `audit_config`: a default `cost threshold for parallelism` of 5 with `MAXDOP` 0 is the usual cause, and the recommendation engine will tell you what to set them to.");
 
+        // THREADPOOL (thread exhaustion) is attribution-keyed by InferenceEngine.ClassifyThreadpool:
+        // the finding roots on THREADPOOL_PARALLEL / THREADPOOL_BLOCKING / THREADPOOL_MIXED when the
+        // co-cause is clear, else the generic THREADPOOL below. Only the parallel flavor is a
+        // MAXDOP/CTFP problem; blocking-driven exhaustion is fixed by clearing the blocking.
         t["THREADPOOL"] = new AdviceBlock(
             Headline:
-                "THREADPOOL waits — SQL Server has run out of worker threads and new sessions are queuing for one",
+                "THREADPOOL waits — SQL Server has run out of worker threads, with no clear parallel or blocking cause this window",
             Investigation:
-                "Any time on THREADPOOL means sessions cannot start until a worker frees up — treat this as severe by default. The engine's THREADPOOL amplifiers (in `FactScorer.ThreadpoolAmplifiers`) score BLOCKING and CXPACKET co-elevation as peer causes, not blocking-first. Look at the BLOCKING_CHAIN drill-down `reconstructed_blocking_chains` for the `apex_spid`, `apex_sleeping`, `depth`, and `victim_count` — every blocked victim is also holding a worker. In parallel, check the CXPACKET line on the Wait Stats tab for the same window: each parallel query consumes one worker per scheduler it touches, so a moderate-concurrency workload at high DOP can exhaust the pool with zero blocking. Call `get_waiting_tasks` (Lite) or `get_cpu_scheduler_pressure` (Dashboard) to see what's queued or under scheduler pressure right now, and `get_top_queries_by_cpu` with `parallel_only=true` to find the parallel offenders.",
+                "Sustained THREADPOOL (it cleared the wait-time + per-wait-average gate, so this isn't pool grow/shrink noise) means new sessions cannot start until a worker frees up. Neither CXPACKET/high-DOP (parallelism) nor blocking co-fired above their own thresholds this window, so the engine could not attribute it — which happens when a co-cause stayed just under threshold or, commonly, the collector could not sample the peak. Decide it by hand: if CXPACKET / high-DOP are present treat it as parallelism (below); if a blocking chain is present treat it as blocking. `get_waiting_tasks` (Lite) / `get_cpu_scheduler_pressure` (Dashboard) show what is queued.",
             Remediation:
-                "Two independent levers: collapse the blocking chain and lower parallelism. If `apex_sleeping` is true on the top reconstructed chain, kill that session — the entire chain unblocks and the workers free. For the parallelism half, `audit_config` will tell you whether `cost threshold for parallelism` and `MAXDOP` are at the defaults that drive this; raising CTFP to 50 and capping MAXDOP at the logical processors in a single NUMA node (≤ 8) is the typical starting point. Do not raise `max worker threads` to mask either cause — it trades thread exhaustion for memory pressure without fixing the underlying contention.");
+                "Resolve the dominant cause — parallelism (raise `cost threshold for parallelism` to 50, cap `MAXDOP` at the logical processors in a single NUMA node, ≤ 8) or blocking (collapse the chain; kill a sleeping apex if present). Do NOT raise `max worker threads` to mask it — that trades thread exhaustion for memory pressure (each worker reserves a thread stack outside max server memory) without fixing the cause. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+
+        t["THREADPOOL_PARALLEL"] = new AdviceBlock(
+            Headline:
+                "Thread exhaustion driven by parallelism — too many parallel queries each reserving worker threads",
+            Investigation:
+                "THREADPOOL fired alongside CXPACKET and/or high-DOP queries: a parallel query reserves up to DOP workers per parallel branch, so a moderate-concurrency workload at high DOP can drain the pool with zero blocking. This is the MAXDOP/CTFP flavor of thread exhaustion. `get_top_queries_by_cpu` with `parallel_only=true` ranks the parallel offenders; check whether they genuinely benefit from the degree of parallelism they are getting.",
+            Remediation:
+                "Guard parallelism: raise `cost threshold for parallelism` to 50 so trivial queries stop going parallel, and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). If those are already set and the pool still exhausts, guard harder — lower MAXDOP further and/or raise CTFP — and tune the specific high-DOP queries (a parallel scan of a large table, or a skewed plan where one branch does all the work). Do NOT raise `max worker threads` to mask it (trades thread exhaustion for memory pressure). Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+
+        t["THREADPOOL_BLOCKING"] = new AdviceBlock(
+            Headline:
+                "Thread exhaustion driven by blocking — workers are pinned on blocked (not running) sessions",
+            Investigation:
+                "THREADPOOL fired alongside blocking: every session waiting on a lock keeps its worker thread assigned, so a wide or deep blocking chain ties up one worker per blocked session and can exhaust the pool. Lowering MAXDOP frees nothing here — the workers are not running parallel work, they are parked on locks. The BLOCKING_CHAIN drill-down `reconstructed_blocking_chains` shows `apex_spid`, `apex_sleeping`, `depth`, and `victim_count`; `get_blocked_process_reports` (Lite) / `get_blocking` (Dashboard) show the live chain.",
+            Remediation:
+                "Clear the blocking — that is what frees the workers. If `apex_sleeping` is true on the top chain, KILL the apex (one kill collapses the pile-up because every downstream victim was waiting on that one transaction). Otherwise fix the one slow operation everyone is queued behind (a missing index turning a seek into a scan under a held lock is the usual shape), and enable RCSI where the contention is readers blocked by writers. MAXDOP/CTFP are not the levers for this. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+
+        t["THREADPOOL_MIXED"] = new AdviceBlock(
+            Headline:
+                "Thread exhaustion with both parallelism and blocking elevated",
+            Investigation:
+                "THREADPOOL fired with BOTH CXPACKET/high-DOP and blocking co-elevated, so workers are being consumed from two directions: parallel queries reserving DOP workers, and blocked sessions parking workers on locks. Look at the BLOCKING_CHAIN drill-down `reconstructed_blocking_chains` (apex, depth, victim_count) and the parallel offenders (`get_top_queries_by_cpu` with `parallel_only=true`) together.",
+            Remediation:
+                "Collapse the blocking first — it pins workers on sessions that are not even running, so it is the faster win (kill a sleeping apex if present; fix the slow operation under the held lock). Then guard parallelism: raise `cost threshold for parallelism` to 50 and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). Do NOT raise `max worker threads` to mask either cause. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
 
         t["CXPACKET"] = new AdviceBlock(
             Headline:

@@ -47,8 +47,10 @@ public class ScenarioTests : IDisposable
         var (stories, facts) = await RunFullPipelineAsync(s => s.SeedThreadExhaustionServerAsync());
         PrintStories("THREAD EXHAUSTION", stories);
 
-        // THREADPOOL should be in the stories (very high severity due to low threshold)
-        Assert.Contains(stories, s => s.Path.Contains("THREADPOOL"));
+        // THREADPOOL should be in the stories (very high severity due to low threshold). When it roots
+        // its own story the key is relabeled by attribution (THREADPOOL_PARALLEL/_BLOCKING/_MIXED), so
+        // match the prefix rather than the exact key.
+        Assert.Contains(stories, s => s.Path.Any(p => p.StartsWith("THREADPOOL")));
     }
 
     [Fact]
@@ -56,8 +58,9 @@ public class ScenarioTests : IDisposable
     {
         var (stories, _) = await RunFullPipelineAsync(s => s.SeedThreadExhaustionServerAsync());
 
-        // THREADPOOL should connect to CXPACKET (parallel queries consuming thread pool)
-        var threadpoolStory = stories.FirstOrDefault(s => s.RootFactKey == "THREADPOOL");
+        // THREADPOOL should connect to CXPACKET (parallel queries consuming thread pool). When it
+        // roots, the key is relabeled by attribution (THREADPOOL_PARALLEL here), so match the prefix.
+        var threadpoolStory = stories.FirstOrDefault(s => s.RootFactKey.StartsWith("THREADPOOL"));
         if (threadpoolStory != null)
         {
             Assert.Contains("CXPACKET", threadpoolStory.Path);
@@ -78,8 +81,9 @@ public class ScenarioTests : IDisposable
         Assert.NotNull(blockingStory);
         Assert.Contains("LCK", blockingStory.Path);
 
-        // THREADPOOL still appears as a separate story
-        Assert.Contains(stories, s => s.Path.Contains("THREADPOOL"));
+        // THREADPOOL still appears as a separate story, now attribution-keyed: blocking co-fired here,
+        // so the engine roots it as THREADPOOL_BLOCKING (or _MIXED if parallelism also fired).
+        Assert.Contains(stories, s => s.RootFactKey is "THREADPOOL_BLOCKING" or "THREADPOOL_MIXED");
     }
 
     [Fact]

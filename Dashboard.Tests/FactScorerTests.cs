@@ -360,4 +360,22 @@ public class FactScorerTests
         Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
         Assert.Null(advice.RemediationTsql);
     }
+
+    // C (workload-aware MAXDOP/CTFP): every THREADPOOL attribution variant InferenceEngine can root
+    // on (parallel/blocking/mixed) plus the generic fallback has an advice block — a relabeled root
+    // with no advice would render an empty card (the dead-fact bug class).
+    [Theory]
+    [InlineData("THREADPOOL")]
+    [InlineData("THREADPOOL_PARALLEL")]
+    [InlineData("THREADPOOL_BLOCKING")]
+    [InlineData("THREADPOOL_MIXED")]
+    public void ThreadpoolVariants_HaveAdviceBlocks(string key)
+    {
+        var advice = FactAdvice.GetForFactKey(key);
+
+        Assert.NotNull(advice);
+        Assert.False(string.IsNullOrWhiteSpace(advice!.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+    }
 }
