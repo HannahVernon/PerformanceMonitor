@@ -170,7 +170,7 @@ public partial class ServerTab : UserControl
                 await ManualRefreshRequested.Invoke();
             }
             /* Manual refresh loads all sub-tabs of the visible tab, not all 13 tabs */
-            await RefreshAllDataAsync(fullRefresh: false);
+            await RefreshAllDataAsync();
         }
         finally
         {
@@ -277,7 +277,7 @@ public partial class ServerTab : UserControl
 
         if (!isCustom)
         {
-            await RefreshAllDataAsync(fullRefresh: false);
+            await RefreshAllDataAsync();
         }
     }
 
@@ -286,7 +286,7 @@ public partial class ServerTab : UserControl
         if (!IsLoaded || _isRefreshing) return;
         if (FromDatePicker?.SelectedDate != null && ToDatePicker?.SelectedDate != null)
         {
-            await RefreshAllDataAsync(fullRefresh: false);
+            await RefreshAllDataAsync();
         }
     }
 
@@ -296,7 +296,7 @@ public partial class ServerTab : UserControl
         /* Only refresh if we have valid dates selected */
         if (FromDatePicker?.SelectedDate != null && ToDatePicker?.SelectedDate != null)
         {
-            await RefreshAllDataAsync(fullRefresh: false);
+            await RefreshAllDataAsync();
         }
     }
 

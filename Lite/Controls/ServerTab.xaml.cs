@@ -153,7 +153,7 @@ public partial class ServerTab : UserControl
         };
         _refreshTimer.Tick += async (s, e) =>
         {
-            await RefreshAllDataAsync(fullRefresh: false);
+            await RefreshAllDataAsync();
         };
         _refreshTimer.Start();
 
@@ -164,7 +164,7 @@ public partial class ServerTab : UserControl
             if (IsVisible && _refreshPendingWhileHidden)
             {
                 _refreshPendingWhileHidden = false;
-                _ = RefreshAllDataAsync(fullRefresh: false);
+                _ = RefreshAllDataAsync();
             }
         };
 
