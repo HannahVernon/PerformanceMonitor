@@ -61,6 +61,10 @@ namespace PerformanceMonitorDashboard
 
             base.OnStartup(e);
 
+            // Right-click selects the DataGrid row under the cursor app-wide, so context-menu actions
+            // (e.g. View Plan) act on the clicked row even after an auto-refresh cleared the selection.
+            PerformanceMonitor.Ui.DataGridRowSelectionBehavior.Enable();
+
             // #1050: WPF's GPU render thread can zombie its surface across sleep/wake or RDP, leaving a
             // live-but-blank window. Software rendering removes the GPU dependency entirely. Charts are
             // unaffected — ScottPlot renders via SkiaSharp (CPU) into a bitmap, not WPF's GPU path.

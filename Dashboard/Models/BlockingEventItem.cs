@@ -44,6 +44,13 @@ namespace PerformanceMonitorDashboard.Models
         public long? TransactionId { get; set; }
         public string BlockedProcessReportXml { get; set; } = string.Empty;
 
+        /// <summary>
+        /// True when a blocked process report XML exists for this row. The grid query defers the
+        /// (large) XML itself for speed and returns only this flag; the XML is fetched on demand
+        /// via DatabaseService.GetBlockedProcessReportAsync when View Plan / Download is clicked.
+        /// </summary>
+        public bool HasBlockedProcessReport { get; set; }
+
         public double? WaitTimeSec => WaitTimeMs.HasValue ? WaitTimeMs.Value / 1000.0 : null;
     }
 }

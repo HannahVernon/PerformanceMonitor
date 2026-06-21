@@ -839,7 +839,7 @@
                                             <DataTemplate>
                                                 <Button Content="Download"
                                                         Click="DownloadBlockingXml_Click"
-                                                        IsEnabled="{Binding BlockedProcessReportXml, Converter={StaticResource NullToBooleanConverter}}"
+                                                        IsEnabled="{Binding HasBlockedProcessReport}"
                                                         Width="75" Height="22" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
@@ -1042,9 +1042,10 @@
                                     <DataGridTemplateColumn Header="Graph" Width="90">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
+                                                <!-- Always enabled: the graph is fetched on demand (deferred out of the grid query); a deadlock always has one. -->
                                                 <Button Content="Download"
                                                         Click="DownloadDeadlockGraph_Click"
-                                                        IsEnabled="{Binding DeadlockGraph, Converter={StaticResource NullToBooleanConverter}}"
+                                                        IsEnabled="True"
                                                         Width="75" Height="22" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
