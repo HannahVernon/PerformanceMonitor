@@ -208,4 +208,48 @@ public class FactAdviceComposeTests
         Assert.DoesNotContain("call `audit_config` to check CTFP and MAXDOP",
             FactAdvice.GetForFactKey("CXPACKET")!.Investigation);
     }
+
+    // ── B2: memory value blocks state the actual cap / physical RAM instead of deferring ──
+
+    [Fact]
+    public void ConfigMaxMemory_StatesConcreteSuggestedCap()
+    {
+        var facts = Facts(F("CONFIG_MAX_MEMORY_MB", 2147483647), F("MEMORY_TOTAL_PHYSICAL_MB", 65536));
+        var advice = FactAdvice.Compose("CONFIG_MAX_MEMORY_MB", facts);
+        Assert.Contains("65,536 MB", advice!.Investigation);   // total physical RAM stated
+        Assert.Contains("58,983 MB", advice.Remediation);       // suggested cap = total - max(4096, 10%)
+        Assert.DoesNotContain("audit_config", advice.Investigation);
+    }
+
+    [Fact]
+    public void ConfigMinMaxNarrow_StatesConfiguredMinAndMax()
+    {
+        var f = new Fact
+        {
+            Key = "CONFIG_MIN_MAX_MEMORY_NARROW", Source = "config", Value = 24000, Severity = 0.4,
+            Metadata = new Dictionary<string, double> { ["min_memory_mb"] = 24000, ["max_memory_mb"] = 28672 }
+        };
+        var advice = FactAdvice.Compose("CONFIG_MIN_MAX_MEMORY_NARROW", Facts(f));
+        Assert.Contains("24,000 MB", advice!.Investigation);
+        Assert.Contains("28,672 MB", advice.Investigation);
+        Assert.DoesNotContain("audit_config", advice.Investigation);
+    }
+
+    [Theory]
+    [InlineData("PAGEIOLATCH_SH")]
+    [InlineData("QUERY_SPILLS")]
+    [InlineData("ANOMALY_MEMORY_PRESSURE")]
+    public void MemoryWaitBlocks_StateCurrentCap_NoAuditConfigDeferral(string key)
+    {
+        var facts = Facts(F("CONFIG_MAX_MEMORY_MB", 28672), F("MEMORY_TOTAL_PHYSICAL_MB", 65536));
+        var advice = FactAdvice.Compose(key, facts);
+        Assert.Contains("max server memory is set to 28,672 MB", advice!.Remediation);
+        Assert.DoesNotContain("audit_config", advice.Remediation);
+    }
+
+    [Fact]
+    public void MemoryWaitBlocks_NoCapFact_FallBackToStatic()
+    {
+        Assert.Equal(FactAdvice.GetForFactKey("QUERY_SPILLS"), FactAdvice.Compose("QUERY_SPILLS", Facts()));
+    }
 }

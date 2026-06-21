@@ -142,6 +142,14 @@ public static class FactAdvice
             "THREADPOOL" => ComposeWithMaxdopCtfpPrefix("THREADPOOL", factsByKey),
             "CXPACKET" => ComposeWithMaxdopCtfpPrefix("CXPACKET", factsByKey),
             "QUERY_HIGH_DOP" => ComposeWithMaxdopCtfpPrefix("QUERY_HIGH_DOP", factsByKey),
+            // Memory value blocks: state the server's actual max server memory + physical RAM
+            // instead of deferring to audit_config (B2). The two config-rooted blocks state the
+            // configured values; the wait/anomaly blocks append the current cap.
+            "CONFIG_MAX_MEMORY_MB" => ComposeConfigMaxMemory(factsByKey),
+            "CONFIG_MIN_MAX_MEMORY_NARROW" => ComposeConfigMinMaxNarrow(factsByKey),
+            "PAGEIOLATCH_SH" => ComposeWithMaxMemorySuffix("PAGEIOLATCH_SH", factsByKey),
+            "QUERY_SPILLS" => ComposeWithMaxMemorySuffix("QUERY_SPILLS", factsByKey),
+            "ANOMALY_MEMORY_PRESSURE" => ComposeWithMaxMemorySuffix("ANOMALY_MEMORY_PRESSURE", factsByKey),
             _ => GetForFactKey(rootFactKey)
         };
     }
@@ -459,6 +467,86 @@ public static class FactAdvice
             : fallback with { Remediation = clause + fallback.Remediation };
     }
 
+    /// <summary>A fact's metadata value, or null when the fact or the metadata key is absent.</summary>
+    private static double? FactMeta(IReadOnlyDictionary<string, Fact> facts, string key, string metaKey) =>
+        facts.TryGetValue(key, out var f) && f.Metadata.TryGetValue(metaKey, out var v) ? v : (double?)null;
+
+    /// <summary>
+    /// A standalone sentence stating the server's actual max server memory and physical RAM, for the
+    /// memory-pressure wait/anomaly blocks (PAGEIOLATCH_SH, QUERY_SPILLS, ANOMALY_MEMORY_PRESSURE)
+    /// that otherwise deferred the value to audit_config. Empty when the cap was not collected.
+    /// </summary>
+    private static string MaxMemorySentence(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var cap = FactValue(facts, "CONFIG_MAX_MEMORY_MB");
+        if (cap is null)
+            return string.Empty;
+        var total = FactValue(facts, "MEMORY_TOTAL_PHYSICAL_MB");
+        var sb = new StringBuilder(cap.Value >= 2147483647L
+            ? "This server's max server memory is at its unlimited default"
+            : $"This server's max server memory is set to {cap.Value:N0} MB");
+        if (total is > 0)
+            sb.Append($" of {total.Value:N0} MB physical RAM");
+        sb.Append('.');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Returns the static block for <paramref name="key"/> with the current max-server-memory sentence
+    /// appended to its remediation. Falls back to the static block when the cap was not collected.
+    /// </summary>
+    private static AdviceBlock ComposeWithMaxMemorySuffix(string key, IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey[key];
+        var sentence = MaxMemorySentence(facts);
+        return sentence.Length == 0
+            ? fallback
+            : fallback with { Remediation = fallback.Remediation + " " + sentence };
+    }
+
+    /// <summary>
+    /// CONFIG_MAX_MEMORY_MB composed with the server's physical RAM, so the card states a concrete
+    /// suggested cap (total − max(4 GB, 10%)) instead of a formula and an audit_config deferral. The
+    /// fact only fires when max server memory is at its ~2 PB default. Falls back to the static block
+    /// when total RAM was not collected (nothing concrete to compute).
+    /// </summary>
+    private static AdviceBlock ComposeConfigMaxMemory(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["CONFIG_MAX_MEMORY_MB"];
+        var total = FactValue(facts, "MEMORY_TOTAL_PHYSICAL_MB");
+        if (total is not > 0)
+            return fallback;
+
+        var osReserve = Math.Max(4096, (long)(total.Value * 0.10));
+        var suggested = total.Value - osReserve;
+        return fallback with
+        {
+            Investigation =
+                $"`max server memory (MB)` is at its ~2 PB default, so SQL Server will grow its buffer pool until the OS is under memory pressure — which can page out SQL's own working set and destabilize the whole host (and any other instances). This server has {total.Value:N0} MB of physical RAM.",
+            Remediation =
+                $"Cap max server memory below total RAM, leaving headroom for the OS and the SQL Server thread stacks — a sensible starting point here is ~{suggested:N0} MB ({total.Value:N0} MB total minus {osReserve:N0} MB for the OS), then adjust for anything else on the box. This is intentionally NOT auto-applied — the correct value is workload- and host-specific. Run `sp_configure 'max server memory (MB)', {suggested}` + RECONFIGURE once you've settled on a number."
+        };
+    }
+
+    /// <summary>
+    /// CONFIG_MIN_MAX_MEMORY_NARROW composed with the configured min and max (from the fact's
+    /// metadata) so the card states the actual figures instead of deferring to audit_config.
+    /// </summary>
+    private static AdviceBlock ComposeConfigMinMaxNarrow(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["CONFIG_MIN_MAX_MEMORY_NARROW"];
+        var min = FactMeta(facts, "CONFIG_MIN_MAX_MEMORY_NARROW", "min_memory_mb");
+        var max = FactMeta(facts, "CONFIG_MIN_MAX_MEMORY_NARROW", "max_memory_mb");
+        if (min is null || max is null)
+            return fallback;
+
+        return fallback with
+        {
+            Investigation =
+                $"`min server memory (MB)` is set to {min.Value:N0} MB, within ~20% of `max server memory (MB)` at {max.Value:N0} MB. min server memory is a floor SQL will not release BELOW once reached — pinning it near max means SQL effectively never gives memory back to the OS, which starves other processes and defeats the OS's ability to reclaim under pressure."
+        };
+    }
+
     /// <summary>
     /// Wraps the inner wait-type's advice with an anomaly-framing prelude so
     /// an ANOMALY_WAIT_THREADPOOL finding reads as "this wait is anomalously
@@ -584,7 +672,7 @@ public static class FactAdvice
             Investigation:
                 "The classic buffer-pool-too-small or scan-too-large signal — SQL is evicting pages it still needs and reading them straight back from disk. Open File I/O → File I/O Latency to separate workload-driven pressure from underlying storage: high PAGEIOLATCH_SH with sub-20ms read latency means the workload is reading too much, not that disk is slow. The PAGEIOLATCH amplifiers (in `FactScorer.PageiolatchAmplifiers`) boost severity when IO_READ_LATENCY_MS ≥ 20 and when memory grant waiters are present. Call `get_memory_stats` for the buffer-pool size, `get_memory_grants` if grants are competing with the pool, and `get_top_queries_by_cpu` to find the readers — high `logical_reads` per execution is the marker.",
             Remediation:
-                "Find the scan and add a covering nonclustered index — one missing index can drop gigabytes of reads per execution and the wait collapses with it. The `plan_analysis` drill-down on BAD_ACTOR findings surfaces the missing-index suggestions the optimizer already generated. If indexing is genuinely right and the wait persists, the buffer pool is too small for the working set: `audit_config` will check whether `max server memory` is at the default 2147483647 and recommend a value that leaves headroom for the OS.");
+                "Find the scan and add a covering nonclustered index — one missing index can drop gigabytes of reads per execution and the wait collapses with it. The `plan_analysis` drill-down on BAD_ACTOR findings surfaces the missing-index suggestions the optimizer already generated. If indexing is genuinely right and the wait persists, the buffer pool is too small for the working set — raise `max server memory` if it is capped below the working set (leaving headroom for the OS), or add RAM.");
 
         t["PAGEIOLATCH_EX"] = new AdviceBlock(
             Headline:
@@ -769,7 +857,7 @@ public static class FactAdvice
             Investigation:
                 "A hash join, sort, or hash aggregate gets a grant smaller than it needs and falls back to writing to tempdb — usually 10-100x slower than the in-memory operator. Root cause is almost always a bad cardinality estimate: the optimizer guessed 1,000 rows and the operator actually saw 1,000,000. The drill-down `top_spilling_queries` is already attached: five queries ranked by `total_spills` with `database`, `query_hash`, `execution_count`, and truncated `query_text`. Open Queries → Top Queries by Duration in-app and sort by spill columns, or call `get_top_queries_by_cpu` to pull the same view by `query_hash`. `analyze_query_plan` on the hash will surface the operator-level estimate-vs-actual divergence.",
             Remediation:
-                "Update statistics with FULLSCAN on the tables that drive the bad estimate — stale statistics are the single most common cause. Add filtered indexes if a subset of the data is the hot spot, or rewrite the operator (a hash join over a sorted input that should have been a merge join is a classic). Per-query stopgaps: `OPTION (RECOMPILE)` re-estimates at each execution against current statistics; `OPTION (MIN_GRANT_PERCENT = X)` forces a larger grant. If many queries spill consistently and grant pressure is high, the workspace pool may simply need more memory available — `audit_config` will tell you whether `max server memory` is constraining it.");
+                "Update statistics with FULLSCAN on the tables that drive the bad estimate — stale statistics are the single most common cause. Add filtered indexes if a subset of the data is the hot spot, or rewrite the operator (a hash join over a sorted input that should have been a merge join is a classic). Per-query stopgaps: `OPTION (RECOMPILE)` re-estimates at each execution against current statistics; `OPTION (MIN_GRANT_PERCENT = X)` forces a larger grant. If many queries spill consistently and grant pressure is high, the workspace pool may simply need more memory available, so check whether `max server memory` is capped too low for the workload.");
 
         t["QUERY_HIGH_DOP"] = new AdviceBlock(
             Headline:
@@ -1006,7 +1094,7 @@ public static class FactAdvice
             Investigation:
                 "This anomaly compares the ratio of `Total Server Memory` to `Target Server Memory` (the two memory counters the collectors store) against its hour-of-week baseline. A spike usually means the OS forced SQL's target down under external memory pressure, or the buffer pool grew unusually fast. Open Memory → Overview to see total vs. target and the buffer pool across the window, and Memory → Memory Clerks to see where the bytes went. If MEMORY_GRANT_PENDING co-fired its `pending_grants` drill-down is attached and grant pressure is part of the story. Call `get_memory_stats` for the latest snapshot, `get_memory_trend` for the time-series, `get_memory_clerks` for the allocation breakdown, and `get_memory_pressure_events` (Lite) for the ring-buffer notifications. QUERY_SPILLS co-elevation means queries are running with grants too small and spilling to tempdb.",
             Remediation:
-                "Match the fix to the shape. If total server memory dropped below target, the OS is reclaiming memory from SQL — check `max server memory` via `audit_config` and whether another process on the host is the aggressor; on a dedicated box, Lock Pages in Memory (the CONFIG_LPIM_DISABLED finding) prevents the paging. If the buffer pool grew fast and grants are pending, an offender is consuming a too-large grant from a bad cardinality estimate — `analyze_query_plan` on the worst `query_hash` shows the estimate-vs-actual divergence, and FULLSCAN statistics or a filtered index fixes it. Anomalies that resolve on their own are typically one-time reporting queries; sustained ones become standard RESOURCE_SEMAPHORE or memory-grant findings on the next window.");
+                "Match the fix to the shape. If total server memory dropped below target, the OS is reclaiming memory from SQL — check whether `max server memory` is capped too low and whether another process on the host is the aggressor; on a dedicated box, Lock Pages in Memory (the CONFIG_LPIM_DISABLED finding) prevents the paging. If the buffer pool grew fast and grants are pending, an offender is consuming a too-large grant from a bad cardinality estimate — `analyze_query_plan` on the worst `query_hash` shows the estimate-vs-actual divergence, and FULLSCAN statistics or a filtered index fixes it. Anomalies that resolve on their own are typically one-time reporting queries; sustained ones become standard RESOURCE_SEMAPHORE or memory-grant findings on the next window.");
 
         t["ANOMALY_OBJECT_GROWTH"] = new AdviceBlock(
             Headline:
