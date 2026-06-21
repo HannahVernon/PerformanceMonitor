@@ -143,8 +143,8 @@ namespace PerformanceMonitorDashboard.Controls
                 _isDrillDownActive = false;
                 SubTabChanged?.Invoke();
 
-                // Lazily load the heavy summary grid the first time its sub-tab is viewed.
-                await EnsureHeavyGridLoadedAsync(SubTabControl.SelectedIndex);
+                // Lazily load the deferred sub-tab (heavy grids, regressions, patterns, heatmap) on first view.
+                await EnsureDeferredSubTabLoadedAsync(SubTabControl.SelectedIndex);
 
                 // Re-run Active Queries whenever it becomes the active sub-tab so the live snapshot
                 // grid is fresh on view. Drill-downs route through SelectActiveQueriesForDrillDown(),
@@ -673,11 +673,11 @@ namespace PerformanceMonitorDashboard.Controls
                     return;
                 }
 
-                // Full refresh. The three heavy summary grids (Query Stats / Proc Stats / Query Store)
-                // are NOT loaded here — their per-row DECOMPRESS dominates the tab-open cost and each is
-                // only one sub-tab's data. They load lazily when their sub-tab is viewed
-                // (EnsureHeavyGridLoadedAsync), so opening the Queries tab only pays for the charts and
-                // the lighter grids. The currently-visible heavy grid (if any) is loaded at the end.
+                // Full refresh. Only the Performance Trends charts and the Active Queries snapshot load
+                // eagerly. The heavy summary grids (Query Stats / Proc Stats / Query Store), the
+                // Regressions and Long-Running Patterns grids, and the Heatmap are all separate sub-tabs
+                // whose queries dominate the tab-open cost, so they load lazily when first viewed
+                // (EnsureDeferredSubTabLoadedAsync). The currently-visible deferred sub-tab loads at the end.
                 _lazyLoadedGridTabs.Clear();
 
                 // Fetch chart data (time-series aggregated per collection_time)
@@ -686,14 +686,12 @@ namespace PerformanceMonitorDashboard.Controls
                 var qsDurationTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => _databaseService.GetQueryStoreDurationTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
                 var execTrendsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExecutionTrends", () => _databaseService.GetExecutionTrendsAsync(_perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate));
 
-                // Fetch grid-only data in parallel (these are light)
-                var activeTask = RefreshActiveQueriesAsync();
-                var regressionsTask = RefreshQueryStoreRegressionsAsync();
-                var patternsTask = RefreshLongRunningPatternsAsync();
+                // Active Queries is the live snapshot most users land on — keep it eager.
+                var activeTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ActiveQueries", () => RefreshActiveQueriesAsync());
 
                 await Task.WhenAll(
                     queryDurationTrendsTask, procDurationTrendsTask, qsDurationTrendsTask, execTrendsTask,
-                    activeTask, regressionsTask, patternsTask
+                    activeTask
                 );
 
                 // Populate charts from time-series data
@@ -702,11 +700,9 @@ namespace PerformanceMonitorDashboard.Controls
                 LoadDurationChart(QueryPerfTrendsQsChart, await qsDurationTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate, "Duration (ms/sec)", TabHelpers.ChartColors[4], _qsDurationHover);
                 LoadExecChart(await execTrendsTask, _perfTrendsHoursBack, _perfTrendsFromDate, _perfTrendsToDate);
 
-                // Heatmap
-                await RefreshQueryHeatmapAsync();
-
-                // Load the heavy summary grid only if its sub-tab is the one currently in view.
-                await EnsureHeavyGridLoadedAsync(SubTabControl.SelectedIndex);
+                // Load whichever deferred sub-tab is currently in view (heavy grids, regressions,
+                // patterns, or heatmap); the rest load when the user first opens them.
+                await EnsureDeferredSubTabLoadedAsync(SubTabControl.SelectedIndex);
             }
             catch (Exception ex)
             {
@@ -723,9 +719,10 @@ namespace PerformanceMonitorDashboard.Controls
         /// its sub-tab is viewed in the current refresh cycle. Deferred out of the full refresh because
         /// their per-row plan/text DECOMPRESS dominated the Queries-tab open time.
         /// </summary>
-        private async Task EnsureHeavyGridLoadedAsync(int subTabIndex)
+        private async Task EnsureDeferredSubTabLoadedAsync(int subTabIndex)
         {
-            if (subTabIndex is not (3 or 4 or 5)) return;        // only the three heavy grids are deferred
+            // 3/4/5 = heavy summary grids; 6 = regressions, 7 = long-running patterns, 8 = heatmap.
+            if (subTabIndex is not (3 or 4 or 5 or 6 or 7 or 8)) return;
             if (_databaseService == null) return;
             if (!_lazyLoadedGridTabs.Add(subTabIndex)) return;   // already loaded this refresh cycle
 
@@ -742,6 +739,9 @@ namespace PerformanceMonitorDashboard.Controls
                     case 3: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStats", () => RefreshQueryStatsGridAsync()); break;
                     case 4: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcStats", () => RefreshProcStatsGridAsync()); break;
                     case 5: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStore", () => RefreshQueryStoreGridAsync()); break;
+                    case 6: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.Regressions", () => RefreshQueryStoreRegressionsAsync()); break;
+                    case 7: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.Patterns", () => RefreshLongRunningPatternsAsync()); break;
+                    case 8: await Helpers.MethodProfiler.TimeAsync("QueryPerformance.Heatmap", () => RefreshQueryHeatmapAsync()); break;
                 }
             }
             catch (Exception ex)

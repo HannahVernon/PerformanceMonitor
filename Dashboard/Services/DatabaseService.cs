@@ -23,8 +23,8 @@ namespace PerformanceMonitorDashboard.Services
         private readonly string _connectionString;
 
         // Limit concurrent database queries to prevent thundering herd on initial load
-        // 42 queries fire on server tab open; throttle to 7 concurrent (6 batches)
-        // Per-instance so each server's queries don't starve other servers
+        // Throttle concurrent connections per server so one tab's queries don't starve other servers
+        // (and don't pile connection-open load onto an already-busy server). Per-instance per server.
         private readonly SemaphoreSlim _querySemaphore = new(7);
 
         public DatabaseService(string connectionString)

@@ -85,15 +85,19 @@ namespace PerformanceMonitorDashboard
 
                 StatusText.Text = GetLoadingMessage();
 
-                if (fullRefresh)
+                // Only an explicit "refresh everything" — Ctrl+Refresh or Apply-to-All, AFTER the first
+                // load — eager-loads all six tabs at once. The launch load (fullRefresh:false), the
+                // auto-refresh timer, and the very first full refresh load ONLY the visible tab: firing
+                // all six together saturates the connection pool, so the tab the user navigates to next
+                // waits behind the others (~a minute on a busy server). The rest load lazily on
+                // navigation, with a catch-up for any tab navigated to mid-load (see the helper).
+                if (fullRefresh && _initializedTabs.Count > 0)
                 {
-                    // Full refresh: query all tabs in parallel (first load, manual refresh, Apply to All)
                     await RefreshAllTabsAsync();
                 }
                 else
                 {
-                    // Timer tick: only refresh the currently visible tab
-                    await RefreshVisibleTabAsync();
+                    await RefreshVisibleTabWithCatchUpAsync();
                 }
 
                 StatusText.Text = "Ready";
@@ -132,14 +136,51 @@ namespace PerformanceMonitorDashboard
         /// </summary>
         private async Task RefreshAllTabsAsync()
         {
-            var overviewTask = RefreshOverviewTabAsync();
-            var queriesTask = RefreshQueriesTabAsync();
-            var resourceMetricsTask = RefreshResourceMetricsTabAsync();
-            var memoryTask = RefreshMemoryTabAsync();
-            var lockingTask = RefreshLockingTabAsync();
-            var systemEventsTask = RefreshSystemEventsTabAsync();
+            // Refresh the tab the user is looking at first, on its own. Kicking off all six tab
+            // refreshes at once saturates the connection pool, so under load the visible tab's queries
+            // wait behind the others and its charts can take tens of seconds to appear. Running it
+            // first keeps it responsive; the remaining tabs then refresh in parallel, competing only
+            // with each other. (Unknown header => every tab lands in the parallel batch, i.e. the
+            // original all-at-once behavior.)
+            var selected = DataTabControl.SelectedItem as TabItem;
+            var visibleHeader = selected != null ? GetTabHeaderText(selected) : string.Empty;
 
-            await Task.WhenAll(overviewTask, queriesTask, resourceMetricsTask, memoryTask, lockingTask, systemEventsTask);
+            switch (visibleHeader)
+            {
+                case "Overview": await RefreshOverviewTabAsync(); break;
+                case "Queries": await RefreshQueriesTabAsync(); break;
+                case "Resource Metrics": await RefreshResourceMetricsTabAsync(); break;
+                case "Memory": await RefreshMemoryTabAsync(); break;
+                case "Locking": await RefreshLockingTabAsync(); break;
+                case "System Events": await RefreshSystemEventsTabAsync(); break;
+            }
+
+            var rest = new System.Collections.Generic.List<Task>();
+            if (visibleHeader != "Overview") rest.Add(RefreshOverviewTabAsync());
+            if (visibleHeader != "Queries") rest.Add(RefreshQueriesTabAsync());
+            if (visibleHeader != "Resource Metrics") rest.Add(RefreshResourceMetricsTabAsync());
+            if (visibleHeader != "Memory") rest.Add(RefreshMemoryTabAsync());
+            if (visibleHeader != "Locking") rest.Add(RefreshLockingTabAsync());
+            if (visibleHeader != "System Events") rest.Add(RefreshSystemEventsTabAsync());
+            await Task.WhenAll(rest);
+        }
+
+        /// <summary>
+        /// Refreshes the visible tab, then loads any other tab the user navigated to while that was
+        /// running. The tab-switch handler (DataTabControl_SelectionChanged) skips refreshing while a
+        /// load is in flight, so without this a tab switched-to mid-load would stay blank until the
+        /// next auto-refresh tick. The loop is capped so it can't spin if the user keeps navigating.
+        /// </summary>
+        private async Task RefreshVisibleTabWithCatchUpAsync()
+        {
+            await RefreshVisibleTabAsync();
+            for (int guard = 0; guard < 8; guard++)
+            {
+                var sel = DataTabControl.SelectedItem as TabItem;
+                var header = sel != null ? GetTabHeaderText(sel) : null;
+                if (string.IsNullOrEmpty(header) || _initializedTabs.Contains(header)) break;
+                await RefreshVisibleTabAsync();
+            }
         }
 
         /// <summary>
@@ -269,8 +310,10 @@ namespace PerformanceMonitorDashboard
         {
             try
             {
-                var blockingEventsTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingEvents", () => Task.Run(() => _databaseService.GetBlockingEventsAsync()));
-                var deadlocksTask = Helpers.MethodProfiler.TimeAsync("Locking.Deadlocks", () => Task.Run(() => _databaseService.GetDeadlocksAsync()));
+                // Use the selected range (same fields the slicer uses), not the 24h default — otherwise
+                // the auto-refresh/navigation reload pulls in rows outside the chosen timeframe.
+                var blockingEventsTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingEvents", () => Task.Run(() => _databaseService.GetBlockingEventsAsync(_blockingHoursBack, _blockingFromDate, _blockingToDate, includeReport: false)));
+                var deadlocksTask = Helpers.MethodProfiler.TimeAsync("Locking.Deadlocks", () => Task.Run(() => _databaseService.GetDeadlocksAsync(_deadlocksHoursBack, _deadlocksFromDate, _deadlocksToDate, includeGraph: false)));
                 var blockingStatsTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingStats", () => Task.Run(() => _databaseService.GetBlockingDeadlockStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
                 var lockWaitStatsTask = Helpers.MethodProfiler.TimeAsync("Locking.LockWaitStats", () => Task.Run(() => _databaseService.GetLockWaitStatsAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
                 var currentWaitsDurationTask = Helpers.MethodProfiler.TimeAsync("Locking.WaitingTaskTrend", () => Task.Run(() => _databaseService.GetWaitingTaskTrendAsync(_blockingStatsHoursBack, _blockingStatsFromDate, _blockingStatsToDate)));
@@ -302,6 +345,7 @@ namespace PerformanceMonitorDashboard
                     Logger.Warning($"Could not load deadlocks: {deadlockEx.Message}");
                 }
 
+                // Slicer histograms load in the background so they never block the grid.
                 _ = LoadBlockingSlicerAsync();
                 _ = LoadDeadlockSlicerAsync();
 
