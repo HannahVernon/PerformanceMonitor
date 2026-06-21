@@ -245,4 +245,42 @@ public class InferenceEngineTests
         Assert.Equal("THREADPOOL_MIXED", ThreadpoolRoot(Tp(), Cx(), Blk()));
         Assert.Equal("THREADPOOL", ThreadpoolRoot(Tp()));
     }
+
+    // Regression: RootFactValue/LeafFactValue must carry the fact's RAW collected VALUE, not its
+    // severity. They were both set to .Severity, so a CONFIG_CTFP finding (value 5, severity 0.4)
+    // reported RootFactValue 0.4 — which the MCP root_fact.value contract and the notification
+    // headline surface as "the value", contradicting the value-stated advice ("CTFP is 5").
+    [Fact]
+    public void BuildStory_RootFactValue_IsFactValue_NotSeverity()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "CONFIG_CTFP", Source = "config", Value = 5, Severity = 0.4 }
+        };
+
+        var story = engine.BuildStories(facts).First(s => s.RootFactKey == "CONFIG_CTFP");
+
+        Assert.Equal(5, story.RootFactValue);   // the collected value, NOT 0.4
+        Assert.Equal(0.4, story.Severity);      // severity still on its own field
+    }
+
+    [Fact]
+    public void BuildStory_LeafFactValue_IsFactValue_NotSeverity()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        // CXPACKET roots (severity >= 0.5) and traverses to SOS_SCHEDULER_YIELD (edge fires when SOS
+        // severity is high), so the story has a leaf whose value must be SOS's value, not its severity.
+        var facts = new List<Fact>
+        {
+            new() { Key = "CXPACKET", Source = "waits", Value = 0.6, Severity = 0.9 },
+            new() { Key = "SOS_SCHEDULER_YIELD", Source = "waits", Value = 0.5, Severity = 0.67 }
+        };
+
+        var story = engine.BuildStories(facts).First(s => s.RootFactKey == "CXPACKET");
+
+        Assert.Equal(0.6, story.RootFactValue);              // CXPACKET value, not 0.9
+        Assert.Equal("SOS_SCHEDULER_YIELD", story.LeafFactKey);
+        Assert.Equal(0.5, story.LeafFactValue);              // SOS value, not 0.67
+    }
 }

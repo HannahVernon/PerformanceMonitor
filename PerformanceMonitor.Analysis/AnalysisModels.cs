@@ -60,6 +60,9 @@ public class Edge
 public class AnalysisStory
 {
     public string RootFactKey { get; set; } = string.Empty;
+    /// <summary>The root fact's RAW collected value (the setting/metric — MAXDOP 0, a wait's
+    /// fraction-of-period, CPU%, etc.), NOT its severity. <see cref="Severity"/> is the separate
+    /// 0–~2 score. Surfaced as MCP root_fact.value and in the notification headline.</summary>
     public double RootFactValue { get; set; }
     public double Severity { get; set; }
     public double Confidence { get; set; }
@@ -69,6 +72,7 @@ public class AnalysisStory
     public string StoryPathHash { get; set; } = string.Empty;
     public string StoryText { get; set; } = string.Empty;
     public string? LeafFactKey { get; set; }
+    /// <summary>The leaf fact's RAW collected value (see <see cref="RootFactValue"/>), not severity.</summary>
     public double? LeafFactValue { get; set; }
     public int FactCount { get; set; }
     public bool IsAbsolution { get; set; }
@@ -106,8 +110,11 @@ public class AnalysisFinding
     public string StoryPathHash { get; set; } = string.Empty;
     public string StoryText { get; set; } = string.Empty;
     public string RootFactKey { get; set; } = string.Empty;
+    /// <summary>The root fact's RAW collected value (the setting/metric), NOT its severity — see
+    /// <see cref="AnalysisStory.RootFactValue"/>. Persisted to analysis_findings.root_fact_value.</summary>
     public double? RootFactValue { get; set; }
     public string? LeafFactKey { get; set; }
+    /// <summary>The leaf fact's RAW collected value (see <see cref="RootFactValue"/>), not severity.</summary>
     public double? LeafFactValue { get; set; }
     public int FactCount { get; set; }
 
