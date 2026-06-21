@@ -188,7 +188,12 @@ public class InferenceEngine
         return new AnalysisStory
         {
             RootFactKey = rootKey,
-            RootFactValue = rootFact?.Severity ?? 0,
+            // RootFactValue/LeafFactValue carry the fact's RAW collected value (the setting/metric —
+            // MAXDOP 0, a wait's fraction-of-period, etc.), NOT its severity. Severity has its own
+            // field below. These feed the MCP root_fact.value / leaf_fact.value contract and the
+            // notification headline; conflating them with severity made an MCP payload report
+            // "MAXDOP is 0" next to value 0.4 (the severity).
+            RootFactValue = rootFact?.Value ?? 0,
             Severity = rootFact?.Severity ?? 0,
             Confidence = confidence,
             Category = category,
@@ -197,7 +202,7 @@ public class InferenceEngine
             StoryPathHash = ComputeHash(storyPath),
             StoryText = string.Empty,
             LeafFactKey = leafKey,
-            LeafFactValue = leafFact?.Severity,
+            LeafFactValue = leafFact?.Value,
             FactCount = path.Count,
             IsAbsolution = false,
             RootFactMetadata = rootFact?.Metadata,
