@@ -18,7 +18,7 @@ using Xunit;
 namespace PerformanceMonitorDashboard.Tests;
 
 /// <summary>
-/// WS3 server-level config: the FactRemediation builder (edition-aware capped MAXDOP / flat CTFP /
+/// WS3 server-level config: the FactRemediation builder (topology-based MAXDOP / flat CTFP /
 /// advise-only memory), the persisted-action DTO round-trip, the Recommendations reader fan-out
 /// (one card per ServerConfigTarget; MAXDOP/CTFP carry Apply, memory cards are copy-paste only), and
 /// the card affordance model (Copy + Apply / Copy-only, NOT incidents).
@@ -42,20 +42,18 @@ public class ServerConfigRecommendationTests
     };
 
     [Theory]
-    // Enterprise (3) -> 8, capped at cores-per-socket when smaller.
-    [InlineData(3, 16, 8)]   // 8 <= 16 cores -> 8
-    [InlineData(3, 4, 4)]    // 8 capped to 4 cores
-    [InlineData(3, 0, 8)]    // cores unknown -> edition value stands
-    // Standard (2) / unknown -> 4.
-    [InlineData(2, 16, 4)]
-    [InlineData(0, 16, 4)]
-    [InlineData(2, 2, 2)]    // 4 capped to 2 cores
-    // Express (4) -> 1.
-    [InlineData(4, 16, 1)]
-    public void BuildServerConfig_Maxdop_EditionAware_CappedAtCores(int edition, int cores, long expectedRecommended)
+    // MAXDOP is topology-based: min(cores-per-socket, 8). Edition is NOT consulted.
+    [InlineData(16, 8)]   // > 8 cores per socket -> capped at 8
+    [InlineData(8, 8)]    // exactly 8 -> 8
+    [InlineData(4, 4)]    // <= 8 -> the core count
+    [InlineData(2, 2)]    // small box -> 2
+    [InlineData(1, 1)]    // single core -> 1
+    [InlineData(0, 8)]    // cores unknown -> the safe general cap of 8
+    public void BuildServerConfig_Maxdop_TopologyBased_CappedAt8(int cores, long expectedRecommended)
     {
+        // edition is supplied to mirror the production row shape but is no longer consulted.
         var finding = ServerConfigFinding("CONFIG_MAXDOP",
-            new { setting = "maxdop", current_value = 0, edition, cores_per_socket = cores });
+            new { setting = "maxdop", current_value = 0, edition = 3, cores_per_socket = cores });
 
         var action = FactRemediation.BuildServerConfigAction(finding);
 

@@ -14,7 +14,7 @@ namespace PerformanceMonitorDashboard.Mcp;
 [McpServerToolType]
 public sealed class McpPerfmonTools
 {
-    [McpServerTool(Name = "get_perfmon_stats"), Description("Gets the latest performance counter values including batch requests/sec, compilations/sec, recompilations/sec, page life expectancy, and other key SQL Server metrics. Provides throughput context that helps distinguish a busy server from a sick one. Use counter_name or instance_name to filter results.")]
+    [McpServerTool(Name = "get_perfmon_stats"), Description("Gets the latest performance counter values including batch requests/sec, compilations/sec, recompilations/sec, and other key SQL Server metrics. Provides throughput context that helps distinguish a busy server from a sick one. Use counter_name or instance_name to filter results.")]
     public static async Task<string> GetPerfmonStats(
         ServerManager serverManager,
         DatabaseServiceRegistry registry,

@@ -250,8 +250,8 @@ AND   collection_time <= $3";
     }
 
     /// <summary>
-    /// Collects key perfmon counters: Page Life Expectancy, Batch Requests/sec, compilations.
-    /// PLE is scored; others are throughput context for the AI.
+    /// Collects key perfmon throughput counters: Batch Requests/sec, compilations, recompilations.
+    /// Unscored context that distinguishes a busy server from a sick one (used by the AI surfaces).
     /// </summary>
     private async Task CollectPerfmonFactsAsync(AnalysisContext context, List<Fact> facts)
     {
@@ -270,7 +270,7 @@ WITH latest AS (
     WHERE server_id = $1
     AND   collection_time >= $2
     AND   collection_time <= $3
-    AND   counter_name IN ('Page life expectancy', 'Batch Requests/sec', 'SQL Compilations/sec', 'SQL Re-Compilations/sec')
+    AND   counter_name IN ('Batch Requests/sec', 'SQL Compilations/sec', 'SQL Re-Compilations/sec')
 )
 SELECT counter_name, cntr_value, delta_cntr_value
 FROM latest WHERE rn = 1";
@@ -288,7 +288,6 @@ FROM latest WHERE rn = 1";
 
                 var (factKey, source) = counterName switch
                 {
-                    "Page life expectancy" => ("PERFMON_PLE", "perfmon"),
                     "Batch Requests/sec" => ("PERFMON_BATCH_REQ_SEC", "perfmon"),
                     "SQL Compilations/sec" => ("PERFMON_COMPILATIONS_SEC", "perfmon"),
                     "SQL Re-Compilations/sec" => ("PERFMON_RECOMPILATIONS_SEC", "perfmon"),
@@ -297,8 +296,8 @@ FROM latest WHERE rn = 1";
 
                 if (factKey == null) continue;
 
-                // For PLE, use the absolute value. For rate counters, use delta.
-                var value = counterName == "Page life expectancy" ? (double)cntrValue : (double)deltaValue;
+                // All remaining counters are per-second rates — use the delta.
+                var value = (double)deltaValue;
 
                 facts.Add(new Fact
                 {

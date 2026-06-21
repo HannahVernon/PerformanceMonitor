@@ -224,7 +224,7 @@ internal static class McpInstructions
         |-----------------|------|
         | Memory grant contention, workspace memory pressure | `get_memory_grants` |
         | Buffer pool composition, memory clerk distribution | `get_memory_clerks` |
-        | Page Life Expectancy, target vs total server memory | `get_memory_stats`, `get_memory_trend` |
+        | Target vs total server memory (how close SQL is to its memory target) | `get_memory_stats`, `get_memory_trend` |
         | Queries that requested large grants during the window | `get_top_queries_by_cpu` |
         | `RESOURCE_SEMAPHORE` waits in the same window | `get_wait_stats`, `get_wait_trend` |
 

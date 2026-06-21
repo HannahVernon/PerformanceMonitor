@@ -291,6 +291,8 @@ public sealed class McpAnalysisTools
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var editionName = edition switch
             {
@@ -299,8 +301,6 @@ public sealed class McpAnalysisTools
                 4 => "Express",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
 
             var recommendations = new System.Collections.Generic.List<object>();
 
@@ -315,8 +315,9 @@ public sealed class McpAnalysisTools
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
-                var suggested = maxdop == 0 ? (isExpress ? 1 : isEnterprise ? 8 : 4) : maxdop;
-                var status = maxdop == 0 ? "warning" : maxdop == 1 && !isExpress ? "review" : "ok";
+                // Topology-based (min(cores-per-socket, 8)), NOT edition-based — see FactRemediation.RecommendedMaxdop.
+                var suggested = maxdop == 0 ? (int)FactRemediation.RecommendedMaxdop(coresPerSocket) : maxdop;
+                var status = maxdop == 0 ? "warning" : maxdop == 1 ? "review" : "ok";
                 recommendations.Add(new { setting = "max degree of parallelism", current_value = maxdop, suggested_value = suggested, status });
             }
 
@@ -453,7 +454,6 @@ internal static class ToolRecommendations
         ["QUERY_HIGH_DOP"] = [new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" })],
         ["PARAMETER_SENSITIVITY"] = [new("get_top_queries_by_cpu", "Find the sensitive query and see its cached parameters"), new("analyze_query_plan", "Examine the plan for operators driving the runtime variance"), new("get_query_trend", "Confirm the bimodal duration pattern over time"), new("get_resource_semaphore", "Check whether bad-parameter executions blow up memory grants")],
         ["PLAN_REGRESSION"] = [new("analyze_query_store_plan", "Compare the regressed plan against the prior plan"), new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"), new("get_query_store_top", "Pull the full Query Store entry and forced-plan history before forcing")],
-        ["PERFMON_PLE"] = [new("get_memory_stats", "Check buffer pool"), new("get_memory_clerks", "See memory allocation")],
         ["DB_CONFIG"] = [new("audit_config", "Check configuration")],
         ["FILE_AUTOGROWTH_PERCENT"] = [new("get_database_sizes", "See per-file sizes and autogrowth settings"), new("get_file_io_stats", "Check per-file growth/latency")],
         ["DISK_SPACE"] = [new("get_file_io_stats", "Check per-file sizes")],
