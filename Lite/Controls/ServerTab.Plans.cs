@@ -546,10 +546,13 @@ public partial class ServerTab : UserControl
         try
         {
             var doc = System.Xml.Linq.XElement.Parse(bprXml);
-            var processContainer = blockingSide
-                ? doc.Element("blocking-process")
-                : doc.Element("blocked-process");
-            var stack = processContainer?.Element("process")?.Element("executionStack");
+            // The collector stores the <blocked-process-report> element as the root, so the
+            // {blocking|blocked}-process nodes are direct children today — but search by descendant
+            // (matching Dashboard) so this keeps working regardless of how deep the node sits.
+            var processContainer = doc
+                .Descendants(blockingSide ? "blocking-process" : "blocked-process")
+                .FirstOrDefault();
+            var stack = processContainer?.Descendants("executionStack").FirstOrDefault();
             if (stack == null) return empty;
 
             var frames = new List<(string, int, int)>();

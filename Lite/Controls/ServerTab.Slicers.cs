@@ -59,7 +59,7 @@ public partial class ServerTab : UserControl
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
 
             var dlr = await _dataService.GetRecentDeadlocksAsync(_serverId, 0, fromServer, toServer);
-            _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(dlr));
+            _deadlockFilterMgr!.UpdateData(await ParseDeadlocksOffUiThreadAsync(dlr));
         }
         catch (Exception ex)
         {
