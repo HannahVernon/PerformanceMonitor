@@ -135,6 +135,7 @@ namespace PerformanceMonitorDashboard.Controls
         {
             InitializeComponent();
             SetupChartSaveMenus();
+            SetupBarCellMaxes();
             Loaded += OnLoaded;
             Unloaded += OnUnloaded;
             SubTabControl.SelectionChanged += async (s, e) =>

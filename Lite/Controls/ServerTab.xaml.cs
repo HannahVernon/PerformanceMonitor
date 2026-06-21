@@ -121,6 +121,7 @@ public partial class ServerTab : UserControl
     public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
     {
         InitializeComponent();
+        SetupBarCellMaxes();
 
         _server = server;
         _dataService = new LocalDataService(duckDb);
