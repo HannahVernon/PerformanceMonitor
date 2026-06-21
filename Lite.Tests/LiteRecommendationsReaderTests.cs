@@ -98,14 +98,16 @@ public class LiteRecommendationsReaderTests
     }
 
     [Fact]
-    public void MapFinding_UnknownFactKey_FallsBackToStoryTextForTitleAndAdvice()
+    public void MapFinding_UnknownFactKey_FallsBackToRootFactKeyTitle_NoAdvice()
     {
+        // StoryText now carries value-stated advice JSON (or empty), never human prose — so an
+        // unknown key with no static advice block falls the title back to the fact key, with no
+        // advice text, rather than echoing StoryText (which would dump JSON).
         var item = LiteRecommendationsReader.MapFinding(
-            Finding("TOTALLY_UNKNOWN_KEY", 0.5, storyText: "A bespoke story."), ServerName);
+            Finding("TOTALLY_UNKNOWN_KEY", 0.5, storyText: ""), ServerName);
 
-        // No advice block matches -> title and advice both fall back to the story text.
-        Assert.Equal("A bespoke story.", item.Title);
-        Assert.Equal("A bespoke story.", item.AdviceText);
+        Assert.Equal("TOTALLY_UNKNOWN_KEY", item.Title);
+        Assert.Null(item.AdviceText);
         Assert.Equal(LiteRecommendationSeverity.Info, item.Severity);
     }
 

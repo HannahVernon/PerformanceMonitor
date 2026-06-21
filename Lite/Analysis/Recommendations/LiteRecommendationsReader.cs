@@ -113,16 +113,19 @@ public sealed class LiteRecommendationsReader
     /// </summary>
     internal static LiteRecommendationItem MapFinding(AnalysisFinding finding, string serverName)
     {
-        var advice = FactAdvice.GetForFactKey(finding.RootFactKey);
+        // Value-stated advice frozen into StoryText at analysis time (current MAXDOP/CTFP/etc.),
+        // with the static block as the fallback for legacy findings. StoryText now holds advice
+        // JSON, never the old (always-empty) story prose, so it is no longer a Title/text fallback.
+        var advice = FactAdvice.GetComposedForFinding(finding);
 
         return new LiteRecommendationItem
         {
             Severity = SeverityBand(finding.Severity),
             RawSeverity = finding.Severity,
             Database = string.IsNullOrEmpty(finding.DatabaseName) ? null : finding.DatabaseName,
-            Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.StoryText,
+            Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
             ProblemArea = finding.Category,
-            AdviceText = ComposeAdvice(advice) ?? NullIfEmpty(finding.StoryText),
+            AdviceText = ComposeAdvice(advice),
             CopyPasteSql = NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
             RootFactKey = finding.RootFactKey,
             ServerName = serverName ?? string.Empty,

@@ -184,6 +184,12 @@ public class AnalysisService
             // 3. Build stories via graph traversal
             var stories = _engine.BuildStories(facts);
 
+            // 3.5. Freeze value-stated advice (current MAXDOP/CTFP/etc.) into each story's StoryText
+            // from the FULL fact set, BEFORE the store copies StoryText onto the finding. This is the
+            // only place the raw fact VALUES are in scope; read-back cards then state the numbers
+            // (FactAdvice.GetComposedForFinding) instead of generic folklore. No schema change.
+            FactAdvice.PopulateStoryText(stories, facts);
+
             // 4. Mute-filter the stories into the surviving findings (P2 reorder) — WITHOUT
             //    inserting yet, so enrichment + action-build happen on the survivors first
             //    and the BUILT RemediationAction is persisted on each row (D2). Muted/

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
+using System.Text.Json;
 
 namespace PerformanceMonitor.Analysis;
 
@@ -70,7 +72,9 @@ public static class FactAdvice
         if (finding is null)
             return null;
 
-        var advice = GetForFactKey(finding.RootFactKey);
+        // Value-stated prose first (frozen StoryText), static fallback for legacy findings; then
+        // overlay the generated copy-paste T-SQL and the two-sided risk disclosure as before.
+        var advice = GetComposedForFinding(finding);
         if (advice is null)
             return null;
 
@@ -95,6 +99,305 @@ public static class FactAdvice
         }
 
         return advice;
+    }
+
+    /// <summary>
+    /// Render-time entry point for a persisted or live finding. Prefers the value-stated advice
+    /// FROZEN into <see cref="AnalysisFinding.StoryText"/> at analysis time (see
+    /// <see cref="PopulateStoryText"/>), and falls back to the static <see cref="GetForFactKey"/>
+    /// block for findings persisted before this field carried advice. Every read surface (Lite and
+    /// Dashboard recommendation cards, MCP get_analysis_findings, analyze_server) calls this so the
+    /// operator reads the SAME numbers the engine observed — current MAXDOP, CTFP, cores — instead
+    /// of generic folklore. The composer ran where the facts live; the card just displays the result.
+    /// </summary>
+    public static AdviceBlock? GetComposedForFinding(AnalysisFinding finding)
+    {
+        if (finding is null)
+            return null;
+        return TryReadStoryText(finding.StoryText) ?? GetForFactKey(finding.RootFactKey);
+    }
+
+    /// <summary>
+    /// Composes value-stated advice for a story's root fact key from the FULL scored fact set.
+    /// The full set matters: a healthy setting (e.g. MAXDOP already at 8) scores 0 and is therefore
+    /// ABSENT from the engine's >0 working set, so the composer must see every fact to state the
+    /// current value. Value-bearing keys (THREADPOOL_PARALLEL / _MIXED, CONFIG_MAXDOP, CONFIG_CTFP)
+    /// interpolate the server's actual settings and tailor the recommendation to how far they are
+    /// from guidance — including the "already within guidance and still exhausting" override. Every
+    /// other key returns its static block unchanged.
+    /// </summary>
+    public static AdviceBlock? Compose(string? rootFactKey, IReadOnlyDictionary<string, Fact> factsByKey)
+    {
+        if (string.IsNullOrEmpty(rootFactKey))
+            return null;
+        return rootFactKey switch
+        {
+            "THREADPOOL_PARALLEL" => ComposeThreadpoolParallel(factsByKey),
+            "THREADPOOL_MIXED" => ComposeThreadpoolMixed(factsByKey),
+            "CONFIG_MAXDOP" => ComposeConfigMaxdop(factsByKey),
+            "CONFIG_CTFP" => ComposeConfigCtfp(factsByKey),
+            _ => GetForFactKey(rootFactKey)
+        };
+    }
+
+    /// <summary>
+    /// Freezes each story's value-stated advice into <see cref="AnalysisStory.StoryText"/> as a
+    /// compact JSON {h,i,r} blob, BEFORE the finding stores copy StoryText onto the persisted
+    /// finding. The full <paramref name="facts"/> list (every severity) backs the value reads.
+    /// Read-back surfaces deserialize it via <see cref="GetComposedForFinding"/>; the static blocks
+    /// remain the fallback. No schema change — StoryText already round-trips in both stores and was
+    /// previously written empty.
+    /// </summary>
+    public static void PopulateStoryText(IEnumerable<AnalysisStory> stories, IReadOnlyList<Fact> facts)
+    {
+        if (stories is null)
+            return;
+        var byKey = (facts ?? Array.Empty<Fact>()).ToFactLookup();
+        foreach (var story in stories)
+        {
+            if (story is null || story.IsAbsolution)
+                continue;
+            var advice = Compose(story.RootFactKey, byKey);
+            if (advice is not null)
+                story.StoryText = SerializeForStoryText(advice);
+        }
+    }
+
+    /// <summary>Serializes an advice block's prose to the compact {h,i,r} JSON stored in StoryText.</summary>
+    public static string SerializeForStoryText(AdviceBlock? advice) =>
+        advice is null
+            ? string.Empty
+            : JsonSerializer.Serialize(new StoryAdvice(advice.Headline, advice.Investigation, advice.Remediation));
+
+    /// <summary>
+    /// Reads back the frozen advice from a finding's StoryText. Returns null for empty or legacy
+    /// (non-JSON) StoryText so the caller falls back to the static block, and is defensive against
+    /// malformed JSON.
+    /// </summary>
+    public static AdviceBlock? TryReadStoryText(string? storyText)
+    {
+        if (string.IsNullOrEmpty(storyText) || storyText[0] != '{')
+            return null;
+        try
+        {
+            var s = JsonSerializer.Deserialize<StoryAdvice>(storyText);
+            if (s is null || (string.IsNullOrEmpty(s.h) && string.IsNullOrEmpty(s.i) && string.IsNullOrEmpty(s.r)))
+                return null;
+            return new AdviceBlock(s.h ?? string.Empty, s.i ?? string.Empty, s.r ?? string.Empty);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private sealed record StoryAdvice(string? h, string? i, string? r);
+
+    // ── Value readers: the fact's RAW collected value (the setting/metric), not its severity ──
+
+    /// <summary>The fact's raw collected value rounded to a whole number, or null when the fact is absent.</summary>
+    private static long? FactValue(IReadOnlyDictionary<string, Fact> facts, string key) =>
+        facts.TryGetValue(key, out var f) ? (long)Math.Round(f.Value) : (long?)null;
+
+    /// <summary>
+    /// Cores-per-socket from SERVER_HARDWARE metadata — the per-NUMA-node proxy MAXDOP guidance keys
+    /// on (NUMA node count itself is not collected). 0 when absent.
+    /// </summary>
+    private static int CoresPerSocket(IReadOnlyDictionary<string, Fact> facts) =>
+        facts.TryGetValue("SERVER_HARDWARE", out var hw)
+            && hw.Metadata.TryGetValue("cores_per_socket", out var c) ? (int)c : 0;
+
+    /// <summary>
+    /// The collection-gap caveat appended to every THREADPOOL-family block: under live thread
+    /// exhaustion the collector is itself a query waiting for a worker, so a gap in Collection Health
+    /// around the window corroborates the event rather than being a separate problem.
+    /// </summary>
+    private const string CollectionGapNote =
+        " Note on the data: under live thread exhaustion the collector is itself a query waiting for " +
+        "a worker, so expect a gap in collection during the worst of it — a missing interval in " +
+        "Collection Health around this window corroborates the event, it is not a separate problem.";
+
+    /// <summary>
+    /// THREADPOOL_PARALLEL composed with the server's ACTUAL MAXDOP, CTFP, and cores-per-socket, so
+    /// the card states the numbers and tailors the guard to how far they are from guidance —
+    /// including the workload-aware override when both are already within guidance and the pool still
+    /// exhausted (the cause is the volume of concurrent parallel queries, so guard harder). Falls
+    /// back to the static block when neither config fact was collected this window.
+    /// </summary>
+    private static AdviceBlock ComposeThreadpoolParallel(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["THREADPOOL_PARALLEL"];
+        var maxdop = FactValue(facts, "CONFIG_MAXDOP");
+        var ctfp = FactValue(facts, "CONFIG_CTFP");
+        if (maxdop is null && ctfp is null)
+            return fallback;
+
+        var cores = CoresPerSocket(facts);
+        var rec = FactRemediation.RecommendedMaxdop(cores);
+        return fallback with { Remediation = ParallelGuardCore(maxdop, ctfp, cores, rec) + CollectionGapNote };
+    }
+
+    /// <summary>
+    /// THREADPOOL_MIXED composed: collapse the blocking first (workers parked on locks are not
+    /// running, so it is the faster win), THEN the value-stated parallelism guard. Falls back to the
+    /// static block when neither config fact was collected this window.
+    /// </summary>
+    private static AdviceBlock ComposeThreadpoolMixed(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["THREADPOOL_MIXED"];
+        var maxdop = FactValue(facts, "CONFIG_MAXDOP");
+        var ctfp = FactValue(facts, "CONFIG_CTFP");
+        if (maxdop is null && ctfp is null)
+            return fallback;
+
+        var cores = CoresPerSocket(facts);
+        var rec = FactRemediation.RecommendedMaxdop(cores);
+        var remediation =
+            "Collapse the blocking first — workers parked on locks are not running, so it is the " +
+            "faster win: if the chain was headed by a sleeping/abandoned transaction, fix the code " +
+            "path that leaves a BEGIN TRAN open (and SET XACT_ABORT ON so an aborted batch rolls " +
+            "back); otherwise fix the slow operation under the held lock (usually a missing index " +
+            "turning a seek into a scan). Then guard parallelism. " +
+            ParallelGuardCore(maxdop, ctfp, cores, rec) + CollectionGapNote;
+        return fallback with { Remediation = remediation };
+    }
+
+    /// <summary>
+    /// The value-stated parallelism-guard recommendation shared by THREADPOOL_PARALLEL and
+    /// THREADPOOL_MIXED. States the server's current MAXDOP and CTFP (no "if") and recommends the
+    /// specific change: raise CTFP toward 50 and bring MAXDOP to the per-NUMA-node proxy (≤ 8) when
+    /// either is loose; or, when both are already within guidance and the pool still exhausted,
+    /// guard harder for the concurrency level. Does NOT include the collection-gap note (the caller
+    /// appends it once).
+    /// </summary>
+    private static string ParallelGuardCore(long? maxdop, long? ctfp, int cores, long rec)
+    {
+        var sb = new StringBuilder();
+
+        // 1. State what was observed — no conditional about settings the engine collected.
+        sb.Append("This server's MAXDOP is ")
+          .Append(maxdop?.ToString() ?? "not readable this window")
+          .Append(" and cost threshold for parallelism is ")
+          .Append(ctfp?.ToString() ?? "not readable this window")
+          .Append(cores > 0 ? $" (cores per socket {cores})." : ".");
+
+        var ctfpGuarded = ctfp is >= 50;
+        var maxdopGuarded = maxdop is > 0 && maxdop <= rec;
+
+        if (ctfpGuarded && maxdopGuarded)
+        {
+            // Workload-aware override: settings are sane, so the driver is the VOLUME of concurrent
+            // parallel queries — guard harder and go after the specific offenders.
+            var harder = Math.Max(2, rec / 2);
+            sb.Append(" Both are already within topology guidance, so the exhaustion is the volume of ")
+              .Append("concurrent parallel queries, not loose settings: guard harder for this concurrency ")
+              .Append($"level by lowering MAXDOP from {maxdop} to {harder} and/or raising cost threshold ")
+              .Append($"for parallelism above {ctfp}, and go after the specific high-DOP offenders");
+        }
+        else
+        {
+            sb.Append(" Guard parallelism:");
+            if (ctfp is null || ctfp <= 5)
+                sb.Append(" raise cost threshold for parallelism to 50 so trivial queries stop going parallel");
+            else if (ctfp < 50)
+                sb.Append($" raise cost threshold for parallelism from {ctfp} toward 50");
+            else
+                sb.Append(" cost threshold for parallelism is already past the trivial-query cutoff");
+
+            if (maxdop is 0)
+                sb.Append($", and cap MAXDOP at {rec} (this server's per-NUMA-node processor count, capped at 8) instead of unlimited");
+            else if (maxdop > rec)
+                sb.Append($", and lower MAXDOP from {maxdop} to {rec} (the per-NUMA-node processor count, capped at 8)");
+            else
+                sb.Append($"; MAXDOP at {maxdop} is already within the ≤ {rec} guidance");
+            sb.Append(". Then go after the specific high-DOP offenders");
+        }
+
+        sb.Append(" — `get_top_queries_by_cpu` with `parallel_only=true` ranks them; the usual shapes ")
+          .Append("are a parallel scan of a large table or a skewed plan where one branch does all the work.");
+
+        // 2. The one factor not collected (workload type) + the don't-mask rule.
+        sb.Append(" Thread exhaustion means concurrency is already high enough to drain the pool, so ")
+          .Append("guarding is warranted here; if these are deliberately large reporting/DW queries ")
+          .Append("rather than OLTP, prefer limiting how many run at once over clamping MAXDOP (which ")
+          .Append("slows each one). Do NOT raise `max worker threads` to mask it — that trades thread ")
+          .Append("exhaustion for memory pressure without fixing the cause.");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// CONFIG_MAXDOP composed with the ACTUAL value, so the headline states the real number (the
+    /// static block hard-coded "MAXDOP is 0", wrong whenever the finding fired for 1 or an
+    /// above-guidance value) and the remediation is tailored to 0 / 1 / above-guidance. Falls back
+    /// to the static block when the fact was not collected this window.
+    /// </summary>
+    private static AdviceBlock ComposeConfigMaxdop(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["CONFIG_MAXDOP"];
+        var maxdop = FactValue(facts, "CONFIG_MAXDOP");
+        if (maxdop is null)
+            return fallback;
+
+        var cores = CoresPerSocket(facts);
+        var rec = FactRemediation.RecommendedMaxdop(cores);
+        var coresNote = cores > 0 ? $" (cores per socket {cores})" : string.Empty;
+
+        string headline, remediation;
+        if (maxdop == 0)
+        {
+            headline = "MAXDOP is 0 — a single query can fan out across every scheduler (up to 64)";
+            remediation =
+                $"Set MAXDOP to {rec} — this server's cores-per-socket capped at 8{coresNote}, the per-NUMA-node " +
+                "proxy; the SKU is irrelevant to the right value. The Apply button runs sp_configure + " +
+                "RECONFIGURE, an online metadata change. On hardware with more than 16 logical processors " +
+                "per NUMA node you can raise it by hand. Raise Cost Threshold for Parallelism in the same pass " +
+                "if its companion finding fired.";
+        }
+        else if (maxdop == 1)
+        {
+            headline = "MAXDOP is 1 — every query is forced to run single-threaded";
+            remediation =
+                $"MAXDOP 1 forces every query serial: large analytical queries, index rebuilds, and DBCC run " +
+                $"far slower. Unless this was set deliberately to fix a specific parallelism problem, set MAXDOP " +
+                $"to {rec} (cores-per-socket capped at 8{coresNote}) via sp_configure + RECONFIGURE, an online change.";
+        }
+        else
+        {
+            headline = $"MAXDOP is {maxdop} — above this server's topology-based guidance of {rec}";
+            remediation =
+                $"Lower MAXDOP from {maxdop} to {rec} (cores-per-socket capped at 8{coresNote}, the per-NUMA-node " +
+                "proxy; the SKU is irrelevant). The Apply button runs sp_configure + RECONFIGURE, an online " +
+                "metadata change. On hardware with more than 16 logical processors per NUMA node a higher value " +
+                "can be justified by hand. Pair it with a sane Cost Threshold for Parallelism if that finding fired.";
+        }
+
+        return fallback with { Headline = headline, Remediation = remediation };
+    }
+
+    /// <summary>
+    /// CONFIG_CTFP composed with the ACTUAL value so the headline and remediation state the current
+    /// number. Falls back to the static block when the fact was not collected this window.
+    /// </summary>
+    private static AdviceBlock ComposeConfigCtfp(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["CONFIG_CTFP"];
+        var ctfp = FactValue(facts, "CONFIG_CTFP");
+        if (ctfp is null)
+            return fallback;
+
+        string headline = ctfp <= 5
+            ? $"Cost Threshold for Parallelism is {ctfp} — at (or below) the 1990s default"
+            : $"Cost Threshold for Parallelism is {ctfp}";
+        string remediation = ctfp <= 5
+            ? $"CTFP is {ctfp}, the shipped default — on modern hardware it sends trivial queries parallel, paying " +
+              "thread-coordination overhead (CXPACKET) for no gain. Raise it to 50 as a starting point, then tune " +
+              "up if CXPACKET persists on genuinely large queries. The Apply button runs sp_configure + RECONFIGURE, " +
+              "an online metadata change. Pair it with a sane MAXDOP if that companion finding fired."
+            : $"CTFP is {ctfp}. Raise it toward 50 so only genuinely expensive queries go parallel, then tune up if " +
+              "CXPACKET persists on large queries. The Apply button runs sp_configure + RECONFIGURE, an online change.";
+
+        return fallback with { Headline = headline, Remediation = remediation };
     }
 
     /// <summary>
@@ -162,7 +465,7 @@ public static class FactAdvice
             Investigation:
                 "Sustained THREADPOOL (it cleared the wait-time + per-wait-average gate, so this isn't pool grow/shrink noise) means new sessions cannot start until a worker frees up. Neither CXPACKET/high-DOP (parallelism) nor blocking co-fired above their own thresholds this window, so the engine could not attribute it — which happens when a co-cause stayed just under threshold or, commonly, the collector could not sample the peak. Decide it by hand: if CXPACKET / high-DOP are present treat it as parallelism (below); if a blocking chain is present treat it as blocking. `get_waiting_tasks` (Lite) / `get_cpu_scheduler_pressure` (Dashboard) show what is queued.",
             Remediation:
-                "Resolve the dominant cause — parallelism (raise `cost threshold for parallelism` to 50, cap `MAXDOP` at the logical processors in a single NUMA node, ≤ 8) or blocking (collapse the chain; kill a sleeping apex if present). Do NOT raise `max worker threads` to mask it — that trades thread exhaustion for memory pressure (each worker reserves a thread stack outside max server memory) without fixing the cause. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+                "Resolve the dominant cause — parallelism (raise `cost threshold for parallelism` to 50, cap `MAXDOP` at the logical processors in a single NUMA node, ≤ 8) or blocking. This is a report on a window that has already passed, so the worker pool has long since recovered: aim at stopping the recurrence, not a one-off `KILL`. For the blocking case that means fixing the abandoned-transaction code path (a BEGIN TRAN left open on an error/timeout path; SET XACT_ABORT ON) or the slow operation under the held lock (usually a missing index turning a seek into a scan). Do NOT raise `max worker threads` to mask it — that trades thread exhaustion for memory pressure (each worker reserves a thread stack outside max server memory) without fixing the cause. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
 
         t["THREADPOOL_PARALLEL"] = new AdviceBlock(
             Headline:
@@ -170,7 +473,7 @@ public static class FactAdvice
             Investigation:
                 "THREADPOOL fired alongside CXPACKET and/or high-DOP queries: a parallel query reserves up to DOP workers per parallel branch, so a moderate-concurrency workload at high DOP can drain the pool with zero blocking. This is the MAXDOP/CTFP flavor of thread exhaustion. `get_top_queries_by_cpu` with `parallel_only=true` ranks the parallel offenders; check whether they genuinely benefit from the degree of parallelism they are getting.",
             Remediation:
-                "Guard parallelism: raise `cost threshold for parallelism` to 50 so trivial queries stop going parallel, and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). If those are already set and the pool still exhausts, guard harder — lower MAXDOP further and/or raise CTFP — and tune the specific high-DOP queries (a parallel scan of a large table, or a skewed plan where one branch does all the work). Do NOT raise `max worker threads` to mask it (trades thread exhaustion for memory pressure). Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+                "Guard parallelism: raise `cost threshold for parallelism` to 50 so trivial queries stop going parallel, and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). When both are already at guidance and the pool still exhausts, the driver is the volume of concurrent parallel queries — lower MAXDOP further and/or raise CTFP for that concurrency level, and tune the specific high-DOP queries (a parallel scan of a large table, or a skewed plan where one branch does all the work). Do NOT raise `max worker threads` to mask it (trades thread exhaustion for memory pressure). Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
 
         t["THREADPOOL_BLOCKING"] = new AdviceBlock(
             Headline:
@@ -178,7 +481,7 @@ public static class FactAdvice
             Investigation:
                 "THREADPOOL fired alongside blocking: every session waiting on a lock keeps its worker thread assigned, so a wide or deep blocking chain ties up one worker per blocked session and can exhaust the pool. Lowering MAXDOP frees nothing here — the workers are not running parallel work, they are parked on locks. The BLOCKING_CHAIN drill-down `reconstructed_blocking_chains` shows `apex_spid`, `apex_sleeping`, `depth`, and `victim_count`; `get_blocked_process_reports` (Lite) / `get_blocking` (Dashboard) show the live chain.",
             Remediation:
-                "Clear the blocking — that is what frees the workers. If `apex_sleeping` is true on the top chain, KILL the apex (one kill collapses the pile-up because every downstream victim was waiting on that one transaction). Otherwise fix the one slow operation everyone is queued behind (a missing index turning a seek into a scan under a held lock is the usual shape), and enable RCSI where the contention is readers blocked by writers. MAXDOP/CTFP are not the levers for this. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+                "Clearing the blocking is what frees the workers — but this is a report on a window that has already passed, so the pile-up is gone and a `KILL` now buys nothing. Aim at the recurrence. If the chain was headed by a sleeping apex (`apex_sleeping = true`), that is the abandoned-transaction signature: fix the code path that opens a BEGIN TRAN and never reaches COMMIT/ROLLBACK on the error or client-timeout path, and SET XACT_ABORT ON so an aborted batch rolls back automatically. If the apex was active, there is one slow operation everyone queued behind — fix it (a missing index turning a seek into a scan under a held lock is the usual shape), and enable RCSI where the contention is readers blocked by writers. MAXDOP/CTFP are not the levers for this. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
 
         t["THREADPOOL_MIXED"] = new AdviceBlock(
             Headline:
@@ -186,7 +489,7 @@ public static class FactAdvice
             Investigation:
                 "THREADPOOL fired with BOTH CXPACKET/high-DOP and blocking co-elevated, so workers are being consumed from two directions: parallel queries reserving DOP workers, and blocked sessions parking workers on locks. Look at the BLOCKING_CHAIN drill-down `reconstructed_blocking_chains` (apex, depth, victim_count) and the parallel offenders (`get_top_queries_by_cpu` with `parallel_only=true`) together.",
             Remediation:
-                "Collapse the blocking first — it pins workers on sessions that are not even running, so it is the faster win (kill a sleeping apex if present; fix the slow operation under the held lock). Then guard parallelism: raise `cost threshold for parallelism` to 50 and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). Do NOT raise `max worker threads` to mask either cause. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
+                "Collapse the blocking first — it pins workers on sessions that are not even running, so it is the bigger win. This is a report on a past window, so go after the recurrence rather than a one-off kill: fix the abandoned-transaction code path (BEGIN TRAN left open on an error/timeout path; SET XACT_ABORT ON) or the slow operation under the held lock. Then guard parallelism: raise `cost threshold for parallelism` to 50 and cap `MAXDOP` at the logical processors in a single NUMA node (≤ 8). Do NOT raise `max worker threads` to mask either cause. Note on the data: under live thread exhaustion the collector is itself a query waiting for a worker, so expect a gap in collection during the worst of it — a missing interval in Collection Health around this window corroborates the event, it is not a separate problem.");
 
         t["CXPACKET"] = new AdviceBlock(
             Headline:
@@ -282,7 +585,7 @@ public static class FactAdvice
             Investigation:
                 "The drill-down `reconstructed_blocking_chains` is already attached: up to three chains, each carrying `apex_spid`, `apex_sleeping`, `depth`, `victim_count`, `max_wait_ms`, and a per-level breakdown with `blocking_spid`, `blocked_spid`, `lock_mode`, `wait_time_ms`, and the SQL on both sides. `apex_sleeping = true` is the abandoned-transaction signature — an application started a BEGIN TRAN and never reached COMMIT/ROLLBACK on the error path. THREADPOOL co-elevation means every blocked victim is also holding a worker thread, and the server is at risk of thread exhaustion. Open Blocking → Blocked Process Reports to walk the same chain in the UI; `get_blocked_process_reports` (Lite) or `get_blocked_process_xml` (Dashboard) returns the parsed event stream.",
             Remediation:
-                "If `apex_sleeping = true` on the top chain, kill the apex session — that single `KILL` collapses the entire pile-up because all victims downstream were waiting on that one transaction. For non-sleeping apex chains, look at the level-0 entry: there's one slow operation everyone else is queued behind. Common shapes: a missing index forcing a scan under a held lock, an UPDATE without a useful WHERE-clause index, or an unindexed foreign key forcing Sch-S during a parent-row update. Fix that one query and the chain dissolves.");
+                "This is a report on a window that has already passed — the pile-up has cleared and a `KILL` now buys nothing, so aim at the recurrence. If `apex_sleeping = true` on the top chain, that is the abandoned-transaction signature: an application opened a BEGIN TRAN and never reached COMMIT/ROLLBACK on its error or client-timeout path. Fix that code path, and SET XACT_ABORT ON so an aborted batch rolls back automatically — killing the session only clears one occurrence. For an active apex, look at the level-0 entry: there is one slow operation everyone else is queued behind. Common shapes: a missing index forcing a scan under a held lock, an UPDATE whose WHERE clause has no supporting index so it locks rows while it scans, or an unindexed foreign key that makes a parent-side UPDATE/DELETE scan the child table to enforce referential integrity. Fix that one operation and the chain dissolves.");
 
         t["LCK"] = new AdviceBlock(
             Headline:

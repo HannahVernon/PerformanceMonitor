@@ -537,10 +537,13 @@ public sealed class McpAnalysisTools
                 {
                     // Persisted findings carry no drill-down (it is ephemeral —
                     // see AnalysisModels.cs), so generate advice prose only.
+                    // The prose IS value-stated: GetComposedForFinding reads the
+                    // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
+                    // StoryText at analysis time, falling back to the static block.
                     // suggested_remediation_sql is intentionally omitted: it
                     // would always be null here. The operator re-runs
                     // analyze_server when they need the copy-paste T-SQL.
-                    var advice = FactAdvice.GetForFactKey(f.RootFactKey);
+                    var advice = FactAdvice.GetComposedForFinding(f);
                     return new
                     {
                         finding_id = f.FindingId,
