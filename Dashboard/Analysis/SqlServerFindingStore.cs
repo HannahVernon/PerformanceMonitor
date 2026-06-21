@@ -50,7 +50,7 @@ BEGIN
         category nvarchar(256) NOT NULL,
         story_path nvarchar(2000) NOT NULL,
         story_path_hash nvarchar(256) NOT NULL,
-        story_text nvarchar(4000) NOT NULL,
+        story_text nvarchar(max) NOT NULL,
         root_fact_key nvarchar(256) NOT NULL,
         root_fact_value float NULL,
         leaf_fact_key nvarchar(256) NULL,
@@ -89,7 +89,14 @@ END;
    idempotently. The Recommendations surface reads it back to drive Apply + the
    two-sided consent gate (the built RemediationAction, not raw drill-down). */
 IF COL_LENGTH(N'config.analysis_findings', N'remediation_action_json') IS NULL
-    ALTER TABLE config.analysis_findings ADD remediation_action_json nvarchar(max) NULL;";
+    ALTER TABLE config.analysis_findings ADD remediation_action_json nvarchar(max) NULL;
+
+/* Compose-from-facts: story_text now carries the serialized value-stated advice for EVERY finding
+   (it was previously written empty), so widen it from nvarchar(4000) to nvarchar(max) on existing
+   DBs — removes the truncation cliff and matches Lite's unbounded story_text. COL_LENGTH returns
+   -1 for nvarchar(max); any other value means the column still needs widening. NOT NULL is kept. */
+IF COL_LENGTH(N'config.analysis_findings', N'story_text') <> -1
+    ALTER TABLE config.analysis_findings ALTER COLUMN story_text nvarchar(max) NOT NULL;";
 
         await cmd.ExecuteNonQueryAsync();
     }
