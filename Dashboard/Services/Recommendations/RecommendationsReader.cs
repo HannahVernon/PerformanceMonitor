@@ -145,7 +145,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 string.Equals(serverAction.FactKey, "SERVER_CONFIG", StringComparison.Ordinal))
             {
                 var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
-                var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
+                var adviceText = ComposeEngineAdvice(FactAdvice.GetComposedForFinding(finding));
                 var items = new List<RecommendationItem>(serverTargets.Count);
 
                 foreach (var target in serverTargets)
@@ -185,7 +185,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 ((remediation.DbConfigTargets is { Count: > 0 }) || (remediation.RcsiTargets is { Count: > 0 })))
             {
                 var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
-                var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
+                var adviceText = ComposeEngineAdvice(FactAdvice.GetComposedForFinding(finding));
                 var safeTargets = remediation.DbConfigTargets ?? Array.Empty<DbConfigTarget>();
                 var rcsiTargets = remediation.RcsiTargets ?? Array.Empty<RcsiTarget>();
                 var items = new List<RecommendationItem>(safeTargets.Count + rcsiTargets.Count);
@@ -336,7 +336,8 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         internal static RecommendationItem MapEngineFinding(AnalysisFinding finding)
         {
             var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
-            var advice = FactAdvice.GetForFactKey(finding.RootFactKey);
+            // Value-stated advice frozen into StoryText at analysis time, static block as fallback.
+            var advice = FactAdvice.GetComposedForFinding(finding);
 
             // WS4: a MISSING_INDEX action is COPY-PASTE ONLY. Render its CREATE statements as the
             // card's copy-paste SQL (via BuildCopyPasteFromAction below), but DON'T carry it as the
@@ -352,7 +353,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 CanonicalSeverity = band,
                 RawSeverity = finding.Severity,
                 Database = finding.DatabaseName,
-                Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.StoryText,
+                Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
                 ProblemArea = finding.Category,
                 AdviceText = ComposeEngineAdvice(advice),
                 CopyPasteSql = BuildCopyPasteFromAction(finding.Remediation),

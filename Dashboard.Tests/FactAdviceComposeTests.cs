@@ -1,0 +1,183 @@
+using System.Collections.Generic;
+using PerformanceMonitor.Analysis;
+using Xunit;
+
+namespace PerformanceMonitorDashboard.Tests;
+
+/// <summary>
+/// Tests the value-stated advice substrate (FactAdvice.Compose / PopulateStoryText /
+/// GetComposedForFinding / Serialize-round-trip). The composer reads the server's ACTUAL settings
+/// from the full fact set and states them — current MAXDOP, CTFP, cores — instead of generic
+/// folklore, and the result is frozen into StoryText so read-back cards show the same numbers.
+/// </summary>
+public class FactAdviceComposeTests
+{
+    private static Dictionary<string, Fact> Facts(params Fact[] facts)
+    {
+        var d = new Dictionary<string, Fact>();
+        foreach (var f in facts)
+            d[f.Key] = f;
+        return d;
+    }
+
+    private static Fact F(string key, double value) =>
+        new() { Key = key, Source = "config", Value = value, Severity = 0.0 };
+
+    private static Fact Hardware(int coresPerSocket) =>
+        new()
+        {
+            Key = "SERVER_HARDWARE",
+            Source = "config",
+            Value = 1,
+            Severity = 0,
+            Metadata = new Dictionary<string, double> { ["cores_per_socket"] = coresPerSocket }
+        };
+
+    // ── THREADPOOL_PARALLEL: states the actual MAXDOP/CTFP, recommends the topology cap ──
+
+    [Fact]
+    public void ThreadpoolParallel_StatesCurrentMaxdopAndCtfp_AndRecommendsTopologyCap()
+    {
+        var advice = FactAdvice.Compose(
+            "THREADPOOL_PARALLEL", Facts(F("CONFIG_MAXDOP", 16), F("CONFIG_CTFP", 5), Hardware(8)));
+
+        Assert.NotNull(advice);
+        var r = advice!.Remediation;
+        Assert.Contains("MAXDOP is 16", r);
+        Assert.Contains("cost threshold for parallelism is 5", r);
+        Assert.Contains("raise cost threshold for parallelism to 50", r);
+        Assert.Contains("lower MAXDOP from 16 to 8", r);
+        // The whole point: no hedging about settings the engine collected.
+        Assert.DoesNotContain("if those are already set", r);
+    }
+
+    [Fact]
+    public void ThreadpoolParallel_AlreadyWithinGuidance_GuardsHarder()
+    {
+        // MAXDOP 8 / CTFP 50 are within topology guidance yet the pool still exhausted, so the
+        // driver is concurrency volume — the workload-aware override guards harder.
+        var advice = FactAdvice.Compose(
+            "THREADPOOL_PARALLEL", Facts(F("CONFIG_MAXDOP", 8), F("CONFIG_CTFP", 50), Hardware(8)));
+
+        var r = advice!.Remediation;
+        Assert.Contains("MAXDOP is 8", r);
+        Assert.Contains("already within topology guidance", r);
+        Assert.Contains("MAXDOP from 8 to 4", r); // harder = rec/2
+    }
+
+    [Fact]
+    public void ThreadpoolParallel_NoConfigFacts_FallsBackToStaticBlock()
+    {
+        var advice = FactAdvice.Compose("THREADPOOL_PARALLEL", Facts());
+        Assert.Equal(FactAdvice.GetForFactKey("THREADPOOL_PARALLEL"), advice);
+    }
+
+    // ── CONFIG_MAXDOP: headline states the real value (the static block hard-coded "0") ──
+
+    [Theory]
+    [InlineData(0, "MAXDOP is 0")]
+    [InlineData(1, "MAXDOP is 1")]
+    [InlineData(16, "MAXDOP is 16")]
+    public void ConfigMaxdop_HeadlineStatesActualValue(int maxdop, string expected)
+    {
+        var advice = FactAdvice.Compose("CONFIG_MAXDOP", Facts(F("CONFIG_MAXDOP", maxdop), Hardware(8)));
+        Assert.Contains(expected, advice!.Headline);
+    }
+
+    [Fact]
+    public void ConfigMaxdop_AboveGuidance_RecommendsLoweringToCores()
+    {
+        var advice = FactAdvice.Compose("CONFIG_MAXDOP", Facts(F("CONFIG_MAXDOP", 32), Hardware(8)));
+        Assert.Contains("Lower MAXDOP from 32 to 8", advice!.Remediation);
+    }
+
+    // ── CONFIG_CTFP: states the real value ──
+
+    [Fact]
+    public void ConfigCtfp_StatesActualValue()
+    {
+        var advice = FactAdvice.Compose("CONFIG_CTFP", Facts(F("CONFIG_CTFP", 5)));
+        Assert.Contains("Cost Threshold for Parallelism is 5", advice!.Headline);
+        Assert.Contains("Raise it to 50", advice.Remediation);
+    }
+
+    // ── non-value keys pass through to the static block ──
+
+    [Fact]
+    public void Compose_NonValueKey_ReturnsStaticBlock()
+    {
+        Assert.Equal(FactAdvice.GetForFactKey("DEADLOCKS"), FactAdvice.Compose("DEADLOCKS", Facts()));
+    }
+
+    // ── serialize / read-back round-trip ──
+
+    [Fact]
+    public void SerializeForStoryText_RoundTrips()
+    {
+        var composed = FactAdvice.Compose(
+            "THREADPOOL_PARALLEL", Facts(F("CONFIG_MAXDOP", 16), F("CONFIG_CTFP", 5), Hardware(8)));
+        var json = FactAdvice.SerializeForStoryText(composed);
+
+        Assert.StartsWith("{", json);
+        var back = FactAdvice.TryReadStoryText(json);
+        Assert.NotNull(back);
+        Assert.Equal(composed!.Headline, back!.Headline);
+        Assert.Equal(composed.Investigation, back.Investigation);
+        Assert.Equal(composed.Remediation, back.Remediation);
+    }
+
+    [Fact]
+    public void TryReadStoryText_LegacyOrEmpty_ReturnsNull()
+    {
+        Assert.Null(FactAdvice.TryReadStoryText(""));
+        Assert.Null(FactAdvice.TryReadStoryText(null));
+        Assert.Null(FactAdvice.TryReadStoryText("plain legacy text"));
+    }
+
+    // ── render entry point: prefer frozen StoryText, fall back to static ──
+
+    [Fact]
+    public void GetComposedForFinding_PrefersFrozenStoryText()
+    {
+        var custom = new AdviceBlock("Frozen headline", "Frozen investigation", "Frozen remediation");
+        var finding = new AnalysisFinding
+        {
+            RootFactKey = "THREADPOOL_PARALLEL",
+            StoryText = FactAdvice.SerializeForStoryText(custom)
+        };
+
+        var advice = FactAdvice.GetComposedForFinding(finding);
+        Assert.Equal("Frozen headline", advice!.Headline);
+        Assert.Equal("Frozen remediation", advice.Remediation);
+    }
+
+    [Fact]
+    public void GetComposedForFinding_EmptyStoryText_FallsBackToStatic()
+    {
+        var finding = new AnalysisFinding { RootFactKey = "CONFIG_CTFP", StoryText = "" };
+        Assert.Equal(FactAdvice.GetForFactKey("CONFIG_CTFP"), FactAdvice.GetComposedForFinding(finding));
+    }
+
+    // ── PopulateStoryText: freezes value-stated advice, skips absolution ──
+
+    [Fact]
+    public void PopulateStoryText_FreezesValueStatedAdvice_OnValueBearingStory()
+    {
+        var story = new AnalysisStory { RootFactKey = "THREADPOOL_PARALLEL", IsAbsolution = false };
+        var facts = new List<Fact> { F("CONFIG_MAXDOP", 16), F("CONFIG_CTFP", 5), Hardware(8) };
+
+        FactAdvice.PopulateStoryText(new[] { story }, facts);
+
+        Assert.StartsWith("{", story.StoryText);
+        var back = FactAdvice.TryReadStoryText(story.StoryText);
+        Assert.Contains("MAXDOP is 16", back!.Remediation);
+    }
+
+    [Fact]
+    public void PopulateStoryText_SkipsAbsolution()
+    {
+        var story = new AnalysisStory { RootFactKey = "server_health", IsAbsolution = true, StoryText = "" };
+        FactAdvice.PopulateStoryText(new[] { story }, new List<Fact>());
+        Assert.Equal("", story.StoryText);
+    }
+}
