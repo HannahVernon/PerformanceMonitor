@@ -8,10 +8,14 @@
 
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 using PerformanceMonitorDashboard.Models;
 
 namespace PerformanceMonitorDashboard.Controls
@@ -69,6 +73,7 @@ namespace PerformanceMonitorDashboard.Controls
             if (items == null || items.Count == 0)
             {
                 BarMaxExecutions = BarMaxTotalCpu = BarMaxTotalElapsed = BarMaxTotalReads = 1.0;
+                if (QueryStatsByDbCards != null) QueryStatsByDbCards.Items = null;
                 return;
             }
 
@@ -77,6 +82,55 @@ namespace PerformanceMonitorDashboard.Controls
             BarMaxTotalCpu = Math.Max(1.0, items.Max(i => i.TotalCpuTimeMs));
             BarMaxTotalElapsed = Math.Max(1.0, items.Max(i => i.TotalElapsedTimeMs));
             BarMaxTotalReads = Math.Max(1.0, items.Max(i => (double)i.TotalLogicalReads));
+
+            RefreshByDbCards(items);
+        }
+
+        /// <summary>
+        /// Builds the per-database CPU bar-cards (A.6) from the currently displayed query rows — no
+        /// new query, just an aggregation of what the grid already holds. A database's color is a
+        /// STABLE alphabetical index (D4), so it keeps its color no matter how the bars are ranked;
+        /// the bars themselves are ordered by value (largest first).
+        /// </summary>
+        private void RefreshByDbCards(List<QueryStatsItem> items)
+        {
+            if (QueryStatsByDbCards == null) return;
+
+            var byDb = items
+                .GroupBy(i => i.DatabaseName ?? string.Empty)
+                .Select(g => new { Db = g.Key, Cpu = g.Sum(x => x.TotalCpuTimeMs) })
+                .Where(x => x.Cpu > 0)
+                .ToList();
+
+            if (byDb.Count == 0)
+            {
+                QueryStatsByDbCards.Items = null;
+                return;
+            }
+
+            var sortedNames = byDb.Select(x => x.Db)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            double max = byDb.Max(x => x.Cpu);
+
+            QueryStatsByDbCards.Items = byDb
+                .OrderByDescending(x => x.Cpu)
+                .Select(x => new MetricBarItem
+                {
+                    Label = string.IsNullOrEmpty(x.Db) ? "(unknown)" : x.Db,
+                    Value = x.Cpu,
+                    Maximum = max,
+                    ValueText = x.Cpu.ToString("N0"),
+                    BarBrush = BrushFromHex(ChartPalette.CyclingColor(sortedNames.IndexOf(x.Db))),
+                })
+                .ToList();
+        }
+
+        private static Brush BrushFromHex(string hex)
+        {
+            var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
+            b.Freeze();
+            return b;
         }
     }
 }

@@ -577,10 +577,17 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <local:TimeRangeSlicerControl x:Name="QueryStatsSlicer" Grid.Row="0"/>
-                <TextBlock x:Name="QueryStatsComparisonBanner" Grid.Row="1" Visibility="Collapsed"
-                           Padding="8,4" FontWeight="Bold"
-                           Foreground="{DynamicResource ForegroundBrush}"
-                           Background="#2244AAFF"/>
+                <StackPanel Grid.Row="1">
+                    <TextBlock x:Name="QueryStatsComparisonBanner" Visibility="Collapsed"
+                               Padding="8,4" FontWeight="Bold"
+                               Foreground="{DynamicResource ForegroundBrush}"
+                               Background="#2244AAFF"/>
+                    <Expander x:Name="QueryStatsByDbExpander" Header="CPU by database" IsExpanded="False" Margin="4,2,4,0">
+                        <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
+                            <ui:MetricBarCards x:Name="QueryStatsByDbCards" Margin="4,4,4,8"/>
+                        </ScrollViewer>
+                    </Expander>
+                </StackPanel>
             <DataGrid Grid.Row="2" x:Name="QueryStatsDataGrid" AutoGenerateColumns="False" IsReadOnly="True"
                       GridLinesVisibility="Horizontal" CanUserResizeColumns="True"
                       ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
