@@ -151,6 +151,75 @@ ORDER BY collection_time";
     }
 
     /// <summary>
+    /// Batched sibling of <see cref="GetWaitStatsTrendAsync"/>: fetches the per-second trend for
+    /// ALL selected wait types in ONE query (replacing an N+1 query-per-type loop), grouped by type.
+    /// The LAG window is partitioned by wait_type so each type's per-second rate is computed independently.
+    /// </summary>
+    public async Task<Dictionary<string, List<WaitStatsTrendPoint>>> GetWaitStatsTrendsByTypesAsync(int serverId, List<string> waitTypes, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        using var _q = TimeQuery("GetWaitStatsTrendsByTypesAsync", "v_wait_stats trends batched by type");
+        var result = new Dictionary<string, List<WaitStatsTrendPoint>>();
+        if (waitTypes.Count == 0) return result;
+
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+
+        var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var typeParams = string.Join(", ", waitTypes.Select((_, i) => "$" + (i + 4)));
+
+        command.CommandText = $@"
+WITH raw AS
+(
+    SELECT
+        wait_type,
+        collection_time,
+        delta_wait_time_ms,
+        delta_signal_wait_time_ms,
+        delta_waiting_tasks,
+        date_diff('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time), collection_time) AS interval_seconds
+    FROM v_wait_stats
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   wait_type IN ({typeParams})
+)
+SELECT
+    wait_type,
+    collection_time,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
+    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
+FROM raw
+ORDER BY wait_type, collection_time";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = startTime });
+        command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var wt in waitTypes)
+            command.Parameters.Add(new DuckDBParameter { Value = wt });
+
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var wt = reader.GetString(0);
+            if (!result.TryGetValue(wt, out var list))
+            {
+                list = new List<WaitStatsTrendPoint>();
+                result[wt] = list;
+            }
+            list.Add(new WaitStatsTrendPoint
+            {
+                CollectionTime = reader.GetDateTime(1),
+                WaitTimeMsPerSecond = reader.IsDBNull(2) ? 0 : reader.GetDouble(2),
+                SignalWaitTimeMsPerSecond = reader.IsDBNull(3) ? 0 : reader.GetDouble(3),
+                AvgMsPerWait = reader.IsDBNull(4) ? 0 : reader.GetDouble(4)
+            });
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Gets total wait time trend across all wait types as a single aggregated time-series.
     /// Used by the correlated timeline lanes for a single-line wait stats overview.
     /// </summary>

@@ -173,11 +173,13 @@ public partial class ServerTab : UserControl
             }
             double globalMax = 0;
 
+            // Batched fetch: one query for all selected wait types (was an N+1 query-per-type loop).
+            var trendsByType = await Task.Run(() => _dataService.GetWaitStatsTrendsByTypesAsync(_serverId, selected.Select(s => s.DisplayName).ToList(), hoursBack, fromDate, toDate));
+            if (gen != _waitStatsPickerGen) return;
+
             for (int i = 0; i < selected.Count; i++)
             {
-                var trend = await Task.Run(() => _dataService.GetWaitStatsTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate));
-                if (gen != _waitStatsPickerGen) return;
-                if (trend.Count == 0) continue;
+                if (!trendsByType.TryGetValue(selected[i].DisplayName, out var trend) || trend.Count == 0) continue;
 
                 var times = trend.Select(t => t.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
                 var values = useAvgPerWait
@@ -332,11 +334,13 @@ public partial class ServerTab : UserControl
             string topNonBpClerk = "";
             double topNonBpMb = 0;
 
+            // Batched fetch: one query for all selected clerk types (was an N+1 query-per-clerk loop).
+            var trendsByType = await Task.Run(() => _dataService.GetMemoryClerkTrendsByTypesAsync(_serverId, selected.Select(s => s.DisplayName).ToList(), hoursBack, fromDate, toDate));
+            if (gen != _memoryClerksPickerGen) return;
+
             for (int i = 0; i < selected.Count; i++)
             {
-                var trend = await Task.Run(() => _dataService.GetMemoryClerkTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate));
-                if (gen != _memoryClerksPickerGen) return;
-                if (trend.Count == 0) continue;
+                if (!trendsByType.TryGetValue(selected[i].DisplayName, out var trend) || trend.Count == 0) continue;
 
                 var times = trend.Select(t => t.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
                 var values = trend.Select(t => t.MemoryMb).ToArray();
@@ -543,11 +547,13 @@ public partial class ServerTab : UserControl
             }
             double globalMax = 0;
 
+            // Batched fetch: one query for all selected counters (was an N+1 query-per-counter loop).
+            var trendsByCounter = await Task.Run(() => _dataService.GetPerfmonTrendsByCountersAsync(_serverId, selected.Select(s => s.DisplayName).ToList(), hoursBack, fromDate, toDate));
+            if (gen != _perfmonPickerGen) return;
+
             for (int i = 0; i < selected.Count; i++)
             {
-                var trend = await Task.Run(() => _dataService.GetPerfmonTrendAsync(_serverId, selected[i].DisplayName, hoursBack, fromDate, toDate));
-                if (gen != _perfmonPickerGen) return;
-                if (trend.Count == 0) continue;
+                if (!trendsByCounter.TryGetValue(selected[i].DisplayName, out var trend) || trend.Count == 0) continue;
 
                 var times = trend.Select(t => t.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
                 var values = trend.Select(t => (double)t.DeltaValue).ToArray();
