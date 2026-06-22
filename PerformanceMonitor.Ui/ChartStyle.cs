@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Linq;
 using System.Windows;
 using System.Windows.Media;
 using ScottPlot.WPF;
@@ -202,17 +203,30 @@ namespace PerformanceMonitor.Ui
         /// </summary>
         public static void StyleScatter(ScottPlot.Plottables.Scatter scatter)
         {
-            int pointCount = scatter.Data.GetScatterPoints().Count;
+            var pts = scatter.Data.GetScatterPoints();
+            int pointCount = pts.Count;
             var seriesColor = scatter.LineColor;
             scatter.LineWidth = 2;
             scatter.MarkerSize = MarkerSizeForDensity(pointCount);
             // Soften the connecting line; markers stay fully opaque so peaks read clearly.
             scatter.LineColor = seriesColor.WithAlpha(215);
-            // Solid-ish area fill under the line — the main "easy on the eye" look ported from
-            // PerformanceStudio. Alpha 70 reads clearly without fully hiding overlapping series on
-            // the busy multi-line charts.
+            // Gradient area fill — the "easy on the eye" PerformanceStudio look. Anchored to THIS
+            // series' own data range [min, max], NOT to zero: the fill is a ribbon hugging the line
+            // (color near the peak, fading to transparent at the series' own floor). Filling to zero
+            // looks wrong for high-baseline metrics like memory (a buffer pool flat at 35 GB would
+            // float a band near the top with a huge dead gap below); anchoring to the data band keeps
+            // it sensible for both near-zero metrics (CPU) and high-baseline ones (memory). The fade
+            // also means overlapping multi-series fills never pile into grey near the floor.
+            double minY = pointCount > 0 ? pts.Min(p => p.Y) : 0.0;
+            double maxY = pointCount > 0 ? pts.Max(p => p.Y) : 1.0;
+            if (double.IsNaN(minY)) minY = 0.0;
+            if (double.IsNaN(maxY) || maxY <= minY) maxY = minY + 1.0;
             scatter.FillY = true;
-            scatter.FillYColor = seriesColor.WithAlpha(70);
+            scatter.FillYValue = minY;
+            scatter.AxisGradientDirection = ScottPlot.AxisGradientDirection.Vertical;
+            scatter.ColorPositions.Clear();
+            scatter.ColorPositions.Add(new(seriesColor.WithAlpha(0), minY));
+            scatter.ColorPositions.Add(new(seriesColor.WithAlpha(135), maxY));
         }
 
         /// <summary>
