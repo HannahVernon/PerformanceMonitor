@@ -243,4 +243,33 @@ public class LiteRecommendationsReaderTests
     {
         Assert.Empty(LiteRecommendationsReader.MapFindings(Array.Empty<AnalysisFinding>(), ServerName));
     }
+
+    // Correlate-and-focus slice 1 (review §1d): each card's advice gains a "what else fired in this
+    // window" cross-reference listing the other findings, so the operator stops hunting across cards.
+    [Fact]
+    public void MapFindings_AppendsCoFiredCrossReference_WhenMultipleFindings()
+    {
+        var t = DateTime.UtcNow;
+        var items = LiteRecommendationsReader.MapFindings(new List<AnalysisFinding>
+        {
+            Finding("CPU_SQL_PERCENT", 1.6, analysisTime: t),
+            Finding("BLOCKING_EVENTS", 1.0, analysisTime: t),
+        }, ServerName);
+
+        Assert.Equal(2, items.Count);
+        Assert.All(items, i => Assert.Contains("Also surfaced in this analysis window:", i.AdviceText!));
+        // each card cross-references the OTHER finding's title
+        Assert.Contains(items[1].Title, items[0].AdviceText!);
+        Assert.Contains(items[0].Title, items[1].AdviceText!);
+    }
+
+    [Fact]
+    public void MapFindings_NoCoFiredLine_ForSingleFinding()
+    {
+        var items = LiteRecommendationsReader.MapFindings(
+            new List<AnalysisFinding> { Finding("CPU_SQL_PERCENT", 1.6) }, ServerName);
+
+        Assert.Single(items);
+        Assert.DoesNotContain("Also surfaced in this analysis window:", items[0].AdviceText ?? string.Empty);
+    }
 }

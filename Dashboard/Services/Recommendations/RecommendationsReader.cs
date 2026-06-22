@@ -105,6 +105,12 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
             foreach (var finding in findings)
                 engineItems.AddRange(MapEngineFindings(finding));
 
+            // Correlate-and-focus slice 1 (review §1d): append a "what else fired in this analysis
+            // window" cross-reference to each engine card's advice so related findings link to each
+            // other instead of the operator hunting across cards. Engine findings only (the legacy
+            // store is a separate producer). Render-time, not frozen.
+            AppendCoFired(engineItems);
+
             var legacyItems = new List<RecommendationItem>(legacy.Count);
             foreach (var issue in legacy)
             {
@@ -115,6 +121,29 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
             }
 
             return RecommendationDeduper.Merge(engineItems, legacyItems);
+        }
+
+        /// <summary>
+        /// Appends a "what else fired in this analysis window" cross-reference to each engine card's
+        /// advice text (correlate-and-focus slice 1, review §1d). Render-time, not frozen; no-op for a
+        /// single card. Mirrors the Lite reader so both apps surface the same cross-reference.
+        /// </summary>
+        internal static void AppendCoFired(List<RecommendationItem> engineItems)
+        {
+            if (engineItems.Count <= 1)
+                return;
+
+            var windowTitles = new List<(string Title, double Severity)>(engineItems.Count);
+            foreach (var it in engineItems)
+                windowTitles.Add((it.Title, it.RawSeverity));
+
+            foreach (var it in engineItems)
+            {
+                var line = CoFiredSummary.Line(CoFiredSummary.OtherTitles(it.Title, windowTitles));
+                if (line is null)
+                    continue;
+                it.AdviceText = string.IsNullOrEmpty(it.AdviceText) ? line : it.AdviceText + " " + line;
+            }
         }
 
         /// <summary>
