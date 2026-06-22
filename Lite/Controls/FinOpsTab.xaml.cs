@@ -140,7 +140,7 @@ public partial class FinOpsTab : UserControl
         string? plan = null;
         if (serverId != 0 && _dataService != null)
         {
-            try { plan = await _dataService.GetCachedQueryPlanAsync(serverId, queryHash); }
+            try { plan = await System.Threading.Tasks.Task.Run(() => _dataService.GetCachedQueryPlanAsync(serverId, queryHash)); }
             catch { /* fall through to the live server */ }
         }
         if (string.IsNullOrEmpty(plan))

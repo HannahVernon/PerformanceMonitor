@@ -1243,7 +1243,7 @@ public partial class ServerTab : UserControl
                 }
             }
             var metric = (HeatmapMetric)HeatmapMetricCombo.SelectedIndex;
-            var result = await _dataService.GetQueryHeatmapAsync(_serverId, metric, hoursBack, fromDate, toDate);
+            var result = await System.Threading.Tasks.Task.Run(() => _dataService.GetQueryHeatmapAsync(_serverId, metric, hoursBack, fromDate, toDate));
             UpdateQueryHeatmapChart(result);
         }
         catch (Exception ex)

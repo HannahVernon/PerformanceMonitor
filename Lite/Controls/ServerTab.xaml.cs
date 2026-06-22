@@ -443,7 +443,7 @@ public partial class ServerTab : UserControl
     {
         try
         {
-            var result = await _dataService.GetDailySummaryAsync(_serverId, _dailySummaryDate);
+            var result = await Task.Run(() => _dataService.GetDailySummaryAsync(_serverId, _dailySummaryDate));
             DailySummaryGrid.ItemsSource = result != null
                 ? new List<DailySummaryRow> { result } : null;
             DailySummaryNoData.Visibility = result == null

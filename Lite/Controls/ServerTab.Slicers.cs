@@ -42,7 +42,7 @@ public partial class ServerTab : UserControl
             var fromServer = ServerTimeHelper.ToServerTime(e.StartUtc);
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
 
-            var bpr = await _dataService.GetRecentBlockedProcessReportsAsync(_serverId, 0, fromServer, toServer);
+            var bpr = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, 0, fromServer, toServer));
             _blockedProcessFilterMgr!.UpdateData(bpr);
         }
         catch (Exception ex)
@@ -58,7 +58,7 @@ public partial class ServerTab : UserControl
             var fromServer = ServerTimeHelper.ToServerTime(e.StartUtc);
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
 
-            var dlr = await _dataService.GetRecentDeadlocksAsync(_serverId, 0, fromServer, toServer);
+            var dlr = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, 0, fromServer, toServer));
             _deadlockFilterMgr!.UpdateData(await ParseDeadlocksOffUiThreadAsync(dlr));
         }
         catch (Exception ex)
@@ -95,7 +95,7 @@ public partial class ServerTab : UserControl
                 queryTo = toDate.Value.AddHours(1);
             }
 
-            var data = await _dataService.GetActiveQuerySlicerDataAsync(_serverId, hoursBack, queryFrom, queryTo);
+            var data = await Task.Run(() => _dataService.GetActiveQuerySlicerDataAsync(_serverId, hoursBack, queryFrom, queryTo));
             _activeQueriesSlicerData = data;
             _activeQueriesSlicerMetric = "Sessions";
             var (slicerStart, slicerEnd) = GetSlicerTimeRange(hoursBack, queryFrom, queryTo);
@@ -119,7 +119,7 @@ public partial class ServerTab : UserControl
             var fromServer = ServerTimeHelper.ToServerTime(e.StartUtc);
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
 
-            var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromServer, toServer);
+            var snapshots = await Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromServer, toServer));
             _querySnapshotsFilterMgr!.UpdateData(snapshots);
             LiveSnapshotIndicator.Text = "";
         }
@@ -151,7 +151,7 @@ public partial class ServerTab : UserControl
                 }
             }
 
-            var data = await _dataService.GetQueryStatsSlicerDataAsync(_serverId, hoursBack, fromDate, toDate);
+            var data = await Task.Run(() => _dataService.GetQueryStatsSlicerDataAsync(_serverId, hoursBack, fromDate, toDate));
             _queryStatsSlicerData = data;
             _queryStatsSlicerMetric = "TotalCpu";
             var (slicerStart, slicerEnd) = GetSlicerTimeRange(hoursBack, fromDate, toDate);
@@ -170,7 +170,7 @@ public partial class ServerTab : UserControl
         {
             var fromServer = ServerTimeHelper.ToServerTime(e.StartUtc);
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
-            var queryStats = await _dataService.GetTopQueriesByCpuAsync(_serverId, 0, 50, fromServer, toServer, UtcOffsetMinutes);
+            var queryStats = await Task.Run(() => _dataService.GetTopQueriesByCpuAsync(_serverId, 0, 50, fromServer, toServer, UtcOffsetMinutes));
             _queryStatsFilterMgr!.UpdateData(queryStats);
             await RefreshQueryStatsComparisonAsync(fromServer, toServer);
         }
@@ -202,7 +202,7 @@ public partial class ServerTab : UserControl
                 }
             }
 
-            var data = await _dataService.GetQueryStoreSlicerDataAsync(_serverId, hoursBack, fromDate, toDate);
+            var data = await Task.Run(() => _dataService.GetQueryStoreSlicerDataAsync(_serverId, hoursBack, fromDate, toDate));
             _queryStoreSlicerData = data;
             _queryStoreSlicerMetric = "TotalCpu";
             var (slicerStart, slicerEnd) = GetSlicerTimeRange(hoursBack, fromDate, toDate);
@@ -221,7 +221,7 @@ public partial class ServerTab : UserControl
         {
             var fromServer = ServerTimeHelper.ToServerTime(e.StartUtc);
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
-            var qsData = await _dataService.GetQueryStoreTopQueriesAsync(_serverId, 0, 50, fromServer, toServer);
+            var qsData = await Task.Run(() => _dataService.GetQueryStoreTopQueriesAsync(_serverId, 0, 50, fromServer, toServer));
             _queryStoreFilterMgr!.UpdateData(qsData);
             await RefreshQueryStoreComparisonAsync(fromServer, toServer);
         }
@@ -253,7 +253,7 @@ public partial class ServerTab : UserControl
                 }
             }
 
-            var data = await _dataService.GetProcStatsSlicerDataAsync(_serverId, hoursBack, fromDate, toDate);
+            var data = await Task.Run(() => _dataService.GetProcStatsSlicerDataAsync(_serverId, hoursBack, fromDate, toDate));
             _procStatsSlicerData = data;
             _procStatsSlicerMetric = "TotalCpu";
             var (slicerStart, slicerEnd) = GetSlicerTimeRange(hoursBack, fromDate, toDate);
@@ -272,7 +272,7 @@ public partial class ServerTab : UserControl
         {
             var fromServer = ServerTimeHelper.ToServerTime(e.StartUtc);
             var toServer = ServerTimeHelper.ToServerTime(e.EndUtc);
-            var procStats = await _dataService.GetTopProceduresByCpuAsync(_serverId, 0, 50, fromServer, toServer, UtcOffsetMinutes);
+            var procStats = await Task.Run(() => _dataService.GetTopProceduresByCpuAsync(_serverId, 0, 50, fromServer, toServer, UtcOffsetMinutes));
             _procStatsFilterMgr!.UpdateData(procStats);
             await RefreshProcStatsComparisonAsync(fromServer, toServer);
         }

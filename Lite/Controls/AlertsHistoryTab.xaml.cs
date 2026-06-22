@@ -79,7 +79,7 @@ public partial class AlertsHistoryTab : UserControl
             var hoursBack = GetSelectedHoursBack();
             int? serverId = GetSelectedServerId();
 
-            var alerts = await _dataService.GetAlertHistoryAsync(hoursBack, 500, serverId);
+            var alerts = await System.Threading.Tasks.Task.Run(() => _dataService.GetAlertHistoryAsync(hoursBack, 500, serverId));
 
             if (_filterManager != null)
                 _filterManager.UpdateData(alerts);
@@ -312,7 +312,7 @@ public partial class AlertsHistoryTab : UserControl
 
         try
         {
-            var affected = await _dataService.DismissAlertsAsync(liveAlerts);
+            var affected = await System.Threading.Tasks.Task.Run(() => _dataService.DismissAlertsAsync(liveAlerts));
             if (affected < liveAlerts.Count && App.LogAlertDismissals)
             {
                 AppLogger.Warn("AlertsHistory", $"Dismiss selected: only {affected} of {liveAlerts.Count} live alert(s) were updated");
@@ -376,7 +376,7 @@ public partial class AlertsHistoryTab : UserControl
         {
             var hoursBack = GetSelectedHoursBack();
             int? serverId = GetSelectedServerId();
-            var affected = await _dataService.DismissAllVisibleAlertsAsync(hoursBack, serverId);
+            var affected = await System.Threading.Tasks.Task.Run(() => _dataService.DismissAllVisibleAlertsAsync(hoursBack, serverId));
             if (affected < liveCount && App.LogAlertDismissals)
             {
                 AppLogger.Warn("AlertsHistory", $"Dismiss all: only {affected} of {liveCount} live alert(s) were updated");
