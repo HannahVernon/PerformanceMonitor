@@ -180,4 +180,22 @@ public class BlockingChainReconstructorTests
         // The 8-victim fan-out out-scores the depth-2 / 2-victim chain.
         Assert.Equal(800, result.Chains[0].ApexSpid);
     }
+
+    [Fact]
+    public void ReconstructedOutput_CarriesTranStartedAndDatabaseName()
+    {
+        // The additive output fields (Phase 0) the block-chain tree builder rebuilds the tree from.
+        var result = Run(new[] { Pair(201, 200), Pair(202, 201) });
+
+        var chain = Assert.Single(result.Chains);
+        Assert.Equal(200, chain.ApexSpid);
+        Assert.Equal(TranFor(200), chain.TranStarted);
+
+        Assert.NotEmpty(chain.Levels);
+        Assert.All(chain.Levels, l => Assert.Equal("TestDb", l.DatabaseName));
+
+        var top = chain.Levels.Single(l => l.BlockingSpid == 200 && l.BlockedSpid == 201);
+        Assert.Equal(TranFor(200), top.BlockingTranStarted);
+        Assert.Equal(TranFor(201), top.BlockedTranStarted);
+    }
 }

@@ -42,9 +42,14 @@ internal sealed class ChainLevel
 {
     public int Level { get; init; }
     public int BlockingSpid { get; init; }
+    /// <summary>Transaction start of the blocking side — the identity disambiguator a faithful
+    /// tree rebuild needs (a SPID reused by two sessions in the window is two real nodes).</summary>
+    public DateTime? BlockingTranStarted { get; init; }
     public int BlockedSpid { get; init; }
+    public DateTime? BlockedTranStarted { get; init; }
     public string LockMode { get; init; } = string.Empty;
     public long WaitTimeMs { get; init; }
+    public string DatabaseName { get; init; } = string.Empty;
     public string BlockingSqlText { get; init; } = string.Empty;
     public string BlockedSqlText { get; init; } = string.Empty;
 }
@@ -53,6 +58,8 @@ internal sealed class ChainLevel
 internal sealed class ReconstructedChain
 {
     public int ApexSpid { get; init; }
+    /// <summary>Transaction start of the apex — pairs with <see cref="ApexSpid"/> as its session identity.</summary>
+    public DateTime? TranStarted { get; init; }
     public bool ApexSleeping { get; init; }
     public int Depth { get; init; }
     public int VictimCount { get; init; }
@@ -84,7 +91,7 @@ internal static class BlockingChainReconstructor
     /// </summary>
     private static readonly DateTime SentinelFloor = new(1900, 1, 2);
 
-    private sealed record EdgeInfo(long WaitMs, string LockMode, string BlockingSql, string BlockedSql);
+    private sealed record EdgeInfo(long WaitMs, string LockMode, string BlockingSql, string BlockedSql, string DatabaseName);
 
     /// <summary>Builds a stable session key, normalizing the 1900-01-01 sentinel to NULL.</summary>
     public static SessionKey MakeKey(int spid, DateTime? tranStarted)
@@ -129,7 +136,8 @@ internal static class BlockingChainReconstructor
             {
                 dests[blocked] = new EdgeInfo(
                     row.WaitTimeMs, row.LockMode ?? string.Empty,
-                    row.BlockingSqlText ?? string.Empty, row.BlockedSqlText ?? string.Empty);
+                    row.BlockingSqlText ?? string.Empty, row.BlockedSqlText ?? string.Empty,
+                    row.DatabaseName ?? string.Empty);
             }
         }
 
@@ -159,6 +167,7 @@ internal static class BlockingChainReconstructor
             chains.Add(new ReconstructedChain
             {
                 ApexSpid = root.Spid,
+                TranStarted = root.TranStarted,
                 ApexSleeping = sleepingBlockers.Contains(root),
                 Depth = depth,
                 VictimCount = victimCount,
@@ -342,9 +351,12 @@ internal static class BlockingChainReconstructor
                 {
                     Level = level + 1,
                     BlockingSpid = node.Spid,
+                    BlockingTranStarted = node.TranStarted,
                     BlockedSpid = child.Spid,
+                    BlockedTranStarted = child.TranStarted,
                     LockMode = edge.LockMode,
                     WaitTimeMs = edge.WaitMs,
+                    DatabaseName = edge.DatabaseName,
                     BlockingSqlText = edge.BlockingSql,
                     BlockedSqlText = edge.BlockedSql
                 });

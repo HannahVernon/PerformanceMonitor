@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Ui;
 using PerformanceMonitor.Common;
 
@@ -348,6 +349,44 @@ LIMIT 200";
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Fetches the blocked/blocker pair rows for a window, for the block-chain viewer to feed
+    /// <see cref="BlockingChainReconstructor"/>. Internal (not public): <see cref="BlockingPairRow"/> is
+    /// internal to the analysis assembly — a public method returning it would be CS0050.
+    /// <see cref="OpenConnectionAsync"/> already takes the DuckDB read lock, so do NOT acquire it again
+    /// (the lock is NoRecursion). Uses <see cref="Analysis.BlockingPairRowQuery.SpidFilter"/> so it agrees
+    /// with the drill-down + fact collectors on the apex.
+    /// </summary>
+    internal async Task<List<BlockingPairRow>> GetBlockingPairRowsAsync(int serverId, DateTime start, DateTime end)
+    {
+        var rows = new List<BlockingPairRow>();
+
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = $@"
+SELECT
+    event_time, database_name,
+    blocked_spid, blocked_last_tran_started,
+    blocking_spid, blocking_last_tran_started,
+    wait_time_ms, lock_mode, blocking_status,
+    blocked_sql_text, blocking_sql_text
+FROM v_blocked_process_reports
+WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+{PerformanceMonitorLite.Analysis.BlockingPairRowQuery.SpidFilter}
+ORDER BY event_time DESC
+LIMIT 5000";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = start });
+        command.Parameters.Add(new DuckDBParameter { Value = end });
+
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            rows.Add(PerformanceMonitorLite.Analysis.BlockingPairRowQuery.Read(reader));
+
+        return rows;
     }
 
     /// <summary>
