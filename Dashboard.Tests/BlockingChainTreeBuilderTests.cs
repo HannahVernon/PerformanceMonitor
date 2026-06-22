@@ -138,7 +138,7 @@ public class BlockingChainTreeBuilderTests
         Assert.Equal(403, n401.Children[0].Spid);
         Assert.Empty(n402.Children);
         Assert.Equal(4, Flatten(root).Count());        // 403 is not duplicated
-        Assert.Single(Flatten(root).Where(n => n.Spid == 403));
+        Assert.Single(Flatten(root), n => n.Spid == 403);
     }
 
     [Fact]
@@ -194,6 +194,6 @@ public class BlockingChainTreeBuilderTests
         var root = Assert.Single(model.Roots);
         Assert.Equal(500, root.Spid);
         Assert.Equal(3, Flatten(root).Count());                 // 500, 501, 502 — no duplicate 500
-        Assert.Single(Flatten(root).Where(n => n.Spid == 500));
+        Assert.Single(Flatten(root), n => n.Spid == 500);
     }
 }

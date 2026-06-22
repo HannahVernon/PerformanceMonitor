@@ -23,7 +23,7 @@ internal static class BlockingChainViewerProjection
         var inputs = reconstruction.Chains.Select(static c => new BlockingChainInput
         {
             ApexSpid = c.ApexSpid,
-            ApexTranStarted = c.TranStarted,
+            ApexTranStarted = c.ApexTranStarted,
             ApexSleeping = c.ApexSleeping,
             Magnitude = c.Magnitude,
             Edges = c.Levels.Select(static l => new BlockingEdgeInput

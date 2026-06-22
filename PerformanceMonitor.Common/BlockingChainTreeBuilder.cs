@@ -85,8 +85,9 @@ namespace PerformanceMonitor.Common
                     return Nullable.Compare(a.BlockedTranStarted, b.BlockedTranStarted);
                 });
 
-            // The apex sources its own SqlText / DatabaseName from any OUTGOING edge (it has no incoming
-            // edge); its wait/lock are empty because it waits on no one.
+            // The apex sources its own SqlText / DatabaseName from its FIRST outgoing edge (it has no
+            // incoming edge); its wait/lock are empty because it waits on no one. Note: a cross-database
+            // lead blocker therefore shows only its first victim's database here.
             var apexEdge = childrenByParent.TryGetValue(apexKey, out var apexOut) && apexOut.Count > 0
                 ? apexOut[0]
                 : null;

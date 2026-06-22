@@ -203,15 +203,7 @@ AND   collection_time <= $3";
             // (Lite maps a missing blocker to spid 0 — see BlockingPairRowQuery).
             command.CommandText = $@"
 SELECT
-    event_time,
-    database_name,
-    blocked_spid,
-    blocked_last_tran_started,
-    blocking_spid,
-    blocking_last_tran_started,
-    wait_time_ms,
-    lock_mode,
-    blocking_status,
+    {BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text,
     blocking_sql_text
 FROM v_blocked_process_reports

@@ -59,7 +59,7 @@ internal sealed class ReconstructedChain
 {
     public int ApexSpid { get; init; }
     /// <summary>Transaction start of the apex — pairs with <see cref="ApexSpid"/> as its session identity.</summary>
-    public DateTime? TranStarted { get; init; }
+    public DateTime? ApexTranStarted { get; init; }
     public bool ApexSleeping { get; init; }
     public int Depth { get; init; }
     public int VictimCount { get; init; }
@@ -167,7 +167,7 @@ internal static class BlockingChainReconstructor
             chains.Add(new ReconstructedChain
             {
                 ApexSpid = root.Spid,
-                TranStarted = root.TranStarted,
+                ApexTranStarted = root.TranStarted,
                 ApexSleeping = sleepingBlockers.Contains(root),
                 Depth = depth,
                 VictimCount = victimCount,

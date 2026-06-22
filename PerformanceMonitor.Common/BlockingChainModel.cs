@@ -94,6 +94,9 @@ namespace PerformanceMonitor.Common
     /// <summary>One blocker -> blocked edge of a chain.</summary>
     public sealed class BlockingEdgeInput
     {
+        /// <summary>The reconstructor's BFS level for this edge. Carried for parity/diagnostics only —
+        /// <see cref="BlockingChainTreeBuilder"/> re-derives depth structurally via its own BFS and does
+        /// not read this, so a reorder of the source edges can't change the built tree.</summary>
         public int Level { get; init; }
         public int BlockingSpid { get; init; }
         public DateTime? BlockingTranStarted { get; init; }

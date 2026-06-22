@@ -189,7 +189,7 @@ public class BlockingChainReconstructorTests
 
         var chain = Assert.Single(result.Chains);
         Assert.Equal(200, chain.ApexSpid);
-        Assert.Equal(TranFor(200), chain.TranStarted);
+        Assert.Equal(TranFor(200), chain.ApexTranStarted);
 
         Assert.NotEmpty(chain.Levels);
         Assert.All(chain.Levels, l => Assert.Equal("TestDb", l.DatabaseName));

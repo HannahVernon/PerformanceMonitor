@@ -118,10 +118,7 @@ LIMIT 5";
         // for the drill-down payload; the shared reader mapping is unaffected (same column order).
         cmd.CommandText = $@"
 SELECT
-    event_time, database_name,
-    blocked_spid, blocked_last_tran_started,
-    blocking_spid, blocking_last_tran_started,
-    wait_time_ms, lock_mode, blocking_status,
+    {BlockingPairRowQuery.LeadingColumns},
     LEFT(blocked_sql_text, 500) AS blocked_sql,
     LEFT(blocking_sql_text, 500) AS blocking_sql
 FROM v_blocked_process_reports

@@ -367,10 +367,7 @@ LIMIT 200";
         using var command = connection.CreateCommand();
         command.CommandText = $@"
 SELECT
-    event_time, database_name,
-    blocked_spid, blocked_last_tran_started,
-    blocking_spid, blocking_last_tran_started,
-    wait_time_ms, lock_mode, blocking_status,
+    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text, blocking_sql_text
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
