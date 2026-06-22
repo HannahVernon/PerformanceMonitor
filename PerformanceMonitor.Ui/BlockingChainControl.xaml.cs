@@ -50,10 +50,10 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     private double _panStartOffsetY;
 
     // Accent brushes — chosen to read on every theme (same palette as PlanViewerControl).
-    private static readonly SolidColorBrush ApexBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));
-    private static readonly SolidColorBrush LongWaitBrush = new(Color.FromRgb(0xFF, 0xB3, 0x47));
+    private static readonly SolidColorBrush ApexBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));        // lead-blocker border + badge (blue)
+    private static readonly SolidColorBrush SelectionBrush = new(Color.FromRgb(0x8E, 0x5B, 0xFF));   // selected node border (purple — distinct from apex)
+    private static readonly SolidColorBrush SleepingBrush = new(Color.FromRgb(0x90, 0xA4, 0xAE));    // sleeping-apex badge (slate — distinct from the warning amber)
     private static readonly SolidColorBrush EdgeBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
-    private static readonly SolidColorBrush SelectionBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));
 
     // Theme-aware chrome resolved at call time from the app's merged resource dictionaries.
     private Brush NodeBackgroundBrush =>
@@ -63,11 +63,18 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     private Brush ForegroundBrush =>
         (TryFindResource("ForegroundBrush") as Brush) ?? Brushes.White;
     private Brush MutedBrush =>
-        (TryFindResource("ForegroundMutedBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0x9A, 0x9A, 0x9A));
+        (TryFindResource("ForegroundMutedBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0xE4, 0xE6, 0xEB));
+    // Longest-wait emphasis (border + the wait number). Theme-aware so it stays legible on Light/CoolBreeze
+    // (orange-on-white fails AA); fallback is the Dark amber.
+    private Brush WarningBrush =>
+        (TryFindResource("WarningTextBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0xFF, 0xB3, 0x47));
 
     public BlockingChainControl()
     {
         InitializeComponent();
+        // Keep the apex legend swatch bound to the same constant the nodes use (the longest-wait swatch
+        // and flag banner use {DynamicResource WarningTextBrush} in XAML, so they track the theme).
+        ApexLegendSwatch.BorderBrush = ApexBrush;
         /* Subscribe for the life of the control. Do NOT unsubscribe on Unloaded — a TabControl fires
            Unloaded on tab switch, which would permanently detach this handler. The host window calls
            Cleanup() when it is actually closed. */
@@ -134,7 +141,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     {
         if (_model == null) return;
         var parts = new List<string>();
-        if (_model.CycleDetected) parts.Add("⚠ cycle detected");
+        if (_model.CycleDetected) parts.Add("cycle detected");
         if (_model.DepthCapped) parts.Add("depth capped");
         if (_model.TraversalTruncated) parts.Add("traversal truncated");
 
@@ -145,8 +152,10 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         }
         else
         {
+            // Reads as a warning (⚠ + the theme-aware amber via FlagBanner's Foreground) — these caveats
+            // mean the rendered chain may be incomplete or misleading.
             FlagBanner.Visibility = Visibility.Visible;
-            FlagBanner.Text = string.Join("  ·  ", parts);
+            FlagBanner.Text = "⚠ " + string.Join("  ·  ", parts);
         }
     }
 
@@ -238,7 +247,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
             Width = NodeWidth,
             Height = NodeHeight,
             Background = NodeBackgroundBrush,
-            BorderBrush = node.IsApex ? ApexBrush : (isLongestWait ? LongWaitBrush : NodeBorderBrush),
+            BorderBrush = node.IsApex ? ApexBrush : (isLongestWait ? WarningBrush : NodeBorderBrush),
             BorderThickness = new Thickness(node.IsApex || isLongestWait ? 2 : 1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(8, 6, 8, 6),
@@ -265,7 +274,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         if (node.IsApex)
             header.Children.Add(MakeBadge("LEAD BLOCKER", ApexBrush));
         if (node.IsApexSleeping)
-            header.Children.Add(MakeBadge("SLEEPING", LongWaitBrush));
+            header.Children.Add(MakeBadge("SLEEPING", SleepingBrush));
         stack.Children.Add(header);
 
         // Database
@@ -292,7 +301,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
                 Text = waitText,
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = isLongestWait ? LongWaitBrush : ForegroundBrush,
+                Foreground = isLongestWait ? WarningBrush : ForegroundBrush,
                 Margin = new Thickness(0, 1, 0, 0)
             });
         }
@@ -337,15 +346,14 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     {
         foreach (var child in node.Children)
         {
-            var (path, label) = CreateElbowConnector(node, child);
-            ChainCanvas.Children.Add(path);
-            if (label != null)
-                ChainCanvas.Children.Add(label);
+            ChainCanvas.Children.Add(CreateElbowConnector(node, child));
             RenderEdges(child);
         }
     }
 
-    private (WpfPath Path, Border? Label) CreateElbowConnector(BlockingChainNode parent, BlockingChainNode child)
+    // Connector only — no edge label. The child's lock mode + wait already live on its card (with the
+    // longest-wait emphasis), and a label here would be painted over by the child card anyway.
+    private WpfPath CreateElbowConnector(BlockingChainNode parent, BlockingChainNode child)
     {
         var parentRight = parent.X + NodeWidth;
         var parentCenterY = parent.Y + NodeHeight / 2;
@@ -360,7 +368,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         figure.Segments.Add(new LineSegment(new Point(childLeft, childCenterY), true));
         geometry.Figures.Add(figure);
 
-        var path = new WpfPath
+        return new WpfPath
         {
             Data = geometry,
             Stroke = EdgeBrush,
@@ -368,29 +376,6 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
             StrokeLineJoin = PenLineJoin.Round,
             SnapsToDevicePixels = true
         };
-
-        // Edge label = the child's lock mode + wait time (its wait on this parent).
-        Border? label = null;
-        var labelText = string.IsNullOrEmpty(child.LockMode)
-            ? FormatWait(child.WaitTimeMs)
-            : $"{child.LockMode} · {FormatWait(child.WaitTimeMs)}";
-        if (!string.IsNullOrWhiteSpace(labelText) && (child.WaitTimeMs > 0 || !string.IsNullOrEmpty(child.LockMode)))
-        {
-            label = new Border
-            {
-                Background = NodeBackgroundBrush,
-                BorderBrush = NodeBorderBrush,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(3),
-                Padding = new Thickness(4, 1, 4, 1),
-                Child = new TextBlock { Text = labelText, FontSize = 9, Foreground = MutedBrush }
-            };
-            // Place just left of the child, centered on its inbound line.
-            Canvas.SetLeft(label, midX + 4);
-            Canvas.SetTop(label, childCenterY - 9);
-        }
-
-        return (path, label);
     }
 
     #endregion
@@ -418,8 +403,10 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         _selectedNodeOriginalThickness = border.BorderThickness;
         _selectedNodeBorder = border;
         _selectedNode = node;
+        // Purple at 3px — distinct hue AND weight from the apex (blue, 2px) and longest-wait (amber, 2px),
+        // so a selected victim can never be mistaken for the lead blocker.
         border.BorderBrush = SelectionBrush;
-        border.BorderThickness = new Thickness(2);
+        border.BorderThickness = new Thickness(3);
 
         ShowProperties(node);
     }

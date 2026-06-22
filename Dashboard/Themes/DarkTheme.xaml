@@ -67,6 +67,9 @@
 
     <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
     <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}"/>
+    <!-- Legible warning amber for content text/borders (block-chain longest-wait, flag banner).
+         Tuned per theme so it clears >=4.5:1 as TEXT on content backgrounds; any control may adopt it. -->
+    <SolidColorBrush x:Key="WarningTextBrush" Color="#FFB347"/>
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource InfoColor}"/>
 

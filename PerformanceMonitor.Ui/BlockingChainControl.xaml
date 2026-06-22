@@ -27,13 +27,13 @@
                     <Separator Margin="12,4"/>
                     <TextBlock Text="Chain:" VerticalAlignment="Center"
                                Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="11" Margin="0,0,6,0"/>
-                    <ComboBox x:Name="ChainSelector" MinWidth="240" Height="26" VerticalContentAlignment="Center"
+                    <ComboBox x:Name="ChainSelector" MinWidth="240" Height="28" VerticalContentAlignment="Center"
                               SelectionChanged="ChainSelector_SelectionChanged"
                               ToolTip="Pick a single chain or show all, ranked by magnitude"/>
                 </StackPanel>
                 <TextBlock x:Name="FlagBanner" DockPanel.Dock="Right" VerticalAlignment="Center"
                            HorizontalAlignment="Right" TextAlignment="Right"
-                           Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="11"
+                           Foreground="{DynamicResource WarningTextBrush}" FontSize="11" FontWeight="SemiBold"
                            Visibility="Collapsed"/>
             </DockPanel>
         </Border>
@@ -42,16 +42,16 @@
         <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" Padding="8,4"
                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
             <StackPanel Orientation="Horizontal">
-                <Border Width="12" Height="12" CornerRadius="2" Background="Transparent"
-                        BorderThickness="2" VerticalAlignment="Center" BorderBrush="#4FA3FF"/>
+                <!-- Apex swatch is set in code from ApexBrush; long-wait tracks the theme warning brush —
+                     so the legend can't drift from what the nodes actually render. -->
+                <Border x:Name="ApexLegendSwatch" Width="12" Height="12" CornerRadius="2" Background="Transparent"
+                        BorderThickness="2" VerticalAlignment="Center"/>
                 <TextBlock Text="Lead blocker (apex)" VerticalAlignment="Center" FontSize="11"
                            Foreground="{DynamicResource ForegroundMutedBrush}" Margin="4,0,16,0"/>
                 <Border Width="12" Height="12" CornerRadius="2" Background="Transparent"
-                        BorderThickness="2" VerticalAlignment="Center" BorderBrush="#FFB347"/>
+                        BorderThickness="2" VerticalAlignment="Center" BorderBrush="{DynamicResource WarningTextBrush}"/>
                 <TextBlock Text="Longest wait" VerticalAlignment="Center" FontSize="11"
                            Foreground="{DynamicResource ForegroundMutedBrush}" Margin="4,0,16,0"/>
-                <TextBlock Text="Edge label = lock mode + wait time" VerticalAlignment="Center" FontSize="11"
-                           Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,0"/>
             </StackPanel>
         </Border>
 
