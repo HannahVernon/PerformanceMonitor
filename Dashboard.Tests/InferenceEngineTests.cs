@@ -283,4 +283,65 @@ public class InferenceEngineTests
         Assert.Equal("SOS_SCHEDULER_YIELD", story.LeafFactKey);
         Assert.Equal(0.5, story.LeafFactValue);              // SOS value, not 0.67
     }
+
+    // ── correlate-and-focus: graph-connectivity incident clustering ──
+
+    [Fact]
+    public void ClusterIntoIncidents_MergesGraphConnectedStories()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"] },
+            new() { RootFactKey = "PLAN_REGRESSION", Severity = 0.6, Path = ["PLAN_REGRESSION"] },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "PLAN_REGRESSION", Source = "queries", Value = 1, Severity = 0.6, BaseSeverity = 0.6 },
+        };
+
+        // CPU_SQL_PERCENT -> PLAN_REGRESSION is an active edge (PLAN_REGRESSION.BaseSeverity > 0),
+        // so the two stories are one incident even though the greedy traversal left them separate.
+        Assert.Single(engine.ClusterIntoIncidents(stories, facts));
+    }
+
+    [Fact]
+    public void ClusterIntoIncidents_KeepsIndependentStoriesSeparate()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"] },
+            new() { RootFactKey = "DISK_SPACE", Severity = 1.6, Path = ["DISK_SPACE"] },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "DISK_SPACE", Source = "disk", Value = 5, Severity = 1.6 },
+        };
+
+        // No graph edge between CPU and disk space -> two separate incidents.
+        Assert.Equal(2, engine.ClusterIntoIncidents(stories, facts).Count);
+    }
+
+    [Fact]
+    public void ClusterIntoIncidents_NormalizesThreadpoolRelabel_AndBridgesToBlocking()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "THREADPOOL_BLOCKING", Severity = 0.9, Path = ["THREADPOOL_BLOCKING"] },
+            new() { RootFactKey = "LCK", Severity = 0.9, Path = ["LCK"] },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "THREADPOOL", Source = "waits", Value = 0.5, Severity = 0.9 },
+            new() { Key = "LCK", Source = "waits", Value = 0.5, Severity = 0.9 },
+        };
+
+        // The relabeled THREADPOOL_BLOCKING path key normalizes to THREADPOOL, whose active
+        // THREADPOOL->LCK bridge (LCK severity >= 0.5) merges it with the blocking story.
+        Assert.Single(engine.ClusterIntoIncidents(stories, facts));
+    }
 }

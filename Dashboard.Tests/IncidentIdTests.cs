@@ -65,4 +65,19 @@ public class IncidentIdTests
         var s2 = new List<AnalysisStory> { Story("BBB", 1.0), Story("AAA", 1.0) }; // same set, reversed order
         Assert.Equal(IncidentId.Compute("SQL1", s1), IncidentId.Compute("SQL1", s2)); // tiebroken by root key
     }
+
+    // ── StampClusters: per-component ids (the clustering refinement) ──
+
+    [Fact]
+    public void StampClusters_GivesEachComponentItsOwnId()
+    {
+        var component1 = new List<AnalysisStory> { Story("CPU_SQL_PERCENT", 1.6), Story("CXPACKET", 0.9) };
+        var component2 = new List<AnalysisStory> { Story("DISK_SPACE", 1.5) };
+
+        IncidentId.StampClusters("SQL1", new[] { component1, component2 });
+
+        Assert.NotEmpty(component1[0].IncidentId);
+        Assert.Equal(component1[0].IncidentId, component1[1].IncidentId); // same incident -> same id
+        Assert.NotEqual(component1[0].IncidentId, component2[0].IncidentId); // different incidents -> different ids
+    }
 }

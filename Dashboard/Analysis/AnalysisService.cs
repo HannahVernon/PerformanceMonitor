@@ -190,10 +190,12 @@ public class AnalysisService
             // (FactAdvice.GetComposedForFinding) instead of generic folklore. No schema change.
             FactAdvice.PopulateStoryText(stories, facts);
 
-            // 3.6. Stamp the run's incident id onto the stories (correlate-and-focus slice 2), BEFORE
-            // the store copies it onto the finding. One run = one incident (v1); the id fingerprints
-            // the primary finding so the same recurring incident is trackable across runs.
-            IncidentId.StampStories(context.ServerName, stories);
+            // 3.6. Cluster the run's stories into causally-related incidents (graph-connectivity) and
+            // stamp each with its own trackable id, BEFORE the store copies it onto the finding. The
+            // grouped surface renders one report per incident; the id fingerprints the incident's
+            // primary so the same recurring incident is trackable across runs.
+            var incidents = _engine.ClusterIntoIncidents(stories, facts);
+            IncidentId.StampClusters(context.ServerName, incidents);
 
             // 4. Mute-filter the stories into the surviving findings (P2 reorder) — WITHOUT
             //    inserting yet, so enrichment + action-build happen on the survivors first

@@ -237,6 +237,68 @@ public class InferenceEngine
     }
 
     /// <summary>
+    /// Groups a run's stories into INCIDENTS — sets of stories that are causally related — via
+    /// connected components over the relationship graph's ACTIVE edges (correlate-and-focus). The
+    /// greedy traversal in <see cref="BuildStories"/> only follows the single highest-severity edge
+    /// from each node, so it splits one root cause across several stories (e.g. a PLAN_REGRESSION that
+    /// is really a facet of the CPU incident); this re-merges them. Two graph families merge only when
+    /// a bridge edge actually fires (THREADPOOL→LCK when both are elevated = one blocking-driven
+    /// thread-exhaustion incident), and a genuinely-independent finding (a standalone disk advisory
+    /// with no active edge to anything present) stays its own incident.
+    ///
+    /// <para>Absolution stories are excluded. Returns one list per incident; a lone story is a
+    /// one-member incident. The fact a story OWNS is its <see cref="AnalysisStory.Path"/> keys,
+    /// normalized for the THREADPOOL relabel (the story path carries THREADPOOL_PARALLEL etc. while
+    /// the graph + facts use the base THREADPOOL key — see <see cref="ClassifyThreadpool"/>).</para>
+    /// </summary>
+    public List<List<AnalysisStory>> ClusterIntoIncidents(IReadOnlyList<AnalysisStory> stories, List<Fact> facts)
+    {
+        var incidentStories = (stories ?? [])
+            .Where(s => s is not null && !s.IsAbsolution)
+            .ToList();
+        if (incidentStories.Count <= 1)
+            return incidentStories.Select(s => new List<AnalysisStory> { s }).ToList();
+
+        // Same >0 working set BuildStories used, so the edge predicates evaluate identically.
+        var factsByKey = (facts ?? []).Where(f => f.Severity > 0).ToFactLookup();
+
+        // Each fact (normalized) is consumed by exactly one story; map it to that story's index.
+        var owner = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < incidentStories.Count; i++)
+            foreach (var key in incidentStories[i].Path)
+                owner[NormalizeKey(key)] = i;
+
+        // Union-find over story indices.
+        var parent = Enumerable.Range(0, incidentStories.Count).ToArray();
+        int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+        void Union(int a, int b) { var ra = Find(a); var rb = Find(b); if (ra != rb) parent[ra] = rb; }
+
+        for (var i = 0; i < incidentStories.Count; i++)
+            foreach (var key in incidentStories[i].Path)
+                foreach (var edge in _graph.GetActiveEdges(NormalizeKey(key), factsByKey))
+                    if (owner.TryGetValue(NormalizeKey(edge.Destination), out var j) && j != i)
+                        Union(i, j);
+
+        var components = new Dictionary<int, List<AnalysisStory>>();
+        for (var i = 0; i < incidentStories.Count; i++)
+        {
+            var root = Find(i);
+            if (!components.TryGetValue(root, out var list))
+                components[root] = list = new List<AnalysisStory>();
+            list.Add(incidentStories[i]);
+        }
+        return components.Values.ToList();
+    }
+
+    /// <summary>
+    /// Maps a relabeled THREADPOOL story root (THREADPOOL_PARALLEL / _BLOCKING / _MIXED) back to the
+    /// base THREADPOOL key the relationship graph and fact set use, so clustering sees its edges.
+    /// Every other key passes through unchanged.
+    /// </summary>
+    private static string NormalizeKey(string key) =>
+        key.StartsWith("THREADPOOL_", StringComparison.Ordinal) ? "THREADPOOL" : key;
+
+    /// <summary>
     /// Stable hash for story path deduplication and muting.
     /// </summary>
     private static string ComputeHash(string storyPath)
