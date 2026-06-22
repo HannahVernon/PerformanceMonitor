@@ -252,6 +252,8 @@ namespace PerformanceMonitorDashboard.Controls
         {
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
             CorrelatedLanes.Initialize(databaseService, baselineProvider);
+            // Forward the Overview lanes' right-click drill-down to the host (-> Active Queries).
+            CorrelatedLanes.ShowActiveQueriesRequested += t => ChartDrillDownRequested?.Invoke("CorrelatedLanes", t);
         }
 
         /// <summary>

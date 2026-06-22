@@ -57,6 +57,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
             TabHelpers.ApplyThemeToChart(chart);
             // Disable zoom/pan/drag but keep mouse events for crosshair
             chart.UserInputProcessor.UserActionResponses.Clear();
+            SetupLaneDrillDown(chart);
         }
 
         _crosshairManager = new CorrelatedCrosshairManager();
@@ -65,6 +66,58 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         _crosshairManager.AddLane(BlockingChart, "Blocking", "events");
         _crosshairManager.AddLane(MemoryChart, "Buffer Pool", "MB");
         _crosshairManager.AddLane(FileIoChart, "I/O Latency", "ms");
+    }
+
+    /// <summary>
+    /// Raised when the user picks "Show Active Queries at This Time" on a lane. The argument is the
+    /// clicked time in the lanes' (server-local) X-axis space; the host navigates to Active Queries.
+    /// </summary>
+    public event Action<DateTime>? ShowActiveQueriesRequested;
+
+    /// <summary>
+    /// Adds a minimal right-click menu (just the Active Queries drill-down) to a lane. The lanes are a
+    /// stripped-chrome view with pan/zoom disabled, so the clicked time is read straight from the X axis.
+    /// </summary>
+    private void SetupLaneDrillDown(ScottPlot.WPF.WpfPlot chart)
+    {
+        var menu = new ContextMenu();
+        var item = new MenuItem { Header = "Show Active Queries at This Time" };
+        menu.Items.Add(item);
+
+        menu.Opened += (s, _) =>
+        {
+            try
+            {
+                var pos = System.Windows.Input.Mouse.GetPosition(chart);
+                var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(chart);
+                var pixel = new ScottPlot.Pixel((float)(pos.X * dpi.DpiScaleX), (float)(pos.Y * dpi.DpiScaleY));
+                var t = DateTime.FromOADate(chart.Plot.GetCoordinates(pixel).X);
+                // Empty-state lanes set the X axis to [-1, 1] (~year 1899); only offer the drill-down
+                // when the click resolves to a real timestamp.
+                bool valid = t.Year >= 2000;
+                item.Tag = valid ? t : (DateTime?)null;
+                item.IsEnabled = valid;
+            }
+            catch
+            {
+                item.Tag = null;
+                item.IsEnabled = false;
+            }
+        };
+
+        item.Click += (s, _) =>
+        {
+            if (item.Tag is DateTime t)
+                ShowActiveQueriesRequested?.Invoke(t);
+        };
+
+        chart.PreviewMouseRightButtonDown += (s, e) =>
+        {
+            e.Handled = true;
+            menu.PlacementTarget = chart;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+            menu.IsOpen = true;
+        };
     }
 
     /// <summary>

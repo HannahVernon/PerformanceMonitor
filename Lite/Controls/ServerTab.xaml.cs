@@ -230,6 +230,7 @@ public partial class ServerTab : UserControl
 
         /* Chart hover tooltips */
         CorrelatedLanes.Initialize(_dataService, _serverId);
+        CorrelatedLanes.ShowActiveQueriesRequested += OnActiveQueriesDrillDown;
         _waitStatsHover = new ChartHoverHelper(WaitStatsChart, "ms/sec");
         _perfmonHover = new ChartHoverHelper(PerfmonChart, "");
         _cpuHover = new ChartHoverHelper(CpuChart, "%");
