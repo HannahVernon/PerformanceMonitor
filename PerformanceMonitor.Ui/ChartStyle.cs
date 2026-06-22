@@ -203,10 +203,16 @@ namespace PerformanceMonitor.Ui
         public static void StyleScatter(ScottPlot.Plottables.Scatter scatter)
         {
             int pointCount = scatter.Data.GetScatterPoints().Count;
+            var seriesColor = scatter.LineColor;
             scatter.LineWidth = 2;
             scatter.MarkerSize = MarkerSizeForDensity(pointCount);
-            // Soften only the connecting line; keep markers fully opaque so peaks stay legible.
-            scatter.LineColor = scatter.LineColor.WithAlpha(210);
+            // Soften the connecting line; markers stay fully opaque so peaks read clearly.
+            scatter.LineColor = seriesColor.WithAlpha(215);
+            // Solid-ish area fill under the line — the main "easy on the eye" look ported from
+            // PerformanceStudio. Alpha 70 reads clearly without fully hiding overlapping series on
+            // the busy multi-line charts.
+            scatter.FillY = true;
+            scatter.FillYColor = seriesColor.WithAlpha(70);
         }
 
         /// <summary>

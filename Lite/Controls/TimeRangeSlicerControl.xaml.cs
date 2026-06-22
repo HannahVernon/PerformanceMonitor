@@ -368,6 +368,33 @@ public partial class TimeRangeSlicerControl : UserControl
 
     private void Toggle_Click(object sender, RoutedEventArgs e) => IsExpanded = !IsExpanded;
 
+    /// <summary>
+    /// Quick-range chip: selects the last N minutes of the loaded window (Tag = minutes), or the
+    /// full window when Tag is 0 ("All"). A duration longer than the window clamps to the start.
+    /// </summary>
+    private void QuickRange_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b || _data.Count < 2) return;
+        if (b.Tag is not string tag || !int.TryParse(tag, out int minutes)) return;
+
+        if (minutes <= 0)
+        {
+            _rangeStart = 0;
+            _rangeEnd = 1.0;
+        }
+        else
+        {
+            var start = DataEndUtc.AddMinutes(-minutes);
+            if (start < DataStartUtc) start = DataStartUtc;
+            _rangeStart = NormAtUtc(start);
+            _rangeEnd = 1.0;
+        }
+
+        UpdateRangeLabel();
+        Redraw();
+        FireRangeChanged();
+    }
+
     private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (_data.Count < 2) return;
