@@ -190,6 +190,11 @@ public class AnalysisService
             // (FactAdvice.GetComposedForFinding) instead of generic folklore. No schema change.
             FactAdvice.PopulateStoryText(stories, facts);
 
+            // 3.6. Stamp the run's incident id onto the stories (correlate-and-focus slice 2), BEFORE
+            // the store copies it onto the finding. One run = one incident (v1); the id fingerprints
+            // the primary finding so the same recurring incident is trackable across runs.
+            IncidentId.StampStories(context.ServerName, stories);
+
             // 4. Mute-filter the stories into the surviving findings (P2 reorder) — WITHOUT
             //    inserting yet, so enrichment + action-build happen on the survivors first
             //    and the BUILT RemediationAction is persisted on each row (D2). Muted/

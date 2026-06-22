@@ -76,6 +76,26 @@ public class FindingStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveFindings_RoundTripsIncidentId()
+    {
+        // Correlate-and-focus slice 2: the incident id persists through the schema (incident_id
+        // column added at analysis-schema v3) and reads back on every finding.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var context = TestDataSeeder.CreateTestContext();
+        var stories = CreateTestStories();
+        foreach (var s in stories)
+            s.IncidentId = "incident_abc";
+
+        await store.SaveFindingsAsync(stories, context);
+        var findings = await store.GetLatestFindingsAsync(context.ServerId);
+
+        Assert.Equal(2, findings.Count);
+        Assert.All(findings, f => Assert.Equal("incident_abc", f.IncidentId));
+    }
+
+    [Fact]
     public async Task GetRecentFindings_RespectsTimeRange()
     {
         await InitializeWithAnalysisAsync();
