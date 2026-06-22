@@ -78,6 +78,15 @@ public class AnalysisStory
     public bool IsAbsolution { get; set; }
 
     /// <summary>
+    /// Stable id for the incident this story belongs to (correlate-and-focus slice 2). All findings
+    /// from one analysis run share it, and it is a fingerprint of the run's PRIMARY (highest-severity)
+    /// finding + database, so the same recurring incident keeps one id across runs (trackable). Set by
+    /// <see cref="IncidentId.StampStories"/> after stories are built; copied onto the finding + persisted.
+    /// Empty for a healthy/absolution-only run.
+    /// </summary>
+    public string IncidentId { get; set; } = string.Empty;
+
+    /// <summary>
     /// Metadata from the root fact (raw metric values used to assemble the story).
     /// Ephemeral — copied onto the finding for the notification layer, not persisted.
     /// </summary>
@@ -108,6 +117,9 @@ public class AnalysisFinding
     public string Category { get; set; } = string.Empty;
     public string StoryPath { get; set; } = string.Empty;
     public string StoryPathHash { get; set; } = string.Empty;
+    /// <summary>Stable id for the incident this finding belongs to — see
+    /// <see cref="AnalysisStory.IncidentId"/>. Persisted to analysis_findings.incident_id.</summary>
+    public string IncidentId { get; set; } = string.Empty;
     public string StoryText { get; set; } = string.Empty;
     public string RootFactKey { get; set; } = string.Empty;
     /// <summary>The root fact's RAW collected value (the setting/metric), NOT its severity — see
