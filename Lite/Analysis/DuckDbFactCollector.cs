@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Numerics;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
@@ -61,10 +60,7 @@ public partial class DuckDbFactCollector : IFactCollector
         return facts;
     }
 
-    private static long ToInt64(object value)
-    {
-        if (value is BigInteger bi)
-            return (long)bi;
-        return Convert.ToInt64(value);
-    }
+    // Single BigInteger-tolerant impl lives in BlockingPairRowQuery (shared with the pair-row reader);
+    // delegate so the check isn't duplicated.
+    private static long ToInt64(object value) => BlockingPairRowQuery.ToInt64(value);
 }

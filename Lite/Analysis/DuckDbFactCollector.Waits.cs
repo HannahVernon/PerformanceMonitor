@@ -199,23 +199,18 @@ AND   collection_time <= $3";
             await connection.OpenAsync();
 
             using var command = connection.CreateCommand();
-            command.CommandText = @"
+            // SpidFilter keeps this in lockstep with the drill-down + viewer fetch on the apex
+            // (Lite maps a missing blocker to spid 0 — see BlockingPairRowQuery).
+            command.CommandText = $@"
 SELECT
-    event_time,
-    database_name,
-    blocked_spid,
-    blocked_last_tran_started,
-    blocking_spid,
-    blocking_last_tran_started,
-    wait_time_ms,
-    lock_mode,
-    blocking_status,
+    {BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text,
     blocking_sql_text
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   event_time >= $2
 AND   event_time <= $3
+{BlockingPairRowQuery.SpidFilter}
 ORDER BY event_time DESC
 LIMIT 5000";
 
@@ -227,22 +222,7 @@ LIMIT 5000";
             using (var reader = await command.ExecuteReaderAsync())
             {
                 while (await reader.ReadAsync())
-                {
-                    rows.Add(new BlockingPairRow
-                    {
-                        EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
-                        DatabaseName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
-                        BlockedSpid = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
-                        BlockedTranStarted = reader.IsDBNull(3) ? null : reader.GetDateTime(3),
-                        BlockingSpid = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
-                        BlockingTranStarted = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
-                        WaitTimeMs = reader.IsDBNull(6) ? 0L : ToInt64(reader.GetValue(6)),
-                        LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
-                        BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                        BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
-                        BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
-                    });
-                }
+                    rows.Add(BlockingPairRowQuery.Read(reader));
             }
 
             if (rows.Count == 0) return;

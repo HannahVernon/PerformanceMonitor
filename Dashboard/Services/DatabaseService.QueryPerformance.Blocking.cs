@@ -12,6 +12,8 @@ using System.Data;
 using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Analysis;
+using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 
@@ -413,6 +415,31 @@ namespace PerformanceMonitorDashboard.Services
 
                     var result = await command.ExecuteScalarAsync();
                     return result == DBNull.Value ? null : result as string;
+                }
+
+                /// <summary>
+                /// Fetches the blocked/blocker pair rows for a window, for the block-chain viewer to feed
+                /// <see cref="BlockingChainReconstructor"/>. Internal (not public): <see cref="BlockingPairRow"/>
+                /// is internal to the analysis assembly — a public method returning it would be CS0050. Uses
+                /// the shared <see cref="BlockingPairRowQuery"/> so it filters apex rows identically to the
+                /// drill-down + fact collectors.
+                /// </summary>
+                internal async Task<List<BlockingPairRow>> GetBlockingPairRowsAsync(DateTime start, DateTime end)
+                {
+                    var rows = new List<BlockingPairRow>();
+
+                    await using var tc = await OpenThrottledConnectionAsync();
+                    var connection = tc.Connection;
+
+                    using var command = new SqlCommand(BlockingPairRowQuery.Sql, connection);
+                    command.CommandTimeout = 120;
+                    BlockingPairRowQuery.AddParameters(command, start, end);
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    while (await reader.ReadAsync())
+                        rows.Add(BlockingPairRowQuery.Read(reader));
+
+                    return rows;
                 }
 
                 public async Task<List<BlockingDeadlockStatsItem>> GetBlockingDeadlockStatsAsync(int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
