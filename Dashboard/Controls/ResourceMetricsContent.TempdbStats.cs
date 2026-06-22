@@ -42,6 +42,7 @@ namespace PerformanceMonitorDashboard.Controls
                 // Load TempDB usage stats
                 var data = await _databaseService.GetTempdbStatsAsync(_tempdbStatsHoursBack, _tempdbStatsFromDate, _tempdbStatsToDate);
                 LoadTempdbStatsChart(data, _tempdbStatsHoursBack, _tempdbStatsFromDate, _tempdbStatsToDate);
+                LoadTempdbSizeChart(data, _tempdbStatsHoursBack, _tempdbStatsFromDate, _tempdbStatsToDate);
 
                 // Load TempDB latency charts (moved from File I/O Latency tab)
                 await LoadTempdbLatencyChartsAsync();
@@ -184,18 +185,10 @@ namespace PerformanceMonitorDashboard.Controls
                 internalScatter.LegendText = "Internal Objects";
                 _tempdbStatsHover?.Add(internalScatter, "Internal Objects");
 
-                // Unallocated (free space) series
-                var (unallocXs, unallocYs) = TabHelpers.FillTimeSeriesGaps(
-                    dataList.Select(d => d.CollectionTime),
-                    dataList.Select(d => (double)d.UnallocatedMb));
-                if (unallocYs.Any(y => y > 0))
-                {
-                    var unallocScatter = TempdbStatsChart.Plot.Add.Scatter(unallocXs, unallocYs);
-                    unallocScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
-                    ChartStyle.StyleScatter(unallocScatter);
-                    unallocScatter.LegendText = "Unallocated";
-                    _tempdbStatsHover?.Add(unallocScatter, "Unallocated");
-                }
+                // Unallocated (free space) is intentionally NOT plotted here: it is almost always the
+                // largest value, so it set the Y-axis and flattened the actual usage series into an
+                // unreadable sliver. The tempdb total file size (used + unallocated) and its growth over
+                // the window are surfaced on the dedicated TempdbSizeChart below, on their own scale.
 
                 // Top Task Total MB series (worst session's usage)
                 var topTaskValues = dataList.Select(d => (double)(d.TopTaskTotalMb ?? 0)).ToArray();
@@ -233,6 +226,46 @@ namespace PerformanceMonitorDashboard.Controls
             TempdbStatsChart.Plot.YLabel("MB");
             TabHelpers.LockChartVerticalAxis(TempdbStatsChart);
             TempdbStatsChart.Refresh();
+        }
+
+        // Dedicated chart for tempdb TOTAL allocated size (used + unallocated free space) over time —
+        // the growth trend the Unallocated band used to carry, on its own scale so it doesn't flatten
+        // the usage breakdown above it.
+        private void LoadTempdbSizeChart(IEnumerable<TempdbStatsItem> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
+        {
+            DateTime rangeEnd = toDate ?? Helpers.ServerTimeHelper.ServerNow;
+            DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+            double xMin = rangeStart.ToOADate();
+            double xMax = rangeEnd.ToOADate();
+
+            TempdbSizeChart.Plot.Clear();
+            TabHelpers.ApplyThemeToChart(TempdbSizeChart);
+
+            var dataList = data?.OrderBy(d => d.CollectionTime).ToList() ?? new List<TempdbStatsItem>();
+            if (dataList.Count > 0)
+            {
+                var (xs, ys) = TabHelpers.FillTimeSeriesGaps(
+                    dataList.Select(d => d.CollectionTime),
+                    dataList.Select(d => (double)(d.TotalReservedMb + d.UnallocatedMb)));
+                var sizeScatter = TempdbSizeChart.Plot.Add.Scatter(xs, ys);
+                sizeScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
+                ChartStyle.StyleScatter(sizeScatter);
+            }
+            else
+            {
+                double xCenter = xMin + (xMax - xMin) / 2;
+                var noDataText = TempdbSizeChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
+                noDataText.LabelFontSize = 14;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
+                noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
+            }
+
+            TempdbSizeChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempdbSizeChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            TempdbSizeChart.Plot.Axes.AutoScaleY();
+            TempdbSizeChart.Plot.YLabel("MB");
+            TabHelpers.LockChartVerticalAxis(TempdbSizeChart);
+            TempdbSizeChart.Refresh();
         }
 
         private void UpdateTempdbStatsSummary(TempdbStatsItem? data)

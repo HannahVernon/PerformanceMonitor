@@ -404,6 +404,30 @@ public partial class ServerTab : UserControl
         TempDbChart.Refresh();
     }
 
+    // Dedicated chart for tempdb TOTAL allocated size (used + unallocated free space) over time — the
+    // growth trend, on its own scale so it doesn't flatten the usage series above. Mirror of Dashboard.
+    private void UpdateTempDbSizeChart(List<TempDbRow> data)
+    {
+        ClearChart(TempDbSizeChart);
+        ApplyTheme(TempDbSizeChart);
+
+        if (data.Count == 0) { TempDbSizeChart.Refresh(); return; }
+
+        var sorted = data.OrderBy(d => d.CollectionTime).ToList();
+        var times = sorted.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
+        var totals = sorted.Select(d => d.TotalReservedMb + d.UnallocatedMb).ToArray();
+
+        var sizePlot = TempDbSizeChart.Plot.Add.Scatter(times, totals);
+        sizePlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
+        ChartStyle.StyleScatter(sizePlot);
+
+        TempDbSizeChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        ReapplyAxisColors(TempDbSizeChart);
+        TempDbSizeChart.Plot.YLabel("Allocated MB");
+        TempDbSizeChart.Plot.Axes.AutoScaleY();
+        TempDbSizeChart.Refresh();
+    }
+
     private void UpdateTempDbFileIoChart(List<FileIoTrendPoint> data)
     {
         ClearChart(TempDbFileIoChart);
