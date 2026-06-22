@@ -77,4 +77,25 @@ public class FactAdviceCorrectnessTests
     {
         Assert.DoesNotContain("right now", FactAdvice.GetForFactKey(key)!.Headline);
     }
+
+    // Review note (§2): SOS rewrite over-swung to "never CPU pressure". The amount + a deep runnable
+    // queue IS demand-exceeds-capacity; the advice must point at the runnable-queue discriminator.
+    [Fact]
+    public void Sos_UsesRunnableQueueDiscriminator_NotAbsoluteNoPressure()
+    {
+        var t = Text("SOS_SCHEDULER_YIELD");
+        Assert.Contains("runnable queue", t);
+        Assert.Contains("get_cpu_scheduler_pressure", t);
+        Assert.DoesNotContain("not as SOS_SCHEDULER_YIELD", t); // the over-correction is gone
+    }
+
+    // Review note (§1): MAXDOP can be set per database; the advice must acknowledge the DB-scoped
+    // override and point at get_database_scoped_config (the engine itself scores only the server default).
+    [Fact]
+    public void ConfigMaxdop_NotesPerDatabaseScopedOverride()
+    {
+        var advice = FactAdvice.GetForFactKey("CONFIG_MAXDOP");
+        Assert.Contains("DATABASE SCOPED CONFIGURATION", advice!.Investigation);
+        Assert.Contains("get_database_scoped_config", advice.Investigation);
+    }
 }
