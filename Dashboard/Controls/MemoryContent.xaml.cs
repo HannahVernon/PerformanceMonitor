@@ -174,7 +174,8 @@ namespace PerformanceMonitorDashboard.Controls
             AddDrillDown(MemoryClerksChart, clerksMenu, () => _memoryClerksHover, "Show Active Queries at This Time", "MemoryClerks");
 
             // Plan Cache chart
-            TabHelpers.SetupChartContextMenu(PlanCacheChart, "Plan_Cache", "collect.plan_cache_stats");
+            var planCacheMenu = TabHelpers.SetupChartContextMenu(PlanCacheChart, "Plan_Cache", "collect.plan_cache_stats");
+            AddDrillDown(PlanCacheChart, planCacheMenu, () => _planCacheHover, "Show Active Queries at This Time", "PlanCache");
 
             // Memory Pressure Events chart
             var pressureMenu = TabHelpers.SetupChartContextMenu(MemoryPressureEventsChart, "Memory_Pressure_Events", "collect.memory_pressure_events");

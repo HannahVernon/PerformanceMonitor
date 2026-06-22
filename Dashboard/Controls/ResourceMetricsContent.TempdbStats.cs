@@ -240,6 +240,7 @@ namespace PerformanceMonitorDashboard.Controls
 
             TempdbSizeChart.Plot.Clear();
             TabHelpers.ApplyThemeToChart(TempdbSizeChart);
+            _tempdbSizeHover?.Clear();
 
             var dataList = data?.OrderBy(d => d.CollectionTime).ToList() ?? new List<TempdbStatsItem>();
             if (dataList.Count > 0)
@@ -250,6 +251,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var sizeScatter = TempdbSizeChart.Plot.Add.Scatter(xs, ys);
                 sizeScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
                 ChartStyle.StyleScatter(sizeScatter);
+                _tempdbSizeHover?.Add(sizeScatter, "Allocated MB");
             }
             else
             {

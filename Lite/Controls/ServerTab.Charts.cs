@@ -410,6 +410,7 @@ public partial class ServerTab : UserControl
     {
         ClearChart(TempDbSizeChart);
         ApplyTheme(TempDbSizeChart);
+        _tempDbSizeHover?.Clear();
 
         if (data.Count == 0) { TempDbSizeChart.Refresh(); return; }
 
@@ -420,6 +421,7 @@ public partial class ServerTab : UserControl
         var sizePlot = TempDbSizeChart.Plot.Add.Scatter(times, totals);
         sizePlot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("UnallocatedTempdb"));
         ChartStyle.StyleScatter(sizePlot);
+        _tempDbSizeHover?.Add(sizePlot, "Allocated MB");
 
         TempDbSizeChart.Plot.Axes.DateTimeTicksBottomDateChange();
         ReapplyAxisColors(TempDbSizeChart);
