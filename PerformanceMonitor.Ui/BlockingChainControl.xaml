@@ -42,10 +42,10 @@
         <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" Padding="8,4"
                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
             <StackPanel Orientation="Horizontal">
-                <!-- Apex swatch is set in code from ApexBrush; long-wait tracks the theme warning brush —
-                     so the legend can't drift from what the nodes actually render. -->
-                <Border x:Name="ApexLegendSwatch" Width="12" Height="12" CornerRadius="2" Background="Transparent"
-                        BorderThickness="2" VerticalAlignment="Center"/>
+                <!-- Both swatches track the same theme brushes the nodes render with, so the legend can't
+                     drift: apex border = ApexBorderBrush, long-wait = WarningTextBrush. -->
+                <Border Width="12" Height="12" CornerRadius="2" Background="Transparent"
+                        BorderThickness="2" VerticalAlignment="Center" BorderBrush="{DynamicResource ApexBorderBrush}"/>
                 <TextBlock Text="Lead blocker (apex)" VerticalAlignment="Center" FontSize="11"
                            Foreground="{DynamicResource ForegroundMutedBrush}" Margin="4,0,16,0"/>
                 <Border Width="12" Height="12" CornerRadius="2" Background="Transparent"

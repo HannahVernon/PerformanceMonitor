@@ -50,7 +50,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     private double _panStartOffsetY;
 
     // Accent brushes — chosen to read on every theme (same palette as PlanViewerControl).
-    private static readonly SolidColorBrush ApexBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));        // lead-blocker border + badge (blue)
+    private static readonly SolidColorBrush ApexBrush = new(Color.FromRgb(0x4F, 0xA3, 0xFF));        // LEAD BLOCKER badge fill only (kept bright so the apex pops; the border is theme-aware below)
     private static readonly SolidColorBrush SelectionBrush = new(Color.FromRgb(0x8E, 0x5B, 0xFF));   // selected node border (purple — distinct from apex)
     private static readonly SolidColorBrush SleepingBrush = new(Color.FromRgb(0x90, 0xA4, 0xAE));    // sleeping-apex badge (slate — distinct from the warning amber)
     private static readonly SolidColorBrush EdgeBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
@@ -68,13 +68,14 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     // (orange-on-white fails AA); fallback is the Dark amber.
     private Brush WarningBrush =>
         (TryFindResource("WarningTextBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0xFF, 0xB3, 0x47));
+    // Apex node border. Theme-aware so it clears >=3:1 as a border on the light node card (bright #4FA3FF
+    // is only ~2.6:1 on white); fallback is the Dark blue. (The badge fill keeps the bright ApexBrush.)
+    private Brush ApexBorderBrush =>
+        (TryFindResource("ApexBorderBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0x4F, 0xA3, 0xFF));
 
     public BlockingChainControl()
     {
         InitializeComponent();
-        // Keep the apex legend swatch bound to the same constant the nodes use (the longest-wait swatch
-        // and flag banner use {DynamicResource WarningTextBrush} in XAML, so they track the theme).
-        ApexLegendSwatch.BorderBrush = ApexBrush;
         /* Subscribe for the life of the control. Do NOT unsubscribe on Unloaded — a TabControl fires
            Unloaded on tab switch, which would permanently detach this handler. The host window calls
            Cleanup() when it is actually closed. */
@@ -247,7 +248,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
             Width = NodeWidth,
             Height = NodeHeight,
             Background = NodeBackgroundBrush,
-            BorderBrush = node.IsApex ? ApexBrush : (isLongestWait ? WarningBrush : NodeBorderBrush),
+            BorderBrush = node.IsApex ? ApexBorderBrush : (isLongestWait ? WarningBrush : NodeBorderBrush),
             BorderThickness = new Thickness(node.IsApex || isLongestWait ? 2 : 1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(8, 6, 8, 6),
