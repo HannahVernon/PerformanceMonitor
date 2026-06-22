@@ -273,6 +273,12 @@ namespace PerformanceMonitorDashboard
 
         public void DisposeChartHelpers()
         {
+            /* Closing the server tab with plan tabs still open would leak each PlanViewerControl via
+               the static ThemeChanged event — clean them up here too (ClosePlanTab_Click only handles
+               the per-tab close-button path). Mirrors Lite's ServerTab cleanup. */
+            foreach (var item in PlanTabControl.Items)
+                if (item is TabItem { Content: PlanViewerControl pv }) pv.Cleanup();
+
             _resourceOverviewCpuHover?.Dispose();
             _resourceOverviewMemoryHover?.Dispose();
             _resourceOverviewIoHover?.Dispose();

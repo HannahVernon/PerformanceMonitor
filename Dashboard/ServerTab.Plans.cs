@@ -18,6 +18,7 @@ using System.Windows.Controls;
 using Microsoft.Data.SqlClient;
 using Microsoft.Win32;
 using PerformanceMonitorDashboard.Models;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -49,7 +50,7 @@ namespace PerformanceMonitorDashboard
         private async void OpenPlanTab(string planXml, string label, string? queryText = null)
         {
             HidePlanLoading();
-            var viewer = new Controls.PlanViewerControl();
+            var viewer = new PlanViewerControl();
             try
             {
                 /* LoadPlan parses+analyzes off the UI thread; it throws XmlException for malformed
@@ -58,6 +59,7 @@ namespace PerformanceMonitorDashboard
             }
             catch (System.Xml.XmlException ex)
             {
+                viewer.Cleanup();
                 MessageBox.Show(
                     $"The plan XML is not valid:\n\n{ex.Message}",
                     "Invalid Plan XML",
@@ -67,6 +69,7 @@ namespace PerformanceMonitorDashboard
             }
             catch (Exception ex)
             {
+                viewer.Cleanup();
                 MessageBox.Show(
                     $"Failed to load the execution plan:\n\n{ex.Message}",
                     "Plan Load Error",
@@ -102,6 +105,7 @@ namespace PerformanceMonitorDashboard
         {
             if (sender is Button btn && btn.Tag is TabItem tab)
             {
+                (tab.Content as PlanViewerControl)?.Cleanup();
                 PlanTabControl.Items.Remove(tab);
                 if (PlanTabControl.Items.Count == 0)
                 {

@@ -184,14 +184,19 @@ public partial class ServerTab : UserControl
             PlanEmptyState.Visibility = Visibility.Visible;
     }
 
-    private void OpenPlanTab(string planXml, string label, string? queryText = null)
+    private async void OpenPlanTab(string planXml, string label, string? queryText = null)
     {
+        HidePlanLoading();
+        var viewer = new PlanViewerControl();
         try
         {
-            System.Xml.Linq.XDocument.Parse(planXml);
+            /* LoadPlan parses+analyzes off the UI thread; it throws XmlException for malformed
+               plan XML, replacing the redundant up-front XDocument.Parse validation. */
+            await viewer.LoadPlan(planXml, label, queryText);
         }
         catch (System.Xml.XmlException ex)
         {
+            viewer.Cleanup();
             MessageBox.Show(
                 $"The plan XML is not valid:\n\n{ex.Message}",
                 "Invalid Plan XML",
@@ -199,10 +204,16 @@ public partial class ServerTab : UserControl
                 MessageBoxImage.Warning);
             return;
         }
-
-        HidePlanLoading();
-        var viewer = new PlanViewerControl();
-        viewer.LoadPlan(planXml, label, queryText);
+        catch (Exception ex)
+        {
+            viewer.Cleanup();
+            MessageBox.Show(
+                $"Failed to load the execution plan:\n\n{ex.Message}",
+                "Plan Load Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
 
         var header = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
         header.Children.Add(new TextBlock

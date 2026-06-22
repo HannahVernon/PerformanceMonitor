@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
- * This file is part of the SQL Server Performance Monitor Lite.
+ * This file is part of the SQL Server Performance Monitor.
  *
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
@@ -14,15 +14,12 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using PerformanceMonitor.PlanAnalysis;
-using PerformanceMonitor.Ui;
-using PerformanceMonitorLite.Models;
-using PerformanceMonitorLite.Services;
 
 using WpfPath = System.Windows.Shapes.Path;
 
-namespace PerformanceMonitorLite.Controls;
+namespace PerformanceMonitor.Ui;
 
-public partial class PlanViewerControl : UserControl
+public partial class PlanViewerControl
 {
     private void RenderStatement(PlanStatement statement)
     {
@@ -47,7 +44,7 @@ public partial class PlanViewerControl : UserControl
         CollectWarnings(statement.RootNode, allWarnings);
         RenderNodes(statement.RootNode, allWarnings.Count);
 
-        // Update insights panel
+        // Update banners
         ShowMissingIndexes(statement.MissingIndexes);
         ShowWaitStats(statement.WaitStats, statement.QueryTimeStats != null);
         ShowRuntimeSummary(statement);
@@ -56,6 +53,8 @@ public partial class PlanViewerControl : UserControl
         // Update cost text
         CostText.Text = $"Statement Cost: {statement.StatementSubTreeCost:F4}";
     }
+
+    #region Node Rendering
 
     private void RenderNodes(PlanNode node, int totalWarningCount = -1)
     {
@@ -171,7 +170,7 @@ public partial class PlanViewerControl : UserControl
             });
             parBadge.Children.Add(new TextBlock
             {
-                Text = "⇆",
+                Text = "\u21C6",
                 FontSize = 12,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
@@ -260,7 +259,9 @@ public partial class PlanViewerControl : UserControl
                 HorizontalAlignment = HorizontalAlignment.Center
             });
 
-            // Actual rows per execution vs Estimated rows (accuracy %) — red if off by 10x+
+            // Actual rows per execution vs Estimated rows (accuracy %) — red if off by 10x+.
+            // EstimateRows is per-execution, so normalize ActualRows by ActualExecutions before
+            // comparing (otherwise multi-execution operators, e.g. an NL inner side, always look off).
             var estRows = node.EstimateRows;
             var actualRowsPerExec = node.ActualExecutions > 0 ? node.ActualRows / (double)node.ActualExecutions : node.ActualRows;
             var accuracyRatio = estRows > 0 ? actualRowsPerExec / estRows : (actualRowsPerExec > 0 ? double.MaxValue : 1.0);
@@ -307,7 +308,7 @@ public partial class PlanViewerControl : UserControl
             };
             badgeRow.Children.Add(new TextBlock
             {
-                Text = "⚠",
+                Text = "\u26A0",
                 FontSize = 13,
                 Foreground = OrangeBrush,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -327,6 +328,10 @@ public partial class PlanViewerControl : UserControl
         border.Child = stack;
         return border;
     }
+
+    #endregion
+
+    #region Edge Rendering
 
     private void RenderEdges(PlanNode node)
     {
@@ -380,10 +385,6 @@ public partial class PlanViewerControl : UserControl
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         int row = 0;
-        var bgBrush = TooltipBgBrush;
-        var borderBrush = TooltipBorderBrush;
-        var mutedBrush = MutedBrush;
-        var fgBrush = TooltipFgBrush;
 
         void AddRow(string label, string value)
         {
@@ -391,14 +392,14 @@ public partial class PlanViewerControl : UserControl
             var lbl = new TextBlock
             {
                 Text = label,
-                Foreground = mutedBrush,
+                Foreground = MutedBrush,
                 FontSize = 12,
                 Margin = new Thickness(0, 1, 12, 1)
             };
             var val = new TextBlock
             {
                 Text = value,
-                Foreground = fgBrush,
+                Foreground = TooltipFgBrush,
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
                 HorizontalAlignment = HorizontalAlignment.Right,
@@ -431,8 +432,8 @@ public partial class PlanViewerControl : UserControl
 
         return new Border
         {
-            Background = bgBrush,
-            BorderBrush = borderBrush,
+            Background = TooltipBgBrush,
+            BorderBrush = TooltipBorderBrush,
             BorderThickness = new Thickness(1),
             Padding = new Thickness(10, 6, 10, 6),
             CornerRadius = new CornerRadius(4),
@@ -447,4 +448,6 @@ public partial class PlanViewerControl : UserControl
         if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024 * 1024):N0} MB";
         return $"{bytes / (1024L * 1024 * 1024):N1} GB";
     }
+
+    #endregion
 }

@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,11 +15,8 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using Microsoft.Win32;
 using PerformanceMonitor.PlanAnalysis;
-using PerformanceMonitorDashboard.Models;
-using PerformanceMonitorDashboard.Services;
-using PerformanceMonitor.Ui;
 
-namespace PerformanceMonitorDashboard.Controls;
+namespace PerformanceMonitor.Ui;
 
 public partial class PlanViewerControl : UserControl
 {
@@ -60,8 +65,16 @@ public partial class PlanViewerControl : UserControl
     public PlanViewerControl()
     {
         InitializeComponent();
+        /* Subscribe for the life of the control. Do NOT unsubscribe on Unloaded — a TabControl
+           fires Unloaded when you switch tabs, which would permanently detach this handler.
+           Hosts call Cleanup() when the plan tab/window is actually closed. */
         ThemeManager.ThemeChanged += OnThemeChanged;
-        Unloaded += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
+    }
+
+    /// <summary>Unsubscribes from theme changes. Hosts must call this when the plan tab/window is closed.</summary>
+    public void Cleanup()
+    {
+        ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private void OnThemeChanged(string _)

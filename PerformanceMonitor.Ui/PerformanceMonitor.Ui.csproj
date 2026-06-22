@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
   </ItemGroup>
 
   <ItemGroup>

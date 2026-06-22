@@ -13,7 +13,7 @@ using System.Windows;
 namespace PerformanceMonitorDashboard
 {
     /// <summary>
-    /// Standalone window that hosts a <see cref="Controls.PlanViewerControl"/> so any drill-down /
+    /// Standalone window that hosts a <see cref="PerformanceMonitor.Ui.PlanViewerControl"/> so any drill-down /
     /// history window can open a collected or actual plan in-app. Shown owned + non-modal so it stays
     /// interactive above a modal drill-down and closes with its host.
     /// </summary>
@@ -22,6 +22,8 @@ namespace PerformanceMonitorDashboard
         public PlanViewerWindow()
         {
             InitializeComponent();
+            // The shared PlanViewerControl needs an explicit Cleanup() to unsubscribe ThemeManager.
+            Closed += (_, _) => Viewer.Cleanup();
         }
 
         /// <summary>Loads a plan into this window's viewer. Throws <see cref="System.Xml.XmlException"/> for invalid XML.</summary>
