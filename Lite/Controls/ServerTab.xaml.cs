@@ -417,6 +417,10 @@ public partial class ServerTab : UserControl
                 toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
             }
         }
+        var navContext = MainTabControl.SelectedIndex == 2
+            ? $"TabNav-Queries.sub{QueriesSubTabControl.SelectedIndex}"
+            : $"TabNav-tab{MainTabControl.SelectedIndex}";
+        using var _navTimer = Helpers.MethodProfiler.StartTiming(navContext);
         await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
     }
 
