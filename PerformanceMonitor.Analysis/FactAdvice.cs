@@ -150,6 +150,10 @@ public static class FactAdvice
             "PAGEIOLATCH_SH" => ComposeWithMaxMemorySuffix("PAGEIOLATCH_SH", factsByKey),
             "QUERY_SPILLS" => ComposeWithMaxMemorySuffix("QUERY_SPILLS", factsByKey),
             "ANOMALY_MEMORY_PRESSURE" => ComposeWithMaxMemorySuffix("ANOMALY_MEMORY_PRESSURE", factsByKey),
+            // RCSI-deferral blocks: state how many databases actually have RCSI off (from the
+            // co-fired DB_CONFIG fact) instead of deferring to audit_config (B3).
+            "BLOCKING_EVENTS" => ComposeWithRcsiSuffix("BLOCKING_EVENTS", factsByKey),
+            "DEADLOCKS" => ComposeWithRcsiSuffix("DEADLOCKS", factsByKey),
             _ => GetForFactKey(rootFactKey)
         };
     }
@@ -505,6 +509,26 @@ public static class FactAdvice
     }
 
     /// <summary>
+    /// Returns the static block for <paramref name="key"/> (BLOCKING_EVENTS / DEADLOCKS) with a
+    /// sentence stating how many databases actually have RCSI off — read from the co-fired DB_CONFIG
+    /// fact's `rcsi_off_count` — appended to its remediation. Falls back to the static block when
+    /// DB_CONFIG did not co-fire or no database has RCSI off (nothing concrete to state).
+    /// </summary>
+    private static AdviceBlock ComposeWithRcsiSuffix(string key, IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey[key];
+        var rcsiOff = FactMeta(facts, "DB_CONFIG", "rcsi_off_count");
+        if (rcsiOff is not > 0)
+            return fallback;
+
+        var n = (long)rcsiOff.Value;
+        var sentence = n == 1
+            ? "One database on this server currently has RCSI off — enable it there if its blocking is readers-vs-writers."
+            : $"{n:N0} databases on this server currently have RCSI off — enable it on the ones whose blocking is readers-vs-writers.";
+        return fallback with { Remediation = fallback.Remediation + " " + sentence };
+    }
+
+    /// <summary>
     /// CONFIG_MAX_MEMORY_MB composed with the server's physical RAM, so the card states a concrete
     /// suggested cap (total − max(4 GB, 10%)) instead of a formula and an audit_config deferral. The
     /// fact only fires when max server memory is at its ~2 PB default. Falls back to the static block
@@ -716,13 +740,13 @@ public static class FactAdvice
             Investigation:
                 "Open Blocking → Blocked Process Reports and zoom to the analysis window — that's the same source the engine just analyzed, with the XML available per row. The drill-down `top_blocking_chains` is already attached: five entries ranked by `wait_time_ms`, each carrying `database`, `blocked_spid`, `blocking_spid`, `lock_mode`, and truncated SQL for both sides. Call `get_blocked_process_reports` for the full parsed reports (Lite) or `get_blocking` (Dashboard), and `get_blocking_trend` (Lite) or `get_blocking_deadlock_stats` (Dashboard) to see whether the rate is climbing across the window or a single spike.",
             Remediation:
-                "Look at the locks involved in `top_blocking_chains`: shared/exclusive mismatch (LCK_M_S blocked by writers) is RCSI territory — `audit_config` will flag any database where RCSI is off and surface the ALTER. Writer/writer contention (X/U/IX modes) is not helped by RCSI; the answer is shorter transactions, indexes that let the writer find rows faster instead of locking a range while scanning, and consistent object access order between procedures. For chronic blocking driven by one slow operation, fix that one query — the lock-hold duration is usually proportional to query duration.");
+                "Look at the locks involved in `top_blocking_chains`: shared/exclusive mismatch (LCK_M_S blocked by writers) is RCSI territory — enable READ_COMMITTED_SNAPSHOT on those databases (`ALTER DATABASE [db] SET READ_COMMITTED_SNAPSHOT ON`) so readers read row versions instead of taking shared locks. Writer/writer contention (X/U/IX modes) is not helped by RCSI; the answer is shorter transactions, indexes that let the writer find rows faster instead of locking a range while scanning, and consistent object access order between procedures. For chronic blocking driven by one slow operation, fix that one query — the lock-hold duration is usually proportional to query duration.");
 
         t["DEADLOCKS"] = new AdviceBlock(
             Headline:
                 "Deadlocks are firing above the per-hour threshold — at least one transaction is being killed every few minutes",
             Investigation:
-                "Open Blocking → Deadlocks and zoom to the window — every row carries the deadlock graph XML, viewable in-app. The drill-down `top_deadlocks` is already attached with the three most recent victims by collection time, including truncated victim SQL. Call `get_deadlocks` for the parsed event stream and `get_deadlock_detail` for the full graph XML on a specific event. SQL Server's deadlock detector runs every 5 seconds, so any sustained rate above the threshold means active recurring contention — not transient. If the graph shows LCK_M_S victims (readers being killed for writers), `audit_config` will tell you whether RCSI is off on the database.",
+                "Open Blocking → Deadlocks and zoom to the window — every row carries the deadlock graph XML, viewable in-app. The drill-down `top_deadlocks` is already attached with the three most recent victims by collection time, including truncated victim SQL. Call `get_deadlocks` for the parsed event stream and `get_deadlock_detail` for the full graph XML on a specific event. SQL Server's deadlock detector runs every 5 seconds, so any sustained rate above the threshold means active recurring contention — not transient. If the graph shows LCK_M_S victims (readers being killed for writers), READ_COMMITTED_SNAPSHOT on that database eliminates the class — readers read row versions instead of taking the shared locks that deadlock with writers.",
             Remediation:
                 "Most deadlocks are caused by inconsistent object access order between two procedures (proc A locks table X then Y; proc B locks Y then X). Read the graph, identify the two paths, and pick one access order for both. For reader/writer deadlocks specifically, enabling READ_COMMITTED_SNAPSHOT on the database eliminates the entire class — readers stop taking shared locks and read row versions instead. Raising deadlock priority on the loser does not prevent the deadlock; it only changes which side dies. Shortening transactions (moving non-transactional work outside `BEGIN TRAN`) shrinks the window in which the deadlock can occur.");
 
