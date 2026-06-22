@@ -252,4 +252,41 @@ public class FactAdviceComposeTests
     {
         Assert.Equal(FactAdvice.GetForFactKey("QUERY_SPILLS"), FactAdvice.Compose("QUERY_SPILLS", Facts()));
     }
+
+    // ── B3: RCSI-deferral blocks state the RCSI-off count instead of deferring to audit_config ──
+
+    private static Fact DbConfig(int rcsiOff) => new()
+    {
+        Key = "DB_CONFIG", Source = "config", Value = 1, Severity = 0.3,
+        Metadata = new Dictionary<string, double> { ["rcsi_off_count"] = rcsiOff }
+    };
+
+    [Theory]
+    [InlineData("BLOCKING_EVENTS")]
+    [InlineData("DEADLOCKS")]
+    public void RcsiBlocks_StateRcsiOffCount_WhenDbConfigCoFired(string key)
+    {
+        var advice = FactAdvice.Compose(key, Facts(DbConfig(9)));
+        Assert.Contains("9 databases on this server currently have RCSI off", advice!.Remediation);
+    }
+
+    [Fact]
+    public void RcsiBlocks_SingularPhrasing_ForOneDatabase()
+    {
+        var advice = FactAdvice.Compose("BLOCKING_EVENTS", Facts(DbConfig(1)));
+        Assert.Contains("One database on this server currently has RCSI off", advice!.Remediation);
+    }
+
+    [Fact]
+    public void RcsiBlocks_NoDbConfig_FallBackToStatic()
+    {
+        Assert.Equal(FactAdvice.GetForFactKey("DEADLOCKS"), FactAdvice.Compose("DEADLOCKS", Facts()));
+    }
+
+    [Fact]
+    public void BlockingAndDeadlock_DropAuditConfigRcsiDeferral()
+    {
+        Assert.DoesNotContain("audit_config", FactAdvice.GetForFactKey("BLOCKING_EVENTS")!.Remediation);
+        Assert.DoesNotContain("audit_config", FactAdvice.GetForFactKey("DEADLOCKS")!.Investigation);
+    }
 }
