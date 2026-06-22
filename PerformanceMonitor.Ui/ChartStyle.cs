@@ -211,22 +211,36 @@ namespace PerformanceMonitor.Ui
             // Soften the connecting line; markers stay fully opaque so peaks read clearly.
             scatter.LineColor = seriesColor.WithAlpha(215);
             // Gradient area fill — the "easy on the eye" PerformanceStudio look. Anchored to THIS
-            // series' own data range [min, max], NOT to zero: the fill is a ribbon hugging the line
-            // (color near the peak, fading to transparent at the series' own floor). Filling to zero
-            // looks wrong for high-baseline metrics like memory (a buffer pool flat at 35 GB would
-            // float a band near the top with a huge dead gap below); anchoring to the data band keeps
-            // it sensible for both near-zero metrics (CPU) and high-baseline ones (memory). The fade
-            // also means overlapping multi-series fills never pile into grey near the floor.
+            // series' own data range [min, max] and filled to FillYValue = min (NOT zero): the fill is
+            // a ribbon hugging the line, fading to transparent at the series' own floor — sensible for
+            // both near-zero metrics (CPU) and high-baseline ones (memory), and the fade stops
+            // overlapping multi-series fills piling into grey near the floor.
+            //
+            // CRITICAL: a gradient fill needs a real vertical span. A flat or empty series (e.g. a
+            // tempdb version-store stuck at 0) gives a ZERO-HEIGHT fill rect, which collapses the two
+            // gradient color stops onto a single pixel and makes ScottPlot throw "number of colors
+            // must match the number of color positions" on EVERY render frame — an unhandled-exception
+            // flood that crashes the app. So only fill when the data genuinely varies; otherwise leave
+            // the line unfilled.
             double minY = pointCount > 0 ? pts.Min(p => p.Y) : 0.0;
-            double maxY = pointCount > 0 ? pts.Max(p => p.Y) : 1.0;
-            if (double.IsNaN(minY)) minY = 0.0;
-            if (double.IsNaN(maxY) || maxY <= minY) maxY = minY + 1.0;
-            scatter.FillY = true;
-            scatter.FillYValue = minY;
-            scatter.AxisGradientDirection = ScottPlot.AxisGradientDirection.Vertical;
+            double maxY = pointCount > 0 ? pts.Max(p => p.Y) : 0.0;
+            bool canFill = pointCount >= 2
+                && maxY > minY
+                && !double.IsNaN(minY) && !double.IsNaN(maxY)
+                && !double.IsInfinity(minY) && !double.IsInfinity(maxY);
             scatter.ColorPositions.Clear();
-            scatter.ColorPositions.Add(new(seriesColor.WithAlpha(0), minY));
-            scatter.ColorPositions.Add(new(seriesColor.WithAlpha(135), maxY));
+            if (canFill)
+            {
+                scatter.FillY = true;
+                scatter.FillYValue = minY;
+                scatter.AxisGradientDirection = ScottPlot.AxisGradientDirection.Vertical;
+                scatter.ColorPositions.Add(new(seriesColor.WithAlpha(0), minY));
+                scatter.ColorPositions.Add(new(seriesColor.WithAlpha(135), maxY));
+            }
+            else
+            {
+                scatter.FillY = false;
+            }
         }
 
         /// <summary>
