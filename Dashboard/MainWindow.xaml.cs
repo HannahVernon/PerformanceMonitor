@@ -1020,6 +1020,13 @@ namespace PerformanceMonitorDashboard
                 {
                     if (_planViewerTab != null)
                     {
+                        // Each plan sub-tab's viewer is rooted by the static ThemeChanged event —
+                        // Cleanup() each before discarding the tab control so none leak.
+                        if (_mainPlanTabControl != null)
+                            foreach (var item in _mainPlanTabControl.Items)
+                                if (item is TabItem { Content: Grid g } && g.Children.Count > 1
+                                    && g.Children[1] is PerformanceMonitor.Ui.PlanViewerControl pv)
+                                    pv.Cleanup();
                         ServerTabControl.Items.Remove(_planViewerTab);
                         _planViewerTab = null;
                         _mainPlanTabControl = null;

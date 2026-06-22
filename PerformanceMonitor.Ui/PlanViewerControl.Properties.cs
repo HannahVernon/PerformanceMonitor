@@ -14,10 +14,8 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.PlanAnalysis;
-using PerformanceMonitor.Ui;
-using PerformanceMonitorDashboard.Models;
 
-namespace PerformanceMonitorDashboard.Controls;
+namespace PerformanceMonitor.Ui;
 
 public partial class PlanViewerControl
 {
