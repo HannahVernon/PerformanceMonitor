@@ -149,7 +149,7 @@ public partial class ServerTab : UserControl
         {
             var hoursBack = GetHoursBack();
             var (fromDate, toDate) = GetCurrentViewDates();
-            var history = await _dataService.GetQueryStatsHistoryAsync(_serverId, row.DatabaseName, row.QueryHash, hoursBack, fromDate, toDate);
+            var history = await Task.Run(() => _dataService.GetQueryStatsHistoryAsync(_serverId, row.DatabaseName, row.QueryHash, hoursBack, fromDate, toDate));
 
             var points = ComputeQueryOverlayPoints(history, _queryStatsSlicerMetric);
             QueryStatsSlicer.SetOverlay(points, row.QueryHash);
@@ -169,7 +169,7 @@ public partial class ServerTab : UserControl
         {
             var hoursBack = GetHoursBack();
             var (fromDate, toDate) = GetCurrentViewDates();
-            var history = await _dataService.GetProcedureStatsHistoryAsync(_serverId, row.DatabaseName, row.SchemaName, row.ObjectName, hoursBack, fromDate, toDate);
+            var history = await Task.Run(() => _dataService.GetProcedureStatsHistoryAsync(_serverId, row.DatabaseName, row.SchemaName, row.ObjectName, hoursBack, fromDate, toDate));
 
             var points = ComputeProcOverlayPoints(history, _procStatsSlicerMetric);
             var label = row.ObjectName.Length > 30 ? row.ObjectName[..30] + "..." : row.ObjectName;
@@ -190,7 +190,7 @@ public partial class ServerTab : UserControl
         {
             var hoursBack = GetHoursBack();
             var (fromDate, toDate) = GetCurrentViewDates();
-            var history = await _dataService.GetQueryStoreHistoryAsync(_serverId, row.DatabaseName, row.QueryId, row.PlanId, hoursBack, fromDate, toDate);
+            var history = await Task.Run(() => _dataService.GetQueryStoreHistoryAsync(_serverId, row.DatabaseName, row.QueryId, row.PlanId, hoursBack, fromDate, toDate));
 
             // Query Store values are already per-interval averages, not cumulative
             Func<QueryStoreHistoryRow, double> selector = _queryStoreSlicerMetric switch

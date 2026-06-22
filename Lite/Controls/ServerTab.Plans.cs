@@ -40,7 +40,7 @@ public partial class ServerTab : UserControl
             // Try DuckDB first
             try
             {
-                plan = await _dataService.GetCachedQueryPlanAsync(_serverId, row.QueryHash);
+                plan = await Task.Run(() => _dataService.GetCachedQueryPlanAsync(_serverId, row.QueryHash));
             }
             catch
             {
@@ -94,7 +94,7 @@ public partial class ServerTab : UserControl
             {
                 try
                 {
-                    plan = await _dataService.GetCachedProcedurePlanAsync(_serverId, row.PlanHandle);
+                    plan = await Task.Run(() => _dataService.GetCachedProcedurePlanAsync(_serverId, row.PlanHandle));
                 }
                 catch
                 {
@@ -462,7 +462,7 @@ public partial class ServerTab : UserControl
         // Try DuckDB cache first
         try
         {
-            var plan = await _dataService.GetCachedQueryPlanAsync(_serverId, queryHash);
+            var plan = await Task.Run(() => _dataService.GetCachedQueryPlanAsync(_serverId, queryHash));
             if (!string.IsNullOrEmpty(plan)) return plan;
         }
         catch { }

@@ -123,7 +123,7 @@ public partial class ServerTab : UserControl
 
         // Navigate to Queries > Active Queries with ±15 min window
         SelectActiveQueriesForDrillDown();
-        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
+        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
         _ = LoadActiveQueriesSlicerAsync();
@@ -136,7 +136,7 @@ public partial class ServerTab : UserControl
         SetDrillDownTimeRange(fromDate, toDate);
 
         SelectActiveQueriesForDrillDown();
-        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
+        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
         _ = LoadActiveQueriesSlicerAsync();
@@ -150,7 +150,7 @@ public partial class ServerTab : UserControl
 
         // Navigate to Active Queries — TempDB spills are visible there
         SelectActiveQueriesForDrillDown();
-        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
+        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
         _ = LoadActiveQueriesSlicerAsync();
@@ -164,7 +164,7 @@ public partial class ServerTab : UserControl
 
         MainTabControl.SelectedIndex = 8; // Blocking
         BlockingSubTabControl.SelectedIndex = 2; // Blocked Process Reports
-        var bpr = await _dataService.GetRecentBlockedProcessReportsAsync(_serverId, 0, fromDate, toDate);
+        var bpr = await System.Threading.Tasks.Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, 0, fromDate, toDate));
         _blockedProcessFilterMgr!.UpdateData(bpr);
     }
 
@@ -176,7 +176,7 @@ public partial class ServerTab : UserControl
 
         MainTabControl.SelectedIndex = 8; // Blocking
         BlockingSubTabControl.SelectedIndex = 3; // Deadlocks
-        var dlr = await _dataService.GetRecentDeadlocksAsync(_serverId, 0, fromDate, toDate);
+        var dlr = await System.Threading.Tasks.Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, 0, fromDate, toDate));
         _deadlockFilterMgr!.UpdateData(await ParseDeadlocksOffUiThreadAsync(dlr));
     }
 
@@ -193,7 +193,7 @@ public partial class ServerTab : UserControl
         SelectActiveQueriesForDrillDown();
 
         AppLogger.Info("DrillDown", $"Calling GetLatestQuerySnapshotsAsync with fromDate={fromDate:O}, toDate={toDate:O}");
-        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate);
+        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
         AppLogger.Info("DrillDown", $"Got {snapshots.Count} snapshots");
 
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
