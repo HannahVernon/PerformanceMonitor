@@ -79,7 +79,31 @@ public sealed class LiteRecommendationsReader
         }
 
         items.Sort(CompareForDisplay);
+        AppendCoFired(items);
         return items;
+    }
+
+    /// <summary>
+    /// Appends a "what else fired in this analysis window" cross-reference to each card's advice text
+    /// (correlate-and-focus slice 1, review §1d) so the operator can see related findings without
+    /// hunting. Render-time, not frozen — always reflects the current batch. No-op for a single card.
+    /// </summary>
+    private static void AppendCoFired(List<LiteRecommendationItem> items)
+    {
+        if (items.Count <= 1)
+            return;
+
+        var windowTitles = new List<(string Title, double Severity)>(items.Count);
+        foreach (var it in items)
+            windowTitles.Add((it.Title, it.RawSeverity));
+
+        foreach (var it in items)
+        {
+            var line = CoFiredSummary.Line(CoFiredSummary.OtherTitles(it.Title, windowTitles));
+            if (line is null)
+                continue;
+            it.AdviceText = string.IsNullOrEmpty(it.AdviceText) ? line : it.AdviceText + " " + line;
+        }
     }
 
     /// <summary>

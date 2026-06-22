@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Text.Json;
@@ -65,6 +66,11 @@ public sealed class McpAnalysisTools
                 }, McpHelpers.JsonOptions);
             }
 
+            // Correlate-and-focus slice 1 (review §1d): each finding's "what else fired this window".
+            var coFiredTitles = new List<(string, double)>(findings.Count);
+            foreach (var wf in findings)
+                coFiredTitles.Add((FactAdvice.GetForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
+
             return JsonSerializer.Serialize(new
             {
                 server = resolved.Value.ServerName,
@@ -93,6 +99,7 @@ public sealed class McpAnalysisTools
                         fact_count = f.FactCount,
                         drill_down = f.DrillDown,
                         next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredTitles),
                         advice = advice is null ? null : new
                         {
                             headline = advice.Headline,
@@ -361,6 +368,16 @@ public sealed class McpAnalysisTools
             if (findings.Count == 0)
                 return JsonSerializer.Serialize(new { server = resolved.Value.ServerName, finding_count = 0, message = "No findings. Run analyze_server to generate new findings." }, McpHelpers.JsonOptions);
 
+            // Correlate-and-focus slice 1 (review §1d): "what else fired", scoped per analysis run
+            // (this read can span multiple runs, unlike analyze_server's single run).
+            var coFiredByRun = new Dictionary<DateTime, List<(string, double)>>();
+            foreach (var wf in findings)
+            {
+                if (!coFiredByRun.TryGetValue(wf.AnalysisTime, out var list))
+                    coFiredByRun[wf.AnalysisTime] = list = new List<(string, double)>();
+                list.Add((FactAdvice.GetComposedForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
+            }
+
             return JsonSerializer.Serialize(new
             {
                 server = resolved.Value.ServerName,
@@ -383,6 +400,7 @@ public sealed class McpAnalysisTools
                         story_path = f.StoryPath,
                         story_path_hash = f.StoryPathHash,
                         analysis_time = f.AnalysisTime.ToString("o"),
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredByRun[f.AnalysisTime]),
                         advice = advice is null ? null : new
                         {
                             headline = advice.Headline,
