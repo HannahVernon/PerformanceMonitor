@@ -22,8 +22,24 @@ namespace PerformanceMonitor.Analysis;
 public static class IncidentId
 {
     /// <summary>
-    /// Stamps the run's incident id onto every non-absolution story. No-op when the run has no
-    /// incident stories (a healthy / absolution-only run leaves the ids empty).
+    /// Stamps each incident component with its OWN id — the primary fingerprint of that component
+    /// (see <see cref="InferenceEngine.ClusterIntoIncidents"/>). This is the per-component refinement
+    /// of <see cref="StampStories"/>: instead of one id for the whole run, each causally-related
+    /// group of findings gets its own trackable id, so the surface can render one report per real
+    /// incident rather than lumping a run's unrelated problems together.
+    /// </summary>
+    public static void StampClusters(
+        string serverName, IReadOnlyList<IReadOnlyList<AnalysisStory>> components)
+    {
+        if (components is null)
+            return;
+        foreach (var component in components)
+            StampStories(serverName, component);
+    }
+
+    /// <summary>
+    /// Stamps a single incident's id onto every non-absolution story in the group. No-op for an
+    /// empty / absolution-only group. Used per-component by <see cref="StampClusters"/>.
     /// </summary>
     public static void StampStories(string serverName, IReadOnlyList<AnalysisStory> stories)
     {
