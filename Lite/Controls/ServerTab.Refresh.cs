@@ -395,6 +395,7 @@ public partial class ServerTab : UserControl
             await System.Threading.Tasks.Task.WhenAll(tempDbTask, tempDbFileIoTask);
 
             UpdateTempDbChart(tempDbTask.Result);
+            UpdateTempDbSizeChart(tempDbTask.Result);
             UpdateTempDbFileIoChart(tempDbFileIoTask.Result);
         }
         catch (Exception ex)
