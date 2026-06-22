@@ -86,6 +86,7 @@ public sealed class McpAnalysisTools
                         fact_count = f.FactCount,
                         drill_down = f.DrillDown,
                         next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        incident_id = f.IncidentId,
                         co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredTitles),
                         advice = advice is null ? null : new
                         {
@@ -574,6 +575,7 @@ public sealed class McpAnalysisTools
                         story_path = f.StoryPath,
                         story_path_hash = f.StoryPathHash,
                         fact_count = f.FactCount,
+                        incident_id = f.IncidentId,
                         co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredByRun[f.AnalysisTime]),
                         time_range = new
                         {
