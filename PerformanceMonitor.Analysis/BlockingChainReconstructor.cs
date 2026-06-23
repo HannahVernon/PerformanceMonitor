@@ -143,8 +143,11 @@ internal static class BlockingChainReconstructor
     /// Edge-precise overload: when the clicked row carries its blocker too, prefer the chain that contains
     /// the exact (blocker -> blocked) edge. This disambiguates a victim that was blocked by two different
     /// lead blockers at different times in the window (each is a separate chain, both containing the victim).
-    /// Falls back to the any-level match on the blocked session when no chain holds that exact edge (e.g. the
-    /// clicked row has no recorded blocker).
+    /// Falls back to the any-level SessionKey match on the blocked session when no chain holds that exact edge
+    /// (e.g. the clicked row has no recorded blocker), and finally to a SPID-only match: the blocked-process
+    /// report keys a blocker with a NULL transaction start (it is not recorded on the blocked row), so a click
+    /// on that session's own 'blocking' row — which carries its real last_transaction_started — would otherwise
+    /// never match the (spid, NULL) apex node and the viewer would wrongly report "no reconstructable chain."
     /// </summary>
     public static ReconstructedChain? FindChainForSession(
         BlockingReconstruction reconstruction,
@@ -160,6 +163,15 @@ internal static class BlockingChainReconstructor
 
         foreach (var chain in reconstruction.Chains)
             if (ChainContains(chain, blockedKey))
+                return chain;
+
+        // Last resort: SPID alone, ignoring the transaction-start identity. A blocker is keyed (spid, NULL) in
+        // the reconstruction (its tran start is NULL on the blocked row), but a click on its 'blocking' row
+        // supplies the session's real tran start, so neither precise pass above can match it. Precise matches
+        // run first and the reconstruction is scoped to a tight time window, so SPID reuse is unlikely to
+        // mislead here — and returning the chain this SPID participates in beats a false "no chain" dialog.
+        foreach (var chain in reconstruction.Chains)
+            if (ChainContainsSpid(chain, blockedSpid))
                 return chain;
 
         return null;
@@ -186,6 +198,23 @@ internal static class BlockingChainReconstructor
             if (MakeKey(l.BlockingSpid, l.BlockingTranStarted).Equals(key)) return true;
             if (MakeKey(l.BlockedSpid, l.BlockedTranStarted).Equals(key)) return true;
         }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True if the SPID appears anywhere in the chain, ignoring the transaction-start identity. The coarse
+    /// last-resort match for the edge-precise <see cref="FindChainForSession(BlockingReconstruction,int,DateTime?,int,DateTime?)"/>,
+    /// for when a blocker is keyed (spid, NULL) in the reconstruction but the clicked row carries a real tran start.
+    /// </summary>
+    private static bool ChainContainsSpid(ReconstructedChain chain, int spid)
+    {
+        if (chain.ApexSpid == spid)
+            return true;
+
+        foreach (var l in chain.Levels)
+            if (l.BlockingSpid == spid || l.BlockedSpid == spid)
+                return true;
 
         return false;
     }

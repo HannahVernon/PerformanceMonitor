@@ -242,4 +242,44 @@ public class BlockingChainReconstructorTests
         Assert.NotNull(fallback);
         Assert.Contains(fallback!.ApexSpid, new[] { 100, 200 });
     }
+
+    [Fact]
+    public void FindChainForSession_BlockerSideClick_ResolvesViaSpidWhenBlockerTranIsNull()
+    {
+        // Real shape from collect.blocking_BlockedProcessReport: the 'blocked' row (75) names its blocker's
+        // SPID (59) but a NULL blocking_last_tran_started, so the reconstruction keys the apex (59, NULL). The
+        // separate 'blocking' row for 59 carries its OWN real last_transaction_started. Clicking that blocking
+        // row must still open the chain (regression: it previously returned null -> "no reconstructable chain").
+        var blockedTran = new DateTime(2026, 6, 23, 7, 21, 14, 897);
+        var blockerOwnTran = new DateTime(2026, 6, 23, 7, 21, 14, 890); // 59's real tran, from its 'blocking' row
+
+        var result = Run(new[]
+        {
+            new BlockingPairRow
+            {
+                EventTime = new DateTime(2026, 6, 23, 7, 21, 14),
+                DatabaseName = "hammerdb_tpcc",
+                BlockedSpid = 75,
+                BlockedTranStarted = blockedTran,
+                BlockingSpid = 59,
+                BlockingTranStarted = null,   // blocker's tran is NULL on the blocked row -> apex keyed (59, NULL)
+                WaitTimeMs = 6893,
+                LockMode = "X",
+                BlockingStatus = "suspended"
+            }
+        });
+
+        var chain = Assert.Single(result.Chains);
+        Assert.Equal(59, chain.ApexSpid);
+        Assert.Null(chain.ApexTranStarted);   // keyed with no tran
+
+        // Blocked-row click carries the exact (59 -> 75) edge and already worked.
+        Assert.NotNull(BlockingChainReconstructor.FindChainForSession(result, 75, blockedTran, 59, null));
+
+        // Blocking-row click: spid 59 with its REAL tran, no recorded blocker. The precise SessionKey can't
+        // match (59, NULL), so the SPID-only fallback must still find the chain.
+        var fromBlocker = BlockingChainReconstructor.FindChainForSession(result, 59, blockerOwnTran, 0, null);
+        Assert.NotNull(fromBlocker);
+        Assert.Equal(59, fromBlocker!.ApexSpid);
+    }
 }
