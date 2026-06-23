@@ -63,13 +63,17 @@ ORDER BY collection_time DESC";
     /// blocking_id) range-limits the lookup. The background collectors keep the lighter <see cref="Sql"/>
     /// (they score chains and never display identity), so this extra correlation is paid only on the
     /// infrequent, small-window viewer open. Maps via <see cref="ReadWithBlockerIdentity"/> (adds 14-16).
+    /// Result row order is intentionally unspecified: the inner TOP (5000) / ORDER BY selects the
+    /// most-recent pairs, reconstruction is order-independent, and the sole caller's maxPairs equals the
+    /// cap — so no outer ORDER BY is added (and collection_time is deliberately not projected, so don't
+    /// "fix" this with ORDER BY c.collection_time — it isn't a column of the derived table).
     /// </summary>
     public const string SqlWithBlockerIdentity = ReadUncommitted + @"
 SELECT
     c.*,
-    bk.login_name AS blocking_login_name,
-    bk.host_name AS blocking_host_name,
-    bk.client_app AS blocking_client_app
+    blocking_login_name = bk.login_name,
+    blocking_host_name = bk.host_name,
+    blocking_client_app = bk.client_app
 FROM
 (" + SelectBody + @"
 ) AS c
