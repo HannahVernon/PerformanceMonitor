@@ -369,7 +369,8 @@ LIMIT 200";
 SELECT
     {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text, blocking_sql_text,
-    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.IdentityColumns}
+    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.IdentityColumns},
+    contentious_object
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
 {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.SpidFilter}

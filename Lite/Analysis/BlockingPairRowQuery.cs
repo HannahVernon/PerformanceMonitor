@@ -64,7 +64,9 @@ AND blocking_spid <> 0";
         BlockedClientApp = reader.IsDBNull(13) ? string.Empty : reader.GetString(13),
         BlockingLoginName = reader.IsDBNull(14) ? string.Empty : reader.GetString(14),
         BlockingHostName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15),
-        BlockingClientApp = reader.IsDBNull(16) ? string.Empty : reader.GetString(16)
+        BlockingClientApp = reader.IsDBNull(16) ? string.Empty : reader.GetString(16),
+        // Ordinal 17: the contended object (every pair-row site appends contentious_object after IdentityColumns).
+        ContentiousObject = reader.IsDBNull(17) ? string.Empty : reader.GetString(17)
     };
 
     /// <summary>

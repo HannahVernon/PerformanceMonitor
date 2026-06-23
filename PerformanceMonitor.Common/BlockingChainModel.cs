@@ -73,6 +73,10 @@ namespace PerformanceMonitor.Common
         public string HostName { get; init; } = string.Empty;
         public string ClientApp { get; init; } = string.Empty;
 
+        /// <summary>The object this session is waiting on (the contended resource), resolved to
+        /// schema.object where possible. Empty for the apex — it waits on no one.</summary>
+        public string ContentiousObject { get; init; } = string.Empty;
+
         /// <summary>Direct victims of this node, ordered deterministically.</summary>
         public List<BlockingChainNode> Children { get; init; } = new();
 
@@ -123,5 +127,8 @@ namespace PerformanceMonitor.Common
         public string BlockingLoginName { get; init; } = string.Empty;
         public string BlockingHostName { get; init; } = string.Empty;
         public string BlockingClientApp { get; init; } = string.Empty;
+        /// <summary>The contended object on this edge (what the blocked side waits on). The victim node
+        /// takes its ContentiousObject from its incoming edge; the apex has none.</summary>
+        public string ContentiousObject { get; init; } = string.Empty;
     }
 }

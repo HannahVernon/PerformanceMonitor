@@ -65,7 +65,8 @@ internal static class BlockingChainViewerProjection
             BlockedClientApp = l.BlockedClientApp,
             BlockingLoginName = l.BlockingLoginName,
             BlockingHostName = l.BlockingHostName,
-            BlockingClientApp = l.BlockingClientApp
+            BlockingClientApp = l.BlockingClientApp,
+            ContentiousObject = l.ContentiousObject
         }).ToList()
     };
 }
