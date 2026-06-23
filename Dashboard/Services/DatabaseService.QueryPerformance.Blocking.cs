@@ -427,8 +427,9 @@ namespace PerformanceMonitorDashboard.Services
                 /// Fetches the blocked/blocker pair rows for a window, for the block-chain viewer to feed
                 /// <see cref="BlockingChainReconstructor"/>. Internal (not public): <see cref="BlockingPairRow"/>
                 /// is internal to the analysis assembly — a public method returning it would be CS0050. Uses
-                /// the shared <see cref="BlockingPairRowQuery"/> so it filters apex rows identically to the
-                /// drill-down + fact collectors.
+                /// the viewer variant <see cref="BlockingPairRowQuery.SqlWithBlockerIdentity"/>: the same apex
+                /// filter as the drill-down + fact collectors, plus the correlated blocker identity so the apex
+                /// node shows login/host/app (the collectors keep the lighter query; they don't display it).
                 /// </summary>
                 internal async Task<List<BlockingPairRow>> GetBlockingPairRowsAsync(DateTime start, DateTime end)
                 {
@@ -437,13 +438,13 @@ namespace PerformanceMonitorDashboard.Services
                     await using var tc = await OpenThrottledConnectionAsync();
                     var connection = tc.Connection;
 
-                    using var command = new SqlCommand(BlockingPairRowQuery.Sql, connection);
+                    using var command = new SqlCommand(BlockingPairRowQuery.SqlWithBlockerIdentity, connection);
                     command.CommandTimeout = 120;
                     BlockingPairRowQuery.AddParameters(command, start, end);
 
                     using var reader = await command.ExecuteReaderAsync();
                     while (await reader.ReadAsync())
-                        rows.Add(BlockingPairRowQuery.Read(reader));
+                        rows.Add(BlockingPairRowQuery.ReadWithBlockerIdentity(reader));
 
                     return rows;
                 }

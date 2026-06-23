@@ -16,9 +16,16 @@ namespace PerformanceMonitorDashboard.Analysis;
 /// </summary>
 internal static class BlockingPairRowQuery
 {
-    public const string Sql = @"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+    private const string ReadUncommitted = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\n";
 
+    /// <summary>
+    /// The core pair SELECT (no SET preamble; ordinals 0-13). Kept separate from <see cref="Sql"/> so the
+    /// viewer variant <see cref="SqlWithBlockerIdentity"/> can reuse it verbatim as a derived table — the
+    /// column list and the apex filter live in exactly one place and can't drift between the two queries.
+    /// Ordinals 11-13 are the BLOCKED row's own identity (login/host/app); the blocker's identity is not
+    /// stored on the blocked row, so a pure apex has no identity from this query alone (see the variant).
+    /// </summary>
+    public const string SelectBody = @"
 SELECT TOP (5000)
     event_time,
     database_name,
@@ -42,10 +49,53 @@ AND   activity = 'blocked'
 AND   blocking_spid IS NOT NULL
 ORDER BY collection_time DESC";
 
+    /// <summary>The collector/fact query: the core SELECT under READ UNCOMMITTED. Maps via <see cref="Read"/>.</summary>
+    public const string Sql = ReadUncommitted + SelectBody;
+
+    /// <summary>
+    /// Viewer-only variant that also resolves the BLOCKER's identity (login / host / client app) per pair,
+    /// so the apex node — which only ever appears as a blocker, never as a blocked row — shows WHO it is
+    /// instead of a bare SPID. The Dashboard table stores identity per process row, so the blocker's lives
+    /// on its <c>activity='blocking'</c> row for the same event; we correlate to it by (event_time, spid)
+    /// via OUTER APPLY. TOP (1) collapses the one-to-many 'blocking' rows a lead blocker emits when it
+    /// blocks several victims in one report (identity is identical across them). The apply is bounded by the
+    /// same <c>collection_time</c> window as the core query, so the clustered PK (collection_time,
+    /// blocking_id) range-limits the lookup. The background collectors keep the lighter <see cref="Sql"/>
+    /// (they score chains and never display identity), so this extra correlation is paid only on the
+    /// infrequent, small-window viewer open. Maps via <see cref="ReadWithBlockerIdentity"/> (adds 14-16).
+    /// Result row order is intentionally unspecified: the inner TOP (5000) / ORDER BY selects the
+    /// most-recent pairs, reconstruction is order-independent, and the sole caller's maxPairs equals the
+    /// cap — so no outer ORDER BY is added (and collection_time is deliberately not projected, so don't
+    /// "fix" this with ORDER BY c.collection_time — it isn't a column of the derived table).
+    /// </summary>
+    public const string SqlWithBlockerIdentity = ReadUncommitted + @"
+SELECT
+    c.*,
+    blocking_login_name = bk.login_name,
+    blocking_host_name = bk.host_name,
+    blocking_client_app = bk.client_app
+FROM
+(" + SelectBody + @"
+) AS c
+OUTER APPLY
+(
+    SELECT TOP (1)
+        k.login_name,
+        k.host_name,
+        k.client_app
+    FROM collect.blocking_BlockedProcessReport AS k
+    WHERE k.activity = 'blocking'
+    AND   k.spid = c.blocking_spid
+    AND   k.event_time = c.event_time
+    AND   k.collection_time >= @collectionWindow
+    ORDER BY k.collection_time DESC
+) AS bk";
+
     /// <summary>
     /// Adds the three parameters. The collection-time floor is a generous bound (window start minus an
     /// hour) so rows whose event_time is inside the window but whose collection_time lags slightly are
-    /// still caught.
+    /// still caught. Shared by both <see cref="Sql"/> and <see cref="SqlWithBlockerIdentity"/> (the apply
+    /// reuses @collectionWindow to bound its own lookup).
     /// </summary>
     public static void AddParameters(SqlCommand cmd, DateTime start, DateTime end)
     {
@@ -54,6 +104,12 @@ ORDER BY collection_time DESC";
         cmd.Parameters.Add(new SqlParameter("@endTime", end));
     }
 
+    /// <summary>
+    /// Maps ordinals 0-13 of the core query: per-event fields plus the BLOCKED row's own identity. The
+    /// blocking-side identity stays empty here — the Dashboard table parses only the blocker's
+    /// status/tran/SQL from the report XML, not its login/host/app — so a pure apex read via the collector
+    /// path shows SQL + db but no identity. The viewer fills it via <see cref="ReadWithBlockerIdentity"/>.
+    /// </summary>
     public static BlockingPairRow Read(DbDataReader reader) => new()
     {
         EventTime = reader.IsDBNull(0) ? default : reader.GetDateTime(0),
@@ -67,12 +123,21 @@ ORDER BY collection_time DESC";
         BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
         BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
         BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
-        // Blocked-side identity (the 'blocked' row's own session). The Dashboard table does NOT parse the
-        // blocker's login/host/app from the XML (only blocking_status/blocking_last_tran_started/
-        // blocking_sql_text), so the blocking-side identity stays empty here — the pure apex shows SQL + db
-        // but no login/host/app. See BlockingChainViewerProjection / the PR notes for the schema follow-up.
         BlockedLoginName = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
         BlockedHostName = reader.IsDBNull(12) ? string.Empty : reader.GetString(12),
         BlockedClientApp = reader.IsDBNull(13) ? string.Empty : reader.GetString(13)
     };
+
+    /// <summary>
+    /// Maps the viewer's <see cref="SqlWithBlockerIdentity"/> result: the core <see cref="Read"/> (0-13)
+    /// plus the correlated blocker identity at ordinals 14-16, so the apex node carries login/host/app.
+    /// </summary>
+    public static BlockingPairRow ReadWithBlockerIdentity(DbDataReader reader)
+    {
+        var row = Read(reader);
+        row.BlockingLoginName = reader.IsDBNull(14) ? string.Empty : reader.GetString(14);
+        row.BlockingHostName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15);
+        row.BlockingClientApp = reader.IsDBNull(16) ? string.Empty : reader.GetString(16);
+        return row;
+    }
 }
