@@ -30,7 +30,7 @@ namespace PerformanceMonitor.Ui;
 public partial class BlockingChainControl : UserControl, IGraphViewer
 {
     private const double NodeWidth = BlockingChainLayout.NodeWidth;
-    private const double NodeHeight = 150;
+    private const double NodeHeight = 166;
 
     private BlockingChainModel? _model;
     private double _zoomLevel = 1.0;
@@ -270,6 +270,10 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         if (!string.IsNullOrEmpty(node.DatabaseName))
             stack.Children.Add(MutedLine(node.DatabaseName));
 
+        // Contended object — what this victim is waiting on (the apex waits on no one, so has none)
+        if (!string.IsNullOrEmpty(node.ContentiousObject))
+            stack.Children.Add(MutedLine(node.ContentiousObject));
+
         // Lock mode + wait (victims only — the apex waits on no one)
         if (!node.IsApex && (node.WaitTimeMs > 0 || !string.IsNullOrEmpty(node.LockMode)))
         {
@@ -459,6 +463,8 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
             AddPropRow("Transaction Started", node.TranStarted.Value.ToString("yyyy-MM-dd HH:mm:ss"));
         if (!string.IsNullOrEmpty(node.DatabaseName))
             AddPropRow("Database", node.DatabaseName);
+        if (!string.IsNullOrEmpty(node.ContentiousObject))
+            AddPropRow("Contended Object", node.ContentiousObject);
         if (!node.IsApex)
         {
             if (!string.IsNullOrEmpty(node.LockMode))

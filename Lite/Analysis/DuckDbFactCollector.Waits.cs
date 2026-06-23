@@ -206,7 +206,8 @@ SELECT
     {BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text,
     blocking_sql_text,
-    {BlockingPairRowQuery.IdentityColumns}
+    {BlockingPairRowQuery.IdentityColumns},
+    contentious_object
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   event_time >= $2

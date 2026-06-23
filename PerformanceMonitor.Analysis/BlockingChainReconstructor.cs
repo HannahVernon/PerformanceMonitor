@@ -39,6 +39,8 @@ internal sealed class BlockingPairRow
     public string BlockingLoginName { get; set; } = string.Empty;
     public string BlockingHostName { get; set; } = string.Empty;
     public string BlockingClientApp { get; set; } = string.Empty;
+    /// <summary>The contended object (schema.object where resolvable) — the blocked row's contentious_object.</summary>
+    public string ContentiousObject { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -69,6 +71,8 @@ internal sealed class ChainLevel
     public string BlockingLoginName { get; init; } = string.Empty;
     public string BlockingHostName { get; init; } = string.Empty;
     public string BlockingClientApp { get; init; } = string.Empty;
+    /// <summary>The contended object for this edge — the blocked side's contentious_object.</summary>
+    public string ContentiousObject { get; init; } = string.Empty;
 }
 
 /// <summary>A single reconstructed blocking chain, rooted at an apex head blocker.</summary>
@@ -448,7 +452,8 @@ internal static class BlockingChainReconstructor
                     BlockedClientApp = row.BlockedClientApp ?? string.Empty,
                     BlockingLoginName = row.BlockingLoginName ?? string.Empty,
                     BlockingHostName = row.BlockingHostName ?? string.Empty,
-                    BlockingClientApp = row.BlockingClientApp ?? string.Empty
+                    BlockingClientApp = row.BlockingClientApp ?? string.Empty,
+                    ContentiousObject = row.ContentiousObject ?? string.Empty
                 });
 
                 if (enqueued.Add(child))

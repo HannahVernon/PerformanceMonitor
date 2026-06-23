@@ -146,7 +146,9 @@ namespace PerformanceMonitor.Common
                             // incoming edge (where it is the blocked party).
                             LoginName = edge.BlockedLoginName,
                             HostName = edge.BlockedHostName,
-                            ClientApp = edge.BlockedClientApp
+                            ClientApp = edge.BlockedClientApp,
+                            // The object this victim is waiting on — its incoming edge's contended resource.
+                            ContentiousObject = edge.ContentiousObject
                         };
                         node.Children.Add(child);
                         next.Add((childKey, child));

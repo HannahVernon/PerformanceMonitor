@@ -273,75 +273,47 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
         var serverStatus = _serverManager.GetConnectionStatus(server.Id);
         bool isAzureSqlDb = serverStatus.SqlEngineEdition == 5;
 
-        string query;
-        if (isAzureSqlDb)
-        {
-            /* Azure SQL DB: read from ring_buffer (database-scoped session)
-               Use .query() to get XML with structure intact, then CONVERT to nvarchar(max) */
-            query = $@"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-DECLARE
-    @PerformanceMonitor_BlockedProcess TABLE
-(
-    ring_buffer xml NOT NULL
-);
-
-INSERT
-    @PerformanceMonitor_BlockedProcess
-(
-    ring_buffer
-)
-SELECT /* PerformanceMonitorLite */
-    ring_xml = TRY_CAST(xet.target_data AS xml)
-FROM sys.dm_xe_database_session_targets AS xet
+        /* The ring-buffer source DMV is the only engine difference (database-scoped on Azure SQL DB,
+           server-scoped elsewhere); event extraction and the wait_resource -> object decode are shared. */
+        string ringBufferSource = isAzureSqlDb
+            ? @"sys.dm_xe_database_session_targets AS xet
 JOIN sys.dm_xe_database_sessions AS xes
-  ON xes.address = xet.event_session_address
-WHERE xes.name = N'{BlockedProcessXeSessionName}'
-AND   xet.target_name = N'ring_buffer'
-OPTION(RECOMPILE);
+  ON xes.address = xet.event_session_address"
+            : @"sys.dm_xe_session_targets AS xet
+JOIN sys.dm_xe_sessions AS xes
+  ON xes.address = xet.event_session_address";
 
-SELECT
-    x.event_time,
-    x.blocked_process_report_xml,
-    x.object_id,
-    x.database_id,
-    /* #1140: resolve the contentious object the blocked_process_report event already carries
-       (object_id/database_id). Mirrors sp_HumanEventsBlockViewer's contentious_object EXACTLY
-       (2-part schema.object + the same 'Unresolved: ...' fallback) so the dedup fingerprint
-       matches the Dashboard for the same object. OBJECT_NAME with the database_id arg resolves
-       cross-DB with no USE; NULL (cross-db perms / dropped object) -> the stable id fallback. */
-    contentious_object =
-        ISNULL
-        (
-            OBJECT_SCHEMA_NAME(x.object_id, x.database_id) + N'.' + OBJECT_NAME(x.object_id, x.database_id),
-            N'Unresolved: database: ' + ISNULL(DB_NAME(x.database_id), N'unknown') +
-            N' object_id: ' + ISNULL(CONVERT(nvarchar(20), x.object_id), N'unknown')
-        )
-FROM
-(
-    SELECT
-        event_time = evt.value('(@timestamp)[1]', 'datetime2'),
-        blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report')),
-        object_id = evt.value('(data[@name=""object_id""]/value/text())[1]', 'integer'),
-        database_id = evt.value('(data[@name=""database_id""]/value/text())[1]', 'integer')
-    FROM
-    (
-        SELECT
-            pmd.ring_buffer
-        FROM @PerformanceMonitor_BlockedProcess AS pmd
-    ) AS rb
-    CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
-    WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
-) AS x
-OPTION(RECOMPILE);";
-        }
-        else
-        {
-            /* On-prem / Azure MI: read from ring_buffer (server-scoped session)
-               Use .query() to get XML with structure intact, then CONVERT to nvarchar(max) */
-            query = $@"
+        /* Resolve contentious_object from wait_resource (KEY hobt -> sys.partitions, OBJECT objid,
+           PAGE/RID -> sys.dm_db_page_info), mirroring sp_HumanEventsBlockViewer (DarlingData #812) so
+           Dashboard and Lite -- and the #1140 dedup fingerprint -- agree. The event object_id/database_id
+           is unreliable for lock waits, kept only as a COALESCE fallback. Cross-db lookups are per-database
+           dynamic SQL guarded by DB-online + TRY/CATCH; the 2019+ DMV is version-gated (or @azure, which
+           reports ProductVersion 12 on Azure SQL DB). #bpr is a #temp (not a table var) so the dynamic SQL
+           can see it. The final SELECT keeps the original 5 columns, so the reader/appender is unchanged. */
+        string query = $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+DECLARE
+    @product_version integer =
+        CONVERT
+        (
+            integer,
+            PARSENAME
+            (
+                CONVERT(sysname, SERVERPROPERTY('ProductVersion')),
+                4
+            )
+        ),
+    @azure bit =
+        CASE
+            WHEN CONVERT(integer, SERVERPROPERTY('EngineEdition')) = 5
+            THEN 1
+            ELSE 0
+        END,
+    @resolve_sql nvarchar(max),
+    @resolve_database_id integer,
+    @key_dbs CURSOR,
+    @page_dbs CURSOR;
 
 DECLARE
     @PerformanceMonitor_BlockedProcess TABLE
@@ -356,9 +328,7 @@ INSERT
 )
 SELECT /* PerformanceMonitorLite */
     ring_xml = TRY_CAST(xet.target_data AS xml)
-FROM sys.dm_xe_session_targets AS xet
-JOIN sys.dm_xe_sessions AS xes
-  ON xes.address = xet.event_session_address
+FROM {ringBufferSource}
 WHERE xes.name = N'{BlockedProcessXeSessionName}'
 AND   xet.target_name = N'ring_buffer'
 OPTION(RECOMPILE);
@@ -368,36 +338,250 @@ SELECT
     x.blocked_process_report_xml,
     x.object_id,
     x.database_id,
-    /* #1140: resolve the contentious object the blocked_process_report event already carries
-       (object_id/database_id). Mirrors sp_HumanEventsBlockViewer's contentious_object EXACTLY
-       (2-part schema.object + the same 'Unresolved: ...' fallback) so the dedup fingerprint
-       matches the Dashboard for the same object. OBJECT_NAME with the database_id arg resolves
-       cross-DB with no USE; NULL (cross-db perms / dropped object) -> the stable id fallback. */
-    contentious_object =
-        ISNULL
-        (
-            OBJECT_SCHEMA_NAME(x.object_id, x.database_id) + N'.' + OBJECT_NAME(x.object_id, x.database_id),
-            N'Unresolved: database: ' + ISNULL(DB_NAME(x.database_id), N'unknown') +
-            N' object_id: ' + ISNULL(CONVERT(nvarchar(20), x.object_id), N'unknown')
-        )
+    x.wait_resource,
+    lock_type = CONVERT(varchar(32), NULL),
+    frag = CONVERT(nvarchar(1024), NULL),
+    resource_database_id = CONVERT(integer, NULL),
+    resource_hobt_id = CONVERT(bigint, NULL),
+    resource_file_id = CONVERT(integer, NULL),
+    resource_page_id = CONVERT(bigint, NULL),
+    resource_object_id = CONVERT(integer, NULL),
+    contentious_object = CONVERT(nvarchar(4000), NULL)
+INTO #bpr
 FROM
 (
     SELECT
         event_time = evt.value('(@timestamp)[1]', 'datetime2'),
         blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report')),
         object_id = evt.value('(data[@name=""object_id""]/value/text())[1]', 'integer'),
-        database_id = evt.value('(data[@name=""database_id""]/value/text())[1]', 'integer')
-    FROM
-    (
-        SELECT
-            pmd.ring_buffer
-        FROM @PerformanceMonitor_BlockedProcess AS pmd
-    ) AS rb
+        database_id = evt.value('(data[@name=""database_id""]/value/text())[1]', 'integer'),
+        wait_resource = evt.value('(data[@name=""blocked_process""]/value/blocked-process-report/blocked-process/process/@waitresource)[1]', 'nvarchar(1024)')
+    FROM @PerformanceMonitor_BlockedProcess AS rb
     CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
     WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
 ) AS x
+OPTION(RECOMPILE);
+
+/* Classify the lock resource (prefers an embedded KEY/PAGE in a compound resource). */
+UPDATE
+    b
+SET
+    b.lock_type =
+        CASE
+            WHEN b.wait_resource LIKE N'%KEY: %'    THEN 'KEY'
+            WHEN b.wait_resource LIKE N'%OBJECT: %' THEN 'OBJECT'
+            WHEN b.wait_resource LIKE N'%RID: %'    THEN 'RID'
+            WHEN b.wait_resource LIKE N'%PAGE: %'   THEN 'PAGE'
+            ELSE LEFT(UPPER(LEFT(b.wait_resource, CHARINDEX(N':', b.wait_resource + N':') - 1)), 32)
+        END
+FROM #bpr AS b
+WHERE b.wait_resource IS NOT NULL
+AND   b.wait_resource <> N''
+OPTION(RECOMPILE);
+
+UPDATE
+    b
+SET
+    b.frag =
+        SUBSTRING
+        (
+            b.wait_resource,
+            CHARINDEX(b.lock_type + N': ', b.wait_resource) + LEN(b.lock_type) + 2,
+            1024
+        )
+FROM #bpr AS b
+WHERE b.lock_type IN ('KEY', 'OBJECT', 'RID', 'PAGE')
+OPTION(RECOMPILE);
+
+UPDATE
+    b
+SET
+    b.resource_database_id =
+        TRY_CONVERT(integer, LEFT(b.frag, CHARINDEX(N':', b.frag + N':') - 1))
+FROM #bpr AS b
+WHERE b.frag IS NOT NULL
+OPTION(RECOMPILE);
+
+UPDATE
+    b
+SET
+    b.resource_hobt_id =
+        TRY_CONVERT(bigint, LTRIM(LEFT(r.rest, CHARINDEX(N' ', r.rest + N' ') - 1)))
+FROM #bpr AS b
+CROSS APPLY
+(
+    SELECT
+        rest = SUBSTRING(b.frag, CHARINDEX(N':', b.frag) + 1, 1024)
+) AS r
+WHERE b.lock_type = 'KEY'
+OPTION(RECOMPILE);
+
+UPDATE
+    b
+SET
+    b.resource_object_id =
+        TRY_CONVERT(integer, LEFT(r.rest, CHARINDEX(N':', r.rest + N':') - 1))
+FROM #bpr AS b
+CROSS APPLY
+(
+    SELECT
+        rest = SUBSTRING(b.frag, CHARINDEX(N':', b.frag) + 1, 1024)
+) AS r
+WHERE b.lock_type = 'OBJECT'
+OPTION(RECOMPILE);
+
+UPDATE
+    b
+SET
+    b.resource_file_id =
+        TRY_CONVERT(integer, LEFT(r.rest, CHARINDEX(N':', r.rest + N':') - 1)),
+    b.resource_page_id =
+        TRY_CONVERT(bigint, LEFT(p.rest2, CHARINDEX(N':', p.rest2 + N':') - 1))
+FROM #bpr AS b
+CROSS APPLY
+(
+    SELECT
+        rest = SUBSTRING(b.frag, CHARINDEX(N':', b.frag) + 1, 1024)
+) AS r
+CROSS APPLY
+(
+    SELECT
+        rest2 = SUBSTRING(r.rest, CHARINDEX(N':', r.rest) + 1, 1024)
+) AS p
+WHERE b.lock_type IN ('PAGE', 'RID')
+OPTION(RECOMPILE);
+
+/* KEY -> object_id via sys.partitions, per contended database (no cross-db form of the view). */
+SET @key_dbs =
+    CURSOR
+    LOCAL FAST_FORWARD
+    FOR
+    SELECT DISTINCT
+        b.resource_database_id
+    FROM #bpr AS b
+    WHERE b.lock_type = 'KEY'
+    AND   b.resource_database_id IS NOT NULL
+    AND   b.resource_hobt_id IS NOT NULL;
+
+OPEN @key_dbs;
+FETCH NEXT FROM @key_dbs INTO @resolve_database_id;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    IF DB_NAME(@resolve_database_id) IS NOT NULL
+    AND DATABASEPROPERTYEX(DB_NAME(@resolve_database_id), 'Status') = N'ONLINE'
+    BEGIN
+        SET @resolve_sql = N'
+        BEGIN TRY
+            UPDATE b
+            SET b.resource_object_id = p.object_id
+            FROM #bpr AS b
+            JOIN ' + QUOTENAME(DB_NAME(@resolve_database_id)) + N'.sys.partitions AS p
+              ON p.hobt_id = b.resource_hobt_id
+            WHERE b.lock_type = ''KEY''
+            AND   b.resource_database_id = @resolve_database_id
+            OPTION(RECOMPILE);
+        END TRY
+        BEGIN CATCH
+            /* no metadata access to the database -> leave for labeling */
+        END CATCH;';
+        EXECUTE sys.sp_executesql
+            @resolve_sql,
+          N'@resolve_database_id integer',
+            @resolve_database_id;
+    END;
+    FETCH NEXT FROM @key_dbs INTO @resolve_database_id;
+END;
+
+/* PAGE / RID -> object_id via sys.dm_db_page_info (2019+ or Azure SQL DB; VIEW DATABASE STATE -> TRY/CATCH). */
+IF @product_version >= 15
+OR @azure = 1
+BEGIN
+    SET @page_dbs =
+        CURSOR
+        LOCAL FAST_FORWARD
+        FOR
+        SELECT DISTINCT
+            b.resource_database_id
+        FROM #bpr AS b
+        WHERE b.lock_type IN ('PAGE', 'RID')
+        AND   b.resource_database_id IS NOT NULL
+        AND   b.resource_page_id IS NOT NULL;
+
+    OPEN @page_dbs;
+    FETCH NEXT FROM @page_dbs INTO @resolve_database_id;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        IF DB_NAME(@resolve_database_id) IS NOT NULL
+        AND DATABASEPROPERTYEX(DB_NAME(@resolve_database_id), 'Status') = N'ONLINE'
+        BEGIN
+            SET @resolve_sql = N'
+            BEGIN TRY
+                UPDATE b
+                SET b.resource_object_id = pi.object_id
+                FROM #bpr AS b
+                CROSS APPLY sys.dm_db_page_info(b.resource_database_id, b.resource_file_id, b.resource_page_id, ''LIMITED'') AS pi
+                WHERE b.lock_type IN (''PAGE'', ''RID'')
+                AND   b.resource_database_id = @resolve_database_id
+                OPTION(RECOMPILE);
+            END TRY
+            BEGIN CATCH
+                /* no VIEW DATABASE STATE / page reallocated -> leave for labeling */
+            END CATCH;';
+            EXECUTE sys.sp_executesql
+                @resolve_sql,
+              N'@resolve_database_id integer',
+                @resolve_database_id;
+        END;
+        FETCH NEXT FROM @page_dbs INTO @resolve_database_id;
+    END;
+END;
+
+/* Format (plain schema.object) + label; the event object_id is the fallback, then the Unresolved sentinel. */
+UPDATE
+    b
+SET
+    b.contentious_object =
+        COALESCE
+        (
+            CASE
+                WHEN b.resource_object_id > 0
+                AND  OBJECT_NAME(b.resource_object_id, b.resource_database_id) IS NOT NULL
+                THEN CONCAT
+                     (
+                         OBJECT_SCHEMA_NAME(b.resource_object_id, b.resource_database_id),
+                         N'.',
+                         OBJECT_NAME(b.resource_object_id, b.resource_database_id)
+                     )
+            END,
+            CASE
+                WHEN b.object_id > 0
+                AND  OBJECT_NAME(b.object_id, b.database_id) IS NOT NULL
+                THEN CONCAT
+                     (
+                         OBJECT_SCHEMA_NAME(b.object_id, b.database_id),
+                         N'.',
+                         OBJECT_NAME(b.object_id, b.database_id)
+                     )
+            END,
+            N'Unresolved: ' +
+            CASE
+                WHEN b.lock_type IS NULL
+                THEN N''
+                ELSE LOWER(b.lock_type) + N' lock, '
+            END +
+            N'database: ' + ISNULL(DB_NAME(b.database_id), N'unknown')
+        )
+FROM #bpr AS b
+OPTION(RECOMPILE);
+
+SELECT
+    b.event_time,
+    b.blocked_process_report_xml,
+    b.object_id,
+    b.database_id,
+    b.contentious_object
+FROM #bpr AS b
 OPTION(RECOMPILE);";
-        }
 
         var serverId = GetServerId(server);
         var collectionTime = DateTime.UtcNow;

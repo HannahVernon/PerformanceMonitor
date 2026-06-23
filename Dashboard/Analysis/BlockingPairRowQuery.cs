@@ -19,11 +19,12 @@ internal static class BlockingPairRowQuery
     private const string ReadUncommitted = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\n";
 
     /// <summary>
-    /// The core pair SELECT (no SET preamble; ordinals 0-13). Kept separate from <see cref="Sql"/> so the
+    /// The core pair SELECT (no SET preamble; ordinals 0-14). Kept separate from <see cref="Sql"/> so the
     /// viewer variant <see cref="SqlWithBlockerIdentity"/> can reuse it verbatim as a derived table — the
     /// column list and the apex filter live in exactly one place and can't drift between the two queries.
-    /// Ordinals 11-13 are the BLOCKED row's own identity (login/host/app); the blocker's identity is not
-    /// stored on the blocked row, so a pure apex has no identity from this query alone (see the variant).
+    /// Ordinals 11-13 are the BLOCKED row's own identity (login/host/app); ordinal 14 is the contended
+    /// object (resolved by the collector / sp_HumanEventsBlockViewer). The blocker's identity is not stored
+    /// on the blocked row, so a pure apex has no identity from this query alone (see the variant).
     /// </summary>
     public const string SelectBody = @"
 SELECT TOP (5000)
@@ -40,7 +41,8 @@ SELECT TOP (5000)
     blocking_sql_text,
     login_name,
     host_name,
-    client_app
+    client_app,
+    contentious_object
 FROM collect.blocking_BlockedProcessReport
 WHERE collection_time >= @collectionWindow
 AND   event_time >= @startTime
@@ -62,7 +64,7 @@ ORDER BY collection_time DESC";
     /// same <c>collection_time</c> window as the core query, so the clustered PK (collection_time,
     /// blocking_id) range-limits the lookup. The background collectors keep the lighter <see cref="Sql"/>
     /// (they score chains and never display identity), so this extra correlation is paid only on the
-    /// infrequent, small-window viewer open. Maps via <see cref="ReadWithBlockerIdentity"/> (adds 14-16).
+    /// infrequent, small-window viewer open. Maps via <see cref="ReadWithBlockerIdentity"/> (adds 15-17).
     /// Result row order is intentionally unspecified: the inner TOP (5000) / ORDER BY selects the
     /// most-recent pairs, reconstruction is order-independent, and the sole caller's maxPairs equals the
     /// cap — so no outer ORDER BY is added (and collection_time is deliberately not projected, so don't
@@ -125,19 +127,20 @@ OUTER APPLY
         BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
         BlockedLoginName = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
         BlockedHostName = reader.IsDBNull(12) ? string.Empty : reader.GetString(12),
-        BlockedClientApp = reader.IsDBNull(13) ? string.Empty : reader.GetString(13)
+        BlockedClientApp = reader.IsDBNull(13) ? string.Empty : reader.GetString(13),
+        ContentiousObject = reader.IsDBNull(14) ? string.Empty : reader.GetString(14)
     };
 
     /// <summary>
-    /// Maps the viewer's <see cref="SqlWithBlockerIdentity"/> result: the core <see cref="Read"/> (0-13)
-    /// plus the correlated blocker identity at ordinals 14-16, so the apex node carries login/host/app.
+    /// Maps the viewer's <see cref="SqlWithBlockerIdentity"/> result: the core <see cref="Read"/> (0-14)
+    /// plus the correlated blocker identity at ordinals 15-17, so the apex node carries login/host/app.
     /// </summary>
     public static BlockingPairRow ReadWithBlockerIdentity(DbDataReader reader)
     {
         var row = Read(reader);
-        row.BlockingLoginName = reader.IsDBNull(14) ? string.Empty : reader.GetString(14);
-        row.BlockingHostName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15);
-        row.BlockingClientApp = reader.IsDBNull(16) ? string.Empty : reader.GetString(16);
+        row.BlockingLoginName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15);
+        row.BlockingHostName = reader.IsDBNull(16) ? string.Empty : reader.GetString(16);
+        row.BlockingClientApp = reader.IsDBNull(17) ? string.Empty : reader.GetString(17);
         return row;
     }
 }
