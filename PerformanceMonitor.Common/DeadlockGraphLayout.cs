@@ -29,7 +29,7 @@ namespace PerformanceMonitor.Common
     public static class DeadlockGraphLayout
     {
         public const double NodeWidth = 240;
-        public const double NodeHeight = 130;
+        public const double NodeHeight = 150;   // fits SPID + proc + contended object + lock/wait + SQL preview
         public const double Padding = 40;
         public const double NodeGap = 70;        // min clear space between two cards on a ring
         public const double ComponentGap = 70;   // gap between component rings when tiled
@@ -94,6 +94,8 @@ namespace PerformanceMonitor.Common
             double rowWidthLimit = targetCols * (maxBoxW + ComponentGap);
 
             double x = Padding, rowTop = Padding, rowMaxH = 0, maxRight = 0;
+            var boxes = new List<DeadlockComponentBox>(laidOut.Count);
+            int cycleIndex = 0;
             foreach (var comp in laidOut)
             {
                 if (x > Padding && x + comp.Width > Padding + rowWidthLimit)
@@ -109,11 +111,24 @@ namespace PerformanceMonitor.Common
                     node.Y = rowTop + localY;
                 }
 
+                // The component's cards span [x, x+Width] x [rowTop, rowTop+Height] — capture it so the viewer
+                // can frame each independent cycle. Index is 1-based in the (biggest-first) tiling order.
+                boxes.Add(new DeadlockComponentBox
+                {
+                    Index = ++cycleIndex,
+                    NodeCount = comp.Nodes.Count,
+                    X = x,
+                    Y = rowTop,
+                    Width = comp.Width,
+                    Height = comp.Height
+                });
+
                 maxRight = Math.Max(maxRight, x + comp.Width);
                 x += comp.Width + ComponentGap;
                 rowMaxH = Math.Max(rowMaxH, comp.Height);
             }
 
+            model.ComponentBoxes = boxes;
             return (maxRight + Padding, rowTop + rowMaxH + Padding);
         }
 

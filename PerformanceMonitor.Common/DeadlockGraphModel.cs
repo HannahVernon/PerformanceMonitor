@@ -36,8 +36,36 @@ namespace PerformanceMonitor.Common
         /// null (both apps strip the wrapper before storage); the launch glue supplies the time it knows.</summary>
         public DateTime? EventTime { get; init; }
 
+        /// <summary>
+        /// Bounding boxes of the independent cycles (connected components of the waits-for graph), in canvas
+        /// coordinates, assigned by <see cref="DeadlockGraphLayout"/>. A single &lt;deadlock&gt; element often
+        /// batches several independent cycles that share no resource (the deadlock monitor reports them as one
+        /// graph); the viewer draws one labelled box per entry so they read as the distinct sub-graphs they are.
+        /// One entry per cycle, biggest first. Layout output, so it follows the same set-after-construction
+        /// pattern as <see cref="DeadlockProcessNode.X"/>/<see cref="DeadlockProcessNode.Y"/>.
+        /// </summary>
+        public IReadOnlyList<DeadlockComponentBox> ComponentBoxes { get; set; } = Array.Empty<DeadlockComponentBox>();
+
         /// <summary>True when the XML produced no processes (empty range, unparseable, or non-deadlock XML).</summary>
         public bool IsEmpty => Processes.Count == 0;
+    }
+
+    /// <summary>
+    /// The canvas-space bounding box of one independent cycle (a connected component of the waits-for graph),
+    /// produced by <see cref="DeadlockGraphLayout"/>. <see cref="Index"/> is 1-based for display ("Cycle 1").
+    /// </summary>
+    public sealed class DeadlockComponentBox
+    {
+        /// <summary>1-based cycle number for display (biggest cycle is 1).</summary>
+        public int Index { get; init; }
+
+        /// <summary>How many processes the cycle contains.</summary>
+        public int NodeCount { get; init; }
+
+        public double X { get; init; }
+        public double Y { get; init; }
+        public double Width { get; init; }
+        public double Height { get; init; }
     }
 
     /// <summary>
@@ -68,6 +96,16 @@ namespace PerformanceMonitor.Common
 
         /// <summary>The resource this process was blocked on (raw <c>waitresource</c> string).</summary>
         public string WaitResource { get; init; } = string.Empty;
+
+        /// <summary>
+        /// The resolved contended resource: the friendly lock kind + object name from the first resource this
+        /// process waits on (its first non-self "waits for" edge), e.g. "PAGE hammerdb_tpcc.dbo.new_order".
+        /// Assigned by <see cref="DeadlockGraphParser"/> after edges are built; SQL Server already resolved the
+        /// objectname in the deadlock resource-list, so this needs no DMV lookup. Empty for a process that only
+        /// owns (no outgoing wait), waits solely on a parallelism exchange, or whose wait resource carried no
+        /// object name (system table / Azure). Mirrors the block-chain viewer's contended-object surface.
+        /// </summary>
+        public string ContentiousObject { get; set; } = string.Empty;
 
         /// <summary>How long this process had been waiting, in ms.</summary>
         public long WaitTimeMs { get; init; }
