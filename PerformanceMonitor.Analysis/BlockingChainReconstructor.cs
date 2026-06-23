@@ -33,9 +33,12 @@ internal sealed class BlockingPairRow
     public string BlockedLoginName { get; init; } = string.Empty;
     public string BlockedHostName { get; init; } = string.Empty;
     public string BlockedClientApp { get; init; } = string.Empty;
-    public string BlockingLoginName { get; init; } = string.Empty;
-    public string BlockingHostName { get; init; } = string.Empty;
-    public string BlockingClientApp { get; init; } = string.Empty;
+    // Blocker-side identity is settable (not init) so the Dashboard viewer can enrich it after Read from
+    // the correlated activity='blocking' row — its table denormalizes only the blocked side (see Dashboard
+    // BlockingPairRowQuery.ReadWithBlockerIdentity). Lite sets all six in its Read object initializer.
+    public string BlockingLoginName { get; set; } = string.Empty;
+    public string BlockingHostName { get; set; } = string.Empty;
+    public string BlockingClientApp { get; set; } = string.Empty;
 }
 
 /// <summary>
