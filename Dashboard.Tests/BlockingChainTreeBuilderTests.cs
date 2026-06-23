@@ -29,7 +29,14 @@ public class BlockingChainTreeBuilderTests
             LockMode = lockMode,
             DatabaseName = db,
             BlockingSqlText = $"blocker {blocker}",
-            BlockedSqlText = $"blocked {blocked}"
+            BlockedSqlText = $"blocked {blocked}",
+            // Identity keyed per spid so a node's sourced login/host/app is assertable.
+            BlockedLoginName = $"login{blocked}",
+            BlockedHostName = $"host{blocked}",
+            BlockedClientApp = $"app{blocked}",
+            BlockingLoginName = $"login{blocker}",
+            BlockingHostName = $"host{blocker}",
+            BlockingClientApp = $"app{blocker}"
         };
 
     private static BlockingChainInput Chain(
@@ -97,6 +104,56 @@ public class BlockingChainTreeBuilderTests
         Assert.Equal(3, root.Children.Count);
         Assert.Equal(new[] { 301, 302, 303 }, root.Children.Select(c => c.Spid).ToArray());
         Assert.All(root.Children, c => Assert.Empty(c.Children));
+    }
+
+    [Fact]
+    public void DeepLinearChain_NestsRootToGreatGrandchild_WithIdentity()
+    {
+        // 1 -> 2 -> 3 -> 4 must render NESTED at every level (root -> child -> grandchild -> great-grandchild),
+        // not flattened. Also proves identity is sourced from the right edge side.
+        var model = Build(Chain(1, new[] { Edge(1, 1, 2), Edge(2, 2, 3), Edge(3, 3, 4) }));
+
+        var root = Assert.Single(model.Roots);
+        Assert.Equal(1, root.Spid);
+        Assert.True(root.IsApex);
+        // Apex identity comes from the blocking side of its outgoing edge.
+        Assert.Equal("login1", root.LoginName);
+        Assert.Equal("host1", root.HostName);
+        Assert.Equal("app1", root.ClientApp);
+
+        var c2 = Assert.Single(root.Children);
+        Assert.Equal(2, c2.Spid);
+        Assert.Equal("login2", c2.LoginName);   // victim identity from the blocked side of its incoming edge
+        Assert.Equal("host2", c2.HostName);
+
+        var c3 = Assert.Single(c2.Children);
+        Assert.Equal(3, c3.Spid);
+
+        var c4 = Assert.Single(c3.Children);
+        Assert.Equal(4, c4.Spid);
+        Assert.Empty(c4.Children);
+
+        Assert.Equal(4, Flatten(root).Count());
+    }
+
+    [Fact]
+    public void MultiLevelBranching_NestsEachBranchSeparately()
+    {
+        // 1 blocks 2 AND 3; 2 blocks 4. Expect 1 -> {2, 3} and 2 -> {4}; no flattening, no duplication.
+        var model = Build(Chain(1, new[] { Edge(1, 1, 2), Edge(1, 1, 3), Edge(2, 2, 4) }));
+
+        var root = Assert.Single(model.Roots);
+        Assert.Equal(new[] { 2, 3 }, root.Children.Select(c => c.Spid).OrderBy(x => x).ToArray());
+
+        var n2 = root.Children.Single(c => c.Spid == 2);
+        var n3 = root.Children.Single(c => c.Spid == 3);
+
+        var n4 = Assert.Single(n2.Children);
+        Assert.Equal(4, n4.Spid);
+        Assert.Empty(n3.Children);
+        Assert.Empty(n4.Children);
+
+        Assert.Equal(4, Flatten(root).Count());   // 1, 2, 3, 4 — each once
     }
 
     [Fact]

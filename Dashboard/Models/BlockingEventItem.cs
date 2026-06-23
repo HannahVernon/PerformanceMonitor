@@ -45,6 +45,14 @@ namespace PerformanceMonitorDashboard.Models
         public string BlockedProcessReportXml { get; set; } = string.Empty;
 
         /// <summary>
+        /// The blocker parsed from the report XML (populated on activity = 'blocked' rows; NULL on
+        /// 'blocking' rows). Lets the block-chain viewer pick the exact (blocker -> blocked) chain edge
+        /// for the clicked row.
+        /// </summary>
+        public int? BlockingSpid { get; set; }
+        public DateTime? BlockingLastTranStarted { get; set; }
+
+        /// <summary>
         /// True when a blocked process report XML exists for this row. The grid query defers the
         /// (large) XML itself for speed and returns only this flag; the XML is fetched on demand
         /// via DatabaseService.GetBlockedProcessReportAsync when View Plan / Download is clicked.

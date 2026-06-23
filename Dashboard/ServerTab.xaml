@@ -48,6 +48,7 @@
                 <MenuItem.Icon><TextBlock Text="📊"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
+            <MenuItem Header="View Block Chain" Click="ViewBlockChain_Click"/>
             <MenuItem Header="View Blocked Plan" Click="ViewBlockedSidePlan_Click"/>
             <MenuItem Header="View Blocking Plan" Click="ViewBlockingSidePlan_Click"/>
         </ContextMenu>
@@ -664,14 +665,9 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
-                            <DockPanel Grid.Row="0" LastChildFill="True">
-                                <Button DockPanel.Dock="Right" Content="View Block Chain"
-                                        Click="ViewBlockChain_Click" Height="26" Padding="10,0"
-                                        Margin="6,0,8,0" VerticalAlignment="Center"
-                                        ToolTip="Reconstruct and visualize the blocking chains for the selected time range"/>
-                                <controls:TimeRangeSlicerControl x:Name="BlockingSlicer"/>
-                            </DockPanel>
+                            <controls:TimeRangeSlicerControl x:Name="BlockingSlicer" Grid.Row="0"/>
                         <DataGrid x:Name="BlockingEventsDataGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                                      MouseDoubleClick="BlockingEventsDataGrid_MouseDoubleClick"
                                       GridLinesVisibility="Horizontal" CanUserResizeColumns="True"
                                       RowStyle="{StaticResource BlockingEventsPlanRowStyle}"
                                       ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">

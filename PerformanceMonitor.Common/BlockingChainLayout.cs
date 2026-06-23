@@ -20,8 +20,8 @@ namespace PerformanceMonitor.Common
     /// </summary>
     public static class BlockingChainLayout
     {
-        public const double NodeWidth = 230;
-        public const double HorizontalSpacing = 290; // NodeWidth + horizontal gap between depths
+        public const double NodeWidth = 260;          // wide enough for login / host / app identity lines
+        public const double HorizontalSpacing = 330;  // NodeWidth + horizontal gap between depths
         public const double VerticalSpacing = 22;
         public const double Padding = 40;
         public const double ForestGap = 36; // extra vertical gap between separate apex trees

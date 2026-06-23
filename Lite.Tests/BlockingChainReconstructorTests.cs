@@ -198,4 +198,48 @@ public class BlockingChainReconstructorTests
         Assert.Equal(TranFor(200), top.BlockingTranStarted);
         Assert.Equal(TranFor(201), top.BlockedTranStarted);
     }
+
+    [Fact]
+    public void FindChainForSession_AnyMember_ReturnsChainRootedAtApex()
+    {
+        // Two separate chains — A: 200 -> 201 -> 202 ; B: 300 -> 301. The viewer scopes to the ONE chain a
+        // clicked session belongs to, rooted at its apex regardless of where in the chain it sits.
+        var result = Run(new[] { Pair(201, 200), Pair(202, 201), Pair(301, 300) });
+
+        // Mid-level 201 -> chain A, rooted at apex 200 (not at the clicked node).
+        var chainA = BlockingChainReconstructor.FindChainForSession(result, 201, TranFor(201));
+        Assert.NotNull(chainA);
+        Assert.Equal(200, chainA!.ApexSpid);
+
+        // The apex itself and a leaf victim resolve to the same apex-rooted chain.
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, 200, TranFor(200))!.ApexSpid);
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, 202, TranFor(202))!.ApexSpid);
+
+        // A member of the other chain resolves to that chain; an absent session returns null.
+        Assert.Equal(300, BlockingChainReconstructor.FindChainForSession(result, 301, TranFor(301))!.ApexSpid);
+        Assert.Null(BlockingChainReconstructor.FindChainForSession(result, 999, TranFor(999)));
+    }
+
+    [Fact]
+    public void FindChainForSession_VictimUnderTwoApexes_DisambiguatesByClickedBlocker()
+    {
+        // Victim 500 (same tran) was blocked by apex 100 and, at another time, apex 200 — two separate
+        // chains, BOTH containing 500. The edge-precise overload returns the chain reached via the clicked
+        // row's blocker, so the clicked row opens the right chain.
+        var result = Run(new[]
+        {
+            Pair(blockedSpid: 500, blockingSpid: 100),
+            Pair(blockedSpid: 500, blockingSpid: 200)
+        });
+
+        Assert.Equal(100, BlockingChainReconstructor
+            .FindChainForSession(result, 500, TranFor(500), 100, TranFor(100))!.ApexSpid);
+        Assert.Equal(200, BlockingChainReconstructor
+            .FindChainForSession(result, 500, TranFor(500), 200, TranFor(200))!.ApexSpid);
+
+        // No recorded blocker -> falls back to the any-level match (one of the chains that contains 500).
+        var fallback = BlockingChainReconstructor.FindChainForSession(result, 500, TranFor(500), 0, null);
+        Assert.NotNull(fallback);
+        Assert.Contains(fallback!.ApexSpid, new[] { 100, 200 });
+    }
 }
