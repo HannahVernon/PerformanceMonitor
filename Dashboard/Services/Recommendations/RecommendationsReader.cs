@@ -197,6 +197,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                                 ServerConfigTargets: new[] { target })
                             : null,
                         StoryPathHash = finding.StoryPathHash,
+                        IncidentId = finding.IncidentId,
                         StoryPath = finding.StoryPath,
                         Setting = RecommendationSetting.None,  // server-level — never de-dupes with legacy
                         IsServerConfigAdvisory = true,
@@ -240,6 +241,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                         Remediation = new RemediationAction(
                             "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), new[] { target }),
                         StoryPathHash = finding.StoryPathHash,
+                        IncidentId = finding.IncidentId,
                         StoryPath = finding.StoryPath,
                         Setting = setting,
                         WindowStartUtc = AsUtc(finding.TimeRangeStart),
@@ -277,6 +279,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                             new[] { new DbConfigTarget(t.Database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF") },
                             RcsiFigures: t.Figures),
                         StoryPathHash = finding.StoryPathHash,
+                        IncidentId = finding.IncidentId,
                         StoryPath = finding.StoryPath,
                         Setting = RecommendationSetting.Rcsi,
                         WindowStartUtc = AsUtc(finding.TimeRangeStart),
@@ -389,6 +392,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 Remediation = isMissingIndex ? null : finding.Remediation,
                 IsMissingIndexAdvisory = isMissingIndex,
                 StoryPathHash = finding.StoryPathHash,
+                IncidentId = finding.IncidentId,
                 StoryPath = finding.StoryPath,
                 Setting = SettingFromAction(finding.Remediation),
                 WindowStartUtc = AsUtc(finding.TimeRangeStart),

@@ -80,6 +80,13 @@ public sealed class LiteRecommendationItem
     /// <summary>The finding's root fact key — drives the advice lookup and the Ask-AI prompt.</summary>
     public string RootFactKey { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The finding's incident id (correlate-and-focus) — the group key the surface collapses cards
+    /// under, so related findings render as one report. Empty for findings analyzed before incident_id
+    /// existed; the view-model treats an empty id as a standalone single-card incident.
+    /// </summary>
+    public string IncidentId { get; set; } = string.Empty;
+
     /// <summary>The monitored server's display name (for the Ask-AI prompt).</summary>
     public string ServerName { get; set; } = string.Empty;
 

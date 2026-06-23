@@ -237,12 +237,17 @@ namespace PerformanceMonitorDashboard.Controls
     public sealed class RecommendationSectionViewModel
     {
         public RecommendationSectionViewModel(
-            CanonicalSeverity severity, IReadOnlyList<RecommendationCardViewModel> cards, bool expanded)
+            CanonicalSeverity severity, IReadOnlyList<RecommendationCardViewModel> cards, bool expanded,
+            string? header = null)
         {
             Severity = severity;
             Cards = cards ?? throw new ArgumentNullException(nameof(cards));
             IsExpanded = expanded;
+            _header = header;
         }
+
+        // When set (incident grouping), overrides the severity-derived header.
+        private readonly string? _header;
 
         /// <summary>The severity this section groups.</summary>
         public CanonicalSeverity Severity { get; }
@@ -256,13 +261,16 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>Whether the section's expander starts expanded.</summary>
         public bool IsExpanded { get; }
 
-        /// <summary>The header label, e.g. "Critical (3)".</summary>
-        public string Header => Severity switch
+        /// <summary>
+        /// The header label. For incident groups it's the supplied incident header (primary finding +
+        /// count + severity); falls back to the severity label ("Critical (3)") when no header was set.
+        /// </summary>
+        public string Header => _header ?? (Severity switch
         {
             CanonicalSeverity.Critical => $"Critical ({Count})",
             CanonicalSeverity.Warning => $"Warning ({Count})",
             _ => $"Info ({Count})"
-        };
+        });
     }
 
     /// <summary>
@@ -343,31 +351,66 @@ namespace PerformanceMonitorDashboard.Controls
             if (list.Count == 0)
                 return new(Array.Empty<RecommendationSectionViewModel>(), RecommendationsState.Empty, string.Empty);
 
-            var sections = new List<RecommendationSectionViewModel>(3);
-            // Fixed display order Critical → Warning → Info, regardless of which bands are present.
-            AppendSection(sections, list, CanonicalSeverity.Critical, expanded: true, serverName, utcOffsetMinutes);
-            AppendSection(sections, list, CanonicalSeverity.Warning, expanded: true, serverName, utcOffsetMinutes);
-            AppendSection(sections, list, CanonicalSeverity.Info, expanded: false, serverName, utcOffsetMinutes);
-
-            return new(sections, RecommendationsState.Loaded, string.Empty);
+            return new(GroupByIncident(list, serverName, utcOffsetMinutes), RecommendationsState.Loaded, string.Empty);
         }
 
-        private static void AppendSection(
-            List<RecommendationSectionViewModel> sections,
-            IReadOnlyList<RecommendationItem> all,
-            CanonicalSeverity severity,
-            bool expanded,
-            string serverName,
-            int utcOffsetMinutes)
+        /// <summary>
+        /// Groups the reader's flat, severity-sorted list into one collapsible section per INCIDENT
+        /// (correlate-and-focus): cards sharing an <see cref="RecommendationItem.IncidentId"/> form one
+        /// group headed by their primary (highest-severity) finding, so related findings read as one
+        /// report instead of a sea of cards. An item with no incident id (legacy rows; engine rows from
+        /// before incident_id existed) is its own single-card group. Groups appear in severity order —
+        /// the input is already severity-desc sorted, so each group's first-appearance (its primary
+        /// card) is in severity-desc order. A group expands unless it is Info-only.
+        /// </summary>
+        private static List<RecommendationSectionViewModel> GroupByIncident(
+            IReadOnlyList<RecommendationItem> list, string serverName, int utcOffsetMinutes)
         {
-            // Preserve the reader's order within the band (it is already severity-desc sorted).
-            var cards = all
-                .Where(i => i.CanonicalSeverity == severity)
+            var order = new List<string>();
+            var buckets = new Dictionary<string, List<RecommendationItem>>(StringComparer.Ordinal);
+            var soloCount = 0;
+            foreach (var item in list)
+            {
+                var key = string.IsNullOrEmpty(item.IncidentId) ? "__solo_" + soloCount++ : item.IncidentId;
+                if (!buckets.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<RecommendationItem>();
+                    buckets[key] = bucket;
+                    order.Add(key);
+                }
+                bucket.Add(item);
+            }
+
+            var sections = new List<RecommendationSectionViewModel>(order.Count);
+            foreach (var key in order)
+                sections.Add(BuildIncidentSection(buckets[key], serverName, utcOffsetMinutes));
+            return sections;
+        }
+
+        /// <summary>
+        /// Builds one incident section from its cards (kept in the reader's severity-desc order). The
+        /// header names the primary (first) finding, the finding count, and the incident severity; the
+        /// section expands unless the incident is Info-only.
+        /// </summary>
+        private static RecommendationSectionViewModel BuildIncidentSection(
+            IReadOnlyList<RecommendationItem> incidentItems, string serverName, int utcOffsetMinutes)
+        {
+            var cards = incidentItems
                 .Select(i => new RecommendationCardViewModel(i, serverName, utcOffsetMinutes))
                 .ToList();
-
-            if (cards.Count > 0)
-                sections.Add(new RecommendationSectionViewModel(severity, cards, expanded));
+            var primary = cards[0]; // reader sorted severity-desc -> the first card is the incident primary
+            var severity = primary.Severity;
+            var label = severity switch
+            {
+                CanonicalSeverity.Critical => "CRITICAL",
+                CanonicalSeverity.Warning => "WARNING",
+                _ => "INFO"
+            };
+            var header = cards.Count > 1
+                ? $"{primary.Title} · {cards.Count} findings · {label}"
+                : $"{primary.Title} · {label}";
+            return new RecommendationSectionViewModel(
+                severity, cards, expanded: severity != CanonicalSeverity.Info, header);
         }
 
         /// <summary>
