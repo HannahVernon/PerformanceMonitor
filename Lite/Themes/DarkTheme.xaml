@@ -74,6 +74,10 @@
          the light node card (bright #4FA3FF is only ~2.6:1 on white). The LEAD BLOCKER badge fill keeps the
          bright ApexBrush constant so the apex still pops. -->
     <SolidColorBrush x:Key="ApexBorderBrush" Color="#4FA3FF"/>
+    <!-- Deadlock victim node border + VICTIM badge fill, and the "waits for" edge/arrow. Tuned per theme
+         so the victim red clears >=3:1 as a border and the edge reads as a line on the canvas. -->
+    <SolidColorBrush x:Key="DeadlockVictimBrush" Color="#FF5C5C"/>
+    <SolidColorBrush x:Key="DeadlockEdgeBrush" Color="#8B93A1"/>
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource InfoColor}"/>
 
