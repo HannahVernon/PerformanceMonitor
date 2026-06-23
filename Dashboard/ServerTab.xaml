@@ -68,6 +68,7 @@
                 <MenuItem.Icon><TextBlock Text="📊"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
+            <MenuItem Header="View Deadlock Graph" Click="ViewDeadlockGraph_Click"/>
             <MenuItem Header="View Plan" Click="ViewDeadlockProcessPlan_Click"/>
         </ContextMenu>
 
@@ -867,6 +868,7 @@
                         <DataGrid x:Name="DeadlocksDataGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                                       RowHeight="28" GridLinesVisibility="Horizontal" CanUserResizeColumns="True"
                                       RowStyle="{StaticResource DeadlocksPlanRowStyle}"
+                                      MouseDoubleClick="DeadlocksDataGrid_MouseDoubleClick"
                                       ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Binding="{Binding EventDate, Converter={StaticResource ServerTimeConverter}}" Width="150">

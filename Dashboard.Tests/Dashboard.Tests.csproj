@@ -20,4 +20,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Dashboard\Dashboard.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Deadlock graph parser/layout golden samples (real sql2025 captures + synthetic edge cases). -->
+    <None Include="Fixtures\Deadlocks\*.xml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

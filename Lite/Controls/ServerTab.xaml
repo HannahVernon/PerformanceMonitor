@@ -77,6 +77,9 @@
                     <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
+                <MenuItem Header="View Deadlock Graph" Click="ViewDeadlockGraph_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F578;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="View Plan" Click="ViewDeadlockProcessPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1482,6 +1485,7 @@
                             <DataGrid x:Name="DeadlockGrid" Grid.Row="1"
                                       AutoGenerateColumns="False" IsReadOnly="True"
                                       RowStyle="{StaticResource DeadlockRowStyle}"
+                                      MouseDoubleClick="DeadlockGrid_MouseDoubleClick"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                                 <DataGrid.Columns>
