@@ -16,7 +16,7 @@ public class LiteRecommendationsViewModelTests
     private static LiteRecommendationItem Item(
         LiteRecommendationSeverity severity, double raw, string title = "T",
         string? database = null, string? sql = null, string? advice = "advice",
-        string serverName = "SQL2022")
+        string serverName = "SQL2022", string incidentId = "")
     {
         return new LiteRecommendationItem
         {
@@ -27,6 +27,7 @@ public class LiteRecommendationsViewModelTests
             CopyPasteSql = sql,
             AdviceText = advice,
             RootFactKey = "CPU_SQL_PERCENT",
+            IncidentId = incidentId,
             ServerName = serverName,
             WindowStartUtc = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc),
             WindowEndUtc = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc)
@@ -78,23 +79,22 @@ public class LiteRecommendationsViewModelTests
     // ── grouping ────────────────────────────────────────────────────────────────
 
     [Fact]
-    public void FromItems_GroupsByBand_InFixedOrder_OmittingEmpty()
+    public void FromItems_GroupsByIncidentId()
     {
+        // Reader-sorted (severity desc); two findings share incident "inc1", a third is its own.
         var items = new[]
         {
-            Item(LiteRecommendationSeverity.Info, 0.5),
-            Item(LiteRecommendationSeverity.Critical, 1.6),
-            Item(LiteRecommendationSeverity.Critical, 1.9),
+            Item(LiteRecommendationSeverity.Critical, 1.9, title: "c1", incidentId: "inc1"),
+            Item(LiteRecommendationSeverity.Warning, 1.0, title: "w1", incidentId: "inc1"),
+            Item(LiteRecommendationSeverity.Warning, 0.9, title: "w2", incidentId: "inc2"),
         };
 
         var vm = LiteRecommendationsViewModel.FromItems(items);
 
-        // Critical present, Warning omitted (no items), Info present -> 2 sections, Critical first.
-        Assert.Equal(2, vm.Sections.Count);
-        Assert.Equal(LiteRecommendationSeverity.Critical, vm.Sections[0].Severity);
-        Assert.Equal(2, vm.Sections[0].Count);
-        Assert.Equal(LiteRecommendationSeverity.Info, vm.Sections[1].Severity);
-        Assert.Equal(1, vm.Sections[1].Count);
+        Assert.Equal(2, vm.Sections.Count);                                       // two incidents
+        Assert.Equal(2, vm.Sections[0].Count);                                    // inc1: c1 + w1
+        Assert.Equal(LiteRecommendationSeverity.Critical, vm.Sections[0].Severity); // primary = c1
+        Assert.Single(vm.Sections[1].Cards);                                      // inc2: w2 only
     }
 
     [Fact]
@@ -116,15 +116,15 @@ public class LiteRecommendationsViewModelTests
     }
 
     [Fact]
-    public void Section_Header_ShowsBandAndCount()
+    public void IncidentHeader_NamesPrimaryFindingCountAndSeverity()
     {
         var vm = LiteRecommendationsViewModel.FromItems(new[]
         {
-            Item(LiteRecommendationSeverity.Warning, 0.8),
-            Item(LiteRecommendationSeverity.Warning, 0.9),
+            Item(LiteRecommendationSeverity.Critical, 1.9, title: "SQL CPU pegged", incidentId: "inc1"),
+            Item(LiteRecommendationSeverity.Warning, 1.0, title: "Plan regression", incidentId: "inc1"),
         });
 
-        Assert.Equal("Warning (2)", vm.Sections.Single().Header);
+        Assert.Equal("SQL CPU pegged · 2 findings · CRITICAL", vm.Sections.Single().Header);
     }
 
     // ── card affordances (advise-only) ──────────────────────────────────────────

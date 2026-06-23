@@ -152,6 +152,7 @@ public sealed class LiteRecommendationsReader
             AdviceText = ComposeAdvice(advice),
             CopyPasteSql = NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
             RootFactKey = finding.RootFactKey,
+            IncidentId = finding.IncidentId,
             ServerName = serverName ?? string.Empty,
             WindowStartUtc = AsUtc(finding.TimeRangeStart),
             WindowEndUtc = AsUtc(finding.TimeRangeEnd)

@@ -152,12 +152,17 @@ public sealed class LiteRecommendationCardViewModel
 public sealed class LiteRecommendationSectionViewModel
 {
     public LiteRecommendationSectionViewModel(
-        LiteRecommendationSeverity severity, IReadOnlyList<LiteRecommendationCardViewModel> cards, bool expanded)
+        LiteRecommendationSeverity severity, IReadOnlyList<LiteRecommendationCardViewModel> cards, bool expanded,
+        string? header = null)
     {
         Severity = severity;
         Cards = cards ?? throw new ArgumentNullException(nameof(cards));
         IsExpanded = expanded;
+        _header = header;
     }
+
+    // When set (incident grouping), overrides the severity-derived header.
+    private readonly string? _header;
 
     /// <summary>The severity this section groups.</summary>
     public LiteRecommendationSeverity Severity { get; }
@@ -171,13 +176,16 @@ public sealed class LiteRecommendationSectionViewModel
     /// <summary>Whether the section's expander starts expanded.</summary>
     public bool IsExpanded { get; }
 
-    /// <summary>The header label, e.g. "Critical (3)".</summary>
-    public string Header => Severity switch
+    /// <summary>
+    /// The header label. For incident groups it's the supplied incident header (primary finding +
+    /// count + severity); falls back to the severity label ("Critical (3)") when no header was set.
+    /// </summary>
+    public string Header => _header ?? (Severity switch
     {
         LiteRecommendationSeverity.Critical => $"Critical ({Count})",
         LiteRecommendationSeverity.Warning => $"Warning ({Count})",
         _ => $"Info ({Count})"
-    };
+    });
 }
 
 /// <summary>
@@ -256,30 +264,66 @@ public sealed class LiteRecommendationsViewModel
         if (list.Count == 0)
             return new(Array.Empty<LiteRecommendationSectionViewModel>(), LiteRecommendationsState.Empty, string.Empty);
 
-        var sections = new List<LiteRecommendationSectionViewModel>(3);
-        // Fixed display order Critical → Warning → Info, regardless of which bands are present.
-        AppendSection(sections, list, LiteRecommendationSeverity.Critical, expanded: true, utcOffsetMinutes);
-        AppendSection(sections, list, LiteRecommendationSeverity.Warning, expanded: true, utcOffsetMinutes);
-        AppendSection(sections, list, LiteRecommendationSeverity.Info, expanded: false, utcOffsetMinutes);
-
-        return new(sections, LiteRecommendationsState.Loaded, string.Empty);
+        return new(GroupByIncident(list, utcOffsetMinutes), LiteRecommendationsState.Loaded, string.Empty);
     }
 
-    private static void AppendSection(
-        List<LiteRecommendationSectionViewModel> sections,
-        IReadOnlyList<LiteRecommendationItem> all,
-        LiteRecommendationSeverity severity,
-        bool expanded,
-        int utcOffsetMinutes)
+    /// <summary>
+    /// Groups the reader's flat, severity-sorted list into one collapsible section per INCIDENT
+    /// (correlate-and-focus): cards sharing an <see cref="LiteRecommendationItem.IncidentId"/> form one
+    /// group headed by their primary (highest-severity) finding, so related findings read as one report
+    /// instead of a sea of cards. A finding with no incident id (from before incident_id existed) is its
+    /// own single-card group. Groups appear in severity order (the input is already severity-desc
+    /// sorted, so each group's primary card is in severity order). A group expands unless it is Info-only.
+    /// Mirrors the Dashboard's GroupByIncident.
+    /// </summary>
+    private static List<LiteRecommendationSectionViewModel> GroupByIncident(
+        IReadOnlyList<LiteRecommendationItem> list, int utcOffsetMinutes)
     {
-        // Preserve the reader's order within the band (it is already severity-desc sorted).
-        var cards = all
-            .Where(i => i.Severity == severity)
+        var order = new List<string>();
+        var buckets = new Dictionary<string, List<LiteRecommendationItem>>(StringComparer.Ordinal);
+        var soloCount = 0;
+        foreach (var item in list)
+        {
+            var key = string.IsNullOrEmpty(item.IncidentId) ? "__solo_" + soloCount++ : item.IncidentId;
+            if (!buckets.TryGetValue(key, out var bucket))
+            {
+                bucket = new List<LiteRecommendationItem>();
+                buckets[key] = bucket;
+                order.Add(key);
+            }
+            bucket.Add(item);
+        }
+
+        var sections = new List<LiteRecommendationSectionViewModel>(order.Count);
+        foreach (var key in order)
+            sections.Add(BuildIncidentSection(buckets[key], utcOffsetMinutes));
+        return sections;
+    }
+
+    /// <summary>
+    /// Builds one incident section from its cards (kept in the reader's severity-desc order). The
+    /// header names the primary (first) finding, the finding count, and the incident severity; the
+    /// section expands unless the incident is Info-only.
+    /// </summary>
+    private static LiteRecommendationSectionViewModel BuildIncidentSection(
+        IReadOnlyList<LiteRecommendationItem> incidentItems, int utcOffsetMinutes)
+    {
+        var cards = incidentItems
             .Select(i => new LiteRecommendationCardViewModel(i, utcOffsetMinutes))
             .ToList();
-
-        if (cards.Count > 0)
-            sections.Add(new LiteRecommendationSectionViewModel(severity, cards, expanded));
+        var primary = cards[0]; // reader sorted severity-desc -> the first card is the incident primary
+        var severity = primary.Severity;
+        var label = severity switch
+        {
+            LiteRecommendationSeverity.Critical => "CRITICAL",
+            LiteRecommendationSeverity.Warning => "WARNING",
+            _ => "INFO"
+        };
+        var header = cards.Count > 1
+            ? $"{primary.Title} · {cards.Count} findings · {label}"
+            : $"{primary.Title} · {label}";
+        return new LiteRecommendationSectionViewModel(
+            severity, cards, expanded: severity != LiteRecommendationSeverity.Info, header);
     }
 
     /// <summary>
