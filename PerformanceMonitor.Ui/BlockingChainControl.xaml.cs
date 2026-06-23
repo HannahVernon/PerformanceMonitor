@@ -21,21 +21,26 @@ using WpfPath = System.Windows.Shapes.Path;
 namespace PerformanceMonitor.Ui;
 
 /// <summary>
-/// Shared block-chain viewer: renders the apex (lead blocker) at the left with its transitive victims
-/// flowing right, one tree per chain. Mirrors PlanViewerControl's conventions — Canvas + ScaleTransform
-/// zoom/pan, click-to-select properties, theme lifecycle (subscribe in ctor, never unsubscribe on
-/// Unloaded, expose <see cref="Cleanup"/> for the host window to call on close).
+/// Shared block-chain viewer: renders ONE chain — the lead blocker (apex) at the left with its full
+/// transitive victim hierarchy flowing right — for the session the user opened it from. The clicked
+/// session is highlighted within the tree. Mirrors PlanViewerControl's conventions — Canvas +
+/// ScaleTransform zoom/pan, click-to-select properties, theme lifecycle (subscribe in ctor, never
+/// unsubscribe on Unloaded, expose <see cref="Cleanup"/> for the host window to call on close).
 /// </summary>
 public partial class BlockingChainControl : UserControl, IGraphViewer
 {
     private const double NodeWidth = BlockingChainLayout.NodeWidth;
-    private const double NodeHeight = 112;
+    private const double NodeHeight = 150;
 
     private BlockingChainModel? _model;
     private double _zoomLevel = 1.0;
     private const double ZoomStep = 0.15;
     private const double MinZoom = 0.1;
     private const double MaxZoom = 3.0;
+
+    // The session the viewer was opened from — highlighted (auto-selected) on load.
+    private int _entrySpid;
+    private DateTime? _entryTran;
 
     // Node selection
     private Border? _selectedNodeBorder;
@@ -93,32 +98,30 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         if (_model == null) return;
 
         var nodeToRestore = _selectedNode;
-        RenderSelected();
+        Render();
 
         if (nodeToRestore == null) return;
-        foreach (var child in ChainCanvas.Children)
-        {
-            if (child is Border b && ReferenceEquals(b.Tag, nodeToRestore))
-            {
-                SelectNode(b, nodeToRestore);
-                break;
-            }
-        }
+        SelectNodeByModel(nodeToRestore);
     }
 
     /// <summary>
-    /// Loads a built model into the viewer. Pure UI work — the caller does the (off-UI-thread) fetch,
-    /// reconstruct, and tree-build, then hands the finished <see cref="BlockingChainModel"/> here.
+    /// Loads the single reconstructed chain that contains the clicked session and highlights that session.
+    /// Pure UI work — the caller does the (off-UI-thread) fetch, reconstruct, single-chain select, and
+    /// tree-build, then hands the finished one-root <see cref="BlockingChainModel"/> here.
     /// </summary>
-    public void LoadModel(BlockingChainModel model, string? emptyStateDetail = null)
+    /// <param name="model">The model holding exactly one root (the chain rooted at its apex).</param>
+    /// <param name="entrySpid">SPID of the session the viewer was opened from (highlighted on load).</param>
+    /// <param name="entryTran">Its normalized transaction-start (the SessionKey disambiguator).</param>
+    public void LoadModel(BlockingChainModel model, int entrySpid, DateTime? entryTran, string? emptyStateDetail = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
+        _entrySpid = entrySpid;
+        _entryTran = entryTran;
 
         if (!string.IsNullOrWhiteSpace(emptyStateDetail))
             EmptyStateDetail.Text = emptyStateDetail;
 
         BuildFlagBanner();
-        PopulateChainSelector();
 
         if (_model.Roots.Count == 0)
         {
@@ -127,9 +130,17 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         }
 
         ShowEmptyState(false);
-        // Default selection (index 0 = "All chains") triggers ChainSelector_SelectionChanged -> render.
-        if (ChainSelector.Items.Count > 0)
-            ChainSelector.SelectedIndex = 0;
+        Render();
+
+        // Highlight (auto-select) the clicked session within the tree so the user lands on "their" node.
+        var entry = _model.Roots
+            .SelectMany(EnumerateTree)
+            .FirstOrDefault(n => n.Spid == _entrySpid && Nullable.Equals(n.TranStarted, _entryTran));
+        if (entry != null)
+        {
+            SelectNodeByModel(entry);
+            ScrollNodeIntoView(entry);
+        }
     }
 
     private void ShowEmptyState(bool empty)
@@ -160,73 +171,32 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         }
     }
 
-    private sealed class ChainSelectorItem
-    {
-        public string Display { get; init; } = "";
-        public BlockingChainNode? Root { get; init; }   // null = all chains
-        public override string ToString() => Display;
-    }
-
-    private void PopulateChainSelector()
-    {
-        ChainSelector.Items.Clear();
-        if (_model == null || _model.Roots.Count == 0) return;
-
-        ChainSelector.Items.Add(new ChainSelectorItem
-        {
-            Display = $"All chains ({_model.Roots.Count})",
-            Root = null
-        });
-
-        foreach (var root in _model.Roots)
-        {
-            var victims = CountDescendants(root);
-            var depth = TreeDepth(root);
-            ChainSelector.Items.Add(new ChainSelectorItem
-            {
-                Display = $"SPID {root.Spid} — {victims} blocked, depth {depth}",
-                Root = root
-            });
-        }
-    }
-
-    private void ChainSelector_SelectionChanged(object sender, SelectionChangedEventArgs e) => RenderSelected();
-
-    private IReadOnlyList<BlockingChainNode> SelectedRoots()
-    {
-        if (_model == null) return Array.Empty<BlockingChainNode>();
-        if (ChainSelector.SelectedItem is ChainSelectorItem item && item.Root != null)
-            return new[] { item.Root };
-        return _model.Roots;
-    }
-
     #region Rendering
 
-    private void RenderSelected()
+    private void Render()
     {
         ChainCanvas.Children.Clear();
         _selectedNodeBorder = null;
 
-        var roots = SelectedRoots();
-        if (roots.Count == 0) return;
+        if (_model == null || _model.Roots.Count == 0) return;
 
         ChainScrollViewer.ScrollToHome();
 
-        var (width, height) = BlockingChainLayout.Layout(roots, _ => NodeHeight);
+        var (width, height) = BlockingChainLayout.Layout(_model.Roots, _ => NodeHeight);
         ChainCanvas.Width = width;
         ChainCanvas.Height = height;
 
-        // Find the longest-wait node across the rendered set to highlight it.
+        // Per-chain longest-wait highlight (only one chain is shown, so it's always meaningful).
         long maxWait = 0;
-        foreach (var root in roots)
+        foreach (var root in _model.Roots)
             Walk(root, n => { if (n.WaitTimeMs > maxWait) maxWait = n.WaitTimeMs; });
         var longestWaitNode = maxWait > 0
-            ? roots.SelectMany(EnumerateTree).FirstOrDefault(n => n.WaitTimeMs == maxWait)
+            ? _model.Roots.SelectMany(EnumerateTree).FirstOrDefault(n => n.WaitTimeMs == maxWait)
             : null;
 
-        foreach (var root in roots)
+        foreach (var root in _model.Roots)
             RenderEdges(root);
-        foreach (var root in roots)
+        foreach (var root in _model.Roots)
             RenderNodes(root, longestWaitNode);
     }
 
@@ -262,34 +232,43 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
 
         var stack = new StackPanel();
 
-        // Header: SPID + role badges
+        // Header: WHO this session is (login) is primary; the SPID is a secondary id. Falls back to the
+        // SPID as the primary label when the source data didn't carry a login (e.g. the Dashboard apex).
         var header = new StackPanel { Orientation = Orientation.Horizontal };
+        var hasLogin = !string.IsNullOrEmpty(node.LoginName);
         header.Children.Add(new TextBlock
         {
-            Text = $"SPID {node.Spid}",
-            FontSize = 13,
+            Text = hasLogin ? node.LoginName : $"SPID {node.Spid}",
+            FontSize = 12,
             FontWeight = FontWeights.Bold,
             Foreground = ForegroundBrush,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = NodeWidth - 110,
             VerticalAlignment = VerticalAlignment.Center
         });
+        if (hasLogin)
+            header.Children.Add(new TextBlock
+            {
+                Text = $"SPID {node.Spid}",
+                FontSize = 10,
+                Foreground = MutedBrush,
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
         if (node.IsApex)
             header.Children.Add(MakeBadge("LEAD BLOCKER", ApexBrush));
         if (node.IsApexSleeping)
             header.Children.Add(MakeBadge("SLEEPING", SleepingBrush));
         stack.Children.Add(header);
 
+        // Host · client app
+        var hostApp = JoinNonEmpty(" · ", node.HostName, node.ClientApp);
+        if (!string.IsNullOrEmpty(hostApp))
+            stack.Children.Add(MutedLine(hostApp));
+
         // Database
         if (!string.IsNullOrEmpty(node.DatabaseName))
-        {
-            stack.Children.Add(new TextBlock
-            {
-                Text = node.DatabaseName,
-                FontSize = 11,
-                Foreground = MutedBrush,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                Margin = new Thickness(0, 1, 0, 0)
-            });
-        }
+            stack.Children.Add(MutedLine(node.DatabaseName));
 
         // Lock mode + wait (victims only — the apex waits on no one)
         if (!node.IsApex && (node.WaitTimeMs > 0 || !string.IsNullOrEmpty(node.LockMode)))
@@ -318,7 +297,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
                 Foreground = MutedBrush,
                 TextWrapping = TextWrapping.Wrap,
                 TextTrimming = TextTrimming.CharacterEllipsis,
-                MaxHeight = 32,
+                MaxHeight = 30,
                 Margin = new Thickness(0, 3, 0, 0)
             });
         }
@@ -326,6 +305,15 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         border.Child = stack;
         return border;
     }
+
+    private TextBlock MutedLine(string text) => new()
+    {
+        Text = text,
+        FontSize = 11,
+        Foreground = MutedBrush,
+        TextTrimming = TextTrimming.CharacterEllipsis,
+        Margin = new Thickness(0, 1, 0, 0)
+    };
 
     private static Border MakeBadge(string text, Brush brush) => new()
     {
@@ -392,6 +380,19 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         }
     }
 
+    /// <summary>Finds the rendered border for a model node and selects it.</summary>
+    private void SelectNodeByModel(BlockingChainNode node)
+    {
+        foreach (var child in ChainCanvas.Children)
+        {
+            if (child is Border b && ReferenceEquals(b.Tag, node))
+            {
+                SelectNode(b, node);
+                return;
+            }
+        }
+    }
+
     private void SelectNode(Border border, BlockingChainNode node)
     {
         if (_selectedNodeBorder != null)
@@ -412,22 +413,23 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         ShowProperties(node);
     }
 
+    /// <summary>Scrolls the canvas so a node is comfortably in view (used for the entry node on load).</summary>
+    private void ScrollNodeIntoView(BlockingChainNode node)
+    {
+        // Defer until the ScrollViewer has its extent (first layout pass may not be done yet).
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ChainScrollViewer.ScrollToHorizontalOffset(Math.Max(0, node.X * _zoomLevel - 60));
+            ChainScrollViewer.ScrollToVerticalOffset(Math.Max(0, node.Y * _zoomLevel - 60));
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
     private ContextMenu BuildNodeContextMenu(BlockingChainNode node)
     {
         var menu = new ContextMenu();
 
         var propsItem = new MenuItem { Header = "Properties" };
-        propsItem.Click += (_, _) =>
-        {
-            foreach (var child in ChainCanvas.Children)
-            {
-                if (child is Border b && ReferenceEquals(b.Tag, node))
-                {
-                    SelectNode(b, node);
-                    break;
-                }
-            }
-        };
+        propsItem.Click += (_, _) => SelectNodeByModel(node);
         menu.Items.Add(propsItem);
 
         if (!string.IsNullOrEmpty(node.SqlText))
@@ -447,6 +449,12 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
 
         AddPropRow("SPID", node.Spid.ToString());
         AddPropRow("Role", node.IsApex ? (node.IsApexSleeping ? "Lead blocker (sleeping)" : "Lead blocker") : "Blocked");
+        if (!string.IsNullOrEmpty(node.LoginName))
+            AddPropRow("Login", node.LoginName);
+        if (!string.IsNullOrEmpty(node.HostName))
+            AddPropRow("Host", node.HostName);
+        if (!string.IsNullOrEmpty(node.ClientApp))
+            AddPropRow("Client App", node.ClientApp);
         if (node.TranStarted.HasValue)
             AddPropRow("Transaction Started", node.TranStarted.Value.ToString("yyyy-MM-dd HH:mm:ss"));
         if (!string.IsNullOrEmpty(node.DatabaseName))
@@ -551,16 +559,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         }
     }
 
-    private void BlockingChainControl_PreviewMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        // Don't steal focus from the chain selector dropdown.
-        if (e.OriginalSource is ComboBox
-            || e.OriginalSource is ComboBoxItem
-            || FindVisualParent<ComboBox>(e.OriginalSource as DependencyObject) != null
-            || FindVisualParent<ComboBoxItem>(e.OriginalSource as DependencyObject) != null)
-            return;
-        Focus();
-    }
+    private void BlockingChainControl_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Focus();
 
     private void ChainScrollViewer_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -615,16 +614,6 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         return false;
     }
 
-    private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
-    {
-        while (child != null)
-        {
-            if (child is T parent) return parent;
-            child = VisualTreeHelper.GetParent(child);
-        }
-        return null;
-    }
-
     #endregion
 
     #region Helpers
@@ -636,6 +625,9 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         if (ms < 60_000) return $"{ms / 1000.0:F1} s";
         return $"{ms / 60_000}m {(ms % 60_000) / 1000}s";
     }
+
+    private static string JoinNonEmpty(string separator, params string[] parts) =>
+        string.Join(separator, parts.Where(p => !string.IsNullOrEmpty(p)));
 
     private static string CollapseWhitespace(string s)
     {
@@ -656,23 +648,6 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
             }
         }
         return sb.ToString();
-    }
-
-    private static int CountDescendants(BlockingChainNode node)
-    {
-        var count = 0;
-        foreach (var child in node.Children)
-            count += 1 + CountDescendants(child);
-        return count;
-    }
-
-    private static int TreeDepth(BlockingChainNode node)
-    {
-        if (node.Children.Count == 0) return 0;
-        var max = 0;
-        foreach (var child in node.Children)
-            max = Math.Max(max, TreeDepth(child));
-        return max + 1;
     }
 
     private static IEnumerable<BlockingChainNode> EnumerateTree(BlockingChainNode node)

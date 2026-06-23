@@ -102,7 +102,11 @@ namespace PerformanceMonitor.Common
                 WaitTimeMs = 0,
                 LockMode = string.Empty,
                 SqlText = apexEdge?.BlockingSqlText ?? string.Empty,
-                DatabaseName = apexEdge?.DatabaseName ?? string.Empty
+                DatabaseName = apexEdge?.DatabaseName ?? string.Empty,
+                // Apex identity comes from the blocking side of an outgoing edge (it's never blocked).
+                LoginName = apexEdge?.BlockingLoginName ?? string.Empty,
+                HostName = apexEdge?.BlockingHostName ?? string.Empty,
+                ClientApp = apexEdge?.BlockingClientApp ?? string.Empty
             };
 
             // Level-synchronized BFS from the apex. Processing each level in (Spid, Tran) order means the
@@ -137,7 +141,12 @@ namespace PerformanceMonitor.Common
                             WaitTimeMs = edge.WaitTimeMs,
                             LockMode = edge.LockMode,
                             SqlText = edge.BlockedSqlText,
-                            DatabaseName = edge.DatabaseName
+                            DatabaseName = edge.DatabaseName,
+                            // A victim / mid-level blocker sources its identity from the blocked side of its
+                            // incoming edge (where it is the blocked party).
+                            LoginName = edge.BlockedLoginName,
+                            HostName = edge.BlockedHostName,
+                            ClientApp = edge.BlockedClientApp
                         };
                         node.Children.Add(child);
                         next.Add((childKey, child));

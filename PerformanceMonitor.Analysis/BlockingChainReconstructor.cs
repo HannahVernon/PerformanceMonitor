@@ -28,6 +28,14 @@ internal sealed class BlockingPairRow
     public string BlockingStatus { get; init; } = string.Empty;
     public string BlockedSqlText { get; init; } = string.Empty;
     public string BlockingSqlText { get; init; } = string.Empty;
+    // Session identity for each side (login / host / client app). Carried so the viewer can show WHO a
+    // session is, not just a SPID. Threaded the same way as the SQL text.
+    public string BlockedLoginName { get; init; } = string.Empty;
+    public string BlockedHostName { get; init; } = string.Empty;
+    public string BlockedClientApp { get; init; } = string.Empty;
+    public string BlockingLoginName { get; init; } = string.Empty;
+    public string BlockingHostName { get; init; } = string.Empty;
+    public string BlockingClientApp { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -52,6 +60,12 @@ internal sealed class ChainLevel
     public string DatabaseName { get; init; } = string.Empty;
     public string BlockingSqlText { get; init; } = string.Empty;
     public string BlockedSqlText { get; init; } = string.Empty;
+    public string BlockedLoginName { get; init; } = string.Empty;
+    public string BlockedHostName { get; init; } = string.Empty;
+    public string BlockedClientApp { get; init; } = string.Empty;
+    public string BlockingLoginName { get; init; } = string.Empty;
+    public string BlockingHostName { get; init; } = string.Empty;
+    public string BlockingClientApp { get; init; } = string.Empty;
 }
 
 /// <summary>A single reconstructed blocking chain, rooted at an apex head blocker.</summary>
@@ -91,13 +105,46 @@ internal static class BlockingChainReconstructor
     /// </summary>
     private static readonly DateTime SentinelFloor = new(1900, 1, 2);
 
-    private sealed record EdgeInfo(long WaitMs, string LockMode, string BlockingSql, string BlockedSql, string DatabaseName);
+    // Holds the deduped winning row for an edge, so every per-pair field (wait, lock, SQL, identity) is
+    // available when building the ChainLevel without re-listing each one here.
+    private sealed record EdgeInfo(BlockingPairRow Row);
 
     /// <summary>Builds a stable session key, normalizing the 1900-01-01 sentinel to NULL.</summary>
     public static SessionKey MakeKey(int spid, DateTime? tranStarted)
     {
         var normalized = tranStarted.HasValue && tranStarted.Value > SentinelFloor ? tranStarted : null;
         return new SessionKey(spid, normalized);
+    }
+
+    /// <summary>
+    /// Finds the single reconstructed chain that contains the given session (matched by SessionKey — the
+    /// session may be the apex, a mid-level blocker, or a leaf victim). Returns the chain rooted at its
+    /// apex, or null if no chain contains the session. Lets the viewer scope to the one chain the clicked
+    /// row belongs to.
+    /// </summary>
+    public static ReconstructedChain? FindChainForSession(
+        BlockingReconstruction reconstruction, int spid, DateTime? tranStarted)
+    {
+        var key = MakeKey(spid, tranStarted);
+        foreach (var chain in reconstruction.Chains)
+            if (ChainContains(chain, key))
+                return chain;
+        return null;
+    }
+
+    /// <summary>True if the session appears anywhere in the chain (apex, a blocker, or a victim).</summary>
+    private static bool ChainContains(ReconstructedChain chain, SessionKey key)
+    {
+        if (MakeKey(chain.ApexSpid, chain.ApexTranStarted).Equals(key))
+            return true;
+
+        foreach (var l in chain.Levels)
+        {
+            if (MakeKey(l.BlockingSpid, l.BlockingTranStarted).Equals(key)) return true;
+            if (MakeKey(l.BlockedSpid, l.BlockedTranStarted).Equals(key)) return true;
+        }
+
+        return false;
     }
 
     public static BlockingReconstruction Reconstruct(
@@ -132,12 +179,9 @@ internal static class BlockingChainReconstructor
             if (!adjacency.TryGetValue(blocker, out var dests))
                 adjacency[blocker] = dests = new Dictionary<SessionKey, EdgeInfo>();
 
-            if (!dests.TryGetValue(blocked, out var existing) || row.WaitTimeMs > existing.WaitMs)
+            if (!dests.TryGetValue(blocked, out var existing) || row.WaitTimeMs > existing.Row.WaitTimeMs)
             {
-                dests[blocked] = new EdgeInfo(
-                    row.WaitTimeMs, row.LockMode ?? string.Empty,
-                    row.BlockingSqlText ?? string.Empty, row.BlockedSqlText ?? string.Empty,
-                    row.DatabaseName ?? string.Empty);
+                dests[blocked] = new EdgeInfo(row);
             }
         }
 
@@ -232,7 +276,7 @@ internal static class BlockingChainReconstructor
         {
             // Pick the orphan with the largest outgoing wait time as the fallback root.
             var fallback = orphans
-                .OrderByDescending(n => adjacency[n].Values.Max(e => e.WaitMs))
+                .OrderByDescending(n => adjacency[n].Values.Max(e => e.Row.WaitTimeMs))
                 .First();
             roots.Add(fallback);
             MarkReachable(fallback, adjacency, reached);
@@ -344,8 +388,9 @@ internal static class BlockingChainReconstructor
             foreach (var (child, edge) in dests)
             {
                 victims.Add(child);
-                if (edge.WaitMs > maxWait)
-                    maxWait = edge.WaitMs;
+                var row = edge.Row;
+                if (row.WaitTimeMs > maxWait)
+                    maxWait = row.WaitTimeMs;
 
                 levels.Add(new ChainLevel
                 {
@@ -354,11 +399,17 @@ internal static class BlockingChainReconstructor
                     BlockingTranStarted = node.TranStarted,
                     BlockedSpid = child.Spid,
                     BlockedTranStarted = child.TranStarted,
-                    LockMode = edge.LockMode,
-                    WaitTimeMs = edge.WaitMs,
-                    DatabaseName = edge.DatabaseName,
-                    BlockingSqlText = edge.BlockingSql,
-                    BlockedSqlText = edge.BlockedSql
+                    LockMode = row.LockMode ?? string.Empty,
+                    WaitTimeMs = row.WaitTimeMs,
+                    DatabaseName = row.DatabaseName ?? string.Empty,
+                    BlockingSqlText = row.BlockingSqlText ?? string.Empty,
+                    BlockedSqlText = row.BlockedSqlText ?? string.Empty,
+                    BlockedLoginName = row.BlockedLoginName ?? string.Empty,
+                    BlockedHostName = row.BlockedHostName ?? string.Empty,
+                    BlockedClientApp = row.BlockedClientApp ?? string.Empty,
+                    BlockingLoginName = row.BlockingLoginName ?? string.Empty,
+                    BlockingHostName = row.BlockingHostName ?? string.Empty,
+                    BlockingClientApp = row.BlockingClientApp ?? string.Empty
                 });
 
                 if (enqueued.Add(child))

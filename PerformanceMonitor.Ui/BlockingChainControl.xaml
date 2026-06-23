@@ -24,12 +24,6 @@
                             ToolTip="Zoom to Fit"/>
                     <TextBlock x:Name="ZoomLevelText" Text="100%" VerticalAlignment="Center"
                                Foreground="{DynamicResource ForegroundMutedBrush}" Margin="8,0,0,0" FontSize="11"/>
-                    <Separator Margin="12,4"/>
-                    <TextBlock Text="Chain:" VerticalAlignment="Center"
-                               Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="11" Margin="0,0,6,0"/>
-                    <ComboBox x:Name="ChainSelector" MinWidth="240" Height="28" VerticalContentAlignment="Center"
-                              SelectionChanged="ChainSelector_SelectionChanged"
-                              ToolTip="Pick a single chain or show all, ranked by magnitude"/>
                 </StackPanel>
                 <TextBlock x:Name="FlagBanner" DockPanel.Dock="Right" VerticalAlignment="Center"
                            HorizontalAlignment="Right" TextAlignment="Right"

@@ -10,22 +10,45 @@ using System;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Ui;
 using PerformanceMonitorDashboard.Analysis;
+using PerformanceMonitorDashboard.Models;
 
 namespace PerformanceMonitorDashboard
 {
     public partial class ServerTab : UserControl
     {
-        /// <summary>
-        /// Opens the block-chain viewer for the Locking tab's current blocking window. Reads the slicer's
-        /// narrowed selection (server-local) when set, else the sub-tab's range. Fetch + reconstruct +
-        /// tree-build run off the UI thread; only the render touches the UI.
-        /// </summary>
+        // Right-click "View Block Chain" on a blocking-events row.
         private async void ViewBlockChain_Click(object sender, RoutedEventArgs e)
         {
+            if (sender is not MenuItem menuItem) return;
+            if (menuItem.Parent is not ContextMenu cm) return;
+            var grid = FindDataGridFromContextMenu(cm);
+            if (grid?.SelectedItem is BlockingEventItem row)
+                await OpenBlockChainForRowAsync(row);
+        }
+
+        // Double-click a blocking-events row.
+        private async void BlockingEventsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (BlockingEventsDataGrid.SelectedItem is BlockingEventItem row)
+                await OpenBlockChainForRowAsync(row);
+        }
+
+        /// <summary>
+        /// Opens the block-chain viewer scoped to ONE chain — the chain the clicked session belongs to,
+        /// rooted at its lead blocker, with the clicked session highlighted. Reconstructs over the Locking
+        /// tab's current blocking window; fetch + reconstruct + tree-build run off the UI thread.
+        /// </summary>
+        private async Task OpenBlockChainForRowAsync(BlockingEventItem row)
+        {
             if (_databaseService == null) return;
+
+            var spid = row.Spid ?? 0;
+            if (spid <= 0) return;
+            var rawTran = row.LastTransactionStarted;
 
             try
             {
@@ -42,22 +65,39 @@ namespace PerformanceMonitorDashboard
                     (start, end) = GetLockingSlicerTimeRange(_blockingHoursBack, _blockingFromDate, _blockingToDate);
                 }
 
-                // Fetch (async DB) + reconstruct (CPU-bound over up to 5000 rows) + tree-build, all off the
-                // UI thread. The model that comes back is pure data; the control renders it on the UI thread.
+                // Fetch (async DB) + reconstruct (CPU-bound over up to 5000 rows) + select the one chain
+                // containing the clicked session, all off the UI thread.
                 var model = await Task.Run(async () =>
                 {
                     var rows = await _databaseService.GetBlockingPairRowsAsync(start, end);
                     var reconstruction = BlockingChainReconstructor.Reconstruct(
                         rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
-                    return BlockingChainViewerProjection.BuildModel(reconstruction);
+                    return BlockingChainViewerProjection.BuildModelForSession(reconstruction, spid, rawTran);
                 });
 
+                if (model == null)
+                {
+                    MessageBox.Show(
+                        Window.GetWindow(this)!,
+                        $"No reconstructable blocking chain for SPID {spid} in the selected range.\n\n" +
+                        "The session may not have been part of a blocked-process report whose wait crossed " +
+                        "the blocked-process threshold in this window.",
+                        "No Block Chain",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
+                }
+
+                // Normalize the clicked tran the same way the reconstructor keyed the nodes, so the control
+                // can match + highlight the clicked session.
+                var key = BlockingChainReconstructor.MakeKey(spid, rawTran);
+
                 var control = new BlockingChainControl();
-                control.LoadModel(model, BlockingChainViewerProjection.EmptyStateDetail);
+                control.LoadModel(model, key.Spid, key.TranStarted, BlockingChainViewerProjection.EmptyStateDetail);
                 GraphViewerWindow.ShowGraph(
                     Window.GetWindow(this),
                     control,
-                    $"Blocking Chains — {_serverConnection.DisplayName}");
+                    $"Block Chain — SPID {spid} on {_serverConnection.DisplayName}");
             }
             catch (Exception ex)
             {

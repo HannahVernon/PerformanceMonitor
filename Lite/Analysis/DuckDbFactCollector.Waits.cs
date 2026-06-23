@@ -205,7 +205,8 @@ AND   collection_time <= $3";
 SELECT
     {BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text,
-    blocking_sql_text
+    blocking_sql_text,
+    {BlockingPairRowQuery.IdentityColumns}
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   event_time >= $2

@@ -50,6 +50,9 @@
                     <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
+                <MenuItem Header="View Block Chain" Click="ViewBlockChain_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F517;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="View Blocked Plan" Click="ViewBlockedSidePlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1365,18 +1368,13 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
-                                <DockPanel Grid.Row="0" LastChildFill="True">
-                                    <Button DockPanel.Dock="Right" Content="View Block Chain"
-                                            Click="ViewBlockChain_Click" Height="26" Padding="10,0"
-                                            Margin="6,0,8,0" VerticalAlignment="Center"
-                                            ToolTip="Reconstruct and visualize the blocking chains for the selected time range"/>
-                                    <controls:TimeRangeSlicerControl x:Name="BlockingSlicer"/>
-                                </DockPanel>
+                                <controls:TimeRangeSlicerControl x:Name="BlockingSlicer" Grid.Row="0"/>
                             <DataGrid x:Name="BlockedProcessReportGrid" Grid.Row="1"
                                       AutoGenerateColumns="False" IsReadOnly="True"
                                       RowStyle="{StaticResource BlockingRowStyle}"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      MouseDoubleClick="BlockedProcessReportGrid_MouseDoubleClick"
                                       Sorting="BlockedProcessReportGrid_Sorting">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Binding="{Binding EventTimeLocal}" Width="130">

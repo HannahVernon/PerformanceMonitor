@@ -198,4 +198,25 @@ public class BlockingChainReconstructorTests
         Assert.Equal(TranFor(200), top.BlockingTranStarted);
         Assert.Equal(TranFor(201), top.BlockedTranStarted);
     }
+
+    [Fact]
+    public void FindChainForSession_AnyMember_ReturnsChainRootedAtApex()
+    {
+        // Two separate chains — A: 200 -> 201 -> 202 ; B: 300 -> 301. The viewer scopes to the ONE chain a
+        // clicked session belongs to, rooted at its apex regardless of where in the chain it sits.
+        var result = Run(new[] { Pair(201, 200), Pair(202, 201), Pair(301, 300) });
+
+        // Mid-level 201 -> chain A, rooted at apex 200 (not at the clicked node).
+        var chainA = BlockingChainReconstructor.FindChainForSession(result, 201, TranFor(201));
+        Assert.NotNull(chainA);
+        Assert.Equal(200, chainA!.ApexSpid);
+
+        // The apex itself and a leaf victim resolve to the same apex-rooted chain.
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, 200, TranFor(200))!.ApexSpid);
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, 202, TranFor(202))!.ApexSpid);
+
+        // A member of the other chain resolves to that chain; an absent session returns null.
+        Assert.Equal(300, BlockingChainReconstructor.FindChainForSession(result, 301, TranFor(301))!.ApexSpid);
+        Assert.Null(BlockingChainReconstructor.FindChainForSession(result, 999, TranFor(999)));
+    }
 }

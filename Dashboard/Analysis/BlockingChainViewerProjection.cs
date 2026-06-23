@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using PerformanceMonitor.Analysis;
@@ -18,33 +19,50 @@ internal static class BlockingChainViewerProjection
         "Blocking chains require the blocked-process-report Extended Event; Azure SQL DB may not emit it " +
         "(the blocked-process threshold is set via sp_configure, which Azure SQL DB does not support).";
 
-    public static BlockingChainModel BuildModel(BlockingReconstruction reconstruction)
+    /// <summary>
+    /// Builds the model for the ONE chain that contains the clicked session (matched by SessionKey — the
+    /// clicked session may be the apex, a mid-level blocker, or a leaf victim). The chain is rooted at its
+    /// apex with the full descendant hierarchy. Returns null when the session isn't in any reconstructed
+    /// chain (its wait may not have met the blocked-process threshold in the selected range).
+    /// </summary>
+    public static BlockingChainModel? BuildModelForSession(
+        BlockingReconstruction reconstruction, int spid, DateTime? tranStarted)
     {
-        var inputs = reconstruction.Chains.Select(static c => new BlockingChainInput
-        {
-            ApexSpid = c.ApexSpid,
-            ApexTranStarted = c.ApexTranStarted,
-            ApexSleeping = c.ApexSleeping,
-            Magnitude = c.Magnitude,
-            Edges = c.Levels.Select(static l => new BlockingEdgeInput
-            {
-                Level = l.Level,
-                BlockingSpid = l.BlockingSpid,
-                BlockingTranStarted = l.BlockingTranStarted,
-                BlockedSpid = l.BlockedSpid,
-                BlockedTranStarted = l.BlockedTranStarted,
-                LockMode = l.LockMode,
-                WaitTimeMs = l.WaitTimeMs,
-                DatabaseName = l.DatabaseName,
-                BlockingSqlText = l.BlockingSqlText,
-                BlockedSqlText = l.BlockedSqlText
-            }).ToList()
-        }).ToList();
+        var chain = BlockingChainReconstructor.FindChainForSession(reconstruction, spid, tranStarted);
+        if (chain == null)
+            return null;
 
         return BlockingChainTreeBuilder.Build(
-            inputs,
+            new[] { ToInput(chain) },
             reconstruction.CycleDetected,
             reconstruction.DepthCapped,
             reconstruction.TraversalTruncated);
     }
+
+    private static BlockingChainInput ToInput(ReconstructedChain c) => new()
+    {
+        ApexSpid = c.ApexSpid,
+        ApexTranStarted = c.ApexTranStarted,
+        ApexSleeping = c.ApexSleeping,
+        Magnitude = c.Magnitude,
+        Edges = c.Levels.Select(static l => new BlockingEdgeInput
+        {
+            Level = l.Level,
+            BlockingSpid = l.BlockingSpid,
+            BlockingTranStarted = l.BlockingTranStarted,
+            BlockedSpid = l.BlockedSpid,
+            BlockedTranStarted = l.BlockedTranStarted,
+            LockMode = l.LockMode,
+            WaitTimeMs = l.WaitTimeMs,
+            DatabaseName = l.DatabaseName,
+            BlockingSqlText = l.BlockingSqlText,
+            BlockedSqlText = l.BlockedSqlText,
+            BlockedLoginName = l.BlockedLoginName,
+            BlockedHostName = l.BlockedHostName,
+            BlockedClientApp = l.BlockedClientApp,
+            BlockingLoginName = l.BlockingLoginName,
+            BlockingHostName = l.BlockingHostName,
+            BlockingClientApp = l.BlockingClientApp
+        }).ToList()
+    };
 }

@@ -66,6 +66,13 @@ namespace PerformanceMonitor.Common
         /// <summary>Database context of the block.</summary>
         public string DatabaseName { get; init; } = string.Empty;
 
+        /// <summary>Who this session is — login, host, and client app. Sourced from the side of the edge
+        /// where this node appears (blocked side for a victim/mid-level blocker; blocking side for the apex).
+        /// May be empty when the source data doesn't carry it (e.g. the Dashboard apex — see the projection).</summary>
+        public string LoginName { get; init; } = string.Empty;
+        public string HostName { get; init; } = string.Empty;
+        public string ClientApp { get; init; } = string.Empty;
+
         /// <summary>Direct victims of this node, ordered deterministically.</summary>
         public List<BlockingChainNode> Children { get; init; } = new();
 
@@ -107,5 +114,14 @@ namespace PerformanceMonitor.Common
         public string DatabaseName { get; init; } = string.Empty;
         public string BlockingSqlText { get; init; } = string.Empty;
         public string BlockedSqlText { get; init; } = string.Empty;
+        // Identity of each side, threaded the same way as the SQL text. A node sources its own identity
+        // from the side it appears on: the blocked side when it's a victim/mid-level blocker, the blocking
+        // side when it's the apex (it only ever appears as a blocker).
+        public string BlockedLoginName { get; init; } = string.Empty;
+        public string BlockedHostName { get; init; } = string.Empty;
+        public string BlockedClientApp { get; init; } = string.Empty;
+        public string BlockingLoginName { get; init; } = string.Empty;
+        public string BlockingHostName { get; init; } = string.Empty;
+        public string BlockingClientApp { get; init; } = string.Empty;
     }
 }

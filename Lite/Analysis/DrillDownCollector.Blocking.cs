@@ -120,7 +120,8 @@ LIMIT 5";
 SELECT
     {BlockingPairRowQuery.LeadingColumns},
     LEFT(blocked_sql_text, 500) AS blocked_sql,
-    LEFT(blocking_sql_text, 500) AS blocking_sql
+    LEFT(blocking_sql_text, 500) AS blocking_sql,
+    {BlockingPairRowQuery.IdentityColumns}
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
 {BlockingPairRowQuery.SpidFilter}

@@ -32,6 +32,16 @@ internal static class BlockingPairRowQuery
     lock_mode,
     blocking_status";
 
+    /// <summary>Ordinals 11-16: session identity for each side. Appended after the per-site SQL-text
+    /// expressions so all three queries share one column order for <see cref="Read"/>. Lite denormalizes
+    /// both sides, so unlike Dashboard the apex's identity is available too.</summary>
+    public const string IdentityColumns = @"blocked_login_name,
+    blocked_host_name,
+    blocked_client_app,
+    blocking_login_name,
+    blocking_host_name,
+    blocking_client_app";
+
     /// <summary>Append to the WHERE clause of every pair-row query (covers NULL and the 0 sentinel).</summary>
     public const string SpidFilter = @"AND blocking_spid IS NOT NULL
 AND blocking_spid <> 0";
@@ -48,7 +58,13 @@ AND blocking_spid <> 0";
         LockMode = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
         BlockingStatus = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
         BlockedSqlText = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
-        BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10)
+        BlockingSqlText = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+        BlockedLoginName = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+        BlockedHostName = reader.IsDBNull(12) ? string.Empty : reader.GetString(12),
+        BlockedClientApp = reader.IsDBNull(13) ? string.Empty : reader.GetString(13),
+        BlockingLoginName = reader.IsDBNull(14) ? string.Empty : reader.GetString(14),
+        BlockingHostName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15),
+        BlockingClientApp = reader.IsDBNull(16) ? string.Empty : reader.GetString(16)
     };
 
     /// <summary>
