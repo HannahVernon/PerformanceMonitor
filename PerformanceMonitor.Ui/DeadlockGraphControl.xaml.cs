@@ -96,15 +96,8 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         var nodeToRestore = _selectedNode;
         Render();
 
-        if (nodeToRestore == null) return;
-        foreach (var child in GraphCanvas.Children)
-        {
-            if (child is Border b && ReferenceEquals(b.Tag, nodeToRestore))
-            {
-                SelectNode(b, nodeToRestore);
-                break;
-            }
-        }
+        if (nodeToRestore != null)
+            SelectNodeByModel(nodeToRestore);
     }
 
     /// <summary>
@@ -129,6 +122,13 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         BuildSummary();
         ShowEmptyState(false);
         Render();
+
+        // Open with the most informative node selected so the viewer lands with the details card showing
+        // (mirrors the block-chain viewer, which auto-selects the clicked session). Prefer a victim — the
+        // rolled-back process is the one you most want to inspect — else the first process.
+        var initial = _model.Processes.FirstOrDefault(p => p.IsVictim) ?? _model.Processes.FirstOrDefault();
+        if (initial != null)
+            SelectNodeByModel(initial);
     }
 
     private void ShowEmptyState(bool empty)
@@ -264,7 +264,8 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
             });
         }
 
-        // SQL preview (clipped). Victims are struck through — they were rolled back.
+        // SQL preview (clipped). The victim's red border already flags the rolled-back process — no
+        // strikethrough on the text (it hurt readability for no added signal).
         if (!string.IsNullOrEmpty(node.SqlText))
         {
             stack.Children.Add(new TextBlock
@@ -275,7 +276,6 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
                 Foreground = MutedBrush,
                 TextWrapping = TextWrapping.Wrap,
                 TextTrimming = TextTrimming.CharacterEllipsis,
-                TextDecorations = node.IsVictim ? TextDecorations.Strikethrough : null,
                 MaxHeight = 46,
                 Margin = new Thickness(0, 3, 0, 0)
             });
@@ -518,6 +518,19 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         }
     }
 
+    /// <summary>Finds the rendered border for a model node and selects it.</summary>
+    private void SelectNodeByModel(DeadlockProcessNode node)
+    {
+        foreach (var child in GraphCanvas.Children)
+        {
+            if (child is Border b && ReferenceEquals(b.Tag, node))
+            {
+                SelectNode(b, node);
+                return;
+            }
+        }
+    }
+
     private void SelectNode(Border border, DeadlockProcessNode node)
     {
         if (_selectedNodeBorder != null)
@@ -543,17 +556,7 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         var menu = new ContextMenu();
 
         var propsItem = new MenuItem { Header = "Properties" };
-        propsItem.Click += (_, _) =>
-        {
-            foreach (var child in GraphCanvas.Children)
-            {
-                if (child is Border b && ReferenceEquals(b.Tag, node))
-                {
-                    SelectNode(b, node);
-                    break;
-                }
-            }
-        };
+        propsItem.Click += (_, _) => SelectNodeByModel(node);
         menu.Items.Add(propsItem);
 
         if (!string.IsNullOrEmpty(node.SqlText))
