@@ -37,10 +37,17 @@ namespace PerformanceMonitorDashboard
                 await OpenBlockChainForRowAsync(row);
         }
 
+        // Reconstruct around the clicked row's own event time (+/- this many minutes) rather than the
+        // slicer selection, so double-clicking any visible row reliably captures that event's chain (the
+        // row itself is a blocked/blocker pair, so it's always in the window). Wide enough to span a
+        // blocking episode's report re-fires; the SessionKey + edge-precise selection guard against merging
+        // unrelated chains.
+        private const int ChainWindowMinutes = 5;
+
         /// <summary>
         /// Opens the block-chain viewer scoped to ONE chain — the chain the clicked session belongs to,
-        /// rooted at its lead blocker, with the clicked session highlighted. Reconstructs over the Locking
-        /// tab's current blocking window; fetch + reconstruct + tree-build run off the UI thread.
+        /// rooted at its lead blocker, with the clicked session highlighted. Fetch + reconstruct +
+        /// tree-build run off the UI thread.
         /// </summary>
         private async Task OpenBlockChainForRowAsync(BlockingEventItem row)
         {
@@ -49,11 +56,21 @@ namespace PerformanceMonitorDashboard
             var spid = row.Spid ?? 0;
             if (spid <= 0) return;
             var rawTran = row.LastTransactionStarted;
+            var blockerSpid = row.BlockingSpid ?? 0;
+            var blockerTran = row.BlockingLastTranStarted;
 
             try
             {
+                // event_time is server-local (same column the reconstruction query filters), so derive the
+                // window straight from it — no clock conversion needed. Fall back to the tab range only if a
+                // row has no event_time.
                 DateTime start, end;
-                if (BlockingSlicer.HasNarrowedSelection
+                if (row.EventTime.HasValue)
+                {
+                    start = row.EventTime.Value.AddMinutes(-ChainWindowMinutes);
+                    end = row.EventTime.Value.AddMinutes(ChainWindowMinutes);
+                }
+                else if (BlockingSlicer.HasNarrowedSelection
                     && BlockingSlicer.SelectionStart.HasValue
                     && BlockingSlicer.SelectionEnd.HasValue)
                 {
@@ -65,14 +82,15 @@ namespace PerformanceMonitorDashboard
                     (start, end) = GetLockingSlicerTimeRange(_blockingHoursBack, _blockingFromDate, _blockingToDate);
                 }
 
-                // Fetch (async DB) + reconstruct (CPU-bound over up to 5000 rows) + select the one chain
-                // containing the clicked session, all off the UI thread.
+                // Fetch (async DB) + reconstruct (CPU-bound over up to 5000 rows) + select the one chain that
+                // contains the clicked (blocker -> blocked) edge, all off the UI thread.
                 var model = await Task.Run(async () =>
                 {
                     var rows = await _databaseService.GetBlockingPairRowsAsync(start, end);
                     var reconstruction = BlockingChainReconstructor.Reconstruct(
                         rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
-                    return BlockingChainViewerProjection.BuildModelForSession(reconstruction, spid, rawTran);
+                    return BlockingChainViewerProjection.BuildModelForSession(
+                        reconstruction, spid, rawTran, blockerSpid, blockerTran);
                 });
 
                 if (model == null)

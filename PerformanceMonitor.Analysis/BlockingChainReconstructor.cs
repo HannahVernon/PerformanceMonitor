@@ -132,6 +132,42 @@ internal static class BlockingChainReconstructor
         return null;
     }
 
+    /// <summary>
+    /// Edge-precise overload: when the clicked row carries its blocker too, prefer the chain that contains
+    /// the exact (blocker -> blocked) edge. This disambiguates a victim that was blocked by two different
+    /// lead blockers at different times in the window (each is a separate chain, both containing the victim).
+    /// Falls back to the any-level match on the blocked session when no chain holds that exact edge (e.g. the
+    /// clicked row has no recorded blocker).
+    /// </summary>
+    public static ReconstructedChain? FindChainForSession(
+        BlockingReconstruction reconstruction,
+        int blockedSpid, DateTime? blockedTran,
+        int blockingSpid, DateTime? blockingTran)
+    {
+        var blockedKey = MakeKey(blockedSpid, blockedTran);
+        var blockerKey = MakeKey(blockingSpid, blockingTran);
+
+        foreach (var chain in reconstruction.Chains)
+            if (ChainContainsEdge(chain, blockerKey, blockedKey))
+                return chain;
+
+        foreach (var chain in reconstruction.Chains)
+            if (ChainContains(chain, blockedKey))
+                return chain;
+
+        return null;
+    }
+
+    /// <summary>True if the chain has the exact blocker -> blocked edge.</summary>
+    private static bool ChainContainsEdge(ReconstructedChain chain, SessionKey blockerKey, SessionKey blockedKey)
+    {
+        foreach (var l in chain.Levels)
+            if (MakeKey(l.BlockingSpid, l.BlockingTranStarted).Equals(blockerKey) &&
+                MakeKey(l.BlockedSpid, l.BlockedTranStarted).Equals(blockedKey))
+                return true;
+        return false;
+    }
+
     /// <summary>True if the session appears anywhere in the chain (apex, a blocker, or a victim).</summary>
     private static bool ChainContains(ReconstructedChain chain, SessionKey key)
     {

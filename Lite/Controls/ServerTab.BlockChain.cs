@@ -36,31 +36,49 @@ public partial class ServerTab : UserControl
             await OpenBlockChainForRowAsync(row);
     }
 
+    // Reconstruct around the clicked row's own event time (+/- this many minutes) rather than the slicer
+    // selection, so double-clicking any visible row reliably captures that event's chain. Wide enough to
+    // span a blocking episode's report re-fires; SessionKey + edge-precise selection guard against merging.
+    private const int ChainWindowMinutes = 5;
+
     /// <summary>
     /// Opens the block-chain viewer scoped to ONE chain — the chain the clicked session belongs to, rooted
-    /// at its lead blocker, with the clicked session highlighted. Reconstructs over the Blocking tab's
-    /// current window. The slicer exposes UTC; the DuckDB rows filter on server-local event_time, so convert.
-    /// Fetch + reconstruct + tree-build run off the UI thread; only the render touches the UI.
+    /// at its lead blocker, with the clicked session highlighted. Fetch + reconstruct + tree-build run off
+    /// the UI thread; only the render touches the UI.
     /// </summary>
     private async Task OpenBlockChainForRowAsync(BlockedProcessReportRow row)
     {
         var spid = row.BlockedSpid;
         if (spid <= 0) return;
         var rawTran = row.BlockedLastTranStarted;
+        var blockerSpid = row.BlockingSpid;
+        var blockerTran = row.BlockingLastTranStarted;
 
         try
         {
+            // row.EventTime is read from the same event_time column the reconstruction query filters on, so
+            // derive the window straight from it — NO clock conversion (converting a value that's already in
+            // the column's clock would shift it the wrong way). Fall back to the slicer/tab range only when a
+            // row has no event_time.
             DateTime start, end;
-            var startUtc = BlockingSlicer.SelectionStartUtc;
-            var endUtc = BlockingSlicer.SelectionEndUtc;
-            if (startUtc.HasValue && endUtc.HasValue)
+            if (row.EventTime.HasValue)
             {
-                start = ServerTimeHelper.ToServerTime(startUtc.Value);
-                end = ServerTimeHelper.ToServerTime(endUtc.Value);
+                start = row.EventTime.Value.AddMinutes(-ChainWindowMinutes);
+                end = row.EventTime.Value.AddMinutes(ChainWindowMinutes);
             }
             else
             {
-                (start, end) = GetBlockingServerRange();
+                var startUtc = BlockingSlicer.SelectionStartUtc;
+                var endUtc = BlockingSlicer.SelectionEndUtc;
+                if (startUtc.HasValue && endUtc.HasValue)
+                {
+                    start = ServerTimeHelper.ToServerTime(startUtc.Value);
+                    end = ServerTimeHelper.ToServerTime(endUtc.Value);
+                }
+                else
+                {
+                    (start, end) = GetBlockingServerRange();
+                }
             }
 
             // GetBlockingPairRowsAsync uses OpenConnectionAsync, which already takes the DuckDB read lock —
@@ -70,7 +88,8 @@ public partial class ServerTab : UserControl
                 var rows = await _dataService.GetBlockingPairRowsAsync(_serverId, start, end);
                 var reconstruction = BlockingChainReconstructor.Reconstruct(
                     rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
-                return BlockingChainViewerProjection.BuildModelForSession(reconstruction, spid, rawTran);
+                return BlockingChainViewerProjection.BuildModelForSession(
+                    reconstruction, spid, rawTran, blockerSpid, blockerTran);
             });
 
             if (model == null)

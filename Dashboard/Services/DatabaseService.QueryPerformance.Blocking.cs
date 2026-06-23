@@ -70,7 +70,9 @@ namespace PerformanceMonitorDashboard.Services
                                 b.login_name,
                                 b.transaction_id,
                                 CONVERT(nvarchar(max), b.blocked_process_report_xml) AS blocked_process_report_xml,
-                                CAST(CASE WHEN b.blocked_process_report_xml IS NOT NULL THEN 1 ELSE 0 END AS bit) AS has_blocked_process_report
+                                CAST(CASE WHEN b.blocked_process_report_xml IS NOT NULL THEN 1 ELSE 0 END AS bit) AS has_blocked_process_report,
+                                b.blocking_spid,
+                                b.blocking_last_tran_started
                             FROM collect.blocking_BlockedProcessReport AS b
                             WHERE b.collection_time >= @from_date
                             AND   b.collection_time <= @to_date
@@ -117,7 +119,9 @@ namespace PerformanceMonitorDashboard.Services
                                 b.login_name,
                                 b.transaction_id,
                                 CONVERT(nvarchar(max), b.blocked_process_report_xml) AS blocked_process_report_xml,
-                                CAST(CASE WHEN b.blocked_process_report_xml IS NOT NULL THEN 1 ELSE 0 END AS bit) AS has_blocked_process_report
+                                CAST(CASE WHEN b.blocked_process_report_xml IS NOT NULL THEN 1 ELSE 0 END AS bit) AS has_blocked_process_report,
+                                b.blocking_spid,
+                                b.blocking_last_tran_started
                             FROM collect.blocking_BlockedProcessReport AS b
                             WHERE b.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())
                             ORDER BY
@@ -177,7 +181,9 @@ namespace PerformanceMonitorDashboard.Services
                             LoginName = reader.IsDBNull(28) ? string.Empty : reader.GetString(28),
                             TransactionId = reader.IsDBNull(29) ? (long?)null : reader.GetInt64(29),
                             BlockedProcessReportXml = reader.IsDBNull(30) ? string.Empty : reader.GetString(30),
-                            HasBlockedProcessReport = !reader.IsDBNull(31) && reader.GetBoolean(31)
+                            HasBlockedProcessReport = !reader.IsDBNull(31) && reader.GetBoolean(31),
+                            BlockingSpid = reader.IsDBNull(32) ? (int?)null : reader.GetInt32(32),
+                            BlockingLastTranStarted = reader.IsDBNull(33) ? (DateTime?)null : reader.GetDateTime(33)
                         });
                     }
         

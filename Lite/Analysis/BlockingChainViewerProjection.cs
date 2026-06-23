@@ -26,9 +26,12 @@ internal static class BlockingChainViewerProjection
     /// chain (its wait may not have met the blocked-process threshold in the selected range).
     /// </summary>
     public static BlockingChainModel? BuildModelForSession(
-        BlockingReconstruction reconstruction, int spid, DateTime? tranStarted)
+        BlockingReconstruction reconstruction,
+        int blockedSpid, DateTime? blockedTran,
+        int blockingSpid, DateTime? blockingTran)
     {
-        var chain = BlockingChainReconstructor.FindChainForSession(reconstruction, spid, tranStarted);
+        var chain = BlockingChainReconstructor.FindChainForSession(
+            reconstruction, blockedSpid, blockedTran, blockingSpid, blockingTran);
         if (chain == null)
             return null;
 
