@@ -191,6 +191,46 @@ public class DeadlockGraphParserTests
         }, SpidEdges(m));
     }
 
+    // ── contended object (resolved straight off the deadlock resource-list) ──
+
+    [Fact]
+    public void ContentiousObject_MatchesEachNodesOutgoingEdgeLabel()
+    {
+        var m = DeadlockGraphParser.Parse(LoadFixture("deadlock_2proc_real_sql2025.xml"));
+
+        // A process's contended object is the resolved label of the resource it waits on (its outgoing edge).
+        foreach (var node in m.Processes)
+        {
+            var waitsOn = m.Edges.First(e => e.WaiterProcessId == node.Id && !e.IsSelfEdge);
+            Assert.Equal(waitsOn.ResourceLabel, node.ContentiousObject);
+            Assert.False(string.IsNullOrEmpty(node.ContentiousObject));
+        }
+
+        // Concretely: the victim contends for the page it was blocked on — no DMV lookup, no raw "7:1:..." id.
+        var bySpid = m.Processes.ToDictionary(p => p.Spid);
+        Assert.Equal("PAGE hammerdb_tpcc.dbo.new_order", bySpid[103].ContentiousObject);
+    }
+
+    [Fact]
+    public void ContentiousObject_CrossProduct_IsTheSharedObject()
+    {
+        var m = DeadlockGraphParser.Parse(LoadFixture("deadlock_crossproduct_synthetic.xml"));
+        var bySpid = m.Processes.ToDictionary(p => p.Spid);
+
+        // Both waiters on the single objectlock surface the same resolved object.
+        Assert.Equal("OBJECT StackOverflow.dbo.Votes", bySpid[203].ContentiousObject);
+        Assert.Equal("OBJECT StackOverflow.dbo.Votes", bySpid[204].ContentiousObject);
+    }
+
+    [Fact]
+    public void ContentiousObject_Empty_WhenProcessWaitsOnlyOnAParallelSelfEdge()
+    {
+        var m = DeadlockGraphParser.Parse(LoadFixture("deadlock_parallel_selfedge_synthetic.xml"));
+
+        // Parallel threads wait on the exchange itself (a self-edge) — there is no contended OBJECT to show.
+        Assert.All(m.Processes, p => Assert.Equal(string.Empty, p.ContentiousObject));
+    }
+
     // ── robustness ──
 
     [Theory]

@@ -88,6 +88,11 @@ namespace PerformanceMonitor.Common
 
                 var (edges, isParallel) = ParseEdges(deadlock);
 
+                // Surface the resolved contended resource on each waiting process (parity with the block-chain
+                // viewer). SQL Server already resolved the objectname in the resource-list, so this is a pure
+                // projection of the edges — no DMV/object lookup needed (the whole reason deadlocks are easier).
+                AssignContendedObjects(processes, edges);
+
                 return new DeadlockGraphModel
                 {
                     Processes = processes,
@@ -206,6 +211,31 @@ namespace PerformanceMonitor.Common
             }
 
             return (edges, isParallel);
+        }
+
+        /// <summary>
+        /// Sets <see cref="DeadlockProcessNode.ContentiousObject"/> on each process to the resolved label of
+        /// the first lock resource it waits on (its first non-self lock edge). Pure projection of the edges
+        /// SQL Server already resolved — no object lookup. Empty for a process that only owns (no outgoing
+        /// wait), waits solely on a parallelism exchange (which is coordination, not a contended object), or
+        /// whose wait resource carried no object name.
+        /// </summary>
+        private static void AssignContendedObjects(
+            IReadOnlyList<DeadlockProcessNode> processes,
+            IReadOnlyList<DeadlockWaitEdge> edges)
+        {
+            foreach (var node in processes)
+            {
+                foreach (var edge in edges)
+                {
+                    if (!string.Equals(edge.WaiterProcessId, node.Id, StringComparison.Ordinal)) continue;
+                    if (edge.IsSelfEdge) continue;
+                    if (ParallelElementNames.Contains(edge.ResourceKind)) continue; // the exchange is not a contended object
+                    if (string.IsNullOrEmpty(edge.ResourceLabel)) continue;
+                    node.ContentiousObject = edge.ResourceLabel;
+                    break;
+                }
+            }
         }
 
         /// <summary>The statement to lead the card with: the process input buffer, falling back to the

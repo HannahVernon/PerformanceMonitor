@@ -111,4 +111,61 @@ public class DeadlockGraphLayoutTests
         Assert.True(width > 0);
         Assert.True(height > 0);
     }
+
+    private static bool Within(DeadlockProcessNode n, DeadlockComponentBox b, double eps = 0.5) =>
+        n.X >= b.X - eps && n.X + DeadlockGraphLayout.NodeWidth <= b.X + b.Width + eps &&
+        n.Y >= b.Y - eps && n.Y + DeadlockGraphLayout.NodeHeight <= b.Y + b.Height + eps;
+
+    [Theory]
+    [InlineData("deadlock_2proc_real_sql2025.xml", 1)]
+    [InlineData("deadlock_5proc_real_sql2025.xml", 2)]            // 3-cycle + 2-cycle
+    [InlineData("deadlock_8proc_multivictim_real_sql2025.xml", 4)] // four 2-cycles
+    [InlineData("deadlock_single5cycle_synthetic.xml", 1)]
+    [InlineData("deadlock_crossproduct_synthetic.xml", 1)]
+    [InlineData("deadlock_parallel_selfedge_synthetic.xml", 1)]   // a<->b via exchange edges = one component
+    public void Layout_PopulatesOneBoxPerComponent(string fixture, int expectedComponents)
+    {
+        var m = Parse(fixture);
+        DeadlockGraphLayout.Layout(m);
+
+        Assert.Equal(expectedComponents, m.ComponentBoxes.Count);
+        Assert.Equal(m.Processes.Count, m.ComponentBoxes.Sum(b => b.NodeCount)); // every process is in one box
+        Assert.Equal(Enumerable.Range(1, expectedComponents), m.ComponentBoxes.Select(b => b.Index));
+
+        // Every card lands inside exactly one component box (so a drawn frame contains exactly its cycle).
+        foreach (var n in m.Processes)
+            Assert.Equal(1, m.ComponentBoxes.Count(b => Within(n, b)));
+    }
+
+    [Fact]
+    public void ComponentBoxes_LoneNode_IsNotCountedAsACycle()
+    {
+        // The viewer frames/counts only components with >= 2 processes. A node connected solely by a self-edge
+        // is its own 1-node component and must NOT read as an independent cycle. No real fixture produces one,
+        // so build it: a<->b is a real 2-cycle and c carries only a self-edge.
+        var model = new DeadlockGraphModel
+        {
+            Processes = new[]
+            {
+                new DeadlockProcessNode { Id = "a", Spid = 60 },
+                new DeadlockProcessNode { Id = "b", Spid = 61 },
+                new DeadlockProcessNode { Id = "c", Spid = 62 },
+            },
+            Edges = new[]
+            {
+                new DeadlockWaitEdge { WaiterProcessId = "a", OwnerProcessId = "b", ResourceKind = "pagelock", ResourceLabel = "PAGE db.dbo.t" },
+                new DeadlockWaitEdge { WaiterProcessId = "b", OwnerProcessId = "a", ResourceKind = "pagelock", ResourceLabel = "PAGE db.dbo.t" },
+                new DeadlockWaitEdge { WaiterProcessId = "c", OwnerProcessId = "c", ResourceKind = "exchangeEvent", ResourceLabel = "Parallelism" },
+            }
+        };
+
+        DeadlockGraphLayout.Layout(model);
+
+        Assert.Equal(2, model.ComponentBoxes.Count);                          // a<->b, and lone c
+        Assert.Equal(1, model.ComponentBoxes.Count(b => b.NodeCount >= 2));   // only a<->b is a cycle
+
+        var multi = Parse("deadlock_8proc_multivictim_real_sql2025.xml");
+        DeadlockGraphLayout.Layout(multi);
+        Assert.Equal(4, multi.ComponentBoxes.Count(b => b.NodeCount >= 2));   // four real cycles
+    }
 }

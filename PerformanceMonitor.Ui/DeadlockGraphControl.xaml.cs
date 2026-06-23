@@ -119,9 +119,9 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
             return;
         }
 
-        BuildSummary();
         ShowEmptyState(false);
-        Render();
+        Render();        // assigns _model.ComponentBoxes, which BuildSummary's cycle count reads
+        BuildSummary();
 
         // Open with the most informative node selected so the viewer lands with the details card showing
         // (mirrors the block-chain viewer, which auto-selects the clicked session). Prefer a victim — the
@@ -144,6 +144,11 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         var victims = _model.Processes.Count(p => p.IsVictim);
         var procs = _model.Processes.Count;
         var summary = $"{procs} process{(procs == 1 ? "" : "es")} · {victims} victim{(victims == 1 ? "" : "s")}";
+        // A single <deadlock> can batch several independent cycles that share no resource — call the count out
+        // so the separate boxes don't read as "two unrelated deadlocks shown together by mistake."
+        var cycles = _model.ComponentBoxes.Count(b => b.NodeCount >= 2);
+        if (cycles > 1)
+            summary += $" · {cycles} independent cycles";
         // Shown only when the parsed XML carried an event wrapper with a timestamp (e.g. raw collect XML
         // or the Azure report); the bare <deadlock> the apps store has none, so this stays off there.
         if (_model.EventTime.HasValue)
@@ -179,6 +184,9 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         GraphCanvas.Width = width;
         GraphCanvas.Height = height;
 
+        // Cycle frames first, so they sit behind the edges and cards as a grouping backdrop.
+        RenderCycleBoxes();
+
         var byId = _model.Processes.ToDictionary(p => p.Id, StringComparer.Ordinal);
 
         // Edges (under the cards), then cards, then edge labels on top so they stay legible.
@@ -191,6 +199,54 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
 
         foreach (var (pos, text, tooltip) in labels)
             RenderEdgeLabel(pos, text, tooltip);
+    }
+
+    /// <summary>
+    /// Draws a dashed, labelled frame around each independent cycle when one deadlock batched more than one
+    /// (the cycles share no resource — see <see cref="DeadlockGraphLayout"/>). A lone cycle needs no frame.
+    /// </summary>
+    private void RenderCycleBoxes()
+    {
+        // A "cycle" is a component with >= 2 processes; a lone node (only a parallel self-edge) is not one and
+        // the parallel banner already explains it. Frame the cycles only when one deadlock holds more than one.
+        var cycles = _model!.ComponentBoxes.Where(b => b.NodeCount >= 2).ToList();
+        if (cycles.Count <= 1) return;
+
+        const double pad = 22; // inflate past the cards and leave a strip at the top for the label
+
+        int number = 0;
+        foreach (var box in cycles)
+        {
+            number++;
+            var frame = new System.Windows.Shapes.Rectangle
+            {
+                Width = box.Width + pad * 2,
+                Height = box.Height + pad * 2,
+                RadiusX = 8,
+                RadiusY = 8,
+                Stroke = MutedBrush,
+                StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection { 4, 3 },
+                Fill = Brushes.Transparent,
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(frame, box.X - pad);
+            Canvas.SetTop(frame, box.Y - pad);
+            GraphCanvas.Children.Add(frame);
+
+            var label = new TextBlock
+            {
+                Text = $"Cycle {number}",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MutedBrush,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(label, box.X - pad + 6);
+            Canvas.SetTop(label, box.Y - pad + 3);
+            GraphCanvas.Children.Add(label);
+        }
     }
 
     private void RenderNode(DeadlockProcessNode node)
@@ -245,6 +301,20 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
                 Text = node.ProcName,
                 FontSize = 11,
                 Foreground = MutedBrush,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 1, 0, 0)
+            });
+        }
+
+        // Contended resource — the object SQL Server resolved for the lock this process waits on. The deadlock
+        // graph names it directly, so this is the at-a-glance answer to "what did they fight over?".
+        if (!string.IsNullOrEmpty(node.ContentiousObject))
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = node.ContentiousObject,
+                FontSize = 11,
+                Foreground = ForegroundBrush,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 Margin = new Thickness(0, 1, 0, 0)
             });
@@ -305,6 +375,7 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         if (!string.IsNullOrEmpty(node.HostName)) lines.Add($"Host: {node.HostName}");
         if (!string.IsNullOrEmpty(node.ClientApp)) lines.Add($"App: {node.ClientApp}");
         if (!string.IsNullOrEmpty(node.IsolationLevel)) lines.Add($"Isolation: {node.IsolationLevel}");
+        if (!string.IsNullOrEmpty(node.ContentiousObject)) lines.Add($"Contended: {node.ContentiousObject}");
         if (!string.IsNullOrEmpty(node.WaitResource)) lines.Add($"Wait resource: {node.WaitResource}");
         lines.Add("Click for full details");
         return string.Join("\n", lines);
@@ -581,6 +652,7 @@ public partial class DeadlockGraphControl : UserControl, IGraphViewer
         if (!string.IsNullOrEmpty(node.ProcName)) AddPropRow("Procedure", node.ProcName);
         if (!string.IsNullOrEmpty(node.LockMode)) AddPropRow("Requested Lock", node.LockMode);
         if (node.WaitTimeMs > 0) AddPropRow("Wait Time", FormatWait(node.WaitTimeMs));
+        if (!string.IsNullOrEmpty(node.ContentiousObject)) AddPropRow("Contended Object", node.ContentiousObject);
         if (!string.IsNullOrEmpty(node.WaitResource)) AddPropRow("Wait Resource", node.WaitResource);
         AddPropRow("Priority", node.Priority.ToString());
         if (!string.IsNullOrEmpty(node.Status)) AddPropRow("Status", node.Status);
