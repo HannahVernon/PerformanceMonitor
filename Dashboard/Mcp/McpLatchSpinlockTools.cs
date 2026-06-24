@@ -31,7 +31,7 @@ public sealed class McpLatchSpinlockTools
         {
             var rows = await resolved.Value.Service.GetLatchStatsTopNAsync(top, hours_back);
             if (rows.Count == 0)
-                return "No latch statistics available in the requested time range.";
+                return McpHelpers.Status("unavailable", "No latch statistics available in the requested time range.");
 
             // Service returns all snapshots for top N classes (for UI charting).
             // For MCP, return only the latest snapshot per class with aggregated deltas.
@@ -94,7 +94,7 @@ public sealed class McpLatchSpinlockTools
         {
             var rows = await resolved.Value.Service.GetSpinlockStatsTopNAsync(top, hours_back);
             if (rows.Count == 0)
-                return "No spinlock statistics available in the requested time range.";
+                return McpHelpers.Status("unavailable", "No spinlock statistics available in the requested time range.");
 
             // Aggregate to one row per spinlock class with totals over the period
             var latestPerClass = rows

@@ -44,13 +44,12 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    status = "healthy",
-                    message = "No significant findings. All metrics are within normal ranges.",
-                    analysis_time = analysisService.LastAnalysisTime?.ToString("o")
-                }, McpHelpers.JsonOptions);
+                /* A successful analysis that found nothing wrong: a true negative ("all clear"),
+                   surfaced with the shared miss vocabulary so callers branch on it uniformly. */
+                return McpHelpers.Status(
+                    "empty",
+                    "No significant findings. All metrics are within normal ranges.",
+                    new { analysis_time = analysisService.LastAnalysisTime?.ToString("o") });
             }
 
             // Correlate-and-focus slice 1 (review §1d): each finding's "what else fired this window".
@@ -138,12 +137,11 @@ public sealed class McpAnalysisTools
 
             if (facts.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    fact_count = 0,
-                    message = "No facts collected. The collector may not have run yet, or no data exists in the requested time range."
-                }, McpHelpers.JsonOptions);
+                /* No scored facts means the underlying collectors produced nothing for the window —
+                   not retrievable now rather than an all-clear (mirrors get_perfmon_trend's empty case). */
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No facts collected. The collector may not have run yet, or no data exists in the requested time range.");
             }
 
             var filtered = facts.AsEnumerable();
@@ -528,12 +526,9 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    finding_count = 0,
-                    message = "No findings in the requested time range. Run analyze_server to generate new findings."
-                }, McpHelpers.JsonOptions);
+                return McpHelpers.Status(
+                    "empty",
+                    "No findings in the requested time range. Run analyze_server to generate new findings.");
             }
 
             // Correlate-and-focus slice 1 (review §1d): "what else fired", scoped per analysis run

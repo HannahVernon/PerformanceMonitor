@@ -33,7 +33,7 @@ public sealed class McpWaitTools
             var rows = await resolved.Value.Service.GetWaitStatsAsync();
             if (rows.Count == 0)
             {
-                return "No wait stats data available.";
+                return McpHelpers.Status("unavailable", "No wait stats data available.");
             }
 
             var result = rows.Take(limit).Select(r => new
@@ -85,7 +85,7 @@ public sealed class McpWaitTools
             var points = await resolved.Value.Service.GetWaitStatsDataAsync(hours_back, topWaitTypes: top_wait_types);
             if (points.Count == 0)
             {
-                return "No wait stats trend data available.";
+                return McpHelpers.Status("unavailable", "No wait stats trend data available.");
             }
 
             var result = points.Select(p => new

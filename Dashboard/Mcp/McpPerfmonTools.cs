@@ -37,7 +37,7 @@ public sealed class McpPerfmonTools
             var rows = await resolved.Value.Service.GetPerfmonStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No perfmon stats available.";
+                return McpHelpers.Status("unavailable", "No perfmon stats available.");
             }
 
             /* Return latest snapshot */
@@ -94,7 +94,7 @@ public sealed class McpPerfmonTools
             var rows = await resolved.Value.Service.GetPerfmonStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No perfmon trend data available.";
+                return McpHelpers.Status("unavailable", "No perfmon trend data available.");
             }
 
             IEnumerable<PerfmonStatsItem> filtered = rows;
