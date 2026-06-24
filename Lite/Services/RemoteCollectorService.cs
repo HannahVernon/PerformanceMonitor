@@ -496,6 +496,7 @@ public partial class RemoteCollectorService
                 "query_store" => await CollectQueryStoreAsync(server, cancellationToken),
                 "memory_grant_stats" => await CollectMemoryGrantStatsAsync(server, cancellationToken),
                 "waiting_tasks" => await CollectWaitingTasksAsync(server, cancellationToken),
+                "dmv_blocking_snapshot" => await CollectDmvBlockingSnapshotAsync(server, cancellationToken),
                 "blocked_process_report" => await CollectBlockedProcessReportsAsync(server, cancellationToken),
                 "database_scoped_config" => await CollectDatabaseScopedConfigAsync(server, cancellationToken),
                 "trace_flags" => await CollectTraceFlagsAsync(server, cancellationToken),

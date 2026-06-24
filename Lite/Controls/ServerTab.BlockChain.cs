@@ -96,8 +96,8 @@ public partial class ServerTab : UserControl
                 MessageBox.Show(
                     Window.GetWindow(this)!,
                     $"No reconstructable blocking chain for SPID {spid} in the selected range.\n\n" +
-                    "The session may not have been part of a blocked-process report whose wait crossed " +
-                    "the blocked-process threshold in this window.",
+                    "The session may not have been blocked (or blocking) in any captured blocked-process " +
+                    "report or DMV blocking snapshot in this window.",
                     "No Block Chain",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);

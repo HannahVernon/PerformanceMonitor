@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Data.Common;
 using System.Numerics;
+using System.Threading.Tasks;
+using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
 
 namespace PerformanceMonitorLite.Analysis;
@@ -90,5 +93,41 @@ AND blocking_spid <> 0";
         if (value is BigInteger bi)
             return (long)bi;
         return Convert.ToInt64(value);
+    }
+
+    /// <summary>
+    /// Fetches DMV-snapshot pair-rows (the always-on blocking fallback) for the window and merges them into
+    /// <paramref name="rows"/> (BPR-preferred — see <see cref="BlockingPairRowMerge"/>). Uses the same column
+    /// fragments as the blocked-process-report queries, against v_dmv_blocking_snapshots, so <see cref="Read"/>
+    /// maps it unchanged. Takes a command factory so the caller's connection (a LockedConnection in the viewer,
+    /// a raw DuckDBConnection in the collectors) runs it on the read lock it already holds.
+    /// </summary>
+    internal static async Task AppendDmvSnapshotRowsAsync(Func<DuckDBCommand> createCommand, List<BlockingPairRow> rows, int serverId, DateTime start, DateTime end)
+    {
+        var dmv = new List<BlockingPairRow>();
+        using (var cmd = createCommand())
+        {
+            cmd.CommandText = $@"
+SELECT
+    {LeadingColumns},
+    blocked_sql_text, blocking_sql_text,
+    {IdentityColumns},
+    contentious_object,
+    {TrailingIdentityColumns}
+FROM v_dmv_blocking_snapshots
+WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+{SpidFilter}
+ORDER BY event_time DESC
+LIMIT 5000";
+            cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = start });
+            cmd.Parameters.Add(new DuckDBParameter { Value = end });
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                dmv.Add(Read(reader));
+        }
+
+        BlockingPairRowMerge.MergeInto(rows, dmv);
     }
 }

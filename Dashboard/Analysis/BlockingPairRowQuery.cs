@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Data.Common;
+using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Analysis;
 
@@ -151,5 +153,68 @@ OUTER APPLY
         row.BlockingHostName = reader.IsDBNull(19) ? string.Empty : reader.GetString(19);
         row.BlockingClientApp = reader.IsDBNull(20) ? string.Empty : reader.GetString(20);
         return row;
+    }
+
+    /// <summary>
+    /// The DMV-snapshot pair-row source (collect.dmv_blocking_snapshots, the always-on blocking fallback).
+    /// Same projection and ordinals (0-20) as <see cref="SqlWithBlockerIdentity"/> so the shared
+    /// <see cref="ReadWithBlockerIdentity"/> maps it unchanged — but the blocker identity is stored inline
+    /// (the snapshot collector captures both sides natively), so no OUTER APPLY correlation is needed.
+    /// </summary>
+    public const string DmvSql = ReadUncommitted + @"
+SELECT TOP (5000)
+    event_time,
+    database_name,
+    spid,
+    last_transaction_started,
+    blocking_spid,
+    blocking_last_tran_started,
+    wait_time_ms,
+    lock_mode,
+    blocking_status,
+    blocked_sql_text,
+    blocking_sql_text,
+    login_name,
+    host_name,
+    client_app,
+    contentious_object,
+    ecid,
+    blocking_ecid,
+    monitor_loop,
+    blocking_login_name,
+    blocking_host_name,
+    blocking_client_app
+FROM collect.dmv_blocking_snapshots
+WHERE collection_time >= @collectionWindow
+AND   event_time >= @startTime
+AND   event_time <= @endTime
+ORDER BY collection_time DESC";
+
+    /// <summary>
+    /// Fetches DMV-snapshot pair-rows for the window and merges them into <paramref name="rows"/>
+    /// (BPR-preferred — see <see cref="BlockingPairRowMerge"/>). Called by all three pair-row consumers
+    /// after they build their BPR rows, so the DMV fallback feeds the reconstructor everywhere the
+    /// blocked-process-report does. Tolerates a not-yet-upgraded database (missing table -> no-op).
+    /// </summary>
+    internal static async Task AppendDmvSnapshotRowsAsync(SqlConnection connection, List<BlockingPairRow> rows, DateTime start, DateTime end)
+    {
+        var dmv = new List<BlockingPairRow>();
+        try
+        {
+            using var cmd = new SqlCommand(DmvSql, connection);
+            cmd.CommandTimeout = 120;
+            AddParameters(cmd, start, end);
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                dmv.Add(ReadWithBlockerIdentity(reader));
+        }
+        catch (SqlException ex) when (ex.Number == 208)
+        {
+            /* Invalid object name: collect.dmv_blocking_snapshots not present yet (pre-upgrade DB).
+               Degrade to BPR-only rather than failing the whole block-chain fetch. */
+            return;
+        }
+
+        BlockingPairRowMerge.MergeInto(rows, dmv);
     }
 }

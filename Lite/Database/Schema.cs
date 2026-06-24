@@ -476,6 +476,41 @@ CREATE TABLE IF NOT EXISTS blocked_process_reports (
     monitor_loop INTEGER
 )";
 
+    /* Always-on DMV blocking snapshot (BPR-independent fallback). Rich blocker/blocked pair-row shape so
+       the shared blocking-chain reconstruction consumes it via v_dmv_blocking_snapshots. Column order MUST
+       match the appender in RemoteCollectorService.DmvBlockingSnapshot.cs (DuckDB appends by position). */
+    public const string CreateDmvBlockingSnapshotsTable = @"
+CREATE TABLE IF NOT EXISTS dmv_blocking_snapshots (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    monitor_loop INTEGER NOT NULL,
+    event_time TIMESTAMP,
+    database_name VARCHAR,
+    blocked_spid INTEGER,
+    blocked_ecid INTEGER,
+    blocked_last_tran_started TIMESTAMP,
+    blocking_spid INTEGER,
+    blocking_ecid INTEGER,
+    blocking_last_tran_started TIMESTAMP,
+    wait_time_ms BIGINT,
+    lock_mode VARCHAR,
+    blocking_status VARCHAR,
+    contentious_object VARCHAR,
+    blocked_sql_text VARCHAR,
+    blocking_sql_text VARCHAR,
+    blocked_login_name VARCHAR,
+    blocked_host_name VARCHAR,
+    blocked_client_app VARCHAR,
+    blocking_login_name VARCHAR,
+    blocking_host_name VARCHAR,
+    blocking_client_app VARCHAR
+)";
+
+    public const string CreateDmvBlockingSnapshotsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_dmv_blocking_snapshots_time ON dmv_blocking_snapshots(server_id, collection_time)";
+
     public const string CreateDatabaseConfigTable = @"
 CREATE TABLE IF NOT EXISTS database_config (
     config_id BIGINT PRIMARY KEY,
@@ -840,6 +875,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateMemoryGrantStatsTable;
         yield return CreateWaitingTasksTable;
         yield return CreateBlockedProcessReportsTable;
+        yield return CreateDmvBlockingSnapshotsTable;
         yield return CreateDatabaseScopedConfigTable;
         yield return CreateTraceFlagsTable;
         yield return CreateRunningJobsTable;
@@ -873,6 +909,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateMemoryGrantStatsIndex;
         yield return CreateWaitingTasksIndex;
         yield return CreateBlockedProcessReportsIndex;
+        yield return CreateDmvBlockingSnapshotsIndex;
         yield return CreateMemoryClerksIndex;
         yield return CreateMemoryPressureEventsIndex;
         yield return CreateDatabaseScopedConfigIndex;

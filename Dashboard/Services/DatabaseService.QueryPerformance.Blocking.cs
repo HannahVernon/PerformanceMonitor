@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Analysis;
@@ -190,7 +191,118 @@ namespace PerformanceMonitorDashboard.Services
                         });
                     }
         
+                    // Always-on DMV blocking snapshot: surface its rows in the grid too, so the block-chain
+                    // viewer is reachable when the blocked-process-report XE captured nothing (AWS RDS).
+                    await AppendDmvBlockingGridItemsAsync(items, hoursBack, fromDate, toDate);
+
                     return items;
+                }
+
+                /// <summary>
+                /// Fetches always-on DMV blocking-snapshot rows for the grid and merges them into the BPR
+                /// list — BPR preferred (dedup by blocked/blocker SPID within a minute), re-capped to 100
+                /// newest-first. Opens its own connection because the caller's BPR reader is still open.
+                /// A missing table (pre-upgrade DB) degrades to a no-op, leaving the BPR rows untouched.
+                /// </summary>
+                private async Task AppendDmvBlockingGridItemsAsync(List<BlockingEventItem> items, int hoursBack, DateTime? fromDate, DateTime? toDate)
+                {
+                    const int gridCap = 100;
+                    string window = (fromDate.HasValue && toDate.HasValue)
+                        ? "d.collection_time >= @from_date AND d.collection_time <= @to_date"
+                        : "d.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())";
+
+                    string query = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT TOP ({gridCap})
+    d.snapshot_id,
+    d.collection_time,
+    d.event_time,
+    d.database_name,
+    d.contentious_object,
+    d.spid,
+    d.ecid,
+    CONVERT(nvarchar(max), d.blocked_sql_text) AS blocked_sql_text,
+    d.wait_time_ms,
+    d.blocking_status,
+    d.lock_mode,
+    d.last_transaction_started,
+    d.client_app,
+    d.host_name,
+    d.login_name,
+    d.blocking_spid,
+    d.blocking_last_tran_started,
+    d.monitor_loop
+FROM collect.dmv_blocking_snapshots AS d
+WHERE {window}
+ORDER BY d.event_time DESC;";
+
+                    var dmvItems = new List<BlockingEventItem>();
+                    try
+                    {
+                        await using var tc = await OpenThrottledConnectionAsync();
+                        using var command = new SqlCommand(query, tc.Connection);
+                        command.CommandTimeout = 120;
+                        command.Parameters.Add(new SqlParameter("@hours_back", SqlDbType.Int) { Value = -hoursBack });
+                        if (fromDate.HasValue) command.Parameters.Add(new SqlParameter("@from_date", SqlDbType.DateTime2) { Value = fromDate.Value });
+                        if (toDate.HasValue) command.Parameters.Add(new SqlParameter("@to_date", SqlDbType.DateTime2) { Value = toDate.Value });
+
+                        using var reader = await command.ExecuteReaderAsync();
+                        while (await reader.ReadAsync())
+                        {
+                            dmvItems.Add(new BlockingEventItem
+                            {
+                                BlockingId = reader.GetInt64(0),
+                                CollectionTime = reader.GetDateTime(1),
+                                EventTime = reader.IsDBNull(2) ? (DateTime?)null : reader.GetDateTime(2),
+                                DatabaseName = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                                ContentiousObject = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                                Spid = reader.IsDBNull(5) ? (int?)null : reader.GetInt32(5),
+                                Ecid = reader.IsDBNull(6) ? (int?)null : reader.GetInt32(6),
+                                QueryText = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                                WaitTimeMs = reader.IsDBNull(8) ? (long?)null : reader.GetInt64(8),
+                                Status = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                                LockMode = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                                LastTransactionStarted = reader.IsDBNull(11) ? (DateTime?)null : reader.GetDateTime(11),
+                                ClientApp = reader.IsDBNull(12) ? string.Empty : reader.GetString(12),
+                                HostName = reader.IsDBNull(13) ? string.Empty : reader.GetString(13),
+                                LoginName = reader.IsDBNull(14) ? string.Empty : reader.GetString(14),
+                                BlockingSpid = reader.IsDBNull(15) ? (int?)null : reader.GetInt32(15),
+                                BlockingLastTranStarted = reader.IsDBNull(16) ? (DateTime?)null : reader.GetDateTime(16),
+                                MonitorLoop = reader.IsDBNull(17) ? (int?)null : reader.GetInt32(17),
+                                Activity = "blocked",
+                                HasBlockedProcessReport = false,
+                                Source = "DMV snapshot"
+                            });
+                        }
+                    }
+                    catch (SqlException ex) when (ex.Number == 208)
+                    {
+                        /* collect.dmv_blocking_snapshots not present yet (pre-upgrade DB) — show BPR-only. */
+                        return;
+                    }
+
+                    if (dmvItems.Count == 0) return;
+
+                    // Dedup: keep all BPR rows; add a DMV row only if no BPR 'blocked' row covers the same
+                    // (blocked spid, blocker spid) within the same minute. BPR is preferred (richer XML).
+                    var seen = new HashSet<(int, int, long)>();
+                    foreach (var b in items)
+                        if (b.Spid.HasValue && b.BlockingSpid.HasValue && b.EventTime.HasValue)
+                            seen.Add((b.Spid.Value, b.BlockingSpid.Value, b.EventTime.Value.Ticks / TimeSpan.TicksPerMinute));
+
+                    foreach (var d in dmvItems)
+                    {
+                        var key = (d.Spid ?? 0, d.BlockingSpid ?? 0, (d.EventTime?.Ticks ?? 0) / TimeSpan.TicksPerMinute);
+                        if (seen.Add(key))
+                            items.Add(d);
+                    }
+
+                    // Re-cap to the grid's TOP(100), newest first. OrderByDescending is stable, so BPR rows
+                    // (added first) win ties over DMV rows at the same event time.
+                    var merged = items.OrderByDescending(i => i.EventTime ?? DateTime.MinValue).Take(gridCap).ToList();
+                    items.Clear();
+                    items.AddRange(merged);
                 }
 
                 // On-demand fetch of a single blocked process report XML (deferred from the grid query
@@ -445,9 +557,15 @@ namespace PerformanceMonitorDashboard.Services
                     command.CommandTimeout = 120;
                     BlockingPairRowQuery.AddParameters(command, start, end);
 
-                    using var reader = await command.ExecuteReaderAsync();
-                    while (await reader.ReadAsync())
-                        rows.Add(BlockingPairRowQuery.ReadWithBlockerIdentity(reader));
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                            rows.Add(BlockingPairRowQuery.ReadWithBlockerIdentity(reader));
+                    }
+
+                    // Always-on DMV blocking snapshot: merge in the fallback rows so the viewer works even
+                    // when the blocked-process-report XE captured nothing (threshold unset / AWS RDS).
+                    await BlockingPairRowQuery.AppendDmvSnapshotRowsAsync(connection, rows, start, end);
 
                     return rows;
                 }

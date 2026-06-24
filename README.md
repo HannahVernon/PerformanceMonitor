@@ -122,7 +122,8 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | memory_grant_stats | 1 min | `sys.dm_exec_query_memory_grants` |
 | tempdb_stats | 1 min | `sys.dm_db_file_space_usage` |
 | perfmon_stats | 1 min | `sys.dm_os_performance_counters` (deltas) |
-| deadlocks | 1 min | `system_health` Extended Events session |
+| deadlocks | 1 min | dedicated `PerformanceMonitor_Deadlock` XE session (`xml_deadlock_report`; `database_xml_deadlock_report` on Azure SQL DB) |
+| dmv_blocking_snapshot | 1 min | `sys.dm_os_waiting_tasks` + `sys.dm_exec_*` (always-on blocking fallback when the blocked-process-report XE is unavailable) |
 | session_stats | 1 min | `sys.dm_exec_sessions` active session tracking |
 | memory_clerks | 5 min | `sys.dm_os_memory_clerks` |
 | memory_pressure_events | 5 min | `sys.dm_os_ring_buffers` RING_BUFFER_RESOURCE_MONITOR |

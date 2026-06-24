@@ -281,6 +281,30 @@ ORDER BY
 GO
 
 /*
+DMV Blocking Snapshot - recent point-in-time blocking captured from DMVs (BPR-independent)
+*/
+CREATE OR ALTER VIEW
+    report.dmv_blocking_snapshots
+AS
+SELECT TOP (1000)
+    dbs.collection_time,
+    dbs.event_time,
+    dbs.database_name,
+    dbs.spid,
+    dbs.blocking_spid,
+    dbs.wait_time_ms,
+    dbs.lock_mode,
+    dbs.blocking_status,
+    dbs.contentious_object,
+    dbs.blocked_sql_text,
+    dbs.blocking_sql_text
+FROM collect.dmv_blocking_snapshots AS dbs
+WHERE dbs.collection_time >= DATEADD(HOUR, -24, SYSDATETIME())
+ORDER BY
+    dbs.event_time DESC;
+GO
+
+/*
 Deadlock Summary - Recent deadlocks
 */
 CREATE OR ALTER VIEW
@@ -2725,6 +2749,7 @@ PRINT '  - report.expensive_queries_today';
 PRINT '  - report.memory_pressure_events';
 PRINT '  - report.cpu_spikes';
 PRINT '  - report.blocking_summary';
+PRINT '  - report.dmv_blocking_snapshots';
 PRINT '  - report.deadlock_summary';
 PRINT '  - report.server_configuration_changes';
 PRINT '  - report.database_configuration_changes';

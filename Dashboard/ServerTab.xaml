@@ -680,6 +680,7 @@
                                             </StackPanel>
                                         </DataGridTextColumn.Header>
                                     </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Source}" Header="Source" Width="130"/>
                                     <DataGridTextColumn Binding="{Binding Activity}" Width="70">
                                         <DataGridTextColumn.Header>
                                             <StackPanel Orientation="Horizontal">
