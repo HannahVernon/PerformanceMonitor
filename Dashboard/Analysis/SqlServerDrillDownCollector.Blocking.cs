@@ -65,21 +65,52 @@ ORDER BY collection_time DESC;";
         await connection.OpenAsync();
 
         using var cmd = connection.CreateCommand();
+        /* BPR + always-on DMV blocking snapshot, so the flat top-blocking list isn't empty when the
+           blocked-process-report XE captured nothing (AWS RDS). Worst-by-wait surfaces regardless of
+           source; on a box with both, BPR and DMV may each contribute (this is a top-5 list, not a count). */
         cmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT TOP 5
     collection_time,
     database_name,
-    spid AS blocked_spid,
-    0 AS blocking_spid,
+    blocked_spid,
+    blocking_spid,
     wait_time_ms,
     lock_mode,
-    LEFT(CAST(query_text AS NVARCHAR(MAX)), 500) AS blocked_sql,
-    LEFT(blocking_tree, 500) AS blocking_sql,
+    blocked_sql,
+    blocking_sql,
     contentious_object
-FROM collect.blocking_BlockedProcessReport
-WHERE collection_time >= @startTime AND collection_time <= @endTime
+FROM
+(
+    SELECT
+        collection_time,
+        database_name,
+        blocked_spid = spid,
+        blocking_spid = 0,
+        wait_time_ms,
+        lock_mode,
+        blocked_sql = LEFT(CAST(query_text AS NVARCHAR(MAX)), 500),
+        blocking_sql = LEFT(blocking_tree, 500),
+        contentious_object
+    FROM collect.blocking_BlockedProcessReport
+    WHERE collection_time >= @startTime AND collection_time <= @endTime
+
+    UNION ALL
+
+    SELECT
+        collection_time,
+        database_name,
+        blocked_spid = spid,
+        blocking_spid,
+        wait_time_ms,
+        lock_mode,
+        blocked_sql = LEFT(CAST(blocked_sql_text AS NVARCHAR(MAX)), 500),
+        blocking_sql = LEFT(CAST(blocking_sql_text AS NVARCHAR(MAX)), 500),
+        contentious_object
+    FROM collect.dmv_blocking_snapshots
+    WHERE collection_time >= @startTime AND collection_time <= @endTime
+) AS combined
 ORDER BY wait_time_ms DESC;";
 
         cmd.Parameters.Add(new SqlParameter("@startTime", context.TimeRangeStart));
