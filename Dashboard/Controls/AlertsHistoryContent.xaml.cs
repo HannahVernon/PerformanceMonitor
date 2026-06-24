@@ -99,10 +99,9 @@ namespace PerformanceMonitorDashboard.Controls
                 ThresholdValue = e.ThresholdValue,
                 NotificationType = e.NotificationType,
                 StatusDisplay = GetStatusDisplay(e),
-                IsResolved = e.MetricName.Contains("Cleared") || e.MetricName.Contains("Resolved"),
-                IsCritical = e.MetricName.Contains("Deadlock") || e.MetricName.Contains("Poison"),
-                IsWarning = !e.MetricName.Contains("Cleared") && !e.MetricName.Contains("Resolved")
-                            && !e.MetricName.Contains("Deadlock") && !e.MetricName.Contains("Poison"),
+                IsResolved = AlertMetricClassifier.IsResolution(e.MetricName),
+                IsCritical = AlertMetricClassifier.IsCritical(e.MetricName),
+                IsWarning = AlertMetricClassifier.IsWarning(e.MetricName),
                 Muted = e.Muted,
                 DetailText = e.DetailText,
                 ContextJson = e.ContextJson

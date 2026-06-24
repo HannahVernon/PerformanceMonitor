@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Common;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
@@ -425,9 +426,9 @@ public class AlertHistoryRow
         }
     }
 
-    public bool IsResolved => MetricName.Contains("Cleared") || MetricName.Contains("Resolved");
-    public bool IsCritical => MetricName.Contains("Deadlock") || MetricName.Contains("Poison");
-    public bool IsWarning => !IsResolved && !IsCritical;
+    public bool IsResolved => AlertMetricClassifier.IsResolution(MetricName);
+    public bool IsCritical => AlertMetricClassifier.IsCritical(MetricName);
+    public bool IsWarning => AlertMetricClassifier.IsWarning(MetricName);
 
     private static string FormatValue(string metricName, double value)
     {

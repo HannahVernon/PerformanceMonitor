@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Models;
@@ -10,12 +11,13 @@ using Xunit;
 namespace PerformanceMonitorDashboard.Tests;
 
 /// <summary>
-/// #1225: muted alerts are written to history for audit but must not count toward the sidebar
-/// Alert badge. Proves GetAlertHistory(includeMuted: false) drops muted rows, that the default
-/// (includeMuted: true) still returns them for the history grid / MCP tool, and — the regression
-/// that bit the reporter — that the muted filter runs BEFORE the row limit, so a flood of muted
-/// noise can't evict a real alert from the counted window. A unique serverId keeps the test
-/// isolated from any on-disk alert_history.json the store loads in its constructor.
+/// #1225: muted alerts and resolution notices ("... Cleared/Resolved/Restored") are written to
+/// history for audit but must not count toward the sidebar Alert badge. Proves GetAlertHistory's
+/// includeMuted/includeResolved filters drop those rows, that the defaults still return them for
+/// the history grid / MCP tool, and — the regression that bit the reporter — that both filters run
+/// BEFORE the row limit, so noise can't evict a real alert from the counted window. A unique
+/// serverId keeps the test isolated from any on-disk alert_history.json the store loads in its
+/// constructor.
 /// </summary>
 public class JsonAlertHistoryStoreMutedFilterTests
 {
@@ -83,5 +85,30 @@ public class JsonAlertHistoryStoreMutedFilterTests
         var mine = actionable.Where(a => a.ServerId == srv).ToList();
         Assert.Single(mine);
         Assert.False(mine[0].Muted);
+    }
+
+    [Fact]
+    public async Task GetAlertHistory_ExcludeResolved_DropsResolutionRows_FiltersBeforeLimit()
+    {
+        var store = new JsonAlertHistoryStore(new FakePreferencesService());
+        var srv = "test-" + Guid.NewGuid().ToString("N");
+
+        // One real alert first (oldest), then a flood of newer resolution notices. "Capture Restored"
+        // and "Server Restored" are included deliberately: the pre-#1225 classifier matched only
+        // Cleared/Resolved, so those "Restored" rows would have slipped into the badge count.
+        await RecordAsync(store, srv, "Deadlocks Detected", muted: false);
+        await Task.Delay(10, TestContext.Current.CancellationToken);
+        foreach (var resolved in new[] { "Blocking Cleared", "CPU Resolved", "Capture Restored", "TempDB Space Resolved", "Server Restored" })
+            await RecordAsync(store, srv, resolved, muted: false);
+
+        // Default includes resolution rows for audit (history grid / MCP); a small limit fills with them.
+        var all = store.GetAlertHistory(hoursBack: 24, limit: 3);
+        Assert.DoesNotContain(all, a => a.ServerId == srv && !AlertMetricClassifier.IsResolution(a.MetricName));
+
+        // Excluding resolution rows before the limit keeps the one real alert in the counted window.
+        var actionable = store.GetAlertHistory(hoursBack: 24, limit: 3, includeResolved: false);
+        var mine = actionable.Where(a => a.ServerId == srv).ToList();
+        Assert.Single(mine);
+        Assert.Equal("Deadlocks Detected", mine[0].MetricName);
     }
 }
