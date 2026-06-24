@@ -29,7 +29,7 @@ public sealed class McpHealthTools
             var rows = await resolved.Value.Service.GetCollectionHealthAsync();
             if (rows.Count == 0)
             {
-                return "No collection health data available.";
+                return McpHelpers.Status("unavailable", "No collection health data available.");
             }
 
             var result = rows.Select(r => new
@@ -88,7 +88,7 @@ public sealed class McpHealthTools
             var rows = await resolved.Value.Service.GetDailySummaryAsync(date);
             if (rows.Count == 0)
             {
-                return "No daily summary data available.";
+                return McpHelpers.Status("unavailable", "No daily summary data available.");
             }
 
             var result = rows.Select(r => new

@@ -26,7 +26,7 @@ public sealed class McpMemoryTools
             var stats = await dataService.GetLatestMemoryStatsAsync(resolved.Value.ServerId);
             if (stats == null)
             {
-                return "No memory stats available.";
+                return McpHelpers.Status("unavailable", "No memory stats available.");
             }
 
             return JsonSerializer.Serialize(new
@@ -156,7 +156,7 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
             var rows = await dataService.GetMemoryPressureEventsAsync(resolved.Value.ServerId, hours_back);
             if (rows.Count == 0)
             {
-                return "No memory pressure events found in the requested time range.";
+                return McpHelpers.Status("empty", "No memory pressure events found in the requested time range.");
             }
 
             return JsonSerializer.Serialize(new
@@ -199,7 +199,7 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
             var rows = await dataService.GetMemoryGrantChartDataAsync(resolved.Value.ServerId, hours_back);
             if (rows.Count == 0)
             {
-                return "No memory grant data available.";
+                return McpHelpers.Status("unavailable", "No memory grant data available.");
             }
 
             /* Return latest snapshot */

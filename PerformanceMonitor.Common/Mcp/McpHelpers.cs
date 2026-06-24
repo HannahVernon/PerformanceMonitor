@@ -71,4 +71,26 @@ internal static class McpHelpers
     {
         return $"Error during {operation}: {ex.Message}";
     }
+
+    /// <summary>
+    /// Builds a consistent JSON envelope for a NON-DATA outcome — a legitimate miss — so an LLM
+    /// consumer can branch on the kind of nothing it got back. Data-bearing results keep their own
+    /// shape and must NOT use this.
+    /// </summary>
+    /// <param name="status">
+    /// One word from the small miss vocabulary:
+    /// <list type="bullet">
+    /// <item><c>empty</c> — a true negative: we looked and there is genuinely nothing (all clear).</item>
+    /// <item><c>not_collected</c> — the input names something this server does not collect.</item>
+    /// <item><c>unavailable</c> — it existed but is not retrievable now (evicted, purged, or not collected yet).</item>
+    /// </list>
+    /// </param>
+    /// <param name="message">The human-readable explanation (kept intact from the prior bare-string text).</param>
+    /// <param name="hints">Optional structured payload to help the caller recover (e.g. the counters that ARE collected). Omitted from the JSON when null.</param>
+    public static string Status(string status, string message, object? hints = null)
+    {
+        return hints is null
+            ? JsonSerializer.Serialize(new { status, message }, JsonOptions)
+            : JsonSerializer.Serialize(new { status, message, hints }, JsonOptions);
+    }
 }
