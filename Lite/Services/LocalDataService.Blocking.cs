@@ -291,7 +291,8 @@ SELECT
     blocking_last_batch_completed,
     blocked_priority,
     blocking_priority,
-    contentious_object
+    contentious_object,
+    monitor_loop
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -344,7 +345,8 @@ LIMIT 200";
                 BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
                 BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
                 BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
-                ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35)
+                ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35),
+                MonitorLoop = reader.IsDBNull(36) ? (int?)null : reader.GetInt32(36)
             });
         }
 
@@ -370,7 +372,8 @@ SELECT
     {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.LeadingColumns},
     blocked_sql_text, blocking_sql_text,
     {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.IdentityColumns},
-    contentious_object
+    contentious_object,
+    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.TrailingIdentityColumns}
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
 {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.SpidFilter}
@@ -874,6 +877,7 @@ public class BlockedProcessReportRow
     public int BlockedEcid { get; set; }
     public int BlockingSpid { get; set; }
     public int BlockingEcid { get; set; }
+    public int? MonitorLoop { get; set; }
     public long WaitTimeMs { get; set; }
     public string WaitResource { get; set; } = "";
     public string LockMode { get; set; } = "";

@@ -931,24 +931,25 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
         var baseTran = TestPeriodStart;
         DateTime Tran(int spid) => baseTran.AddSeconds(spid);
 
-        // blocked spid, blocked tran, blocking spid, blocking tran, blocking status
-        var pairs = new (int BlockedSpid, DateTime BlockedTran, int BlockingSpid, DateTime BlockingTran, string BlockingStatus)[]
+        // blocked spid, blocked tran, blocking spid, blocking tran, blocking status, blocked ecid
+        var pairs = new (int BlockedSpid, DateTime BlockedTran, int BlockingSpid, DateTime BlockingTran, string BlockingStatus, int BlockedEcid)[]
         {
             // Chain A — depth 4, apex 200 sleeping
-            (201, Tran(201), 200, Tran(200), "sleeping"),
-            (202, Tran(202), 201, Tran(201), "running"),
-            (203, Tran(203), 202, Tran(202), "running"),
-            (204, Tran(204), 203, Tran(203), "running"),
+            (201, Tran(201), 200, Tran(200), "sleeping", 0),
+            (202, Tran(202), 201, Tran(201), "running", 0),
+            (203, Tran(203), 202, Tran(202), "running", 0),
+            (204, Tran(204), 203, Tran(203), "running", 0),
             // Chain B — depth 1, apex 300, five victims
-            (301, Tran(301), 300, Tran(300), "running"),
-            (302, Tran(302), 300, Tran(300), "running"),
-            (303, Tran(303), 300, Tran(300), "running"),
-            (304, Tran(304), 300, Tran(300), "running"),
-            (305, Tran(305), 300, Tran(300), "running"),
-            // SPID reuse — spid 201 again, a different transaction start; must not join Chain A
-            (201, Tran(201).AddHours(2), 210, Tran(210), "running"),
+            (301, Tran(301), 300, Tran(300), "running", 0),
+            (302, Tran(302), 300, Tran(300), "running", 0),
+            (303, Tran(303), 300, Tran(300), "running", 0),
+            (304, Tran(304), 300, Tran(300), "running", 0),
+            (305, Tran(305), 300, Tran(300), "running", 0),
+            // SPID reuse — spid 201 again on a DIFFERENT execution context (ecid 1); the (spid, ecid) key
+            // keeps this distinct session off Chain A (transaction start is no longer the disambiguator).
+            (201, Tran(201).AddHours(2), 210, Tran(210), "running", 1),
             // 1900-01-01 sentinel transaction start on the blocked session
-            (220, new DateTime(1900, 1, 1), 221, Tran(221), "running"),
+            (220, new DateTime(1900, 1, 1), 221, Tran(221), "running", 0),
         };
 
         for (var i = 0; i < pairs.Length; i++)
@@ -962,8 +963,9 @@ INSERT INTO blocked_process_reports
     (blocked_report_id, collection_time, server_id, server_name,
      event_time, database_name, blocked_spid, blocked_last_tran_started,
      blocking_spid, blocking_last_tran_started, wait_time_ms,
-     lock_mode, blocked_status, blocking_status, blocked_sql_text, blocking_sql_text)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+     lock_mode, blocked_status, blocking_status, blocked_sql_text, blocking_sql_text,
+     blocked_ecid)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
 
             cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
             cmd.Parameters.Add(new DuckDBParameter { Value = eventTime });
@@ -981,6 +983,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
             cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockingStatus });
             cmd.Parameters.Add(new DuckDBParameter { Value = $"SELECT * FROM dbo.T WHERE id = {p.BlockedSpid}" });
             cmd.Parameters.Add(new DuckDBParameter { Value = $"UPDATE dbo.T SET v = 1 WHERE id = {p.BlockingSpid}" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockedEcid });
             await cmd.ExecuteNonQueryAsync();
         }
     }

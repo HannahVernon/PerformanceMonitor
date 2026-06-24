@@ -27,11 +27,10 @@ internal static class BlockingChainViewerProjection
     /// </summary>
     public static BlockingChainModel? BuildModelForSession(
         BlockingReconstruction reconstruction,
-        int blockedSpid, DateTime? blockedTran,
-        int blockingSpid, DateTime? blockingTran)
+        int? monitorLoop, int spid, int ecid)
     {
         var chain = BlockingChainReconstructor.FindChainForSession(
-            reconstruction, blockedSpid, blockedTran, blockingSpid, blockingTran);
+            reconstruction, monitorLoop, spid, ecid);
         if (chain == null)
             return null;
 
@@ -45,6 +44,7 @@ internal static class BlockingChainViewerProjection
     private static BlockingChainInput ToInput(ReconstructedChain c) => new()
     {
         ApexSpid = c.ApexSpid,
+        ApexEcid = c.ApexEcid,
         ApexTranStarted = c.ApexTranStarted,
         ApexSleeping = c.ApexSleeping,
         Magnitude = c.Magnitude,
@@ -52,8 +52,10 @@ internal static class BlockingChainViewerProjection
         {
             Level = l.Level,
             BlockingSpid = l.BlockingSpid,
+            BlockingEcid = l.BlockingEcid,
             BlockingTranStarted = l.BlockingTranStarted,
             BlockedSpid = l.BlockedSpid,
+            BlockedEcid = l.BlockedEcid,
             BlockedTranStarted = l.BlockedTranStarted,
             LockMode = l.LockMode,
             WaitTimeMs = l.WaitTimeMs,

@@ -23,6 +23,13 @@ internal sealed class BlockingPairRow
     public DateTime? BlockedTranStarted { get; init; }
     public int BlockingSpid { get; init; }
     public DateTime? BlockingTranStarted { get; init; }
+    /// <summary>The blocked-process-report's monitorLoop — the episode (one monitor scan) the row belongs to.
+    /// Nullable: only the viewer scopes by it; the collector passes scopeByMonitorLoop=false (treated as null).</summary>
+    public int? MonitorLoop { get; init; }
+    /// <summary>Execution-context id of each side; with spid it forms the session identity the reconstruction
+    /// keys on (mirrors sp_HumanEventsBlockViewer's spid:ecid). 0 for the common non-parallel case.</summary>
+    public int BlockedEcid { get; init; }
+    public int BlockingEcid { get; init; }
     public long WaitTimeMs { get; init; }
     public string LockMode { get; init; } = string.Empty;
     public string BlockingStatus { get; init; } = string.Empty;
@@ -44,21 +51,25 @@ internal sealed class BlockingPairRow
 }
 
 /// <summary>
-/// Stable session identity. A SPID is reused across the analysis window, so the bare
-/// integer is not a session identity — the transaction start time disambiguates two
-/// sessions that reused one SPID.
+/// Stable session identity mirroring sp_HumanEventsBlockViewer: spid:ecid scoped to a monitor_loop (one
+/// blocked-process-report scan = one episode). MonitorLoop is null when the caller reconstructs cumulatively
+/// across the window (the collector) rather than per-scan (the viewer); ecid distinguishes parallel workers.
+/// Transaction start is NOT part of the identity — the blocking-process node omits it, so it is null on every
+/// blocker and cannot disambiguate.
 /// </summary>
-internal readonly record struct SessionKey(int Spid, DateTime? TranStarted);
+internal readonly record struct SessionKey(int? MonitorLoop, int Spid, int Ecid);
 
 /// <summary>One level (one blocked/blocker edge) of a reconstructed chain, for drill-down.</summary>
 internal sealed class ChainLevel
 {
     public int Level { get; init; }
     public int BlockingSpid { get; init; }
-    /// <summary>Transaction start of the blocking side — the identity disambiguator a faithful
-    /// tree rebuild needs (a SPID reused by two sessions in the window is two real nodes).</summary>
+    public int BlockingEcid { get; init; }
+    /// <summary>Transaction start of the blocking side — display only (sentinel-normalized); not part of the
+    /// session identity, which is spid:ecid within monitor_loop.</summary>
     public DateTime? BlockingTranStarted { get; init; }
     public int BlockedSpid { get; init; }
+    public int BlockedEcid { get; init; }
     public DateTime? BlockedTranStarted { get; init; }
     public string LockMode { get; init; } = string.Empty;
     public long WaitTimeMs { get; init; }
@@ -79,7 +90,11 @@ internal sealed class ChainLevel
 internal sealed class ReconstructedChain
 {
     public int ApexSpid { get; init; }
-    /// <summary>Transaction start of the apex — pairs with <see cref="ApexSpid"/> as its session identity.</summary>
+    public int ApexEcid { get; init; }
+    /// <summary>The chain's episode (monitor_loop) when scoped per-scan; null for a cumulative reconstruction.
+    /// All nodes in a scoped chain share it (one report's two sides carry the same monitor_loop).</summary>
+    public int? MonitorLoop { get; init; }
+    /// <summary>Transaction start of the apex — display only (null for a blocker, which has none).</summary>
     public DateTime? ApexTranStarted { get; init; }
     public bool ApexSleeping { get; init; }
     public int Depth { get; init; }
@@ -116,111 +131,55 @@ internal static class BlockingChainReconstructor
     // available when building the ChainLevel without re-listing each one here.
     private sealed record EdgeInfo(BlockingPairRow Row);
 
-    /// <summary>Builds a stable session key, normalizing the 1900-01-01 sentinel to NULL.</summary>
-    public static SessionKey MakeKey(int spid, DateTime? tranStarted)
-    {
-        var normalized = tranStarted.HasValue && tranStarted.Value > SentinelFloor ? tranStarted : null;
-        return new SessionKey(spid, normalized);
-    }
+    /// <summary>Builds a session key. MonitorLoop is null when reconstructing cumulatively (collector).</summary>
+    public static SessionKey MakeKey(int? monitorLoop, int spid, int ecid) => new(monitorLoop, spid, ecid);
+
+    /// <summary>Normalizes the 1900-01-01 sentinel to NULL for display tran values.</summary>
+    private static DateTime? NormalizeTran(DateTime? tranStarted) =>
+        tranStarted.HasValue && tranStarted.Value > SentinelFloor ? tranStarted : null;
 
     /// <summary>
-    /// Finds the single reconstructed chain that contains the given session (matched by SessionKey — the
-    /// session may be the apex, a mid-level blocker, or a leaf victim). Returns the chain rooted at its
-    /// apex, or null if no chain contains the session. Lets the viewer scope to the one chain the clicked
-    /// row belongs to.
+    /// Finds the single reconstructed chain that contains the clicked session, matched by spid:ecid within
+    /// its episode (monitor_loop). The session may be the apex, a mid-level blocker, or a leaf victim. When
+    /// the clicked monitor_loop is unavailable (e.g. a lead-blocker grid row), it falls back to a
+    /// monitor_loop-agnostic spid:ecid match — the reconstruction window is already tight, so this still lands
+    /// on the right chain rather than reporting "no reconstructable chain." Returns null when no chain holds
+    /// the session. Only the viewer calls this, on a per-scan (scoped) reconstruction; the collector takes the
+    /// worst chain directly.
     /// </summary>
     public static ReconstructedChain? FindChainForSession(
-        BlockingReconstruction reconstruction, int spid, DateTime? tranStarted)
+        BlockingReconstruction reconstruction, int? monitorLoop, int spid, int ecid)
     {
-        var key = MakeKey(spid, tranStarted);
         foreach (var chain in reconstruction.Chains)
-            if (ChainContains(chain, key))
-                return chain;
-        return null;
-    }
-
-    /// <summary>
-    /// Edge-precise overload: when the clicked row carries its blocker too, prefer the chain that contains
-    /// the exact (blocker -> blocked) edge. This disambiguates a victim that was blocked by two different
-    /// lead blockers at different times in the window (each is a separate chain, both containing the victim).
-    /// Falls back to the any-level SessionKey match on the blocked session when no chain holds that exact edge
-    /// (e.g. the clicked row has no recorded blocker), and finally to a SPID-only match: the blocked-process
-    /// report keys a blocker with a NULL transaction start (it is not recorded on the blocked row), so a click
-    /// on that session's own 'blocking' row — which carries its real last_transaction_started — would otherwise
-    /// never match the (spid, NULL) apex node and the viewer would wrongly report "no reconstructable chain."
-    /// </summary>
-    public static ReconstructedChain? FindChainForSession(
-        BlockingReconstruction reconstruction,
-        int blockedSpid, DateTime? blockedTran,
-        int blockingSpid, DateTime? blockingTran)
-    {
-        var blockedKey = MakeKey(blockedSpid, blockedTran);
-        var blockerKey = MakeKey(blockingSpid, blockingTran);
-
-        foreach (var chain in reconstruction.Chains)
-            if (ChainContainsEdge(chain, blockerKey, blockedKey))
+            if ((!monitorLoop.HasValue || chain.MonitorLoop == monitorLoop) &&
+                ChainContainsSpidEcid(chain, spid, ecid))
                 return chain;
 
-        foreach (var chain in reconstruction.Chains)
-            if (ChainContains(chain, blockedKey))
-                return chain;
-
-        // Last resort: SPID alone, ignoring the transaction-start identity. A blocker is keyed (spid, NULL) in
-        // the reconstruction (its tran start is NULL on the blocked row), but a click on its 'blocking' row
-        // supplies the session's real tran start, so neither precise pass above can match it. Precise matches
-        // run first and the reconstruction is scoped to a tight time window, so SPID reuse is unlikely to
-        // mislead here — and returning the chain this SPID participates in beats a false "no chain" dialog.
-        foreach (var chain in reconstruction.Chains)
-            if (ChainContainsSpid(chain, blockedSpid))
-                return chain;
+        if (monitorLoop.HasValue)
+            foreach (var chain in reconstruction.Chains)
+                if (ChainContainsSpidEcid(chain, spid, ecid))
+                    return chain;
 
         return null;
     }
 
-    /// <summary>True if the chain has the exact blocker -> blocked edge.</summary>
-    private static bool ChainContainsEdge(ReconstructedChain chain, SessionKey blockerKey, SessionKey blockedKey)
+    /// <summary>True if the session (spid:ecid) appears anywhere in the chain — apex, a blocker, or a victim.</summary>
+    private static bool ChainContainsSpidEcid(ReconstructedChain chain, int spid, int ecid)
     {
-        foreach (var l in chain.Levels)
-            if (MakeKey(l.BlockingSpid, l.BlockingTranStarted).Equals(blockerKey) &&
-                MakeKey(l.BlockedSpid, l.BlockedTranStarted).Equals(blockedKey))
-                return true;
-        return false;
-    }
-
-    /// <summary>True if the session appears anywhere in the chain (apex, a blocker, or a victim).</summary>
-    private static bool ChainContains(ReconstructedChain chain, SessionKey key)
-    {
-        if (MakeKey(chain.ApexSpid, chain.ApexTranStarted).Equals(key))
+        if (chain.ApexSpid == spid && chain.ApexEcid == ecid)
             return true;
 
         foreach (var l in chain.Levels)
         {
-            if (MakeKey(l.BlockingSpid, l.BlockingTranStarted).Equals(key)) return true;
-            if (MakeKey(l.BlockedSpid, l.BlockedTranStarted).Equals(key)) return true;
+            if (l.BlockingSpid == spid && l.BlockingEcid == ecid) return true;
+            if (l.BlockedSpid == spid && l.BlockedEcid == ecid) return true;
         }
 
         return false;
     }
 
-    /// <summary>
-    /// True if the SPID appears anywhere in the chain, ignoring the transaction-start identity. The coarse
-    /// last-resort match for the edge-precise <see cref="FindChainForSession(BlockingReconstruction,int,DateTime?,int,DateTime?)"/>,
-    /// for when a blocker is keyed (spid, NULL) in the reconstruction but the clicked row carries a real tran start.
-    /// </summary>
-    private static bool ChainContainsSpid(ReconstructedChain chain, int spid)
-    {
-        if (chain.ApexSpid == spid)
-            return true;
-
-        foreach (var l in chain.Levels)
-            if (l.BlockingSpid == spid || l.BlockedSpid == spid)
-                return true;
-
-        return false;
-    }
-
     public static BlockingReconstruction Reconstruct(
-        IEnumerable<BlockingPairRow> rows, int maxDepth, int maxPairs, int stepBudget)
+        IEnumerable<BlockingPairRow> rows, int maxDepth, int maxPairs, int stepBudget, bool scopeByMonitorLoop)
     {
         var pairs = rows.Take(maxPairs).ToList();
         if (pairs.Count == 0)
@@ -235,8 +194,11 @@ internal static class BlockingChainReconstructor
 
         foreach (var row in pairs)
         {
-            var blocker = MakeKey(row.BlockingSpid, row.BlockingTranStarted);
-            var blocked = MakeKey(row.BlockedSpid, row.BlockedTranStarted);
+            // The collector reconstructs cumulatively (loop = null) so an episode's per-scan re-fires merge into
+            // one chain (preserves window-level depth/victims for the severity fact); the viewer scopes per scan.
+            var loop = scopeByMonitorLoop ? row.MonitorLoop : null;
+            var blocker = MakeKey(loop, row.BlockingSpid, row.BlockingEcid);
+            var blocked = MakeKey(loop, row.BlockedSpid, row.BlockedEcid);
 
             allNodes.Add(blocker);
             allNodes.Add(blocked);
@@ -280,10 +242,18 @@ internal static class BlockingChainReconstructor
                 FactScorer.ApplyThresholdFormula(depth, 3, 8),
                 FactScorer.ApplyThresholdFormula(victimCount, 5, 25));
 
+            // Apex display tran comes from its first outgoing edge's blocking side (the apex never appears as a
+            // blocked row); a blocker has no tran on Dashboard (null) but Lite carries it.
+            var apexTran = adjacency.TryGetValue(root, out var apexDests) && apexDests.Count > 0
+                ? NormalizeTran(apexDests.Values.First().Row.BlockingTranStarted)
+                : null;
+
             chains.Add(new ReconstructedChain
             {
                 ApexSpid = root.Spid,
-                ApexTranStarted = root.TranStarted,
+                ApexEcid = root.Ecid,
+                MonitorLoop = root.MonitorLoop,
+                ApexTranStarted = apexTran,
                 ApexSleeping = sleepingBlockers.Contains(root),
                 Depth = depth,
                 VictimCount = victimCount,
@@ -468,9 +438,11 @@ internal static class BlockingChainReconstructor
                 {
                     Level = level + 1,
                     BlockingSpid = node.Spid,
-                    BlockingTranStarted = node.TranStarted,
+                    BlockingEcid = node.Ecid,
+                    BlockingTranStarted = NormalizeTran(row.BlockingTranStarted),
                     BlockedSpid = child.Spid,
-                    BlockedTranStarted = child.TranStarted,
+                    BlockedEcid = child.Ecid,
+                    BlockedTranStarted = NormalizeTran(row.BlockedTranStarted),
                     LockMode = row.LockMode ?? string.Empty,
                     WaitTimeMs = row.WaitTimeMs,
                     DatabaseName = row.DatabaseName ?? string.Empty,

@@ -122,7 +122,8 @@ SELECT
     LEFT(blocked_sql_text, 500) AS blocked_sql,
     LEFT(blocking_sql_text, 500) AS blocking_sql,
     {BlockingPairRowQuery.IdentityColumns},
-    contentious_object
+    contentious_object,
+    {BlockingPairRowQuery.TrailingIdentityColumns}
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
 {BlockingPairRowQuery.SpidFilter}
@@ -143,7 +144,7 @@ LIMIT 5000";
         if (rows.Count == 0) return;
 
         var reconstruction = BlockingChainReconstructor.Reconstruct(
-            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
+            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000, scopeByMonitorLoop: false);
 
         var items = new List<object>();
         foreach (var chain in reconstruction.Chains.Take(3))
