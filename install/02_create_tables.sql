@@ -1122,6 +1122,11 @@ BEGIN
         blocking_spid integer NULL,
         blocking_last_tran_started datetime2(7) NULL,
         blocking_status nvarchar(10) NULL,
+        /* Session identity for (monitor_loop, spid, ecid) chain reconstruction; populated by install/23.
+           blocking_ecid is the blocker's exec-context (blocked side uses the ecid column above); monitor_loop
+           is the blocked-process-report episode. */
+        blocking_ecid integer NULL,
+        monitor_loop integer NULL,
         blocked_sql_text nvarchar(max) NULL,
         blocking_sql_text nvarchar(max) NULL,
         CONSTRAINT
