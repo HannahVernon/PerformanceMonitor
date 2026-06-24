@@ -83,11 +83,12 @@ namespace PerformanceMonitorDashboard
 
         private void UpdateAlertBadge()
         {
-            /* Muted alerts stay in history for audit but must not inflate the sidebar Alert badge —
-               otherwise known recurring noise (e.g. a muted trace-reader session) makes the dashboard
-               look like it has actionable alerts (#1225). Excluded inside the query, before the limit,
-               so a flood of muted rows can't push real alerts out of the counted window. */
-            var alerts = _alertHistoryStore.GetAlertHistory(hoursBack: 24, limit: 100, includeMuted: false);
+            /* The badge counts only actionable alerts. Muted alerts (known recurring noise) and
+               resolution notices ("... Cleared/Resolved/Restored" — a condition that already
+               recovered) both stay in Alert History for audit but must not inflate the badge, or the
+               dashboard looks like it has unhandled alerts when it doesn't (#1225). Both are excluded
+               inside the query, before the limit, so neither can push real alerts out of the count. */
+            var alerts = _alertHistoryStore.GetAlertHistory(hoursBack: 24, limit: 100, includeMuted: false, includeResolved: false);
             var count = alerts.Count;
 
             if (count > 0)

@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Interfaces;
@@ -193,14 +194,23 @@ namespace PerformanceMonitorDashboard.Services
         /// Alert badge count so known recurring noise (a muted source firing every cooldown) can
         /// neither inflate the badge nor push real alerts out of the counted window (#1225).
         /// </param>
-        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50, bool includeMuted = true)
+        /// <param name="includeResolved">
+        /// When true (default), resolution / good-news rows ("&#8230; Cleared/Resolved/Restored")
+        /// are returned for audit/history display. When false, they are filtered out before the
+        /// limit — also used by the sidebar Alert badge so a resolved condition is not counted as
+        /// an actionable alert (#1225). See <see cref="AlertMetricClassifier.IsResolution"/>.
+        /// </param>
+        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50, bool includeMuted = true, bool includeResolved = true)
         {
             var cutoff = DateTime.UtcNow.AddHours(-hoursBack);
 
             lock (_alertLogLock)
             {
                 return _alertLog
-                    .Where(a => a.AlertTime >= cutoff && !a.Hidden && (includeMuted || !a.Muted))
+                    .Where(a => a.AlertTime >= cutoff
+                        && !a.Hidden
+                        && (includeMuted || !a.Muted)
+                        && (includeResolved || !AlertMetricClassifier.IsResolution(a.MetricName)))
                     .OrderByDescending(a => a.AlertTime)
                     .Take(limit)
                     .ToList();
