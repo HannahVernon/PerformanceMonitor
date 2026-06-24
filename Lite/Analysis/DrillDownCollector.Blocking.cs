@@ -64,14 +64,32 @@ LIMIT 3";
         await connection.OpenAsync();
 
         using var cmd = connection.CreateCommand();
+        /* BPR + always-on DMV blocking snapshot, so the flat top-blocking list isn't empty when the
+           blocked-process-report XE captured nothing (AWS RDS). Worst-by-wait surfaces regardless of
+           source; on a box with both, each may contribute (this is a top-5 list, not a count). */
         cmd.CommandText = @"
 SELECT collection_time, database_name, blocked_spid, blocking_spid,
-       wait_time_ms, lock_mode,
-       LEFT(blocked_sql_text, 500) AS blocked_sql,
-       LEFT(blocking_sql_text, 500) AS blocking_sql,
-       contentious_object
-FROM v_blocked_process_reports
-WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+       wait_time_ms, lock_mode, blocked_sql, blocking_sql, contentious_object
+FROM
+(
+    SELECT collection_time, database_name, blocked_spid, blocking_spid,
+           wait_time_ms, lock_mode,
+           LEFT(blocked_sql_text, 500) AS blocked_sql,
+           LEFT(blocking_sql_text, 500) AS blocking_sql,
+           contentious_object
+    FROM v_blocked_process_reports
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+
+    UNION ALL
+
+    SELECT collection_time, database_name, blocked_spid, blocking_spid,
+           wait_time_ms, lock_mode,
+           LEFT(blocked_sql_text, 500) AS blocked_sql,
+           LEFT(blocking_sql_text, 500) AS blocking_sql,
+           contentious_object
+    FROM v_dmv_blocking_snapshots
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+) AS combined
 ORDER BY wait_time_ms DESC
 LIMIT 5";
 
