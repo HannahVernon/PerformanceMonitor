@@ -39,6 +39,24 @@ public class AlertSeverityTests
     }
 
     [Fact]
+    public void CaptureDown_IsCriticalNotInfo()
+    {
+        // Capture Down is emailed/webhooked and fires as an Error toast — it must not fall through
+        // to INFO-blue like an unmapped metric (same gap class as Volume Free Space, #1136).
+        var (hex, badge, _) = AlertSeverity.ForMetric("Capture Down");
+        Assert.Equal("CRITICAL", badge);
+        Assert.Equal("#DC2626", hex);
+    }
+
+    [Fact]
+    public void FailedAgentJob_IsWarningNotInfo()
+    {
+        var (hex, badge, _) = AlertSeverity.ForMetric("Failed Agent Job");
+        Assert.Equal("WARNING", badge);
+        Assert.Equal("#D97706", hex);
+    }
+
+    [Fact]
     public void EmailBody_CriticalOverride_RendersCriticalNotInfo()
     {
         var ctx = new AlertContext { SeverityOverride = AlertSeverityLevel.Critical };
