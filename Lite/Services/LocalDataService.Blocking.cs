@@ -305,7 +305,8 @@ LIMIT 200";
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
         var items = new List<BlockedProcessReportRow>();
-        using var reader = await command.ExecuteReaderAsync();
+        using (var reader = await command.ExecuteReaderAsync())
+        {
         while (await reader.ReadAsync())
         {
             items.Add(new BlockedProcessReportRow
@@ -349,8 +350,93 @@ LIMIT 200";
                 MonitorLoop = reader.IsDBNull(36) ? (int?)null : reader.GetInt32(36)
             });
         }
+        }
+
+        // Always-on DMV blocking snapshot: surface its rows in the grid too, so the block-chain viewer is
+        // reachable when the blocked-process-report XE captured nothing (AWS RDS). Same connection/lock.
+        await AppendDmvBlockedProcessGridRowsAsync(connection.CreateCommand, items, serverId, startTime, endTime);
 
         return items;
+    }
+
+    /// <summary>
+    /// Fetches always-on DMV blocking-snapshot rows for the blocked-process grid and merges them into the
+    /// BPR list — BPR preferred (dedup by blocked/blocker SPID within a minute), re-capped to 200 newest
+    /// first. Runs on the caller's connection/lock (the read lock is non-recursive, so a second connection
+    /// can't be opened). v_dmv_blocking_snapshots is created by DuckDbInitializer, so it always exists.
+    /// </summary>
+    private static async Task AppendDmvBlockedProcessGridRowsAsync(
+        Func<DuckDBCommand> createCommand, List<BlockedProcessReportRow> items, int serverId, DateTime startTime, DateTime endTime)
+    {
+        const int gridCap = 200;
+        var dmvItems = new List<BlockedProcessReportRow>();
+        using (var command = createCommand())
+        {
+            command.CommandText = @"
+SELECT
+    collection_time, event_time, database_name,
+    blocked_spid, blocked_ecid, blocking_spid, blocking_ecid,
+    wait_time_ms, lock_mode, blocking_status, contentious_object,
+    blocked_sql_text, blocking_sql_text,
+    blocked_login_name, blocked_host_name, blocked_client_app,
+    blocked_last_tran_started, blocking_last_tran_started, monitor_loop
+FROM v_dmv_blocking_snapshots
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+ORDER BY event_time DESC
+LIMIT 200";
+            command.Parameters.Add(new DuckDBParameter { Value = serverId });
+            command.Parameters.Add(new DuckDBParameter { Value = startTime });
+            command.Parameters.Add(new DuckDBParameter { Value = endTime });
+
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                dmvItems.Add(new BlockedProcessReportRow
+                {
+                    CollectionTime = reader.GetDateTime(0),
+                    EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
+                    DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                    BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                    BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                    BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+                    WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                    LockMode = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    BlockingStatus = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                    ContentiousObject = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                    BlockedSqlText = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                    BlockingSqlText = reader.IsDBNull(12) ? "" : reader.GetString(12),
+                    BlockedLoginName = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                    BlockedHostName = reader.IsDBNull(14) ? "" : reader.GetString(14),
+                    BlockedClientApp = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                    BlockedLastTranStarted = reader.IsDBNull(16) ? null : reader.GetDateTime(16),
+                    BlockingLastTranStarted = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
+                    MonitorLoop = reader.IsDBNull(18) ? (int?)null : reader.GetInt32(18),
+                    Source = "DMV snapshot"
+                });
+            }
+        }
+
+        if (dmvItems.Count == 0) return;
+
+        // Dedup: keep all BPR rows; add a DMV row only if no BPR row covers the same (blocked, blocker)
+        // SPID within the same minute. BPR is preferred (richer report XML).
+        var seen = new HashSet<(int, int, long)>();
+        foreach (var b in items)
+            if (b.EventTime.HasValue)
+                seen.Add((b.BlockedSpid, b.BlockingSpid, b.EventTime.Value.Ticks / TimeSpan.TicksPerMinute));
+
+        foreach (var d in dmvItems)
+        {
+            var key = (d.BlockedSpid, d.BlockingSpid, (d.EventTime?.Ticks ?? 0) / TimeSpan.TicksPerMinute);
+            if (seen.Add(key))
+                items.Add(d);
+        }
+
+        // Re-cap to the grid's LIMIT, newest first.
+        items.Sort((a, b) => Nullable.Compare(b.EventTime, a.EventTime));
+        if (items.Count > gridCap)
+            items.RemoveRange(gridCap, items.Count - gridCap);
     }
 
     /// <summary>
@@ -384,9 +470,16 @@ LIMIT 5000";
         command.Parameters.Add(new DuckDBParameter { Value = start });
         command.Parameters.Add(new DuckDBParameter { Value = end });
 
-        using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-            rows.Add(PerformanceMonitorLite.Analysis.BlockingPairRowQuery.Read(reader));
+        using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+                rows.Add(PerformanceMonitorLite.Analysis.BlockingPairRowQuery.Read(reader));
+        }
+
+        // Always-on DMV blocking snapshot: merge in the fallback rows so the viewer works even when the
+        // blocked-process-report XE captured nothing (threshold unset / AWS RDS). Same connection/lock.
+        await PerformanceMonitorLite.Analysis.BlockingPairRowQuery.AppendDmvSnapshotRowsAsync(
+            connection.CreateCommand, rows, serverId, start, end);
 
         return rows;
     }
@@ -878,6 +971,14 @@ public class BlockedProcessReportRow
     public int BlockingSpid { get; set; }
     public int BlockingEcid { get; set; }
     public int? MonitorLoop { get; set; }
+
+    /// <summary>
+    /// Where this row came from: the blocked-process-report XE ("blocked-process-report") or the always-on
+    /// DMV snapshot fallback ("DMV snapshot"). Surfaced as a grid badge so a row captured when the
+    /// blocked-process threshold was unset (e.g. AWS RDS) is distinguishable.
+    /// </summary>
+    public string Source { get; set; } = "blocked-process-report";
+
     public long WaitTimeMs { get; set; }
     public string WaitResource { get; set; } = "";
     public string LockMode { get; set; } = "";

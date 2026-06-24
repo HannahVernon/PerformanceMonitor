@@ -73,6 +73,7 @@ public class ArchiveService
         ("blocked_process_reports", "collection_time"),
         ("memory_grant_stats", "collection_time"),
         ("waiting_tasks", "collection_time"),
+        ("dmv_blocking_snapshots", "collection_time"),
         ("running_jobs", "collection_time"),
         ("database_size_stats", "collection_time"),
         ("index_object_stats", "collection_time"),

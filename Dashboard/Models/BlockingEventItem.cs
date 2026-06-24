@@ -62,6 +62,13 @@ namespace PerformanceMonitorDashboard.Models
         /// </summary>
         public bool HasBlockedProcessReport { get; set; }
 
+        /// <summary>
+        /// Where this row came from: the blocked-process-report XE ("blocked-process-report") or the
+        /// always-on DMV snapshot fallback ("DMV snapshot"). Surfaced as a grid badge so a row captured
+        /// when the blocked-process threshold was unset (e.g. AWS RDS) is distinguishable.
+        /// </summary>
+        public string Source { get; set; } = "blocked-process-report";
+
         public double? WaitTimeSec => WaitTimeMs.HasValue ? WaitTimeMs.Value / 1000.0 : null;
     }
 }

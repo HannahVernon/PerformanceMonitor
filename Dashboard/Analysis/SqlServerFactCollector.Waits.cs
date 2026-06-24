@@ -231,6 +231,10 @@ AND   collection_time <= @endTime";
                     rows.Add(BlockingPairRowQuery.Read(reader));
             }
 
+            // Always-on DMV blocking snapshot fallback (works when the blocked-process-report XE is empty,
+            // e.g. AWS RDS). Merge BEFORE the empty check so DMV-only blocking still produces facts.
+            await BlockingPairRowQuery.AppendDmvSnapshotRowsAsync(connection, rows, context.TimeRangeStart, context.TimeRangeEnd);
+
             if (rows.Count == 0) return;
 
             // Cumulative (not per-scan): merges an episode's re-fires across the window so the severity fact

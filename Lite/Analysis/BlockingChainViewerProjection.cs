@@ -15,9 +15,9 @@ namespace PerformanceMonitorLite.Analysis;
 internal static class BlockingChainViewerProjection
 {
     public const string EmptyStateDetail =
-        "No blocked-process reports were collected in the selected time range. " +
-        "Blocking chains require the blocked-process-report Extended Event; Azure SQL DB may not emit it " +
-        "(the blocked-process threshold is set via sp_configure, which Azure SQL DB does not support).";
+        "No blocking was captured for this session in the selected time range — from either the " +
+        "blocked-process-report Extended Event or the always-on DMV blocking snapshot. Its wait may not " +
+        "have overlapped a collection in this window.";
 
     /// <summary>
     /// Builds the model for the ONE chain that contains the clicked session (matched by SessionKey — the

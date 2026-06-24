@@ -141,6 +141,11 @@ LIMIT 5000";
                 rows.Add(BlockingPairRowQuery.Read(reader));
         }
 
+        // Always-on DMV blocking snapshot fallback. Merge BEFORE the empty check so DMV-only blocking
+        // (blocked-process-report unavailable, e.g. AWS RDS) still reconstructs.
+        await BlockingPairRowQuery.AppendDmvSnapshotRowsAsync(
+            connection.CreateCommand, rows, context.ServerId, context.TimeRangeStart, context.TimeRangeEnd);
+
         if (rows.Count == 0) return;
 
         var reconstruction = BlockingChainReconstructor.Reconstruct(

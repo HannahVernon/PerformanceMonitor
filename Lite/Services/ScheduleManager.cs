@@ -41,6 +41,7 @@ public class ScheduleManager
             ["memory_pressure_events"] = 5,
             ["tempdb_stats"] = 1, ["perfmon_stats"] = 1, ["deadlocks"] = 1,
             ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
+            ["dmv_blocking_snapshot"] = 1,
             ["blocked_process_report"] = 1, ["running_jobs"] = 2
         },
         ["Balanced"] = new(StringComparer.OrdinalIgnoreCase)
@@ -51,6 +52,7 @@ public class ScheduleManager
             ["memory_pressure_events"] = 5,
             ["tempdb_stats"] = 1, ["perfmon_stats"] = 1, ["deadlocks"] = 1,
             ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
+            ["dmv_blocking_snapshot"] = 1,
             ["blocked_process_report"] = 1, ["running_jobs"] = 5
         },
         ["Low-Impact"] = new(StringComparer.OrdinalIgnoreCase)
@@ -61,6 +63,7 @@ public class ScheduleManager
             ["memory_pressure_events"] = 15,
             ["tempdb_stats"] = 5, ["perfmon_stats"] = 5, ["deadlocks"] = 5,
             ["memory_grant_stats"] = 5, ["waiting_tasks"] = 5,
+            ["dmv_blocking_snapshot"] = 5,
             ["blocked_process_report"] = 5, ["running_jobs"] = 30
         }
     };
@@ -745,11 +748,12 @@ public class ScheduleManager
             new() { Name = "memory_pressure_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Memory pressure notifications from RING_BUFFER_RESOURCE_MONITOR" },
             new() { Name = "tempdb_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "TempDB space usage from sys.dm_db_file_space_usage" },
             new() { Name = "perfmon_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Key performance counters from sys.dm_os_performance_counters" },
-            new() { Name = "deadlocks", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Deadlocks from system_health extended event session" },
+            new() { Name = "deadlocks", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Deadlocks from a dedicated PerformanceMonitor_Deadlock XE session (xml_deadlock_report)" },
             new() { Name = "server_config", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Server configuration (on-load only)" },
             new() { Name = "database_config", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Database configuration (on-load only)" },
             new() { Name = "memory_grant_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Memory grant statistics from sys.dm_exec_query_memory_grants" },
             new() { Name = "waiting_tasks", Enabled = true, FrequencyMinutes = 1, RetentionDays = 7, Description = "Point-in-time waiting tasks from sys.dm_os_waiting_tasks" },
+            new() { Name = "dmv_blocking_snapshot", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Always-on point-in-time blocking snapshot from DMVs (BPR-independent fallback; works when blocked process threshold is unset, e.g. AWS RDS)" },
             new() { Name = "blocked_process_report", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Blocked process reports from XE ring buffer session (opt-out)" },
             new() { Name = "database_scoped_config", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Database-scoped configurations (on-load only)" },
             new() { Name = "trace_flags", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Active trace flags via DBCC TRACESTATUS (on-load only)" },

@@ -1144,6 +1144,55 @@ BEGIN
 END;
 
 /*
+DMV blocking snapshot - point-in-time blocking from sys.dm_os_waiting_tasks, independent of the
+blocked_process_report XE (which needs 'blocked process threshold' > 0, unset/unsettable on AWS RDS).
+Same blocker->blocked pair-row shape the blocking-chain reconstruction consumes; monitor_loop is
+synthesized negative so DMV episodes never collide with real (non-negative) blocked-process-report loops.
+*/
+IF OBJECT_ID(N'collect.dmv_blocking_snapshots', N'U') IS NULL
+BEGIN
+    CREATE TABLE
+        collect.dmv_blocking_snapshots
+    (
+        snapshot_id bigint IDENTITY NOT NULL,
+        collection_time datetime2(7) NOT NULL
+            DEFAULT SYSDATETIME(),
+        monitor_loop integer NOT NULL,
+        event_time datetime2(7) NOT NULL,
+        database_name nvarchar(128) NULL,
+        spid integer NOT NULL,
+        ecid integer NOT NULL,
+        last_transaction_started datetime2(7) NULL,
+        blocking_spid integer NOT NULL,
+        blocking_ecid integer NOT NULL,
+        blocking_last_tran_started datetime2(7) NULL,
+        wait_time_ms bigint NULL,
+        lock_mode nvarchar(20) NULL,
+        blocking_status nvarchar(30) NULL,
+        contentious_object nvarchar(4000) NULL,
+        blocked_sql_text nvarchar(max) NULL,
+        blocking_sql_text nvarchar(max) NULL,
+        login_name nvarchar(256) NULL,
+        host_name nvarchar(256) NULL,
+        client_app nvarchar(256) NULL,
+        blocking_login_name nvarchar(256) NULL,
+        blocking_host_name nvarchar(256) NULL,
+        blocking_client_app nvarchar(256) NULL,
+        CONSTRAINT
+            PK_dmv_blocking_snapshots
+        PRIMARY KEY CLUSTERED
+        (
+            collection_time ASC,
+            snapshot_id ASC
+        )
+        WITH
+            (DATA_COMPRESSION = PAGE)
+    );
+
+    PRINT 'Created collect.dmv_blocking_snapshots table';
+END;
+
+/*
 Latch Statistics with Deltas
 */
 IF OBJECT_ID(N'collect.latch_stats', N'U') IS NULL
