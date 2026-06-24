@@ -46,11 +46,16 @@ internal static class AlertSeverity
         {
             "Blocking Detected" => ("#D97706", "ALERT", "\U0001F7E0"),
             "Deadlocks Detected" => ("#DC2626", "ALERT", "\U0001F534"),
+            // Blocking/deadlock capture is broken — emailed/webhooked, and fired as an Error toast,
+            // so it must not render INFO-blue like an unmapped metric (mirrors the #1136 gap fix).
+            "Capture Down" => ("#DC2626", "CRITICAL", "\U0001F534"),
             "High CPU" => ("#F59E0B", "WARNING", "\U0001F7E1"),
             "Poison Wait" => ("#DC2626", "CRITICAL", "\U0001F534"),
             "Long-Running Query" => ("#D97706", "WARNING", "\U0001F7E0"),
             "TempDB Space" => ("#D97706", "WARNING", "\U0001F7E0"),
             "Long-Running Job" => ("#D97706", "WARNING", "\U0001F7E0"),
+            // Emailed/webhooked and fired as a Warning toast — was falling through to INFO-blue.
+            "Failed Agent Job" => ("#D97706", "WARNING", "\U0001F7E0"),
             "Volume Free Space" => ("#D97706", "WARNING", "\U0001F7E0"),
             "Server Unreachable" => ("#DC2626", "CRITICAL", "\U0001F534"),
             "Server Restored" => ("#16A34A", "RESOLVED", "\U0001F7E2"),
