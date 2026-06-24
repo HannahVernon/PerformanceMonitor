@@ -18,12 +18,15 @@ public class BlockingChainTreeBuilderTests
     private static BlockingEdgeInput Edge(
         int level, int blocker, int blocked,
         long wait = 1000, string lockMode = "X", string db = "TestDb",
-        DateTime? blockerTran = null, DateTime? blockedTran = null) => new()
+        DateTime? blockerTran = null, DateTime? blockedTran = null,
+        int blockerEcid = 0, int blockedEcid = 0) => new()
         {
             Level = level,
             BlockingSpid = blocker,
+            BlockingEcid = blockerEcid,
             BlockingTranStarted = blockerTran ?? Tran(blocker),
             BlockedSpid = blocked,
+            BlockedEcid = blockedEcid,
             BlockedTranStarted = blockedTran ?? Tran(blocked),
             WaitTimeMs = wait,
             LockMode = lockMode,
@@ -157,23 +160,20 @@ public class BlockingChainTreeBuilderTests
     }
 
     [Fact]
-    public void SameSpidDifferentTransaction_AreKeptAsSeparateNodes()
+    public void SameSpidDifferentEcid_AreKeptAsSeparateNodes()
     {
-        // Apex 200 blocks SPID 201 twice — but two DIFFERENT sessions (distinct tran starts). The
-        // builder must NOT collapse them into one node.
-        var tranA = Tran(201);
-        var tranB = Tran(201).AddHours(3);
+        // Apex 200 blocks SPID 201 on two DIFFERENT execution contexts (ecid 0 and 1 — parallel workers).
+        // The builder keys on spid:ecid, so it must NOT collapse them into one node.
         var model = Build(Chain(200, new[]
         {
-            Edge(1, 200, 201, blockedTran: tranA),
-            Edge(1, 200, 201, blockedTran: tranB)
+            Edge(1, 200, 201, blockedEcid: 0),
+            Edge(1, 200, 201, blockedEcid: 1)
         }));
 
         var root = Assert.Single(model.Roots);
         Assert.Equal(2, root.Children.Count);
         Assert.All(root.Children, c => Assert.Equal(201, c.Spid));
-        Assert.Equal(new[] { tranA, tranB }.OrderBy(t => t),
-                     root.Children.Select(c => c.TranStarted!.Value).OrderBy(t => t));
+        Assert.Equal(new[] { 0, 1 }, root.Children.Select(c => c.Ecid).OrderBy(e => e));
     }
 
     [Fact]
