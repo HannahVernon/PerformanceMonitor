@@ -187,14 +187,20 @@ namespace PerformanceMonitorDashboard.Services
         /// <summary>
         /// Gets alert history from the log (excludes hidden alerts).
         /// </summary>
-        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50)
+        /// <param name="includeMuted">
+        /// When true (default), muted rows are returned for audit/history display. When false,
+        /// muted rows are filtered out <em>before</em> the limit is applied — used by the sidebar
+        /// Alert badge count so known recurring noise (a muted source firing every cooldown) can
+        /// neither inflate the badge nor push real alerts out of the counted window (#1225).
+        /// </param>
+        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50, bool includeMuted = true)
         {
             var cutoff = DateTime.UtcNow.AddHours(-hoursBack);
 
             lock (_alertLogLock)
             {
                 return _alertLog
-                    .Where(a => a.AlertTime >= cutoff && !a.Hidden)
+                    .Where(a => a.AlertTime >= cutoff && !a.Hidden && (includeMuted || !a.Muted))
                     .OrderByDescending(a => a.AlertTime)
                     .Take(limit)
                     .ToList();
