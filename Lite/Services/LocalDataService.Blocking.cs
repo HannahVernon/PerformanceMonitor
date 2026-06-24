@@ -307,49 +307,49 @@ LIMIT 200";
         var items = new List<BlockedProcessReportRow>();
         using (var reader = await command.ExecuteReaderAsync())
         {
-        while (await reader.ReadAsync())
-        {
-            items.Add(new BlockedProcessReportRow
+            while (await reader.ReadAsync())
             {
-                CollectionTime = reader.GetDateTime(0),
-                EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
-                DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
-                BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
-                BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
-                BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
-                WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
-                WaitResource = reader.IsDBNull(8) ? "" : reader.GetString(8),
-                LockMode = reader.IsDBNull(9) ? "" : reader.GetString(9),
-                BlockedStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
-                BlockedIsolationLevel = reader.IsDBNull(11) ? "" : reader.GetString(11),
-                BlockedLogUsed = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
-                BlockedTransactionCount = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
-                BlockedClientApp = reader.IsDBNull(14) ? "" : reader.GetString(14),
-                BlockedHostName = reader.IsDBNull(15) ? "" : reader.GetString(15),
-                BlockedLoginName = reader.IsDBNull(16) ? "" : reader.GetString(16),
-                BlockedSqlText = reader.IsDBNull(17) ? "" : reader.GetString(17),
-                BlockingStatus = reader.IsDBNull(18) ? "" : reader.GetString(18),
-                BlockingIsolationLevel = reader.IsDBNull(19) ? "" : reader.GetString(19),
-                BlockingClientApp = reader.IsDBNull(20) ? "" : reader.GetString(20),
-                BlockingHostName = reader.IsDBNull(21) ? "" : reader.GetString(21),
-                BlockingLoginName = reader.IsDBNull(22) ? "" : reader.GetString(22),
-                BlockingSqlText = reader.IsDBNull(23) ? "" : reader.GetString(23),
-                BlockedProcessReportXml = reader.IsDBNull(24) ? "" : reader.GetString(24),
-                BlockedTransactionName = reader.IsDBNull(25) ? "" : reader.GetString(25),
-                BlockingTransactionName = reader.IsDBNull(26) ? "" : reader.GetString(26),
-                BlockedLastTranStarted = reader.IsDBNull(27) ? null : reader.GetDateTime(27),
-                BlockingLastTranStarted = reader.IsDBNull(28) ? null : reader.GetDateTime(28),
-                BlockedLastBatchStarted = reader.IsDBNull(29) ? null : reader.GetDateTime(29),
-                BlockingLastBatchStarted = reader.IsDBNull(30) ? null : reader.GetDateTime(30),
-                BlockedLastBatchCompleted = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
-                BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
-                BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
-                BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
-                ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35),
-                MonitorLoop = reader.IsDBNull(36) ? (int?)null : reader.GetInt32(36)
-            });
-        }
+                items.Add(new BlockedProcessReportRow
+                {
+                    CollectionTime = reader.GetDateTime(0),
+                    EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
+                    DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                    BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                    BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                    BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+                    WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                    WaitResource = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    LockMode = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                    BlockedStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                    BlockedIsolationLevel = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                    BlockedLogUsed = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                    BlockedTransactionCount = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
+                    BlockedClientApp = reader.IsDBNull(14) ? "" : reader.GetString(14),
+                    BlockedHostName = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                    BlockedLoginName = reader.IsDBNull(16) ? "" : reader.GetString(16),
+                    BlockedSqlText = reader.IsDBNull(17) ? "" : reader.GetString(17),
+                    BlockingStatus = reader.IsDBNull(18) ? "" : reader.GetString(18),
+                    BlockingIsolationLevel = reader.IsDBNull(19) ? "" : reader.GetString(19),
+                    BlockingClientApp = reader.IsDBNull(20) ? "" : reader.GetString(20),
+                    BlockingHostName = reader.IsDBNull(21) ? "" : reader.GetString(21),
+                    BlockingLoginName = reader.IsDBNull(22) ? "" : reader.GetString(22),
+                    BlockingSqlText = reader.IsDBNull(23) ? "" : reader.GetString(23),
+                    BlockedProcessReportXml = reader.IsDBNull(24) ? "" : reader.GetString(24),
+                    BlockedTransactionName = reader.IsDBNull(25) ? "" : reader.GetString(25),
+                    BlockingTransactionName = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                    BlockedLastTranStarted = reader.IsDBNull(27) ? null : reader.GetDateTime(27),
+                    BlockingLastTranStarted = reader.IsDBNull(28) ? null : reader.GetDateTime(28),
+                    BlockedLastBatchStarted = reader.IsDBNull(29) ? null : reader.GetDateTime(29),
+                    BlockingLastBatchStarted = reader.IsDBNull(30) ? null : reader.GetDateTime(30),
+                    BlockedLastBatchCompleted = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
+                    BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
+                    BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
+                    BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
+                    ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35),
+                    MonitorLoop = reader.IsDBNull(36) ? (int?)null : reader.GetInt32(36)
+                });
+            }
         }
 
         // Always-on DMV blocking snapshot: surface its rows in the grid too, so the block-chain viewer is
@@ -433,10 +433,11 @@ LIMIT 200";
                 items.Add(d);
         }
 
-        // Re-cap to the grid's LIMIT, newest first.
-        items.Sort((a, b) => Nullable.Compare(b.EventTime, a.EventTime));
-        if (items.Count > gridCap)
-            items.RemoveRange(gridCap, items.Count - gridCap);
+        // Re-cap to the grid's LIMIT, newest first. OrderByDescending is stable, so BPR rows (added
+        // first) win ties over DMV rows at the same event time — matching the Dashboard grid.
+        var merged = items.OrderByDescending(i => i.EventTime ?? DateTime.MinValue).Take(gridCap).ToList();
+        items.Clear();
+        items.AddRange(merged);
     }
 
     /// <summary>
