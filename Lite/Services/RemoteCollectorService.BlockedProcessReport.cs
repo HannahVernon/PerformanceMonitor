@@ -696,6 +696,7 @@ OPTION(RECOMPILE);";
                            .AppendValue(objectId)
                            .AppendValue(databaseId)
                            .AppendValue(contentiousObject)
+                           .AppendValue(parsed.MonitorLoop)
                            .EndRow();
 
                         rowsCollected++;
@@ -741,6 +742,8 @@ OPTION(RECOMPILE);";
             return new ParsedBlockedProcessReport
             {
                 EventTime = eventTime,
+                // Lite's stored XML is rooted at <blocked-process-report>, so monitorLoop is a root attribute.
+                MonitorLoop = int.TryParse(doc.Attribute("monitorLoop")?.Value, out var ml) ? ml : (int?)null,
                 DatabaseName = blockedProcess.Attribute("currentdbname")?.Value,
                 BlockedSpid = int.TryParse(blockedProcess.Attribute("spid")?.Value, out var bs) ? bs : 0,
                 BlockedEcid = int.TryParse(blockedProcess.Attribute("ecid")?.Value, out var be) ? be : 0,
@@ -787,6 +790,7 @@ OPTION(RECOMPILE);";
     private class ParsedBlockedProcessReport
     {
         public DateTime? EventTime { get; set; }
+        public int? MonitorLoop { get; set; }
         public string? DatabaseName { get; set; }
         public int BlockedSpid { get; set; }
         public int BlockedEcid { get; set; }

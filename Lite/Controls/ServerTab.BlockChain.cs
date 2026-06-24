@@ -50,9 +50,8 @@ public partial class ServerTab : UserControl
     {
         var spid = row.BlockedSpid;
         if (spid <= 0) return;
-        var rawTran = row.BlockedLastTranStarted;
-        var blockerSpid = row.BlockingSpid;
-        var blockerTran = row.BlockingLastTranStarted;
+        var ecid = row.BlockedEcid;
+        var monitorLoop = row.MonitorLoop;   // the clicked event's episode; scopes the reconstruction match
 
         try
         {
@@ -87,9 +86,9 @@ public partial class ServerTab : UserControl
             {
                 var rows = await _dataService.GetBlockingPairRowsAsync(_serverId, start, end);
                 var reconstruction = BlockingChainReconstructor.Reconstruct(
-                    rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
+                    rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000, scopeByMonitorLoop: true);
                 return BlockingChainViewerProjection.BuildModelForSession(
-                    reconstruction, spid, rawTran, blockerSpid, blockerTran);
+                    reconstruction, monitorLoop, spid, ecid);
             });
 
             if (model == null)
@@ -105,12 +104,8 @@ public partial class ServerTab : UserControl
                 return;
             }
 
-            // Normalize the clicked tran the same way the reconstructor keyed the nodes, so the control can
-            // match + highlight the clicked session.
-            var key = BlockingChainReconstructor.MakeKey(spid, rawTran);
-
             var control = new BlockingChainControl();
-            control.LoadModel(model, key.Spid, key.TranStarted, BlockingChainViewerProjection.EmptyStateDetail);
+            control.LoadModel(model, spid, ecid, BlockingChainViewerProjection.EmptyStateDetail);
             GraphViewerWindow.ShowGraph(
                 Window.GetWindow(this),
                 control,

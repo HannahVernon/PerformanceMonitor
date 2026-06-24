@@ -41,8 +41,11 @@ namespace PerformanceMonitor.Common
     {
         public int Spid { get; init; }
 
-        /// <summary>Transaction start; the identity disambiguator that defeats SPID reuse. May be null
-        /// (no open transaction / sentinel-normalized).</summary>
+        /// <summary>Execution-context id; with <see cref="Spid"/> forms the node identity (spid:ecid, mirroring
+        /// sp_HumanEventsBlockViewer). 0 for the common non-parallel case.</summary>
+        public int Ecid { get; init; }
+
+        /// <summary>Transaction start — display only now (identity is spid:ecid). May be null.</summary>
         public DateTime? TranStarted { get; init; }
 
         /// <summary>True for the lead/head blocker at the root of its tree.</summary>
@@ -94,6 +97,7 @@ namespace PerformanceMonitor.Common
     public sealed class BlockingChainInput
     {
         public int ApexSpid { get; init; }
+        public int ApexEcid { get; init; }
         public DateTime? ApexTranStarted { get; init; }
         public bool ApexSleeping { get; init; }
         public double Magnitude { get; init; }
@@ -110,8 +114,10 @@ namespace PerformanceMonitor.Common
         /// not read this, so a reorder of the source edges can't change the built tree.</summary>
         public int Level { get; init; }
         public int BlockingSpid { get; init; }
+        public int BlockingEcid { get; init; }
         public DateTime? BlockingTranStarted { get; init; }
         public int BlockedSpid { get; init; }
+        public int BlockedEcid { get; init; }
         public DateTime? BlockedTranStarted { get; init; }
         public string LockMode { get; init; } = string.Empty;
         public long WaitTimeMs { get; init; }

@@ -133,7 +133,7 @@ ORDER BY wait_time_ms DESC;";
         if (rows.Count == 0) return;
 
         var reconstruction = BlockingChainReconstructor.Reconstruct(
-            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000);
+            rows, maxDepth: 50, maxPairs: 5000, stepBudget: 100_000, scopeByMonitorLoop: false);
 
         var items = new List<object>();
         foreach (var chain in reconstruction.Chains.Take(3))

@@ -23,6 +23,9 @@ namespace PerformanceMonitorDashboard.Models
         public string BlockingTree { get; set; } = string.Empty;
         public int? Spid { get; set; }
         public int? Ecid { get; set; }
+        /// <summary>The blocked-process-report monitorLoop (episode) for this row; scopes the block-chain
+        /// viewer to the clicked event. Typed column populated at collect time (install/23).</summary>
+        public int? MonitorLoop { get; set; }
         public string QueryText { get; set; } = string.Empty;
         public long? WaitTimeMs { get; set; }
         public string Status { get; set; } = string.Empty;

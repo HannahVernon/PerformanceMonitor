@@ -19,16 +19,16 @@ namespace PerformanceMonitor.Common
     /// </summary>
     public static class BlockingChainTreeBuilder
     {
-        // (Spid, TranStarted) is the session identity — see BlockingChainNode. ValueTuple gives correct
-        // structural equality for the dictionary keys (Nullable&lt;DateTime&gt; compares by value).
+        // (Spid, Ecid) is the session identity — see BlockingChainNode (mirrors sp_HumanEventsBlockViewer's
+        // spid:ecid). Transaction start is display-only and no longer part of the key.
         private readonly struct NodeKey : IEquatable<NodeKey>
         {
             public readonly int Spid;
-            public readonly DateTime? Tran;
-            public NodeKey(int spid, DateTime? tran) { Spid = spid; Tran = tran; }
-            public bool Equals(NodeKey other) => Spid == other.Spid && Nullable.Equals(Tran, other.Tran);
+            public readonly int Ecid;
+            public NodeKey(int spid, int ecid) { Spid = spid; Ecid = ecid; }
+            public bool Equals(NodeKey other) => Spid == other.Spid && Ecid == other.Ecid;
             public override bool Equals(object? obj) => obj is NodeKey k && Equals(k);
-            public override int GetHashCode() => HashCode.Combine(Spid, Tran);
+            public override int GetHashCode() => HashCode.Combine(Spid, Ecid);
         }
 
         /// <summary>
@@ -52,7 +52,7 @@ namespace PerformanceMonitor.Common
                 // Rank worst-first; deterministic tiebreak so the layout is stable regardless of input order.
                 .OrderByDescending(r => r.Magnitude)
                 .ThenBy(r => r.Spid)
-                .ThenBy(r => r.TranStarted ?? DateTime.MinValue)
+                .ThenBy(r => r.Ecid)
                 .ToList();
 
             return new BlockingChainModel
@@ -66,13 +66,13 @@ namespace PerformanceMonitor.Common
 
         private static BlockingChainNode? BuildOne(BlockingChainInput chain)
         {
-            var apexKey = new NodeKey(chain.ApexSpid, chain.ApexTranStarted);
+            var apexKey = new NodeKey(chain.ApexSpid, chain.ApexEcid);
 
             // Group edges by parent (blocking side); within a parent, sort children deterministically.
             var childrenByParent = new Dictionary<NodeKey, List<BlockingEdgeInput>>();
             foreach (var edge in chain.Edges)
             {
-                var parent = new NodeKey(edge.BlockingSpid, edge.BlockingTranStarted);
+                var parent = new NodeKey(edge.BlockingSpid, edge.BlockingEcid);
                 if (!childrenByParent.TryGetValue(parent, out var list))
                     childrenByParent[parent] = list = new List<BlockingEdgeInput>();
                 list.Add(edge);
@@ -82,7 +82,7 @@ namespace PerformanceMonitor.Common
                 {
                     var c = a.BlockedSpid.CompareTo(b.BlockedSpid);
                     if (c != 0) return c;
-                    return Nullable.Compare(a.BlockedTranStarted, b.BlockedTranStarted);
+                    return a.BlockedEcid.CompareTo(b.BlockedEcid);
                 });
 
             // The apex sources its own SqlText / DatabaseName from its FIRST outgoing edge (it has no
@@ -95,6 +95,7 @@ namespace PerformanceMonitor.Common
             var root = new BlockingChainNode
             {
                 Spid = chain.ApexSpid,
+                Ecid = chain.ApexEcid,
                 TranStarted = chain.ApexTranStarted,
                 IsApex = true,
                 IsApexSleeping = chain.ApexSleeping,
@@ -121,7 +122,7 @@ namespace PerformanceMonitor.Common
                 {
                     var c = a.Key.Spid.CompareTo(b.Key.Spid);
                     if (c != 0) return c;
-                    return Nullable.Compare(a.Key.Tran, b.Key.Tran);
+                    return a.Key.Ecid.CompareTo(b.Key.Ecid);
                 });
 
                 var next = new List<(NodeKey, BlockingChainNode)>();
@@ -130,12 +131,13 @@ namespace PerformanceMonitor.Common
                     if (!childrenByParent.TryGetValue(key, out var edges)) continue;
                     foreach (var edge in edges)
                     {
-                        var childKey = new NodeKey(edge.BlockedSpid, edge.BlockedTranStarted);
+                        var childKey = new NodeKey(edge.BlockedSpid, edge.BlockedEcid);
                         if (!visited.Add(childKey)) continue; // already placed (diamond back-edge) or a cycle
 
                         var child = new BlockingChainNode
                         {
                             Spid = edge.BlockedSpid,
+                            Ecid = edge.BlockedEcid,
                             TranStarted = edge.BlockedTranStarted,
                             IsApex = false,
                             WaitTimeMs = edge.WaitTimeMs,

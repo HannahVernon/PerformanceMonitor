@@ -42,6 +42,13 @@ internal static class BlockingPairRowQuery
     blocking_host_name,
     blocking_client_app";
 
+    /// <summary>Ordinals 18-20: spid:ecid + monitor_loop, the reconstruction's session identity. Every
+    /// pair-row site appends this after contentious_object (ordinal 17) so the shared <see cref="Read"/> sees
+    /// one column order across all three call sites.</summary>
+    public const string TrailingIdentityColumns = @"blocked_ecid,
+    blocking_ecid,
+    monitor_loop";
+
     /// <summary>Append to the WHERE clause of every pair-row query (covers NULL and the 0 sentinel).</summary>
     public const string SpidFilter = @"AND blocking_spid IS NOT NULL
 AND blocking_spid <> 0";
@@ -66,7 +73,11 @@ AND blocking_spid <> 0";
         BlockingHostName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15),
         BlockingClientApp = reader.IsDBNull(16) ? string.Empty : reader.GetString(16),
         // Ordinal 17: the contended object (every pair-row site appends contentious_object after IdentityColumns).
-        ContentiousObject = reader.IsDBNull(17) ? string.Empty : reader.GetString(17)
+        ContentiousObject = reader.IsDBNull(17) ? string.Empty : reader.GetString(17),
+        // 18-20: spid:ecid + monitor_loop (every site appends TrailingIdentityColumns after contentious_object).
+        BlockedEcid = reader.IsDBNull(18) ? 0 : Convert.ToInt32(reader.GetValue(18)),
+        BlockingEcid = reader.IsDBNull(19) ? 0 : Convert.ToInt32(reader.GetValue(19)),
+        MonitorLoop = reader.IsDBNull(20) ? (int?)null : Convert.ToInt32(reader.GetValue(20))
     };
 
     /// <summary>

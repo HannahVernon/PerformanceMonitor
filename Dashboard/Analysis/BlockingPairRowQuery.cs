@@ -42,7 +42,10 @@ SELECT TOP (5000)
     login_name,
     host_name,
     client_app,
-    contentious_object
+    contentious_object,
+    ecid,
+    blocking_ecid,
+    monitor_loop
 FROM collect.blocking_BlockedProcessReport
 WHERE collection_time >= @collectionWindow
 AND   event_time >= @startTime
@@ -128,19 +131,25 @@ OUTER APPLY
         BlockedLoginName = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
         BlockedHostName = reader.IsDBNull(12) ? string.Empty : reader.GetString(12),
         BlockedClientApp = reader.IsDBNull(13) ? string.Empty : reader.GetString(13),
-        ContentiousObject = reader.IsDBNull(14) ? string.Empty : reader.GetString(14)
+        ContentiousObject = reader.IsDBNull(14) ? string.Empty : reader.GetString(14),
+        // 15-17: spid:ecid + monitor_loop typed columns (populated at collect time by install/23). The
+        // collector reconstructs cumulatively (scopeByMonitorLoop:false) so MonitorLoop is read but ignored;
+        // the viewer scopes by it.
+        BlockedEcid = reader.IsDBNull(15) ? 0 : Convert.ToInt32(reader.GetValue(15)),
+        BlockingEcid = reader.IsDBNull(16) ? 0 : Convert.ToInt32(reader.GetValue(16)),
+        MonitorLoop = reader.IsDBNull(17) ? (int?)null : Convert.ToInt32(reader.GetValue(17))
     };
 
     /// <summary>
-    /// Maps the viewer's <see cref="SqlWithBlockerIdentity"/> result: the core <see cref="Read"/> (0-14)
-    /// plus the correlated blocker identity at ordinals 15-17, so the apex node carries login/host/app.
+    /// Maps the viewer's <see cref="SqlWithBlockerIdentity"/> result: the core <see cref="Read"/> (0-17)
+    /// plus the correlated blocker identity at ordinals 18-20, so the apex node carries login/host/app.
     /// </summary>
     public static BlockingPairRow ReadWithBlockerIdentity(DbDataReader reader)
     {
         var row = Read(reader);
-        row.BlockingLoginName = reader.IsDBNull(15) ? string.Empty : reader.GetString(15);
-        row.BlockingHostName = reader.IsDBNull(16) ? string.Empty : reader.GetString(16);
-        row.BlockingClientApp = reader.IsDBNull(17) ? string.Empty : reader.GetString(17);
+        row.BlockingLoginName = reader.IsDBNull(18) ? string.Empty : reader.GetString(18);
+        row.BlockingHostName = reader.IsDBNull(19) ? string.Empty : reader.GetString(19);
+        row.BlockingClientApp = reader.IsDBNull(20) ? string.Empty : reader.GetString(20);
         return row;
     }
 }

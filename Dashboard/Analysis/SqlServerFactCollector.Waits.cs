@@ -233,7 +233,9 @@ AND   collection_time <= @endTime";
 
             if (rows.Count == 0) return;
 
-            var reconstruction = BlockingChainReconstructor.Reconstruct(rows, maxDepth, maxPairs, stepBudget);
+            // Cumulative (not per-scan): merges an episode's re-fires across the window so the severity fact
+            // keeps window-level depth/victim counts (per-scan scoping would under-count and under-fire).
+            var reconstruction = BlockingChainReconstructor.Reconstruct(rows, maxDepth, maxPairs, stepBudget, scopeByMonitorLoop: false);
             if (reconstruction.Chains.Count == 0) return;
 
             var worst = reconstruction.Chains[0];

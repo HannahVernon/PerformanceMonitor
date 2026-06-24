@@ -472,7 +472,8 @@ CREATE TABLE IF NOT EXISTS blocked_process_reports (
     blocked_process_report_xml VARCHAR,
     object_id INTEGER,
     database_id INTEGER,
-    contentious_object VARCHAR
+    contentious_object VARCHAR,
+    monitor_loop INTEGER
 )";
 
     public const string CreateDatabaseConfigTable = @"

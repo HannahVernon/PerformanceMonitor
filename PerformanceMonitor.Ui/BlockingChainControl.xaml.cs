@@ -40,7 +40,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
 
     // The session the viewer was opened from — highlighted (auto-selected) on load.
     private int _entrySpid;
-    private DateTime? _entryTran;
+    private int _entryEcid;
 
     // Node selection
     private Border? _selectedNodeBorder;
@@ -111,12 +111,12 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
     /// </summary>
     /// <param name="model">The model holding exactly one root (the chain rooted at its apex).</param>
     /// <param name="entrySpid">SPID of the session the viewer was opened from (highlighted on load).</param>
-    /// <param name="entryTran">Its normalized transaction-start (the SessionKey disambiguator).</param>
-    public void LoadModel(BlockingChainModel model, int entrySpid, DateTime? entryTran, string? emptyStateDetail = null)
+    /// <param name="entryEcid">Its execution-context id — the spid:ecid identity disambiguator.</param>
+    public void LoadModel(BlockingChainModel model, int entrySpid, int entryEcid, string? emptyStateDetail = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _entrySpid = entrySpid;
-        _entryTran = entryTran;
+        _entryEcid = entryEcid;
 
         if (!string.IsNullOrWhiteSpace(emptyStateDetail))
             EmptyStateDetail.Text = emptyStateDetail;
@@ -135,7 +135,7 @@ public partial class BlockingChainControl : UserControl, IGraphViewer
         // Highlight (auto-select) the clicked session within the tree so the user lands on "their" node.
         var entry = _model.Roots
             .SelectMany(EnumerateTree)
-            .FirstOrDefault(n => n.Spid == _entrySpid && Nullable.Equals(n.TranStarted, _entryTran));
+            .FirstOrDefault(n => n.Spid == _entrySpid && n.Ecid == _entryEcid);
         if (entry != null)
         {
             SelectNodeByModel(entry);

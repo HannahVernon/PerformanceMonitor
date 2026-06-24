@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 31;
+    internal const int CurrentSchemaVersion = 32;
 
     private readonly string _archivePath;
 
@@ -788,6 +788,24 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v31 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 32)
+        {
+            /* v32: block-chain reconstruction now keys sessions by spid:ecid within monitor_loop (mirroring
+               sp_HumanEventsBlockViewer). blocked_process_reports gains monitor_loop (the blocked-process-report
+               episode). Appended at the end to keep the positional appender aligned; the v_ view (SELECT *,
+               recreated on startup) surfaces it; old parquet reads back NULL (union BY NAME). The collector
+               appender now writes monitor_loop, so an un-migrated DB would mis-align — this ALTER is required. */
+            _logger?.LogInformation("Running migration to v32: blocked_process_reports.monitor_loop");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS monitor_loop INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v32 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

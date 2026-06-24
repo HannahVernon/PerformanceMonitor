@@ -282,4 +282,27 @@ public class BlockingChainReconstructorTests
         Assert.NotNull(fromBlocker);
         Assert.Equal(59, fromBlocker!.ApexSpid);
     }
+
+    [Fact]
+    public void DeepChain_WithNullBlockerTran_StillFormsOneChain()
+    {
+        // Real-world shape: blocking_last_tran_started is ALWAYS NULL (SQL omits @lasttranstarted on the
+        // <blocking-process> node), while each blocked session carries its real tran. So a mid-chain session
+        // is keyed (spid, realTran) where it is the BLOCKED party but (spid, NULL) where it is the BLOCKER.
+        // The chain 116 -> 111 -> 80 must reconstruct as ONE depth-2 chain, not split at 111. The existing
+        // tests miss this because Pair() gives every blocker a real tran (TranFor), masking the asymmetry.
+        var t111 = new DateTime(2026, 6, 23, 7, 9, 9, 440);
+        var t80  = new DateTime(2026, 6, 23, 7, 9, 9, 460);
+
+        var result = Run(new[]
+        {
+            new BlockingPairRow { EventTime = new DateTime(2026,6,23,7,9,15), BlockedSpid = 111, BlockedTranStarted = t111, BlockingSpid = 116, BlockingTranStarted = null, WaitTimeMs = 5000, BlockingStatus = "suspended" },
+            new BlockingPairRow { EventTime = new DateTime(2026,6,23,7,9,15), BlockedSpid = 80,  BlockedTranStarted = t80,  BlockingSpid = 111, BlockingTranStarted = null, WaitTimeMs = 5000, BlockingStatus = "suspended" },
+        });
+
+        var chain = Assert.Single(result.Chains);   // currently FAILS: splits into 116->111 and 111->80
+        Assert.Equal(116, chain.ApexSpid);
+        Assert.Equal(2, chain.Depth);
+        Assert.Equal(2, chain.VictimCount);
+    }
 }
