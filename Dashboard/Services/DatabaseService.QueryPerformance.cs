@@ -194,21 +194,42 @@ namespace PerformanceMonitorDashboard.Services
                     var connection = tc.Connection;
 
                     var timeFilter = fromDate.HasValue && toDate.HasValue
-                        ? "WHERE b.collection_time >= @from_date AND b.collection_time <= @to_date"
-                        : "WHERE b.collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
+                        ? "WHERE collection_time >= @from_date AND collection_time <= @to_date"
+                        : "WHERE collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
 
+                    // BPR buckets, falling back to the always-on DMV snapshot only when BPR has no buckets in
+                    // the window (AWS RDS) — so a server with both sources never double-counts.
                     string query = $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-SELECT
-    DATEADD(HOUR, DATEDIFF(HOUR, 0, b.collection_time), 0) AS bucket_hour,
-    COUNT(*) AS event_count,
-    ISNULL(SUM(b.wait_time_ms), 0) / 1000.0 AS total_wait_sec,
-    COUNT(DISTINCT b.spid) AS distinct_blocked,
-    COUNT(DISTINCT b.database_name) AS distinct_databases
-FROM collect.blocking_BlockedProcessReport AS b
-{timeFilter}
-GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, b.collection_time), 0)
+WITH bpr AS
+(
+    SELECT
+        bucket_hour = DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0),
+        event_count = COUNT(*),
+        total_wait_sec = ISNULL(SUM(wait_time_ms), 0) / 1000.0,
+        distinct_blocked = COUNT(DISTINCT spid),
+        distinct_databases = COUNT(DISTINCT database_name)
+    FROM collect.blocking_BlockedProcessReport
+    {timeFilter}
+    GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0)
+),
+dmv AS
+(
+    SELECT
+        bucket_hour = DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0),
+        event_count = COUNT(*),
+        total_wait_sec = ISNULL(SUM(wait_time_ms), 0) / 1000.0,
+        distinct_blocked = COUNT(DISTINCT spid),
+        distinct_databases = COUNT(DISTINCT database_name)
+    FROM collect.dmv_blocking_snapshots
+    {timeFilter}
+    GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0)
+)
+SELECT bucket_hour, event_count, total_wait_sec, distinct_blocked, distinct_databases FROM bpr
+UNION ALL
+SELECT bucket_hour, event_count, total_wait_sec, distinct_blocked, distinct_databases FROM dmv
+WHERE NOT EXISTS (SELECT 1 FROM bpr)
 ORDER BY bucket_hour;";
 
                     using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };

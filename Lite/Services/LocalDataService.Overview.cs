@@ -70,11 +70,11 @@ LIMIT 1";
         /* Blocking count in last hour - uses XE blocked process reports */
         using (var cmd = connection.CreateCommand())
         {
+            /* Prefer the blocked-process-report; fall back to the always-on DMV snapshot (AWS RDS). */
             cmd.CommandText = @"
-SELECT COUNT(*)
-FROM v_blocked_process_reports
-WHERE server_id = $1
-AND   event_time >= $2";
+SELECT COALESCE(NULLIF(
+    (SELECT COUNT(*) FROM v_blocked_process_reports WHERE server_id = $1 AND event_time >= $2), 0),
+    (SELECT COUNT(*) FROM v_dmv_blocking_snapshots WHERE server_id = $1 AND event_time >= $2))";
             cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
             cmd.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow.AddHours(-1) });
             var result = await cmd.ExecuteScalarAsync();
