@@ -59,8 +59,12 @@ SELECT
          AND   collection_time >= $2 AND collection_time < $3), 0
     ) AS deadlock_count,
     COALESCE(
-        (SELECT COUNT(*)
+        NULLIF((SELECT COUNT(*)
          FROM v_blocked_process_reports
+         WHERE server_id = $1
+         AND   collection_time >= $2 AND collection_time < $3), 0),
+        (SELECT COUNT(*)
+         FROM v_dmv_blocking_snapshots
          WHERE server_id = $1
          AND   collection_time >= $2 AND collection_time < $3), 0
     ) AS blocking_events,

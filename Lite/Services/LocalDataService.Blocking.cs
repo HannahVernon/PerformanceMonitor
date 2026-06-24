@@ -215,14 +215,21 @@ ORDER BY collection_time DESC, cpu_time_ms DESC";
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
+        /* blocking_count prefers the blocked-process-report; falls back to the always-on DMV snapshot when
+           BPR captured nothing (AWS RDS). latest_event_time includes DMV blocking recency too. */
         command.CommandText = @"
 SELECT
-    (SELECT COUNT(*) FROM v_blocked_process_reports
-     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS blocking_count,
+    COALESCE(NULLIF((SELECT COUNT(*) FROM v_blocked_process_reports
+     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3), 0),
+     (SELECT COUNT(*) FROM v_dmv_blocking_snapshots
+     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3)) AS blocking_count,
     (SELECT COUNT(*) FROM v_deadlocks
      WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS deadlock_count,
     (SELECT MAX(t) FROM (
         SELECT MAX(event_time) AS t FROM v_blocked_process_reports
+        WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+        UNION ALL
+        SELECT MAX(event_time) AS t FROM v_dmv_blocking_snapshots
         WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
         UNION ALL
         SELECT MAX(deadlock_time) AS t FROM v_deadlocks
@@ -495,19 +502,37 @@ LIMIT 5000";
         using var command = connection.CreateCommand();
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
+        /* BPR buckets, falling back to the always-on DMV snapshot only when BPR has no buckets in the
+           window (AWS RDS) — so a server with both sources never double-counts. */
         command.CommandText = @"
-SELECT
-    date_trunc('hour', collection_time) AS bucket,
-    COUNT(*) AS event_count,
-    COALESCE(SUM(wait_time_ms), 0) / 1000.0 AS total_wait_sec,
-    COUNT(DISTINCT blocking_spid) AS distinct_blockers,
-    COUNT(DISTINCT blocked_spid) AS distinct_blocked,
-    COUNT(DISTINCT database_name) AS distinct_databases
-FROM v_blocked_process_reports
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-GROUP BY date_trunc('hour', collection_time)
+WITH bpr AS (
+    SELECT
+        date_trunc('hour', collection_time) AS bucket,
+        COUNT(*) AS event_count,
+        COALESCE(SUM(wait_time_ms), 0) / 1000.0 AS total_wait_sec,
+        COUNT(DISTINCT blocking_spid) AS distinct_blockers,
+        COUNT(DISTINCT blocked_spid) AS distinct_blocked,
+        COUNT(DISTINCT database_name) AS distinct_databases
+    FROM v_blocked_process_reports
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    GROUP BY date_trunc('hour', collection_time)
+),
+dmv AS (
+    SELECT
+        date_trunc('hour', collection_time) AS bucket,
+        COUNT(*) AS event_count,
+        COALESCE(SUM(wait_time_ms), 0) / 1000.0 AS total_wait_sec,
+        COUNT(DISTINCT blocking_spid) AS distinct_blockers,
+        COUNT(DISTINCT blocked_spid) AS distinct_blocked,
+        COUNT(DISTINCT database_name) AS distinct_databases
+    FROM v_dmv_blocking_snapshots
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    GROUP BY date_trunc('hour', collection_time)
+)
+SELECT bucket, event_count, total_wait_sec, distinct_blockers, distinct_blocked, distinct_databases FROM bpr
+UNION ALL
+SELECT bucket, event_count, total_wait_sec, distinct_blockers, distinct_blocked, distinct_databases FROM dmv
+WHERE NOT EXISTS (SELECT 1 FROM bpr)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -589,20 +614,24 @@ ORDER BY bucket";
 
         /* Use blocked_process_reports from XE session - more reliable than point-in-time snapshots
            Group by event_time (when blocking actually occurred) rather than collection_time */
+        /* BPR per-minute buckets, falling back to the always-on DMV snapshot only when BPR has none in the
+           window (AWS RDS) — so a server with both sources never double-counts. */
         command.CommandText = @"
-SELECT
-    bucket,
-    incident_count
-FROM (
-    SELECT
-        DATE_TRUNC('minute', event_time) AS bucket,
-        COUNT(*) AS incident_count
+WITH bpr AS (
+    SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
     FROM v_blocked_process_reports
-    WHERE server_id = $1
-    AND   event_time >= $2
-    AND   event_time <= $3
+    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
     GROUP BY DATE_TRUNC('minute', event_time)
-) sub
+),
+dmv AS (
+    SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
+    FROM v_dmv_blocking_snapshots
+    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+    GROUP BY DATE_TRUNC('minute', event_time)
+)
+SELECT bucket, incident_count FROM bpr
+UNION ALL
+SELECT bucket, incident_count FROM dmv WHERE NOT EXISTS (SELECT 1 FROM bpr)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
