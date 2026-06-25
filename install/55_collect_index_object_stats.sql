@@ -22,9 +22,11 @@ GO
 Collector: index_object_stats_collector
 Purpose: Captures per-table and per-index size, usage, and locking statistics
          for growth trending, unused-index detection, and contention analysis.
-Collection Type: Point-in-time snapshot for sizes; cumulative counters for
-         usage/locking (deltas derived in the read layer using
-         sqlserver_start_time as the reset boundary).
+Collection Type: Point-in-time snapshot for sizes; raw cumulative counters for
+         usage/locking. The read layer shows size growth as size(t2) - size(t1)
+         and usage/locking as raw cumulative totals - it does NOT derive counter
+         deltas (sqlserver_start_time flags only restart/detach/AUTO_CLOSE resets,
+         not the metadata-cache-eviction reset; see #1138).
 Target Table: collect.index_object_stats
 Frequency: Every 1440 minutes (daily) - object grain is high volume.
 Dependencies: sys.dm_db_partition_stats, sys.dm_db_index_usage_stats,

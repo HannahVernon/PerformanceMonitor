@@ -287,56 +287,11 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         // ============================================
-        // Object/Index stats (#1103)
+        // Object/Index stats (#1103) — the standalone Object Sizes & Index Usage loaders were removed
+        // in #1138; that data is now the Storage Growth -> object -> index drill (FinOpsContent.ObjectHeatmap.cs).
+        // The Locking & Contention loader moved to FinOpsContent.Locking.cs (the #1138 color-scaled grid).
+        // The MCP read methods GetObjectSizeGrowthAsync / GetIndexUsageAsync remain on DatabaseService.
         // ============================================
-
-        private async Task LoadObjectSizeGrowthAsync()
-        {
-            if (_databaseService == null) return;
-            try
-            {
-                var data = await _databaseService.GetObjectSizeGrowthAsync();
-                ObjectSizeGrowthDataGrid.ItemsSource = data;
-                ObjectSizeGrowthNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-                ObjectSizeGrowthCountIndicator.Text = data.Count > 0 ? $"{data.Count} table(s)" : "";
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error loading object size/growth: {ex.Message}", ex);
-            }
-        }
-
-        private async Task LoadIndexUsageAsync()
-        {
-            if (_databaseService == null) return;
-            try
-            {
-                var data = await _databaseService.GetIndexUsageAsync();
-                IndexUsageDataGrid.ItemsSource = data;
-                IndexUsageNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-                IndexUsageCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error loading index usage: {ex.Message}", ex);
-            }
-        }
-
-        private async Task LoadIndexLockingAsync()
-        {
-            if (_databaseService == null) return;
-            try
-            {
-                var data = await _databaseService.GetIndexLockingAsync();
-                IndexLockingDataGrid.ItemsSource = data;
-                IndexLockingNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-                IndexLockingCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error loading index locking: {ex.Message}", ex);
-            }
-        }
 
         // ============================================
         // Optimization Tab — Idle Databases
