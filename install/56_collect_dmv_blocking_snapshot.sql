@@ -148,7 +148,8 @@ BEGIN
             blocking_ecid = ISNULL(wt.blocking_exec_context_id, 0),
             blocking_last_tran_started = tat_k.transaction_begin_time,
             wait_time_ms = wt.wait_duration_ms,
-            /* LCK_M_X -> X, PAGELATCH_EX -> EX, etc. */
+            /* LCK_M_X -> X, PAGELATCH_EX -> EX, etc. RESOURCE_SEMAPHORE[_QUERY_COMPILE] has no mode prefix to
+               strip, so it stays whole and doubles as the contention-type tag (why lock_mode is nvarchar(64)). */
             lock_mode =
                 REPLACE(REPLACE(REPLACE(wt.wait_type, N'LCK_M_', N''), N'PAGEIOLATCH_', N''), N'PAGELATCH_', N''),
             /* Blocker status from its SESSION (a sleeping/idle blocker has no request row). */
@@ -219,7 +220,19 @@ BEGIN
                   wt.wait_type LIKE N'LCK[_]%'
                   OR wt.wait_type LIKE N'PAGELATCH[_]%'
                   OR wt.wait_type LIKE N'PAGEIOLATCH[_]%'
+                  OR wt.wait_type LIKE N'RESOURCE_SEMAPHORE%'
               )
+        /* Layered minimum-wait floor: cut grid/chain noise by contention class. Locks must persist to matter
+           (2s); page latches churn faster, so a lower floor (PAGELATCH 0.5s, PAGEIOLATCH 1s); memory-grant /
+           compile-gate waits (RESOURCE_SEMAPHORE and RESOURCE_SEMAPHORE_QUERY_COMPILE) run long, so 5s. */
+        AND   wt.wait_duration_ms >=
+              CASE
+                  WHEN wt.wait_type LIKE N'LCK[_]%'             THEN 2000
+                  WHEN wt.wait_type LIKE N'PAGELATCH[_]%'       THEN 500
+                  WHEN wt.wait_type LIKE N'PAGEIOLATCH[_]%'     THEN 1000
+                  WHEN wt.wait_type LIKE N'RESOURCE_SEMAPHORE%' THEN 5000
+                  ELSE 1000
+              END
         AND   ISNULL(der_b.database_id, 0) <> DB_ID(N'PerformanceMonitor')
         OPTION(RECOMPILE);
 

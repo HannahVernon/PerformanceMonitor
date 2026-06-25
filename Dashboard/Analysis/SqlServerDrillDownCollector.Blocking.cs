@@ -67,8 +67,27 @@ ORDER BY collection_time DESC;";
         using var cmd = connection.CreateCommand();
         /* BPR + always-on DMV blocking snapshot, so the flat top-blocking list isn't empty when the
            blocked-process-report XE captured nothing (AWS RDS). Worst-by-wait surfaces regardless of
-           source; on a box with both, BPR and DMV may each contribute (this is a top-5 list, not a count). */
-        cmd.CommandText = @"
+           source; on a box with both, BPR and DMV may each contribute (this is a top-5 list, not a count).
+           The DMV UNION branch is dropped on a not-yet-upgraded server (no dmv_blocking_snapshots table) --
+           inlining a missing table here would fail the whole combined batch at compile (Msg 208). */
+        bool dmvExists = await BlockingPairRowQuery.DmvSnapshotsTableExistsAsync(connection);
+        string dmvUnion = dmvExists ? @"
+
+    UNION ALL
+
+    SELECT
+        collection_time,
+        database_name,
+        blocked_spid = spid,
+        blocking_spid,
+        wait_time_ms,
+        lock_mode,
+        blocked_sql = LEFT(CAST(blocked_sql_text AS NVARCHAR(MAX)), 500),
+        blocking_sql = LEFT(CAST(blocking_sql_text AS NVARCHAR(MAX)), 500),
+        contentious_object
+    FROM collect.dmv_blocking_snapshots
+    WHERE collection_time >= @startTime AND collection_time <= @endTime" : "";
+        cmd.CommandText = $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT TOP 5
@@ -94,22 +113,7 @@ FROM
         blocking_sql = LEFT(blocking_tree, 500),
         contentious_object
     FROM collect.blocking_BlockedProcessReport
-    WHERE collection_time >= @startTime AND collection_time <= @endTime
-
-    UNION ALL
-
-    SELECT
-        collection_time,
-        database_name,
-        blocked_spid = spid,
-        blocking_spid,
-        wait_time_ms,
-        lock_mode,
-        blocked_sql = LEFT(CAST(blocked_sql_text AS NVARCHAR(MAX)), 500),
-        blocking_sql = LEFT(CAST(blocking_sql_text AS NVARCHAR(MAX)), 500),
-        contentious_object
-    FROM collect.dmv_blocking_snapshots
-    WHERE collection_time >= @startTime AND collection_time <= @endTime
+    WHERE collection_time >= @startTime AND collection_time <= @endTime{dmvUnion}
 ) AS combined
 ORDER BY wait_time_ms DESC;";
 

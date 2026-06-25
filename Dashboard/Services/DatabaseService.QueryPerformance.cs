@@ -13,6 +13,7 @@ using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Ui;
+using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitor.Common;
@@ -198,7 +199,27 @@ namespace PerformanceMonitorDashboard.Services
                         : "WHERE collection_time >= DATEADD(HOUR, -@hours_back, SYSDATETIME())";
 
                     // BPR buckets, falling back to the always-on DMV snapshot only when BPR has no buckets in
-                    // the window (AWS RDS) — so a server with both sources never double-counts.
+                    // the window (AWS RDS) — so a server with both sources never double-counts. The DMV branch is
+                    // dropped entirely on a not-yet-upgraded server (no dmv_blocking_snapshots table): inlining a
+                    // missing table in the CTE would fail the whole batch at compile (Msg 208).
+                    bool dmvExists = await BlockingPairRowQuery.DmvSnapshotsTableExistsAsync(connection);
+                    string dmvCte = dmvExists ? $@",
+dmv AS
+(
+    SELECT
+        bucket_hour = DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0),
+        event_count = COUNT(*),
+        total_wait_sec = ISNULL(SUM(wait_time_ms), 0) / 1000.0,
+        distinct_blocked = COUNT(DISTINCT spid),
+        distinct_databases = COUNT(DISTINCT database_name)
+    FROM collect.dmv_blocking_snapshots
+    {timeFilter}
+    GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0)
+)" : "";
+                    string dmvUnion = dmvExists ? @"
+UNION ALL
+SELECT bucket_hour, event_count, total_wait_sec, distinct_blocked, distinct_databases FROM dmv
+WHERE NOT EXISTS (SELECT 1 FROM bpr)" : "";
                     string query = $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -213,23 +234,8 @@ WITH bpr AS
     FROM collect.blocking_BlockedProcessReport
     {timeFilter}
     GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0)
-),
-dmv AS
-(
-    SELECT
-        bucket_hour = DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0),
-        event_count = COUNT(*),
-        total_wait_sec = ISNULL(SUM(wait_time_ms), 0) / 1000.0,
-        distinct_blocked = COUNT(DISTINCT spid),
-        distinct_databases = COUNT(DISTINCT database_name)
-    FROM collect.dmv_blocking_snapshots
-    {timeFilter}
-    GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, collection_time), 0)
-)
-SELECT bucket_hour, event_count, total_wait_sec, distinct_blocked, distinct_databases FROM bpr
-UNION ALL
-SELECT bucket_hour, event_count, total_wait_sec, distinct_blocked, distinct_databases FROM dmv
-WHERE NOT EXISTS (SELECT 1 FROM bpr)
+){dmvCte}
+SELECT bucket_hour, event_count, total_wait_sec, distinct_blocked, distinct_databases FROM bpr{dmvUnion}
 ORDER BY bucket_hour;";
 
                     using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
