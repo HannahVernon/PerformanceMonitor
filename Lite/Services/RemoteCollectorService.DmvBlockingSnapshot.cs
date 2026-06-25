@@ -103,7 +103,18 @@ AND   (
           wt.wait_type LIKE N'LCK[_]%'
           OR wt.wait_type LIKE N'PAGELATCH[_]%'
           OR wt.wait_type LIKE N'PAGEIOLATCH[_]%'
+          OR wt.wait_type LIKE N'RESOURCE_SEMAPHORE%'
       )
+/* Layered minimum-wait floor (kept in lockstep with install/56): locks must persist to matter (2s); page
+   latches churn faster (PAGELATCH 0.5s, PAGEIOLATCH 1s); memory-grant / compile-gate waits run long, so 5s. */
+AND   wt.wait_duration_ms >=
+      CASE
+          WHEN wt.wait_type LIKE N'LCK[_]%'             THEN 2000
+          WHEN wt.wait_type LIKE N'PAGELATCH[_]%'       THEN 500
+          WHEN wt.wait_type LIKE N'PAGEIOLATCH[_]%'     THEN 1000
+          WHEN wt.wait_type LIKE N'RESOURCE_SEMAPHORE%' THEN 5000
+          ELSE 1000
+      END
 OPTION(RECOMPILE);";
 
         var serverId = GetServerId(server);

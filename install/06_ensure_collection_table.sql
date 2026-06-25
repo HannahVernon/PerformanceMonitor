@@ -1079,7 +1079,7 @@ BEGIN
                 blocking_ecid integer NOT NULL,
                 blocking_last_tran_started datetime2(7) NULL,
                 wait_time_ms bigint NULL,
-                lock_mode nvarchar(20) NULL,
+                lock_mode nvarchar(64) NULL, /* 64 not 20: holds RESOURCE_SEMAPHORE_QUERY_COMPILE (32) whole as the contention tag */
                 blocking_status nvarchar(30) NULL,
                 contentious_object nvarchar(4000) NULL,
                 blocked_sql_text nvarchar(max) NULL,

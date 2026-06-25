@@ -217,4 +217,21 @@ ORDER BY collection_time DESC";
 
         BlockingPairRowMerge.MergeInto(rows, dmv);
     }
+
+    /// <summary>
+    /// Cheap existence probe for collect.dmv_blocking_snapshots. The slicer and the flat top-blocking
+    /// drill-down inline this table in a single combined CTE / UNION batch, which fails to COMPILE (Msg 208)
+    /// on a not-yet-upgraded database — a runtime try/catch can't rescue one combined batch the way the
+    /// separate <see cref="AppendDmvSnapshotRowsAsync"/> fetch can. Those callers use this to drop the DMV
+    /// branch from the query text entirely on such servers, degrading to BPR-only instead of throwing.
+    /// </summary>
+    internal static async Task<bool> DmvSnapshotsTableExistsAsync(SqlConnection connection)
+    {
+        using var cmd = new SqlCommand(
+            "SELECT CASE WHEN OBJECT_ID(N'collect.dmv_blocking_snapshots', N'U') IS NOT NULL THEN 1 ELSE 0 END;",
+            connection);
+        cmd.CommandTimeout = 30;
+        var result = await cmd.ExecuteScalarAsync();
+        return result is not null && result != DBNull.Value && Convert.ToInt32(result) == 1;
+    }
 }
