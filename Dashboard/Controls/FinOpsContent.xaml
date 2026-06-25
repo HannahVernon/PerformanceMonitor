@@ -1056,7 +1056,7 @@
              Object sizes/growth are now the Storage Growth -> object drill (per-DB heatmap + grid),
              and per-index usage is the object -> index drill leaf. See FinOpsContent.ObjectHeatmap.cs. -->
 
-        <!-- Locking & Contention Sub-Tab (#1103) -->
+        <!-- Locking & Contention Sub-Tab (#1138: color-scaled wait-type grid + DB selector + index drill) -->
         <TabItem Header="Locking &amp; Contention">
             <Grid>
                 <Grid.RowDefinitions>
@@ -1064,20 +1064,30 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                    <TextBlock Text="Locking &amp; Contention" VerticalAlignment="Center" Margin="0,0,10,0"
+                    <Button x:Name="LockingBackButton" Content="&#x2190; Back" Click="LockingBack_Click"
+                            Visibility="Collapsed" Margin="0,0,10,0" Padding="10,4" MinWidth="70"/>
+                    <TextBlock x:Name="LockingBreadcrumb" Text="Locking &amp; Contention" VerticalAlignment="Center" Margin="0,0,10,0"
                                FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                     <Button Content="Refresh" Click="IndexLockingRefresh_Click" Margin="4,0,0,0" Padding="10,4" MinWidth="70"/>
                     <TextBlock x:Name="IndexLockingCountIndicator" Text="" Margin="12,0,0,0"
                                VerticalAlignment="Center" FontStyle="Italic"
                                Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
-                    <TextBlock Text="Cumulative since last restart; top contended objects first" Margin="12,0,0,0"
+                    <TextBlock x:Name="LockingDbLabel" Text="Database:" VerticalAlignment="Center" Margin="16,0,6,0" FontSize="11"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                    <ComboBox x:Name="LockingDbSelector" Width="200" FontSize="11" Padding="4,2"
+                              SelectionChanged="LockingDbSelector_Changed"/>
+                    <TextBlock Text="Cumulative since last restart; cells shaded per-column by wait time" Margin="12,0,0,0"
                                VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"/>
                 </StackPanel>
                 <Grid Grid.Row="1" Margin="10,0,10,10">
+                  <!-- View 0 (parent): top-N indexes by total lock+latch wait; the four *_wait_in_ms cells are
+                       shaded per-column (log) by their wait category's hue. Double-click an index for detail. -->
+                  <Grid x:Name="LockingParentView">
                     <DataGrid x:Name="IndexLockingDataGrid" ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               AutoGenerateColumns="False" IsReadOnly="True" CanUserSortColumns="True"
                               GridLinesVisibility="Horizontal" CanUserResizeColumns="True" HeadersVisibility="Column"
-                              SelectionMode="Extended" RowStyle="{StaticResource DefaultRowStyle}">
+                              SelectionMode="Single" MouseDoubleClick="IndexLockingGrid_DoubleClick"
+                              RowStyle="{StaticResource DefaultRowStyle}">
                         <DataGrid.Resources>
                             <Style x:Key="RightAlign" TargetType="TextBlock"><Setter Property="HorizontalAlignment" Value="Right"/></Style>
                         </DataGrid.Resources>
@@ -1098,11 +1108,35 @@
                                     <TextBlock Text="Index" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                             </DataGridTextColumn>
                             <DataGridTextColumn Header="Row Lock Waits" Binding="{Binding RowLockWaitCount, StringFormat='{}{0:N0}'}" Width="110" ElementStyle="{StaticResource RightAlign}"/>
-                            <DataGridTextColumn Header="Row Lock Wait (ms)" Binding="{Binding RowLockWaitInMs, StringFormat='{}{0:N0}'}" Width="130" ElementStyle="{StaticResource RightAlign}"/>
-                            <DataGridTextColumn Header="Page Lock Wait (ms)" Binding="{Binding PageLockWaitInMs, StringFormat='{}{0:N0}'}" Width="130" ElementStyle="{StaticResource RightAlign}"/>
+                            <DataGridTemplateColumn Header="Row Lock Wait (ms)" Width="130" SortMemberPath="RowLockWaitInMs">
+                                <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                    <Border Background="{Binding RowLockHeat, Converter={StaticResource HeatBrush}, ConverterParameter=Lock}">
+                                        <TextBlock Text="{Binding RowLockWaitInMs, StringFormat='{}{0:N0}'}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="6,2"/>
+                                    </Border>
+                                </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="Page Lock Wait (ms)" Width="130" SortMemberPath="PageLockWaitInMs">
+                                <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                    <Border Background="{Binding PageLockHeat, Converter={StaticResource HeatBrush}, ConverterParameter=Lock}">
+                                        <TextBlock Text="{Binding PageLockWaitInMs, StringFormat='{}{0:N0}'}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="6,2"/>
+                                    </Border>
+                                </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Lock Escalations" Binding="{Binding IndexLockPromotionCount, StringFormat='{}{0:N0}'}" Width="120" ElementStyle="{StaticResource RightAlign}"/>
-                            <DataGridTextColumn Header="Page Latch Wait (ms)" Binding="{Binding PageLatchWaitInMs, StringFormat='{}{0:N0}'}" Width="130" ElementStyle="{StaticResource RightAlign}"/>
-                            <DataGridTextColumn Header="Page IO Latch Wait (ms)" Binding="{Binding PageIoLatchWaitInMs, StringFormat='{}{0:N0}'}" Width="150" ElementStyle="{StaticResource RightAlign}"/>
+                            <DataGridTemplateColumn Header="Page Latch Wait (ms)" Width="130" SortMemberPath="PageLatchWaitInMs">
+                                <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                    <Border Background="{Binding PageLatchHeat, Converter={StaticResource HeatBrush}, ConverterParameter='Buffer Latch'}">
+                                        <TextBlock Text="{Binding PageLatchWaitInMs, StringFormat='{}{0:N0}'}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="6,2"/>
+                                    </Border>
+                                </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="Page IO Latch Wait (ms)" Width="150" SortMemberPath="PageIoLatchWaitInMs">
+                                <DataGridTemplateColumn.CellTemplate><DataTemplate>
+                                    <Border Background="{Binding PageIoLatchHeat, Converter={StaticResource HeatBrush}, ConverterParameter='Buffer IO'}">
+                                        <TextBlock Text="{Binding PageIoLatchWaitInMs, StringFormat='{}{0:N0}'}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="6,2"/>
+                                    </Border>
+                                </DataTemplate></DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Reserved (MB)" Binding="{Binding ReservedMb, StringFormat='{}{0:N1}'}" Width="100" ElementStyle="{StaticResource RightAlign}"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -1110,6 +1144,31 @@
                                Text="No locking/contention data recorded. Index/object stats are collected daily."
                                FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+                  </Grid>
+
+                  <!-- View 1 (index drill): full lock/latch counters + identity for the selected index. -->
+                  <Grid x:Name="LockingDetailView" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                      <StackPanel x:Name="LockingDetailPanel" Margin="2,2,2,8" MaxWidth="720" HorizontalAlignment="Left">
+                        <TextBlock Margin="0,0,0,8" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}">
+                            <Run Text="{Binding SchemaName, Mode=OneWay}"/><Run Text="."/><Run Text="{Binding TableName, Mode=OneWay}"/>
+                            <Run Text="  ·  "/><Run Text="{Binding IndexName, Mode=OneWay}"/>
+                        </TextBlock>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <GroupBox Grid.Column="0" Header="Identity &amp; Size" Margin="0,0,5,0" Foreground="{DynamicResource ForegroundBrush}">
+                                <StackPanel Margin="8" x:Name="LockingDetailIdentity"/>
+                            </GroupBox>
+                            <GroupBox Grid.Column="1" Header="Lock &amp; Latch Waits" Margin="5,0,0,0" Foreground="{DynamicResource ForegroundBrush}">
+                                <StackPanel Margin="8" x:Name="LockingDetailCounters"/>
+                            </GroupBox>
+                        </Grid>
+                      </StackPanel>
+                    </ScrollViewer>
+                  </Grid>
                 </Grid>
             </Grid>
         </TabItem>

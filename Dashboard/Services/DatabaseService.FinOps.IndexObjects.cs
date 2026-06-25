@@ -288,10 +288,12 @@ OPTION(MAXDOP 1, RECOMPILE);";
         }
 
         /// <summary>
-        /// Per-index locking/latch contention from the latest snapshot, top objects by lock waits.
-        /// Counters are cumulative since the metadata last entered cache (≈ instance restart).
+        /// Per-index locking/latch contention at each database's latest snapshot, top objects by total
+        /// lock+latch wait. Counters are cumulative since the metadata last entered cache (≈ instance
+        /// restart) — shown as raw totals, no delta (#1138 §3B). Optionally scoped to one database (the
+        /// Locking grid's DB selector); per-database latest so "all databases" shows every DB's newest row.
         /// </summary>
-        public async Task<List<IndexLockingRow>> GetIndexLockingAsync(int topN = 200)
+        public async Task<List<IndexLockingRow>> GetIndexLockingAsync(int topN = 200, string? databaseName = null)
         {
             var items = new List<IndexLockingRow>();
 
@@ -301,6 +303,18 @@ OPTION(MAXDOP 1, RECOMPILE);";
             const string query = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
+WITH
+    latest AS
+    (
+        SELECT
+            database_name,
+            latest_time = MAX(collection_time)
+        FROM collect.index_object_stats
+        WHERE @db IS NULL
+        OR    database_name = @db
+        GROUP BY
+            database_name
+    )
 SELECT TOP (@topN)
     ios.database_name,
     ios.schema_name,
@@ -317,14 +331,14 @@ SELECT TOP (@topN)
     page_lock_wait_in_ms = ISNULL(ios.page_lock_wait_in_ms, 0),
     index_lock_promotion_count = ISNULL(ios.index_lock_promotion_count, 0),
     page_latch_wait_in_ms = ISNULL(ios.page_latch_wait_in_ms, 0),
-    page_io_latch_wait_in_ms = ISNULL(ios.page_io_latch_wait_in_ms, 0)
+    page_io_latch_wait_in_ms = ISNULL(ios.page_io_latch_wait_in_ms, 0),
+    page_latch_wait_count = ISNULL(ios.page_latch_wait_count, 0),
+    page_io_latch_wait_count = ISNULL(ios.page_io_latch_wait_count, 0)
 FROM collect.index_object_stats AS ios
-WHERE ios.collection_time =
-(
-    SELECT MAX(collection_time)
-    FROM collect.index_object_stats
-)
-AND
+JOIN latest AS l
+  ON  l.database_name = ios.database_name
+  AND l.latest_time = ios.collection_time
+WHERE
 (
     ISNULL(ios.row_lock_wait_in_ms, 0) > 0
     OR ISNULL(ios.page_lock_wait_in_ms, 0) > 0
@@ -341,6 +355,7 @@ OPTION(MAXDOP 1, RECOMPILE);";
 
             using var command = new SqlCommand(query, connection);
             command.Parameters.AddWithValue("@topN", topN);
+            command.Parameters.AddWithValue("@db", (object?)databaseName ?? DBNull.Value);
             command.CommandTimeout = 120;
 
             using (StartQueryTiming("FinOps_IndexLocking", query, connection))
@@ -365,9 +380,65 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         PageLockWaitInMs = reader.IsDBNull(12) ? 0L : Convert.ToInt64(reader.GetValue(12)),
                         IndexLockPromotionCount = reader.IsDBNull(13) ? 0L : Convert.ToInt64(reader.GetValue(13)),
                         PageLatchWaitInMs = reader.IsDBNull(14) ? 0L : Convert.ToInt64(reader.GetValue(14)),
-                        PageIoLatchWaitInMs = reader.IsDBNull(15) ? 0L : Convert.ToInt64(reader.GetValue(15))
+                        PageIoLatchWaitInMs = reader.IsDBNull(15) ? 0L : Convert.ToInt64(reader.GetValue(15)),
+                        PageLatchWaitCount = reader.IsDBNull(16) ? 0L : Convert.ToInt64(reader.GetValue(16)),
+                        PageIoLatchWaitCount = reader.IsDBNull(17) ? 0L : Convert.ToInt64(reader.GetValue(17))
                     });
                 }
+            }
+
+            return items;
+        }
+
+        /// <summary>
+        /// Distinct databases that have any lock/latch contention at their latest snapshot — the source for
+        /// the Locking grid's database selector (#1138 §3B).
+        /// </summary>
+        public async Task<List<string>> GetIndexLockingDatabasesAsync()
+        {
+            var items = new List<string>();
+
+            await using var tc = await OpenThrottledConnectionAsync();
+            var connection = tc.Connection;
+
+            const string query = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+WITH
+    latest AS
+    (
+        SELECT
+            database_name,
+            latest_time = MAX(collection_time)
+        FROM collect.index_object_stats
+        GROUP BY
+            database_name
+    )
+SELECT DISTINCT
+    ios.database_name
+FROM collect.index_object_stats AS ios
+JOIN latest AS l
+  ON  l.database_name = ios.database_name
+  AND l.latest_time = ios.collection_time
+WHERE
+(
+    ISNULL(ios.row_lock_wait_in_ms, 0) > 0
+    OR ISNULL(ios.page_lock_wait_in_ms, 0) > 0
+    OR ISNULL(ios.page_latch_wait_in_ms, 0) > 0
+    OR ISNULL(ios.page_io_latch_wait_in_ms, 0) > 0
+    OR ISNULL(ios.index_lock_promotion_count, 0) > 0
+)
+ORDER BY
+    ios.database_name
+OPTION(MAXDOP 1, RECOMPILE);";
+
+            using var command = new SqlCommand(query, connection);
+            command.CommandTimeout = 120;
+
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (!reader.IsDBNull(0)) items.Add(reader.GetString(0));
             }
 
             return items;
@@ -408,9 +479,11 @@ SELECT
     @earliest_time = MIN(ios.collection_time)
 FROM collect.index_object_stats AS ios
 WHERE ios.database_name = @db
-AND   ios.collection_time >= @window_start;
+AND   ios.collection_time >= @window_start
+OPTION(MAXDOP 1, RECOMPILE);
 
-CREATE TABLE #ranked
+CREATE TABLE
+    #ranked
 (
     schema_name sysname NOT NULL,
     table_name sysname NOT NULL,
@@ -418,11 +491,14 @@ CREATE TABLE #ranked
     cur_used_mb decimal(19,2) NULL,
     cur_rows bigint NULL,
     index_count integer NULL,
-    growth_mb decimal(19,2) NULL
+    growth_mb decimal(19,2) NULL,
+    PRIMARY KEY CLUSTERED (schema_name, table_name)
 );
 
 INSERT
     #ranked
+WITH
+    (TABLOCK)
 (
     schema_name,
     table_name,
@@ -449,7 +525,7 @@ FROM
         cur_reserved_mb = SUM(ios.reserved_mb),
         cur_used_mb = SUM(ios.used_mb),
         cur_rows = MAX(ios.total_rows),
-        index_count = COUNT(*)
+        index_count = COUNT_BIG(*)
     FROM collect.index_object_stats AS ios
     WHERE ios.database_name = @db
     AND   ios.collection_time = @latest_time
@@ -473,7 +549,10 @@ LEFT JOIN
   ON  e.schema_name = l.schema_name
   AND e.table_name = l.table_name
 ORDER BY
-    l.cur_reserved_mb - COALESCE(e.e_reserved_mb, l.cur_reserved_mb) DESC;
+    l.cur_reserved_mb - COALESCE(e.e_reserved_mb, l.cur_reserved_mb) DESC,
+    l.schema_name,
+    l.table_name
+OPTION(MAXDOP 1, RECOMPILE);
 
 SELECT
     r.schema_name,
@@ -485,12 +564,15 @@ SELECT
     r.growth_mb
 FROM #ranked AS r
 ORDER BY
-    r.growth_mb DESC;
+    r.growth_mb DESC,
+    r.schema_name,
+    r.table_name
+OPTION(MAXDOP 1, RECOMPILE);
 
 SELECT
     ios.schema_name,
     ios.table_name,
-    the_day = CAST(ios.collection_time AS date),
+    the_day = CONVERT(date, ios.collection_time),
     reserved_mb = SUM(ios.reserved_mb)
 FROM collect.index_object_stats AS ios
 JOIN #ranked AS r
@@ -501,11 +583,12 @@ AND   ios.collection_time >= @window_start
 GROUP BY
     ios.schema_name,
     ios.table_name,
-    CAST(ios.collection_time AS date)
+    CONVERT(date, ios.collection_time)
 ORDER BY
     ios.schema_name,
     ios.table_name,
-    CAST(ios.collection_time AS date);
+    CONVERT(date, ios.collection_time)
+OPTION(MAXDOP 1, RECOMPILE);
 
 DROP TABLE #ranked;";
 
@@ -711,5 +794,18 @@ namespace PerformanceMonitorDashboard.Models
         public long IndexLockPromotionCount { get; set; }
         public long PageLatchWaitInMs { get; set; }
         public long PageIoLatchWaitInMs { get; set; }
+        public long PageLatchWaitCount { get; set; }
+        public long PageIoLatchWaitCount { get; set; }
+
+        /// <summary>
+        /// Per-column 0..1 log color-scale intensities for the four *_wait_in_ms cells (#1138 §3B). Set by
+        /// the loader after fetch (each column normalized over the visible rows via
+        /// <see cref="PerformanceMonitor.Common.FinOpsHeatmapBuilder.ColumnLogIntensities"/>); bound to the
+        /// cell background through HeatIntensityToBrushConverter. Not from the database.
+        /// </summary>
+        public double RowLockHeat { get; set; }
+        public double PageLockHeat { get; set; }
+        public double PageLatchHeat { get; set; }
+        public double PageIoLatchHeat { get; set; }
     }
 }

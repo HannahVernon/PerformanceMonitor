@@ -140,6 +140,58 @@ public class IndexObjectStatsTests : IDisposable
         Assert.Equal(100_000, hot!.RowLockWaitInMs);
     }
 
+    // ── #1138 object-growth heatmap producer ──
+
+    [Fact]
+    public async Task ObjectGrowthHeatmap_RanksByGrowth_AndReturnsDailySeries()
+    {
+        await SeedScenarioAsync();
+        var (objects, samples) = await _dataService.GetObjectGrowthHeatmapDataAsync(ServerId, "AppDb", daysBack: 30, topN: 20);
+
+        Assert.NotEmpty(objects);
+        // BigTable grew 200 -> 600 MB; the others are flat, so BigTable ranks first by growth.
+        Assert.Equal("BigTable", objects[0].TableName);
+        Assert.Equal(400m, objects[0].Growth30dMb);
+
+        // The daily series for BigTable carries both snapshots (prior + latest), keyed schema.table.
+        var bigSamples = samples.Where(s => s.ObjectKey == "dbo.BigTable").ToList();
+        Assert.Equal(2, bigSamples.Count);
+        Assert.Contains(bigSamples, s => s.ReservedMb == 600);
+        Assert.Contains(bigSamples, s => s.ReservedMb == 200);
+    }
+
+    [Fact]
+    public async Task ObjectIndexDetail_ReturnsPerIndexRowsForObject()
+    {
+        await SeedScenarioAsync();
+        var rows = await _dataService.GetObjectIndexDetailAsync(ServerId, "AppDb", "dbo", "BigTable");
+
+        Assert.Single(rows);
+        Assert.Equal("PK_BigTable", rows[0].IndexName);
+        Assert.Equal(600m, rows[0].ReservedMb);
+    }
+
+    [Fact]
+    public async Task IndexLocking_DatabaseSelector_ListsContendedDatabases()
+    {
+        await SeedScenarioAsync();
+        var dbs = await _dataService.GetIndexLockingDatabasesAsync(ServerId);
+
+        // HotTable has lock waits in AppDb, so AppDb is offered in the selector.
+        Assert.Contains("AppDb", dbs);
+    }
+
+    [Fact]
+    public async Task IndexLocking_FilteredByDatabase_ReturnsThatDbOnly()
+    {
+        await SeedScenarioAsync();
+        var rows = await _dataService.GetIndexLockingAsync(ServerId, 200, "AppDb");
+
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.Equal("AppDb", r.DatabaseName));
+        Assert.Contains(rows, r => r.TableName == "HotTable" && r.RowLockWaitInMs == 100_000);
+    }
+
     // ── anomaly detection ──
 
     [Fact]

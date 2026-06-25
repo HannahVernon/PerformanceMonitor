@@ -142,16 +142,20 @@ public partial class FinOpsTab : UserControl
             var days = GetObjectHeatmapDaysBack();
             var (objects, samples) = await Task.Run(() => _dataService.GetObjectGrowthHeatmapDataAsync(serverId, databaseName, days));
 
-            ObjectGrowthDetailGrid.ItemsSource = objects;
-            StorageGrowthCountIndicator.Text = objects.Count > 0 ? $"{objects.Count} object(s)" : "";
-            ObjectGrowthNoDataMessage.Visibility = objects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            // One canonical, deterministic top-of-chart-first ranking drives BOTH the companion grid and
+            // the heatmap rows, so they can never disagree (and stay identical across Dashboard/Lite).
+            var orderedKeys = FinOpsHeatmapBuilder.RankTopGrowers(
+                objects.Select(o => ($"{o.SchemaName}.{o.TableName}", (double)o.Growth30dMb)), objects.Count);
+            var byKey = objects.ToDictionary(o => $"{o.SchemaName}.{o.TableName}");
+            var orderedObjects = orderedKeys.Select(k => byKey[k]).ToList();
 
-            // Heatmap rows bottom-to-top: the renderer flips vertically (row 0 = bottom), so reverse the
-            // descending-by-growth ranking to put the biggest grower at the TOP of the chart.
-            var rowKeysBottomToTop = objects
-                .Select(o => $"{o.SchemaName}.{o.TableName}")
-                .Reverse()
-                .ToList();
+            ObjectGrowthDetailGrid.ItemsSource = orderedObjects;
+            StorageGrowthCountIndicator.Text = orderedObjects.Count > 0 ? $"{orderedObjects.Count} object(s)" : "";
+            ObjectGrowthNoDataMessage.Visibility = orderedObjects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            // Heatmap rows are bottom-to-top: the renderer flips vertically (row 0 = bottom), so reverse
+            // the top-first ranking to put the biggest grower at the TOP of the chart.
+            var rowKeysBottomToTop = Enumerable.Reverse(orderedKeys).ToList();
             _objHeatmapMatrix = FinOpsHeatmapBuilder.BuildMatrix(rowKeysBottomToTop, samples);
             _objHeatmapHandle = FinOpsHeatmapRenderer.Render(
                 ObjectGrowthHeatmapChart,

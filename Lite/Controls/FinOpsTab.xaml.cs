@@ -605,21 +605,8 @@ public partial class FinOpsTab : UserControl
     // The read methods GetObjectSizeGrowthAsync / GetIndexUsageAsync remain on LocalDataService for MCP.
     // ============================================
 
-    private async System.Threading.Tasks.Task LoadIndexLockingAsync(int serverId)
-    {
-        if (_dataService == null) return;
-        try
-        {
-            var data = await Task.Run(() => _dataService.GetIndexLockingAsync(serverId));
-            _indexLockingFilterMgr!.UpdateData(data);
-            NoIndexLockingMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            IndexLockingCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("FinOps", $"Failed to load index locking: {ex.Message}");
-        }
-    }
+    // LoadIndexLockingAsync (the #1138 color-scaled grid + DB selector + index drill) lives in
+    // FinOpsTab.Locking.cs.
 
     private async void RefreshIndexLocking_Click(object sender, RoutedEventArgs e)
     {

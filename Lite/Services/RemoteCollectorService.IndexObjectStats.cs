@@ -35,9 +35,10 @@ public partial class RemoteCollectorService
     /// <summary>
     /// Collects per-table and per-index size, usage, and locking statistics for growth
     /// trending, unused-index detection, and contention analysis.
-    /// Size columns are absolute point-in-time values; usage and locking counters are
-    /// cumulative (reset on instance restart / DB detach / AUTO_CLOSE) - sqlserver_start_time
-    /// carries the reset boundary so deltas can be computed safely in the read layer.
+    /// Size columns are absolute point-in-time values (growth = size(t2) - size(t1) in the
+    /// read layer); usage and locking counters are raw cumulative totals shown as-is - the
+    /// read layer does NOT compute counter deltas (sqlserver_start_time flags only
+    /// restart / DB detach / AUTO_CLOSE resets, not the metadata-cache-eviction reset; see #1138).
     /// All three DMVs are database-scoped, so collection runs ONE COMMAND PER DATABASE:
     /// on-prem enumerates databases then sends each through [db].sys.sp_executesql; Azure
     /// SQL DB connects to each database individually. Each database is collected with its

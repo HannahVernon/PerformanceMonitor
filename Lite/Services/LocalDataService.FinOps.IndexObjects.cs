@@ -192,47 +192,62 @@ LIMIT {topN}";
     }
 
     /// <summary>
-    /// Per-index locking/latch contention from the latest snapshot for a server.
+    /// Per-index locking/latch contention at each database's latest snapshot for a server, top objects by
+    /// total lock+latch wait. Cumulative totals, no delta (#1138 §3B). Optionally scoped to one database
+    /// (the Locking grid's DB selector); per-database latest so "all databases" shows every DB's newest row.
     /// </summary>
-    public async Task<List<IndexLockingRow>> GetIndexLockingAsync(int serverId, int topN = 200)
+    public async Task<List<IndexLockingRow>> GetIndexLockingAsync(int serverId, int topN = 200, string? databaseName = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
+        // Build the optional DB filter as literal SQL so a NULL parameter never has to be typed by DuckDB.
+        var dbFilter = databaseName == null ? "" : " AND database_name = $2";
+
         command.CommandText = $@"
+WITH latest AS (
+    SELECT database_name, MAX(collection_time) AS latest_time
+    FROM v_index_object_stats
+    WHERE server_id = $1{dbFilter}
+    GROUP BY database_name
+)
 SELECT
-    database_name,
-    schema_name,
-    table_name,
-    index_name,
-    index_type_desc,
-    reserved_mb,
-    total_rows,
-    COALESCE(row_lock_count, 0) AS row_lock_count,
-    COALESCE(row_lock_wait_count, 0) AS row_lock_wait_count,
-    COALESCE(row_lock_wait_in_ms, 0) AS row_lock_wait_in_ms,
-    COALESCE(page_lock_count, 0) AS page_lock_count,
-    COALESCE(page_lock_wait_count, 0) AS page_lock_wait_count,
-    COALESCE(page_lock_wait_in_ms, 0) AS page_lock_wait_in_ms,
-    COALESCE(index_lock_promotion_count, 0) AS index_lock_promotion_count,
-    COALESCE(page_latch_wait_in_ms, 0) AS page_latch_wait_in_ms,
-    COALESCE(page_io_latch_wait_in_ms, 0) AS page_io_latch_wait_in_ms
-FROM v_index_object_stats
-WHERE server_id = $1
-AND   collection_time = (SELECT MAX(collection_time) FROM v_index_object_stats WHERE server_id = $1)
+    ios.database_name,
+    ios.schema_name,
+    ios.table_name,
+    ios.index_name,
+    ios.index_type_desc,
+    ios.reserved_mb,
+    ios.total_rows,
+    COALESCE(ios.row_lock_count, 0) AS row_lock_count,
+    COALESCE(ios.row_lock_wait_count, 0) AS row_lock_wait_count,
+    COALESCE(ios.row_lock_wait_in_ms, 0) AS row_lock_wait_in_ms,
+    COALESCE(ios.page_lock_count, 0) AS page_lock_count,
+    COALESCE(ios.page_lock_wait_count, 0) AS page_lock_wait_count,
+    COALESCE(ios.page_lock_wait_in_ms, 0) AS page_lock_wait_in_ms,
+    COALESCE(ios.index_lock_promotion_count, 0) AS index_lock_promotion_count,
+    COALESCE(ios.page_latch_wait_in_ms, 0) AS page_latch_wait_in_ms,
+    COALESCE(ios.page_io_latch_wait_in_ms, 0) AS page_io_latch_wait_in_ms,
+    COALESCE(ios.page_latch_wait_count, 0) AS page_latch_wait_count,
+    COALESCE(ios.page_io_latch_wait_count, 0) AS page_io_latch_wait_count
+FROM v_index_object_stats ios
+JOIN latest l ON l.database_name = ios.database_name AND l.latest_time = ios.collection_time
+WHERE ios.server_id = $1
 AND (
-    COALESCE(row_lock_wait_in_ms, 0) > 0
-    OR COALESCE(page_lock_wait_in_ms, 0) > 0
-    OR COALESCE(page_latch_wait_in_ms, 0) > 0
-    OR COALESCE(page_io_latch_wait_in_ms, 0) > 0
-    OR COALESCE(index_lock_promotion_count, 0) > 0
+    COALESCE(ios.row_lock_wait_in_ms, 0) > 0
+    OR COALESCE(ios.page_lock_wait_in_ms, 0) > 0
+    OR COALESCE(ios.page_latch_wait_in_ms, 0) > 0
+    OR COALESCE(ios.page_io_latch_wait_in_ms, 0) > 0
+    OR COALESCE(ios.index_lock_promotion_count, 0) > 0
 )
 ORDER BY
-    COALESCE(row_lock_wait_in_ms, 0) + COALESCE(page_lock_wait_in_ms, 0)
-    + COALESCE(page_latch_wait_in_ms, 0) + COALESCE(page_io_latch_wait_in_ms, 0) DESC
+    COALESCE(ios.row_lock_wait_in_ms, 0) + COALESCE(ios.page_lock_wait_in_ms, 0)
+    + COALESCE(ios.page_latch_wait_in_ms, 0) + COALESCE(ios.page_io_latch_wait_in_ms, 0) DESC
 LIMIT {topN}";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        if (databaseName != null)
+            command.Parameters.Add(new DuckDBParameter { Value = databaseName });
 
         var items = new List<IndexLockingRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -255,8 +270,50 @@ LIMIT {topN}";
                 PageLockWaitInMs = reader.IsDBNull(12) ? 0L : Convert.ToInt64(reader.GetValue(12)),
                 IndexLockPromotionCount = reader.IsDBNull(13) ? 0L : Convert.ToInt64(reader.GetValue(13)),
                 PageLatchWaitInMs = reader.IsDBNull(14) ? 0L : Convert.ToInt64(reader.GetValue(14)),
-                PageIoLatchWaitInMs = reader.IsDBNull(15) ? 0L : Convert.ToInt64(reader.GetValue(15))
+                PageIoLatchWaitInMs = reader.IsDBNull(15) ? 0L : Convert.ToInt64(reader.GetValue(15)),
+                PageLatchWaitCount = reader.IsDBNull(16) ? 0L : Convert.ToInt64(reader.GetValue(16)),
+                PageIoLatchWaitCount = reader.IsDBNull(17) ? 0L : Convert.ToInt64(reader.GetValue(17))
             });
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// Distinct databases that have any lock/latch contention at their latest snapshot — the source for the
+    /// Locking grid's database selector (#1138 §3B).
+    /// </summary>
+    public async Task<List<string>> GetIndexLockingDatabasesAsync(int serverId)
+    {
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+
+        command.CommandText = @"
+WITH latest AS (
+    SELECT database_name, MAX(collection_time) AS latest_time
+    FROM v_index_object_stats
+    WHERE server_id = $1
+    GROUP BY database_name
+)
+SELECT DISTINCT ios.database_name
+FROM v_index_object_stats ios
+JOIN latest l ON l.database_name = ios.database_name AND l.latest_time = ios.collection_time
+WHERE ios.server_id = $1
+AND (
+    COALESCE(ios.row_lock_wait_in_ms, 0) > 0
+    OR COALESCE(ios.page_lock_wait_in_ms, 0) > 0
+    OR COALESCE(ios.page_latch_wait_in_ms, 0) > 0
+    OR COALESCE(ios.page_io_latch_wait_in_ms, 0) > 0
+    OR COALESCE(ios.index_lock_promotion_count, 0) > 0
+)
+ORDER BY ios.database_name";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+
+        var items = new List<string>();
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            if (!reader.IsDBNull(0)) items.Add(reader.GetString(0));
         }
         return items;
     }
@@ -316,7 +373,7 @@ SELECT
     l.cur_reserved_mb - COALESCE(e.e_reserved_mb, l.cur_reserved_mb) AS growth_mb
 FROM latest l
 LEFT JOIN earliest e ON e.schema_name = l.schema_name AND e.table_name = l.table_name
-ORDER BY growth_mb DESC
+ORDER BY growth_mb DESC, l.schema_name, l.table_name
 LIMIT {topN}";
             command.Parameters.Add(new DuckDBParameter { Value = serverId });
             command.Parameters.Add(new DuckDBParameter { Value = databaseName });
@@ -371,7 +428,7 @@ ranked AS (
         l.cur_reserved_mb - COALESCE(e.e_reserved_mb, l.cur_reserved_mb) AS growth_mb
     FROM latest l
     LEFT JOIN earliest e ON e.schema_name = l.schema_name AND e.table_name = l.table_name
-    ORDER BY growth_mb DESC
+    ORDER BY growth_mb DESC, l.schema_name, l.table_name
     LIMIT {topN}
 )
 SELECT
@@ -531,4 +588,17 @@ public class IndexLockingRow
     public long IndexLockPromotionCount { get; set; }
     public long PageLatchWaitInMs { get; set; }
     public long PageIoLatchWaitInMs { get; set; }
+    public long PageLatchWaitCount { get; set; }
+    public long PageIoLatchWaitCount { get; set; }
+
+    /// <summary>
+    /// Per-column 0..1 log color-scale intensities for the four *_wait_in_ms cells (#1138 §3B). Set by the
+    /// loader after fetch (each column normalized over the visible rows via
+    /// <see cref="PerformanceMonitor.Common.FinOpsHeatmapBuilder.ColumnLogIntensities"/>); bound to the cell
+    /// background through HeatIntensityToBrushConverter. Not from the database.
+    /// </summary>
+    public double RowLockHeat { get; set; }
+    public double PageLockHeat { get; set; }
+    public double PageLatchHeat { get; set; }
+    public double PageIoLatchHeat { get; set; }
 }

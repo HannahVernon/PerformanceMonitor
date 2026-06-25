@@ -1533,9 +1533,12 @@ END;
 Index/Object Statistics Table (FinOps)
 Per-table and per-index size, usage, and locking stats for growth trending,
 unused-index detection, and contention analysis. Size columns are absolute
-point-in-time values; usage and locking counters are cumulative (reset on
-instance restart / DB detach / AUTO_CLOSE) - sqlserver_start_time carries the
-reset boundary so deltas can be computed safely in the read layer.
+point-in-time values, so growth is a plain size(t2) - size(t1) in the read layer.
+Usage and locking counters are cumulative; the read layer shows them as raw totals
+at the latest snapshot - it does NOT compute counter deltas. sqlserver_start_time
+flags only an instance restart / DB detach / AUTO_CLOSE reset, NOT the
+metadata-cache-eviction reset that dm_db_index_operational_stats also performs, so
+a cumulative-counter delta is not reliable and is deliberately not attempted (#1138).
 */
 IF OBJECT_ID(N'collect.index_object_stats', N'U') IS NULL
 BEGIN

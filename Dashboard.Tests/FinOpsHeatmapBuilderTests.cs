@@ -132,4 +132,42 @@ public class FinOpsHeatmapBuilderTests
         var matrix = FinOpsHeatmapBuilder.BuildMatrix(new[] { "a" }, Array.Empty<FinOpsObjectDaySample>());
         Assert.True(matrix.IsEmpty);
     }
+
+    // ── ColumnLogIntensities (Phase 2 color-scale binding) ──
+
+    [Fact]
+    public void ColumnLogIntensities_MaxIsOne_ZeroIsZero_OthersBetween()
+    {
+        var intensities = FinOpsHeatmapBuilder.ColumnLogIntensities(new long[] { 0, 10, 100 });
+
+        Assert.Equal(0.0, intensities[0]);                 // zero -> no shade
+        Assert.Equal(1.0, intensities[2], 6);              // column max -> full shade
+        Assert.InRange(intensities[1], 0.0001, 0.9999);    // mid -> partial
+        Assert.True(intensities[1] < intensities[2]);
+    }
+
+    [Fact]
+    public void ColumnLogIntensities_AllZero_ReturnsAllZero()
+    {
+        var intensities = FinOpsHeatmapBuilder.ColumnLogIntensities(new long[] { 0, 0, 0 });
+        Assert.All(intensities, v => Assert.Equal(0.0, v)); // max=0 divide-by-zero guard (§3B)
+    }
+
+    [Fact]
+    public void ColumnLogIntensities_NegativeClampsToZero()
+    {
+        var intensities = FinOpsHeatmapBuilder.ColumnLogIntensities(new long[] { -5, 100 });
+        Assert.Equal(0.0, intensities[0]);
+        Assert.Equal(1.0, intensities[1], 6);
+    }
+
+    [Fact]
+    public void ColumnLogIntensities_LogScale_CompressesLargeRange()
+    {
+        // A single hot value among many quiet ones: the quiet values still get a visible (non-tiny)
+        // shade because of the log scale, not a linear one.
+        var intensities = FinOpsHeatmapBuilder.ColumnLogIntensities(new long[] { 10, 10000 });
+        Assert.True(intensities[0] > 0.2, $"log scale should keep the small value visible, got {intensities[0]}");
+        Assert.Equal(1.0, intensities[1], 6);
+    }
 }
