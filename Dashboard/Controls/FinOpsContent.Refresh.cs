@@ -50,17 +50,19 @@ namespace PerformanceMonitorDashboard.Controls
 
         private async void StorageGrowthRefresh_Click(object sender, RoutedEventArgs e)
         {
-            await LoadStorageGrowthAsync();
-        }
-
-        private async void ObjectSizeGrowthRefresh_Click(object sender, RoutedEventArgs e)
-        {
-            await LoadObjectSizeGrowthAsync();
-        }
-
-        private async void IndexUsageRefresh_Click(object sender, RoutedEventArgs e)
-        {
-            await LoadIndexUsageAsync();
+            // Refresh the view the user is actually looking at (#1138 drill), not just the parent grid.
+            switch (_storageLevel)
+            {
+                case StorageDrillLevel.Objects when !string.IsNullOrEmpty(_objDrillDb):
+                    await LoadObjectGrowthAsync(_objDrillDb);
+                    break;
+                case StorageDrillLevel.Indexes when !string.IsNullOrEmpty(_objDrillTable):
+                    await LoadObjectIndexDetailAsync(_objDrillDb, _objDrillSchema, _objDrillTable);
+                    break;
+                default:
+                    await LoadStorageGrowthAsync();
+                    break;
+            }
         }
 
         private async void IndexLockingRefresh_Click(object sender, RoutedEventArgs e)

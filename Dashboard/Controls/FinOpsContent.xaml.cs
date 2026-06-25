@@ -149,6 +149,7 @@ namespace PerformanceMonitorDashboard.Controls
                 var connectionString = server.GetConnectionString(_credentialService);
                 _databaseService = new DatabaseService(connectionString);
                 _currentServerMonthlyCost = server.MonthlyCostUsd;
+                ResetStorageDrill(); // a new server invalidates any open object/index drill
                 await RefreshDataAsync();
             }
         }
@@ -175,8 +176,6 @@ namespace PerformanceMonitorDashboard.Controls
                     LoadApplicationConnectionsAsync(),
                     LoadServerInventoryAsync(),
                     LoadStorageGrowthAsync(),
-                    LoadObjectSizeGrowthAsync(),
-                    LoadIndexUsageAsync(),
                     LoadIndexLockingAsync(),
                     LoadIdleDatabasesAsync(),
                     LoadTempdbSummaryAsync(),
