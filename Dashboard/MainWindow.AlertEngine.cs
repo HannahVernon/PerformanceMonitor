@@ -803,7 +803,11 @@ namespace PerformanceMonitorDashboard
             UserPreferences prefs, string metricName, string serverName, string summaryCurrentValue,
             string thresholdValue, string serverId, AlertContext? context)
         {
-            if (prefs.AlertDeliveryMode == AlertNotificationMode.PerEvent && context?.Incidents is { Count: > 0 })
+            /* #1236: a per-server override (Manage Servers -> Edit) wins over the global delivery mode;
+               null inherits prefs.AlertDeliveryMode. */
+            var deliveryMode = AlertDeliveryModeResolver.Resolve(
+                _serverManager.GetServerById(serverId)?.AlertDeliveryModeOverride, prefs.AlertDeliveryMode);
+            if (deliveryMode == AlertNotificationMode.PerEvent && context?.Incidents is { Count: > 0 })
             {
                 foreach (var msg in PerEventNotification.Split(context, prefs.AlertPerEventMaxPerCycle))
                 {

@@ -756,7 +756,10 @@ public partial class MainWindow : Window
             string metricName, string serverName, string summaryCurrentValue, string thresholdValue,
             int serverId, AlertContext? context, bool isMuted, string? summaryDetailText)
         {
-            if (App.AlertDeliveryMode == AlertNotificationMode.PerEvent && context?.Incidents is { Count: > 0 })
+            /* #1236: a per-server override (Manage Servers -> Edit) wins over the global delivery mode;
+               null inherits App.AlertDeliveryMode. */
+            var deliveryMode = AlertDeliveryModeResolver.Resolve(ResolveServerDeliveryOverride(serverId), App.AlertDeliveryMode);
+            if (deliveryMode == AlertNotificationMode.PerEvent && context?.Incidents is { Count: > 0 })
             {
                 foreach (var msg in PerEventNotification.Split(context, App.AlertPerEventMaxPerCycle))
                 {
@@ -771,6 +774,14 @@ public partial class MainWindow : Window
                 metricName, serverName, summaryCurrentValue, thresholdValue, serverId,
                 context, muted: isMuted, detailText: summaryDetailText);
         }
+
+        /* #1236: the per-server delivery-mode override for serverId, or null to inherit the global
+           App.AlertDeliveryMode. serverId is the deterministic hash of the storage name (the same
+           mapping the alert loop uses), so map it back to the ServerConnection to read its override. */
+        private AlertNotificationMode? ResolveServerDeliveryOverride(int serverId) =>
+            _serverManager.GetAllServers().FirstOrDefault(s =>
+                RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(s)) == serverId)
+                ?.AlertDeliveryModeOverride;
 
         private static string? ContextToDetailText(AlertContext? context)
         {

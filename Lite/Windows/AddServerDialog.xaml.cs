@@ -14,6 +14,7 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -85,6 +86,12 @@ public partial class AddServerDialog : Window
         ReadOnlyIntentCheckBox.IsChecked = existing.ReadOnlyIntent;
         MultiSubnetFailoverCheckBox.IsChecked = existing.MultiSubnetFailover;
         MonthlyCostBox.Text = existing.MonthlyCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        AlertDeliveryOverrideBox.SelectedIndex = existing.AlertDeliveryModeOverride switch
+        {
+            AlertNotificationMode.Summary => 1,
+            AlertNotificationMode.PerEvent => 2,
+            _ => 0
+        };
 
         // Profile-backed server (M-3 edit-load): preselect "use profile" + the dropdown, and do NOT
         // call GetCredential(existing.Id) — there is intentionally no per-server secret to load.
@@ -212,6 +219,13 @@ public partial class AddServerDialog : Window
                 : Visibility.Collapsed;
         }
     }
+
+    private AlertNotificationMode? GetSelectedDeliveryOverride() => AlertDeliveryOverrideBox.SelectedIndex switch
+    {
+        1 => AlertNotificationMode.Summary,
+        2 => AlertNotificationMode.PerEvent,
+        _ => null
+    };
 
     private string GetSelectedEncryptMode()
     {
@@ -549,6 +563,7 @@ public partial class AddServerDialog : Window
                 AddedServer.MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true;
                 if (decimal.TryParse(MonthlyCostBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var editCost) && editCost >= 0)
                     AddedServer.MonthlyCostUsd = editCost;
+                AddedServer.AlertDeliveryModeOverride = GetSelectedDeliveryOverride();
 
                 AddedServer.CredentialProfileId = useProfile ? selectedProfile!.Id : null;
 
@@ -599,6 +614,7 @@ public partial class AddServerDialog : Window
                     ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true,
                     MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true,
                     MonthlyCostUsd = monthlyCost,
+                    AlertDeliveryModeOverride = GetSelectedDeliveryOverride(),
                     CredentialProfileId = useProfile ? selectedProfile!.Id : null
                 };
 
