@@ -319,6 +319,14 @@ public partial class App : Application
         Directory.CreateDirectory(ConfigDirectory);
         Directory.CreateDirectory(Path.Combine(appDataRoot, "archive"));
 
+        // Seed the per-user config dir from the copies bundled next to the exe on first run, so a
+        // fresh install/extract has the editable defaults present. Critical for ignored_wait_types.json:
+        // without it the wait filter is empty and benign waits flood the wait stats tab (#1240).
+        Services.ConfigSeeder.SeedMissing(
+            Path.Combine(AppContext.BaseDirectory, "config"),
+            ConfigDirectory,
+            new[] { "ignored_wait_types.json", "collection_schedule.json" });
+
         // Load settings
         LoadDefaultTimeRange();
         LoadAlertSettings();

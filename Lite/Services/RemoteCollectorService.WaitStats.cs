@@ -32,7 +32,16 @@ public partial class RemoteCollectorService
     {
         var waits = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        /* Per-user copy (editable, seeded on first run) first; fall back to the copy bundled next to
+           the exe. A fresh install/extract before seeding has no per-user file, and without this
+           fallback the set would be empty and NO benign waits get filtered — they then dominate the
+           wait stats tab (#1240). */
         var configPath = Path.Combine(App.ConfigDirectory, "ignored_wait_types.json");
+        if (!File.Exists(configPath))
+        {
+            configPath = Path.Combine(AppContext.BaseDirectory, "config", "ignored_wait_types.json");
+        }
+
         if (File.Exists(configPath))
         {
             try
@@ -56,6 +65,10 @@ public partial class RemoteCollectorService
             {
                 _logger?.LogWarning(ex, "Failed to load ignored wait types from {Path}", configPath);
             }
+        }
+        else
+        {
+            _logger?.LogWarning("ignored_wait_types.json not found (per-user or bundled); wait-stat filtering disabled");
         }
 
         return waits;
