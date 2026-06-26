@@ -25,6 +25,18 @@ public enum AlertNotificationMode
 }
 
 /// <summary>
+/// #1236: resolves the effective alert delivery mode for a single server. A per-server override wins;
+/// a null override inherits the global <see cref="AlertNotificationMode"/> default. Centralized here so
+/// Lite and Dashboard apply identical precedence (e.g. Per-event for one noisy prod box while the global
+/// default stays Summary everywhere else).
+/// </summary>
+public static class AlertDeliveryModeResolver
+{
+    public static AlertNotificationMode Resolve(AlertNotificationMode? perServerOverride, AlertNotificationMode global)
+        => perServerOverride ?? global;
+}
+
+/// <summary>
 /// Splits a built alert <see cref="AlertContext"/> into per-incident messages for #1141 Per-event mode.
 /// Each distinct incident (already grouped + fingerprinted by #1140) becomes one message carrying that
 /// single incident; when the incident count exceeds the per-cycle cap, the overflow incidents are

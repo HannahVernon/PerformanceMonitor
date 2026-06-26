@@ -21,6 +21,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorDashboard
 {
@@ -83,6 +84,12 @@ namespace PerformanceMonitorDashboard
             TrustServerCertificateCheckBox.IsChecked = existingServer.TrustServerCertificate;
             ReadOnlyIntentCheckBox.IsChecked = existingServer.ReadOnlyIntent;
             MultiSubnetFailoverCheckBox.IsChecked = existingServer.MultiSubnetFailover;
+            AlertDeliveryOverrideComboBox.SelectedIndex = existingServer.AlertDeliveryModeOverride switch
+            {
+                AlertNotificationMode.Summary => 1,
+                AlertNotificationMode.PerEvent => 2,
+                _ => 0
+            };
 
             if (existingServer.AuthenticationType == AuthenticationTypes.EntraMFA)
             {
@@ -134,6 +141,13 @@ namespace PerformanceMonitorDashboard
                     : System.Windows.Visibility.Collapsed;
             }
         }
+
+        private AlertNotificationMode? GetSelectedDeliveryOverride() => AlertDeliveryOverrideComboBox.SelectedIndex switch
+        {
+            1 => AlertNotificationMode.Summary,
+            2 => AlertNotificationMode.PerEvent,
+            _ => null
+        };
 
         private string GetSelectedEncryptMode()
         {
@@ -847,6 +861,7 @@ namespace PerformanceMonitorDashboard
             MultiSubnetFailoverCheckBox.IsEnabled = enabled;
             IsFavoriteCheckBox.IsEnabled = enabled;
             MonthlyCostTextBox.IsEnabled = enabled;
+            AlertDeliveryOverrideComboBox.IsEnabled = enabled;
             DescriptionTextBox.IsEnabled = enabled;
             TestConnectionButton.IsEnabled = enabled;
             SaveButton.IsEnabled = enabled;
@@ -942,6 +957,7 @@ namespace PerformanceMonitorDashboard
                 ServerConnection.MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true;
                 if (decimal.TryParse(MonthlyCostTextBox.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var editCost) && editCost >= 0)
                     ServerConnection.MonthlyCostUsd = editCost;
+                ServerConnection.AlertDeliveryModeOverride = GetSelectedDeliveryOverride();
             }
             else
             {
@@ -962,7 +978,8 @@ namespace PerformanceMonitorDashboard
                     TrustServerCertificate = TrustServerCertificateCheckBox.IsChecked == true,
                     ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true,
                     MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true,
-                    MonthlyCostUsd = monthlyCost
+                    MonthlyCostUsd = monthlyCost,
+                    AlertDeliveryModeOverride = GetSelectedDeliveryOverride()
                 };
             }
 

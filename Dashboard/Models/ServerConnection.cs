@@ -13,6 +13,7 @@ using Microsoft.Data.SqlClient;
 using PerformanceMonitorDashboard.Interfaces;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorDashboard.Models
 {
@@ -82,6 +83,14 @@ namespace PerformanceMonitorDashboard.Models
         /// Set to 0 to hide cost columns. All FinOps costs are proportional to this budget.
         /// </summary>
         public decimal MonthlyCostUsd { get; set; } = 0m;
+
+        /// <summary>
+        /// #1236: per-server override for the alert delivery mode (deadlock/blocking notifications).
+        /// null = inherit the global AlertDeliveryMode setting; Summary/PerEvent forces that mode for
+        /// this server regardless of the global default (e.g. Per-event for one noisy prod box, Summary
+        /// everywhere else). Resolved via <see cref="PerformanceMonitor.Notifications.AlertDeliveryModeResolver"/>.
+        /// </summary>
+        public AlertNotificationMode? AlertDeliveryModeOverride { get; set; }
 
         /// <summary>
         /// Display name with "(Read-Only)" suffix when ReadOnlyIntent is enabled.
