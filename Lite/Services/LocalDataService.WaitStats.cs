@@ -15,6 +15,11 @@ namespace PerformanceMonitorLite.Services;
 
 public partial class LocalDataService
 {
+    /* #1240: the wait-stats tab shares the collector's ignored-wait list and excludes those types at
+       DISPLAY time, so benign waits already in the DuckDB (collected before the filter was active) don't
+       surface in the tab/picker — copying the JSON only stops new collection, not existing rows. */
+    private readonly Lazy<HashSet<string>> _ignoredWaitTypes = new(IgnoredWaitTypes.Load);
+
     /// <summary>
     /// Gets aggregated wait stats for a server over a time period, sorted by delta wait time.
     /// </summary>
@@ -26,7 +31,8 @@ public partial class LocalDataService
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
-        command.CommandText = @"
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        command.CommandText = $@"
 SELECT
     wait_type,
     SUM(delta_waiting_tasks) AS total_waiting_tasks,
@@ -37,6 +43,7 @@ FROM v_wait_stats
 WHERE server_id = $1
 AND   collection_time >= $2
 AND   collection_time <= $3
+{exclude}
 GROUP BY wait_type
 ORDER BY SUM(delta_wait_time_ms) DESC
 LIMIT 50";
@@ -72,7 +79,8 @@ LIMIT 50";
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
-        command.CommandText = @"
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        command.CommandText = $@"
 SELECT
     wait_type,
     SUM(delta_wait_time_ms) AS total_delta
@@ -80,6 +88,7 @@ FROM v_wait_stats
 WHERE server_id = $1
 AND   collection_time >= $2
 AND   collection_time <= $3
+{exclude}
 GROUP BY wait_type
 ORDER BY SUM(delta_wait_time_ms) DESC";
 
@@ -231,7 +240,8 @@ ORDER BY wait_type, collection_time";
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
-        command.CommandText = @"
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        command.CommandText = $@"
 WITH per_collection AS
 (
     SELECT
@@ -242,6 +252,7 @@ WITH per_collection AS
     WHERE server_id = $1
     AND   collection_time >= $2
     AND   collection_time <= $3
+    {exclude}
     GROUP BY collection_time
 )
 SELECT

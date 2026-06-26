@@ -10,7 +10,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
@@ -25,52 +24,18 @@ public partial class RemoteCollectorService
     private readonly Lazy<HashSet<string>> _ignoredWaitTypes;
 
     /// <summary>
-    /// Loads the set of wait types to ignore during collection.
-    /// Thread-safe via Lazy&lt;T&gt; (multiple server tasks call this in parallel).
+    /// Loads the set of wait types to ignore during collection, from the shared <see cref="IgnoredWaitTypes"/>
+    /// source (per-user copy, then the bundled fallback) so collection and the wait-stats tab use one list.
+    /// Thread-safe via Lazy&lt;T&gt; (multiple server tasks call this in parallel). Warns when the set is
+    /// empty so a missing/unreadable list is visible rather than silently disabling filtering (#1240).
     /// </summary>
     private HashSet<string> LoadIgnoredWaitTypes()
     {
-        var waits = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        /* Per-user copy (editable, seeded on first run) first; fall back to the copy bundled next to
-           the exe. A fresh install/extract before seeding has no per-user file, and without this
-           fallback the set would be empty and NO benign waits get filtered — they then dominate the
-           wait stats tab (#1240). */
-        var configPath = Path.Combine(App.ConfigDirectory, "ignored_wait_types.json");
-        if (!File.Exists(configPath))
+        var waits = IgnoredWaitTypes.Load();
+        if (waits.Count == 0)
         {
-            configPath = Path.Combine(AppContext.BaseDirectory, "config", "ignored_wait_types.json");
+            _logger?.LogWarning("ignored_wait_types.json not found or empty (per-user or bundled); wait-stat filtering disabled");
         }
-
-        if (File.Exists(configPath))
-        {
-            try
-            {
-                var json = File.ReadAllText(configPath);
-                using var doc = JsonDocument.Parse(json);
-
-                if (doc.RootElement.TryGetProperty("ignored_waits", out var waitsArray))
-                {
-                    foreach (var wait in waitsArray.EnumerateArray())
-                    {
-                        var waitType = wait.GetString();
-                        if (!string.IsNullOrEmpty(waitType))
-                        {
-                            waits.Add(waitType);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "Failed to load ignored wait types from {Path}", configPath);
-            }
-        }
-        else
-        {
-            _logger?.LogWarning("ignored_wait_types.json not found (per-user or bundled); wait-stat filtering disabled");
-        }
-
         return waits;
     }
 
