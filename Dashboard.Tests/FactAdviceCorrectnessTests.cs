@@ -85,8 +85,8 @@ public class FactAdviceCorrectnessTests
     {
         var t = Text("SOS_SCHEDULER_YIELD");
         Assert.Contains("runnable queue", t);
-        Assert.Contains("get_cpu_scheduler_pressure", t);
         Assert.DoesNotContain("not as SOS_SCHEDULER_YIELD", t); // the over-correction is gone
+        Assert.DoesNotContain("get_cpu_scheduler_pressure", t); // MCP tool names removed from human prose
     }
 
     // Review note (§1): MAXDOP can be set per database; the advice must acknowledge the DB-scoped
@@ -96,6 +96,6 @@ public class FactAdviceCorrectnessTests
     {
         var advice = FactAdvice.GetForFactKey("CONFIG_MAXDOP");
         Assert.Contains("DATABASE SCOPED CONFIGURATION", advice!.Investigation);
-        Assert.Contains("get_database_scoped_config", advice.Investigation);
+        Assert.DoesNotContain("get_database_scoped_config", advice.Investigation); // MCP tool name removed
     }
 }

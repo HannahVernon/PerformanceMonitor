@@ -17,6 +17,13 @@ public class Fact
     public string? DatabaseName { get; set; }
 
     /// <summary>
+    /// Optional object name (schema.table, optionally with an index) for object-scoped facts such as
+    /// the ANOMALY_OBJECT_* anomalies — the name the source query selected but the doubles-only
+    /// <see cref="Metadata"/> cannot carry.
+    /// </summary>
+    public string? ObjectName { get; set; }
+
+    /// <summary>
     /// Raw metric values for analysis and audit trail.
     /// Keys are metric-specific (e.g., "wait_time_ms", "waiting_tasks_count").
     /// </summary>

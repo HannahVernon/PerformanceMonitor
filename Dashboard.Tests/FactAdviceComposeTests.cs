@@ -33,6 +33,81 @@ public class FactAdviceComposeTests
             Metadata = new Dictionary<string, double> { ["cores_per_socket"] = coresPerSocket }
         };
 
+    private static Fact FM(string key, double value, Dictionary<string, double> meta, string? obj = null) =>
+        new() { Key = key, Source = "x", Value = value, Severity = 1, Metadata = meta, ObjectName = obj };
+
+    // The audience invariant: composed advice must never contain MCP tool names or internal field names.
+    private static readonly string[] ToolNameMarkers =
+        { "get_", "audit_config", "parallel_only", "schema_table", "reconstructed_blocking_chains", "top_cpu_queries", "lock_mode_breakdown", "queries_at_spike", "best_plan_id" };
+
+    private static void AssertComposedAndClean(AdviceBlock? a)
+    {
+        Assert.NotNull(a);
+        var text = a!.Headline + " " + a.Investigation + " " + a.Remediation;
+        foreach (var m in ToolNameMarkers)
+            Assert.DoesNotContain(m, text);
+    }
+
+    // Regression guard for the routing bug: range-lock findings surface under the real LCK_M_R* keys
+    // (kept individual by the collector), not "LCK_RANGE" — they must reach the composer (state wait
+    // totals, no tool names), not fall through to the tool-named static block.
+    [Fact]
+    public void RangeLock_RealKey_IsComposed_StatesWaitTotals_NoToolNames()
+    {
+        var wait = new Dictionary<string, double>
+        {
+            ["wait_time_ms"] = 75000, ["waiting_tasks_count"] = 300, ["avg_ms_per_wait"] = 250,
+            ["signal_wait_time_ms"] = 0, ["resource_wait_time_ms"] = 75000, ["period_duration_ms"] = 3600000,
+        };
+        var a = FactAdvice.Compose("LCK_M_RS_S", Facts(FM("LCK_M_RS_S", 0.05, wait)));
+        AssertComposedAndClean(a);
+        Assert.Contains("Key-range lock waits", a!.Investigation); // wait-totals prefix = composed, not static
+        Assert.Contains("SERIALIZABLE", a.Investigation);
+    }
+
+    [Fact]
+    public void BlockingChain_StatesDepthAndVictims_NoToolNames()
+    {
+        var meta = new Dictionary<string, double>
+        {
+            ["worst_chain_depth"] = 7, ["worst_chain_victim_count"] = 12, ["worst_apex_sleeping"] = 1,
+            ["worst_chain_max_wait_ms"] = 48000, ["total_reconstructed_chains"] = 23,
+        };
+        var a = FactAdvice.Compose("BLOCKING_CHAIN", Facts(FM("BLOCKING_CHAIN", 7, meta)));
+        AssertComposedAndClean(a);
+        Assert.Contains("7", a!.Investigation);
+        Assert.Contains("12", a.Investigation);
+    }
+
+    [Fact]
+    public void AnomalyObjectGrowth_NamesTheObject_NoToolNames()
+    {
+        var meta = new Dictionary<string, double> { ["growth_mb"] = 6200, ["growth_pct"] = 44, ["current_mb"] = 20200 };
+        var a = FactAdvice.Compose("ANOMALY_OBJECT_GROWTH", Facts(FM("ANOMALY_OBJECT_GROWTH", 6200, meta, obj: "dbo.Orders")));
+        AssertComposedAndClean(a);
+        Assert.Contains("dbo.Orders", a!.Headline);
+    }
+
+    [Fact]
+    public void Sos_StatesSignalWaitShare_NoToolNames()
+    {
+        var wait = new Dictionary<string, double>
+        {
+            ["wait_time_ms"] = 600000, ["waiting_tasks_count"] = 5000, ["avg_ms_per_wait"] = 120,
+            ["signal_wait_time_ms"] = 180000, ["resource_wait_time_ms"] = 420000, ["period_duration_ms"] = 3600000,
+        };
+        var a = FactAdvice.Compose("SOS_SCHEDULER_YIELD", Facts(FM("SOS_SCHEDULER_YIELD", 0.2, wait)));
+        AssertComposedAndClean(a);
+        Assert.Contains("signal wait", a!.Investigation);
+    }
+
+    [Fact]
+    public void Cxpacket_Composed_NoToolNames()
+    {
+        var a = FactAdvice.Compose("CXPACKET", Facts(F("CONFIG_MAXDOP", 16), F("CONFIG_CTFP", 5), Hardware(8)));
+        AssertComposedAndClean(a);
+    }
+
     // ── THREADPOOL_PARALLEL: states the actual MAXDOP/CTFP, recommends the topology cap ──
 
     [Fact]
