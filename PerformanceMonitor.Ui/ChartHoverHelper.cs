@@ -42,8 +42,6 @@ internal sealed class ChartHoverHelper
     // ── Click-to-isolate state ─────────────────────────────────────────────────────────────────
     private readonly bool _enableClickIsolate;
     private string? _isolatedLabel;                              // null = nothing isolated
-    private ScottPlot.AxisLimits? _preIsolateLimits;            // axis limits captured at isolate time
-    private IReadOnlyList<ScottPlot.IAxisRule>? _savedRules;    // axis rules cleared during isolate
     private bool _leftPressed;
     private Point _pressPos;
     private bool _suppressNextLeftUp;                          // set on double-click so the 2nd up can't re-isolate
@@ -148,10 +146,8 @@ internal sealed class ChartHoverHelper
 
     public void Clear()
     {
-        // A re-render resets isolate (the build re-installs any LockedVertical rule itself).
+        // A re-render resets isolate.
         _isolatedLabel = null;
-        _preIsolateLimits = null;
-        _savedRules = null;
         _series.Clear();
         _barPlots.Clear();
     }
@@ -465,15 +461,9 @@ internal sealed class ChartHoverHelper
     {
         if (_series.Count == 0) return;
 
-        // Snapshot the restore state ONLY when entering isolate from the full view. Switching straight
-        // from one isolated series to another (A→B, with no Restore in between) must keep the ORIGINAL
-        // limits + rules captured at A: re-capturing here would save A's already-Y-fitted axes and the
-        // already-emptied rule list, so toggling B off later would restore the wrong view (and, on
-        // Dashboard, drop the LockedVertical rule).
-        bool enteringFresh = _isolatedLabel is null;
-        if (enteringFresh)
-            _preIsolateLimits = _chart.Plot.Axes.GetLimits();
-
+        // Dim every other series; leave the isolated one at its true original look. The Y axis is left
+        // untouched — isolate is a focus aid, not a zoom. (To inspect a buried series, deselect the big
+        // ones in the picker, which re-renders + autoscales.)
         foreach (var entry in _series)
         {
             var visual = ResolveSeriesVisual(label, entry.Label);
@@ -491,19 +481,11 @@ internal sealed class ChartHoverHelper
         }
 
         _isolatedLabel = label;
-
-        // Clear axis rules so the Y-fit sticks — Dashboard installs a LockedVertical rule every render
-        // that would otherwise revert SetLimitsY (Lite installs none, so this is a no-op there). On an
-        // A→B switch the rules are already cleared from A's isolate, so B's SetLimitsY still sticks.
-        if (enteringFresh)
-            _savedRules = SaveAndClearRules(_chart.Plot.Axes.Rules);
-        AutoFitYToSeries(label);
         _chart.Refresh();
     }
 
-    /// <summary>Restores the full multi-series view: un-dims every series, puts back the saved axis
-    /// rules and pre-isolate limits. A no-op when nothing is isolated (so the per-app autoscale hook
-    /// can call it unconditionally).</summary>
+    /// <summary>Un-dims every series back to the full multi-series view. A no-op when nothing is isolated
+    /// (so the per-app autoscale hook can call it unconditionally).</summary>
     internal void Restore()
     {
         if (_isolatedLabel is null) return;
@@ -511,13 +493,6 @@ internal sealed class ChartHoverHelper
         foreach (var entry in _series)
             RestoreSeriesVisual(entry);                                   // faithful for fill + line-only charts
         _isolatedLabel = null;
-
-        RestoreAxisRules(_chart.Plot.Axes.Rules, _savedRules);
-        _savedRules = null;
-        if (_preIsolateLimits is not null)
-            _chart.Plot.Axes.SetLimits(_preIsolateLimits.Value);
-        _preIsolateLimits = null;
-
         _chart.Refresh();
     }
 
@@ -544,24 +519,6 @@ internal sealed class ChartHoverHelper
         }
     }
 
-    private void AutoFitYToSeries(string label)
-    {
-        SeriesEntry entry = default;
-        bool found = false;
-        foreach (var e in _series)
-            if (string.Equals(e.Label, label, StringComparison.Ordinal)) { entry = e; found = true; break; }
-        if (!found || entry.Scatter is null) return;
-
-        var limits = _chart.Plot.Axes.GetLimits();
-        var pts = entry.Scatter.Data.GetScatterPoints();
-        var tuples = new List<(double X, double Y)>(pts.Count);
-        foreach (var p in pts) tuples.Add((p.X, p.Y));
-
-        var fit = ComputeIsolateYLimits(tuples, limits.Left, limits.Right);
-        if (fit is not null)
-            _chart.Plot.Axes.SetLimitsY(fit.Value.Min, fit.Value.Max);
-    }
-
     // ── Pure helpers (unit tested; no live WpfPlot needed) ──────────────────────────────────────
 
     /// <summary>The next isolate target given the current one and a freshly clicked label: clicking
@@ -585,60 +542,4 @@ internal sealed class ChartHoverHelper
         public static readonly IsolateVisual Full = new(false, 255, true);
     }
 
-    /// <summary>
-    /// Y-axis limits that fit a single isolated series over the currently visible X-range, padded
-    /// ~5% each side. Prefers points inside [<paramref name="xMin"/>,<paramref name="xMax"/>]; if none
-    /// are visible, falls back to the whole series. Returns null when there is nothing finite to fit
-    /// (caller leaves the axis alone). A degenerate flat series (max &lt;= min) is widened to
-    /// [min, min+1] before padding so the axis keeps a non-zero height (mirrors
-    /// <see cref="ChartStyle.SetChartYLimitsWithLegendPadding"/>). Deliberately does NOT anchor to
-    /// zero — the whole point of isolate is to reveal a series' own variation, even at a high baseline.
-    /// </summary>
-    internal static (double Min, double Max)? ComputeIsolateYLimits(
-        IReadOnlyList<(double X, double Y)> points, double xMin, double xMax)
-    {
-        if (points is null || points.Count == 0) return null;
-
-        static bool Scan(IReadOnlyList<(double X, double Y)> pts, double lo, double hi,
-            out double min, out double max)
-        {
-            min = double.MaxValue; max = double.MinValue; bool any = false;
-            foreach (var (x, y) in pts)
-            {
-                if (x < lo || x > hi) continue;
-                if (double.IsNaN(y) || double.IsInfinity(y)) continue;
-                if (y < min) min = y;
-                if (y > max) max = y;
-                any = true;
-            }
-            return any;
-        }
-
-        if (!Scan(points, xMin, xMax, out double yMin, out double yMax))
-            if (!Scan(points, double.NegativeInfinity, double.PositiveInfinity, out yMin, out yMax))
-                return null;
-
-        if (yMax <= yMin) yMax = yMin + 1;            // degenerate flat guard (mirror ChartStyle.cs:182)
-        double margin = (yMax - yMin) * 0.05;         // small breathing room on each side
-        return (yMin - margin, yMax + margin);
-    }
-
-    /// <summary>Snapshots and clears a chart's axis rules so an isolate Y-fit can override a
-    /// LockedVertical rule. Returns the saved list for <see cref="RestoreAxisRules{T}"/>. Generic so
-    /// it is unit testable without a live plot.</summary>
-    internal static List<T> SaveAndClearRules<T>(IList<T> liveRules)
-    {
-        var saved = new List<T>(liveRules);
-        liveRules.Clear();
-        return saved;
-    }
-
-    /// <summary>Restores rules saved by <see cref="SaveAndClearRules{T}"/> (no-op when null), replacing
-    /// whatever rules a re-render may have installed in the meantime.</summary>
-    internal static void RestoreAxisRules<T>(IList<T> liveRules, IReadOnlyList<T>? saved)
-    {
-        if (saved is null) return;
-        liveRules.Clear();
-        foreach (var r in saved) liveRules.Add(r);
-    }
 }
