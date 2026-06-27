@@ -150,6 +150,8 @@ ORDER BY growth_mb DESC LIMIT 1";
                 if (await reader.ReadAsync())
                 {
                     var db = reader.GetString(0);
+                    var gSchema = reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString();
+                    var gTable = reader.IsDBNull(2) ? null : reader.GetValue(2)?.ToString();
                     var growthMb = Convert.ToDouble(reader.GetValue(5));
                     var growthPct = Convert.ToDouble(reader.GetValue(6));
                     anomalies.Add(new Fact
@@ -159,6 +161,7 @@ ORDER BY growth_mb DESC LIMIT 1";
                         Value = growthMb,
                         ServerId = context.ServerId,
                         DatabaseName = db,
+                        ObjectName = string.IsNullOrEmpty(gTable) ? null : string.IsNullOrEmpty(gSchema) ? gTable : $"{gSchema}.{gTable}",
                         Metadata = new Dictionary<string, double>
                         {
                             ["prior_mb"] = Convert.ToDouble(reader.GetValue(3)),
@@ -197,7 +200,17 @@ ORDER BY ms_delta DESC LIMIT 1";
                 if (await reader.ReadAsync())
                 {
                     var db = reader.GetString(0);
+                    var cSchema = reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString();
+                    var cTable = reader.IsDBNull(2) ? null : reader.GetValue(2)?.ToString();
+                    var cIndex = reader.IsDBNull(3) ? null : reader.GetValue(3)?.ToString();
                     var msDelta = Convert.ToDouble(reader.GetValue(4));
+                    string? contendedObject = null;
+                    if (!string.IsNullOrEmpty(cTable))
+                    {
+                        contendedObject = string.IsNullOrEmpty(cSchema) ? cTable : $"{cSchema}.{cTable}";
+                        if (!string.IsNullOrEmpty(cIndex))
+                            contendedObject += $", index {cIndex}";
+                    }
                     anomalies.Add(new Fact
                     {
                         Source = "anomaly",
@@ -205,6 +218,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                         Value = msDelta,
                         ServerId = context.ServerId,
                         DatabaseName = db,
+                        ObjectName = contendedObject,
                         Metadata = new Dictionary<string, double>
                         {
                             ["lock_wait_ms_delta"] = msDelta,
