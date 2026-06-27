@@ -205,4 +205,51 @@ public class ChartClickIsolateTests
         ChartHoverHelper.RestoreAxisRules(live, saved);
         Assert.Empty(live);                          // back to the original (empty) rule set
     }
+
+    // ── RestoreSeriesVisual: faithful restore for line-only AND fill charts (regression) ─────────
+
+    [Fact]
+    public void RestoreSeriesVisual_LineOnlyChart_StaysLineOnly_NoPhantomMarkersOrFill()
+    {
+        // CollectorDuration / trend charts build line-only (MarkerSize 0, no fill) and never call
+        // StyleScatter. Restore must NOT re-run StyleScatter — that would add density markers + a fill.
+        var plot = new ScottPlot.Plot();
+        var sc = plot.Add.Scatter(new double[] { 1, 2, 3 }, new double[] { 1, 2, 3 });
+        var identity = ScottPlot.Color.FromHex("#4E79A7");
+        sc.Color = identity;
+        sc.LineWidth = 1.5f;
+        sc.MarkerSize = 0;
+        sc.FillY = false;
+        var entry = new ChartHoverHelper.SeriesEntry(sc, "Collector", identity,
+            sc.LineColor, sc.LineWidth, sc.MarkerSize, sc.FillY);
+
+        sc.Color = identity.WithAlpha(ChartHoverHelper.DimAlpha);   // simulate a dim
+        ChartHoverHelper.RestoreSeriesVisual(entry);
+
+        Assert.Equal(0f, sc.MarkerSize);             // no phantom density markers
+        Assert.False(sc.FillY);                      // no phantom fill ribbon
+        Assert.Equal(1.5f, sc.LineWidth);            // original width preserved
+    }
+
+    [Fact]
+    public void RestoreSeriesVisual_FillChart_RebuildsTheStyleScatterLook()
+    {
+        // A StyleScatter'd fill chart restores via StyleScatter, which rebuilds the gradient from the
+        // unchanged data — reproducing the original look (isolate never spans a re-render).
+        var plot = new ScottPlot.Plot();
+        var sc = plot.Add.Scatter(new double[] { 1, 2, 3 }, new double[] { 0, 5, 10 });
+        var identity = ScottPlot.Color.FromHex("#4E79A7");
+        sc.Color = identity;
+        ChartStyle.StyleScatter(sc);
+        var entry = new ChartHoverHelper.SeriesEntry(sc, "Wait", identity,
+            sc.LineColor, sc.LineWidth, sc.MarkerSize, sc.FillY);
+        Assert.True(entry.OrigFillY);                // StyleScatter set FillY=true (data has a range)
+
+        sc.Color = identity.WithAlpha(ChartHoverHelper.DimAlpha);
+        sc.FillY = false;                            // simulate a dim
+        ChartHoverHelper.RestoreSeriesVisual(entry);
+
+        Assert.True(sc.FillY);                       // fill ribbon rebuilt
+        Assert.Equal(2f, sc.LineWidth);              // StyleScatter's signature line width
+    }
 }

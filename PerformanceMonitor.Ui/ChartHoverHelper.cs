@@ -26,8 +26,9 @@ internal sealed class ChartHoverHelper
 {
     /// <summary>A registered series: the scatter, its full (untruncated) label, and the unmutated
     /// identity color captured at registration (see <see cref="Add"/>).</summary>
-    private readonly record struct SeriesEntry(
-        ScottPlot.Plottables.Scatter Scatter, string Label, ScottPlot.Color Identity);
+    internal readonly record struct SeriesEntry(
+        ScottPlot.Plottables.Scatter Scatter, string Label, ScottPlot.Color Identity,
+        ScottPlot.Color OrigLineColor, float OrigLineWidth, float OrigMarkerSize, bool OrigFillY);
 
     private readonly ScottPlot.WPF.WpfPlot _chart;
     private readonly List<SeriesEntry> _series = new();
@@ -45,6 +46,7 @@ internal sealed class ChartHoverHelper
     private IReadOnlyList<ScottPlot.IAxisRule>? _savedRules;    // axis rules cleared during isolate
     private bool _leftPressed;
     private Point _pressPos;
+    private bool _suppressNextLeftUp;                          // set on double-click so the 2nd up can't re-isolate
 
     /// <summary>The faint line/marker alpha applied to non-isolated series while isolated.</summary>
     internal const byte DimAlpha = 40;
@@ -106,6 +108,9 @@ internal sealed class ChartHoverHelper
             // click-vs-drag. We never set e.Handled, so pan/zoom/right-click keep working.
             chart.PreviewMouseLeftButtonDown += OnPreviewLeftButtonDown;
             chart.MouseLeftButtonUp += OnLeftButtonUp;
+            // Double-click is the autoscale/restore gesture (the per-app handler restores). Flag it so
+            // the second mouse-up can't re-isolate — deterministic, vs. relying on e.ClickCount on the up.
+            chart.MouseDoubleClick += OnDoubleClick;
         }
 
         _registry.AddOrUpdate(chart, this);
@@ -122,6 +127,7 @@ internal sealed class ChartHoverHelper
         _chart.Loaded -= OnChartLoaded;
         _chart.PreviewMouseLeftButtonDown -= OnPreviewLeftButtonDown;
         _chart.MouseLeftButtonUp -= OnLeftButtonUp;
+        _chart.MouseDoubleClick -= OnDoubleClick;
         _registry.Remove(_chart);
         _popup.IsOpen = false;
         _series.Clear();
@@ -154,8 +160,12 @@ internal sealed class ChartHoverHelper
         /* Capture the IDENTITY color from the marker fill, NOT scatter.Color: Add runs after
            ChartStyle.StyleScatter, which has already mutated the line color to identity.WithAlpha(215)
            but never touches the marker fill — so MarkerStyle.FillColor still holds the pure identity
-           used to dim/restore this series. */
-        _series.Add(new SeriesEntry(scatter, label, scatter.MarkerStyle.FillColor));
+           used to dim/restore this series. Also snapshot the full visual state as the chart left it, so
+           restore is faithful for line-only charts (CollectorDuration / trend charts use MarkerSize 0,
+           no fill, and never call StyleScatter) as well as the StyleScatter'd fill charts. */
+        _series.Add(new SeriesEntry(
+            scatter, label, scatter.MarkerStyle.FillColor,
+            scatter.LineColor, scatter.LineWidth, scatter.MarkerSize, scatter.FillY));
 
     public void Add(ScottPlot.Plottables.BarPlot barPlot, string label) =>
         _barPlots.Add((barPlot, label));
@@ -335,14 +345,21 @@ internal sealed class ChartHoverHelper
         _pressPos = e.GetPosition(_chart);
     }
 
+    // Fires on the 2nd down of a double-click, before the terminal up — so the up below is suppressed.
+    private void OnDoubleClick(object sender, MouseButtonEventArgs e) => _suppressNextLeftUp = true;
+
     private void OnLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        // The 2nd-down's PreviewMouseLeftButtonDown is marked Handled by Control.HandleDoubleClick, so our
+        // press handler is skipped and _leftPressed is already false on a double-click's terminal up.
+        // Consume the suppress flag (set by OnDoubleClick) BEFORE the _leftPressed gate, or it sticks and
+        // swallows the next genuine click. This flag is the deterministic re-isolate guard; double-click
+        // is the autoscale/restore gesture (SetupChartContextMenu calls Restore()) and must not re-isolate.
+        if (_suppressNextLeftUp) { _suppressNextLeftUp = false; _leftPressed = false; return; }
         if (!_leftPressed) return;
         _leftPressed = false;
 
-        // Ignore the second up of a double-click: double-click is the autoscale/restore gesture
-        // (SetupChartContextMenu), which already calls Restore() — re-isolating on it would fight that.
-        if (e.ClickCount != 1) return;
+        if (e.ClickCount != 1) return;   // cheap secondary guard for a double-click's terminal up
 
         var pos = e.GetPosition(_chart);
         double dx = pos.X - _pressPos.X;
@@ -468,9 +485,8 @@ internal sealed class ChartHoverHelper
             }
             else
             {
-                // The isolated series at full identity; StyleScatter rebuilds the 215-alpha line + fill.
-                entry.Scatter.Color = entry.Identity;
-                ChartStyle.StyleScatter(entry.Scatter);
+                // The isolated series back at its true original look (faithful for line-only charts too).
+                RestoreSeriesVisual(entry);
             }
         }
 
@@ -493,10 +509,7 @@ internal sealed class ChartHoverHelper
         if (_isolatedLabel is null) return;
 
         foreach (var entry in _series)
-        {
-            entry.Scatter.Color = entry.Identity;
-            ChartStyle.StyleScatter(entry.Scatter);                       // rebuild line + markers + fill
-        }
+            RestoreSeriesVisual(entry);                                   // faithful for fill + line-only charts
         _isolatedLabel = null;
 
         RestoreAxisRules(_chart.Plot.Axes.Rules, _savedRules);
@@ -506,6 +519,29 @@ internal sealed class ChartHoverHelper
         _preIsolateLimits = null;
 
         _chart.Refresh();
+    }
+
+    /// <summary>Returns one series to its captured original look. Fill charts (OrigFillY true) are
+    /// rebuilt by StyleScatter — it regenerates the gradient from the unchanged data. Line-only charts
+    /// (no fill: CollectorDuration / trend charts use MarkerSize 0 and never call StyleScatter) get their
+    /// captured line + marker values written back directly; running StyleScatter on those would wrongly
+    /// add density markers and a fill ribbon they never had.</summary>
+    internal static void RestoreSeriesVisual(in SeriesEntry e)
+    {
+        if (e.OrigFillY)
+        {
+            e.Scatter.Color = e.Identity;
+            ChartStyle.StyleScatter(e.Scatter);
+        }
+        else
+        {
+            // Color sets line + marker to the opaque identity; then put the captured line look back.
+            e.Scatter.Color = e.Identity;
+            e.Scatter.LineColor = e.OrigLineColor;
+            e.Scatter.LineWidth = e.OrigLineWidth;
+            e.Scatter.MarkerSize = e.OrigMarkerSize;
+            e.Scatter.FillY = false;
+        }
     }
 
     private void AutoFitYToSeries(string label)
