@@ -29,7 +29,8 @@ SELECT
     SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'ERROR' THEN 1 ELSE 0 END) AS error_count,
     AVG(duration_ms) AS avg_duration_ms,
-    MAX(CASE WHEN status = 'SUCCESS' THEN collection_time END) AS last_success_time,
+    -- SKIPPED counts as a healthy run (dedup / version-gated collectors no-op without being stale)
+    MAX(CASE WHEN status IN ('SUCCESS', 'SKIPPED') THEN collection_time END) AS last_success_time,
     MAX(collection_time) AS last_run_time,
     MAX(CASE WHEN status IN ('ERROR', 'PERMISSIONS') THEN error_message END) AS last_error,
     MAX(CASE WHEN status IN ('ERROR', 'PERMISSIONS') THEN collection_time END) AS last_error_time,
