@@ -304,6 +304,18 @@
 
                     <!-- Collection Health Sub-Tab -->
                     <TabItem Header="Collection Health">
+                      <DockPanel>
+                        <!-- Banner shown when collection has stopped (jobs disabled / Agent down / collectors failing).
+                             Populated by the app's own check, so it surfaces here even when collection is off. -->
+                        <Border x:Name="CollectionStoppedBanner" DockPanel.Dock="Top" Visibility="Collapsed"
+                                Background="#5C2626" BorderBrush="#8B3A3A" BorderThickness="1" CornerRadius="3"
+                                Padding="10,6" Margin="5,5,5,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#x26A0;" FontSize="14" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="White"/>
+                                <TextBlock x:Name="CollectionStoppedBannerText" VerticalAlignment="Center" Foreground="White"
+                                           TextWrapping="Wrap" FontWeight="SemiBold"/>
+                            </StackPanel>
+                        </Border>
                         <TabControl ItemContainerStyle="{DynamicResource SubTabItemStyle}">
                             <TabItem Header="Health Summary">
                                 <Grid>
@@ -396,6 +408,7 @@
                                 <ScottPlot:WpfPlot x:Name="CollectorDurationChart" Margin="4"/>
                             </TabItem>
                         </TabControl>
+                      </DockPanel>
                     </TabItem>
 
                     <!-- Running Jobs Sub-Tab -->

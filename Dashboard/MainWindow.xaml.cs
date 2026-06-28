@@ -120,6 +120,8 @@ namespace PerformanceMonitorDashboard
         private readonly ConcurrentDictionary<string, DateTime> _lastAlertedFailedJobTime = new();
         private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
         private readonly ConcurrentDictionary<string, bool> _activeCaptureDownAlert = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastCollectionStoppedAlert = new();
+        private readonly ConcurrentDictionary<string, bool> _activeCollectionStoppedAlert = new();
         private readonly ConcurrentDictionary<string, long> _previousDeadlockCounts = new();
         /* Time of the last NEW deadlock per server, used to de-flap the "Deadlocks Cleared"
            notification (#1091): deadlock detection is edge-triggered off a delta, so the check

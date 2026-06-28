@@ -197,6 +197,7 @@ namespace PerformanceMonitorDashboard
             LongRunningJobMultiplierTextBox.Text = prefs.LongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
             NotifyOnFailedJobsCheckBox.IsChecked = prefs.NotifyOnFailedJobs;
             FailedJobLookbackTextBox.Text = prefs.FailedJobLookbackMinutes.ToString(CultureInfo.InvariantCulture);
+            NotifyOnCollectionStoppedCheckBox.IsChecked = prefs.NotifyOnCollectionStopped;
             AlertCooldownTextBox.Text = prefs.AlertCooldownMinutes.ToString(CultureInfo.InvariantCulture);
             EmailCooldownTextBox.Text = prefs.EmailCooldownMinutes.ToString(CultureInfo.InvariantCulture);
             AlertDeliveryModeCombo.SelectedIndex = prefs.AlertDeliveryMode == AlertNotificationMode.PerEvent ? 1 : 0;
@@ -379,6 +380,12 @@ namespace PerformanceMonitorDashboard
             UpdateAlertNotificationStates();
         }
 
+        private void NotifyOnCollectionStoppedCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
         private void RestoreAlertDefaultsButton_Click(object sender, RoutedEventArgs e)
         {
             BlockingThresholdTextBox.Text = "30";
@@ -429,6 +436,8 @@ namespace PerformanceMonitorDashboard
                 parts.Add($"jobs > {LongRunningJobMultiplierTextBox.Text}x avg");
             if (NotifyOnFailedJobsCheckBox.IsChecked == true)
                 parts.Add($"failed jobs (last {FailedJobLookbackTextBox.Text}m)");
+            if (NotifyOnCollectionStoppedCheckBox.IsChecked == true)
+                parts.Add("collection stopped");
 
             AlertPreviewText.Text = parts.Count > 0
                 ? $"Will alert when: {string.Join(", ", parts)}"
@@ -458,6 +467,7 @@ namespace PerformanceMonitorDashboard
             LongRunningJobMultiplierTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningJobsCheckBox.IsChecked == true;
             NotifyOnFailedJobsCheckBox.IsEnabled = notificationsEnabled;
             FailedJobLookbackTextBox.IsEnabled = notificationsEnabled && NotifyOnFailedJobsCheckBox.IsChecked == true;
+            NotifyOnCollectionStoppedCheckBox.IsEnabled = notificationsEnabled;
             UpdateAlertPreviewText();
         }
 
@@ -751,6 +761,8 @@ namespace PerformanceMonitorDashboard
                 prefs.FailedJobLookbackMinutes = failedJobLookback;
             else if (prefs.NotifyOnFailedJobs)
                 validationErrors.Add("Failed-job lookback must be between 1 and 1440 minutes");
+
+            prefs.NotifyOnCollectionStopped = NotifyOnCollectionStoppedCheckBox.IsChecked == true;
 
             if (int.TryParse(AlertCooldownTextBox.Text, out int alertCooldown) && alertCooldown >= 1 && alertCooldown <= 120)
                 prefs.AlertCooldownMinutes = alertCooldown;

@@ -162,10 +162,11 @@ namespace PerformanceMonitorDashboard.Services
                     ? Task.FromResult(new List<FailedJobInfo>())
                     : GetRecentlyFailedJobsAsync(connection, failedJobLookbackMinutes);
                 var missingCaptureTask = GetMissingCaptureSessionsAsync(connection);
+                var collectionStoppedTask = GetCollectionStoppedAsync(connection, engineEdition);
 
                 var allTasks = filteredDeadlockTask != null
-                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask }
-                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask };
+                    ? new Task[] { cpuTask, blockingTask, deadlockTask, filteredDeadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask, collectionStoppedTask }
+                    : new Task[] { cpuTask, blockingTask, deadlockTask, poisonWaitTask, longRunningTask, tempDbTask, volumeTask, anomalousJobTask, failedJobTask, missingCaptureTask, collectionStoppedTask };
                 await Task.WhenAll(allTasks);
 
                 var cpuResult = await cpuTask;
@@ -186,6 +187,13 @@ namespace PerformanceMonitorDashboard.Services
                 result.AnomalousJobs = await anomalousJobTask;
                 result.RecentlyFailedJobs = await failedJobTask;
                 result.MissingCaptureSessions = await missingCaptureTask;
+
+                var collectionStopped = await collectionStoppedTask;
+                result.CollectionStopped = collectionStopped.Stopped;
+                result.CollectionStoppedReason = collectionStopped.Reason;
+                result.DisabledCollectorJobs = collectionStopped.DisabledJobs;
+                result.TotalCollectorJobs = collectionStopped.TotalJobs;
+                result.MinutesSinceLastCollection = collectionStopped.MinutesSince;
             }
             catch (Exception ex)
             {
@@ -194,6 +202,135 @@ namespace PerformanceMonitorDashboard.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Minutes of collection silence beyond which — absent a clearer cause like disabled jobs —
+        /// we treat collection as stopped (Agent service down, or collectors erroring). Generous so a
+        /// slow schedule preset doesn't false-alarm; the disabled-jobs check catches the common case
+        /// immediately regardless of this. Hardcoded by intent (defaults over speculative config).
+        /// </summary>
+        private const int CollectionStaleThresholdMinutes = 30;
+
+        internal readonly record struct CollectionStoppedResult(
+            bool Stopped, string? Reason, int DisabledJobs, int TotalJobs, int? MinutesSince);
+
+        /// <summary>
+        /// Pure decision: given the two probe results (disabled-job counts and minutes-since-last-collection),
+        /// decide whether collection is stopped and why. Disabled jobs win — immediate and specific; the
+        /// freshness gap is the catch-all for Agent-stopped / erroring collectors. Extracted for unit testing.
+        /// </summary>
+        internal static CollectionStoppedResult DecideCollectionStopped(
+            int disabledJobs, int totalJobs, int? minutesSince, int thresholdMinutes)
+        {
+            if (totalJobs > 0 && disabledJobs > 0)
+            {
+                string reason = disabledJobs == totalJobs
+                    ? $"All {totalJobs} PerformanceMonitor collector Agent job(s) are disabled — data collection has stopped."
+                    : $"{disabledJobs} of {totalJobs} PerformanceMonitor collector Agent job(s) are disabled — collection is partially or fully stopped.";
+                return new CollectionStoppedResult(true, reason, disabledJobs, totalJobs, minutesSince);
+            }
+
+            if (minutesSince.HasValue && minutesSince.Value >= thresholdMinutes)
+            {
+                string reason = $"No collector has run in {minutesSince.Value} minutes — the SQL Agent service may be stopped or the collectors are failing.";
+                return new CollectionStoppedResult(true, reason, disabledJobs, totalJobs, minutesSince);
+            }
+
+            return new CollectionStoppedResult(false, null, disabledJobs, totalJobs, minutesSince);
+        }
+
+        /// <summary>
+        /// Detects whether data collection has stopped — the one health signal the app must compute
+        /// itself, since the collector that fills every other table is exactly what may be off.
+        /// Two checks: (1) are the PerformanceMonitor SQL Agent jobs disabled (immediate, definitive),
+        /// and (2) has nothing logged a collection within the expected window (catches Agent-stopped /
+        /// erroring collectors). The msdb job check is skipped on Azure SQL DB (no Agent) and degrades
+        /// gracefully if msdb is unreadable (RDS / missing SQLAgentReaderRole) — it never reports
+        /// "disabled" when it simply couldn't look.
+        /// </summary>
+        private async Task<CollectionStoppedResult> GetCollectionStoppedAsync(SqlConnection connection, int engineEdition)
+        {
+            int disabledJobs = 0;
+            int totalJobs = 0;
+            int? minutesSince = null;
+
+            // (1) Are the collector Agent jobs disabled? Live msdb read — same gating as the failed-job
+            //     query (skip Azure SQL DB; tolerate restricted msdb). enabled = 0 means the job won't fire.
+            if (engineEdition != 5)
+            {
+                try
+                {
+                    const string jobQuery = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                        SELECT
+                            total_jobs = COUNT_BIG(*),
+                            disabled_jobs = SUM(CASE WHEN sj.enabled = 0 THEN 1 ELSE 0 END)
+                        FROM msdb.dbo.sysjobs AS sj
+                        WHERE sj.name LIKE N'PerformanceMonitor%'
+                        OPTION(RECOMPILE);";
+
+                    using var cmd = new SqlCommand(jobQuery, connection);
+                    cmd.CommandTimeout = 10;
+                    using var reader = await cmd.ExecuteReaderAsync();
+                    if (await reader.ReadAsync())
+                    {
+                        totalJobs = reader.IsDBNull(0) ? 0 : (int)reader.GetInt64(0);
+                        disabledJobs = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Restricted msdb (e.g. AWS RDS) or no SQLAgentReaderRole — leave counts at 0 so we
+                    // fall through to the freshness check rather than falsely claiming jobs are disabled.
+                    Logger.Warning($"Could not read collector job state: {ex.Message}");
+                }
+            }
+
+            // (2) Freshness backstop: how long since ANY collector logged a run (success, failure, or
+            //     skipped — all mean the master collector fired). NULL = never collected, not "stopped".
+            try
+            {
+                const string freshnessQuery = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                    SELECT minutes_since = DATEDIFF(MINUTE, MAX(cl.collection_time), SYSDATETIME())
+                    FROM config.collection_log AS cl
+                    OPTION(RECOMPILE);";
+
+                using var cmd = new SqlCommand(freshnessQuery, connection);
+                cmd.CommandTimeout = 10;
+                var raw = await cmd.ExecuteScalarAsync();
+                if (raw != null && raw != DBNull.Value)
+                    minutesSince = Convert.ToInt32(raw);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Could not read collection freshness: {ex.Message}");
+            }
+
+            // Decide + explain. Disabled jobs win (immediate, specific); freshness is the catch-all.
+            return DecideCollectionStopped(disabledJobs, totalJobs, minutesSince, CollectionStaleThresholdMinutes);
+        }
+
+        /// <summary>
+        /// Public entry for the Collection Health tab: runs the same disabled-jobs + freshness check the
+        /// alert engine uses and returns whether collection looks stopped, with a human-readable reason.
+        /// Opens its own connection; passing engineEdition 0 lets the inner msdb check try (and degrade
+        /// gracefully on Azure SQL DB / restricted msdb) rather than threading edition through the tab.
+        /// </summary>
+        public async Task<(bool Stopped, string? Reason)> GetCollectionStatusAsync()
+        {
+            try
+            {
+                await using var tc = await OpenThrottledConnectionAsync();
+                var result = await GetCollectionStoppedAsync(tc.Connection, 0);
+                return (result.Stopped, result.Reason);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"GetCollectionStatusAsync failed: {ex.Message}");
+                return (false, null);
+            }
         }
 
         /// <summary>
