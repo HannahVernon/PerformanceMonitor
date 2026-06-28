@@ -398,6 +398,7 @@ Both editions include a real-time alert engine that monitors for performance iss
 | **Volume free space** | 10% or 5 GB free | Fires when a monitored volume's free space drops below the percentage or absolute threshold (either check can be disabled). Never fires on Azure SQL Database. |
 | **Failed agent job** | 60-minute lookback | Fires when a SQL Agent job run fails within the lookback window. Skipped on Azure SQL Database. |
 | **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online (tray + email) |
+| **Collection stopped** | Jobs disabled, or no run in 30 min | Fires when the PerformanceMonitor collector Agent jobs are disabled, or no collection has run for 30+ minutes (Agent service stopped or collectors erroring). App-computed, so it survives the collector being off; clears with a "Collection Resumed" notice. Full edition only (Lite runs its own scheduler); never fires on Azure SQL Database; degrades gracefully where msdb is restricted (e.g. AWS RDS). |
 
 All thresholds are configurable in Settings.
 
