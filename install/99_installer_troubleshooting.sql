@@ -2,7 +2,7 @@
 Copyright 2026 Darling Data, LLC
 https://www.erikdarling.com/
 
-Lightweight troubleshooting script for the Performance Monitor Installer GUI.
+Lightweight troubleshooting script for the Performance Monitor installer.
 This script runs quick diagnostic checks without executing collectors.
 For full troubleshooting with collector execution, use 99_user_troubleshooting.sql
 */
