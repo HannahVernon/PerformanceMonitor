@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.0] - 2026-06-27
+## [3.1.0] - 2026-06-28
 
 ### Added
 
@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lite and Dashboard: resolved/cleared tray toasts are themed to match the condition cards** ([#1186]) — *Blocking Cleared*, *CPU Resolved*, etc. went through a plain unthemed Windows balloon while the triggering alert used the themed card, so a resolution looked nothing like the alert it resolved. All 17 resolved/cleared notifications across both apps now render a themed `StyledBalloon` with a green-check *resolved* accent (the same green as the email/webhook RESOLVED badge); server online/offline, update-available, and analysis-finding toasts stay as OS balloons so they persist in the Action Center
 
 ### Fixed
+
+- **Lite and Dashboard: the Overview's empty Blocking/Deadlocking lane now renders as a live grid instead of a dead black box** ([#1245]) — on a healthy server the Blocking/Deadlocking correlated-timeline lane usually has no events, and its empty state drew as a blank black box: the grid was hidden, both axes used an `EmptyTickGenerator`, and a "No Data" label sat at the origin where `SyncXAxes` immediately shoved it off-screen the moment it set the real time range. The empty lane now renders like the populated ones — grid kept, a 0-1 Y axis with normal numeric ticks, and `DateTimeTicksBottomDateChange` so its vertical gridlines line up with the other lanes (time labels still only on the bottom File I/O lane) — so an idle lane reads as "nothing happening" rather than broken. Mirrored in both apps' sync-paired `CorrelatedTimelineLanesControl`.
 
 - **Lite and Dashboard: corrected wrong and misleading recommendation advice, plus a MAXDOP code bug** ([#1185], [#1187], [#1192], [#1194]) — an adversarial, source-checked audit of the advice engine found several claims that were outright wrong; the worst are fixed against primary documentation: `SOS_SCHEDULER_YIELD` is no longer described as "demand exceeds supply" (it's quantum-exhaustion CPU work — pressure shows as signal-wait / runnable-queue share); "every UPDATE touches every nonclustered index" is removed (only changed-column indexes are touched); the last-page-contention guidance is corrected to `OPTIMIZE_FOR_SEQUENTIAL_KEY` (the old text recommended *adding* a clustered index, which creates the hotspot); tempdb "autogrowth disabled" is corrected to enable it; range-lock isolation is narrowed to `SERIALIZABLE`; and the dead `PERFMON_PLE` rule (PLE is never collected) is removed. Separately a **code** bug is fixed: `FactRemediation.RecommendedMaxdop` computed MAXDOP from `engine_edition` (8/4/1 by edition — invented; SQL Server's guidance is topology-based, never edition-based) and the engine both recommended *and could apply* it; it now derives from cores-per-socket (`min(cores, 8)`), with edition dropped from the advice. Also fixed: the root-fact value surfaced in the MCP and notifications showed the finding's severity instead of its value. Covered by `FactAdviceCorrectnessTests`.
 - **Lite: the Alert History Value/Threshold columns no longer show a raw full-precision float** ([#1134]) — a Volume Free Space alert rendered its Value as `0.9746057751382348` instead of a rounded, unit-aware figure. Lite stores each alert's `current_value`/`threshold_value` as a DuckDB `DOUBLE` and the grid binds to `CurrentValueDisplay`/`ThresholdValueDisplay`, which ran the value through a `FormatValue` helper that special-cased only CPU and TempDB and fell through to `":G"` (full precision) for every other metric — so free-space %, poison-wait ms, long-running-job % of average, and the count metrics all leaked the raw double. `FormatValue` is now keyed on the exact `metric_name` strings Lite's alert engine emits: percent metrics (High CPU, TempDB Space, Volume Free Space, Long-Running Job) render as `F1` + `%`, Poison Wait as whole `ms`, Long-Running Query as whole `m`, and the count metrics (Blocking, Deadlocks, Failed Agent Job) as whole numbers — and the fallback is now `":F2"` instead of `":G"`, so an unmapped metric (e.g. an analysis-finding severity) can never render a raw float again. This was **Lite-only**: the Dashboard's `AlertHistoryDisplayItem.CurrentValue` is a pre-formatted string built at the alert site, so it was structurally immune and is unchanged. Covered by `AlertHistoryValueFormatTests`
@@ -162,6 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1198]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1198
 [#1203]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1203
 [#1244]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1244
+[#1245]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1245
 [#1148]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1148
 [#1155]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1155
 [#1157]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1157
