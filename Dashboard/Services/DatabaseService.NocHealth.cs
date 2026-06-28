@@ -315,21 +315,44 @@ namespace PerformanceMonitorDashboard.Services
         /// <summary>
         /// Public entry for the Collection Health tab: runs the same disabled-jobs + freshness check the
         /// alert engine uses and returns whether collection looks stopped, with a human-readable reason.
-        /// Opens its own connection; passing engineEdition 0 lets the inner msdb check try (and degrade
-        /// gracefully on Azure SQL DB / restricted msdb) rather than threading edition through the tab.
+        /// Opens its own connection and resolves the real engine edition first, so the inner msdb job
+        /// check gates Azure SQL DB (edition 5) by skipping cleanly — the same way the alert path does —
+        /// instead of issuing a doomed query and relying on the catch. The try/catch remains a backstop.
         /// </summary>
         public async Task<(bool Stopped, string? Reason)> GetCollectionStatusAsync()
         {
             try
             {
                 await using var tc = await OpenThrottledConnectionAsync();
-                var result = await GetCollectionStoppedAsync(tc.Connection, 0);
+                int engineEdition = await GetEngineEditionAsync(tc.Connection);
+                var result = await GetCollectionStoppedAsync(tc.Connection, engineEdition);
                 return (result.Stopped, result.Reason);
             }
             catch (Exception ex)
             {
                 Logger.Warning($"GetCollectionStatusAsync failed: {ex.Message}");
                 return (false, null);
+            }
+        }
+
+        /// <summary>
+        /// Reads SERVERPROPERTY('EngineEdition') for the current connection (5 = Azure SQL Database).
+        /// Returns 0 if it can't be read, which callers treat as "unknown / not Azure" — the inner msdb
+        /// check then tries and degrades gracefully, so a failed edition read never disables the check.
+        /// </summary>
+        private static async Task<int> GetEngineEditionAsync(SqlConnection connection)
+        {
+            try
+            {
+                using var cmd = new SqlCommand("SELECT CONVERT(integer, SERVERPROPERTY('EngineEdition'));", connection);
+                cmd.CommandTimeout = 10;
+                var raw = await cmd.ExecuteScalarAsync();
+                return raw == null || raw == DBNull.Value ? 0 : Convert.ToInt32(raw);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Could not read engine edition for collection-status check: {ex.Message}");
+                return 0;
             }
         }
 
