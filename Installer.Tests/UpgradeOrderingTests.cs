@@ -178,6 +178,70 @@ public class UpgradeOrderingTests
         Assert.Contains(upgrades, u => u.FolderName == "2.2.0-to-2.3.0");
     }
 
+    [Fact]
+    public void EmbeddedUpgrades_AllDiscoveredFoldersHaveReadableManifestAndScripts()
+    {
+        // Self-maintaining guard for the bug class behind #772 (broken embedded-resource
+        // discovery) and the 3.1.0 prep blocker (an upgrade folder shipped with no upgrade.txt,
+        // which ScriptProvider silently skips). Every embedded upgrade folder the Dashboard
+        // could apply must expose a readable manifest whose listed scripts all exist and read.
+        var provider = ScriptProvider.FromEmbeddedResources();
+        var warnings = new List<string>();
+
+        var upgrades = provider.GetApplicableUpgrades("0.0.1", "999.0.0", warnings.Add);
+
+        Assert.NotEmpty(upgrades);
+        Assert.Empty(warnings); // nothing skipped for a missing upgrade.txt
+
+        foreach (var upgrade in upgrades)
+        {
+            var manifest = provider.GetUpgradeManifest(upgrade);
+            Assert.NotEmpty(manifest);
+
+            foreach (var scriptName in manifest)
+            {
+                Assert.True(
+                    provider.UpgradeScriptExists(upgrade, scriptName),
+                    $"{upgrade.FolderName}/{scriptName} is listed in upgrade.txt but is not embedded");
+                Assert.False(
+                    string.IsNullOrWhiteSpace(provider.ReadUpgradeScript(upgrade, scriptName)),
+                    $"{upgrade.FolderName}/{scriptName} is embedded but empty");
+            }
+        }
+    }
+
+    [Fact]
+    public void EmbeddedUpgrades_3_0_0_To_3_1_0_DiscoverableWithManifestAndScript()
+    {
+        // Exercises THIS release's upgrade through the embedded-resource path the Dashboard
+        // uses (a distinct code path from the CLI's filesystem provider — #772 only hit
+        // embedded resources). Pins the 3.0.0 -> 3.1.0 hop the 3.1.0 prep had to repair: the
+        // folder shipped without the upgrade.txt that lists its one script.
+        var provider = ScriptProvider.FromEmbeddedResources();
+        var warnings = new List<string>();
+
+        var upgrades = provider.GetApplicableUpgrades("3.0.0", "3.1.0", warnings.Add);
+
+        Assert.Contains(upgrades, u => u.FolderName == "3.0.0-to-3.1.0");
+        Assert.DoesNotContain(warnings, w => w.Contains("3.0.0-to-3.1.0"));
+
+        foreach (var upgrade in upgrades)
+        {
+            if (upgrade.FolderName != "3.0.0-to-3.1.0")
+                continue;
+
+            var manifest = provider.GetUpgradeManifest(upgrade);
+            Assert.Contains("01_blocking_chain_monitor_loop.sql", manifest);
+            Assert.True(provider.UpgradeScriptExists(upgrade, "01_blocking_chain_monitor_loop.sql"));
+
+            var script = provider.ReadUpgradeScript(upgrade, "01_blocking_chain_monitor_loop.sql");
+            Assert.Contains("USE PerformanceMonitor", script);
+            Assert.Contains("ALTER TABLE collect.blocking_BlockedProcessReport", script);
+            Assert.Contains("blocking_ecid", script);
+            Assert.Contains("monitor_loop", script);
+        }
+    }
+
     [Theory]
     [InlineData("_2._2._0_to_2._3._0.upgrade.txt", "_2._2._0_to_2._3._0")]
     [InlineData("_2._2._0_to_2._3._0.03_add_growth_vlf_columns.sql", "_2._2._0_to_2._3._0")]
