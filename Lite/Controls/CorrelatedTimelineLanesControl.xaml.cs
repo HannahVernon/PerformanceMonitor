@@ -624,19 +624,28 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         chart.Plot.Clear();
     }
 
-    private static void ShowEmpty(ScottPlot.WPF.WpfPlot chart, string title)
+    /* Render an empty lane as a live, gridded chart instead of a dead black box. This is most often
+       the Blocking/Deadlocking lane on a healthy server (no events = good news), so make it match the
+       populated lanes: keep the grid and show a 0-1 Y axis. We no longer blank the axes or add the old
+       "No Data" text (which SyncXAxes pushed off-screen anyway). X limits and the vertical gridlines are
+       set afterward by SyncXAxes so the time axis aligns with the other lanes; the left axis keeps its
+       default numeric ticks, so 0/1 labels and horizontal gridlines render. The title arg is retained
+       for call-site readability. */
+    private void ShowEmpty(ScottPlot.WPF.WpfPlot chart, string title)
     {
+        chart.Plot.Axes.DateTimeTicksBottomDateChange();
+        // Only the bottom (File I/O) lane shows time labels; the upper lanes hide them (matches UpdateLane).
+        if (chart != FileIoChart)
+            chart.Plot.Axes.Bottom.TickLabelStyle.IsVisible = false;
+
         ReapplyAxisColors(chart);
-        var text = chart.Plot.Add.Text($"{title}\nNo Data", 0, 0);
-        text.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
-        text.LabelFontSize = 12;
-        text.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
-        chart.Plot.HideGrid();
-        chart.Plot.Axes.SetLimitsX(-1, 1);
-        chart.Plot.Axes.SetLimitsY(-1, 1);
-        chart.Plot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.EmptyTickGenerator();
-        chart.Plot.Axes.Left.TickGenerator = new ScottPlot.TickGenerators.EmptyTickGenerator();
+
+        chart.Plot.Title("");
+        chart.Plot.YLabel("");
         chart.Plot.Legend.IsVisible = false;
+        chart.Plot.Axes.Margins(bottom: 0);
+        chart.Plot.Axes.SetLimitsY(0, 1);
+
         chart.Refresh();
     }
 
