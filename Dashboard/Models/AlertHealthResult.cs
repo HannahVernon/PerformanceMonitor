@@ -58,6 +58,39 @@ namespace PerformanceMonitorDashboard.Models
         public List<string> MissingCaptureSessions { get; set; } = new();
 
         /// <summary>
+        /// True when data collection appears to have stopped — either the PerformanceMonitor
+        /// SQL Agent collector jobs are disabled, or nothing has logged a collection within the
+        /// expected window (Agent service stopped, or collectors silently failing). This is the
+        /// one signal that survives the collector being off, because the app computes it directly
+        /// rather than reading a collected table the dead collector would have filled.
+        /// </summary>
+        public bool CollectionStopped { get; set; }
+
+        /// <summary>
+        /// Human-readable cause for <see cref="CollectionStopped"/>
+        /// (e.g. "3 of 6 collector jobs are disabled"). Null when collection is healthy.
+        /// </summary>
+        public string? CollectionStoppedReason { get; set; }
+
+        /// <summary>
+        /// Count of PerformanceMonitor Agent jobs with enabled = 0. 0 when none are disabled,
+        /// or when job state couldn't be read (Azure SQL DB / restricted msdb).
+        /// </summary>
+        public int DisabledCollectorJobs { get; set; }
+
+        /// <summary>
+        /// Total PerformanceMonitor Agent jobs found in msdb. 0 on Azure SQL DB or when
+        /// job state couldn't be read.
+        /// </summary>
+        public int TotalCollectorJobs { get; set; }
+
+        /// <summary>
+        /// Minutes since the most recent entry in config.collection_log. Null when the log is
+        /// empty (never collected) or couldn't be read.
+        /// </summary>
+        public int? MinutesSinceLastCollection { get; set; }
+
+        /// <summary>
         /// Total CPU = SQL + Other.
         /// </summary>
         public int? TotalCpuPercent

@@ -352,6 +352,60 @@ namespace PerformanceMonitorDashboard
                     "running", "session running", true, "tray");
             }
 
+            /* Collection Stopped alerts — the collector Agent jobs are disabled, the Agent service is
+               stopped, or the collectors are failing, so no new data is landing. This is the one check
+               the app computes itself (live msdb job state + collection_log freshness), because every
+               collected table the dead collector would have filled is unreliable here. Without it, a
+               stopped collector reads as a calm, all-zero server instead of a warning. */
+            if (prefs.NotifyOnCollectionStopped && health.CollectionStopped)
+            {
+                _activeCollectionStoppedAlert[serverId] = true;
+                if (!_lastCollectionStoppedAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
+                {
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Collection Stopped" };
+                    bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
+                    _lastCollectionStoppedAlert[serverId] = now;
+
+                    var reason = health.CollectionStoppedReason ?? "Data collection has stopped.";
+                    var detailText = reason +
+                        " The Dashboard's history and live cards read from collected data, so a stopped collector makes " +
+                        "the server look quiet (all zeros) rather than broken. Re-enable the PerformanceMonitor SQL Agent " +
+                        "jobs (or restart the SQL Agent service) to resume collection.";
+
+                    if (!isMuted)
+                    {
+                        _notificationService?.ShowSnoozableNotification(
+                            "Collection Stopped",
+                            $"{serverName}: {reason}",
+                            NotificationType.Error,
+                            serverName,
+                            "Collection Stopped",
+                            _muteRuleService);
+                    }
+
+                    _emailAlertService.RecordAlert(serverId, serverName, "Collection Stopped",
+                        health.DisabledCollectorJobs > 0 ? $"{health.DisabledCollectorJobs} job(s) disabled" : "no recent collection",
+                        "collecting", !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
+
+                    if (!isMuted)
+                    {
+                        await _emailAlertService.TrySendAlertEmailAsync(
+                            "Collection Stopped",
+                            serverName,
+                            reason,
+                            "collecting",
+                            serverId);
+                    }
+                }
+            }
+            else if (_activeCollectionStoppedAlert.TryRemove(serverId, out var wasCollectionStopped) && wasCollectionStopped)
+            {
+                _notificationService?.ShowStyledNotification("Collection Resumed",
+                    $"{serverName}: Data collection is running again", ToastSeverity.Success);
+                _emailAlertService.RecordAlert(serverId, serverName, "Collection Resumed",
+                    "collecting", "collecting", true, "tray");
+            }
+
             /* High CPU alerts — evaluator picks Total or SQL based on prefs.CpuAlertMode */
             int? alertCpuValue = prefs.CpuAlertMode == CpuAlertMode.Total
                 ? health.TotalCpuPercent

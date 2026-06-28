@@ -168,6 +168,14 @@ namespace PerformanceMonitorDashboard
                 var healthData = await _databaseService.GetCollectionHealthAsync();
                 HealthDataGrid.ItemsSource = healthData;
                 HealthNoDataMessage.Visibility = healthData.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+                // App-side check (disabled jobs / freshness) so a stopped collector is flagged here
+                // immediately, not only once the per-collector rows age into STALE after 24h.
+                var (stopped, reason) = await _databaseService.GetCollectionStatusAsync();
+                CollectionStoppedBanner.Visibility = stopped ? Visibility.Visible : Visibility.Collapsed;
+                if (stopped)
+                    CollectionStoppedBannerText.Text = reason ?? "Data collection has stopped.";
+
                 StatusText.Text = "Ready";
             }
             catch (Exception ex)

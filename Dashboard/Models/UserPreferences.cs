@@ -113,6 +113,7 @@ namespace PerformanceMonitorDashboard.Models
         public int LongRunningJobMultiplier { get; set; } = 3; // Alert when job runs > Nx historical average
         public bool NotifyOnFailedJobs { get; set; } = true; // Alert when a SQL Agent job has recently failed
         public int FailedJobLookbackMinutes { get; set; } = 60; // Look back this many minutes for failed Agent job runs
+        public bool NotifyOnCollectionStopped { get; set; } = true; // Alert when collection stops (collector jobs disabled, Agent stopped, or collectors failing)
         private int _alertCooldownMinutes = 5;
         public int AlertCooldownMinutes
         {

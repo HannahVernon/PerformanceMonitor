@@ -308,6 +308,14 @@
                                          TextAlignment="Center"/>
                                 <TextBlock Text="minutes" VerticalAlignment="Center"/>
                             </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnCollectionStoppedCheckBox"
+                                          Content="Data collection has stopped (collector jobs disabled, Agent down, or collectors failing)"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnCollectionStoppedCheckBox_Changed"
+                                          Unchecked="NotifyOnCollectionStoppedCheckBox_Changed"
+                                          ToolTip="Warn when the PerformanceMonitor SQL Agent jobs are disabled, or nothing has collected recently (Agent service stopped or collectors erroring). The app checks this itself, so it still fires when collection is off."/>
+                            </StackPanel>
                             <TextBlock x:Name="AlertPreviewText" FontSize="11" FontStyle="Italic" Foreground="Gray"
                                        TextWrapping="Wrap" Margin="0,12,0,0"/>
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
