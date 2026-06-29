@@ -19,11 +19,8 @@ public sealed class McpCpuTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 4.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {

@@ -32,9 +32,8 @@ public sealed class McpAnalysisTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of data to analyze. Default 4.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -134,9 +133,8 @@ public sealed class McpAnalysisTools
         [Description("Filter to a specific source category. Omit for all.")] string? source = null,
         [Description("Minimum severity to include. Default 0.")] double min_severity = 0)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -206,9 +204,8 @@ public sealed class McpAnalysisTools
         [Description("Hours back for the comparison period. Default 4.")] int hours_back = 4,
         [Description("Hours back for the baseline period start. Default 28.")] int baseline_hours_back = 28)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -281,9 +278,8 @@ public sealed class McpAnalysisTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -352,9 +348,8 @@ public sealed class McpAnalysisTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of finding history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -423,9 +418,8 @@ public sealed class McpAnalysisTools
         [Description("Server name.")] string? server_name = null,
         [Description("Optional reason for muting.")] string? reason = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {

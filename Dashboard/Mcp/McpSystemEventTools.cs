@@ -20,9 +20,8 @@ public sealed class McpSystemEventTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of events to return. Default 100.")] int limit = 100)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -72,9 +71,8 @@ public sealed class McpSystemEventTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries to return. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -135,9 +133,8 @@ For actionable interpretation and suggested follow-up tools, see the 'Interpreti
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;

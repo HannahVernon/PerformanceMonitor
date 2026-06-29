@@ -20,9 +20,8 @@ public sealed class McpActiveQueryTools
         [Description("Hours of data to retrieve. Default 1.")] int hours_back = 1,
         [Description("Maximum number of rows to return. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
