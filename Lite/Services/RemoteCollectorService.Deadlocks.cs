@@ -55,6 +55,15 @@ public partial class RemoteCollectorService
                 await EnsureDeadlockXeSessionOnPremAsync(connection, server, cancellationToken);
             }
         }
+        catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+        {
+            /* Session already present + running -- see IsBenignXeSessionAlreadyPresent. On Azure SQL DB the
+               XE existence catalogs are visibility-scoped per principal, so the pre-check can miss an
+               existing session and CREATE/START then reports "already exists" (25631) / "already started"
+               (25705). That's success, not a failure to surface as unhealthy or log every cycle (#1251). */
+            _logger?.LogDebug("Deadlock XE session already present on '{Server}' (benign)", server.DisplayName);
+            AppLogger.Info("XeSession", $"[{server.DisplayName}] Deadlock XE session already present (benign, #1251)");
+        }
         catch (SqlException ex)
         {
             _logger?.LogWarning("Failed to ensure deadlock XE session on '{Server}': {Message}",
