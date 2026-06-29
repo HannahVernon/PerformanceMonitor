@@ -50,13 +50,20 @@ public static class DataGridExport
         if (value.Length > 0) Clipboard.SetDataObject(value, false);
     }
 
-    /// <summary>Copies the current row (all columns, tab-delimited) to the clipboard.</summary>
+    /// <summary>
+    /// Copies a row (all columns, tab-delimited) to the clipboard -- the row the context menu was
+    /// opened on, falling back to the current or selected row. Row-attached context menus don't
+    /// select the row on right-click, so CurrentItem alone is often null here.
+    /// </summary>
     public static void CopyRow(object sender)
     {
         var grid = FindDataGrid(sender);
-        if (grid?.CurrentItem == null) return;
+        if (grid == null) return;
 
-        Clipboard.SetDataObject(string.Join("\t", GetRowValues(grid, grid.CurrentItem)), false);
+        var item = FindRowItem(sender) ?? grid.CurrentItem ?? grid.SelectedItem;
+        if (item == null) return;
+
+        Clipboard.SetDataObject(string.Join("\t", GetRowValues(grid, item)), false);
     }
 
     /// <summary>Copies the whole grid (header + all rows, tab-delimited) to the clipboard.</summary>
@@ -210,5 +217,22 @@ public static class DataGridExport
             target = VisualTreeHelper.GetParent(target);
         }
         return target as DataGrid;
+    }
+
+    /// <summary>
+    /// The data item of the DataGridRow the context menu was opened on (for row- or cell-attached
+    /// menus), or null when the menu is attached directly to the DataGrid.
+    /// </summary>
+    private static object? FindRowItem(object sender)
+    {
+        if (sender is not MenuItem menuItem || menuItem.Parent is not ContextMenu contextMenu)
+            return null;
+
+        DependencyObject? target = contextMenu.PlacementTarget;
+        while (target != null && target is not DataGridRow)
+        {
+            target = VisualTreeHelper.GetParent(target);
+        }
+        return (target as DataGridRow)?.Item;
     }
 }
