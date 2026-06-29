@@ -180,16 +180,6 @@ namespace PerformanceMonitorDashboard.Controls
             MemoryBrokerRatioChart.Plot.YLabel("Value");
         }
 
-        private void MemoryBrokerFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(MemoryBrokerDataGrid, sender as TextBox);
-        }
-
-        private void MemoryBrokerNumericFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(MemoryBrokerDataGrid, sender as TextBox);
-        }
-
         #endregion
     }
 }

@@ -178,16 +178,6 @@ namespace PerformanceMonitorDashboard.Controls
             return null;
         }
 
-        private void DailySummaryFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(DailySummaryDataGrid, sender as TextBox);
-        }
-
-        private void DailySummaryNumericFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(DailySummaryDataGrid, sender as TextBox);
-        }
-
         private async void DailySummary_Refresh_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -457,7 +447,5 @@ namespace PerformanceMonitorDashboard.Controls
         }
 
         #endregion
-
-        // Filtering logic moved to DataGridFilterService.ApplyFilter()
     }
 }
