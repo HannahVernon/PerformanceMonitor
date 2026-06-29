@@ -437,93 +437,14 @@ public partial class WaitDrillDownWindow : Window
 
     #region Context Menu Handlers
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-        {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-            {
-                var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                if (!string.IsNullOrEmpty(cellContent))
-                    Clipboard.SetDataObject(cellContent, false);
-            }
-        }
-    }
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-    private void CopyRow_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-        {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid?.SelectedItem != null)
-                Clipboard.SetDataObject(TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem), false);
-        }
-    }
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-        {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid != null && dataGrid.Items.Count > 0)
-            {
-                var sb = new StringBuilder();
-                var headers = new List<string>();
-                foreach (var column in dataGrid.Columns)
-                {
-                    if (column is DataGridBoundColumn)
-                        headers.Add(DataGridClipboardBehavior.GetHeaderText(column));
-                }
-                sb.AppendLine(string.Join("\t", headers));
-                foreach (var item in dataGrid.Items)
-                    sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-                Clipboard.SetDataObject(sb.ToString(), false);
-            }
-        }
-    }
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-        {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid != null && dataGrid.Items.Count > 0)
-            {
-                var dialog = new SaveFileDialog
-                {
-                    FileName = $"wait_drill_down_{_waitType}_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                    DefaultExt = ".csv",
-                    Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                };
-
-                if (dialog.ShowDialog() == true)
-                {
-                    try
-                    {
-                        var sb = new StringBuilder();
-                        var headers = new List<string>();
-                        foreach (var column in dataGrid.Columns)
-                        {
-                            if (column is DataGridBoundColumn)
-                                headers.Add(TabHelpers.EscapeCsvField(DataGridClipboardBehavior.GetHeaderText(column)));
-                        }
-                        sb.AppendLine(string.Join(",", headers));
-                        foreach (var item in dataGrid.Items)
-                        {
-                            var values = TabHelpers.GetRowValues(dataGrid, item);
-                            sb.AppendLine(string.Join(",", values.Select(v => TabHelpers.EscapeCsvField(v))));
-                        }
-                        System.IO.File.WriteAllText(dialog.FileName, sb.ToString());
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
-                }
-            }
-        }
-    }
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+        DataGridExport.ExportToCsv(sender, $"wait_drill_down_{_waitType}", TabHelpers.CsvSeparator);
 
     #endregion
 

@@ -400,97 +400,14 @@ namespace PerformanceMonitorDashboard.Controls
 
         #region Context Menu Handlers
 
-        private void CopyCell_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-                {
-                    var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                    if (!string.IsNullOrEmpty(cellContent))
-                        Clipboard.SetDataObject(cellContent, false);
-                }
-            }
-        }
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid?.SelectedItem != null)
-                    Clipboard.SetDataObject(TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem), false);
-            }
-        }
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-        private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var sb = new StringBuilder();
-                    var headers = dataGrid.Columns
-                        .OfType<DataGridBoundColumn>()
-                        .Select(c => DataGridClipboardBehavior.GetHeaderText(c))
-                        .ToList();
-                    sb.AppendLine(string.Join("\t", headers));
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
-                    foreach (var item in dataGrid.Items)
-                        sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-
-                    Clipboard.SetDataObject(sb.ToString(), false);
-                }
-            }
-        }
-
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var saveFileDialog = new SaveFileDialog
-                    {
-                        FileName = $"alert_history_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                        DefaultExt = ".csv",
-                        Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                    };
-
-                    if (saveFileDialog.ShowDialog() == true)
-                    {
-                        try
-                        {
-                            var sb = new StringBuilder();
-                            var sep = TabHelpers.CsvSeparator;
-                            var headers = dataGrid.Columns
-                                .OfType<DataGridBoundColumn>()
-                                .Select(c => TabHelpers.EscapeCsvField(DataGridClipboardBehavior.GetHeaderText(c), sep))
-                                .ToList();
-                            sb.AppendLine(string.Join(sep, headers));
-
-                            foreach (var item in dataGrid.Items)
-                            {
-                                var values = TabHelpers.GetRowValues(dataGrid, item);
-                                sb.AppendLine(string.Join(sep, values.Select(v => TabHelpers.EscapeCsvField(v, sep))));
-                            }
-
-                            File.WriteAllText(saveFileDialog.FileName, sb.ToString());
-                            MessageBox.Show($"Data exported successfully to:\n{saveFileDialog.FileName}",
-                                "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show($"Error exporting data:\n\n{ex.Message}",
-                                "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
-                    }
-                }
-            }
-        }
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+            DataGridExport.ExportToCsv(sender, "alert_history", TabHelpers.CsvSeparator);
 
         #endregion
 

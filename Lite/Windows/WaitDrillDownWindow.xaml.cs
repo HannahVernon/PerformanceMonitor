@@ -419,10 +419,10 @@ public partial class WaitDrillDownWindow : Window
 
     #endregion
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.CopyCell(sender);
-    private void CopyRow_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.CopyRow(sender);
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.CopyAllRows(sender);
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.ExportToCsv(sender, "wait_drill_down");
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "wait_drill_down", App.CsvSeparator);
 
     private async void ViewPlan_Click(object sender, RoutedEventArgs e)
     {
