@@ -38,7 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserMemoryNodeOOMAsync(_memoryNodeOOMHoursBack, _memoryNodeOOMFromDate, _memoryNodeOOMToDate);
-                _memoryNodeOOMUnfilteredData = data;
 
                 // Load charts
                 LoadMemoryNodeOOMUtilChart(data, _memoryNodeOOMHoursBack, _memoryNodeOOMFromDate, _memoryNodeOOMToDate);
@@ -296,8 +295,6 @@ namespace PerformanceMonitorDashboard.Controls
             // Process Virtual Memory Low: Red is bad
             ProcVirtLowIndicator.Fill = procVirtLowCount > 0 ? warningBrush : unknownBrush;
         }
-
-        // MemoryNodeOOM filter methods removed - DataGrid removed per GitHub issue #13
 
         #endregion
     }

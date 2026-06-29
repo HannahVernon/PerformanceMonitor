@@ -38,8 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserIOIssuesAsync(_ioIssuesHoursBack, _ioIssuesFromDate, _ioIssuesToDate);
-                _ioIssuesUnfilteredData = data;
-                // IOIssuesDataGrid removed - chart only per todo.md #19
                 LoadIOIssuesChart(data, _ioIssuesHoursBack, _ioIssuesFromDate, _ioIssuesToDate);
                 LoadLongestPendingIOChart(data, _ioIssuesHoursBack, _ioIssuesFromDate, _ioIssuesToDate);
             }
@@ -123,7 +121,6 @@ namespace PerformanceMonitorDashboard.Controls
             IOIssuesChart.Refresh();
         }
 
-        // IOIssuesFilter_Click removed - grid removed per todo.md #19
         private void LoadLongestPendingIOChart(IEnumerable<HealthParserIOIssueItem> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
         {
             DateTime rangeEnd = toDate ?? Helpers.ServerTimeHelper.ServerNow;
@@ -215,15 +212,6 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.LockChartVerticalAxis(LongestPendingIOChart);
             LongestPendingIOChart.Refresh();
         }
-
-
-
-        // ApplyIOIssuesFilters removed - grid removed per todo.md #19
-
-        // UpdateIOIssuesFilterButtonStyles removed - grid removed per todo.md #19
-
-        // IOIssuesFilterTextBox_TextChanged removed - grid removed per todo.md #19
-        // IOIssuesNumericFilterTextBox_TextChanged removed - grid removed per todo.md #19
 
         #endregion
     }

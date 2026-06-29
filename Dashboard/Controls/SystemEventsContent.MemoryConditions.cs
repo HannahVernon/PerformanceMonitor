@@ -38,7 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserMemoryConditionsAsync(_memoryConditionsHoursBack, _memoryConditionsFromDate, _memoryConditionsToDate);
-                // Grid removed per todo.md #14 - chart only
                 LoadMemoryConditionsChart(data, _memoryConditionsHoursBack, _memoryConditionsFromDate, _memoryConditionsToDate);
             }
             catch (Exception ex)
@@ -110,20 +109,6 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.LockChartVerticalAxis(MemoryConditionsChart);
             MemoryConditionsChart.Refresh();
         }
-
-        // MemoryConditionsFilter_Click removed - grid removed per todo.md #14
-
-        // ApplyMemoryConditionsFilters removed - grid removed per todo.md #14
-
-        // UpdateMemoryConditionsFilterButtonStyles removed - grid removed per todo.md #14
-
-        // MemoryConditionsFilterTextBox_TextChanged removed - grid removed per todo.md #14
-
-
-
-
-
-
 
         #endregion
     }

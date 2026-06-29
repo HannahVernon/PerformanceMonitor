@@ -38,7 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserSchedulerIssuesAsync(_schedulerIssuesHoursBack, _schedulerIssuesFromDate, _schedulerIssuesToDate);
-                // Grid removed per todo.md #13 - chart + summary only
                 LoadSchedulerIssuesChart(data, _schedulerIssuesHoursBack, _schedulerIssuesFromDate, _schedulerIssuesToDate);
                 UpdateSchedulerIssuesSummaryPanel(data);
             }
@@ -166,20 +165,6 @@ namespace PerformanceMonitorDashboard.Controls
                     (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#CCCCCC"));
             }
         }
-
-        // SchedulerIssuesFilter_Click removed - grid removed per todo.md #13
-
-        // ApplySchedulerIssuesFilters removed - grid removed per todo.md #13
-
-        // UpdateSchedulerIssuesFilterButtonStyles removed - grid removed per todo.md #13
-
-        // SchedulerIssuesFilterTextBox_TextChanged removed - grid removed per todo.md #13
-
-        // SchedulerIssuesNumericFilterTextBox_TextChanged removed - grid removed per todo.md #13
-
-        // SchedulerIssuesBoolFilter_Changed removed - grid removed per todo.md #13
-
-        // ApplySchedulerIssuesFilter removed - grid removed per todo.md #13
 
         #endregion
     }
