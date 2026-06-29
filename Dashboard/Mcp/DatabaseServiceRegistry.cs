@@ -16,10 +16,8 @@ public sealed class DatabaseServiceRegistry : IAsyncDisposable
     private readonly ConcurrentDictionary<string, DatabaseService> _services = new(StringComparer.OrdinalIgnoreCase);
     private readonly ICredentialService _credentialService;
 
-    public DatabaseServiceRegistry(ServerManager serverManager, ICredentialService credentialService)
+    public DatabaseServiceRegistry(ICredentialService credentialService)
     {
-        /* serverManager passed for future use but not currently needed */
-        _ = serverManager;
         _credentialService = credentialService;
     }
 
@@ -35,15 +33,9 @@ public sealed class DatabaseServiceRegistry : IAsyncDisposable
         });
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        foreach (var kvp in _services)
-        {
-            if (kvp.Value is IAsyncDisposable disposable)
-            {
-                await disposable.DisposeAsync();
-            }
-        }
         _services.Clear();
+        return ValueTask.CompletedTask;
     }
 }

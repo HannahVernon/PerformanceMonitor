@@ -53,7 +53,7 @@ public sealed class McpHostService : BackgroundService
             builder.Logging.SetMinimumLevel(LogLevel.Warning);
 
             /* Register services that MCP tools need via dependency injection */
-            _registry = new DatabaseServiceRegistry(_serverManager, _credentialService);
+            _registry = new DatabaseServiceRegistry(_credentialService);
             builder.Services.AddSingleton(_serverManager);
             builder.Services.AddSingleton(_registry);
             builder.Services.AddSingleton(_muteRuleService);

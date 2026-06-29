@@ -35,7 +35,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 total_entries = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                entries = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                entries = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_system_health", ex); }
@@ -64,7 +64,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 error_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                errors = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                errors = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_severe_errors", ex); }
@@ -93,7 +93,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 issue_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                issues = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                issues = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_io_issues", ex); }
@@ -122,7 +122,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 issue_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                issues = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                issues = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_scheduler_issues", ex); }
@@ -151,7 +151,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_memory_conditions", ex); }
@@ -180,7 +180,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_cpu_tasks", ex); }
@@ -209,7 +209,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_memory_broker", ex); }
@@ -238,20 +238,9 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_memory_node_oom", ex); }
-    }
-
-    /// <summary>
-    /// Generic serializer for HealthParser items. All HealthParser models share
-    /// similar structure — uses reflection-free duck typing via dynamic.
-    /// </summary>
-    private static object SerializeHealthItem(object item)
-    {
-        // All HealthParser items share a CollectionTime property and varying detail columns.
-        // Serialize the full object and let JSON handle the properties.
-        return item;
     }
 }

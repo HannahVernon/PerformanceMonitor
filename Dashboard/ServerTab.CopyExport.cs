@@ -194,11 +194,6 @@ namespace PerformanceMonitorDashboard
             return values;
         }
 
-        private string GetColumnHeader(DataGridColumn column)
-        {
-            return TabHelpers.GetColumnHeader(column);
-        }
-
         private string EscapeCsvField(string field)
         {
             return TabHelpers.EscapeCsvField(field);

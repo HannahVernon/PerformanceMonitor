@@ -61,15 +61,6 @@ public partial class SqlServerFactCollector : IFactCollector
         return facts;
     }
 
-    /// <summary>
-    /// Collects server hardware properties: CPU count, cores, sockets, memory.
-    /// Critical context for MAXDOP and memory recommendations.
-    /// </summary>
-    /// <summary>
-    /// Builds the latest-row server_properties SELECT, including the WS5 server-health columns only
-    /// when the DB has them. Extracted for testability and so a not-yet-upgraded server (no WS5
-    /// columns) reads the core hardware columns without a bind error.
-    /// </summary>
     // The WS5 server-health column names (compile-time literals — never built from data, so the
     // probe + SELECT-list construction below are injection-safe). Each is referenced only when it
     // actually exists on the target DB.
