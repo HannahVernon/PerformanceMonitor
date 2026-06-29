@@ -33,7 +33,7 @@
 
 | | **[Full Edition](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** | **[Lite Edition](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** |
 |---|---|---|
-| **What it does** | Installs a `PerformanceMonitor` database with 33 T-SQL collectors running via SQL Agent. Separate dashboard app connects to view everything. | Single desktop app that monitors remotely. Stores data locally in DuckDB + Parquet. Nothing touches your server. |
+| **What it does** | Installs a `PerformanceMonitor` database with 34 T-SQL collectors running via SQL Agent. Separate dashboard app connects to view everything. | Single desktop app that monitors remotely. Stores data locally in DuckDB + Parquet. Nothing touches your server. |
 | **Best for** | Production 24/7 monitoring, long-term baselining | Quick triage, Azure SQL DB, locked-down servers, consultants, firefighting |
 | **Requires** | SQL Agent running ([see permissions](#permissions)) | `VIEW SERVER STATE` ([see permissions](#permissions)) |
 | **Get started** | Run the installer, open the dashboard | Download, run, add a server, done |
@@ -56,7 +56,7 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 ## What You Get
 
-🔍 **33 specialized T-SQL collectors** running on configurable schedules with named presets (Off, Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments. Switch presets with a pair of SQL Agent jobs to get quiet-hours / overnight windows without writing any code.
+🔍 **34 specialized T-SQL collectors** running on configurable schedules with named presets (Off, Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments. Switch presets with a pair of SQL Agent jobs to get quiet-hours / overnight windows without writing any code.
 
 🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications, styled HTML emails with full XML attachments, and webhook notifications for external integrations
 
@@ -106,7 +106,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 
 ### Lite Collectors
 
-25 collectors run on independent, configurable schedules:
+26 collectors run on independent, configurable schedules:
 
 | Collector | Default | Source |
 |---|---|---|
@@ -122,7 +122,8 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | memory_grant_stats | 1 min | `sys.dm_exec_query_memory_grants` |
 | tempdb_stats | 1 min | `sys.dm_db_file_space_usage` |
 | perfmon_stats | 1 min | `sys.dm_os_performance_counters` (deltas) |
-| deadlocks | 1 min | `system_health` Extended Events session |
+| deadlocks | 1 min | dedicated `PerformanceMonitor_Deadlock` XE session (`xml_deadlock_report`; `database_xml_deadlock_report` on Azure SQL DB) |
+| dmv_blocking_snapshot | 1 min | `sys.dm_os_waiting_tasks` + `sys.dm_exec_*` (always-on blocking fallback when the blocked-process-report XE is unavailable) |
 | session_stats | 1 min | `sys.dm_exec_sessions` active session tracking |
 | memory_clerks | 5 min | `sys.dm_os_memory_clerks` |
 | memory_pressure_events | 5 min | `sys.dm_os_ring_buffers` RING_BUFFER_RESOURCE_MONITOR |
@@ -293,7 +294,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 
 `sp_configure` is not available on AWS RDS for SQL Server. Features that depend on server-level configuration must be set through **AWS RDS Parameter Groups** instead.
 
-**Blocked process threshold** — Required for blocked process report collection. Without this, blocked process reports will not fire on RDS.
+**Blocked process threshold** — Enables blocked-process-report collection (the richer XE-sourced blocking detail). Without it the blocked-process-report XE will not fire on RDS, but blocking is still captured by the always-on `dmv_blocking_snapshot` collector, so the blocking grid and block-chain viewer stay populated regardless. Set the threshold for the fuller report-sourced detail.
 
 1. Open the [AWS RDS Console](https://console.aws.amazon.com/rds/) and navigate to **Parameter groups**
 2. Create a new parameter group (or modify the one attached to your instance):
@@ -352,7 +353,7 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns, query heatmap |
 | **Resource Metrics** | Server trends, wait stats, TempDB, file I/O latency, perfmon counters, default trace events, trace analysis, session stats, latch stats, spinlock stats |
 | **Memory** | Memory overview, grants, clerks, plan cache, memory pressure events |
-| **Locking** | Blocking chains, deadlocks, blocking/deadlock trends |
+| **Locking** | Blocking chains, deadlocks, blocking/deadlock trends, visual block-chain & deadlock-graph viewers |
 | **System Events** | Corruption events, contention, errors, I/O issues, scheduler issues, memory conditions |
 
 Plus a NOC-style landing page with server health cards (green/yellow/red severity indicators).
@@ -369,11 +370,11 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Queries** | Performance trends, top queries and procedures by duration, Query Store integration, query heatmap |
 | **File I/O** | Read/write I/O trends per database file |
 | **TempDB** | Space usage breakdown and TempDB file I/O |
-| **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history |
+| **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history, visual block-chain & deadlock-graph viewers |
 | **Perfmon** | Selectable SQL Server performance counters over time |
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
 | **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, per-object table/index size, growth, usage, and locking/contention analysis, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
-| **Recommendations** | Prioritized findings drawn from collected metrics, grouped by severity, each card showing the affected database, the recommendation, the reasoning behind it, and a copyable MCP investigation prompt |
+| **Recommendations** | Prioritized findings drawn from collected metrics, grouped into incidents, each card showing the affected database, the recommendation, the reasoning behind it, and a copyable MCP investigation prompt |
 
 Both editions feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
 
@@ -397,6 +398,7 @@ Both editions include a real-time alert engine that monitors for performance iss
 | **Volume free space** | 10% or 5 GB free | Fires when a monitored volume's free space drops below the percentage or absolute threshold (either check can be disabled). Never fires on Azure SQL Database. |
 | **Failed agent job** | 60-minute lookback | Fires when a SQL Agent job run fails within the lookback window. Skipped on Azure SQL Database. |
 | **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online (tray + email) |
+| **Collection stopped** | Jobs disabled, or no run in 30 min | Fires when the PerformanceMonitor collector Agent jobs are disabled, or no collection has run for 30+ minutes (Agent service stopped or collectors erroring). App-computed, so it survives the collector being off; clears with a "Collection Resumed" notice. Full edition only (Lite runs its own scheduler); never fires on Azure SQL Database; degrades gracefully where msdb is restricted (e.g. AWS RDS). |
 
 All thresholds are configurable in Settings.
 

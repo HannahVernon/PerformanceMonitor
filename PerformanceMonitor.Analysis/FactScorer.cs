@@ -32,7 +32,6 @@ public class FactScorer
                 "tempdb" => ScoreTempDbFact(fact),
                 "memory" => ScoreMemoryFact(fact),
                 "queries" => ScoreQueryFact(fact),
-                "perfmon" => ScorePerfmonFact(fact),
                 "config" => ScoreConfigFact(fact),
                 "database_config" => ScoreDatabaseConfigFact(fact),
                 "jobs" => ScoreJobFact(fact),
@@ -218,22 +217,6 @@ public class FactScorer
             // indexes / warning detail ride in the finding drill-down (Fact metadata is numeric only).
             "MISSING_INDEX" => fact.Value > 0 ? 0.4 : 0.0,
             "PLAN_WARNING" => fact.Value > 0 ? 0.4 : 0.0,
-            _ => 0.0
-        };
-    }
-
-    /// <summary>
-    /// Scores perfmon counter facts. PLE is the classic memory pressure indicator.
-    /// </summary>
-    private static double ScorePerfmonFact(Fact fact)
-    {
-        return fact.Key switch
-        {
-            // PLE: lower is worse. Invert: concerning < 300, critical < 60
-            "PERFMON_PLE" when fact.Value <= 0 => 1.0,
-            "PERFMON_PLE" when fact.Value < 60 => 1.0,
-            "PERFMON_PLE" when fact.Value < 300 => 0.5 + 0.5 * (300 - fact.Value) / 240,
-            "PERFMON_PLE" => 0.0,
             _ => 0.0
         };
     }
@@ -497,7 +480,6 @@ public class FactScorer
             "QUERY_SPILLS" => QuerySpillAmplifiers(),
             "PARAMETER_SENSITIVITY" => ParameterSensitivityAmplifiers(),
             "PLAN_REGRESSION" => PlanRegressionAmplifiers(),
-            "PERFMON_PLE" => PleAmplifiers(),
             "DB_CONFIG" => DbConfigAmplifiers(),
             "DISK_SPACE" => DiskSpaceAmplifiers(),
             _ => []
@@ -838,26 +820,6 @@ public class FactScorer
             Description = "THREADPOOL waits present — blocking causing thread exhaustion",
             Boost = 0.3,
             Predicate = facts => facts.ContainsKey("THREADPOOL") && facts["THREADPOOL"].BaseSeverity > 0
-        }
-    ];
-
-    /// <summary>
-    /// PLE: memory pressure confirmed by PAGEIOLATCH and RESOURCE_SEMAPHORE.
-    /// </summary>
-    private static List<AmplifierDefinition> PleAmplifiers() =>
-    [
-        new()
-        {
-            Description = "PAGEIOLATCH waits present — buffer pool misses confirm memory pressure",
-            Boost = 0.3,
-            Predicate = facts => HasSignificantWait(facts, "PAGEIOLATCH_SH", 0.10)
-                              || HasSignificantWait(facts, "PAGEIOLATCH_EX", 0.10)
-        },
-        new()
-        {
-            Description = "RESOURCE_SEMAPHORE waits — memory grants competing with buffer pool",
-            Boost = 0.2,
-            Predicate = facts => facts.ContainsKey("RESOURCE_SEMAPHORE") && facts["RESOURCE_SEMAPHORE"].BaseSeverity > 0
         }
     ];
 

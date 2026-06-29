@@ -21,238 +21,113 @@ namespace PerformanceMonitorLite.Services;
 public partial class RemoteCollectorService
 {
     /// <summary>
+    /// Command timeout for the index/object-stats collector. This sweep reads
+    /// sys.dm_db_index_operational_stats over every index in a database, which is
+    /// far heavier than the other DMV collectors. It now runs one command PER
+    /// DATABASE (see <see cref="CollectIndexObjectStatsAsync"/>), so this larger,
+    /// dedicated budget applies to a single database rather than a whole-instance
+    /// sweep. Matches the 300s the FinOps sp_IndexCleanup path already uses
+    /// (LocalDataService.FinOps.IndexAnalysis). The global 30s CommandTimeoutSeconds
+    /// was the root cause of #1135 (one cumulative all-or-nothing command timed out).
+    /// </summary>
+    private const int IndexObjectStatsCommandTimeoutSeconds = 300;
+
+    /// <summary>
     /// Collects per-table and per-index size, usage, and locking statistics for growth
     /// trending, unused-index detection, and contention analysis.
-    /// Size columns are absolute point-in-time values; usage and locking counters are
-    /// cumulative (reset on instance restart / DB detach / AUTO_CLOSE) - sqlserver_start_time
-    /// carries the reset boundary so deltas can be computed safely in the read layer.
-    /// All three DMVs are database-scoped: on-prem iterates databases via a cursor + cross-DB
-    /// sp_executesql into a #temp; Azure SQL DB connects to each database individually.
-    /// In-Memory OLTP (Hekaton) objects are not represented by these DMVs.
+    /// Size columns are absolute point-in-time values (growth = size(t2) - size(t1) in the
+    /// read layer); usage and locking counters are raw cumulative totals shown as-is - the
+    /// read layer does NOT compute counter deltas (sqlserver_start_time flags only
+    /// restart / DB detach / AUTO_CLOSE resets, not the metadata-cache-eviction reset; see #1138).
+    /// All three DMVs are database-scoped, so collection runs ONE COMMAND PER DATABASE:
+    /// on-prem enumerates databases then sends each through [db].sys.sp_executesql; Azure
+    /// SQL DB connects to each database individually. Each database is collected with its
+    /// own command, timeout, and try/catch, so a slow or inaccessible database only fails
+    /// itself instead of discarding the whole instance's results (#1135). Within each
+    /// database, the three DMVs are staged into #temp tables with single scans and then
+    /// joined - this gives the optimizer real cardinality and avoids the bad plans the old
+    /// single monolithic multi-DMV join produced on large databases (the sp_IndexCleanup
+    /// technique). In-Memory OLTP (Hekaton) objects are not represented by these DMVs.
     /// </summary>
     private async Task<int> CollectIndexObjectStatsAsync(ServerConnection server, CancellationToken cancellationToken)
     {
         var serverStatus = _serverManager.GetConnectionStatus(server.Id);
         bool isAzureSqlDb = serverStatus?.SqlEngineEdition == 5;
 
-        string onPremQuery = @"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+        /*
+        Per-database collection body. Runs inside a single database's context (the on-prem
+        path wraps it in [db].sys.sp_executesql; the Azure path connects to the database).
+        Each DMV is staged into its own #temp with one scan, then joined - sized/usage/
+        locking counters get accurate cardinality so the final join gets a sane plan even
+        on very large databases. The final SELECT's column order MUST match the ordinals in
+        ReadIndexObjectStatRow (0..43).
+        */
+        const string perDbStatsBody = @"
 SET NOCOUNT ON;
-
-DECLARE
-    @sqlserver_start_time datetime2(7) =
-        (SELECT osi.sqlserver_start_time FROM sys.dm_os_sys_info AS osi),
-    @db_name sysname,
-    @sql nvarchar(MAX);
-
-CREATE TABLE #ios
-(
-    database_name sysname NOT NULL,
-    database_id int NOT NULL,
-    schema_name sysname NOT NULL,
-    object_id int NOT NULL,
-    table_name sysname NOT NULL,
-    index_id int NOT NULL,
-    index_name sysname NULL,
-    index_type_desc nvarchar(60) NULL,
-    is_unique bit NULL,
-    is_primary_key bit NULL,
-    is_filtered bit NULL,
-    partition_count int NULL,
-    reserved_mb decimal(19,2) NULL,
-    used_mb decimal(19,2) NULL,
-    in_row_data_mb decimal(19,2) NULL,
-    lob_data_mb decimal(19,2) NULL,
-    row_overflow_mb decimal(19,2) NULL,
-    total_rows bigint NULL,
-    user_seeks bigint NULL,
-    user_scans bigint NULL,
-    user_lookups bigint NULL,
-    user_updates bigint NULL,
-    last_user_seek datetime2(7) NULL,
-    last_user_scan datetime2(7) NULL,
-    last_user_lookup datetime2(7) NULL,
-    last_user_update datetime2(7) NULL,
-    leaf_insert_count bigint NULL,
-    leaf_update_count bigint NULL,
-    leaf_delete_count bigint NULL,
-    range_scan_count bigint NULL,
-    singleton_lookup_count bigint NULL,
-    row_lock_count bigint NULL,
-    row_lock_wait_count bigint NULL,
-    row_lock_wait_in_ms bigint NULL,
-    page_lock_count bigint NULL,
-    page_lock_wait_count bigint NULL,
-    page_lock_wait_in_ms bigint NULL,
-    index_lock_promotion_attempt_count bigint NULL,
-    index_lock_promotion_count bigint NULL,
-    page_latch_wait_count bigint NULL,
-    page_latch_wait_in_ms bigint NULL,
-    page_io_latch_wait_count bigint NULL,
-    page_io_latch_wait_in_ms bigint NULL
-);
-
-DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR
-    SELECT
-        d.name
-    FROM sys.databases AS d
-    WHERE d.state_desc = N'ONLINE'
-    AND   d.database_id > 0
-    AND   HAS_DBACCESS(d.name) = 1
-    /*EXCLUSION_FILTER_CURSOR*/
-    ORDER BY
-        d.name;
-
-OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @db_name;
-
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    BEGIN TRY
-        SET @sql = N'EXECUTE ' + QUOTENAME(@db_name) + N'.sys.sp_executesql N''
-INSERT #ios
-(
-    database_name, database_id, schema_name, object_id, table_name, index_id, index_name,
-    index_type_desc, is_unique, is_primary_key, is_filtered, partition_count, reserved_mb,
-    used_mb, in_row_data_mb, lob_data_mb, row_overflow_mb, total_rows, user_seeks, user_scans,
-    user_lookups, user_updates, last_user_seek, last_user_scan, last_user_lookup, last_user_update,
-    leaf_insert_count, leaf_update_count, leaf_delete_count, range_scan_count, singleton_lookup_count,
-    row_lock_count, row_lock_wait_count, row_lock_wait_in_ms, page_lock_count, page_lock_wait_count,
-    page_lock_wait_in_ms, index_lock_promotion_attempt_count, index_lock_promotion_count,
-    page_latch_wait_count, page_latch_wait_in_ms, page_io_latch_wait_count, page_io_latch_wait_in_ms
-)
-SELECT
-    DB_NAME(), DB_ID(), s.name, o.object_id, o.name, i.index_id, i.name, i.type_desc,
-    i.is_unique, i.is_primary_key, i.has_filter, ps.partition_count,
-    CONVERT(decimal(19,2), ps.reserved_pages * 8.0 / 1024.0),
-    CONVERT(decimal(19,2), ps.used_pages * 8.0 / 1024.0),
-    CONVERT(decimal(19,2), ps.in_row_pages * 8.0 / 1024.0),
-    CONVERT(decimal(19,2), ps.lob_pages * 8.0 / 1024.0),
-    CONVERT(decimal(19,2), ps.row_overflow_pages * 8.0 / 1024.0),
-    ps.total_rows, us.user_seeks, us.user_scans, us.user_lookups, us.user_updates,
-    us.last_user_seek, us.last_user_scan, us.last_user_lookup, us.last_user_update,
-    os.leaf_insert_count, os.leaf_update_count, os.leaf_delete_count, os.range_scan_count,
-    os.singleton_lookup_count, os.row_lock_count, os.row_lock_wait_count, os.row_lock_wait_in_ms,
-    os.page_lock_count, os.page_lock_wait_count, os.page_lock_wait_in_ms,
-    os.index_lock_promotion_attempt_count, os.index_lock_promotion_count,
-    os.page_latch_wait_count, os.page_latch_wait_in_ms, os.page_io_latch_wait_count,
-    os.page_io_latch_wait_in_ms
-FROM sys.indexes AS i
-JOIN sys.objects AS o
-  ON o.object_id = i.object_id
-JOIN sys.schemas AS s
-  ON s.schema_id = o.schema_id
-LEFT JOIN
-(
-    SELECT
-        dps.object_id, dps.index_id,
-        partition_count = COUNT_BIG(*),
-        reserved_pages = SUM(dps.reserved_page_count),
-        used_pages = SUM(dps.used_page_count),
-        in_row_pages = SUM(dps.in_row_data_page_count),
-        lob_pages = SUM(dps.lob_used_page_count),
-        row_overflow_pages = SUM(dps.row_overflow_used_page_count),
-        total_rows = SUM(dps.row_count)
-    FROM sys.dm_db_partition_stats AS dps
-    GROUP BY dps.object_id, dps.index_id
-) AS ps
-  ON ps.object_id = i.object_id AND ps.index_id = i.index_id
-LEFT JOIN sys.dm_db_index_usage_stats AS us
-  ON us.database_id = DB_ID() AND us.object_id = i.object_id AND us.index_id = i.index_id
-LEFT JOIN
-(
-    SELECT
-        ios.object_id, ios.index_id,
-        leaf_insert_count = SUM(ios.leaf_insert_count),
-        leaf_update_count = SUM(ios.leaf_update_count),
-        leaf_delete_count = SUM(ios.leaf_delete_count),
-        range_scan_count = SUM(ios.range_scan_count),
-        singleton_lookup_count = SUM(ios.singleton_lookup_count),
-        row_lock_count = SUM(ios.row_lock_count),
-        row_lock_wait_count = SUM(ios.row_lock_wait_count),
-        row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
-        page_lock_count = SUM(ios.page_lock_count),
-        page_lock_wait_count = SUM(ios.page_lock_wait_count),
-        page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
-        index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
-        index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
-        page_latch_wait_count = SUM(ios.page_latch_wait_count),
-        page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
-        page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
-        page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
-    FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
-    GROUP BY ios.object_id, ios.index_id
-) AS os
-  ON os.object_id = i.object_id AND os.index_id = i.index_id
-WHERE o.is_ms_shipped = 0
-AND   o.type IN (N''''U'''', N''''V'''')
-OPTION(RECOMPILE);'';';
-
-        EXECUTE sys.sp_executesql @sql;
-    END TRY
-    BEGIN CATCH
-    END CATCH;
-
-    FETCH NEXT FROM db_cursor INTO @db_name;
-END;
-
-CLOSE db_cursor;
-DEALLOCATE db_cursor;
-
-SELECT
-    sqlserver_start_time = @sqlserver_start_time,
-    x.database_name,
-    x.database_id,
-    x.schema_name,
-    x.object_id,
-    x.table_name,
-    x.index_id,
-    x.index_name,
-    x.index_type_desc,
-    x.is_unique,
-    x.is_primary_key,
-    x.is_filtered,
-    x.partition_count,
-    x.reserved_mb,
-    x.used_mb,
-    x.in_row_data_mb,
-    x.lob_data_mb,
-    x.row_overflow_mb,
-    x.total_rows,
-    x.user_seeks,
-    x.user_scans,
-    x.user_lookups,
-    x.user_updates,
-    x.last_user_seek,
-    x.last_user_scan,
-    x.last_user_lookup,
-    x.last_user_update,
-    x.leaf_insert_count,
-    x.leaf_update_count,
-    x.leaf_delete_count,
-    x.range_scan_count,
-    x.singleton_lookup_count,
-    x.row_lock_count,
-    x.row_lock_wait_count,
-    x.row_lock_wait_in_ms,
-    x.page_lock_count,
-    x.page_lock_wait_count,
-    x.page_lock_wait_in_ms,
-    x.index_lock_promotion_attempt_count,
-    x.index_lock_promotion_count,
-    x.page_latch_wait_count,
-    x.page_latch_wait_in_ms,
-    x.page_io_latch_wait_count,
-    x.page_io_latch_wait_in_ms
-FROM #ios AS x
-ORDER BY
-    x.reserved_mb DESC;";
-
-        var (exclusionClause, _) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "d.name");
-        onPremQuery = onPremQuery.Replace("/*EXCLUSION_FILTER_CURSOR*/", exclusionClause);
-
-        const string azureSqlDbQuery = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+/* Size + row counts (one scan of dm_db_partition_stats) */
+SELECT
+    dps.object_id,
+    dps.index_id,
+    partition_count = COUNT_BIG(*),
+    reserved_pages = SUM(dps.reserved_page_count),
+    used_pages = SUM(dps.used_page_count),
+    in_row_pages = SUM(dps.in_row_data_page_count),
+    lob_pages = SUM(dps.lob_used_page_count),
+    row_overflow_pages = SUM(dps.row_overflow_used_page_count),
+    total_rows = SUM(dps.row_count)
+INTO #sizes
+FROM sys.dm_db_partition_stats AS dps
+GROUP BY
+    dps.object_id,
+    dps.index_id
+OPTION(RECOMPILE);
+
+/* Usage counters (one scan of dm_db_index_usage_stats for this database) */
+SELECT
+    us.object_id,
+    us.index_id,
+    us.user_seeks,
+    us.user_scans,
+    us.user_lookups,
+    us.user_updates,
+    us.last_user_seek,
+    us.last_user_scan,
+    us.last_user_lookup,
+    us.last_user_update
+INTO #usage
+FROM sys.dm_db_index_usage_stats AS us
+WHERE us.database_id = DB_ID()
+OPTION(RECOMPILE);
+
+/* Locking/latch counters (one scan of dm_db_index_operational_stats - the heavy DMV) */
+SELECT
+    ios.object_id,
+    ios.index_id,
+    leaf_insert_count = SUM(ios.leaf_insert_count),
+    leaf_update_count = SUM(ios.leaf_update_count),
+    leaf_delete_count = SUM(ios.leaf_delete_count),
+    range_scan_count = SUM(ios.range_scan_count),
+    singleton_lookup_count = SUM(ios.singleton_lookup_count),
+    row_lock_count = SUM(ios.row_lock_count),
+    row_lock_wait_count = SUM(ios.row_lock_wait_count),
+    row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
+    page_lock_count = SUM(ios.page_lock_count),
+    page_lock_wait_count = SUM(ios.page_lock_wait_count),
+    page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
+    index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
+    index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
+    page_latch_wait_count = SUM(ios.page_latch_wait_count),
+    page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
+    page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
+    page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
+INTO #ops
+FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
+GROUP BY
+    ios.object_id,
+    ios.index_id
+OPTION(RECOMPILE);
 
 SELECT
     sqlserver_start_time = (SELECT osi.sqlserver_start_time FROM sys.dm_os_sys_info AS osi),
@@ -304,52 +179,17 @@ JOIN sys.objects AS o
   ON o.object_id = i.object_id
 JOIN sys.schemas AS s
   ON s.schema_id = o.schema_id
-LEFT JOIN
-(
-    SELECT
-        dps.object_id, dps.index_id,
-        partition_count = COUNT_BIG(*),
-        reserved_pages = SUM(dps.reserved_page_count),
-        used_pages = SUM(dps.used_page_count),
-        in_row_pages = SUM(dps.in_row_data_page_count),
-        lob_pages = SUM(dps.lob_used_page_count),
-        row_overflow_pages = SUM(dps.row_overflow_used_page_count),
-        total_rows = SUM(dps.row_count)
-    FROM sys.dm_db_partition_stats AS dps
-    GROUP BY dps.object_id, dps.index_id
-) AS ps
-  ON ps.object_id = i.object_id AND ps.index_id = i.index_id
-LEFT JOIN sys.dm_db_index_usage_stats AS us
-  ON us.database_id = DB_ID() AND us.object_id = i.object_id AND us.index_id = i.index_id
-LEFT JOIN
-(
-    SELECT
-        ios.object_id, ios.index_id,
-        leaf_insert_count = SUM(ios.leaf_insert_count),
-        leaf_update_count = SUM(ios.leaf_update_count),
-        leaf_delete_count = SUM(ios.leaf_delete_count),
-        range_scan_count = SUM(ios.range_scan_count),
-        singleton_lookup_count = SUM(ios.singleton_lookup_count),
-        row_lock_count = SUM(ios.row_lock_count),
-        row_lock_wait_count = SUM(ios.row_lock_wait_count),
-        row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
-        page_lock_count = SUM(ios.page_lock_count),
-        page_lock_wait_count = SUM(ios.page_lock_wait_count),
-        page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
-        index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
-        index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
-        page_latch_wait_count = SUM(ios.page_latch_wait_count),
-        page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
-        page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
-        page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
-    FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
-    GROUP BY ios.object_id, ios.index_id
-) AS os
-  ON os.object_id = i.object_id AND os.index_id = i.index_id
+LEFT JOIN #sizes AS ps
+  ON  ps.object_id = i.object_id
+  AND ps.index_id = i.index_id
+LEFT JOIN #usage AS us
+  ON  us.object_id = i.object_id
+  AND us.index_id = i.index_id
+LEFT JOIN #ops AS os
+  ON  os.object_id = i.object_id
+  AND os.index_id = i.index_id
 WHERE o.is_ms_shipped = 0
 AND   o.type IN (N'U', N'V')
-ORDER BY
-    reserved_mb DESC
 OPTION(RECOMPILE);";
 
         var serverId = GetServerId(server);
@@ -364,19 +204,26 @@ OPTION(RECOMPILE);";
 
         if (isAzureSqlDb)
         {
+            /* Azure SQL DB: one connection per database (cannot cross databases). Already
+               resilient - each database has its own command + try/catch. */
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
             foreach (var dbName in databases)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     using var dbConn = await OpenAzureDatabaseConnectionAsync(server, dbName, cancellationToken);
-                    using var cmd = new SqlCommand(azureSqlDbQuery, dbConn);
-                    cmd.CommandTimeout = CommandTimeoutSeconds;
+                    using var cmd = new SqlCommand(perDbStatsBody, dbConn);
+                    cmd.CommandTimeout = IndexObjectStatsCommandTimeoutSeconds;
                     using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
                     while (await reader.ReadAsync(cancellationToken))
                     {
                         rows.Add(ReadIndexObjectStatRow(reader));
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -386,16 +233,62 @@ OPTION(RECOMPILE);";
         }
         else
         {
+            /* On-prem / Azure MI / AWS RDS: one connection, enumerate databases, then collect
+               each one with its own command via [db].sys.sp_executesql. A slow or inaccessible
+               database fails only itself; the rest still persist (#1135). */
             using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-            using var command = new SqlCommand(onPremQuery, sqlConnection);
-            command.CommandTimeout = CommandTimeoutSeconds;
-            var (_, exclusionParams) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "d.name");
-            foreach (var p in exclusionParams) command.Parameters.Add(p);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            var (exclusionClause, exclusionParams) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "d.name");
+            var enumQuery = $@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT
+    d.name
+FROM sys.databases AS d
+WHERE d.state_desc = N'ONLINE'
+AND   d.database_id > 0
+AND   HAS_DBACCESS(d.name) = 1
+{exclusionClause}
+ORDER BY
+    d.name;";
+
+            var databases = new List<string>();
+            using (var enumCommand = new SqlCommand(enumQuery, sqlConnection))
             {
-                rows.Add(ReadIndexObjectStatRow(reader));
+                enumCommand.CommandTimeout = CommandTimeoutSeconds;
+                foreach (var p in exclusionParams) enumCommand.Parameters.Add(p);
+                using var enumReader = await enumCommand.ExecuteReaderAsync(cancellationToken);
+                while (await enumReader.ReadAsync(cancellationToken))
+                {
+                    databases.Add(enumReader.GetString(0));
+                }
+            }
+
+            /* Double single quotes so the body survives nesting inside [db].sys.sp_executesql N'...' */
+            var escapedBody = perDbStatsBody.Replace("'", "''");
+            foreach (var dbName in databases)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var escapedDbName = dbName.Replace("]", "]]");
+                    var perDbQuery = $"EXECUTE [{escapedDbName}].sys.sp_executesql N'{escapedBody}';";
+                    using var command = new SqlCommand(perDbQuery, sqlConnection);
+                    command.CommandTimeout = IndexObjectStatsCommandTimeoutSeconds;
+                    using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        rows.Add(ReadIndexObjectStatRow(reader));
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning("Failed to collect index/object stats from [{Database}] on '{Server}': {Error}",
+                        dbName, server.DisplayName, ex.Message);
+                }
             }
         }
         sqlSw.Stop();

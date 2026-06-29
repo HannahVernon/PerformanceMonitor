@@ -66,6 +66,7 @@ public class FindingStore
                 Category = story.Category,
                 StoryPath = story.StoryPath,
                 StoryPathHash = story.StoryPathHash,
+                IncidentId = story.IncidentId,
                 StoryText = story.StoryText,
                 RootFactKey = story.RootFactKey,
                 RootFactValue = story.RootFactValue,
@@ -99,7 +100,7 @@ public class FindingStore
 SELECT finding_id, analysis_time, server_id, server_name, database_name,
        time_range_start, time_range_end, severity, confidence, category,
        story_path, story_path_hash, story_text,
-       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count
+       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id
 FROM analysis_findings
 WHERE server_id = $1
 AND   analysis_time >= $2
@@ -132,7 +133,8 @@ LIMIT $3";
                 RootFactValue = reader.IsDBNull(14) ? null : reader.GetDouble(14),
                 LeafFactKey = reader.IsDBNull(15) ? null : reader.GetString(15),
                 LeafFactValue = reader.IsDBNull(16) ? null : reader.GetDouble(16),
-                FactCount = reader.GetInt32(17)
+                FactCount = reader.GetInt32(17),
+                IncidentId = reader.IsDBNull(18) ? string.Empty : reader.GetString(18)
             });
         }
 
@@ -155,7 +157,7 @@ LIMIT $3";
 SELECT finding_id, analysis_time, server_id, server_name, database_name,
        time_range_start, time_range_end, severity, confidence, category,
        story_path, story_path_hash, story_text,
-       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count
+       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id
 FROM analysis_findings
 WHERE server_id = $1
 AND   analysis_time = (
@@ -187,7 +189,8 @@ ORDER BY severity DESC";
                 RootFactValue = reader.IsDBNull(14) ? null : reader.GetDouble(14),
                 LeafFactKey = reader.IsDBNull(15) ? null : reader.GetString(15),
                 LeafFactValue = reader.IsDBNull(16) ? null : reader.GetDouble(16),
-                FactCount = reader.GetInt32(17)
+                FactCount = reader.GetInt32(17),
+                IncidentId = reader.IsDBNull(18) ? string.Empty : reader.GetString(18)
             });
         }
 
@@ -284,8 +287,8 @@ INSERT INTO analysis_findings
     (finding_id, analysis_time, server_id, server_name, database_name,
      time_range_start, time_range_end, severity, confidence, category,
      story_path, story_path_hash, story_text,
-     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)";
+     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)";
 
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.FindingId });
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.AnalysisTime });
@@ -305,6 +308,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.LeafFactKey ?? (object)DBNull.Value });
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.LeafFactValue ?? (object)DBNull.Value });
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.FactCount });
+        cmd.Parameters.Add(new DuckDBParameter { Value = finding.IncidentId ?? string.Empty });
 
         await cmd.ExecuteNonQueryAsync();
     }

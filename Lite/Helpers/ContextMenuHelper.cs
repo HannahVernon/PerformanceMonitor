@@ -266,6 +266,8 @@ public static class ContextMenuHelper
         var autoscaleItem = new MenuItem { Header = "Revert (or double-click)", Icon = new TextBlock { Text = "\u21a9" } };
         autoscaleItem.Click += (s, e) =>
         {
+            // Clear an active click-isolate first so it doesn't leave series dimmed / state stale.
+            if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
             chart.Plot.Axes.AutoScale();
             chart.Refresh();
         };
@@ -367,6 +369,8 @@ public static class ContextMenuHelper
         chart.PreviewMouseDoubleClick += (s, e) =>
         {
             e.Handled = true;
+            // Clear an active click-isolate first so it doesn't leave series dimmed / state stale.
+            if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
             chart.Plot.Axes.AutoScale();
             chart.Refresh();
         };

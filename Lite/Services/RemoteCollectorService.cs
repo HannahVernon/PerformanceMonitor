@@ -496,6 +496,7 @@ public partial class RemoteCollectorService
                 "query_store" => await CollectQueryStoreAsync(server, cancellationToken),
                 "memory_grant_stats" => await CollectMemoryGrantStatsAsync(server, cancellationToken),
                 "waiting_tasks" => await CollectWaitingTasksAsync(server, cancellationToken),
+                "dmv_blocking_snapshot" => await CollectDmvBlockingSnapshotAsync(server, cancellationToken),
                 "blocked_process_report" => await CollectBlockedProcessReportsAsync(server, cancellationToken),
                 "database_scoped_config" => await CollectDatabaseScopedConfigAsync(server, cancellationToken),
                 "trace_flags" => await CollectTraceFlagsAsync(server, cancellationToken),
@@ -1000,21 +1001,13 @@ WHERE server_id = $3";
     }
 
     /// <summary>
-    /// Deterministic hash code for a string. .NET Core randomizes string.GetHashCode()
-    /// per process, so we use a simple FNV-1a hash to get a stable value across restarts.
+    /// Deterministic hash code for a string. Forwards to the shared
+    /// <see cref="PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode"/> so Lite,
+    /// Dashboard, and the MCP paths all derive the same server id from a server name. Kept as a
+    /// thin internal wrapper to avoid churning the many existing call sites.
     /// </summary>
-    internal static int GetDeterministicHashCode(string value)
-    {
-        unchecked
-        {
-            var hash = (int)2166136261;
-            foreach (var c in value)
-            {
-                hash = (hash ^ c) * 16777619;
-            }
-            return hash;
-        }
-    }
+    internal static int GetDeterministicHashCode(string value) =>
+        PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode(value);
 
     /// <summary>
     /// Checks if a collector is supported on the given SQL Server version and engine edition.

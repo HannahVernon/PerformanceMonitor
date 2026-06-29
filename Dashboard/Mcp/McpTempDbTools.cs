@@ -33,7 +33,7 @@ public sealed class McpTempDbTools
             var rows = await resolved.Value.Service.GetTempdbStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No TempDB data available.";
+                return McpHelpers.Status("unavailable", "No TempDB data available.");
             }
 
             var result = rows.Select(r => new

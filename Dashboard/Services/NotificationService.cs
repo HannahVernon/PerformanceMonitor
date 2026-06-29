@@ -145,6 +145,34 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
+        /// Shows a themed, button-less balloon (the same card chrome as the snoozable condition cards)
+        /// for resolved/cleared conditions, so an "all clear" toast no longer renders as a plain,
+        /// unthemed Windows balloon. Pass <see cref="ToastSeverity.Success"/> for a green-check "resolved"
+        /// accent. Honors the notifications-enabled pref and marshals to the UI thread, like
+        /// <see cref="ShowNotification"/>.
+        /// </summary>
+        public void ShowStyledNotification(string title, string message, ToastSeverity severity)
+        {
+            if (_trayIcon == null) return;
+
+            var prefs = _preferencesService.GetPreferences();
+            if (!prefs.NotificationsEnabled) return;
+
+            void Show()
+            {
+                var trayIcon = _trayIcon;
+                if (trayIcon == null) return;
+                var balloon = new Controls.StyledBalloon(title, message, severity);
+                trayIcon.ShowCustomBalloon(balloon, System.Windows.Controls.Primitives.PopupAnimation.Slide, 10000);
+            }
+
+            if (_mainWindow.Dispatcher.CheckAccess())
+                Show();
+            else
+                _mainWindow.Dispatcher.Invoke(Show);
+        }
+
+        /// <summary>
         /// Shows a custom interactive popup with Snooze 15m / 1h / 4h and Dismiss buttons.
         /// Snooze buttons create a temporary mute rule scoped to <paramref name="serverName"/> + <paramref name="metricName"/>.
         /// </summary>

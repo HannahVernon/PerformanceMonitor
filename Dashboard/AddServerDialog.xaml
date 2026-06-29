@@ -129,6 +129,18 @@
                                  ToolTip="What this server costs per month (license, compute, storage combined). Used for FinOps cost attribution. Leave 0 to hide cost columns."/>
                     </StackPanel>
 
+                    <!-- Alert Delivery Override (#1236) -->
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Alert delivery:" Width="110" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource ForegroundBrush}"/>
+                        <ComboBox x:Name="AlertDeliveryOverrideComboBox" Width="240" SelectedIndex="0"
+                                  ToolTip="How deadlock/blocking alerts for THIS server are delivered. 'Use global setting' follows the app-wide Alerts setting; override to force Summary or Per-event for just this server.">
+                            <ComboBoxItem Content="Use global setting"/>
+                            <ComboBoxItem Content="Summary — one card per cycle"/>
+                            <ComboBoxItem Content="Per-event — one notification per incident"/>
+                        </ComboBox>
+                    </StackPanel>
+
                     <!-- Description -->
                     <TextBlock Text="Description (optional):" Margin="0,4,0,4"
                                Foreground="{DynamicResource ForegroundBrush}"/>

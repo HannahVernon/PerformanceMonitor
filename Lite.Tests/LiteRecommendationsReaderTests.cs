@@ -98,14 +98,16 @@ public class LiteRecommendationsReaderTests
     }
 
     [Fact]
-    public void MapFinding_UnknownFactKey_FallsBackToStoryTextForTitleAndAdvice()
+    public void MapFinding_UnknownFactKey_FallsBackToRootFactKeyTitle_NoAdvice()
     {
+        // StoryText now carries value-stated advice JSON (or empty), never human prose — so an
+        // unknown key with no static advice block falls the title back to the fact key, with no
+        // advice text, rather than echoing StoryText (which would dump JSON).
         var item = LiteRecommendationsReader.MapFinding(
-            Finding("TOTALLY_UNKNOWN_KEY", 0.5, storyText: "A bespoke story."), ServerName);
+            Finding("TOTALLY_UNKNOWN_KEY", 0.5, storyText: ""), ServerName);
 
-        // No advice block matches -> title and advice both fall back to the story text.
-        Assert.Equal("A bespoke story.", item.Title);
-        Assert.Equal("A bespoke story.", item.AdviceText);
+        Assert.Equal("TOTALLY_UNKNOWN_KEY", item.Title);
+        Assert.Null(item.AdviceText);
         Assert.Equal(LiteRecommendationSeverity.Info, item.Severity);
     }
 
@@ -240,5 +242,34 @@ public class LiteRecommendationsReaderTests
     public void MapFindings_Empty_ReturnsEmpty()
     {
         Assert.Empty(LiteRecommendationsReader.MapFindings(Array.Empty<AnalysisFinding>(), ServerName));
+    }
+
+    // Correlate-and-focus slice 1 (review §1d): each card's advice gains a "what else fired in this
+    // window" cross-reference listing the other findings, so the operator stops hunting across cards.
+    [Fact]
+    public void MapFindings_AppendsCoFiredCrossReference_WhenMultipleFindings()
+    {
+        var t = DateTime.UtcNow;
+        var items = LiteRecommendationsReader.MapFindings(new List<AnalysisFinding>
+        {
+            Finding("CPU_SQL_PERCENT", 1.6, analysisTime: t),
+            Finding("BLOCKING_EVENTS", 1.0, analysisTime: t),
+        }, ServerName);
+
+        Assert.Equal(2, items.Count);
+        Assert.All(items, i => Assert.Contains("Also surfaced in this analysis window:", i.AdviceText!));
+        // each card cross-references the OTHER finding's title
+        Assert.Contains(items[1].Title, items[0].AdviceText!);
+        Assert.Contains(items[0].Title, items[1].AdviceText!);
+    }
+
+    [Fact]
+    public void MapFindings_NoCoFiredLine_ForSingleFinding()
+    {
+        var items = LiteRecommendationsReader.MapFindings(
+            new List<AnalysisFinding> { Finding("CPU_SQL_PERCENT", 1.6) }, ServerName);
+
+        Assert.Single(items);
+        Assert.DoesNotContain("Also surfaced in this analysis window:", items[0].AdviceText ?? string.Empty);
     }
 }

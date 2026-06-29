@@ -26,7 +26,7 @@ public sealed class McpIoTools
             var rows = await dataService.GetLatestFileIoStatsAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
             {
-                return "No file I/O stats available.";
+                return McpHelpers.Status("unavailable", "No file I/O stats available.");
             }
 
             var result = rows.Select(r => new

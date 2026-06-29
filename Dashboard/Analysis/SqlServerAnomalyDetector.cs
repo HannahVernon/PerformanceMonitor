@@ -215,6 +215,8 @@ OPTION(MAXDOP 1, RECOMPILE);";
                 if (await reader.ReadAsync())
                 {
                     var db = reader.GetString(0);
+                    var gSchema = reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString();
+                    var gTable = reader.IsDBNull(2) ? null : reader.GetValue(2)?.ToString();
                     var growthMb = Convert.ToDouble(reader.GetValue(5));
                     var growthPct = Convert.ToDouble(reader.GetValue(6));
                     anomalies.Add(new Fact
@@ -224,6 +226,7 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         Value = growthMb,
                         ServerId = context.ServerId,
                         DatabaseName = db,
+                        ObjectName = string.IsNullOrEmpty(gTable) ? null : string.IsNullOrEmpty(gSchema) ? gTable : $"{gSchema}.{gTable}",
                         Metadata = new Dictionary<string, double>
                         {
                             ["prior_mb"] = Convert.ToDouble(reader.GetValue(3)),
@@ -321,7 +324,17 @@ OPTION(MAXDOP 1, RECOMPILE);";
                 if (await reader.ReadAsync())
                 {
                     var db = reader.GetString(0);
+                    var cSchema = reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString();
+                    var cTable = reader.IsDBNull(2) ? null : reader.GetValue(2)?.ToString();
+                    var cIndex = reader.IsDBNull(3) ? null : reader.GetValue(3)?.ToString();
                     var msDelta = Convert.ToDouble(reader.GetValue(4));
+                    string? contendedObject = null;
+                    if (!string.IsNullOrEmpty(cTable))
+                    {
+                        contendedObject = string.IsNullOrEmpty(cSchema) ? cTable : $"{cSchema}.{cTable}";
+                        if (!string.IsNullOrEmpty(cIndex))
+                            contendedObject += $", index {cIndex}";
+                    }
                     anomalies.Add(new Fact
                     {
                         Source = "anomaly",
@@ -329,6 +342,7 @@ OPTION(MAXDOP 1, RECOMPILE);";
                         Value = msDelta,
                         ServerId = context.ServerId,
                         DatabaseName = db,
+                        ObjectName = contendedObject,
                         Metadata = new Dictionary<string, double>
                         {
                             ["lock_wait_ms_delta"] = msDelta,
@@ -572,17 +586,27 @@ SELECT
             var currentBlocking = Convert.ToInt64(reader.GetValue(0));
             var currentDeadlocks = Convert.ToInt64(reader.GetValue(1));
 
+            /* Baseline mean is events per hour-of-day/dow bucket (≈ events per hour at this time of
+               day). current_* are raw counts over the whole analysis window (hoursBack, default 4),
+               so normalize them to per-hour before the ratio — otherwise the ratio scales with the
+               window length, not the workload, and a steady event rate trips the spike threshold. */
+            var windowHours = (context.TimeRangeEnd - context.TimeRangeStart).TotalHours;
+            if (windowHours <= 0) windowHours = 1;
+            var currentBlockingPerHour = currentBlocking / windowHours;
+            var currentDeadlocksPerHour = currentDeadlocks / windowHours;
+
+            // Baseline mean = events per hour for this hour+dow bucket
             var baselineBlockingRate = blockingBaseline.SampleCount > 0 ? blockingBaseline.Mean : 0;
             var baselineDeadlockRate = deadlockBaseline.SampleCount > 0 ? deadlockBaseline.Mean : 0;
 
-            // Blocking spike: at least 5 events AND 3x baseline rate (or no baseline)
-            if (currentBlocking >= 5 && (baselineBlockingRate <= 0 || currentBlocking / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
+            // Blocking spike: at least 5 events in the window AND per-hour rate >= 3x baseline (or no baseline)
+            if (currentBlocking >= 5 && (baselineBlockingRate <= 0 || currentBlockingPerHour / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
             {
                 var metadata = new Dictionary<string, double>
                 {
                     ["current_count"] = currentBlocking,
                     ["baseline_rate"] = baselineBlockingRate,
-                    ["ratio"] = baselineBlockingRate > 0 ? currentBlocking / baselineBlockingRate : 100.0
+                    ["ratio"] = baselineBlockingRate > 0 ? currentBlockingPerHour / baselineBlockingRate : 100.0
                 };
                 AddBaselineContext(metadata, blockingBaseline);
 
@@ -596,14 +620,14 @@ SELECT
                 });
             }
 
-            // Deadlock spike: at least 3 events AND 3x baseline rate (or no baseline)
-            if (currentDeadlocks >= 3 && (baselineDeadlockRate <= 0 || currentDeadlocks / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
+            // Deadlock spike: at least 3 events in the window AND per-hour rate >= 3x baseline (or no baseline)
+            if (currentDeadlocks >= 3 && (baselineDeadlockRate <= 0 || currentDeadlocksPerHour / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
             {
                 var metadata = new Dictionary<string, double>
                 {
                     ["current_count"] = currentDeadlocks,
                     ["baseline_rate"] = baselineDeadlockRate,
-                    ["ratio"] = baselineDeadlockRate > 0 ? currentDeadlocks / baselineDeadlockRate : 100.0
+                    ["ratio"] = baselineDeadlockRate > 0 ? currentDeadlocksPerHour / baselineDeadlockRate : 100.0
                 };
                 AddBaselineContext(metadata, deadlockBaseline);
 

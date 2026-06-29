@@ -32,6 +32,30 @@ public static class LowDiskAlertGate
     public const double DefaultWorseningMarginPercent = 1.0;
 
     /// <summary>
+    /// Free-space percentage at or below which a breach is "critically low" (#1136) — a second,
+    /// lower tier beneath the user-configured fire threshold. Below this the database can no longer
+    /// grow data/log files, so transactions fail and the database can go into recovery/suspect; that
+    /// warrants CRITICAL, not the WARNING the normal breach renders.
+    /// </summary>
+    public const double CriticalFreePercent = 3.0;
+
+    /// <summary>
+    /// Free-space GB at or below which a breach is "critically low" regardless of percentage — a
+    /// large volume sitting at a few GB free has no room for a single autogrow. See
+    /// <see cref="CriticalFreePercent"/>.
+    /// </summary>
+    public const double CriticalFreeGb = 2.0;
+
+    /// <summary>
+    /// True when the worst breached volume is critically low on EITHER dimension (mirrors the OR
+    /// semantics of the breach test itself): free space at/below <see cref="CriticalFreePercent"/>
+    /// or at/below <see cref="CriticalFreeGb"/>. Drives the CRITICAL severity tier (#1136). Shared
+    /// by Lite and Dashboard so the two apps grade low-disk identically.
+    /// </summary>
+    public static bool IsCriticallyLow(double freePercent, double freeGb) =>
+        freePercent <= CriticalFreePercent || freeGb <= CriticalFreeGb;
+
+    /// <summary>
     /// Returns true when a low-disk alert should fire this cycle.
     /// </summary>
     /// <param name="currentWorstFreePercent">

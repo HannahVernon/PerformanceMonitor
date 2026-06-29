@@ -31,7 +31,7 @@ public sealed class McpSystemEventTools
         {
             var rows = await resolved.Value.Service.GetDefaultTraceEventsAsync(hours_back);
             if (rows.Count == 0)
-                return "No default trace events found in the requested time range.";
+                return McpHelpers.Status("empty", "No default trace events found in the requested time range.");
 
             var result = rows.Take(limit).Select(r => new
             {
@@ -83,7 +83,7 @@ public sealed class McpSystemEventTools
         {
             var rows = await resolved.Value.Service.GetTraceAnalysisAsync(hours_back);
             if (rows.Count == 0)
-                return "No trace analysis data found in the requested time range.";
+                return McpHelpers.Status("empty", "No trace analysis data found in the requested time range.");
 
             var result = rows.Take(limit).Select(r => new
             {
@@ -146,7 +146,7 @@ For actionable interpretation and suggested follow-up tools, see the 'Interpreti
         {
             var rows = await resolved.Value.Service.GetMemoryPressureEventsAsync(hours_back);
             if (rows.Count == 0)
-                return "No memory pressure events found in the requested time range.";
+                return McpHelpers.Status("empty", "No memory pressure events found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {

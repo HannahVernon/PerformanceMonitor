@@ -1122,6 +1122,11 @@ BEGIN
         blocking_spid integer NULL,
         blocking_last_tran_started datetime2(7) NULL,
         blocking_status nvarchar(10) NULL,
+        /* Session identity for (monitor_loop, spid, ecid) chain reconstruction; populated by install/23.
+           blocking_ecid is the blocker's exec-context (blocked side uses the ecid column above); monitor_loop
+           is the blocked-process-report episode. */
+        blocking_ecid integer NULL,
+        monitor_loop integer NULL,
         blocked_sql_text nvarchar(max) NULL,
         blocking_sql_text nvarchar(max) NULL,
         CONSTRAINT
@@ -1136,6 +1141,55 @@ BEGIN
     );
 
     PRINT 'Created collect.blocking_BlockedProcessReport table';
+END;
+
+/*
+DMV blocking snapshot - point-in-time blocking from sys.dm_os_waiting_tasks, independent of the
+blocked_process_report XE (which needs 'blocked process threshold' > 0, unset/unsettable on AWS RDS).
+Same blocker->blocked pair-row shape the blocking-chain reconstruction consumes; monitor_loop is
+synthesized negative so DMV episodes never collide with real (non-negative) blocked-process-report loops.
+*/
+IF OBJECT_ID(N'collect.dmv_blocking_snapshots', N'U') IS NULL
+BEGIN
+    CREATE TABLE
+        collect.dmv_blocking_snapshots
+    (
+        snapshot_id bigint IDENTITY NOT NULL,
+        collection_time datetime2(7) NOT NULL
+            DEFAULT SYSDATETIME(),
+        monitor_loop integer NOT NULL,
+        event_time datetime2(7) NOT NULL,
+        database_name nvarchar(128) NULL,
+        spid integer NOT NULL,
+        ecid integer NOT NULL,
+        last_transaction_started datetime2(7) NULL,
+        blocking_spid integer NOT NULL,
+        blocking_ecid integer NOT NULL,
+        blocking_last_tran_started datetime2(7) NULL,
+        wait_time_ms bigint NULL,
+        lock_mode nvarchar(64) NULL, /* 64 not 20: holds RESOURCE_SEMAPHORE_QUERY_COMPILE (32) whole as the contention tag */
+        blocking_status nvarchar(30) NULL,
+        contentious_object nvarchar(4000) NULL,
+        blocked_sql_text nvarchar(max) NULL,
+        blocking_sql_text nvarchar(max) NULL,
+        login_name nvarchar(256) NULL,
+        host_name nvarchar(256) NULL,
+        client_app nvarchar(256) NULL,
+        blocking_login_name nvarchar(256) NULL,
+        blocking_host_name nvarchar(256) NULL,
+        blocking_client_app nvarchar(256) NULL,
+        CONSTRAINT
+            PK_dmv_blocking_snapshots
+        PRIMARY KEY CLUSTERED
+        (
+            collection_time ASC,
+            snapshot_id ASC
+        )
+        WITH
+            (DATA_COMPRESSION = PAGE)
+    );
+
+    PRINT 'Created collect.dmv_blocking_snapshots table';
 END;
 
 /*
@@ -1479,9 +1533,12 @@ END;
 Index/Object Statistics Table (FinOps)
 Per-table and per-index size, usage, and locking stats for growth trending,
 unused-index detection, and contention analysis. Size columns are absolute
-point-in-time values; usage and locking counters are cumulative (reset on
-instance restart / DB detach / AUTO_CLOSE) - sqlserver_start_time carries the
-reset boundary so deltas can be computed safely in the read layer.
+point-in-time values, so growth is a plain size(t2) - size(t1) in the read layer.
+Usage and locking counters are cumulative; the read layer shows them as raw totals
+at the latest snapshot - it does NOT compute counter deltas. sqlserver_start_time
+flags only an instance restart / DB detach / AUTO_CLOSE reset, NOT the
+metadata-cache-eviction reset that dm_db_index_operational_stats also performs, so
+a cumulative-counter delta is not reliable and is deliberately not attempted (#1138).
 */
 IF OBJECT_ID(N'collect.index_object_stats', N'U') IS NULL
 BEGIN

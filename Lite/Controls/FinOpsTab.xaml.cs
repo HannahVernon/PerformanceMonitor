@@ -50,8 +50,6 @@ public partial class FinOpsTab : UserControl
     private DataGridFilterManager<WaitCategorySummaryRow>? _waitCategoryFilterMgr;
     private DataGridFilterManager<ExpensiveQueryRow>? _expensiveQueriesFilterMgr;
     private DataGridFilterManager<MemoryGrantEfficiencyRow>? _memoryGrantFilterMgr;
-    private DataGridFilterManager<ObjectSizeGrowthRow>? _objectSizeGrowthFilterMgr;
-    private DataGridFilterManager<IndexUsageRow>? _indexUsageFilterMgr;
     private DataGridFilterManager<IndexLockingRow>? _indexLockingFilterMgr;
 
     public FinOpsTab()
@@ -117,6 +115,72 @@ public partial class FinOpsTab : UserControl
         return 0;
     }
 
+    // ── Plan navigation for the query-identifying FinOps grids ──
+    // Lazy: executeActual reads the current selected-server connection string, and Window.GetWindow(this)
+    // is only valid once the control is in the visual tree.
+    private PlanNavigationController? _planActions;
+    private PlanNavigationController PlanActions => _planActions ??= new PlanNavigationController(
+        Window.GetWindow(this)!,
+        (xml, label, qt) => Windows.PlanViewerWindow.ShowPlanAsync(Window.GetWindow(this)!, xml, label, qt),
+        (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+            GetSelectedConnectionString() ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+        "the monitored server");
+
+    private string? GetSelectedConnectionString()
+        => ServerSelector.SelectedItem is ServerConnection s && _credentialResolver != null
+            ? _credentialResolver.GetConnectionString(s)
+            : null;
+
+    private async System.Threading.Tasks.Task<string?> FetchFinOpsHighImpactPlanAsync(string queryHash)
+    {
+        if (string.IsNullOrEmpty(queryHash)) return null;
+        var serverId = GetSelectedServerId();
+        string? plan = null;
+        if (serverId != 0 && _dataService != null)
+        {
+            try { plan = await System.Threading.Tasks.Task.Run(() => _dataService.GetCachedQueryPlanAsync(serverId, queryHash)); }
+            catch { /* fall through to the live server */ }
+        }
+        if (string.IsNullOrEmpty(plan))
+        {
+            var connStr = GetSelectedConnectionString();
+            if (!string.IsNullOrEmpty(connStr))
+                plan = await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, queryHash);
+        }
+        return plan;
+    }
+
+    private async void FinOpsViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetFinOpsRow(sender) is HighImpactQueryRow row)
+            await PlanActions.ViewPlanAsync(
+                () => FetchFinOpsHighImpactPlanAsync(row.QueryHash),
+                $"Est Plan - {row.QueryHash}", row.FullQueryText);
+    }
+
+    private async void FinOpsGetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        switch (GetFinOpsRow(sender))
+        {
+            case HighImpactQueryRow hi:
+                await PlanActions.GetActualPlanAsync(hi.FullQueryText, hi.DatabaseName, $"Actual Plan - {hi.QueryHash}");
+                break;
+            case ExpensiveQueryRow ex:
+                await PlanActions.GetActualPlanAsync(ex.FullQueryText, ex.DatabaseName, "Actual Plan - Expensive Query");
+                break;
+        }
+    }
+
+    private static object? GetFinOpsRow(object sender)
+    {
+        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+        {
+            if (contextMenu.PlacementTarget is DataGridRow row) return row.DataContext;
+            if (contextMenu.PlacementTarget is DataGrid grid) return grid.CurrentCell.Item ?? grid.SelectedItem;
+        }
+        return null;
+    }
+
     /// <summary>
     /// Refreshes all FinOps data.
     /// </summary>
@@ -150,8 +214,6 @@ public partial class FinOpsTab : UserControl
             LoadApplicationConnectionsAsync(serverId),
             LoadDatabaseSizesAsync(serverId),
             LoadStorageGrowthAsync(serverId),
-            LoadObjectSizeGrowthAsync(serverId),
-            LoadIndexUsageAsync(serverId),
             LoadIndexLockingAsync(serverId),
             LoadIdleDatabasesAsync(serverId),
             LoadTempdbSummaryAsync(serverId),
@@ -538,68 +600,13 @@ public partial class FinOpsTab : UserControl
     }
 
     // ============================================
-    // Object/Index stats (#1103)
+    // Object/Index stats (#1103) — the standalone Object Sizes & Index Usage loaders were removed in
+    // #1138; that data is now the Storage Growth -> object -> index drill (FinOpsTab.ObjectHeatmap.cs).
+    // The read methods GetObjectSizeGrowthAsync / GetIndexUsageAsync remain on LocalDataService for MCP.
     // ============================================
 
-    private async System.Threading.Tasks.Task LoadObjectSizeGrowthAsync(int serverId)
-    {
-        if (_dataService == null) return;
-        try
-        {
-            var data = await Task.Run(() => _dataService.GetObjectSizeGrowthAsync(serverId));
-            _objectSizeGrowthFilterMgr!.UpdateData(data);
-            NoObjectSizeGrowthMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            ObjectSizeGrowthCountIndicator.Text = data.Count > 0 ? $"{data.Count} table(s)" : "";
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("FinOps", $"Failed to load object size/growth: {ex.Message}");
-        }
-    }
-
-    private async System.Threading.Tasks.Task LoadIndexUsageAsync(int serverId)
-    {
-        if (_dataService == null) return;
-        try
-        {
-            var data = await Task.Run(() => _dataService.GetIndexUsageAsync(serverId));
-            _indexUsageFilterMgr!.UpdateData(data);
-            NoIndexUsageMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            IndexUsageCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("FinOps", $"Failed to load index usage: {ex.Message}");
-        }
-    }
-
-    private async System.Threading.Tasks.Task LoadIndexLockingAsync(int serverId)
-    {
-        if (_dataService == null) return;
-        try
-        {
-            var data = await Task.Run(() => _dataService.GetIndexLockingAsync(serverId));
-            _indexLockingFilterMgr!.UpdateData(data);
-            NoIndexLockingMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            IndexLockingCountIndicator.Text = data.Count > 0 ? $"{data.Count} index(es)" : "";
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("FinOps", $"Failed to load index locking: {ex.Message}");
-        }
-    }
-
-    private async void RefreshObjectSizeGrowth_Click(object sender, RoutedEventArgs e)
-    {
-        var serverId = GetSelectedServerId();
-        if (serverId != 0) await LoadObjectSizeGrowthAsync(serverId);
-    }
-
-    private async void RefreshIndexUsage_Click(object sender, RoutedEventArgs e)
-    {
-        var serverId = GetSelectedServerId();
-        if (serverId != 0) await LoadIndexUsageAsync(serverId);
-    }
+    // LoadIndexLockingAsync (the #1138 color-scaled grid + DB selector + index drill) lives in
+    // FinOpsTab.Locking.cs.
 
     private async void RefreshIndexLocking_Click(object sender, RoutedEventArgs e)
     {
@@ -780,6 +787,7 @@ public partial class FinOpsTab : UserControl
 
     private async void ServerSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        ResetStorageDrill(); // a new server invalidates any open object/index drill
         await LoadPerServerDataAsync();
     }
 
@@ -821,7 +829,20 @@ public partial class FinOpsTab : UserControl
     private async void RefreshStorageGrowth_Click(object sender, RoutedEventArgs e)
     {
         var serverId = GetSelectedServerId();
-        if (serverId != 0) await LoadStorageGrowthAsync(serverId);
+        if (serverId == 0) return;
+        // Refresh the view the user is actually looking at (#1138 drill), not just the parent grid.
+        switch (_storageLevel)
+        {
+            case StorageDrillLevel.Objects when !string.IsNullOrEmpty(_objDrillDb):
+                await LoadObjectGrowthAsync(serverId, _objDrillDb);
+                break;
+            case StorageDrillLevel.Indexes when !string.IsNullOrEmpty(_objDrillTable):
+                await LoadObjectIndexDetailAsync(serverId, _objDrillDb, _objDrillSchema, _objDrillTable);
+                break;
+            default:
+                await LoadStorageGrowthAsync(serverId);
+                break;
+        }
     }
 
     private async void WaitStatsTimeRange_Changed(object sender, SelectionChangedEventArgs e)
@@ -1049,8 +1070,6 @@ public partial class FinOpsTab : UserControl
         _waitCategoryFilterMgr = new DataGridFilterManager<WaitCategorySummaryRow>(WaitCategorySummaryDataGrid);
         _expensiveQueriesFilterMgr = new DataGridFilterManager<ExpensiveQueryRow>(ExpensiveQueriesDataGrid);
         _memoryGrantFilterMgr = new DataGridFilterManager<MemoryGrantEfficiencyRow>(MemoryGrantEfficiencyDataGrid);
-        _objectSizeGrowthFilterMgr = new DataGridFilterManager<ObjectSizeGrowthRow>(ObjectSizeGrowthDataGrid);
-        _indexUsageFilterMgr = new DataGridFilterManager<IndexUsageRow>(IndexUsageDataGrid);
         _indexLockingFilterMgr = new DataGridFilterManager<IndexLockingRow>(IndexLockingDataGrid);
 
         _filterManagers[DatabaseResourcesDataGrid] = _dbResourcesFilterMgr;
@@ -1066,8 +1085,6 @@ public partial class FinOpsTab : UserControl
         _filterManagers[WaitCategorySummaryDataGrid] = _waitCategoryFilterMgr;
         _filterManagers[ExpensiveQueriesDataGrid] = _expensiveQueriesFilterMgr;
         _filterManagers[MemoryGrantEfficiencyDataGrid] = _memoryGrantFilterMgr;
-        _filterManagers[ObjectSizeGrowthDataGrid] = _objectSizeGrowthFilterMgr;
-        _filterManagers[IndexUsageDataGrid] = _indexUsageFilterMgr;
         _filterManagers[IndexLockingDataGrid] = _indexLockingFilterMgr;
     }
 

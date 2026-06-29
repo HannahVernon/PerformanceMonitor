@@ -7,9 +7,9 @@ using Xunit;
 namespace PerformanceMonitorLite.Tests;
 
 /// <summary>
-/// Pure unit tests for BlockingChainReconstructor — apex/depth/victim reconstruction,
-/// the composite session identity that defeats SPID reuse, the 1900-01-01 sentinel,
-/// cycle handling, and the traversal caps. No database.
+/// Pure unit tests for BlockingChainReconstructor — apex/depth/victim reconstruction, the (monitor_loop,
+/// spid, ecid) session identity (mirroring sp_HumanEventsBlockViewer), cumulative-vs-per-scan scoping, cycle
+/// handling, and the traversal caps. No database.
 /// </summary>
 public class BlockingChainReconstructorTests
 {
@@ -21,7 +21,7 @@ public class BlockingChainReconstructorTests
 
     private static BlockingPairRow Pair(
         int blockedSpid, int blockingSpid,
-        DateTime? blockedTran = null, DateTime? blockingTran = null,
+        int? monitorLoop = null, int blockedEcid = 0, int blockingEcid = 0,
         long waitMs = 1000, string blockingStatus = "running")
     {
         return new BlockingPairRow
@@ -29,9 +29,12 @@ public class BlockingChainReconstructorTests
             EventTime = new DateTime(2026, 5, 22, 10, 0, 0),
             DatabaseName = "TestDb",
             BlockedSpid = blockedSpid,
-            BlockedTranStarted = blockedTran ?? TranFor(blockedSpid),
+            BlockedTranStarted = TranFor(blockedSpid),
             BlockingSpid = blockingSpid,
-            BlockingTranStarted = blockingTran ?? TranFor(blockingSpid),
+            BlockingTranStarted = TranFor(blockingSpid),
+            MonitorLoop = monitorLoop,
+            BlockedEcid = blockedEcid,
+            BlockingEcid = blockingEcid,
             WaitTimeMs = waitMs,
             LockMode = "X",
             BlockingStatus = blockingStatus,
@@ -40,8 +43,9 @@ public class BlockingChainReconstructorTests
         };
     }
 
-    private static BlockingReconstruction Run(IEnumerable<BlockingPairRow> rows) =>
-        BlockingChainReconstructor.Reconstruct(rows, MaxDepth, MaxPairs, StepBudget);
+    // Default scope is cumulative (the collector path); the viewer-style tests pass scopeByMonitorLoop: true.
+    private static BlockingReconstruction Run(IEnumerable<BlockingPairRow> rows, bool scopeByMonitorLoop = false) =>
+        BlockingChainReconstructor.Reconstruct(rows, MaxDepth, MaxPairs, StepBudget, scopeByMonitorLoop);
 
     [Fact]
     public void Empty_ProducesNoChains()
@@ -79,35 +83,88 @@ public class BlockingChainReconstructorTests
     }
 
     [Fact]
-    public void SpidReuse_DifferentTransactionStart_DoesNotSplice()
+    public void DeepChain_WithNullBlockerTran_StillFormsOneChain()
     {
-        // Real chain 200 → 201 → 202, plus SPID 201 reused (different tran) blocking 203.
-        var reusedTran = TranFor(201).AddHours(3);
+        // The bug this whole change fixes: blocking_last_tran_started is always NULL, so the old (spid, tran)
+        // key split a mid-chain node. Keying by spid:ecid within monitor_loop, 116 → 111 → 80 is ONE depth-2
+        // chain — 111 unifies as (loop, 111, 0) whether it is the blocker or the blocked party.
         var result = Run(new[]
         {
-            Pair(201, 200),
-            Pair(202, 201),
-            Pair(203, 201, blockingTran: reusedTran) // reused 201 — a distinct session
-        });
+            Pair(111, 116, monitorLoop: 620365),
+            Pair(80, 111, monitorLoop: 620365),
+        }, scopeByMonitorLoop: true);
 
-        // Two distinct chains: apex 200 depth 2, and the reused-201 apex depth 1.
-        Assert.Equal(2, result.Chains.Count);
-        Assert.Contains(result.Chains, c => c.ApexSpid == 200 && c.Depth == 2);
-        Assert.Contains(result.Chains, c => c.ApexSpid == 201 && c.Depth == 1);
+        var chain = Assert.Single(result.Chains);
+        Assert.Equal(116, chain.ApexSpid);
+        Assert.Equal(2, chain.Depth);
+        Assert.Equal(2, chain.VictimCount);
     }
 
     [Fact]
-    public void Sentinel_TransactionStart_NormalizesToNull()
+    public void SeparateEpisodes_SameSpid_DoNotLeak()
     {
-        // SQL Server's 1900-01-01 "no transaction" sentinel must key the same as NULL.
-        Assert.Equal(
-            BlockingChainReconstructor.MakeKey(100, null),
-            BlockingChainReconstructor.MakeKey(100, new DateTime(1900, 1, 1)));
+        // The same blocker→blocked pair in two different monitor_loops (episodes) must stay two chains, not
+        // merge — the cross-episode leakage the monitor_loop scope prevents for the viewer.
+        var result = Run(new[]
+        {
+            Pair(201, 200, monitorLoop: 1),
+            Pair(201, 200, monitorLoop: 2),
+        }, scopeByMonitorLoop: true);
 
-        // And a real transaction start must NOT collapse to the sentinel key.
-        Assert.NotEqual(
-            BlockingChainReconstructor.MakeKey(100, null),
-            BlockingChainReconstructor.MakeKey(100, TranFor(100)));
+        Assert.Equal(2, result.Chains.Count);
+        Assert.All(result.Chains, c => Assert.Equal(200, c.ApexSpid));
+        Assert.Contains(result.Chains, c => c.MonitorLoop == 1);
+        Assert.Contains(result.Chains, c => c.MonitorLoop == 2);
+    }
+
+    [Fact]
+    public void ParallelBlocker_DistinctEcid_AreDistinctNodes()
+    {
+        // Same SPID, different ecid (parallel workers) are distinct sessions: spid 200 ecid 0 and ecid 1 each
+        // head their own chain.
+        var result = Run(new[]
+        {
+            Pair(201, 200, monitorLoop: 1, blockingEcid: 0),
+            Pair(202, 200, monitorLoop: 1, blockingEcid: 1),
+        }, scopeByMonitorLoop: true);
+
+        Assert.Equal(2, result.Chains.Count);
+        Assert.Contains(result.Chains, c => c.ApexEcid == 0);
+        Assert.Contains(result.Chains, c => c.ApexEcid == 1);
+    }
+
+    [Fact]
+    public void Cumulative_MergesAcrossScans()
+    {
+        // The collector (scopeByMonitorLoop:false) ignores monitor_loop, so an episode's per-scan re-fires
+        // merge into ONE chain — preserving window-level depth/victims for the severity fact (per-scan scoping
+        // would under-count). 200 → 201 (scan 1) and 201 → 202 (scan 2) form one depth-2 chain.
+        var result = Run(new[]
+        {
+            Pair(201, 200, monitorLoop: 1),
+            Pair(202, 201, monitorLoop: 2),
+        }, scopeByMonitorLoop: false);
+
+        var chain = Assert.Single(result.Chains);
+        Assert.Equal(200, chain.ApexSpid);
+        Assert.Equal(2, chain.Depth);
+        Assert.Null(chain.MonitorLoop);   // cumulative chains carry no episode
+    }
+
+    [Fact]
+    public void SpidReuse_DifferentMonitorLoop_DoesNotSplice()
+    {
+        // SPID 201 reused across two episodes is two distinct sessions, not one spliced chain.
+        var result = Run(new[]
+        {
+            Pair(201, 200, monitorLoop: 1),
+            Pair(202, 201, monitorLoop: 1),   // 200 → 201 → 202 in episode 1
+            Pair(203, 201, monitorLoop: 2),   // reused 201 heads its own chain in episode 2
+        }, scopeByMonitorLoop: true);
+
+        Assert.Equal(2, result.Chains.Count);
+        Assert.Contains(result.Chains, c => c.ApexSpid == 200 && c.Depth == 2);
+        Assert.Contains(result.Chains, c => c.ApexSpid == 201 && c.Depth == 1);
     }
 
     [Fact]
@@ -129,7 +186,7 @@ public class BlockingChainReconstructorTests
     {
         // A 12-edge line, reconstructed with a maxDepth of 4.
         var rows = Enumerable.Range(0, 12).Select(i => Pair(501 + i, 500 + i)).ToList();
-        var result = BlockingChainReconstructor.Reconstruct(rows, maxDepth: 4, MaxPairs, StepBudget);
+        var result = BlockingChainReconstructor.Reconstruct(rows, maxDepth: 4, MaxPairs, StepBudget, scopeByMonitorLoop: false);
 
         Assert.True(result.DepthCapped);
         var chain = Assert.Single(result.Chains);
@@ -179,5 +236,71 @@ public class BlockingChainReconstructorTests
         Assert.Equal(2, result.Chains.Count);
         // The 8-victim fan-out out-scores the depth-2 / 2-victim chain.
         Assert.Equal(800, result.Chains[0].ApexSpid);
+    }
+
+    [Fact]
+    public void ReconstructedOutput_CarriesTranStartedAndDatabaseName()
+    {
+        // Transaction start is display-only now, sourced from the rows (apex from its first outgoing edge).
+        var result = Run(new[] { Pair(201, 200), Pair(202, 201) });
+
+        var chain = Assert.Single(result.Chains);
+        Assert.Equal(200, chain.ApexSpid);
+        Assert.Equal(TranFor(200), chain.ApexTranStarted);
+
+        Assert.NotEmpty(chain.Levels);
+        Assert.All(chain.Levels, l => Assert.Equal("TestDb", l.DatabaseName));
+
+        var top = chain.Levels.Single(l => l.BlockingSpid == 200 && l.BlockedSpid == 201);
+        Assert.Equal(TranFor(200), top.BlockingTranStarted);
+        Assert.Equal(TranFor(201), top.BlockedTranStarted);
+    }
+
+    [Fact]
+    public void FindChainForSession_AnyMember_ReturnsChainRootedAtApex()
+    {
+        // Two separate chains — A: 200 → 201 → 202 ; B: 300 → 301. The viewer scopes to the ONE chain a
+        // clicked session belongs to, rooted at its apex regardless of where in the chain it sits.
+        var result = Run(new[] { Pair(201, 200), Pair(202, 201), Pair(301, 300) });
+
+        var chainA = BlockingChainReconstructor.FindChainForSession(result, null, 201, 0);
+        Assert.NotNull(chainA);
+        Assert.Equal(200, chainA!.ApexSpid);
+
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, null, 200, 0)!.ApexSpid);
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, null, 202, 0)!.ApexSpid);
+        Assert.Equal(300, BlockingChainReconstructor.FindChainForSession(result, null, 301, 0)!.ApexSpid);
+        Assert.Null(BlockingChainReconstructor.FindChainForSession(result, null, 999, 0));
+    }
+
+    [Fact]
+    public void FindChainForSession_DisambiguatesByMonitorLoop()
+    {
+        // Victim 500 was blocked by apex 100 in episode 1 and apex 200 in episode 2 — two scoped chains, both
+        // containing 500. The clicked row's monitor_loop selects the right one.
+        var result = Run(new[]
+        {
+            Pair(blockedSpid: 500, blockingSpid: 100, monitorLoop: 1),
+            Pair(blockedSpid: 500, blockingSpid: 200, monitorLoop: 2)
+        }, scopeByMonitorLoop: true);
+
+        Assert.Equal(100, BlockingChainReconstructor.FindChainForSession(result, 1, 500, 0)!.ApexSpid);
+        Assert.Equal(200, BlockingChainReconstructor.FindChainForSession(result, 2, 500, 0)!.ApexSpid);
+    }
+
+    [Fact]
+    public void FindChainForSession_NullMonitorLoop_FallsBackToSpidEcid()
+    {
+        // A lead-blocker grid row may not supply its monitor_loop; the click must still resolve via spid:ecid
+        // rather than reporting "no reconstructable chain" (supersedes the #1222 SPID-only fallback).
+        var result = Run(new[]
+        {
+            Pair(201, 200, monitorLoop: 7),
+            Pair(202, 201, monitorLoop: 7),
+        }, scopeByMonitorLoop: true);
+
+        var chain = BlockingChainReconstructor.FindChainForSession(result, null, 200, 0);
+        Assert.NotNull(chain);
+        Assert.Equal(200, chain!.ApexSpid);
     }
 }

@@ -347,14 +347,14 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     // Run all independent refreshes in parallel for initial load / manual refresh
                     await Task.WhenAll(
-                        RefreshSystemHealthAsync(),
-                        RefreshSevereErrorsAsync(),
-                        RefreshIOIssuesAsync(),
-                        RefreshSchedulerIssuesAsync(),
-                        RefreshMemoryConditionsAsync(),
-                        RefreshCPUTasksAsync(),
-                        RefreshMemoryBrokerAsync(),
-                        RefreshMemoryNodeOOMAsync()
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.SystemHealth", () => RefreshSystemHealthAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.SevereErrors", () => RefreshSevereErrorsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.IOIssues", () => RefreshIOIssuesAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.SchedulerIssues", () => RefreshSchedulerIssuesAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.MemoryConditions", () => RefreshMemoryConditionsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.CPUTasks", () => RefreshCPUTasksAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.MemoryBroker", () => RefreshMemoryBrokerAsync()),
+                        Helpers.MethodProfiler.TimeAsync("SystemEvents.MemoryNodeOOM", () => RefreshMemoryNodeOOMAsync())
                     );
                 }
                 else

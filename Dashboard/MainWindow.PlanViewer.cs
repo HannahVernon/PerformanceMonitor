@@ -12,6 +12,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard
 {
@@ -176,7 +177,7 @@ namespace PerformanceMonitorDashboard
             emptyState.Children.Add(emptyStack);
 
             // --- Viewer layer (hidden until a plan is loaded) ---
-            var viewer = new Controls.PlanViewerControl
+            var viewer = new PlanViewerControl
             {
                 Visibility = Visibility.Collapsed
             };
@@ -204,6 +205,7 @@ namespace PerformanceMonitorDashboard
             subCloseBtn.Tag = subTab;
             subCloseBtn.Click += (_, _) =>
             {
+                (subTabContent.Children[1] as PlanViewerControl)?.Cleanup();
                 _mainPlanTabControl!.Items.Remove(subTab);
                 // If only the "+" tab remains, re-open a fresh empty sub-tab
                 if (_mainPlanTabControl.Items.Count == 1 &&
@@ -282,7 +284,7 @@ namespace PerformanceMonitorDashboard
             if (subTabContent.Children.Count < 2) return;
 
             var emptyState = subTabContent.Children[0] as FrameworkElement;
-            var viewer = subTabContent.Children[1] as Controls.PlanViewerControl;
+            var viewer = subTabContent.Children[1] as PlanViewerControl;
             if (viewer == null) return;
 
             try

@@ -141,6 +141,19 @@ public class AnalysisService
             // 3. Build stories via graph traversal
             var stories = _engine.BuildStories(facts);
 
+            // 3.5. Freeze value-stated advice (current MAXDOP/CTFP/etc.) into each story's StoryText
+            // from the FULL fact set, BEFORE the store copies StoryText onto the finding. This is the
+            // only place the raw fact VALUES are in scope; read-back cards then state the numbers
+            // (FactAdvice.GetComposedForFinding) instead of generic folklore. No schema change.
+            FactAdvice.PopulateStoryText(stories, facts);
+
+            // 3.6. Cluster the run's stories into causally-related incidents (graph-connectivity) and
+            // stamp each with its own trackable id, BEFORE the store copies it onto the finding. The
+            // grouped surface renders one report per incident; the id fingerprints the incident's
+            // primary so the same recurring incident is trackable across runs.
+            var incidents = _engine.ClusterIntoIncidents(stories, facts);
+            IncidentId.StampClusters(context.ServerName, incidents);
+
             // 4. Persist findings (filtering out muted)
             var findings = await _findingStore.SaveFindingsAsync(stories, context);
 

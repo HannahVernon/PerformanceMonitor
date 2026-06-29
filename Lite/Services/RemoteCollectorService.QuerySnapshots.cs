@@ -93,7 +93,8 @@ SELECT /* PerformanceMonitorLite */
                      AND (dest.text LIKE N'%sp_MScdc_capture_job%' OR dest.text LIKE N'%sp_cdc_scan%')
                 THEN 1
                 ELSE 0
-            END)
+            END),
+    query_hash = CONVERT(varchar(18), der.query_hash, 1) /* #1140 long-running-query dedup key */
 FROM sys.dm_exec_requests AS der
 JOIN sys.dm_exec_sessions AS des
     ON des.session_id = der.session_id
@@ -148,7 +149,8 @@ SELECT
     der.transaction_isolation_level,
     der.dop,
     der.parallel_worker_count,
-    der.percent_complete
+    der.percent_complete,
+    der.query_hash
 INTO #req
 FROM sys.dm_exec_requests AS der
 WHERE der.session_id <> @@SPID
@@ -201,7 +203,8 @@ SELECT /* PerformanceMonitorLite */
     des.open_transaction_count,
     der.percent_complete,
     /* Azure SQL Database has no SQL Agent / msdb.dbo.cdc_jobs (CDC there is scheduler-based), so no capture job to exclude. */
-    is_cdc_capture = CONVERT(bit, 0)
+    is_cdc_capture = CONVERT(bit, 0),
+    query_hash = CONVERT(varchar(18), der.query_hash, 1) /* #1140 long-running-query dedup key */
 FROM #req AS der
 JOIN sys.dm_exec_sessions AS des
     ON des.session_id = der.session_id
@@ -328,6 +331,7 @@ DROP TABLE #req;
                    .AppendValue(reader.IsDBNull(23) ? 0 : Convert.ToInt32(reader.GetValue(23)))            /* open_transaction_count */
                    .AppendValue(reader.IsDBNull(24) ? 0m : Convert.ToDecimal(reader.GetValue(24)))        /* percent_complete */
                    .AppendValue(!reader.IsDBNull(25) && Convert.ToBoolean(reader.GetValue(25)))           /* is_cdc_capture */
+                   .AppendValue(reader.IsDBNull(26) ? (string?)null : reader.GetString(26))                /* query_hash (#1140) */
                    .EndRow();
 
                 rowsCollected++;

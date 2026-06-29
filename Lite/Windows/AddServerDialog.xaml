@@ -152,6 +152,15 @@
                 <TextBox x:Name="MonthlyCostBox" Width="100" TextAlignment="Right" Text="0"
                          ToolTip="What this server costs per month (license, compute, storage combined). Used for FinOps cost attribution. Leave 0 to hide cost columns."/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Alert delivery:" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Width="110"/>
+                <ComboBox x:Name="AlertDeliveryOverrideBox" Width="240" SelectedIndex="0"
+                          ToolTip="How deadlock/blocking alerts for THIS server are delivered. 'Use global setting' follows the app-wide Alerts setting; override to force Summary or Per-event for just this server.">
+                    <ComboBoxItem Content="Use global setting"/>
+                    <ComboBoxItem Content="Summary — one card per cycle"/>
+                    <ComboBoxItem Content="Per-event — one notification per incident"/>
+                </ComboBox>
+            </StackPanel>
         </StackPanel>
 
         <!-- Status -->

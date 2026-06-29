@@ -260,7 +260,7 @@ namespace PerformanceMonitorDashboard
             SetDrillDownGlobalRange(from, to);
 
             QueriesTabItem.IsSelected = true;
-            PerformanceTab.SelectSubTab(1); // Active Queries
+            PerformanceTab.SelectActiveQueriesForDrillDown();
             PerformanceTab.SetTimeRange(0, from, to);
             PerformanceTab.IsRefreshing = true;
             try { await RefreshQueriesTabAsync(); }
@@ -274,7 +274,7 @@ namespace PerformanceMonitorDashboard
             SetDrillDownGlobalRange(from, to);
 
             QueriesTabItem.IsSelected = true;
-            PerformanceTab.SelectSubTab(1); // Active Queries
+            PerformanceTab.SelectActiveQueriesForDrillDown();
             PerformanceTab.SetTimeRange(0, from, to);
             PerformanceTab.IsRefreshing = true;
             try { await RefreshQueriesTabAsync(); }

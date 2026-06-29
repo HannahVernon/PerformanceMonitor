@@ -28,10 +28,16 @@ public partial class ServerTab : UserControl
     /// </summary>
     public async void RefreshData()
     {
-        await RefreshAllDataAsync(fullRefresh: false);
+        await RefreshAllDataAsync();
     }
 
-    private async System.Threading.Tasks.Task RefreshAllDataAsync(bool fullRefresh = false)
+    /* Deadlock-graph XML parsing (XElement.Parse + deep Descendants traversal per row) is heavy
+       enough to hitch the dispatcher on the Blocking tab; run it on the thread pool so only the
+       grid bind stays on the UI thread. */
+    private static Task<List<DeadlockProcessDetail>> ParseDeadlocksOffUiThreadAsync(List<DeadlockRow> rows)
+        => Task.Run(() => DeadlockProcessDetail.ParseFromRows(rows));
+
+    private async System.Threading.Tasks.Task RefreshAllDataAsync()
     {
         if (_isRefreshing) return;
         _isRefreshing = true;
@@ -56,27 +62,20 @@ public partial class ServerTab : UserControl
         {
             using var _profiler = Helpers.MethodProfiler.StartTiming($"ServerTab-{_server?.DisplayName}");
 
-            if (fullRefresh)
+            /* When this server tab isn't the selected one, its charts/grids aren't on screen —
+               skip the heavy sub-tab data refresh and just keep the alert badge current. Mark
+               dirty so the sub-tab is refreshed when the tab is selected again (IsVisibleChanged). */
+            if (IsVisible)
             {
-                await RefreshAllTabsAsync(hoursBack, fromDate, toDate);
+                await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
             }
             else
             {
-                /* When this server tab isn't the selected one, its charts/grids aren't on screen —
-                   skip the heavy sub-tab data refresh and just keep the alert badge current. Mark
-                   dirty so the sub-tab is refreshed when the tab is selected again (IsVisibleChanged). */
-                if (IsVisible)
-                {
-                    await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
-                }
-                else
-                {
-                    _refreshPendingWhileHidden = true;
-                }
-                /* Always keep alert badge current even when Blocking tab is not visible */
-                if (MainTabControl.SelectedIndex != 8)
-                    await RefreshAlertCountsAsync(hoursBack, fromDate, toDate);
+                _refreshPendingWhileHidden = true;
             }
+            /* Always keep alert badge current even when Blocking tab is not visible */
+            if (MainTabControl.SelectedIndex != 8)
+                await RefreshAlertCountsAsync(hoursBack, fromDate, toDate);
 
             var tz = ServerTimeHelper.GetTimezoneLabel(ServerTimeHelper.CurrentDisplayMode);
             ConnectionStatusText.Text = $"Last refresh: {DateTime.Now:HH:mm:ss} ({tz})";
@@ -130,169 +129,6 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>
-    /// Full refresh of all tabs — used for first load, manual refresh, and time range changes.
-    /// </summary>
-    private async System.Threading.Tasks.Task RefreshAllTabsAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
-    {
-        var loadSw = Stopwatch.StartNew();
-
-        /* Load all tabs in parallel, off the UI thread.
-           DuckDB.NET is synchronous, so calling these directly on the dispatcher would run all
-           ~36 queries serially on the UI thread (the freeze). Task.Run pushes each onto a pool
-           thread — each query's read lock is acquired AND released inside that one synchronous run,
-           so the ReaderWriterLockSlim thread affinity is respected — and the fan-out below becomes
-           genuinely parallel. The UI-update code after the awaits is unchanged. */
-        var snapshotsTask = Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, hoursBack, fromDate, toDate));
-        var cpuTask = Task.Run(() => _dataService.GetCpuUtilizationAsync(_serverId, hoursBack, fromDate, toDate));
-        var memoryTask = Task.Run(() => _dataService.GetLatestMemoryStatsAsync(_serverId));
-        var memoryTrendTask = Task.Run(() => _dataService.GetMemoryTrendAsync(_serverId, hoursBack, fromDate, toDate));
-        var queryStatsTask = Task.Run(() => _dataService.GetTopQueriesByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes));
-        var procStatsTask = Task.Run(() => _dataService.GetTopProceduresByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes));
-        var fileIoTrendTask = Task.Run(() => _dataService.GetFileIoLatencyTrendAsync(_serverId, hoursBack, fromDate, toDate));
-        var fileIoThroughputTask = Task.Run(() => _dataService.GetFileIoThroughputTrendAsync(_serverId, hoursBack, fromDate, toDate));
-        var tempDbTask = Task.Run(() => _dataService.GetTempDbTrendAsync(_serverId, hoursBack, fromDate, toDate));
-        var tempDbFileIoTask = Task.Run(() => _dataService.GetTempDbFileIoTrendAsync(_serverId, hoursBack, fromDate, toDate));
-        var deadlockTask = Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, hoursBack, fromDate, toDate));
-        var blockedProcessTask = Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, hoursBack, fromDate, toDate));
-        var waitTypesTask = Task.Run(() => _dataService.GetDistinctWaitTypesAsync(_serverId, hoursBack, fromDate, toDate));
-        var memoryClerkTypesTask = Task.Run(() => _dataService.GetDistinctMemoryClerkTypesAsync(_serverId, hoursBack, fromDate, toDate));
-        var perfmonCountersTask = Task.Run(() => _dataService.GetDistinctPerfmonCountersAsync(_serverId, hoursBack, fromDate, toDate));
-        var queryStoreTask = Task.Run(() => _dataService.GetQueryStoreTopQueriesAsync(_serverId, hoursBack, 50, fromDate, toDate));
-        var memoryGrantTrendTask = Task.Run(() => _dataService.GetMemoryGrantTrendAsync(_serverId, hoursBack, fromDate, toDate));
-        var memoryGrantChartTask = Task.Run(() => _dataService.GetMemoryGrantChartDataAsync(_serverId, hoursBack, fromDate, toDate));
-        var memoryPressureEventsTask = Task.Run(() => _dataService.GetMemoryPressureEventsAsync(_serverId, hoursBack, fromDate, toDate));
-        var serverConfigTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestServerConfigAsync(_serverId)));
-        var databaseConfigTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestDatabaseConfigAsync(_serverId)));
-        var databaseScopedConfigTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestDatabaseScopedConfigAsync(_serverId)));
-        var traceFlagsTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestTraceFlagsAsync(_serverId)));
-        var runningJobsTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetRunningJobsAsync(_serverId)));
-        var collectionHealthTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetCollectionHealthAsync(_serverId)));
-        var collectionLogTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetRecentCollectionLogAsync(_serverId, hoursBack)));
-        var dailySummaryTask = Task.Run(() => _dataService.GetDailySummaryAsync(_serverId, _dailySummaryDate));
-        /* Core data tasks */
-        await System.Threading.Tasks.Task.WhenAll(
-            snapshotsTask, cpuTask, memoryTask, memoryTrendTask,
-            queryStatsTask, procStatsTask, fileIoTrendTask, fileIoThroughputTask, tempDbTask, tempDbFileIoTask,
-            deadlockTask, blockedProcessTask, waitTypesTask, memoryClerkTypesTask, perfmonCountersTask,
-            queryStoreTask, memoryGrantTrendTask, memoryGrantChartTask, memoryPressureEventsTask,
-            serverConfigTask, databaseConfigTask, databaseScopedConfigTask, traceFlagsTask,
-            runningJobsTask, collectionHealthTask, collectionLogTask, dailySummaryTask);
-
-        /* Trend chart tasks - run separately so failures don't kill the whole refresh */
-        var lockWaitTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLockWaitTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var blockingTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var deadlockTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var queryDurationTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var procDurationTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetProcedureDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var queryStoreDurationTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var executionCountTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetExecutionCountTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var currentWaitsDurationTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetWaitingTaskTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-        var currentWaitsBlockedTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockedSessionTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-
-        await System.Threading.Tasks.Task.WhenAll(
-            lockWaitTrendTask, blockingTrendTask, deadlockTrendTask,
-            queryDurationTrendTask, procDurationTrendTask, queryStoreDurationTrendTask, executionCountTrendTask,
-            currentWaitsDurationTask, currentWaitsBlockedTask);
-
-        loadSw.Stop();
-
-        /* Log data counts and timing for diagnostics */
-        AppLogger.DataDiag("ServerTab", $"[{_server.DisplayName}] serverId={_serverId} hoursBack={hoursBack} dataLoad={loadSw.ElapsedMilliseconds}ms");
-        AppLogger.DataDiag("ServerTab", $"  Snapshots: {snapshotsTask.Result.Count}, CPU: {cpuTask.Result.Count}");
-        AppLogger.DataDiag("ServerTab", $"  Memory: {(memoryTask.Result != null ? "1" : "null")}, MemoryTrend: {memoryTrendTask.Result.Count}");
-        AppLogger.DataDiag("ServerTab", $"  QueryStats: {queryStatsTask.Result.Count}, ProcStats: {procStatsTask.Result.Count}");
-        AppLogger.DataDiag("ServerTab", $"  FileIoTrend: {fileIoTrendTask.Result.Count}");
-        AppLogger.DataDiag("ServerTab", $"  TempDb: {tempDbTask.Result.Count}, BlockedProcessReports: {blockedProcessTask.Result.Count}, Deadlocks: {deadlockTask.Result.Count}");
-        AppLogger.DataDiag("ServerTab", $"  WaitTypes: {waitTypesTask.Result.Count}, PerfmonCounters: {perfmonCountersTask.Result.Count}, QueryStore: {queryStoreTask.Result.Count}");
-
-        /* Update grids (via filter managers to preserve active filters) */
-        _querySnapshotsFilterMgr!.UpdateData(snapshotsTask.Result);
-        LiveSnapshotIndicator.Text = "";
-        _queryStatsFilterMgr!.UpdateData(queryStatsTask.Result);
-        SetDefaultSortIfNone(QueryStatsGrid, "TotalElapsedMs", ListSortDirection.Descending);
-        {
-            var cEnd = toDate ?? DateTime.UtcNow;
-            var cStart = fromDate ?? cEnd.AddHours(-hoursBack);
-            await RefreshQueryStatsComparisonAsync(cStart, cEnd);
-        }
-        _procStatsFilterMgr!.UpdateData(procStatsTask.Result);
-        SetDefaultSortIfNone(ProcedureStatsGrid, "TotalElapsedMs", ListSortDirection.Descending);
-        {
-            var cEnd2 = toDate ?? DateTime.UtcNow;
-            var cStart2 = fromDate ?? cEnd2.AddHours(-hoursBack);
-            await RefreshProcStatsComparisonAsync(cStart2, cEnd2);
-        }
-        _blockedProcessFilterMgr!.UpdateData(blockedProcessTask.Result);
-        _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(deadlockTask.Result));
-        _queryStoreFilterMgr!.UpdateData(queryStoreTask.Result);
-        SetDefaultSortIfNone(QueryStoreGrid, "TotalDurationMs", ListSortDirection.Descending);
-        {
-            var cEnd3 = toDate ?? DateTime.UtcNow;
-            var cStart3 = fromDate ?? cEnd3.AddHours(-hoursBack);
-            await RefreshQueryStoreComparisonAsync(cStart3, cEnd3);
-        }
-        _serverConfigFilterMgr!.UpdateData(serverConfigTask.Result);
-        _databaseConfigFilterMgr!.UpdateData(databaseConfigTask.Result);
-        _dbScopedConfigFilterMgr!.UpdateData(databaseScopedConfigTask.Result);
-        _traceFlagsFilterMgr!.UpdateData(traceFlagsTask.Result);
-        _runningJobsFilterMgr!.UpdateData(runningJobsTask.Result);
-        _collectionHealthFilterMgr!.UpdateData(collectionHealthTask.Result);
-        _collectionLogFilterMgr!.UpdateData(collectionLogTask.Result);
-        var dailySummary = await dailySummaryTask;
-        DailySummaryGrid.ItemsSource = dailySummary != null
-            ? new List<DailySummaryRow> { dailySummary } : null;
-        DailySummaryNoData.Visibility = dailySummary == null
-            ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-        UpdateCollectorDurationChart(collectionLogTask.Result);
-
-        /* Update memory summary */
-        UpdateMemorySummary(memoryTask.Result);
-
-        /* Update charts */
-        UpdateCpuChart(cpuTask.Result);
-        UpdateMemoryChart(memoryTrendTask.Result, memoryGrantTrendTask.Result);
-        UpdateTempDbChart(tempDbTask.Result);
-        UpdateTempDbFileIoChart(tempDbFileIoTask.Result);
-        UpdateFileIoCharts(fileIoTrendTask.Result);
-        UpdateFileIoThroughputCharts(fileIoThroughputTask.Result);
-        UpdateLockWaitTrendChart(lockWaitTrendTask.Result, hoursBack, fromDate, toDate);
-        UpdateBlockingTrendChart(blockingTrendTask.Result, hoursBack, fromDate, toDate);
-        UpdateDeadlockTrendChart(deadlockTrendTask.Result, hoursBack, fromDate, toDate);
-        UpdateCurrentWaitsDurationChart(currentWaitsDurationTask.Result, hoursBack, fromDate, toDate);
-        UpdateCurrentWaitsBlockedChart(currentWaitsBlockedTask.Result, hoursBack, fromDate, toDate);
-        UpdateQueryDurationTrendChart(queryDurationTrendTask.Result);
-        UpdateProcDurationTrendChart(procDurationTrendTask.Result);
-        UpdateQueryStoreDurationTrendChart(queryStoreDurationTrendTask.Result);
-        UpdateExecutionCountTrendChart(executionCountTrendTask.Result);
-        UpdateMemoryGrantCharts(memoryGrantChartTask.Result);
-        UpdateMemoryPressureEventsChart(memoryPressureEventsTask.Result, hoursBack, fromDate, toDate);
-
-        /* Populate pickers (preserve selections) */
-        PopulateWaitTypePicker(waitTypesTask.Result);
-        PopulateMemoryClerkPicker(memoryClerkTypesTask.Result);
-        PopulatePerfmonPicker(perfmonCountersTask.Result);
-
-        /* Update picker-driven charts */
-        await UpdateWaitStatsChartFromPickerAsync();
-        await UpdateMemoryClerksChartFromPickerAsync();
-        await UpdatePerfmonChartFromPickerAsync();
-
-        /* Notify parent of alert counts for tab badge.
-           Include the latest event timestamp so acknowledgement is only
-           cleared when genuinely new events arrive, not when the time range changes. */
-        var blockingCount = blockedProcessTask.Result.Count;
-        var deadlockCount = deadlockTask.Result.Count;
-        DateTime? latestEventTime = null;
-        if (blockingCount > 0 || deadlockCount > 0)
-        {
-            var latestBlocking = blockedProcessTask.Result.Max(r => (DateTime?)r.EventTime);
-            var latestDeadlock = deadlockTask.Result.Max(r => (DateTime?)r.DeadlockTime);
-            latestEventTime = latestBlocking > latestDeadlock ? latestBlocking : latestDeadlock;
-        }
-        AlertCountsChanged?.Invoke(blockingCount, deadlockCount, latestEventTime);
-    }
-
     /* ───────────────────────────── Per-tab refresh methods ───────────────────────────── */
 
     /// <summary>Tab 0 — Wait Stats</summary>
@@ -322,10 +158,10 @@ public partial class ServerTab : UserControl
                 switch (QueriesSubTabControl.SelectedIndex)
                 {
                     case 0: // Performance Trends — 4 trend charts
-                        var qdt = Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-                        var pdt = Task.Run(() => SafeQueryAsync(() => _dataService.GetProcedureDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-                        var qsdt = Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-                        var ect = Task.Run(() => SafeQueryAsync(() => _dataService.GetExecutionCountTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+                        var qdt = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var pdt = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetProcedureDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var qsdt = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var ect = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExecutionTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetExecutionCountTrendAsync(_serverId, hoursBack, fromDate, toDate))));
                         await System.Threading.Tasks.Task.WhenAll(qdt, pdt, qsdt, ect);
                         UpdateQueryDurationTrendChart(qdt.Result);
                         UpdateProcDurationTrendChart(pdt.Result);
@@ -382,19 +218,19 @@ public partial class ServerTab : UserControl
             }
 
             /* Full refresh: load all sub-tabs */
-            var snapshotsTask = Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, hoursBack, fromDate, toDate));
-            var queryStatsTask = Task.Run(() => _dataService.GetTopQueriesByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes));
-            var procStatsTask = Task.Run(() => _dataService.GetTopProceduresByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes));
-            var queryStoreTask = Task.Run(() => _dataService.GetQueryStoreTopQueriesAsync(_serverId, hoursBack, 50, fromDate, toDate));
-            var queryDurationTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var procDurationTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetProcedureDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var queryStoreDurationTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var executionCountTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetExecutionCountTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var heatmapTask = Task.Run(async () =>
+            var snapshotsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.Snapshots", () => Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, hoursBack, fromDate, toDate)));
+            var queryStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStats", () => Task.Run(() => _dataService.GetTopQueriesByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes)));
+            var procStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcStats", () => Task.Run(() => _dataService.GetTopProceduresByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes)));
+            var queryStoreTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStore", () => Task.Run(() => _dataService.GetQueryStoreTopQueriesAsync(_serverId, hoursBack, 50, fromDate, toDate)));
+            var queryDurationTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var procDurationTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetProcedureDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var queryStoreDurationTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var executionCountTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExecutionTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetExecutionCountTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var heatmapTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.Heatmap", () => Task.Run(async () =>
             {
                 try { return await _dataService.GetQueryHeatmapAsync(_serverId, (HeatmapMetric)Dispatcher.Invoke(() => HeatmapMetricCombo.SelectedIndex), hoursBack, fromDate, toDate); }
                 catch { return new HeatmapResult(); }
-            });
+            }));
 
             await System.Threading.Tasks.Task.WhenAll(
                 snapshotsTask, queryStatsTask, procStatsTask, queryStoreTask,
@@ -507,12 +343,12 @@ public partial class ServerTab : UserControl
             }
 
             /* Full refresh: load all sub-tabs */
-            var memoryTask = Task.Run(() => _dataService.GetLatestMemoryStatsAsync(_serverId));
-            var memoryTrendTask = Task.Run(() => _dataService.GetMemoryTrendAsync(_serverId, hoursBack, fromDate, toDate));
-            var memoryClerkTypesTask = Task.Run(() => _dataService.GetDistinctMemoryClerkTypesAsync(_serverId, hoursBack, fromDate, toDate));
-            var memoryGrantTrendTask = Task.Run(() => _dataService.GetMemoryGrantTrendAsync(_serverId, hoursBack, fromDate, toDate));
-            var memoryGrantChartTask = Task.Run(() => _dataService.GetMemoryGrantChartDataAsync(_serverId, hoursBack, fromDate, toDate));
-            var memoryPressureEventsTask = Task.Run(() => _dataService.GetMemoryPressureEventsAsync(_serverId, hoursBack, fromDate, toDate));
+            var memoryTask = Helpers.MethodProfiler.TimeAsync("Memory.MemoryStats", () => Task.Run(() => _dataService.GetLatestMemoryStatsAsync(_serverId)));
+            var memoryTrendTask = Helpers.MethodProfiler.TimeAsync("Memory.MemoryTrend", () => Task.Run(() => _dataService.GetMemoryTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+            var memoryClerkTypesTask = Helpers.MethodProfiler.TimeAsync("Memory.MemoryClerks", () => Task.Run(() => _dataService.GetDistinctMemoryClerkTypesAsync(_serverId, hoursBack, fromDate, toDate)));
+            var memoryGrantTrendTask = Helpers.MethodProfiler.TimeAsync("Memory.MemoryGrantTrend", () => Task.Run(() => _dataService.GetMemoryGrantTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+            var memoryGrantChartTask = Helpers.MethodProfiler.TimeAsync("Memory.MemoryGrants", () => Task.Run(() => _dataService.GetMemoryGrantChartDataAsync(_serverId, hoursBack, fromDate, toDate)));
+            var memoryPressureEventsTask = Helpers.MethodProfiler.TimeAsync("Memory.MemoryPressureEvents", () => Task.Run(() => _dataService.GetMemoryPressureEventsAsync(_serverId, hoursBack, fromDate, toDate)));
 
             await System.Threading.Tasks.Task.WhenAll(memoryTask, memoryTrendTask, memoryClerkTypesTask, memoryGrantTrendTask, memoryGrantChartTask, memoryPressureEventsTask);
 
@@ -534,8 +370,8 @@ public partial class ServerTab : UserControl
     {
         try
         {
-            var fileIoTrendTask = Task.Run(() => _dataService.GetFileIoLatencyTrendAsync(_serverId, hoursBack, fromDate, toDate));
-            var fileIoThroughputTask = Task.Run(() => _dataService.GetFileIoThroughputTrendAsync(_serverId, hoursBack, fromDate, toDate));
+            var fileIoTrendTask = Helpers.MethodProfiler.TimeAsync("FileIo.LatencyTrend", () => Task.Run(() => _dataService.GetFileIoLatencyTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+            var fileIoThroughputTask = Helpers.MethodProfiler.TimeAsync("FileIo.ThroughputTrend", () => Task.Run(() => _dataService.GetFileIoThroughputTrendAsync(_serverId, hoursBack, fromDate, toDate)));
 
             await System.Threading.Tasks.Task.WhenAll(fileIoTrendTask, fileIoThroughputTask);
 
@@ -553,12 +389,13 @@ public partial class ServerTab : UserControl
     {
         try
         {
-            var tempDbTask = Task.Run(() => _dataService.GetTempDbTrendAsync(_serverId, hoursBack, fromDate, toDate));
-            var tempDbFileIoTask = Task.Run(() => _dataService.GetTempDbFileIoTrendAsync(_serverId, hoursBack, fromDate, toDate));
+            var tempDbTask = Helpers.MethodProfiler.TimeAsync("TempDb.Trend", () => Task.Run(() => _dataService.GetTempDbTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+            var tempDbFileIoTask = Helpers.MethodProfiler.TimeAsync("TempDb.FileIoTrend", () => Task.Run(() => _dataService.GetTempDbFileIoTrendAsync(_serverId, hoursBack, fromDate, toDate)));
 
             await System.Threading.Tasks.Task.WhenAll(tempDbTask, tempDbFileIoTask);
 
             UpdateTempDbChart(tempDbTask.Result);
+            UpdateTempDbSizeChart(tempDbTask.Result);
             UpdateTempDbFileIoChart(tempDbFileIoTask.Result);
         }
         catch (Exception ex)
@@ -578,29 +415,32 @@ public partial class ServerTab : UserControl
                 switch (BlockingSubTabControl.SelectedIndex)
                 {
                     case 0: // Trends — 3 trend charts
-                        var lwt = Task.Run(() => SafeQueryAsync(() => _dataService.GetLockWaitTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-                        var bt = Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-                        var dt = Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+                        var lwt = Helpers.MethodProfiler.TimeAsync("Locking.LockWaitTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetLockWaitTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var bt = Helpers.MethodProfiler.TimeAsync("Locking.BlockingTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var dt = Helpers.MethodProfiler.TimeAsync("Locking.DeadlockTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate))));
                         await System.Threading.Tasks.Task.WhenAll(lwt, bt, dt);
                         UpdateLockWaitTrendChart(lwt.Result, hoursBack, fromDate, toDate);
                         UpdateBlockingTrendChart(bt.Result, hoursBack, fromDate, toDate);
                         UpdateDeadlockTrendChart(dt.Result, hoursBack, fromDate, toDate);
                         break;
                     case 1: // Current Waits — 2 charts
-                        var cwd = Task.Run(() => SafeQueryAsync(() => _dataService.GetWaitingTaskTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-                        var cwb = Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockedSessionTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+                        var cwd = Helpers.MethodProfiler.TimeAsync("Locking.WaitingTaskTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetWaitingTaskTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var cwb = Helpers.MethodProfiler.TimeAsync("Locking.BlockedSessionTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockedSessionTrendAsync(_serverId, hoursBack, fromDate, toDate))));
                         await System.Threading.Tasks.Task.WhenAll(cwd, cwb);
                         UpdateCurrentWaitsDurationChart(cwd.Result, hoursBack, fromDate, toDate);
                         UpdateCurrentWaitsBlockedChart(cwb.Result, hoursBack, fromDate, toDate);
                         break;
                     case 2: // Blocked Process Reports
                         var bpr = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, hoursBack, fromDate, toDate));
-                        _blockedProcessFilterMgr!.UpdateData(bpr);
+                        using (Helpers.MethodProfiler.StartTiming("Locking.BindBlockedGrid"))
+                            _blockedProcessFilterMgr!.UpdateData(bpr);
                         await LoadBlockingSlicerAsync();
                         break;
                     case 3: // Deadlocks
                         var dlr = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, hoursBack, fromDate, toDate));
-                        _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(dlr));
+                        var dlrDetails = await ParseDeadlocksOffUiThreadAsync(dlr);
+                        using (Helpers.MethodProfiler.StartTiming("Locking.BindDeadlockGrid"))
+                            _deadlockFilterMgr!.UpdateData(dlrDetails);
                         await LoadDeadlockSlicerAsync();
                         break;
                 }
@@ -610,27 +450,35 @@ public partial class ServerTab : UserControl
             }
 
             /* Full refresh: load all sub-tabs */
-            var blockedProcessTask = Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, hoursBack, fromDate, toDate));
-            var deadlockTask = Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, hoursBack, fromDate, toDate));
-            var lockWaitTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLockWaitTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var blockingTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var deadlockTrendTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var currentWaitsDurationTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetWaitingTaskTrendAsync(_serverId, hoursBack, fromDate, toDate)));
-            var currentWaitsBlockedTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockedSessionTrendAsync(_serverId, hoursBack, fromDate, toDate)));
+            var blockedProcessTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockedProcessReports", () => Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(_serverId, hoursBack, fromDate, toDate)));
+            var deadlockTask = Helpers.MethodProfiler.TimeAsync("Locking.Deadlocks", () => Task.Run(() => _dataService.GetRecentDeadlocksAsync(_serverId, hoursBack, fromDate, toDate)));
+            var lockWaitTrendTask = Helpers.MethodProfiler.TimeAsync("Locking.LockWaitTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetLockWaitTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var blockingTrendTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var deadlockTrendTask = Helpers.MethodProfiler.TimeAsync("Locking.DeadlockTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var currentWaitsDurationTask = Helpers.MethodProfiler.TimeAsync("Locking.WaitingTaskTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetWaitingTaskTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+            var currentWaitsBlockedTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockedSessionTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockedSessionTrendAsync(_serverId, hoursBack, fromDate, toDate))));
 
             await System.Threading.Tasks.Task.WhenAll(
                 blockedProcessTask, deadlockTask,
                 lockWaitTrendTask, blockingTrendTask, deadlockTrendTask,
                 currentWaitsDurationTask, currentWaitsBlockedTask);
 
-            _blockedProcessFilterMgr!.UpdateData(blockedProcessTask.Result);
-            _deadlockFilterMgr!.UpdateData(DeadlockProcessDetail.ParseFromRows(deadlockTask.Result));
+            /* Parse deadlock graphs off the UI thread (this was the Blocking-tab hitch). Time the
+               remaining UI-thread render steps so any new hot spot is pinpointed (bind vs charts). */
+            var deadlockDetails = await ParseDeadlocksOffUiThreadAsync(deadlockTask.Result);
+            using (Helpers.MethodProfiler.StartTiming("Locking.BindBlockedGrid"))
+                _blockedProcessFilterMgr!.UpdateData(blockedProcessTask.Result);
+            using (Helpers.MethodProfiler.StartTiming("Locking.BindDeadlockGrid"))
+                _deadlockFilterMgr!.UpdateData(deadlockDetails);
 
-            UpdateLockWaitTrendChart(lockWaitTrendTask.Result, hoursBack, fromDate, toDate);
-            UpdateBlockingTrendChart(blockingTrendTask.Result, hoursBack, fromDate, toDate);
-            UpdateDeadlockTrendChart(deadlockTrendTask.Result, hoursBack, fromDate, toDate);
-            UpdateCurrentWaitsDurationChart(currentWaitsDurationTask.Result, hoursBack, fromDate, toDate);
-            UpdateCurrentWaitsBlockedChart(currentWaitsBlockedTask.Result, hoursBack, fromDate, toDate);
+            using (Helpers.MethodProfiler.StartTiming("Locking.RenderTrendCharts"))
+            {
+                UpdateLockWaitTrendChart(lockWaitTrendTask.Result, hoursBack, fromDate, toDate);
+                UpdateBlockingTrendChart(blockingTrendTask.Result, hoursBack, fromDate, toDate);
+                UpdateDeadlockTrendChart(deadlockTrendTask.Result, hoursBack, fromDate, toDate);
+                UpdateCurrentWaitsDurationChart(currentWaitsDurationTask.Result, hoursBack, fromDate, toDate);
+                UpdateCurrentWaitsBlockedChart(currentWaitsBlockedTask.Result, hoursBack, fromDate, toDate);
+            }
 
             await LoadBlockingSlicerAsync();
             await LoadDeadlockSlicerAsync();
@@ -757,10 +605,10 @@ public partial class ServerTab : UserControl
     {
         try
         {
-            var serverConfigTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestServerConfigAsync(_serverId)));
-            var databaseConfigTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestDatabaseConfigAsync(_serverId)));
-            var databaseScopedConfigTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestDatabaseScopedConfigAsync(_serverId)));
-            var traceFlagsTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestTraceFlagsAsync(_serverId)));
+            var serverConfigTask = Helpers.MethodProfiler.TimeAsync("Config.ServerConfig", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestServerConfigAsync(_serverId))));
+            var databaseConfigTask = Helpers.MethodProfiler.TimeAsync("Config.DatabaseConfig", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestDatabaseConfigAsync(_serverId))));
+            var databaseScopedConfigTask = Helpers.MethodProfiler.TimeAsync("Config.DatabaseScopedConfig", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestDatabaseScopedConfigAsync(_serverId))));
+            var traceFlagsTask = Helpers.MethodProfiler.TimeAsync("Config.TraceFlags", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetLatestTraceFlagsAsync(_serverId))));
 
             await System.Threading.Tasks.Task.WhenAll(serverConfigTask, databaseConfigTask, databaseScopedConfigTask, traceFlagsTask);
 
@@ -798,8 +646,8 @@ public partial class ServerTab : UserControl
     {
         try
         {
-            var collectionHealthTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetCollectionHealthAsync(_serverId)));
-            var collectionLogTask = Task.Run(() => SafeQueryAsync(() => _dataService.GetRecentCollectionLogAsync(_serverId, hoursBack)));
+            var collectionHealthTask = Helpers.MethodProfiler.TimeAsync("CollectionHealth.Health", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetCollectionHealthAsync(_serverId))));
+            var collectionLogTask = Helpers.MethodProfiler.TimeAsync("CollectionHealth.Log", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetRecentCollectionLogAsync(_serverId, hoursBack))));
 
             await System.Threading.Tasks.Task.WhenAll(collectionHealthTask, collectionLogTask);
 

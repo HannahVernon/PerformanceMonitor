@@ -34,6 +34,7 @@ namespace PerformanceMonitorDashboard
         private readonly int _hoursBack;
         private readonly DateTime? _fromDate;
         private readonly DateTime? _toDate;
+        private readonly PlanNavigationController _planActions;
         private List<TracePatternDetailItem> _historyData = new();
         private ChartHoverHelper? _chartHover;
 
@@ -59,6 +60,13 @@ namespace PerformanceMonitorDashboard
             _hoursBack = hoursBack;
             _fromDate = fromDate;
             _toDate = toDate;
+
+            _planActions = new PlanNavigationController(
+                this,
+                (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+                (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                    _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                "the monitored server");
 
             // Collapse newlines/tabs to spaces and truncate for a clean single-line header
             var displayPattern = MultipleSpacesRegExp().Replace(queryPattern, " ").Trim();
@@ -169,21 +177,10 @@ namespace PerformanceMonitorDashboard
             var dates = orderedData.Select(h => h.EndTime!.Value.ToOADate()).ToArray();
             var values = orderedData.Select(h => GetMetricValue(h, metricTag)).ToArray();
 
-            var color = ScottPlot.Color.FromHex("#4FC3F7");
+            var color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
             var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
             scatter.Color = color;
-
-            // Sparse data: show only markers to avoid misleading interpolated lines
-            if (dates.Length <= 1)
-            {
-                scatter.LineWidth = 0;
-                scatter.MarkerSize = 8;
-            }
-            else
-            {
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 4;
-            }
+            ChartStyle.StyleScatter(scatter);
 
             HistoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
             Helpers.TabHelpers.ReapplyAxisColors(HistoryChart);
@@ -410,6 +407,29 @@ namespace PerformanceMonitorDashboard
 
         [System.Text.RegularExpressions.GeneratedRegex(@"\s+")]
         private static partial System.Text.RegularExpressions.Regex MultipleSpacesRegExp();
+
+        #endregion
+
+        #region Plan Actions
+
+        // Trace patterns are aggregated trace/RPC-completed events with no cached plan, so only
+        // "Get Actual Plan" is offered (re-execute the sampled statement) — mirroring how the main
+        // grid treats LongRunningQueryPatternItem.
+        private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (GetHistoryItem(sender) is not { } item) return;
+            await _planActions.GetActualPlanAsync(item.SqlText, _databaseName, "Actual Plan - Trace Pattern");
+        }
+
+        private static TracePatternDetailItem? GetHistoryItem(object sender)
+        {
+            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+            {
+                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
+                return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as TracePatternDetailItem;
+            }
+            return null;
+        }
 
         #endregion
     }

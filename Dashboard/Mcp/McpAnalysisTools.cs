@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Text.Json;
@@ -56,14 +57,18 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    status = "healthy",
-                    message = "No significant findings. All metrics are within normal ranges.",
-                    analysis_time = analysisService.LastAnalysisTime?.ToString("o")
-                }, McpHelpers.JsonOptions);
+                /* A successful analysis that found nothing wrong: a true negative ("all clear"),
+                   surfaced with the shared miss vocabulary so callers branch on it uniformly. */
+                return McpHelpers.Status(
+                    "empty",
+                    "No significant findings. All metrics are within normal ranges.",
+                    new { analysis_time = analysisService.LastAnalysisTime?.ToString("o") });
             }
+
+            // Correlate-and-focus slice 1 (review §1d): each finding's "what else fired this window".
+            var coFiredTitles = new List<(string, double)>(findings.Count);
+            foreach (var wf in findings)
+                coFiredTitles.Add((FactAdvice.GetForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
 
             return JsonSerializer.Serialize(new
             {
@@ -93,6 +98,8 @@ public sealed class McpAnalysisTools
                         fact_count = f.FactCount,
                         drill_down = f.DrillDown,
                         next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredTitles),
                         advice = advice is null ? null : new
                         {
                             headline = advice.Headline,
@@ -142,12 +149,9 @@ public sealed class McpAnalysisTools
 
             if (facts.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    fact_count = 0,
-                    message = "No facts collected."
-                }, McpHelpers.JsonOptions);
+                /* No scored facts means the underlying collectors produced nothing for the window —
+                   not retrievable now rather than an all-clear (mirrors get_perfmon_trend's empty case). */
+                return McpHelpers.Status("unavailable", "No facts collected.");
             }
 
             var filtered = facts.AsEnumerable();
@@ -291,6 +295,8 @@ public sealed class McpAnalysisTools
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var editionName = edition switch
             {
@@ -299,8 +305,6 @@ public sealed class McpAnalysisTools
                 4 => "Express",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
 
             var recommendations = new System.Collections.Generic.List<object>();
 
@@ -315,8 +319,9 @@ public sealed class McpAnalysisTools
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
-                var suggested = maxdop == 0 ? (isExpress ? 1 : isEnterprise ? 8 : 4) : maxdop;
-                var status = maxdop == 0 ? "warning" : maxdop == 1 && !isExpress ? "review" : "ok";
+                // Topology-based (min(cores-per-socket, 8)), NOT edition-based — see FactRemediation.RecommendedMaxdop.
+                var suggested = maxdop == 0 ? (int)FactRemediation.RecommendedMaxdop(coresPerSocket) : maxdop;
+                var status = maxdop == 0 ? "warning" : maxdop == 1 ? "review" : "ok";
                 recommendations.Add(new { setting = "max degree of parallelism", current_value = maxdop, suggested_value = suggested, status });
             }
 
@@ -358,7 +363,17 @@ public sealed class McpAnalysisTools
             var findings = await analysisService.GetRecentFindingsAsync(serverId, hours_back);
 
             if (findings.Count == 0)
-                return JsonSerializer.Serialize(new { server = resolved.Value.ServerName, finding_count = 0, message = "No findings. Run analyze_server to generate new findings." }, McpHelpers.JsonOptions);
+                return McpHelpers.Status("empty", "No findings. Run analyze_server to generate new findings.");
+
+            // Correlate-and-focus slice 1 (review §1d): "what else fired", scoped per analysis run
+            // (this read can span multiple runs, unlike analyze_server's single run).
+            var coFiredByRun = new Dictionary<DateTime, List<(string, double)>>();
+            foreach (var wf in findings)
+            {
+                if (!coFiredByRun.TryGetValue(wf.AnalysisTime, out var list))
+                    coFiredByRun[wf.AnalysisTime] = list = new List<(string, double)>();
+                list.Add((FactAdvice.GetComposedForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
+            }
 
             return JsonSerializer.Serialize(new
             {
@@ -368,10 +383,13 @@ public sealed class McpAnalysisTools
                 {
                     // Persisted findings carry no drill-down (it is ephemeral —
                     // see AnalysisModels.cs), so generate advice prose only.
+                    // The prose IS value-stated: GetComposedForFinding reads the
+                    // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
+                    // StoryText at analysis time, falling back to the static block.
                     // suggested_remediation_sql is intentionally omitted: it
                     // would always be null here. The operator re-runs
                     // analyze_server when they need the copy-paste T-SQL.
-                    var advice = FactAdvice.GetForFactKey(f.RootFactKey);
+                    var advice = FactAdvice.GetComposedForFinding(f);
                     return new
                     {
                         severity = Math.Round(f.Severity, 2),
@@ -379,6 +397,8 @@ public sealed class McpAnalysisTools
                         story_path = f.StoryPath,
                         story_path_hash = f.StoryPathHash,
                         analysis_time = f.AnalysisTime.ToString("o"),
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredByRun[f.AnalysisTime]),
                         advice = advice is null ? null : new
                         {
                             headline = advice.Headline,
@@ -453,7 +473,6 @@ internal static class ToolRecommendations
         ["QUERY_HIGH_DOP"] = [new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" })],
         ["PARAMETER_SENSITIVITY"] = [new("get_top_queries_by_cpu", "Find the sensitive query and see its cached parameters"), new("analyze_query_plan", "Examine the plan for operators driving the runtime variance"), new("get_query_trend", "Confirm the bimodal duration pattern over time"), new("get_resource_semaphore", "Check whether bad-parameter executions blow up memory grants")],
         ["PLAN_REGRESSION"] = [new("analyze_query_store_plan", "Compare the regressed plan against the prior plan"), new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"), new("get_query_store_top", "Pull the full Query Store entry and forced-plan history before forcing")],
-        ["PERFMON_PLE"] = [new("get_memory_stats", "Check buffer pool"), new("get_memory_clerks", "See memory allocation")],
         ["DB_CONFIG"] = [new("audit_config", "Check configuration")],
         ["FILE_AUTOGROWTH_PERCENT"] = [new("get_database_sizes", "See per-file sizes and autogrowth settings"), new("get_file_io_stats", "Check per-file growth/latency")],
         ["DISK_SPACE"] = [new("get_file_io_stats", "Check per-file sizes")],

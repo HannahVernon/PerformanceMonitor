@@ -23,36 +23,79 @@ internal sealed class BlockingPairRow
     public DateTime? BlockedTranStarted { get; init; }
     public int BlockingSpid { get; init; }
     public DateTime? BlockingTranStarted { get; init; }
+    /// <summary>The blocked-process-report's monitorLoop — the episode (one monitor scan) the row belongs to.
+    /// Nullable: only the viewer scopes by it; the collector passes scopeByMonitorLoop=false (treated as null).</summary>
+    public int? MonitorLoop { get; init; }
+    /// <summary>Execution-context id of each side; with spid it forms the session identity the reconstruction
+    /// keys on (mirrors sp_HumanEventsBlockViewer's spid:ecid). 0 for the common non-parallel case.</summary>
+    public int BlockedEcid { get; init; }
+    public int BlockingEcid { get; init; }
     public long WaitTimeMs { get; init; }
     public string LockMode { get; init; } = string.Empty;
     public string BlockingStatus { get; init; } = string.Empty;
     public string BlockedSqlText { get; init; } = string.Empty;
     public string BlockingSqlText { get; init; } = string.Empty;
+    // Session identity for each side (login / host / client app). Carried so the viewer can show WHO a
+    // session is, not just a SPID. Threaded the same way as the SQL text.
+    public string BlockedLoginName { get; init; } = string.Empty;
+    public string BlockedHostName { get; init; } = string.Empty;
+    public string BlockedClientApp { get; init; } = string.Empty;
+    // Blocker-side identity is settable (not init) so the Dashboard viewer can enrich it after Read from
+    // the correlated activity='blocking' row — its table denormalizes only the blocked side (see Dashboard
+    // BlockingPairRowQuery.ReadWithBlockerIdentity). Lite sets all six in its Read object initializer.
+    public string BlockingLoginName { get; set; } = string.Empty;
+    public string BlockingHostName { get; set; } = string.Empty;
+    public string BlockingClientApp { get; set; } = string.Empty;
+    /// <summary>The contended object (schema.object where resolvable) — the blocked row's contentious_object.</summary>
+    public string ContentiousObject { get; init; } = string.Empty;
 }
 
 /// <summary>
-/// Stable session identity. A SPID is reused across the analysis window, so the bare
-/// integer is not a session identity — the transaction start time disambiguates two
-/// sessions that reused one SPID.
+/// Stable session identity mirroring sp_HumanEventsBlockViewer: spid:ecid scoped to a monitor_loop (one
+/// blocked-process-report scan = one episode). MonitorLoop is null when the caller reconstructs cumulatively
+/// across the window (the collector) rather than per-scan (the viewer); ecid distinguishes parallel workers.
+/// Transaction start is NOT part of the identity — the blocking-process node omits it, so it is null on every
+/// blocker and cannot disambiguate.
 /// </summary>
-internal readonly record struct SessionKey(int Spid, DateTime? TranStarted);
+internal readonly record struct SessionKey(int? MonitorLoop, int Spid, int Ecid);
 
 /// <summary>One level (one blocked/blocker edge) of a reconstructed chain, for drill-down.</summary>
 internal sealed class ChainLevel
 {
     public int Level { get; init; }
     public int BlockingSpid { get; init; }
+    public int BlockingEcid { get; init; }
+    /// <summary>Transaction start of the blocking side — display only (sentinel-normalized); not part of the
+    /// session identity, which is spid:ecid within monitor_loop.</summary>
+    public DateTime? BlockingTranStarted { get; init; }
     public int BlockedSpid { get; init; }
+    public int BlockedEcid { get; init; }
+    public DateTime? BlockedTranStarted { get; init; }
     public string LockMode { get; init; } = string.Empty;
     public long WaitTimeMs { get; init; }
+    public string DatabaseName { get; init; } = string.Empty;
     public string BlockingSqlText { get; init; } = string.Empty;
     public string BlockedSqlText { get; init; } = string.Empty;
+    public string BlockedLoginName { get; init; } = string.Empty;
+    public string BlockedHostName { get; init; } = string.Empty;
+    public string BlockedClientApp { get; init; } = string.Empty;
+    public string BlockingLoginName { get; init; } = string.Empty;
+    public string BlockingHostName { get; init; } = string.Empty;
+    public string BlockingClientApp { get; init; } = string.Empty;
+    /// <summary>The contended object for this edge — the blocked side's contentious_object.</summary>
+    public string ContentiousObject { get; init; } = string.Empty;
 }
 
 /// <summary>A single reconstructed blocking chain, rooted at an apex head blocker.</summary>
 internal sealed class ReconstructedChain
 {
     public int ApexSpid { get; init; }
+    public int ApexEcid { get; init; }
+    /// <summary>The chain's episode (monitor_loop) when scoped per-scan; null for a cumulative reconstruction.
+    /// All nodes in a scoped chain share it (one report's two sides carry the same monitor_loop).</summary>
+    public int? MonitorLoop { get; init; }
+    /// <summary>Transaction start of the apex — display only (null for a blocker, which has none).</summary>
+    public DateTime? ApexTranStarted { get; init; }
     public bool ApexSleeping { get; init; }
     public int Depth { get; init; }
     public int VictimCount { get; init; }
@@ -84,17 +127,59 @@ internal static class BlockingChainReconstructor
     /// </summary>
     private static readonly DateTime SentinelFloor = new(1900, 1, 2);
 
-    private sealed record EdgeInfo(long WaitMs, string LockMode, string BlockingSql, string BlockedSql);
+    // Holds the deduped winning row for an edge, so every per-pair field (wait, lock, SQL, identity) is
+    // available when building the ChainLevel without re-listing each one here.
+    private sealed record EdgeInfo(BlockingPairRow Row);
 
-    /// <summary>Builds a stable session key, normalizing the 1900-01-01 sentinel to NULL.</summary>
-    public static SessionKey MakeKey(int spid, DateTime? tranStarted)
+    /// <summary>Builds a session key. MonitorLoop is null when reconstructing cumulatively (collector).</summary>
+    public static SessionKey MakeKey(int? monitorLoop, int spid, int ecid) => new(monitorLoop, spid, ecid);
+
+    /// <summary>Normalizes the 1900-01-01 sentinel to NULL for display tran values.</summary>
+    private static DateTime? NormalizeTran(DateTime? tranStarted) =>
+        tranStarted.HasValue && tranStarted.Value > SentinelFloor ? tranStarted : null;
+
+    /// <summary>
+    /// Finds the single reconstructed chain that contains the clicked session, matched by spid:ecid within
+    /// its episode (monitor_loop). The session may be the apex, a mid-level blocker, or a leaf victim. When
+    /// the clicked monitor_loop is unavailable (e.g. a lead-blocker grid row), it falls back to a
+    /// monitor_loop-agnostic spid:ecid match — the reconstruction window is already tight, so this still lands
+    /// on the right chain rather than reporting "no reconstructable chain." Returns null when no chain holds
+    /// the session. Only the viewer calls this, on a per-scan (scoped) reconstruction; the collector takes the
+    /// worst chain directly.
+    /// </summary>
+    public static ReconstructedChain? FindChainForSession(
+        BlockingReconstruction reconstruction, int? monitorLoop, int spid, int ecid)
     {
-        var normalized = tranStarted.HasValue && tranStarted.Value > SentinelFloor ? tranStarted : null;
-        return new SessionKey(spid, normalized);
+        foreach (var chain in reconstruction.Chains)
+            if ((!monitorLoop.HasValue || chain.MonitorLoop == monitorLoop) &&
+                ChainContainsSpidEcid(chain, spid, ecid))
+                return chain;
+
+        if (monitorLoop.HasValue)
+            foreach (var chain in reconstruction.Chains)
+                if (ChainContainsSpidEcid(chain, spid, ecid))
+                    return chain;
+
+        return null;
+    }
+
+    /// <summary>True if the session (spid:ecid) appears anywhere in the chain — apex, a blocker, or a victim.</summary>
+    private static bool ChainContainsSpidEcid(ReconstructedChain chain, int spid, int ecid)
+    {
+        if (chain.ApexSpid == spid && chain.ApexEcid == ecid)
+            return true;
+
+        foreach (var l in chain.Levels)
+        {
+            if (l.BlockingSpid == spid && l.BlockingEcid == ecid) return true;
+            if (l.BlockedSpid == spid && l.BlockedEcid == ecid) return true;
+        }
+
+        return false;
     }
 
     public static BlockingReconstruction Reconstruct(
-        IEnumerable<BlockingPairRow> rows, int maxDepth, int maxPairs, int stepBudget)
+        IEnumerable<BlockingPairRow> rows, int maxDepth, int maxPairs, int stepBudget, bool scopeByMonitorLoop)
     {
         var pairs = rows.Take(maxPairs).ToList();
         if (pairs.Count == 0)
@@ -109,8 +194,11 @@ internal static class BlockingChainReconstructor
 
         foreach (var row in pairs)
         {
-            var blocker = MakeKey(row.BlockingSpid, row.BlockingTranStarted);
-            var blocked = MakeKey(row.BlockedSpid, row.BlockedTranStarted);
+            // The collector reconstructs cumulatively (loop = null) so an episode's per-scan re-fires merge into
+            // one chain (preserves window-level depth/victims for the severity fact); the viewer scopes per scan.
+            var loop = scopeByMonitorLoop ? row.MonitorLoop : null;
+            var blocker = MakeKey(loop, row.BlockingSpid, row.BlockingEcid);
+            var blocked = MakeKey(loop, row.BlockedSpid, row.BlockedEcid);
 
             allNodes.Add(blocker);
             allNodes.Add(blocked);
@@ -125,11 +213,9 @@ internal static class BlockingChainReconstructor
             if (!adjacency.TryGetValue(blocker, out var dests))
                 adjacency[blocker] = dests = new Dictionary<SessionKey, EdgeInfo>();
 
-            if (!dests.TryGetValue(blocked, out var existing) || row.WaitTimeMs > existing.WaitMs)
+            if (!dests.TryGetValue(blocked, out var existing) || row.WaitTimeMs > existing.Row.WaitTimeMs)
             {
-                dests[blocked] = new EdgeInfo(
-                    row.WaitTimeMs, row.LockMode ?? string.Empty,
-                    row.BlockingSqlText ?? string.Empty, row.BlockedSqlText ?? string.Empty);
+                dests[blocked] = new EdgeInfo(row);
             }
         }
 
@@ -156,9 +242,18 @@ internal static class BlockingChainReconstructor
                 FactScorer.ApplyThresholdFormula(depth, 3, 8),
                 FactScorer.ApplyThresholdFormula(victimCount, 5, 25));
 
+            // Apex display tran comes from its first outgoing edge's blocking side (the apex never appears as a
+            // blocked row); a blocker has no tran on Dashboard (null) but Lite carries it.
+            var apexTran = adjacency.TryGetValue(root, out var apexDests) && apexDests.Count > 0
+                ? NormalizeTran(apexDests.Values.First().Row.BlockingTranStarted)
+                : null;
+
             chains.Add(new ReconstructedChain
             {
                 ApexSpid = root.Spid,
+                ApexEcid = root.Ecid,
+                MonitorLoop = root.MonitorLoop,
+                ApexTranStarted = apexTran,
                 ApexSleeping = sleepingBlockers.Contains(root),
                 Depth = depth,
                 VictimCount = victimCount,
@@ -223,7 +318,7 @@ internal static class BlockingChainReconstructor
         {
             // Pick the orphan with the largest outgoing wait time as the fallback root.
             var fallback = orphans
-                .OrderByDescending(n => adjacency[n].Values.Max(e => e.WaitMs))
+                .OrderByDescending(n => adjacency[n].Values.Max(e => e.Row.WaitTimeMs))
                 .First();
             roots.Add(fallback);
             MarkReachable(fallback, adjacency, reached);
@@ -335,18 +430,31 @@ internal static class BlockingChainReconstructor
             foreach (var (child, edge) in dests)
             {
                 victims.Add(child);
-                if (edge.WaitMs > maxWait)
-                    maxWait = edge.WaitMs;
+                var row = edge.Row;
+                if (row.WaitTimeMs > maxWait)
+                    maxWait = row.WaitTimeMs;
 
                 levels.Add(new ChainLevel
                 {
                     Level = level + 1,
                     BlockingSpid = node.Spid,
+                    BlockingEcid = node.Ecid,
+                    BlockingTranStarted = NormalizeTran(row.BlockingTranStarted),
                     BlockedSpid = child.Spid,
-                    LockMode = edge.LockMode,
-                    WaitTimeMs = edge.WaitMs,
-                    BlockingSqlText = edge.BlockingSql,
-                    BlockedSqlText = edge.BlockedSql
+                    BlockedEcid = child.Ecid,
+                    BlockedTranStarted = NormalizeTran(row.BlockedTranStarted),
+                    LockMode = row.LockMode ?? string.Empty,
+                    WaitTimeMs = row.WaitTimeMs,
+                    DatabaseName = row.DatabaseName ?? string.Empty,
+                    BlockingSqlText = row.BlockingSqlText ?? string.Empty,
+                    BlockedSqlText = row.BlockedSqlText ?? string.Empty,
+                    BlockedLoginName = row.BlockedLoginName ?? string.Empty,
+                    BlockedHostName = row.BlockedHostName ?? string.Empty,
+                    BlockedClientApp = row.BlockedClientApp ?? string.Empty,
+                    BlockingLoginName = row.BlockingLoginName ?? string.Empty,
+                    BlockingHostName = row.BlockingHostName ?? string.Empty,
+                    BlockingClientApp = row.BlockingClientApp ?? string.Empty,
+                    ContentiousObject = row.ContentiousObject ?? string.Empty
                 });
 
                 if (enqueued.Add(child))

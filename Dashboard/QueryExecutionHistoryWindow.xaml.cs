@@ -35,6 +35,8 @@ namespace PerformanceMonitorDashboard
         private readonly int _hoursBack;
         private readonly DateTime? _fromDate;
         private readonly DateTime? _toDate;
+        private readonly string? _queryText;
+        private readonly PlanNavigationController _planActions;
         private List<QueryExecutionHistoryItem> _historyData = new();
         private ScottPlot.IPanel? _legendPanel;
         private ChartHoverHelper? _chartHover;
@@ -52,7 +54,8 @@ namespace PerformanceMonitorDashboard
             string sourceType = "Query Store",
             int hoursBack = 24,
             DateTime? fromDate = null,
-            DateTime? toDate = null)
+            DateTime? toDate = null,
+            string? queryText = null)
         {
             InitializeComponent();
 
@@ -63,6 +66,14 @@ namespace PerformanceMonitorDashboard
             _hoursBack = hoursBack;
             _fromDate = fromDate;
             _toDate = toDate;
+            _queryText = queryText;
+
+            _planActions = new PlanNavigationController(
+                this,
+                (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+                (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                    _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                "the monitored server");
 
             QueryIdentifierText.Text = $"Query Execution History: Query {queryId} in [{databaseName}]";
 
@@ -179,18 +190,8 @@ namespace PerformanceMonitorDashboard
                 .OrderBy(g => g.Key)
                 .ToList();
 
-            // Color palette for different plans
-            var colors = new[]
-            {
-                ScottPlot.Color.FromHex("#4FC3F7"),
-                ScottPlot.Color.FromHex("#81C784"),
-                ScottPlot.Color.FromHex("#FFB74D"),
-                ScottPlot.Color.FromHex("#F06292"),
-                ScottPlot.Color.FromHex("#BA68C8"),
-                ScottPlot.Color.FromHex("#4DB6AC"),
-                ScottPlot.Color.FromHex("#FF8A65"),
-                ScottPlot.Color.FromHex("#A1887F")
-            };
+            // Color palette for different plans — shared cross-app cycling palette
+            var colors = ChartPalette.CyclingPalette.Select(ScottPlot.Color.FromHex).ToArray();
 
             int colorIndex = 0;
             var scatterSeries = new List<(ScottPlot.Plottables.Scatter Scatter, string Label)>();
@@ -208,21 +209,9 @@ namespace PerformanceMonitorDashboard
                 var color = colors[colorIndex % colors.Length];
                 var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
                 scatter.Color = color;
+                ChartStyle.StyleScatter(scatter);
                 var label = $"Plan {planGroup.Key}";
                 scatter.LegendText = label;
-
-                // Sparse data: use total dataset size, not per-plan size, since
-                // data is split across plan groups
-                if (_historyData.Count <= 1)
-                {
-                    scatter.LineWidth = 0;
-                    scatter.MarkerSize = 8;
-                }
-                else
-                {
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 4;
-                }
 
                 scatterSeries.Add((scatter, label));
                 colorIndex++;
@@ -505,6 +494,33 @@ namespace PerformanceMonitorDashboard
                     }
                 }
             }
+        }
+
+        #endregion
+
+        #region Plan Actions
+
+        private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+        {
+            if (GetHistoryItem(sender) is not { } item) return;
+            await _planActions.ViewPlanAsync(
+                () => _databaseService.GetQueryStorePlanXmlByCollectionIdAsync(item.CollectionId),
+                $"Est Plan - QS {_queryId}", _queryText);
+        }
+
+        private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        {
+            await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - QS {_queryId}");
+        }
+
+        private static QueryExecutionHistoryItem? GetHistoryItem(object sender)
+        {
+            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+            {
+                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
+                return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as QueryExecutionHistoryItem;
+            }
+            return null;
         }
 
         #endregion

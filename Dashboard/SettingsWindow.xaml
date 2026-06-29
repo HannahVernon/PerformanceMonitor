@@ -308,6 +308,14 @@
                                          TextAlignment="Center"/>
                                 <TextBlock Text="minutes" VerticalAlignment="Center"/>
                             </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <CheckBox x:Name="NotifyOnCollectionStoppedCheckBox"
+                                          Content="Data collection has stopped (collector jobs disabled, Agent down, or collectors failing)"
+                                          VerticalAlignment="Center"
+                                          Checked="NotifyOnCollectionStoppedCheckBox_Changed"
+                                          Unchecked="NotifyOnCollectionStoppedCheckBox_Changed"
+                                          ToolTip="Warn when the PerformanceMonitor SQL Agent jobs are disabled, or nothing has collected recently (Agent service stopped or collectors erroring). The app checks this itself, so it still fires when collection is off."/>
+                            </StackPanel>
                             <TextBlock x:Name="AlertPreviewText" FontSize="11" FontStyle="Italic" Foreground="Gray"
                                        TextWrapping="Wrap" Margin="0,12,0,0"/>
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
@@ -319,6 +327,17 @@
                                 <TextBlock Text="Email alert cooldown:" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                 <TextBox x:Name="EmailCooldownTextBox" Width="50" TextAlignment="Center" VerticalAlignment="Center"/>
                                 <TextBlock Text="minutes" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                            </StackPanel>
+                            <!-- #1141: deadlock/blocking notification delivery mode + per-event cap -->
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <TextBlock Text="Deadlock/blocking delivery:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <ComboBox x:Name="AlertDeliveryModeCombo" Width="260" VerticalAlignment="Center">
+                                    <ComboBoxItem Content="Summary — one card per cycle" Tag="Summary"/>
+                                    <ComboBoxItem Content="Per-event — one notification per incident" Tag="PerEvent"/>
+                                </ComboBox>
+                                <TextBlock Text="max" VerticalAlignment="Center" Margin="8,0,4,0"/>
+                                <TextBox x:Name="AlertPerEventMaxTextBox" Width="50" TextAlignment="Center" VerticalAlignment="Center"/>
+                                <TextBlock Text="/cycle" VerticalAlignment="Center" Margin="4,0,0,0"/>
                             </StackPanel>
                             <!-- Global Alert Filters -->
                             <TextBlock Text="Global Alert Filters" FontWeight="Bold" FontSize="12" Margin="0,16,0,6"/>

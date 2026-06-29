@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Notifications;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Interfaces;
@@ -106,8 +107,11 @@ namespace PerformanceMonitorDashboard.Services
         /// Dashboard records email and webhook deliveries as separate alert-log
         /// rows, so the filter is just NotificationType == "email" — Lite's
         /// combined "email+webhook" notification_type never appears here.
+        /// When <paramref name="dedupKey"/> is non-null (#1154), the scan is additionally
+        /// restricted to rows whose ContextJson carries that #1140 fingerprint (the helper
+        /// null-guards the many tray/muted rows whose ContextJson is null).
         /// </remarks>
-        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName)
+        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName, string? dedupKey = null)
         {
             lock (_alertLogLock)
             {
@@ -118,6 +122,39 @@ namespace PerformanceMonitorDashboard.Services
                     if (entry.MetricName != metricName) continue;
                     if (entry.NotificationType != "email") continue;
                     if (!string.IsNullOrEmpty(entry.SendError)) continue;
+                    if (dedupKey is not null && !AlertContextSerializer.ContextJsonContainsDedupKey(entry.ContextJson, dedupKey)) continue;
+                    if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
+                }
+                return Task.FromResult(max);
+            }
+        }
+
+        /// <summary>
+        /// Returns the UTC time the most recent alert webhook was successfully
+        /// sent for this server/metric, scanned from the in-memory alert log
+        /// (loaded from alert_history.json on startup) — or null if none. Seeds
+        /// the webhook cooldown after restart so a Teams/Slack alert posted
+        /// shortly before a restart is not re-posted afterward (#1145, mirroring
+        /// the email seed #981).
+        /// </summary>
+        /// <remarks>
+        /// Dashboard records webhook deliveries as their own alert-log rows with
+        /// NotificationType == "webhook" (written only on a successful post), so
+        /// the type alone implies success — no SendError filter is needed.
+        /// When <paramref name="dedupKey"/> is non-null (#1154), the scan is additionally
+        /// restricted to rows whose ContextJson carries that #1140 fingerprint.
+        /// </remarks>
+        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName, string? dedupKey = null)
+        {
+            lock (_alertLogLock)
+            {
+                DateTime? max = null;
+                foreach (var entry in _alertLog)
+                {
+                    if (entry.ServerId != serverId) continue;
+                    if (entry.MetricName != metricName) continue;
+                    if (entry.NotificationType != "webhook") continue;
+                    if (dedupKey is not null && !AlertContextSerializer.ContextJsonContainsDedupKey(entry.ContextJson, dedupKey)) continue;
                     if (max == null || entry.AlertTime > max.Value) max = entry.AlertTime;
                 }
                 return Task.FromResult(max);
@@ -151,14 +188,29 @@ namespace PerformanceMonitorDashboard.Services
         /// <summary>
         /// Gets alert history from the log (excludes hidden alerts).
         /// </summary>
-        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50)
+        /// <param name="includeMuted">
+        /// When true (default), muted rows are returned for audit/history display. When false,
+        /// muted rows are filtered out <em>before</em> the limit is applied — used by the sidebar
+        /// Alert badge count so known recurring noise (a muted source firing every cooldown) can
+        /// neither inflate the badge nor push real alerts out of the counted window (#1225).
+        /// </param>
+        /// <param name="includeResolved">
+        /// When true (default), resolution / good-news rows ("&#8230; Cleared/Resolved/Restored")
+        /// are returned for audit/history display. When false, they are filtered out before the
+        /// limit — also used by the sidebar Alert badge so a resolved condition is not counted as
+        /// an actionable alert (#1225). See <see cref="AlertMetricClassifier.IsResolution"/>.
+        /// </param>
+        public List<AlertLogEntry> GetAlertHistory(int hoursBack = 24, int limit = 50, bool includeMuted = true, bool includeResolved = true)
         {
             var cutoff = DateTime.UtcNow.AddHours(-hoursBack);
 
             lock (_alertLogLock)
             {
                 return _alertLog
-                    .Where(a => a.AlertTime >= cutoff && !a.Hidden)
+                    .Where(a => a.AlertTime >= cutoff
+                        && !a.Hidden
+                        && (includeMuted || !a.Muted)
+                        && (includeResolved || !AlertMetricClassifier.IsResolution(a.MetricName)))
                     .OrderByDescending(a => a.AlertTime)
                     .Take(limit)
                     .ToList();

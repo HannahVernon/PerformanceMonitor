@@ -330,6 +330,10 @@ BEGIN
                 BEGIN
                     EXECUTE collect.waiting_tasks_collector @debug = @debug;
                 END;
+                ELSE IF @collector_name = N'dmv_blocking_snapshot_collector'
+                BEGIN
+                    EXECUTE collect.dmv_blocking_snapshot_collector @debug = @debug;
+                END;
                 ELSE IF @collector_name = N'running_jobs_collector'
                 BEGIN
                     EXECUTE collect.running_jobs_collector @debug = @debug;

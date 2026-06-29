@@ -50,7 +50,8 @@ public class RecommendationsViewModelTests
         DateTime? windowStartUtc = null,
         DateTime? windowEndUtc = null,
         string? storyHash = "hash",
-        string? storyPath = "root>leaf")
+        string? storyPath = "root>leaf",
+        string incidentId = "")
     {
         return new RecommendationItem
         {
@@ -66,7 +67,8 @@ public class RecommendationsViewModelTests
             WindowStartUtc = windowStartUtc,
             WindowEndUtc = windowEndUtc,
             StoryPathHash = source == RecommendationSource.Engine ? storyHash : null,
-            StoryPath = source == RecommendationSource.Engine ? storyPath : null
+            StoryPath = source == RecommendationSource.Engine ? storyPath : null,
+            IncidentId = incidentId
         };
     }
 
@@ -129,33 +131,29 @@ public class RecommendationsViewModelTests
     // ---- grouping ---------------------------------------------------------
 
     [Fact]
-    public void FromItems_GroupsBySeverity_IntoThreeSectionsInFixedOrder()
+    public void FromItems_GroupsByIncidentId()
     {
+        // Reader-sorted (severity desc); two findings share incident "inc1", a third is its own.
         var items = new[]
         {
-            Item(CanonicalSeverity.Info, title: "i1"),
-            Item(CanonicalSeverity.Critical, title: "c1"),
-            Item(CanonicalSeverity.Warning, title: "w1"),
-            Item(CanonicalSeverity.Critical, title: "c2"),
+            Item(CanonicalSeverity.Critical, title: "c1", rawSeverity: 1.9, incidentId: "inc1"),
+            Item(CanonicalSeverity.Warning, title: "w1", rawSeverity: 1.0, incidentId: "inc1"),
+            Item(CanonicalSeverity.Warning, title: "w2", rawSeverity: 0.9, incidentId: "inc2"),
         };
 
         var vm = RecommendationsViewModel.FromItems(items);
 
-        // Fixed display order Critical -> Warning -> Info, regardless of input order.
-        Assert.Equal(3, vm.Sections.Count);
-        Assert.Equal(CanonicalSeverity.Critical, vm.Sections[0].Severity);
-        Assert.Equal(CanonicalSeverity.Warning, vm.Sections[1].Severity);
-        Assert.Equal(CanonicalSeverity.Info, vm.Sections[2].Severity);
-
-        Assert.Equal(2, vm.Sections[0].Count);
-        Assert.Equal(1, vm.Sections[1].Count);
-        Assert.Equal(1, vm.Sections[2].Count);
-        Assert.Equal(4, vm.TotalCount);
+        Assert.Equal(2, vm.Sections.Count);                                // two incidents
+        Assert.Equal(2, vm.Sections[0].Count);                             // inc1: c1 + w1
+        Assert.Equal(CanonicalSeverity.Critical, vm.Sections[0].Severity); // primary = c1
+        Assert.Single(vm.Sections[1].Cards);                               // inc2: w2 only
+        Assert.Equal(3, vm.TotalCount);
     }
 
     [Fact]
-    public void FromItems_OmitsEmptySeveritySections()
+    public void FromItems_NoIncidentId_EachItemIsItsOwnGroup()
     {
+        // Legacy / pre-incident_id rows carry no id, so each is a standalone single-card group.
         var items = new[]
         {
             Item(CanonicalSeverity.Warning, title: "w1"),
@@ -164,20 +162,19 @@ public class RecommendationsViewModelTests
 
         var vm = RecommendationsViewModel.FromItems(items);
 
-        Assert.Single(vm.Sections);
-        Assert.Equal(CanonicalSeverity.Warning, vm.Sections[0].Severity);
-        Assert.Equal(2, vm.Sections[0].Count);
+        Assert.Equal(2, vm.Sections.Count);
+        Assert.All(vm.Sections, s => Assert.Single(s.Cards));
     }
 
     [Fact]
-    public void FromItems_PreservesReaderOrderWithinASection()
+    public void FromItems_PreservesReaderOrderWithinAnIncident()
     {
-        // The reader returns severity-desc; within a band the order must be preserved as-is.
+        // The reader returns severity-desc; within an incident the order must be preserved as-is.
         var items = new[]
         {
-            Item(CanonicalSeverity.Critical, title: "first", rawSeverity: 1.9),
-            Item(CanonicalSeverity.Critical, title: "second", rawSeverity: 1.6),
-            Item(CanonicalSeverity.Critical, title: "third", rawSeverity: 1.51),
+            Item(CanonicalSeverity.Critical, title: "first", rawSeverity: 1.9, incidentId: "inc1"),
+            Item(CanonicalSeverity.Critical, title: "second", rawSeverity: 1.6, incidentId: "inc1"),
+            Item(CanonicalSeverity.Critical, title: "third", rawSeverity: 1.51, incidentId: "inc1"),
         };
 
         var vm = RecommendationsViewModel.FromItems(items);
@@ -204,18 +201,27 @@ public class RecommendationsViewModelTests
     }
 
     [Fact]
-    public void SectionHeader_IncludesCount()
+    public void IncidentHeader_NamesPrimaryFindingCountAndSeverity()
     {
         var items = new[]
         {
-            Item(CanonicalSeverity.Critical, title: "c1"),
-            Item(CanonicalSeverity.Critical, title: "c2"),
-            Item(CanonicalSeverity.Critical, title: "c3"),
+            Item(CanonicalSeverity.Critical, title: "SQL CPU pegged", rawSeverity: 1.9, incidentId: "inc1"),
+            Item(CanonicalSeverity.Warning, title: "Plan regression", rawSeverity: 1.0, incidentId: "inc1"),
         };
 
         var vm = RecommendationsViewModel.FromItems(items);
 
-        Assert.Equal("Critical (3)", vm.Sections[0].Header);
+        Assert.Equal("SQL CPU pegged · 2 findings · CRITICAL", vm.Sections[0].Header);
+    }
+
+    [Fact]
+    public void IncidentHeader_SingleFinding_OmitsCount()
+    {
+        var items = new[] { Item(CanonicalSeverity.Warning, title: "RCSI is OFF — Sales", incidentId: "inc1") };
+
+        var vm = RecommendationsViewModel.FromItems(items);
+
+        Assert.Equal("RCSI is OFF — Sales · WARNING", vm.Sections[0].Header);
     }
 
     [Fact]

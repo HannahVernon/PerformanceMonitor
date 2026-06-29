@@ -197,8 +197,11 @@ namespace PerformanceMonitorDashboard
             LongRunningJobMultiplierTextBox.Text = prefs.LongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
             NotifyOnFailedJobsCheckBox.IsChecked = prefs.NotifyOnFailedJobs;
             FailedJobLookbackTextBox.Text = prefs.FailedJobLookbackMinutes.ToString(CultureInfo.InvariantCulture);
+            NotifyOnCollectionStoppedCheckBox.IsChecked = prefs.NotifyOnCollectionStopped;
             AlertCooldownTextBox.Text = prefs.AlertCooldownMinutes.ToString(CultureInfo.InvariantCulture);
             EmailCooldownTextBox.Text = prefs.EmailCooldownMinutes.ToString(CultureInfo.InvariantCulture);
+            AlertDeliveryModeCombo.SelectedIndex = prefs.AlertDeliveryMode == AlertNotificationMode.PerEvent ? 1 : 0;
+            AlertPerEventMaxTextBox.Text = prefs.AlertPerEventMaxPerCycle.ToString(CultureInfo.InvariantCulture);
             MuteRuleDefaultExpirationCombo.SelectedIndex = prefs.MuteRuleDefaultExpiration switch
             {
                 "1 hour" => 0,
@@ -377,6 +380,12 @@ namespace PerformanceMonitorDashboard
             UpdateAlertNotificationStates();
         }
 
+        private void NotifyOnCollectionStoppedCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoading) return;
+            UpdateAlertNotificationStates();
+        }
+
         private void RestoreAlertDefaultsButton_Click(object sender, RoutedEventArgs e)
         {
             BlockingThresholdTextBox.Text = "30";
@@ -391,6 +400,8 @@ namespace PerformanceMonitorDashboard
             FailedJobLookbackTextBox.Text = "60";
             AlertCooldownTextBox.Text = "5";
             EmailCooldownTextBox.Text = "15";
+            AlertDeliveryModeCombo.SelectedIndex = 0;
+            AlertPerEventMaxTextBox.Text = "10";
             AlertExcludedDatabasesTextBox.Text = "";
             MuteRuleDefaultExpirationCombo.SelectedIndex = 1; // 24 hours
             UpdateAlertPreviewText();
@@ -425,6 +436,8 @@ namespace PerformanceMonitorDashboard
                 parts.Add($"jobs > {LongRunningJobMultiplierTextBox.Text}x avg");
             if (NotifyOnFailedJobsCheckBox.IsChecked == true)
                 parts.Add($"failed jobs (last {FailedJobLookbackTextBox.Text}m)");
+            if (NotifyOnCollectionStoppedCheckBox.IsChecked == true)
+                parts.Add("collection stopped");
 
             AlertPreviewText.Text = parts.Count > 0
                 ? $"Will alert when: {string.Join(", ", parts)}"
@@ -454,6 +467,7 @@ namespace PerformanceMonitorDashboard
             LongRunningJobMultiplierTextBox.IsEnabled = notificationsEnabled && NotifyOnLongRunningJobsCheckBox.IsChecked == true;
             NotifyOnFailedJobsCheckBox.IsEnabled = notificationsEnabled;
             FailedJobLookbackTextBox.IsEnabled = notificationsEnabled && NotifyOnFailedJobsCheckBox.IsChecked == true;
+            NotifyOnCollectionStoppedCheckBox.IsEnabled = notificationsEnabled;
             UpdateAlertPreviewText();
         }
 
@@ -748,6 +762,8 @@ namespace PerformanceMonitorDashboard
             else if (prefs.NotifyOnFailedJobs)
                 validationErrors.Add("Failed-job lookback must be between 1 and 1440 minutes");
 
+            prefs.NotifyOnCollectionStopped = NotifyOnCollectionStoppedCheckBox.IsChecked == true;
+
             if (int.TryParse(AlertCooldownTextBox.Text, out int alertCooldown) && alertCooldown >= 1 && alertCooldown <= 120)
                 prefs.AlertCooldownMinutes = alertCooldown;
             else
@@ -757,6 +773,12 @@ namespace PerformanceMonitorDashboard
                 prefs.EmailCooldownMinutes = emailCooldown;
             else
                 validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes");
+
+            prefs.AlertDeliveryMode = AlertDeliveryModeCombo.SelectedIndex == 1 ? AlertNotificationMode.PerEvent : AlertNotificationMode.Summary;
+            if (int.TryParse(AlertPerEventMaxTextBox.Text, out int perEventMax) && perEventMax >= 1 && perEventMax <= 100)
+                prefs.AlertPerEventMaxPerCycle = perEventMax;
+            else
+                validationErrors.Add("Per-event max-per-cycle must be between 1 and 100");
 
             prefs.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
             MuteRuleDialog.DefaultExpiration = prefs.MuteRuleDefaultExpiration;

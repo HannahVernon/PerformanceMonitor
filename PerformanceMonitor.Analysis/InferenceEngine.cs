@@ -167,7 +167,18 @@ public class InferenceEngine
         var leafKey = path.Count > 1 ? path[^1] : null;
         var leafFact = leafKey != null ? factsByKey.GetValueOrDefault(leafKey) : null;
 
-        var storyPath = string.Join(" → ", path);
+        // Attribute THREADPOOL (thread exhaustion) by its co-elevated cause, so the finding's ROOT
+        // KEY — the thing that persists and that FactAdvice is keyed on — carries parallel-vs-blocking.
+        // Only parallel-driven exhaustion is a MAXDOP/CTFP problem; blocking-driven exhaustion pins
+        // workers on blocked (not running) sessions and is fixed by clearing the blocking. The fact
+        // object keeps its "THREADPOOL" key (relationship graph + amplifiers untouched); only the
+        // finding's root key and story path are relabeled to the attribution variant.
+        var rootKey = path[0] == "THREADPOOL" ? ClassifyThreadpool(factsByKey) : path[0];
+        var effectivePath = rootKey == path[0]
+            ? path
+            : path.Select((k, i) => i == 0 ? rootKey : k).ToList();
+
+        var storyPath = string.Join(" → ", effectivePath);
         var category = rootFact?.Source ?? "unknown";
 
         // Confidence = what fraction of edge destinations had matching facts
@@ -176,17 +187,22 @@ public class InferenceEngine
 
         return new AnalysisStory
         {
-            RootFactKey = path[0],
-            RootFactValue = rootFact?.Severity ?? 0,
+            RootFactKey = rootKey,
+            // RootFactValue/LeafFactValue carry the fact's RAW collected value (the setting/metric —
+            // MAXDOP 0, a wait's fraction-of-period, etc.), NOT its severity. Severity has its own
+            // field below. These feed the MCP root_fact.value / leaf_fact.value contract and the
+            // notification headline; conflating them with severity made an MCP payload report
+            // "MAXDOP is 0" next to value 0.4 (the severity).
+            RootFactValue = rootFact?.Value ?? 0,
             Severity = rootFact?.Severity ?? 0,
             Confidence = confidence,
             Category = category,
-            Path = path,
+            Path = effectivePath,
             StoryPath = storyPath,
             StoryPathHash = ComputeHash(storyPath),
             StoryText = string.Empty,
             LeafFactKey = leafKey,
-            LeafFactValue = leafFact?.Severity,
+            LeafFactValue = leafFact?.Value,
             FactCount = path.Count,
             IsAbsolution = false,
             RootFactMetadata = rootFact?.Metadata,
@@ -194,6 +210,93 @@ public class InferenceEngine
             DatabaseName = rootFact?.DatabaseName
         };
     }
+
+    /// <summary>
+    /// Classifies a THREADPOOL (thread-exhaustion) root by its co-elevated cause so the persisted,
+    /// read-back root key carries the attribution that FactAdvice routes on. Parallel-driven
+    /// (CXPACKET / high-DOP co-fired) is the only flavor MAXDOP/CTFP fixes; blocking-driven
+    /// (blocked sessions pinning workers) is fixed by clearing the blocking. Mirrors the THREADPOOL
+    /// amplifier peers (CXPACKET, blocking/LCK). Returns the generic "THREADPOOL" when neither
+    /// co-fired (unattributed — the advice then tells the operator how to tell which it is).
+    /// factsByKey here contains only facts that scored above zero, so presence == fired.
+    /// </summary>
+    private static string ClassifyThreadpool(Dictionary<string, Fact> factsByKey)
+    {
+        var parallel = factsByKey.ContainsKey("CXPACKET")
+                    || factsByKey.ContainsKey("QUERY_HIGH_DOP");
+        var blocking = factsByKey.ContainsKey("BLOCKING_EVENTS")
+                    || factsByKey.ContainsKey("BLOCKING_CHAIN")
+                    || factsByKey.ContainsKey("LCK");
+        return (parallel, blocking) switch
+        {
+            (true, true) => "THREADPOOL_MIXED",
+            (true, false) => "THREADPOOL_PARALLEL",
+            (false, true) => "THREADPOOL_BLOCKING",
+            _ => "THREADPOOL"
+        };
+    }
+
+    /// <summary>
+    /// Groups a run's stories into INCIDENTS — sets of stories that are causally related — via
+    /// connected components over the relationship graph's ACTIVE edges (correlate-and-focus). The
+    /// greedy traversal in <see cref="BuildStories"/> only follows the single highest-severity edge
+    /// from each node, so it splits one root cause across several stories (e.g. a PLAN_REGRESSION that
+    /// is really a facet of the CPU incident); this re-merges them. Two graph families merge only when
+    /// a bridge edge actually fires (THREADPOOL→LCK when both are elevated = one blocking-driven
+    /// thread-exhaustion incident), and a genuinely-independent finding (a standalone disk advisory
+    /// with no active edge to anything present) stays its own incident.
+    ///
+    /// <para>Absolution stories are excluded. Returns one list per incident; a lone story is a
+    /// one-member incident. The fact a story OWNS is its <see cref="AnalysisStory.Path"/> keys,
+    /// normalized for the THREADPOOL relabel (the story path carries THREADPOOL_PARALLEL etc. while
+    /// the graph + facts use the base THREADPOOL key — see <see cref="ClassifyThreadpool"/>).</para>
+    /// </summary>
+    public List<List<AnalysisStory>> ClusterIntoIncidents(IReadOnlyList<AnalysisStory> stories, List<Fact> facts)
+    {
+        var incidentStories = (stories ?? [])
+            .Where(s => s is not null && !s.IsAbsolution)
+            .ToList();
+        if (incidentStories.Count <= 1)
+            return incidentStories.Select(s => new List<AnalysisStory> { s }).ToList();
+
+        // Same >0 working set BuildStories used, so the edge predicates evaluate identically.
+        var factsByKey = (facts ?? []).Where(f => f.Severity > 0).ToFactLookup();
+
+        // Each fact (normalized) is consumed by exactly one story; map it to that story's index.
+        var owner = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < incidentStories.Count; i++)
+            foreach (var key in incidentStories[i].Path)
+                owner[NormalizeKey(key)] = i;
+
+        // Union-find over story indices.
+        var parent = Enumerable.Range(0, incidentStories.Count).ToArray();
+        int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+        void Union(int a, int b) { var ra = Find(a); var rb = Find(b); if (ra != rb) parent[ra] = rb; }
+
+        for (var i = 0; i < incidentStories.Count; i++)
+            foreach (var key in incidentStories[i].Path)
+                foreach (var edge in _graph.GetActiveEdges(NormalizeKey(key), factsByKey))
+                    if (owner.TryGetValue(NormalizeKey(edge.Destination), out var j) && j != i)
+                        Union(i, j);
+
+        var components = new Dictionary<int, List<AnalysisStory>>();
+        for (var i = 0; i < incidentStories.Count; i++)
+        {
+            var root = Find(i);
+            if (!components.TryGetValue(root, out var list))
+                components[root] = list = new List<AnalysisStory>();
+            list.Add(incidentStories[i]);
+        }
+        return components.Values.ToList();
+    }
+
+    /// <summary>
+    /// Maps a relabeled THREADPOOL story root (THREADPOOL_PARALLEL / _BLOCKING / _MIXED) back to the
+    /// base THREADPOOL key the relationship graph and fact set use, so clustering sees its edges.
+    /// Every other key passes through unchanged.
+    /// </summary>
+    private static string NormalizeKey(string key) =>
+        key.StartsWith("THREADPOOL_", StringComparison.Ordinal) ? "THREADPOOL" : key;
 
     /// <summary>
     /// Stable hash for story path deduplication and muting.

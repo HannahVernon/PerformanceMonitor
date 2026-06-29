@@ -29,7 +29,7 @@ public sealed class McpObjectStatsTools
             var rows = await resolved.Value.Service.GetObjectSizeGrowthAsync();
             if (rows.Count == 0)
             {
-                return "No object size data available. Index/object stats are collected daily.";
+                return McpHelpers.Status("unavailable", "No object size data available. Index/object stats are collected daily.");
             }
 
             var result = rows.Select(r => new
@@ -76,7 +76,7 @@ public sealed class McpObjectStatsTools
             var rows = await resolved.Value.Service.GetIndexUsageAsync();
             if (rows.Count == 0)
             {
-                return "No index usage data available. Index/object stats are collected daily.";
+                return McpHelpers.Status("unavailable", "No index usage data available. Index/object stats are collected daily.");
             }
 
             var result = rows.Select(r => new
@@ -126,7 +126,7 @@ public sealed class McpObjectStatsTools
             var rows = await resolved.Value.Service.GetIndexLockingAsync();
             if (rows.Count == 0)
             {
-                return "No locking/contention data recorded. Index/object stats are collected daily.";
+                return McpHelpers.Status("unavailable", "No locking/contention data recorded. Index/object stats are collected daily.");
             }
 
             var result = rows.Select(r => new

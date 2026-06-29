@@ -139,6 +139,14 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         public string? StoryPath { get; set; }
 
         /// <summary>
+        /// The engine finding's incident id (correlate-and-focus) — the group key the surface
+        /// collapses cards under, so related findings render as one report. Empty for legacy rows and
+        /// for engine rows analyzed before incident_id existed; the view-model treats an empty id as a
+        /// standalone single-card incident.
+        /// </summary>
+        public string IncidentId { get; set; } = string.Empty;
+
+        /// <summary>
         /// The canonical de-dupe setting (or <see cref="RecommendationSetting.None"/>). See
         /// <see cref="RecommendationSetting"/>. Drives the (database, setting) de-dupe key.
         /// </summary>

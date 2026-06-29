@@ -97,7 +97,7 @@ public class TestDataSeeder
         await SeedCpuUtilizationAsync(85, 5);
         await SeedIoLatencyAsync(totalReads: 1_000_000, stallReadMs: 35_000_000, // 35ms avg read
                                   totalWrites: 200_000, stallWriteMs: 2_000_000); // 10ms avg write
-        await SeedPerfmonAsync(ple: 120); // Low PLE — buffer pool under pressure
+        await SeedPerfmonAsync();
         await SeedMemoryClerksAsync(new Dictionary<string, double>
         {
             ["MEMORYCLERK_SQLBUFFERPOOL"] = 54_000,
@@ -144,7 +144,7 @@ public class TestDataSeeder
         await SeedQueryStatsAsync(totalSpills: 500, highDopQueryCount: 15);
         await SeedServerPropertiesAsync(cpuCount: 32, htRatio: 2, physicalMemMb: 131_072,
             edition: "Enterprise Edition");
-        await SeedPerfmonAsync(ple: 800);
+        await SeedPerfmonAsync();
     }
 
     /// <summary>
@@ -178,7 +178,7 @@ public class TestDataSeeder
         await SeedIoLatencyAsync(totalReads: 500_000, stallReadMs: 500_000, // 1ms avg read
                                   totalWrites: 200_000, stallWriteMs: 100_000); // 0.5ms avg write
         await SeedTempDbAsync(reservedMb: 100, unallocatedMb: 900); // 10% — healthy
-        await SeedPerfmonAsync(ple: 5_000); // Excellent PLE
+        await SeedPerfmonAsync();
         await SeedDatabaseConfigAsync(
             ("AppDB1", true, false, false, "CHECKSUM"),
             ("AppDB2", true, false, false, "CHECKSUM"));
@@ -421,12 +421,12 @@ public class TestDataSeeder
         await SeedFileSizeAsync(totalDataSizeMb: 307_200); // 300GB
         await SeedServerEditionAsync(edition: 2, majorVersion: 16); // Standard 2022
 
-        // Cascade evidence: grant waiters + spills + I/O + low PLE
+        // Cascade evidence: grant waiters + spills + I/O
         await SeedMemoryGrantsAsync(maxWaiters: 5, timeoutErrors: 3);
         await SeedQueryStatsAsync(totalSpills: 2_000, highDopQueryCount: 5);
         await SeedIoLatencyAsync(totalReads: 800_000, stallReadMs: 28_000_000, // 35ms avg read
                                   totalWrites: 200_000, stallWriteMs: 3_000_000);
-        await SeedPerfmonAsync(ple: 200);
+        await SeedPerfmonAsync();
         await SeedServerPropertiesAsync(cpuCount: 16, htRatio: 2, physicalMemMb: 65_536);
     }
 
@@ -599,7 +599,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         await SeedTempDbAsync(reservedMb: 9_000, unallocatedMb: 1_000); // 90% full
         await SeedMemoryGrantsAsync(maxWaiters: 8, maxGrantees: 5, timeoutErrors: 10, forcedGrants: 5);
         await SeedQueryStatsAsync(totalSpills: 5_000, highDopQueryCount: 20);
-        await SeedPerfmonAsync(ple: 45); // Critically low PLE
+        await SeedPerfmonAsync();
         await SeedMemoryClerksAsync(new Dictionary<string, double>
         {
             ["MEMORYCLERK_SQLBUFFERPOOL"] = 50_000,
@@ -931,24 +931,25 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
         var baseTran = TestPeriodStart;
         DateTime Tran(int spid) => baseTran.AddSeconds(spid);
 
-        // blocked spid, blocked tran, blocking spid, blocking tran, blocking status
-        var pairs = new (int BlockedSpid, DateTime BlockedTran, int BlockingSpid, DateTime BlockingTran, string BlockingStatus)[]
+        // blocked spid, blocked tran, blocking spid, blocking tran, blocking status, blocked ecid
+        var pairs = new (int BlockedSpid, DateTime BlockedTran, int BlockingSpid, DateTime BlockingTran, string BlockingStatus, int BlockedEcid)[]
         {
             // Chain A — depth 4, apex 200 sleeping
-            (201, Tran(201), 200, Tran(200), "sleeping"),
-            (202, Tran(202), 201, Tran(201), "running"),
-            (203, Tran(203), 202, Tran(202), "running"),
-            (204, Tran(204), 203, Tran(203), "running"),
+            (201, Tran(201), 200, Tran(200), "sleeping", 0),
+            (202, Tran(202), 201, Tran(201), "running", 0),
+            (203, Tran(203), 202, Tran(202), "running", 0),
+            (204, Tran(204), 203, Tran(203), "running", 0),
             // Chain B — depth 1, apex 300, five victims
-            (301, Tran(301), 300, Tran(300), "running"),
-            (302, Tran(302), 300, Tran(300), "running"),
-            (303, Tran(303), 300, Tran(300), "running"),
-            (304, Tran(304), 300, Tran(300), "running"),
-            (305, Tran(305), 300, Tran(300), "running"),
-            // SPID reuse — spid 201 again, a different transaction start; must not join Chain A
-            (201, Tran(201).AddHours(2), 210, Tran(210), "running"),
+            (301, Tran(301), 300, Tran(300), "running", 0),
+            (302, Tran(302), 300, Tran(300), "running", 0),
+            (303, Tran(303), 300, Tran(300), "running", 0),
+            (304, Tran(304), 300, Tran(300), "running", 0),
+            (305, Tran(305), 300, Tran(300), "running", 0),
+            // SPID reuse — spid 201 again on a DIFFERENT execution context (ecid 1); the (spid, ecid) key
+            // keeps this distinct session off Chain A (transaction start is no longer the disambiguator).
+            (201, Tran(201).AddHours(2), 210, Tran(210), "running", 1),
             // 1900-01-01 sentinel transaction start on the blocked session
-            (220, new DateTime(1900, 1, 1), 221, Tran(221), "running"),
+            (220, new DateTime(1900, 1, 1), 221, Tran(221), "running", 0),
         };
 
         for (var i = 0; i < pairs.Length; i++)
@@ -962,8 +963,9 @@ INSERT INTO blocked_process_reports
     (blocked_report_id, collection_time, server_id, server_name,
      event_time, database_name, blocked_spid, blocked_last_tran_started,
      blocking_spid, blocking_last_tran_started, wait_time_ms,
-     lock_mode, blocked_status, blocking_status, blocked_sql_text, blocking_sql_text)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+     lock_mode, blocked_status, blocking_status, blocked_sql_text, blocking_sql_text,
+     blocked_ecid)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
 
             cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
             cmd.Parameters.Add(new DuckDBParameter { Value = eventTime });
@@ -981,6 +983,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
             cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockingStatus });
             cmd.Parameters.Add(new DuckDBParameter { Value = $"SELECT * FROM dbo.T WHERE id = {p.BlockedSpid}" });
             cmd.Parameters.Add(new DuckDBParameter { Value = $"UPDATE dbo.T SET v = 1 WHERE id = {p.BlockingSpid}" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = p.BlockedEcid });
             await cmd.ExecuteNonQueryAsync();
         }
     }
@@ -1457,10 +1460,10 @@ VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)";
     }
 
     /// <summary>
-    /// Seeds perfmon_stats with key counters. PLE uses cntr_value (absolute);
-    /// rate counters use delta_cntr_value.
+    /// Seeds perfmon_stats with the collected rate counters (batch requests, compilations,
+    /// recompilations); all use delta_cntr_value.
     /// </summary>
-    internal async Task SeedPerfmonAsync(long ple, long batchReqSec = 500,
+    internal async Task SeedPerfmonAsync(long batchReqSec = 500,
         long compilationsSec = 50, long recompilationsSec = 5)
     {
         using var readLock = _duckDb.AcquireReadLock();
@@ -1469,7 +1472,6 @@ VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)";
 
         var counters = new (string name, long cntrValue, long deltaValue)[]
         {
-            ("Page life expectancy", ple, 0),
             ("Batch Requests/sec", batchReqSec * 60, batchReqSec), // cntr = cumulative, delta = rate
             ("SQL Compilations/sec", compilationsSec * 60, compilationsSec),
             ("SQL Re-Compilations/sec", recompilationsSec * 60, recompilationsSec)

@@ -37,7 +37,11 @@ public class WebhookAlertService
     private const string TsqlWebhookHint = "See email or in-app Alert Details for the copy-paste T-SQL.";
     private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
 
-    private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
+    /* #1154: per-incident-fingerprint cooldown (was a per-(serverId, metricName)
+       ConcurrentDictionary). Keyed per #1140 dedup fingerprint so a distinct incident in the
+       window is delivered; falls back to the metric-level key when an alert carries no
+       fingerprintable incident. */
+    private readonly IncidentCooldown _cooldown;
     private readonly IAlertSettings _settings;
     private readonly AlertBranding _branding;
     private readonly ILogger<WebhookAlertService> _logger;
@@ -47,11 +51,27 @@ public class WebhookAlertService
     private int _consecutiveSlackFailures;
     private string? _lastSlackError;
 
-    public WebhookAlertService(IAlertSettings settings, AlertBranding branding, ILogger<WebhookAlertService> logger)
+    /// <param name="historyStore">
+    /// Optional alert-history store used to seed the per-fingerprint webhook cooldown across an app
+    /// restart (#1145, mirroring the email seed #981). When null the cooldown is purely in-memory
+    /// (the pre-#1145 behavior, seeding disabled) — the test call sites pass null.
+    /// </param>
+    public WebhookAlertService(
+        IAlertSettings settings,
+        AlertBranding branding,
+        ILogger<WebhookAlertService> logger,
+        IAlertHistoryStore? historyStore = null)
     {
         _settings = settings;
         _branding = branding;
         _logger = logger;
+        _cooldown = new IncidentCooldown(
+            keyPrefix: "webhook:",
+            // Null store -> null seed delegate -> no restart seeding (preserves the pre-#1145 in-memory path).
+            seedLastSentUtc: historyStore is null
+                ? null
+                : (serverId, metricName, dedupKey) =>
+                    historyStore.GetLastWebhookSentUtcAsync(serverId, metricName, dedupKey));
     }
 
     /// <summary>
@@ -68,9 +88,16 @@ public class WebhookAlertService
     {
         try
         {
-            var cooldownKey = $"webhook:{serverId}:{metricName}";
-            if (_cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes))
+            /* #1154: per-fingerprint cooldown. Post if any incident in this alert is outside its
+               window (a distinct fingerprint is not throttled by an unrelated prior incident); stamp
+               every candidate key only after a successful post. Seeds the webhook last-sent time from
+               the alert log on first touch per key (#1145), unless the store is null (no seeding). No
+               incidents -> the metric-level fallback key (today's behavior). */
+            var decision = await _cooldown.EvaluateAsync(
+                serverId, metricName, context?.Incidents,
+                TimeSpan.FromMinutes(_settings.EmailCooldownMinutes));
+
+            if (!decision.ShouldSend)
             {
                 return false;
             }
@@ -89,7 +116,7 @@ public class WebhookAlertService
 
             if (sent)
             {
-                _cooldowns[cooldownKey] = DateTime.UtcNow;
+                _cooldown.Stamp(decision);
             }
 
             return sent;
@@ -202,7 +229,7 @@ public class WebhookAlertService
         bool isTest = false,
         AlertContext? context = null)
     {
-        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName);
+        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName, context?.SeverityOverride);
         var themeColor = hexColor.TrimStart('#');
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
@@ -349,7 +376,7 @@ public class WebhookAlertService
         bool isTest = false,
         AlertContext? context = null)
     {
-        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName);
+        var (hexColor, badgeText, emoji) = AlertSeverity.ForMetric(metricName, context?.SeverityOverride);
         var utcNow = DateTime.UtcNow;
         var localNow = DateTime.Now;
 

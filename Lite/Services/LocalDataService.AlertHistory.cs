@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Common;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
@@ -425,14 +426,28 @@ public class AlertHistoryRow
         }
     }
 
-    public bool IsResolved => MetricName.Contains("Cleared") || MetricName.Contains("Resolved");
-    public bool IsCritical => MetricName.Contains("Deadlock") || MetricName.Contains("Poison");
-    public bool IsWarning => !IsResolved && !IsCritical;
+    public bool IsResolved => AlertMetricClassifier.IsResolution(MetricName);
+    public bool IsCritical => AlertMetricClassifier.IsCritical(MetricName);
+    public bool IsWarning => AlertMetricClassifier.IsWarning(MetricName);
 
-    private static string FormatValue(string metricName, double value)
+    /* #1134: render the stored alert value with the unit and precision that match each metric the
+       Lite alert engine emits (MainWindow.AlertEngine.cs), keyed on the exact metric_name strings it
+       logs to config_alert_log. The fallback is :F2 (never :G) so an unmapped metric — e.g. an
+       "Analysis: <category> [<hash>]" finding severity — can never render as a raw full-precision
+       float (the reported Volume Free Space 0.9746057751382348). The same formatter drives the
+       Value and Threshold columns, so both carry the unit. */
+    private static string FormatValue(string metricName, double value) => metricName switch
     {
-        if (metricName.Contains("CPU")) return $"{value:F0}%";
-        if (metricName.Contains("TempDB")) return $"{value:F0}%";
-        return $"{value:G}";
-    }
+        /* Percent metrics — CPU/TempDB usage, free space, and the job's "% of average". */
+        "High CPU" or "TempDB Space" or "Volume Free Space" or "Long-Running Job" => $"{value:F1}%",
+
+        /* Poison wait carries an average ms/wait; long-running query carries elapsed minutes. */
+        "Poison Wait" => $"{value:F0} ms",
+        "Long-Running Query" => $"{value:F0} m",
+
+        /* Count metrics — whole-number event counts. */
+        "Blocking Detected" or "Deadlocks Detected" or "Failed Agent Job" => $"{value:F0}",
+
+        _ => $"{value:F2}"
+    };
 }

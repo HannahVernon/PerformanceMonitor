@@ -347,7 +347,8 @@ CREATE TABLE IF NOT EXISTS query_snapshots (
     program_name VARCHAR,
     open_transaction_count INTEGER,
     percent_complete DECIMAL(5,2),
-    is_cdc_capture BOOLEAN DEFAULT false
+    is_cdc_capture BOOLEAN DEFAULT false,
+    query_hash VARCHAR
 )";
 
     public const string CreateTempdbStatsTable = @"
@@ -468,8 +469,47 @@ CREATE TABLE IF NOT EXISTS blocked_process_reports (
     blocking_last_batch_completed TIMESTAMP,
     blocked_priority INTEGER,
     blocking_priority INTEGER,
-    blocked_process_report_xml VARCHAR
+    blocked_process_report_xml VARCHAR,
+    object_id INTEGER,
+    database_id INTEGER,
+    contentious_object VARCHAR,
+    monitor_loop INTEGER
 )";
+
+    /* Always-on DMV blocking snapshot (BPR-independent fallback). Rich blocker/blocked pair-row shape so
+       the shared blocking-chain reconstruction consumes it via v_dmv_blocking_snapshots. Column order MUST
+       match the appender in RemoteCollectorService.DmvBlockingSnapshot.cs (DuckDB appends by position). */
+    public const string CreateDmvBlockingSnapshotsTable = @"
+CREATE TABLE IF NOT EXISTS dmv_blocking_snapshots (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    monitor_loop INTEGER NOT NULL,
+    event_time TIMESTAMP,
+    database_name VARCHAR,
+    blocked_spid INTEGER,
+    blocked_ecid INTEGER,
+    blocked_last_tran_started TIMESTAMP,
+    blocking_spid INTEGER,
+    blocking_ecid INTEGER,
+    blocking_last_tran_started TIMESTAMP,
+    wait_time_ms BIGINT,
+    lock_mode VARCHAR,
+    blocking_status VARCHAR,
+    contentious_object VARCHAR,
+    blocked_sql_text VARCHAR,
+    blocking_sql_text VARCHAR,
+    blocked_login_name VARCHAR,
+    blocked_host_name VARCHAR,
+    blocked_client_app VARCHAR,
+    blocking_login_name VARCHAR,
+    blocking_host_name VARCHAR,
+    blocking_client_app VARCHAR
+)";
+
+    public const string CreateDmvBlockingSnapshotsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_dmv_blocking_snapshots_time ON dmv_blocking_snapshots(server_id, collection_time)";
 
     public const string CreateDatabaseConfigTable = @"
 CREATE TABLE IF NOT EXISTS database_config (
@@ -764,6 +804,24 @@ CREATE TABLE IF NOT EXISTS config_alert_log (
     context_json VARCHAR
 )";
 
+    /* Edge-trigger watermarks for the rolling-count blocking/deadlock alert gate (#1091) and the
+       time-based failed-Agent-job watermark. Persisted so the watermark survives an app restart
+       (#1145): without it the in-memory watermark resets and the first post-restart sweep re-fires
+       the same alert (and re-posts the same webhook) for events still lingering in the lookback
+       window — including failed-job toasts the user already saw and dismissed before the restart.
+       Keyed (server_id, metric_name); one short row per server/metric, upserted on change.
+       Count metrics (blocking/deadlock) use the INTEGER watermark column; the failed-job metric
+       uses watermark_time (the newest already-alerted failure's server-local run time). */
+    public const string CreateEdgeTriggerWatermarksTable = @"
+CREATE TABLE IF NOT EXISTS config_edge_trigger_watermarks (
+    server_id INTEGER NOT NULL,
+    metric_name VARCHAR NOT NULL,
+    watermark INTEGER NOT NULL,
+    watermark_time TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (server_id, metric_name)
+)";
+
     public const string CreateMuteRulesTable = @"
 CREATE TABLE IF NOT EXISTS config_mute_rules (
     id VARCHAR NOT NULL PRIMARY KEY,
@@ -817,6 +875,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateMemoryGrantStatsTable;
         yield return CreateWaitingTasksTable;
         yield return CreateBlockedProcessReportsTable;
+        yield return CreateDmvBlockingSnapshotsTable;
         yield return CreateDatabaseScopedConfigTable;
         yield return CreateTraceFlagsTable;
         yield return CreateRunningJobsTable;
@@ -825,6 +884,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateServerPropertiesTable;
         yield return CreateSessionStatsTable;
         yield return CreateAlertLogTable;
+        yield return CreateEdgeTriggerWatermarksTable;
         yield return CreateMuteRulesTable;
         yield return CreateDismissedArchiveAlertsTable;
     }
@@ -849,6 +909,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateMemoryGrantStatsIndex;
         yield return CreateWaitingTasksIndex;
         yield return CreateBlockedProcessReportsIndex;
+        yield return CreateDmvBlockingSnapshotsIndex;
         yield return CreateMemoryClerksIndex;
         yield return CreateMemoryPressureEventsIndex;
         yield return CreateDatabaseScopedConfigIndex;

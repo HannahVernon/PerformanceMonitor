@@ -9,7 +9,6 @@ A clear description of the change and why it's being made.
 - [ ] Lite Tests
 - [ ] SQL collection scripts
 - [ ] CLI Installer
-- [ ] GUI Installer
 - [ ] Documentation
 
 ## How was this tested?

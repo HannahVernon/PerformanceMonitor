@@ -273,6 +273,12 @@ namespace PerformanceMonitorDashboard
 
         public void DisposeChartHelpers()
         {
+            /* Closing the server tab with plan tabs still open would leak each PlanViewerControl via
+               the static ThemeChanged event — clean them up here too (ClosePlanTab_Click only handles
+               the per-tab close-button path). Mirrors Lite's ServerTab cleanup. */
+            foreach (var item in PlanTabControl.Items)
+                if (item is TabItem { Content: PlanViewerControl pv }) pv.Cleanup();
+
             _resourceOverviewCpuHover?.Dispose();
             _resourceOverviewMemoryHover?.Dispose();
             _resourceOverviewIoHover?.Dispose();
@@ -387,6 +393,11 @@ namespace PerformanceMonitorDashboard
 
                 LoadUserPreferences();
 
+                // Sync the per-tab range fields (including the blocking/deadlock slicers) to the global
+                // range so nothing opens out of sync — e.g. the global on 24h but a slicer rendering the
+                // last 7 days from a stale saved per-tab preference.
+                ApplyGlobalRangeToAllTabs();
+
                 // Sync time range button visual with saved preference
                 HighlightTimeButton(_globalHoursBack);
                 GlobalDateRangeIndicator.Text = GetGlobalDateRangeText();
@@ -442,7 +453,7 @@ namespace PerformanceMonitorDashboard
             _refreshStartedUtc = DateTime.UtcNow;
             try
             {
-                await RefreshVisibleTabAsync();
+                await RefreshVisibleTabWithCatchUpAsync();
                 StatusText.Text = "Ready";
                 FooterText.Text = $"Last refresh: {DateTime.Now:yyyy-MM-dd HH:mm:ss} | Server: {_serverConnection.DisplayName}";
             }

@@ -174,7 +174,8 @@ namespace PerformanceMonitorDashboard.Controls
             AddDrillDown(MemoryClerksChart, clerksMenu, () => _memoryClerksHover, "Show Active Queries at This Time", "MemoryClerks");
 
             // Plan Cache chart
-            TabHelpers.SetupChartContextMenu(PlanCacheChart, "Plan_Cache", "collect.plan_cache_stats");
+            var planCacheMenu = TabHelpers.SetupChartContextMenu(PlanCacheChart, "Plan_Cache", "collect.plan_cache_stats");
+            AddDrillDown(PlanCacheChart, planCacheMenu, () => _planCacheHover, "Show Active Queries at This Time", "PlanCache");
 
             // Memory Pressure Events chart
             var pressureMenu = TabHelpers.SetupChartContextMenu(MemoryPressureEventsChart, "Memory_Pressure_Events", "collect.memory_pressure_events");
@@ -228,11 +229,11 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     // Run all independent refreshes in parallel for initial load / manual refresh
                     await Task.WhenAll(
-                        RefreshMemoryStatsAsync(),
-                        RefreshMemoryGrantsAsync(),
-                        RefreshMemoryClerksAsync(),
-                        RefreshPlanCacheAsync(),
-                        RefreshMemoryPressureEventsAsync()
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryStats", () => RefreshMemoryStatsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryGrants", () => RefreshMemoryGrantsAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryClerks", () => RefreshMemoryClerksAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.PlanCache", () => RefreshPlanCacheAsync()),
+                        Helpers.MethodProfiler.TimeAsync("Memory.MemoryPressureEvents", () => RefreshMemoryPressureEventsAsync())
                     );
                 }
                 else

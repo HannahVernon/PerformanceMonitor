@@ -25,8 +25,10 @@ These views provide ready-to-query interfaces for common troubleshooting scenari
 
 /*
 Collection Health View - CRITICAL for detecting silent failures
-Shows last successful collection time and failure rate for each collector
-ALERT if any collector hasn't run successfully in 24 hours
+Shows last successful collection time and failure rate for each collector.
+A SKIPPED status counts as a healthy run: dedup-snapshot collectors (e.g. server_properties)
+log SKIPPED when nothing changed, which is a successful no-op -- not staleness.
+ALERT if any collector hasn't run (success or skip) in 24 hours
 */
 CREATE OR ALTER VIEW
     report.collection_health
@@ -40,7 +42,8 @@ WITH
             MAX
             (
                 CASE
-                    WHEN cl.collection_status = N'SUCCESS'
+                    /* SKIPPED counts as a successful run -- dedup collectors no-op when unchanged. */
+                    WHEN cl.collection_status IN (N'SUCCESS', N'SKIPPED')
                     THEN cl.collection_time
                     ELSE NULL
                 END
@@ -50,7 +53,7 @@ WITH
             COUNT_BIG
             (
                 CASE
-                    WHEN cl.collection_status NOT IN (N'CONFIG_CHANGE', N'TABLE_MISSING', N'TABLE_CREATED', N'SKIPPED')
+                    WHEN cl.collection_status NOT IN (N'CONFIG_CHANGE', N'TABLE_MISSING', N'TABLE_CREATED')
                     THEN 1
                     ELSE NULL
                 END
@@ -118,7 +121,7 @@ WITH
                     cl.collection_time DESC
             )
         FROM config.collection_log AS cl
-        WHERE cl.collection_status NOT IN (N'CONFIG_CHANGE', N'TABLE_MISSING', N'TABLE_CREATED', N'SKIPPED')
+        WHERE cl.collection_status NOT IN (N'CONFIG_CHANGE', N'TABLE_MISSING', N'TABLE_CREATED')
         AND   cl.collection_time >= DATEADD(DAY, -7, SYSDATETIME())
     ) AS r
     WHERE r.rn <= 20
@@ -278,6 +281,30 @@ FROM collect.blocked_process_xml AS bpx
 WHERE bpx.collection_time >= DATEADD(HOUR, -24, SYSDATETIME())
 ORDER BY
     bpx.event_time DESC;
+GO
+
+/*
+DMV Blocking Snapshot - recent point-in-time blocking captured from DMVs (BPR-independent)
+*/
+CREATE OR ALTER VIEW
+    report.dmv_blocking_snapshots
+AS
+SELECT TOP (1000)
+    dbs.collection_time,
+    dbs.event_time,
+    dbs.database_name,
+    dbs.spid,
+    dbs.blocking_spid,
+    dbs.wait_time_ms,
+    dbs.lock_mode,
+    dbs.blocking_status,
+    dbs.contentious_object,
+    dbs.blocked_sql_text,
+    dbs.blocking_sql_text
+FROM collect.dmv_blocking_snapshots AS dbs
+WHERE dbs.collection_time >= DATEADD(HOUR, -24, SYSDATETIME())
+ORDER BY
+    dbs.event_time DESC;
 GO
 
 /*
@@ -2725,6 +2752,7 @@ PRINT '  - report.expensive_queries_today';
 PRINT '  - report.memory_pressure_events';
 PRINT '  - report.cpu_spikes';
 PRINT '  - report.blocking_summary';
+PRINT '  - report.dmv_blocking_snapshots';
 PRINT '  - report.deadlock_summary';
 PRINT '  - report.server_configuration_changes';
 PRINT '  - report.database_configuration_changes';

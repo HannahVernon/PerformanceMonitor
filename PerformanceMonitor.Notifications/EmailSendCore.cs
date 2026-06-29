@@ -7,7 +7,6 @@
  */
 
 using System;
-using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Mail;
@@ -30,11 +29,15 @@ namespace PerformanceMonitor.Notifications;
 public sealed class EmailSendCore
 {
     private readonly IAlertSettings _settings;
-    private readonly IAlertHistoryStore _historyStore;
     private readonly WebhookAlertService _webhookAlertService;
     private readonly AlertBranding _branding;
     private readonly ILogger _logger;
-    private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
+
+    /* #1154: per-incident-fingerprint cooldown (was a per-(serverId, metricName)
+       ConcurrentDictionary). Keyed per #1140 dedup fingerprint so a distinct incident in
+       the window is delivered; falls back to the metric-level key when an alert carries no
+       fingerprintable incident. Seeds the email last-sent time from the alert log (#981). */
+    private readonly IncidentCooldown _cooldown;
 
     /* Failure tracking for louder logging + the health getter (MIN-4: counters stay
        co-located with GetEmailHealth on the shared core). */
@@ -49,10 +52,13 @@ public sealed class EmailSendCore
         ILogger logger)
     {
         _settings = settings;
-        _historyStore = historyStore;
         _webhookAlertService = webhookAlertService;
         _branding = branding;
         _logger = logger;
+        _cooldown = new IncidentCooldown(
+            keyPrefix: "",
+            seedLastSentUtc: (serverId, metricName, dedupKey) =>
+                historyStore.GetLastEmailSentUtcAsync(serverId, metricName, dedupKey));
     }
 
     /// <summary>
@@ -84,24 +90,15 @@ public sealed class EmailSendCore
             !string.IsNullOrWhiteSpace(_settings.SmtpFromAddress) &&
             !string.IsNullOrWhiteSpace(_settings.SmtpRecipients))
         {
-            var cooldownKey = $"{serverId}:{metricName}";
+            /* #1154: per-fingerprint cooldown. Send if any incident in this alert is outside its
+               window (a distinct fingerprint is not throttled by an unrelated prior incident);
+               stamp every candidate key only after a successful send. Seeds from the alert log on
+               first touch per key (#981). No incidents -> the metric-level fallback key (today's behavior). */
+            var decision = await _cooldown.EvaluateAsync(
+                serverId, metricName, context?.Incidents,
+                TimeSpan.FromMinutes(_settings.EmailCooldownMinutes));
 
-            /* Seed the in-memory cooldown from the alert log the first time this key is
-               seen, so an alert email sent shortly before an app restart is not immediately
-               re-sent afterward (#981). The in-memory dictionary is authoritative once seeded. */
-            if (!_cooldowns.ContainsKey(cooldownKey))
-            {
-                var lastPersistedSend = await _historyStore.GetLastEmailSentUtcAsync(serverId, metricName);
-                if (lastPersistedSend.HasValue)
-                {
-                    _cooldowns.TryAdd(cooldownKey, lastPersistedSend.Value);
-                }
-            }
-
-            var withinCooldown = _cooldowns.TryGetValue(cooldownKey, out var lastSent) &&
-                DateTime.UtcNow - lastSent < TimeSpan.FromMinutes(_settings.EmailCooldownMinutes);
-
-            if (!withinCooldown)
+            if (decision.ShouldSend)
             {
                 emailAttempted = true;
 
@@ -113,7 +110,7 @@ public sealed class EmailSendCore
                 {
                     await SendEmailAsync(_settings, subject, htmlBody, plainTextBody, context);
                     emailSent = true;
-                    _cooldowns[cooldownKey] = DateTime.UtcNow;
+                    _cooldown.Stamp(decision);
 
                     if (_consecutiveFailures > 0)
                     {

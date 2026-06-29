@@ -314,7 +314,23 @@ BEGIN
                         (
                             N'(//blocked-process-report/blocking-process/process/inputbuf/text())[1]',
                             N'nvarchar(max)'
-                        )))
+                        ))),
+                    /* Session identity for the (monitor_loop, spid, ecid) chain reconstruction. monitor_loop
+                       is the report's episode; blocking_ecid is the blocker's exec-context (the blocked side's
+                       ecid is already populated by sp_HumanEventsBlockViewer). Descendant axis: the stored XML
+                       is <event>-rooted. */
+                    b.monitor_loop =
+                        b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/@monitorLoop)[1]',
+                            N'integer'
+                        ),
+                    b.blocking_ecid =
+                        b.blocked_process_report_xml.value
+                        (
+                            N'(//blocked-process-report/blocking-process/process/@ecid)[1]',
+                            N'integer'
+                        )
                 FROM collect.blocking_BlockedProcessReport AS b
                 WHERE b.event_time >= @start_date_local
                 AND   b.event_time <= @end_date_local

@@ -14,6 +14,7 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using PerformanceMonitor.Notifications;
 using System.Windows.Threading;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
@@ -34,8 +35,12 @@ public partial class App : Application
     private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
 
     private const string MutexName = "PerformanceMonitorLite_SingleInstance";
-    private Mutex? _singleInstanceMutex;
-    private bool _ownsMutex;
+    /* Version-aware single-instance + upgrade handoff (plans/single-instance-upgrade-handoff.md):
+       a newer build launched over an older tray-resident one closes it and takes over instead of
+       being handed back the stale in-memory version. The coordinator owns the mutex + the exit
+       listener for the life of the owning process. */
+    private const string ExitForUpgradeEventName = "PerformanceMonitorLite_ExitForUpgrade";
+    private SingleInstanceCoordinator? _instanceCoordinator;
 
     /* Single-instance "surface the window" channel (#769, #1050). A second launch signals this named
        event and exits; the owning instance restores its window through WPF's own Show() path
@@ -114,6 +119,10 @@ public partial class App : Application
     public static int AlertFailedJobLookbackMinutes { get; set; } = 60;  // Look back this many minutes for failed Agent job runs
     public static int AlertCooldownMinutes { get; set; } = 5;  // Tray notification cooldown between repeated alerts
     public static int EmailCooldownMinutes { get; set; } = 15; // Email cooldown between repeated alerts
+    /* #1141: deadlock/blocking notification delivery — Summary (one batched card per cycle, the default)
+       or PerEvent (one notification per distinct incident, capped, for per-incident ticketing). */
+    public static AlertNotificationMode AlertDeliveryMode { get; set; } = AlertNotificationMode.Summary;
+    public static int AlertPerEventMaxPerCycle { get; set; } = 10; // Max per-event notifications per cycle before "+N more"
     public static string MuteRuleDefaultExpiration { get; set; } = "24 hours"; // Default expiration for new mute rules
     public static bool LogAlertDismissals { get; set; } = true; // Log alert dismiss/mute actions to file
 
@@ -256,17 +265,25 @@ public partial class App : Application
     {
         SetCurrentProcessExplicitAppUserModelID("DarlingData.PerformanceMonitor.Lite");
 
-        // Check for existing instance
-        _singleInstanceMutex = new Mutex(true, MutexName, out _ownsMutex);
-
-        if (!_ownsMutex)
+        /* Single-instance with upgrade handoff. Runs synchronously, at the top of OnStartup before
+           base.OnStartup and any window/data init, so we only open the shared DuckDB / bind the MCP
+           port after any older instance has released them. A newer build closes an older tray-resident
+           one and takes over; a same/newer one just surfaces the existing instance (today's behavior);
+           an older-but-elevated one raises an actionable error. */
+        _instanceCoordinator = new SingleInstanceCoordinator(new SingleInstanceOptions
         {
-            /* Ask the running instance to surface its window, then exit (#769). We signal a named
-               event rather than poking its HWND with Win32 ShowWindow: the owning instance restores
-               through WPF's own Show() path, which is the only thing that un-blanks a tray-hidden
-               window (#1050). Best-effort — if the first instance is still mid-startup the channel
-               may not exist yet, but it's already coming up visible anyway. */
-            SingleInstanceSignal.TrySignal(ShowWindowEventName);
+            MutexName = MutexName,
+            ProcessName = "PerformanceMonitorLite",
+            ExitEventName = ExitForUpgradeEventName,
+            SurfaceRunningInstance = () => SingleInstanceSignal.TrySignal(ShowWindowEventName),
+            GracefulSelfExit = () => Dispatcher.BeginInvoke(new Action(Shutdown)),
+            Prompts = new MessageBoxHandoffPrompts("Performance Monitor Lite"),
+            AutoConfirm = Array.Exists(e.Args, a => string.Equals(a, HandoffArgs.AutoConfirm, StringComparison.OrdinalIgnoreCase)),
+            Log = msg => { try { AppLogger.Info("SingleInstance", msg); } catch { /* logger not yet initialized */ } },
+        });
+
+        if (!_instanceCoordinator.TryBecomeOwner())
+        {
             Shutdown();
             return;
         }
@@ -277,6 +294,10 @@ public partial class App : Application
         _instanceSignal = new SingleInstanceSignal(ShowWindowEventName, OnSurfaceWindowRequested);
 
         base.OnStartup(e);
+
+        // Right-click selects the DataGrid row under the cursor app-wide, so context-menu actions
+        // (e.g. View Plan) act on the clicked row even after an auto-refresh cleared the selection.
+        PerformanceMonitor.Ui.DataGridRowSelectionBehavior.Enable();
 
         // #1050: WPF's GPU render thread can zombie its surface across sleep/wake or RDP, leaving a
         // live-but-blank window. Software rendering removes the GPU dependency entirely. Charts are
@@ -297,6 +318,14 @@ public partial class App : Application
         // Ensure directories exist
         Directory.CreateDirectory(ConfigDirectory);
         Directory.CreateDirectory(Path.Combine(appDataRoot, "archive"));
+
+        // Seed the per-user config dir from the copies bundled next to the exe on first run, so a
+        // fresh install/extract has the editable defaults present. Critical for ignored_wait_types.json:
+        // without it the wait filter is empty and benign waits flood the wait stats tab (#1240).
+        Services.ConfigSeeder.SeedMissing(
+            Path.Combine(AppContext.BaseDirectory, "config"),
+            ConfigDirectory,
+            new[] { "ignored_wait_types.json", "collection_schedule.json" });
 
         // Load settings
         LoadDefaultTimeRange();
@@ -341,6 +370,13 @@ public partial class App : Application
         Dispatcher.BeginInvoke(new Action(() => _mainWindow?.RestoreFromTray()));
     }
 
+    /// <summary>
+    /// Opens the upgrade-handoff "exit" channel once startup is past its risky init (DuckDB ready).
+    /// Called by <see cref="MainWindow"/> after initialization so a newer build won't signal/kill us
+    /// mid-init (#single-instance-upgrade-handoff). Safe to call more than once.
+    /// </summary>
+    public void EnableUpgradeHandoff() => _instanceCoordinator?.EnableUpgradeHandoff();
+
     protected override void OnExit(ExitEventArgs e)
     {
         AppLogger.Info("App", "Shutting down");
@@ -349,11 +385,8 @@ public partial class App : Application
 
         AppLogger.Shutdown();
 
-        if (_ownsMutex)
-        {
-            _singleInstanceMutex?.ReleaseMutex();
-        }
-        _singleInstanceMutex?.Dispose();
+        /* Releases the mutex + disposes the exit-for-upgrade listener. */
+        _instanceCoordinator?.Dispose();
 
         base.OnExit(e);
     }
@@ -499,6 +532,9 @@ public partial class App : Application
             if (root.TryGetProperty("alert_failed_job_lookback_minutes", out v)) AlertFailedJobLookbackMinutes = (int)Math.Clamp(v.GetInt64(), 1, 1440);
             if (root.TryGetProperty("alert_cooldown_minutes", out v)) AlertCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
             if (root.TryGetProperty("email_cooldown_minutes", out v)) EmailCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
+            if (root.TryGetProperty("alert_delivery_mode", out v) && Enum.TryParse<AlertNotificationMode>(v.GetString(), out var deliveryMode))
+                AlertDeliveryMode = deliveryMode;
+            if (root.TryGetProperty("alert_per_event_max_per_cycle", out v)) AlertPerEventMaxPerCycle = (int)Math.Clamp(v.GetInt64(), 1, 100);
             if (root.TryGetProperty("mute_rule_default_expiration", out v))
             {
                 var exp = v.GetString();

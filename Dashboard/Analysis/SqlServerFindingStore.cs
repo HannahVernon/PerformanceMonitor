@@ -50,12 +50,13 @@ BEGIN
         category nvarchar(256) NOT NULL,
         story_path nvarchar(2000) NOT NULL,
         story_path_hash nvarchar(256) NOT NULL,
-        story_text nvarchar(4000) NOT NULL,
+        story_text nvarchar(max) NOT NULL,
         root_fact_key nvarchar(256) NOT NULL,
         root_fact_value float NULL,
         leaf_fact_key nvarchar(256) NULL,
         leaf_fact_value float NULL,
         fact_count integer NOT NULL,
+        incident_id nvarchar(64) NULL,
         remediation_action_json nvarchar(max) NULL,
         CONSTRAINT PK_analysis_findings PRIMARY KEY CLUSTERED (finding_id)
             WITH (DATA_COMPRESSION = PAGE)
@@ -89,7 +90,18 @@ END;
    idempotently. The Recommendations surface reads it back to drive Apply + the
    two-sided consent gate (the built RemediationAction, not raw drill-down). */
 IF COL_LENGTH(N'config.analysis_findings', N'remediation_action_json') IS NULL
-    ALTER TABLE config.analysis_findings ADD remediation_action_json nvarchar(max) NULL;";
+    ALTER TABLE config.analysis_findings ADD remediation_action_json nvarchar(max) NULL;
+
+/* Compose-from-facts: story_text now carries the serialized value-stated advice for EVERY finding
+   (it was previously written empty), so widen it from nvarchar(4000) to nvarchar(max) on existing
+   DBs — removes the truncation cliff and matches Lite's unbounded story_text. COL_LENGTH returns
+   -1 for nvarchar(max); any other value means the column still needs widening. NOT NULL is kept. */
+IF COL_LENGTH(N'config.analysis_findings', N'story_text') <> -1
+    ALTER TABLE config.analysis_findings ALTER COLUMN story_text nvarchar(max) NOT NULL;
+
+/* Correlate-and-focus slice 2: the incident grouping id, added idempotently on existing DBs. */
+IF COL_LENGTH(N'config.analysis_findings', N'incident_id') IS NULL
+    ALTER TABLE config.analysis_findings ADD incident_id nvarchar(64) NULL;";
 
         await cmd.ExecuteNonQueryAsync();
     }
@@ -146,6 +158,7 @@ IF COL_LENGTH(N'config.analysis_findings', N'remediation_action_json') IS NULL
                     Category = story.Category,
                     StoryPath = story.StoryPath,
                     StoryPathHash = story.StoryPathHash,
+                    IncidentId = story.IncidentId,
                     StoryText = story.StoryText,
                     RootFactKey = story.RootFactKey,
                     RootFactValue = story.RootFactValue,
@@ -219,7 +232,7 @@ SELECT TOP (@limit)
     time_range_start, time_range_end, severity, confidence, category,
     story_path, story_path_hash, story_text,
     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count,
-    remediation_action_json
+    incident_id, remediation_action_json
 FROM config.analysis_findings
 WHERE server_id = @serverId
 AND   analysis_time >= @cutoff
@@ -264,7 +277,8 @@ SELECT
     finding_id, analysis_time, server_id, server_name, database_name,
     time_range_start, time_range_end, severity, confidence, category,
     story_path, story_path_hash, story_text,
-    root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count
+    root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count,
+    incident_id
 FROM config.analysis_findings
 WHERE server_id = @serverId
 AND   analysis_time = (
@@ -411,13 +425,13 @@ INSERT INTO config.analysis_findings
      time_range_start, time_range_end, severity, confidence, category,
      story_path, story_path_hash, story_text,
      root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count,
-     remediation_action_json)
+     incident_id, remediation_action_json)
 VALUES
     (@findingId, @analysisTime, @serverId, @serverName, @databaseName,
      @timeRangeStart, @timeRangeEnd, @severity, @confidence, @category,
      @storyPath, @storyPathHash, @storyText,
      @rootFactKey, @rootFactValue, @leafFactKey, @leafFactValue, @factCount,
-     @remediationActionJson);";
+     @incidentId, @remediationActionJson);";
 
             cmd.Parameters.Add(new SqlParameter("@findingId", finding.FindingId));
             cmd.Parameters.Add(new SqlParameter("@analysisTime", finding.AnalysisTime));
@@ -437,6 +451,8 @@ VALUES
             cmd.Parameters.Add(new SqlParameter("@leafFactKey", (object?)finding.LeafFactKey ?? DBNull.Value));
             cmd.Parameters.Add(new SqlParameter("@leafFactValue", (object?)finding.LeafFactValue ?? DBNull.Value));
             cmd.Parameters.Add(new SqlParameter("@factCount", finding.FactCount));
+            cmd.Parameters.Add(new SqlParameter("@incidentId",
+                (object?)(string.IsNullOrEmpty(finding.IncidentId) ? null : finding.IncidentId) ?? DBNull.Value));
             // D2: persist the BUILT action (mirrors the alert path's ContextJson) so the
             // Recommendations reader can drive Apply + consent from a stored finding.
             cmd.Parameters.Add(new SqlParameter("@remediationActionJson",
@@ -474,15 +490,17 @@ VALUES
             RootFactValue = reader.IsDBNull(14) ? null : reader.GetDouble(14),
             LeafFactKey = reader.IsDBNull(15) ? null : reader.GetString(15),
             LeafFactValue = reader.IsDBNull(16) ? null : reader.GetDouble(16),
-            FactCount = reader.GetInt32(17)
+            FactCount = reader.GetInt32(17),
+            // incident_id is ordinal 18 in BOTH SELECTs (correlate-and-focus slice 2).
+            IncidentId = reader.FieldCount > 18 && !reader.IsDBNull(18) ? reader.GetString(18) : string.Empty
         };
 
-        // D2: only GetRecentFindingsAsync selects remediation_action_json (ordinal 18);
-        // GetLatestFindingsAsync omits it, so guard by field count before reading. The
+        // D2: GetRecentFindingsAsync selects remediation_action_json (now ordinal 19, after
+        // incident_id); GetLatestFindingsAsync omits it, so guard by field count before reading. The
         // BUILT action is deserialized via the SAME serializer the alert path uses, so the
         // Recommendations surface can drive Apply + the two-sided consent gate from storage.
-        if (reader.FieldCount > 18 && !reader.IsDBNull(18))
-            finding.Remediation = AlertContextSerializer.DeserializeAction(reader.GetString(18));
+        if (reader.FieldCount > 19 && !reader.IsDBNull(19))
+            finding.Remediation = AlertContextSerializer.DeserializeAction(reader.GetString(19));
 
         return finding;
     }

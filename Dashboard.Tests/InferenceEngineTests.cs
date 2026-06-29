@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using PerformanceMonitor.Analysis;
 using Xunit;
 
@@ -217,5 +218,130 @@ public class InferenceEngineTests
         var ex = Record.Exception(() => engine.BuildStories(facts));
 
         Assert.Null(ex);
+    }
+
+    // C (workload-aware MAXDOP/CTFP): a THREADPOOL root is relabeled by its co-elevated cause so the
+    // persisted root key carries parallel-vs-blocking — only the parallel flavor is a MAXDOP/CTFP
+    // problem. CXPACKET/high-DOP co-fired -> _PARALLEL; blocking co-fired -> _BLOCKING; both ->
+    // _MIXED; neither -> generic THREADPOOL. Co-causes are seeded below 0.5 so only THREADPOOL roots.
+    [Fact]
+    public void Threadpool_RootIsAttributedByCoElevatedCause()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+
+        string ThreadpoolRoot(params Fact[] facts) =>
+            engine.BuildStories(facts.ToList())
+                  .First(s => s.RootFactKey.StartsWith("THREADPOOL"))
+                  .RootFactKey;
+
+        Fact Tp() => new() { Key = "THREADPOOL", Source = "waits", Value = 0.5, Severity = 0.9 };
+        Fact Cx() => new() { Key = "CXPACKET", Source = "waits", Value = 0.3, Severity = 0.3 };
+        Fact Dop() => new() { Key = "QUERY_HIGH_DOP", Source = "queries", Value = 6, Severity = 0.3 };
+        Fact Blk() => new() { Key = "BLOCKING_EVENTS", Source = "blocking", Value = 20, Severity = 0.3 };
+
+        Assert.Equal("THREADPOOL_PARALLEL", ThreadpoolRoot(Tp(), Cx()));
+        Assert.Equal("THREADPOOL_PARALLEL", ThreadpoolRoot(Tp(), Dop()));
+        Assert.Equal("THREADPOOL_BLOCKING", ThreadpoolRoot(Tp(), Blk()));
+        Assert.Equal("THREADPOOL_MIXED", ThreadpoolRoot(Tp(), Cx(), Blk()));
+        Assert.Equal("THREADPOOL", ThreadpoolRoot(Tp()));
+    }
+
+    // Regression: RootFactValue/LeafFactValue must carry the fact's RAW collected VALUE, not its
+    // severity. They were both set to .Severity, so a CONFIG_CTFP finding (value 5, severity 0.4)
+    // reported RootFactValue 0.4 — which the MCP root_fact.value contract and the notification
+    // headline surface as "the value", contradicting the value-stated advice ("CTFP is 5").
+    [Fact]
+    public void BuildStory_RootFactValue_IsFactValue_NotSeverity()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var facts = new List<Fact>
+        {
+            new() { Key = "CONFIG_CTFP", Source = "config", Value = 5, Severity = 0.4 }
+        };
+
+        var story = engine.BuildStories(facts).First(s => s.RootFactKey == "CONFIG_CTFP");
+
+        Assert.Equal(5, story.RootFactValue);   // the collected value, NOT 0.4
+        Assert.Equal(0.4, story.Severity);      // severity still on its own field
+    }
+
+    [Fact]
+    public void BuildStory_LeafFactValue_IsFactValue_NotSeverity()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        // CXPACKET roots (severity >= 0.5) and traverses to SOS_SCHEDULER_YIELD (edge fires when SOS
+        // severity is high), so the story has a leaf whose value must be SOS's value, not its severity.
+        var facts = new List<Fact>
+        {
+            new() { Key = "CXPACKET", Source = "waits", Value = 0.6, Severity = 0.9 },
+            new() { Key = "SOS_SCHEDULER_YIELD", Source = "waits", Value = 0.5, Severity = 0.67 }
+        };
+
+        var story = engine.BuildStories(facts).First(s => s.RootFactKey == "CXPACKET");
+
+        Assert.Equal(0.6, story.RootFactValue);              // CXPACKET value, not 0.9
+        Assert.Equal("SOS_SCHEDULER_YIELD", story.LeafFactKey);
+        Assert.Equal(0.5, story.LeafFactValue);              // SOS value, not 0.67
+    }
+
+    // ── correlate-and-focus: graph-connectivity incident clustering ──
+
+    [Fact]
+    public void ClusterIntoIncidents_MergesGraphConnectedStories()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"] },
+            new() { RootFactKey = "PLAN_REGRESSION", Severity = 0.6, Path = ["PLAN_REGRESSION"] },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "PLAN_REGRESSION", Source = "queries", Value = 1, Severity = 0.6, BaseSeverity = 0.6 },
+        };
+
+        // CPU_SQL_PERCENT -> PLAN_REGRESSION is an active edge (PLAN_REGRESSION.BaseSeverity > 0),
+        // so the two stories are one incident even though the greedy traversal left them separate.
+        Assert.Single(engine.ClusterIntoIncidents(stories, facts));
+    }
+
+    [Fact]
+    public void ClusterIntoIncidents_KeepsIndependentStoriesSeparate()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"] },
+            new() { RootFactKey = "DISK_SPACE", Severity = 1.6, Path = ["DISK_SPACE"] },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "DISK_SPACE", Source = "disk", Value = 5, Severity = 1.6 },
+        };
+
+        // No graph edge between CPU and disk space -> two separate incidents.
+        Assert.Equal(2, engine.ClusterIntoIncidents(stories, facts).Count);
+    }
+
+    [Fact]
+    public void ClusterIntoIncidents_NormalizesThreadpoolRelabel_AndBridgesToBlocking()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "THREADPOOL_BLOCKING", Severity = 0.9, Path = ["THREADPOOL_BLOCKING"] },
+            new() { RootFactKey = "LCK", Severity = 0.9, Path = ["LCK"] },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "THREADPOOL", Source = "waits", Value = 0.5, Severity = 0.9 },
+            new() { Key = "LCK", Source = "waits", Value = 0.5, Severity = 0.9 },
+        };
+
+        // The relabeled THREADPOOL_BLOCKING path key normalizes to THREADPOOL, whose active
+        // THREADPOOL->LCK bridge (LCK severity >= 0.5) merges it with the blocking story.
+        Assert.Single(engine.ClusterIntoIncidents(stories, facts));
     }
 }

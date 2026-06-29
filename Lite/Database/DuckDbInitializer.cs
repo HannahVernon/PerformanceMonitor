@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 29;
+    internal const int CurrentSchemaVersion = 32;
 
     private readonly string _archivePath;
 
@@ -116,6 +116,7 @@ public class DuckDbInitializer
         "query_snapshots", "cpu_utilization_stats", "file_io_stats", "memory_stats",
         "memory_clerks", "memory_pressure_events", "tempdb_stats", "perfmon_stats",
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
+        "dmv_blocking_snapshots",
         "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
         "session_stats", "server_config", "database_config",
         "database_scoped_config", "trace_flags", "config_alert_log",
@@ -747,6 +748,65 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v28 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 30)
+        {
+            /* v30 (#1140): dedup-fingerprint support. blocked_process_reports gains the contentious
+               object the blocked_process_report event already carries (object_id/database_id) plus the
+               resolved name; query_snapshots gains query_hash for the long-running-query dedup key.
+               Appended at the end to keep the positional appender aligned; the v_ views union BY NAME
+               so old parquet reads back NULL for these. */
+            _logger?.LogInformation("Running migration to v30: dedup fingerprint columns (#1140)");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS object_id INTEGER");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS database_id INTEGER");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS contentious_object VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS query_hash VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v30 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 31)
+        {
+            /* v31: failed-Agent-job watermark persistence. The blocking/deadlock edge-trigger
+               watermarks already survive restart (#1145); the failed-job watermark did not, so a
+               reopen re-fired tray toasts for failures still inside the lookback window that the
+               user had already seen and dismissed. Adds a nullable watermark_time column to the
+               existing watermark table to hold the newest already-alerted failure's server-local
+               run time. Only ALTER if the table exists — fresh installs get the column from
+               GetAllTableStatements(). */
+            _logger?.LogInformation("Running migration to v31: failed-job watermark column");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE config_edge_trigger_watermarks ADD COLUMN IF NOT EXISTS watermark_time TIMESTAMP");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v31 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 32)
+        {
+            /* v32: block-chain reconstruction now keys sessions by spid:ecid within monitor_loop (mirroring
+               sp_HumanEventsBlockViewer). blocked_process_reports gains monitor_loop (the blocked-process-report
+               episode). Appended at the end to keep the positional appender aligned; the v_ view (SELECT *,
+               recreated on startup) surfaces it; old parquet reads back NULL (union BY NAME). The collector
+               appender now writes monitor_loop, so an un-migrated DB would mis-align — this ALTER is required. */
+            _logger?.LogInformation("Running migration to v32: blocked_process_reports.monitor_loop");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS monitor_loop INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v32 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

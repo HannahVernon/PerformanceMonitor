@@ -79,7 +79,31 @@ public sealed class LiteRecommendationsReader
         }
 
         items.Sort(CompareForDisplay);
+        AppendCoFired(items);
         return items;
+    }
+
+    /// <summary>
+    /// Appends a "what else fired in this analysis window" cross-reference to each card's advice text
+    /// (correlate-and-focus slice 1, review §1d) so the operator can see related findings without
+    /// hunting. Render-time, not frozen — always reflects the current batch. No-op for a single card.
+    /// </summary>
+    private static void AppendCoFired(List<LiteRecommendationItem> items)
+    {
+        if (items.Count <= 1)
+            return;
+
+        var windowTitles = new List<(string Title, double Severity)>(items.Count);
+        foreach (var it in items)
+            windowTitles.Add((it.Title, it.RawSeverity));
+
+        foreach (var it in items)
+        {
+            var line = CoFiredSummary.Line(CoFiredSummary.OtherTitles(it.Title, windowTitles));
+            if (line is null)
+                continue;
+            it.AdviceText = string.IsNullOrEmpty(it.AdviceText) ? line : it.AdviceText + " " + line;
+        }
     }
 
     /// <summary>
@@ -113,18 +137,22 @@ public sealed class LiteRecommendationsReader
     /// </summary>
     internal static LiteRecommendationItem MapFinding(AnalysisFinding finding, string serverName)
     {
-        var advice = FactAdvice.GetForFactKey(finding.RootFactKey);
+        // Value-stated advice frozen into StoryText at analysis time (current MAXDOP/CTFP/etc.),
+        // with the static block as the fallback for legacy findings. StoryText now holds advice
+        // JSON, never the old (always-empty) story prose, so it is no longer a Title/text fallback.
+        var advice = FactAdvice.GetComposedForFinding(finding);
 
         return new LiteRecommendationItem
         {
             Severity = SeverityBand(finding.Severity),
             RawSeverity = finding.Severity,
             Database = string.IsNullOrEmpty(finding.DatabaseName) ? null : finding.DatabaseName,
-            Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.StoryText,
+            Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
             ProblemArea = finding.Category,
-            AdviceText = ComposeAdvice(advice) ?? NullIfEmpty(finding.StoryText),
+            AdviceText = ComposeAdvice(advice),
             CopyPasteSql = NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
             RootFactKey = finding.RootFactKey,
+            IncidentId = finding.IncidentId,
             ServerName = serverName ?? string.Empty,
             WindowStartUtc = AsUtc(finding.TimeRangeStart),
             WindowEndUtc = AsUtc(finding.TimeRangeEnd)

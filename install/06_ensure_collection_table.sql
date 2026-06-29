@@ -1061,6 +1061,44 @@ BEGIN
             );
 
         END;
+        ELSE IF @table_name = N'dmv_blocking_snapshots'
+        BEGIN
+            CREATE TABLE
+                collect.dmv_blocking_snapshots
+            (
+                snapshot_id bigint IDENTITY NOT NULL,
+                collection_time datetime2(7) NOT NULL
+                    DEFAULT SYSDATETIME(),
+                monitor_loop integer NOT NULL,
+                event_time datetime2(7) NOT NULL,
+                database_name nvarchar(128) NULL,
+                spid integer NOT NULL,
+                ecid integer NOT NULL,
+                last_transaction_started datetime2(7) NULL,
+                blocking_spid integer NOT NULL,
+                blocking_ecid integer NOT NULL,
+                blocking_last_tran_started datetime2(7) NULL,
+                wait_time_ms bigint NULL,
+                lock_mode nvarchar(64) NULL, /* 64 not 20: holds RESOURCE_SEMAPHORE_QUERY_COMPILE (32) whole as the contention tag */
+                blocking_status nvarchar(30) NULL,
+                contentious_object nvarchar(4000) NULL,
+                blocked_sql_text nvarchar(max) NULL,
+                blocking_sql_text nvarchar(max) NULL,
+                login_name nvarchar(256) NULL,
+                host_name nvarchar(256) NULL,
+                client_app nvarchar(256) NULL,
+                blocking_login_name nvarchar(256) NULL,
+                blocking_host_name nvarchar(256) NULL,
+                blocking_client_app nvarchar(256) NULL,
+                CONSTRAINT
+                    PK_dmv_blocking_snapshots
+                PRIMARY KEY CLUSTERED
+                    (collection_time, snapshot_id)
+                WITH
+                    (DATA_COMPRESSION = PAGE)
+            );
+
+        END;
         ELSE IF @table_name = N'running_jobs'
         BEGIN
             CREATE TABLE
@@ -1239,7 +1277,7 @@ BEGIN
         END;
         ELSE
         BEGIN
-            SET @error_message = N'Unknown table name: ' + @table_name + N'. Valid table names are: wait_stats, query_stats, memory_stats, memory_pressure_events, deadlock_xml, blocked_process_xml, procedure_stats, query_snapshots, query_store_data, trace_analysis, default_trace_events, file_io_stats, memory_grant_stats, cpu_scheduler_stats, memory_clerks_stats, perfmon_stats, cpu_utilization_stats, blocking_deadlock_stats, latch_stats, spinlock_stats, tempdb_stats, plan_cache_stats, session_stats, waiting_tasks, running_jobs, database_size_stats, index_object_stats, server_properties';
+            SET @error_message = N'Unknown table name: ' + @table_name + N'. Valid table names are: wait_stats, query_stats, memory_stats, memory_pressure_events, deadlock_xml, blocked_process_xml, procedure_stats, query_snapshots, query_store_data, trace_analysis, default_trace_events, file_io_stats, memory_grant_stats, cpu_scheduler_stats, memory_clerks_stats, perfmon_stats, cpu_utilization_stats, blocking_deadlock_stats, latch_stats, spinlock_stats, tempdb_stats, plan_cache_stats, session_stats, waiting_tasks, dmv_blocking_snapshots, running_jobs, database_size_stats, index_object_stats, server_properties';
             RAISERROR(@error_message, 16, 1);
             RETURN;
         END;

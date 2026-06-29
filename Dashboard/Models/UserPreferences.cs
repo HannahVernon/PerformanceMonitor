@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitorDashboard.Models
 {
@@ -112,6 +113,7 @@ namespace PerformanceMonitorDashboard.Models
         public int LongRunningJobMultiplier { get; set; } = 3; // Alert when job runs > Nx historical average
         public bool NotifyOnFailedJobs { get; set; } = true; // Alert when a SQL Agent job has recently failed
         public int FailedJobLookbackMinutes { get; set; } = 60; // Look back this many minutes for failed Agent job runs
+        public bool NotifyOnCollectionStopped { get; set; } = true; // Alert when collection stops (collector jobs disabled, Agent stopped, or collectors failing)
         private int _alertCooldownMinutes = 5;
         public int AlertCooldownMinutes
         {
@@ -124,6 +126,16 @@ namespace PerformanceMonitorDashboard.Models
         {
             get => _emailCooldownMinutes;
             set => _emailCooldownMinutes = Math.Clamp(value, 1, 120);
+        }
+
+        /* #1141: deadlock/blocking notification delivery — Summary (one batched card per cycle, the
+           default) or PerEvent (one notification per distinct incident, capped). */
+        public AlertNotificationMode AlertDeliveryMode { get; set; } = AlertNotificationMode.Summary;
+        private int _alertPerEventMaxPerCycle = 10;
+        public int AlertPerEventMaxPerCycle
+        {
+            get => _alertPerEventMaxPerCycle;
+            set => _alertPerEventMaxPerCycle = Math.Clamp(value, 1, 100);
         }
 
         // SMTP email alert settings
@@ -199,6 +211,13 @@ namespace PerformanceMonitorDashboard.Models
 
         // Acknowledged alert baselines (persisted, keyed by "serverId:tabName")
         public Dictionary<string, AlertBaseline> AcknowledgedBaselines { get; set; } = new();
+
+        /* Failed-Agent-job tray watermark (persisted, keyed by serverId): the newest already-alerted
+           failure's server-local run time, stored as DateTime.Ticks. Seeds the in-memory watermark
+           on restart so a reopen does not re-fire toasts for failures still inside the lookback window
+           that the user already saw and dismissed (the failed-job equivalent of #1145). Ticks keep the
+           value basis-exact across JSON round-trips, free of DateTimeKind ambiguity. */
+        public Dictionary<string, long> FailedJobAlertWatermarkTicks { get; set; } = new();
     }
 
     /// <summary>

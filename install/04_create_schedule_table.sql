@@ -77,7 +77,8 @@ FROM
     (N'running_jobs_collector', 1, 1, 2, 7, N'Currently running SQL Agent jobs with historical duration comparison'),
     (N'database_size_stats_collector', 1, 60, 10, 90, N'Database file sizes for growth trending and capacity planning'),
     (N'index_object_stats_collector', 1, 1440, 15, 90, N'Per-object table/index size, usage, and locking stats for growth, unused-index, and contention analysis (daily collection)'),
-    (N'server_properties_collector', 1, 1440, 5, 365, N'Server edition, licensing, CPU/memory hardware metadata for license audit')
+    (N'server_properties_collector', 1, 1440, 5, 365, N'Server edition, licensing, CPU/memory hardware metadata for license audit'),
+    (N'dmv_blocking_snapshot_collector', 1, 1, 2, 30, N'Point-in-time blocking snapshot from DMVs (always-on fallback for the blocked-process-report XE; works when blocked process threshold is unset, e.g. AWS RDS)')
 ) AS v (collector_name, enabled, frequency_minutes, max_duration_minutes, retention_days, description)
 WHERE NOT EXISTS
 (

@@ -105,6 +105,12 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
             foreach (var finding in findings)
                 engineItems.AddRange(MapEngineFindings(finding));
 
+            // Correlate-and-focus slice 1 (review §1d): append a "what else fired in this analysis
+            // window" cross-reference to each engine card's advice so related findings link to each
+            // other instead of the operator hunting across cards. Engine findings only (the legacy
+            // store is a separate producer). Render-time, not frozen.
+            AppendCoFired(engineItems);
+
             var legacyItems = new List<RecommendationItem>(legacy.Count);
             foreach (var issue in legacy)
             {
@@ -115,6 +121,29 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
             }
 
             return RecommendationDeduper.Merge(engineItems, legacyItems);
+        }
+
+        /// <summary>
+        /// Appends a "what else fired in this analysis window" cross-reference to each engine card's
+        /// advice text (correlate-and-focus slice 1, review §1d). Render-time, not frozen; no-op for a
+        /// single card. Mirrors the Lite reader so both apps surface the same cross-reference.
+        /// </summary>
+        internal static void AppendCoFired(List<RecommendationItem> engineItems)
+        {
+            if (engineItems.Count <= 1)
+                return;
+
+            var windowTitles = new List<(string Title, double Severity)>(engineItems.Count);
+            foreach (var it in engineItems)
+                windowTitles.Add((it.Title, it.RawSeverity));
+
+            foreach (var it in engineItems)
+            {
+                var line = CoFiredSummary.Line(CoFiredSummary.OtherTitles(it.Title, windowTitles));
+                if (line is null)
+                    continue;
+                it.AdviceText = string.IsNullOrEmpty(it.AdviceText) ? line : it.AdviceText + " " + line;
+            }
         }
 
         /// <summary>
@@ -145,7 +174,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 string.Equals(serverAction.FactKey, "SERVER_CONFIG", StringComparison.Ordinal))
             {
                 var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
-                var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
+                var adviceText = ComposeEngineAdvice(FactAdvice.GetComposedForFinding(finding));
                 var items = new List<RecommendationItem>(serverTargets.Count);
 
                 foreach (var target in serverTargets)
@@ -168,6 +197,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                                 ServerConfigTargets: new[] { target })
                             : null,
                         StoryPathHash = finding.StoryPathHash,
+                        IncidentId = finding.IncidentId,
                         StoryPath = finding.StoryPath,
                         Setting = RecommendationSetting.None,  // server-level — never de-dupes with legacy
                         IsServerConfigAdvisory = true,
@@ -185,7 +215,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 ((remediation.DbConfigTargets is { Count: > 0 }) || (remediation.RcsiTargets is { Count: > 0 })))
             {
                 var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
-                var adviceText = ComposeEngineAdvice(FactAdvice.GetForFactKey(finding.RootFactKey));
+                var adviceText = ComposeEngineAdvice(FactAdvice.GetComposedForFinding(finding));
                 var safeTargets = remediation.DbConfigTargets ?? Array.Empty<DbConfigTarget>();
                 var rcsiTargets = remediation.RcsiTargets ?? Array.Empty<RcsiTarget>();
                 var items = new List<RecommendationItem>(safeTargets.Count + rcsiTargets.Count);
@@ -211,6 +241,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                         Remediation = new RemediationAction(
                             "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(), new[] { target }),
                         StoryPathHash = finding.StoryPathHash,
+                        IncidentId = finding.IncidentId,
                         StoryPath = finding.StoryPath,
                         Setting = setting,
                         WindowStartUtc = AsUtc(finding.TimeRangeStart),
@@ -248,6 +279,7 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                             new[] { new DbConfigTarget(t.Database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF") },
                             RcsiFigures: t.Figures),
                         StoryPathHash = finding.StoryPathHash,
+                        IncidentId = finding.IncidentId,
                         StoryPath = finding.StoryPath,
                         Setting = RecommendationSetting.Rcsi,
                         WindowStartUtc = AsUtc(finding.TimeRangeStart),
@@ -336,7 +368,8 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
         internal static RecommendationItem MapEngineFinding(AnalysisFinding finding)
         {
             var band = RecommendationDeduper.FromEngineSeverity(finding.Severity);
-            var advice = FactAdvice.GetForFactKey(finding.RootFactKey);
+            // Value-stated advice frozen into StoryText at analysis time, static block as fallback.
+            var advice = FactAdvice.GetComposedForFinding(finding);
 
             // WS4: a MISSING_INDEX action is COPY-PASTE ONLY. Render its CREATE statements as the
             // card's copy-paste SQL (via BuildCopyPasteFromAction below), but DON'T carry it as the
@@ -352,13 +385,14 @@ namespace PerformanceMonitorDashboard.Services.Recommendations
                 CanonicalSeverity = band,
                 RawSeverity = finding.Severity,
                 Database = finding.DatabaseName,
-                Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.StoryText,
+                Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
                 ProblemArea = finding.Category,
                 AdviceText = ComposeEngineAdvice(advice),
                 CopyPasteSql = BuildCopyPasteFromAction(finding.Remediation),
                 Remediation = isMissingIndex ? null : finding.Remediation,
                 IsMissingIndexAdvisory = isMissingIndex,
                 StoryPathHash = finding.StoryPathHash,
+                IncidentId = finding.IncidentId,
                 StoryPath = finding.StoryPath,
                 Setting = SettingFromAction(finding.Remediation),
                 WindowStartUtc = AsUtc(finding.TimeRangeStart),

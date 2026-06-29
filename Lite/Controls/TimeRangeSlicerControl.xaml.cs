@@ -36,6 +36,9 @@ public partial class TimeRangeSlicerControl : UserControl
 
     private enum DragMode { None, MoveRange, DragStart, DragEnd }
     private DragMode _dragMode = DragMode.None;
+
+    private enum HandleHover { None, Start, End }
+    private HandleHover _hoveredHandle = HandleHover.None;
     private double _dragOriginX;
     private double _dragOriginRangeStart;
     private double _dragOriginRangeEnd;
@@ -260,6 +263,7 @@ public partial class TimeRangeSlicerControl : UserControl
         var overlayBrush = FindBrush("SlicerOverlayBrush", "#99000000");
         var selectedBrush = FindBrush("SlicerSelectedBrush", "#22FFFFFF");
         var handleBrush = FindBrush("SlicerHandleBrush", "#E4E6EB");
+        var handleHoverBrush = FindBrush("SlicerHandleHoverBrush", "#2EAEF1");
 
         var selLeft = _rangeStart * w;
         var selRight = _rangeEnd * w;
@@ -268,8 +272,8 @@ public partial class TimeRangeSlicerControl : UserControl
         if (selRight < w) AddRect(selRight, 0, w - selRight, h, overlayBrush);
         AddRect(selLeft, 0, Math.Max(0, selRight - selLeft), h, selectedBrush);
 
-        DrawHandle(selLeft, h, handleBrush);
-        DrawHandle(selRight - HandleWidthPx, h, handleBrush);
+        DrawHandle(selLeft, h, _hoveredHandle == HandleHover.Start ? handleHoverBrush : handleBrush);
+        DrawHandle(selRight - HandleWidthPx, h, _hoveredHandle == HandleHover.End ? handleHoverBrush : handleBrush);
 
         AddLine(selLeft, 0, selRight, 0, handleBrush, 0.5);
         AddLine(selLeft, h, selRight, h, handleBrush, 0.5);
@@ -364,6 +368,33 @@ public partial class TimeRangeSlicerControl : UserControl
 
     private void Toggle_Click(object sender, RoutedEventArgs e) => IsExpanded = !IsExpanded;
 
+    /// <summary>
+    /// Quick-range chip: selects the last N minutes of the loaded window (Tag = minutes), or the
+    /// full window when Tag is 0 ("All"). A duration longer than the window clamps to the start.
+    /// </summary>
+    private void QuickRange_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b || _data.Count < 2) return;
+        if (b.Tag is not string tag || !int.TryParse(tag, out int minutes)) return;
+
+        if (minutes <= 0)
+        {
+            _rangeStart = 0;
+            _rangeEnd = 1.0;
+        }
+        else
+        {
+            var start = DataEndUtc.AddMinutes(-minutes);
+            if (start < DataStartUtc) start = DataStartUtc;
+            _rangeStart = NormAtUtc(start);
+            _rangeEnd = 1.0;
+        }
+
+        UpdateRangeLabel();
+        Redraw();
+        FireRangeChanged();
+    }
+
     private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (_data.Count < 2) return;
@@ -397,12 +428,16 @@ public partial class TimeRangeSlicerControl : UserControl
         {
             var selLeft = _rangeStart * w;
             var selRight = _rangeEnd * w;
-            if (Math.Abs(pos.X - selLeft) <= HandleGripWidthPx || Math.Abs(pos.X - selRight) <= HandleGripWidthPx)
-                SlicerCanvas.Cursor = Cursors.SizeWE;
+            HandleHover newHover = HandleHover.None;
+            if (Math.Abs(pos.X - selLeft) <= HandleGripWidthPx)
+            { SlicerCanvas.Cursor = Cursors.SizeWE; newHover = HandleHover.Start; }
+            else if (Math.Abs(pos.X - selRight) <= HandleGripWidthPx)
+            { SlicerCanvas.Cursor = Cursors.SizeWE; newHover = HandleHover.End; }
             else if (pos.X >= selLeft && pos.X <= selRight)
                 SlicerCanvas.Cursor = Cursors.SizeAll;
             else
                 SlicerCanvas.Cursor = Cursors.Arrow;
+            if (newHover != _hoveredHandle) { _hoveredHandle = newHover; Redraw(); }
             return;
         }
 
@@ -429,6 +464,15 @@ public partial class TimeRangeSlicerControl : UserControl
         UpdateRangeLabel();
         Redraw();
         e.Handled = true;
+    }
+
+    private void Canvas_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (_dragMode == DragMode.None && _hoveredHandle != HandleHover.None)
+        {
+            _hoveredHandle = HandleHover.None;
+            Redraw();
+        }
     }
 
     private void Canvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)

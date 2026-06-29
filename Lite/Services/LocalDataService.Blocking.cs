@@ -11,90 +11,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Ui;
 using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
-
-/// <summary>
-/// Holds the connected server's UTC offset so model display properties
-/// can convert UTC timestamps to server-local time without per-instance wiring.
-/// Set by ServerTab on creation; defaults to local offset for backwards compatibility.
-/// </summary>
-public static class ServerTimeHelper
-{
-    private static int _utcOffsetMinutes = (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes;
-
-    public static int UtcOffsetMinutes
-    {
-        get => _utcOffsetMinutes;
-        set => _utcOffsetMinutes = value;
-    }
-
-    public static DateTime ToServerTime(DateTime utcTime) => utcTime.AddMinutes(_utcOffsetMinutes);
-
-    /// <summary>
-    /// Converts a local DateTime (from date picker) to server time.
-    /// Use when the user picks dates in their local timezone but the database stores server time.
-    /// </summary>
-    public static DateTime LocalToServerTime(DateTime localTime)
-    {
-        var utcTime = localTime.ToUniversalTime();
-        return utcTime.AddMinutes(_utcOffsetMinutes);
-    }
-
-    /// <summary>
-    /// Converts a server DateTime to local time.
-    /// Use this when displaying server timestamps to the user in the UI.
-    /// </summary>
-    public static DateTime ToLocalTime(DateTime serverTime)
-    {
-        /* Convert server time to UTC, then to local */
-        var utcTime = serverTime.AddMinutes(-_utcOffsetMinutes);
-        return utcTime.ToLocalTime();
-    }
-
-    /// <summary>
-    /// The current display mode preference. Read from App settings at startup.
-    /// </summary>
-    public static TimeDisplayMode CurrentDisplayMode { get; set; } = TimeDisplayMode.ServerTime;
-
-    /// <summary>
-    /// Converts a server DateTime for display based on the selected display mode.
-    /// </summary>
-    public static DateTime ConvertForDisplay(DateTime serverTime, TimeDisplayMode mode) => mode switch
-    {
-        TimeDisplayMode.LocalTime => ToLocalTime(serverTime),
-        TimeDisplayMode.UTC => serverTime.AddMinutes(-_utcOffsetMinutes),
-        _ => serverTime
-    };
-
-    /// <summary>
-    /// Converts a display-mode DateTime back to server time. Reverse of ConvertForDisplay.
-    /// </summary>
-    public static DateTime DisplayTimeToServerTime(DateTime displayTime, TimeDisplayMode mode) => mode switch
-    {
-        TimeDisplayMode.LocalTime => LocalToServerTime(displayTime),
-        TimeDisplayMode.UTC => displayTime.AddMinutes(_utcOffsetMinutes),
-        _ => displayTime
-    };
-
-    /// <summary>
-    /// Returns a short timezone label for the current display mode.
-    /// </summary>
-    public static string GetTimezoneLabel(TimeDisplayMode mode) => mode switch
-    {
-        TimeDisplayMode.LocalTime => TimeZoneInfo.Local.StandardName,
-        TimeDisplayMode.UTC => "UTC",
-        _ => $"UTC{(_utcOffsetMinutes >= 0 ? "+" : "")}{_utcOffsetMinutes / 60}:{Math.Abs(_utcOffsetMinutes % 60):D2}"
-    };
-
-    public static string FormatServerTime(DateTime utcTime, string format = "yyyy-MM-dd HH:mm:ss")
-        => ConvertForDisplay(utcTime.AddMinutes(_utcOffsetMinutes), CurrentDisplayMode).ToString(format);
-
-    public static string FormatServerTime(DateTime? utcTime, string format = "yyyy-MM-dd HH:mm:ss")
-        => utcTime.HasValue ? ConvertForDisplay(utcTime.Value.AddMinutes(_utcOffsetMinutes), CurrentDisplayMode).ToString(format) : "";
-}
 
 public partial class LocalDataService
 {
@@ -294,14 +215,21 @@ ORDER BY collection_time DESC, cpu_time_ms DESC";
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
+        /* blocking_count prefers the blocked-process-report; falls back to the always-on DMV snapshot when
+           BPR captured nothing (AWS RDS). latest_event_time includes DMV blocking recency too. */
         command.CommandText = @"
 SELECT
-    (SELECT COUNT(*) FROM v_blocked_process_reports
-     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS blocking_count,
+    COALESCE(NULLIF((SELECT COUNT(*) FROM v_blocked_process_reports
+     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3), 0),
+     (SELECT COUNT(*) FROM v_dmv_blocking_snapshots
+     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3)) AS blocking_count,
     (SELECT COUNT(*) FROM v_deadlocks
      WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS deadlock_count,
     (SELECT MAX(t) FROM (
         SELECT MAX(event_time) AS t FROM v_blocked_process_reports
+        WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+        UNION ALL
+        SELECT MAX(event_time) AS t FROM v_dmv_blocking_snapshots
         WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
         UNION ALL
         SELECT MAX(deadlock_time) AS t FROM v_deadlocks
@@ -369,7 +297,9 @@ SELECT
     blocked_last_batch_completed,
     blocking_last_batch_completed,
     blocked_priority,
-    blocking_priority
+    blocking_priority,
+    contentious_object,
+    monitor_loop
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -382,50 +312,184 @@ LIMIT 200";
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
         var items = new List<BlockedProcessReportRow>();
-        using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        using (var reader = await command.ExecuteReaderAsync())
         {
-            items.Add(new BlockedProcessReportRow
+            while (await reader.ReadAsync())
             {
-                CollectionTime = reader.GetDateTime(0),
-                EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
-                DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
-                BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
-                BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
-                BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
-                WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
-                WaitResource = reader.IsDBNull(8) ? "" : reader.GetString(8),
-                LockMode = reader.IsDBNull(9) ? "" : reader.GetString(9),
-                BlockedStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
-                BlockedIsolationLevel = reader.IsDBNull(11) ? "" : reader.GetString(11),
-                BlockedLogUsed = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
-                BlockedTransactionCount = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
-                BlockedClientApp = reader.IsDBNull(14) ? "" : reader.GetString(14),
-                BlockedHostName = reader.IsDBNull(15) ? "" : reader.GetString(15),
-                BlockedLoginName = reader.IsDBNull(16) ? "" : reader.GetString(16),
-                BlockedSqlText = reader.IsDBNull(17) ? "" : reader.GetString(17),
-                BlockingStatus = reader.IsDBNull(18) ? "" : reader.GetString(18),
-                BlockingIsolationLevel = reader.IsDBNull(19) ? "" : reader.GetString(19),
-                BlockingClientApp = reader.IsDBNull(20) ? "" : reader.GetString(20),
-                BlockingHostName = reader.IsDBNull(21) ? "" : reader.GetString(21),
-                BlockingLoginName = reader.IsDBNull(22) ? "" : reader.GetString(22),
-                BlockingSqlText = reader.IsDBNull(23) ? "" : reader.GetString(23),
-                BlockedProcessReportXml = reader.IsDBNull(24) ? "" : reader.GetString(24),
-                BlockedTransactionName = reader.IsDBNull(25) ? "" : reader.GetString(25),
-                BlockingTransactionName = reader.IsDBNull(26) ? "" : reader.GetString(26),
-                BlockedLastTranStarted = reader.IsDBNull(27) ? null : reader.GetDateTime(27),
-                BlockingLastTranStarted = reader.IsDBNull(28) ? null : reader.GetDateTime(28),
-                BlockedLastBatchStarted = reader.IsDBNull(29) ? null : reader.GetDateTime(29),
-                BlockingLastBatchStarted = reader.IsDBNull(30) ? null : reader.GetDateTime(30),
-                BlockedLastBatchCompleted = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
-                BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
-                BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
-                BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34)
-            });
+                items.Add(new BlockedProcessReportRow
+                {
+                    CollectionTime = reader.GetDateTime(0),
+                    EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
+                    DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                    BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                    BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                    BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+                    WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                    WaitResource = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    LockMode = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                    BlockedStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                    BlockedIsolationLevel = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                    BlockedLogUsed = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                    BlockedTransactionCount = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
+                    BlockedClientApp = reader.IsDBNull(14) ? "" : reader.GetString(14),
+                    BlockedHostName = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                    BlockedLoginName = reader.IsDBNull(16) ? "" : reader.GetString(16),
+                    BlockedSqlText = reader.IsDBNull(17) ? "" : reader.GetString(17),
+                    BlockingStatus = reader.IsDBNull(18) ? "" : reader.GetString(18),
+                    BlockingIsolationLevel = reader.IsDBNull(19) ? "" : reader.GetString(19),
+                    BlockingClientApp = reader.IsDBNull(20) ? "" : reader.GetString(20),
+                    BlockingHostName = reader.IsDBNull(21) ? "" : reader.GetString(21),
+                    BlockingLoginName = reader.IsDBNull(22) ? "" : reader.GetString(22),
+                    BlockingSqlText = reader.IsDBNull(23) ? "" : reader.GetString(23),
+                    BlockedProcessReportXml = reader.IsDBNull(24) ? "" : reader.GetString(24),
+                    BlockedTransactionName = reader.IsDBNull(25) ? "" : reader.GetString(25),
+                    BlockingTransactionName = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                    BlockedLastTranStarted = reader.IsDBNull(27) ? null : reader.GetDateTime(27),
+                    BlockingLastTranStarted = reader.IsDBNull(28) ? null : reader.GetDateTime(28),
+                    BlockedLastBatchStarted = reader.IsDBNull(29) ? null : reader.GetDateTime(29),
+                    BlockingLastBatchStarted = reader.IsDBNull(30) ? null : reader.GetDateTime(30),
+                    BlockedLastBatchCompleted = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
+                    BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
+                    BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
+                    BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
+                    ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35),
+                    MonitorLoop = reader.IsDBNull(36) ? (int?)null : reader.GetInt32(36)
+                });
+            }
         }
 
+        // Always-on DMV blocking snapshot: surface its rows in the grid too, so the block-chain viewer is
+        // reachable when the blocked-process-report XE captured nothing (AWS RDS). Same connection/lock.
+        await AppendDmvBlockedProcessGridRowsAsync(connection.CreateCommand, items, serverId, startTime, endTime);
+
         return items;
+    }
+
+    /// <summary>
+    /// Fetches always-on DMV blocking-snapshot rows for the blocked-process grid and merges them into the
+    /// BPR list — BPR preferred (dedup by blocked/blocker SPID within a minute), re-capped to 200 newest
+    /// first. Runs on the caller's connection/lock (the read lock is non-recursive, so a second connection
+    /// can't be opened). v_dmv_blocking_snapshots is created by DuckDbInitializer, so it always exists.
+    /// </summary>
+    private static async Task AppendDmvBlockedProcessGridRowsAsync(
+        Func<DuckDBCommand> createCommand, List<BlockedProcessReportRow> items, int serverId, DateTime startTime, DateTime endTime)
+    {
+        const int gridCap = 200;
+        var dmvItems = new List<BlockedProcessReportRow>();
+        using (var command = createCommand())
+        {
+            command.CommandText = @"
+SELECT
+    collection_time, event_time, database_name,
+    blocked_spid, blocked_ecid, blocking_spid, blocking_ecid,
+    wait_time_ms, lock_mode, blocking_status, contentious_object,
+    blocked_sql_text, blocking_sql_text,
+    blocked_login_name, blocked_host_name, blocked_client_app,
+    blocked_last_tran_started, blocking_last_tran_started, monitor_loop
+FROM v_dmv_blocking_snapshots
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+ORDER BY event_time DESC
+LIMIT 200";
+            command.Parameters.Add(new DuckDBParameter { Value = serverId });
+            command.Parameters.Add(new DuckDBParameter { Value = startTime });
+            command.Parameters.Add(new DuckDBParameter { Value = endTime });
+
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                dmvItems.Add(new BlockedProcessReportRow
+                {
+                    CollectionTime = reader.GetDateTime(0),
+                    EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
+                    DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                    BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                    BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                    BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+                    WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                    LockMode = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    BlockingStatus = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                    ContentiousObject = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                    BlockedSqlText = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                    BlockingSqlText = reader.IsDBNull(12) ? "" : reader.GetString(12),
+                    BlockedLoginName = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                    BlockedHostName = reader.IsDBNull(14) ? "" : reader.GetString(14),
+                    BlockedClientApp = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                    BlockedLastTranStarted = reader.IsDBNull(16) ? null : reader.GetDateTime(16),
+                    BlockingLastTranStarted = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
+                    MonitorLoop = reader.IsDBNull(18) ? (int?)null : reader.GetInt32(18),
+                    Source = "DMV snapshot"
+                });
+            }
+        }
+
+        if (dmvItems.Count == 0) return;
+
+        // Dedup: keep all BPR rows; add a DMV row only if no BPR row covers the same (blocked, blocker)
+        // SPID within the same minute. BPR is preferred (richer report XML).
+        var seen = new HashSet<(int, int, long)>();
+        foreach (var b in items)
+            if (b.EventTime.HasValue)
+                seen.Add((b.BlockedSpid, b.BlockingSpid, b.EventTime.Value.Ticks / TimeSpan.TicksPerMinute));
+
+        foreach (var d in dmvItems)
+        {
+            var key = (d.BlockedSpid, d.BlockingSpid, (d.EventTime?.Ticks ?? 0) / TimeSpan.TicksPerMinute);
+            if (seen.Add(key))
+                items.Add(d);
+        }
+
+        // Re-cap to the grid's LIMIT, newest first. OrderByDescending is stable, so BPR rows (added
+        // first) win ties over DMV rows at the same event time — matching the Dashboard grid.
+        var merged = items.OrderByDescending(i => i.EventTime ?? DateTime.MinValue).Take(gridCap).ToList();
+        items.Clear();
+        items.AddRange(merged);
+    }
+
+    /// <summary>
+    /// Fetches the blocked/blocker pair rows for a window, for the block-chain viewer to feed
+    /// <see cref="BlockingChainReconstructor"/>. Internal (not public): <see cref="BlockingPairRow"/> is
+    /// internal to the analysis assembly — a public method returning it would be CS0050.
+    /// <see cref="OpenConnectionAsync"/> already takes the DuckDB read lock, so do NOT acquire it again
+    /// (the lock is NoRecursion). Uses <see cref="Analysis.BlockingPairRowQuery.SpidFilter"/> so it agrees
+    /// with the drill-down + fact collectors on the apex.
+    /// </summary>
+    internal async Task<List<BlockingPairRow>> GetBlockingPairRowsAsync(int serverId, DateTime start, DateTime end)
+    {
+        var rows = new List<BlockingPairRow>();
+
+        using var connection = await OpenConnectionAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = $@"
+SELECT
+    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.LeadingColumns},
+    blocked_sql_text, blocking_sql_text,
+    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.IdentityColumns},
+    contentious_object,
+    {PerformanceMonitorLite.Analysis.BlockingPairRowQuery.TrailingIdentityColumns}
+FROM v_blocked_process_reports
+WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+{PerformanceMonitorLite.Analysis.BlockingPairRowQuery.SpidFilter}
+ORDER BY event_time DESC
+LIMIT 5000";
+
+        command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        command.Parameters.Add(new DuckDBParameter { Value = start });
+        command.Parameters.Add(new DuckDBParameter { Value = end });
+
+        using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+                rows.Add(PerformanceMonitorLite.Analysis.BlockingPairRowQuery.Read(reader));
+        }
+
+        // Always-on DMV blocking snapshot: merge in the fallback rows so the viewer works even when the
+        // blocked-process-report XE captured nothing (threshold unset / AWS RDS). Same connection/lock.
+        await PerformanceMonitorLite.Analysis.BlockingPairRowQuery.AppendDmvSnapshotRowsAsync(
+            connection.CreateCommand, rows, serverId, start, end);
+
+        return rows;
     }
 
     /// <summary>
@@ -438,19 +502,37 @@ LIMIT 200";
         using var command = connection.CreateCommand();
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
+        /* BPR buckets, falling back to the always-on DMV snapshot only when BPR has no buckets in the
+           window (AWS RDS) — so a server with both sources never double-counts. */
         command.CommandText = @"
-SELECT
-    date_trunc('hour', collection_time) AS bucket,
-    COUNT(*) AS event_count,
-    COALESCE(SUM(wait_time_ms), 0) / 1000.0 AS total_wait_sec,
-    COUNT(DISTINCT blocking_spid) AS distinct_blockers,
-    COUNT(DISTINCT blocked_spid) AS distinct_blocked,
-    COUNT(DISTINCT database_name) AS distinct_databases
-FROM v_blocked_process_reports
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-GROUP BY date_trunc('hour', collection_time)
+WITH bpr AS (
+    SELECT
+        date_trunc('hour', collection_time) AS bucket,
+        COUNT(*) AS event_count,
+        COALESCE(SUM(wait_time_ms), 0) / 1000.0 AS total_wait_sec,
+        COUNT(DISTINCT blocking_spid) AS distinct_blockers,
+        COUNT(DISTINCT blocked_spid) AS distinct_blocked,
+        COUNT(DISTINCT database_name) AS distinct_databases
+    FROM v_blocked_process_reports
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    GROUP BY date_trunc('hour', collection_time)
+),
+dmv AS (
+    SELECT
+        date_trunc('hour', collection_time) AS bucket,
+        COUNT(*) AS event_count,
+        COALESCE(SUM(wait_time_ms), 0) / 1000.0 AS total_wait_sec,
+        COUNT(DISTINCT blocking_spid) AS distinct_blockers,
+        COUNT(DISTINCT blocked_spid) AS distinct_blocked,
+        COUNT(DISTINCT database_name) AS distinct_databases
+    FROM v_dmv_blocking_snapshots
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    GROUP BY date_trunc('hour', collection_time)
+)
+SELECT bucket, event_count, total_wait_sec, distinct_blockers, distinct_blocked, distinct_databases FROM bpr
+UNION ALL
+SELECT bucket, event_count, total_wait_sec, distinct_blockers, distinct_blocked, distinct_databases FROM dmv
+WHERE NOT EXISTS (SELECT 1 FROM bpr)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -532,20 +614,24 @@ ORDER BY bucket";
 
         /* Use blocked_process_reports from XE session - more reliable than point-in-time snapshots
            Group by event_time (when blocking actually occurred) rather than collection_time */
+        /* BPR per-minute buckets, falling back to the always-on DMV snapshot only when BPR has none in the
+           window (AWS RDS) — so a server with both sources never double-counts. */
         command.CommandText = @"
-SELECT
-    bucket,
-    incident_count
-FROM (
-    SELECT
-        DATE_TRUNC('minute', event_time) AS bucket,
-        COUNT(*) AS incident_count
+WITH bpr AS (
+    SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
     FROM v_blocked_process_reports
-    WHERE server_id = $1
-    AND   event_time >= $2
-    AND   event_time <= $3
+    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
     GROUP BY DATE_TRUNC('minute', event_time)
-) sub
+),
+dmv AS (
+    SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
+    FROM v_dmv_blocking_snapshots
+    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+    GROUP BY DATE_TRUNC('minute', event_time)
+)
+SELECT bucket, incident_count FROM bpr
+UNION ALL
+SELECT bucket, incident_count FROM dmv WHERE NOT EXISTS (SELECT 1 FROM bpr)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -914,6 +1000,15 @@ public class BlockedProcessReportRow
     public int BlockedEcid { get; set; }
     public int BlockingSpid { get; set; }
     public int BlockingEcid { get; set; }
+    public int? MonitorLoop { get; set; }
+
+    /// <summary>
+    /// Where this row came from: the blocked-process-report XE ("blocked-process-report") or the always-on
+    /// DMV snapshot fallback ("DMV snapshot"). Surfaced as a grid badge so a row captured when the
+    /// blocked-process threshold was unset (e.g. AWS RDS) is distinguishable.
+    /// </summary>
+    public string Source { get; set; } = "blocked-process-report";
+
     public long WaitTimeMs { get; set; }
     public string WaitResource { get; set; } = "";
     public string LockMode { get; set; } = "";
@@ -932,6 +1027,7 @@ public class BlockedProcessReportRow
     public string BlockingLoginName { get; set; } = "";
     public string BlockingSqlText { get; set; } = "";
     public string BlockedProcessReportXml { get; set; } = "";
+    public string ContentiousObject { get; set; } = "";
     public string BlockedTransactionName { get; set; } = "";
     public string BlockingTransactionName { get; set; } = "";
     public DateTime? BlockedLastTranStarted { get; set; }

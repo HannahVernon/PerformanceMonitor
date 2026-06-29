@@ -233,9 +233,14 @@ namespace PerformanceMonitorDashboard
                 RecommendationsTab.SetTimeRange(_globalHoursBack);
                 DefaultTraceTab.SetTimeRange(_globalHoursBack, _globalFromDate, _globalToDate);
 
-                // Refresh all data
+                // Refresh only the visible tab with the new range; the other tabs already have the
+                // range set (above) and re-load lazily with it when navigated to. Forcing a six-tab
+                // refresh here floods the connection pool, so the tab the user is on can take ~a minute
+                // to update on a busy server. Clearing _initializedTabs makes each tab do a full (not
+                // sub-tab-only) refresh on its next visit so the new range applies throughout.
+                _initializedTabs.Clear();
                 StatusText.Text = GetLoadingMessage();
-                await LoadDataAsync();
+                await LoadDataAsync(fullRefresh: false);
                 StatusText.Text = "Time range applied to all tabs";
             }
             catch (Exception ex)
@@ -558,6 +563,10 @@ namespace PerformanceMonitorDashboard
                         Blocking_Refresh_Click(null, new RoutedEventArgs());
                         Deadlocks_Refresh_Click(null, new RoutedEventArgs());
                         BlockingStats_Refresh_Click(null, new RoutedEventArgs());
+                        // The grid refreshes above don't touch the slicer histograms. Without these the
+                        // slicers only update on the next auto-refresh tick — that's the ~45–60s "lag".
+                        _ = LoadBlockingSlicerAsync();
+                        _ = LoadDeadlockSlicerAsync();
                         break;
 
                     case "Queries":

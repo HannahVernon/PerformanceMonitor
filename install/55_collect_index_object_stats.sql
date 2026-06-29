@@ -22,9 +22,11 @@ GO
 Collector: index_object_stats_collector
 Purpose: Captures per-table and per-index size, usage, and locking statistics
          for growth trending, unused-index detection, and contention analysis.
-Collection Type: Point-in-time snapshot for sizes; cumulative counters for
-         usage/locking (deltas derived in the read layer using
-         sqlserver_start_time as the reset boundary).
+Collection Type: Point-in-time snapshot for sizes; raw cumulative counters for
+         usage/locking. The read layer shows size growth as size(t2) - size(t1)
+         and usage/locking as raw cumulative totals - it does NOT derive counter
+         deltas (sqlserver_start_time flags only restart/detach/AUTO_CLOSE resets,
+         not the metadata-cache-eviction reset; see #1138).
 Target Table: collect.index_object_stats
 Frequency: Every 1440 minutes (daily) - object grain is high volume.
 Dependencies: sys.dm_db_partition_stats, sys.dm_db_index_usage_stats,
@@ -109,6 +111,71 @@ BEGIN
         */
         IF @engine_edition = 5
         BEGIN
+            /*
+            Stage each DMV with a single scan so the final join gets real cardinality.
+            A single monolithic multi-DMV join can pick a bad plan on large databases;
+            staging avoids that (the sp_IndexCleanup technique - see #1135).
+            */
+            SELECT
+                dps.object_id,
+                dps.index_id,
+                partition_count = COUNT_BIG(*),
+                reserved_pages = SUM(dps.reserved_page_count),
+                used_pages = SUM(dps.used_page_count),
+                in_row_pages = SUM(dps.in_row_data_page_count),
+                lob_pages = SUM(dps.lob_used_page_count),
+                row_overflow_pages = SUM(dps.row_overflow_used_page_count),
+                total_rows = SUM(dps.row_count)
+            INTO #sizes
+            FROM sys.dm_db_partition_stats AS dps
+            GROUP BY
+                dps.object_id,
+                dps.index_id
+            OPTION(RECOMPILE);
+
+            SELECT
+                us.object_id,
+                us.index_id,
+                us.user_seeks,
+                us.user_scans,
+                us.user_lookups,
+                us.user_updates,
+                us.last_user_seek,
+                us.last_user_scan,
+                us.last_user_lookup,
+                us.last_user_update
+            INTO #usage
+            FROM sys.dm_db_index_usage_stats AS us
+            WHERE us.database_id = DB_ID()
+            OPTION(RECOMPILE);
+
+            SELECT
+                ios.object_id,
+                ios.index_id,
+                leaf_insert_count = SUM(ios.leaf_insert_count),
+                leaf_update_count = SUM(ios.leaf_update_count),
+                leaf_delete_count = SUM(ios.leaf_delete_count),
+                range_scan_count = SUM(ios.range_scan_count),
+                singleton_lookup_count = SUM(ios.singleton_lookup_count),
+                row_lock_count = SUM(ios.row_lock_count),
+                row_lock_wait_count = SUM(ios.row_lock_wait_count),
+                row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
+                page_lock_count = SUM(ios.page_lock_count),
+                page_lock_wait_count = SUM(ios.page_lock_wait_count),
+                page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
+                index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
+                index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
+                page_latch_wait_count = SUM(ios.page_latch_wait_count),
+                page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
+                page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
+                page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
+            INTO #ops
+            FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
+            GROUP BY
+                ios.object_id,
+                ios.index_id
+            OPTION(RECOMPILE);
+
             INSERT INTO
                 collect.index_object_stats
             (
@@ -209,56 +276,13 @@ BEGIN
               ON o.object_id = i.object_id
             JOIN sys.schemas AS s
               ON s.schema_id = o.schema_id
-            LEFT JOIN
-            (
-                SELECT
-                    dps.object_id,
-                    dps.index_id,
-                    partition_count = COUNT_BIG(*),
-                    reserved_pages = SUM(dps.reserved_page_count),
-                    used_pages = SUM(dps.used_page_count),
-                    in_row_pages = SUM(dps.in_row_data_page_count),
-                    lob_pages = SUM(dps.lob_used_page_count),
-                    row_overflow_pages = SUM(dps.row_overflow_used_page_count),
-                    total_rows = SUM(dps.row_count)
-                FROM sys.dm_db_partition_stats AS dps
-                GROUP BY
-                    dps.object_id,
-                    dps.index_id
-            ) AS ps
+            LEFT JOIN #sizes AS ps
               ON  ps.object_id = i.object_id
               AND ps.index_id = i.index_id
-            LEFT JOIN sys.dm_db_index_usage_stats AS us
-              ON  us.database_id = DB_ID()
-              AND us.object_id = i.object_id
+            LEFT JOIN #usage AS us
+              ON  us.object_id = i.object_id
               AND us.index_id = i.index_id
-            LEFT JOIN
-            (
-                SELECT
-                    ios.object_id,
-                    ios.index_id,
-                    leaf_insert_count = SUM(ios.leaf_insert_count),
-                    leaf_update_count = SUM(ios.leaf_update_count),
-                    leaf_delete_count = SUM(ios.leaf_delete_count),
-                    range_scan_count = SUM(ios.range_scan_count),
-                    singleton_lookup_count = SUM(ios.singleton_lookup_count),
-                    row_lock_count = SUM(ios.row_lock_count),
-                    row_lock_wait_count = SUM(ios.row_lock_wait_count),
-                    row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
-                    page_lock_count = SUM(ios.page_lock_count),
-                    page_lock_wait_count = SUM(ios.page_lock_wait_count),
-                    page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
-                    index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
-                    index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
-                    page_latch_wait_count = SUM(ios.page_latch_wait_count),
-                    page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
-                    page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
-                    page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
-                FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
-                GROUP BY
-                    ios.object_id,
-                    ios.index_id
-            ) AS os
+            LEFT JOIN #ops AS os
               ON  os.object_id = i.object_id
               AND os.index_id = i.index_id
             WHERE o.is_ms_shipped = 0
@@ -266,6 +290,8 @@ BEGIN
             OPTION(RECOMPILE);
 
             SET @rows_collected = ROWCOUNT_BIG();
+
+            DROP TABLE #sizes, #usage, #ops;
         END;
         ELSE
         BEGIN
@@ -305,6 +331,72 @@ BEGIN
             BEGIN
                 BEGIN TRY
                     SET @sql = N'
+                    SET NOCOUNT ON;
+                    SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+                    /* Stage each DMV with a single scan (real cardinality -> sane plan on
+                       large databases; the sp_IndexCleanup technique - see #1135). These
+                       #temps live only inside this per-database batch. */
+                    SELECT
+                        dps.object_id,
+                        dps.index_id,
+                        partition_count = COUNT_BIG(*),
+                        reserved_pages = SUM(dps.reserved_page_count),
+                        used_pages = SUM(dps.used_page_count),
+                        in_row_pages = SUM(dps.in_row_data_page_count),
+                        lob_pages = SUM(dps.lob_used_page_count),
+                        row_overflow_pages = SUM(dps.row_overflow_used_page_count),
+                        total_rows = SUM(dps.row_count)
+                    INTO #sizes
+                    FROM sys.dm_db_partition_stats AS dps
+                    GROUP BY
+                        dps.object_id,
+                        dps.index_id
+                    OPTION(RECOMPILE);
+
+                    SELECT
+                        us.object_id,
+                        us.index_id,
+                        us.user_seeks,
+                        us.user_scans,
+                        us.user_lookups,
+                        us.user_updates,
+                        us.last_user_seek,
+                        us.last_user_scan,
+                        us.last_user_lookup,
+                        us.last_user_update
+                    INTO #usage
+                    FROM sys.dm_db_index_usage_stats AS us
+                    WHERE us.database_id = DB_ID()
+                    OPTION(RECOMPILE);
+
+                    SELECT
+                        ios.object_id,
+                        ios.index_id,
+                        leaf_insert_count = SUM(ios.leaf_insert_count),
+                        leaf_update_count = SUM(ios.leaf_update_count),
+                        leaf_delete_count = SUM(ios.leaf_delete_count),
+                        range_scan_count = SUM(ios.range_scan_count),
+                        singleton_lookup_count = SUM(ios.singleton_lookup_count),
+                        row_lock_count = SUM(ios.row_lock_count),
+                        row_lock_wait_count = SUM(ios.row_lock_wait_count),
+                        row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
+                        page_lock_count = SUM(ios.page_lock_count),
+                        page_lock_wait_count = SUM(ios.page_lock_wait_count),
+                        page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
+                        index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
+                        index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
+                        page_latch_wait_count = SUM(ios.page_latch_wait_count),
+                        page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
+                        page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
+                        page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
+                    INTO #ops
+                    FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
+                    GROUP BY
+                        ios.object_id,
+                        ios.index_id
+                    OPTION(RECOMPILE);
+
                     INSERT INTO
                         PerformanceMonitor.collect.index_object_stats
                     (
@@ -405,56 +497,13 @@ BEGIN
                       ON o.object_id = i.object_id
                     JOIN sys.schemas AS s
                       ON s.schema_id = o.schema_id
-                    LEFT JOIN
-                    (
-                        SELECT
-                            dps.object_id,
-                            dps.index_id,
-                            partition_count = COUNT_BIG(*),
-                            reserved_pages = SUM(dps.reserved_page_count),
-                            used_pages = SUM(dps.used_page_count),
-                            in_row_pages = SUM(dps.in_row_data_page_count),
-                            lob_pages = SUM(dps.lob_used_page_count),
-                            row_overflow_pages = SUM(dps.row_overflow_used_page_count),
-                            total_rows = SUM(dps.row_count)
-                        FROM sys.dm_db_partition_stats AS dps
-                        GROUP BY
-                            dps.object_id,
-                            dps.index_id
-                    ) AS ps
+                    LEFT JOIN #sizes AS ps
                       ON  ps.object_id = i.object_id
                       AND ps.index_id = i.index_id
-                    LEFT JOIN sys.dm_db_index_usage_stats AS us
-                      ON  us.database_id = DB_ID()
-                      AND us.object_id = i.object_id
+                    LEFT JOIN #usage AS us
+                      ON  us.object_id = i.object_id
                       AND us.index_id = i.index_id
-                    LEFT JOIN
-                    (
-                        SELECT
-                            ios.object_id,
-                            ios.index_id,
-                            leaf_insert_count = SUM(ios.leaf_insert_count),
-                            leaf_update_count = SUM(ios.leaf_update_count),
-                            leaf_delete_count = SUM(ios.leaf_delete_count),
-                            range_scan_count = SUM(ios.range_scan_count),
-                            singleton_lookup_count = SUM(ios.singleton_lookup_count),
-                            row_lock_count = SUM(ios.row_lock_count),
-                            row_lock_wait_count = SUM(ios.row_lock_wait_count),
-                            row_lock_wait_in_ms = SUM(ios.row_lock_wait_in_ms),
-                            page_lock_count = SUM(ios.page_lock_count),
-                            page_lock_wait_count = SUM(ios.page_lock_wait_count),
-                            page_lock_wait_in_ms = SUM(ios.page_lock_wait_in_ms),
-                            index_lock_promotion_attempt_count = SUM(ios.index_lock_promotion_attempt_count),
-                            index_lock_promotion_count = SUM(ios.index_lock_promotion_count),
-                            page_latch_wait_count = SUM(ios.page_latch_wait_count),
-                            page_latch_wait_in_ms = SUM(ios.page_latch_wait_in_ms),
-                            page_io_latch_wait_count = SUM(ios.page_io_latch_wait_count),
-                            page_io_latch_wait_in_ms = SUM(ios.page_io_latch_wait_in_ms)
-                        FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
-                        GROUP BY
-                            ios.object_id,
-                            ios.index_id
-                    ) AS os
+                    LEFT JOIN #ops AS os
                       ON  os.object_id = i.object_id
                       AND os.index_id = i.index_id
                     WHERE o.is_ms_shipped = 0

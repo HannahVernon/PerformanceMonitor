@@ -48,6 +48,7 @@
                 <MenuItem.Icon><TextBlock Text="📊"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
+            <MenuItem Header="View Block Chain" Click="ViewBlockChain_Click"/>
             <MenuItem Header="View Blocked Plan" Click="ViewBlockedSidePlan_Click"/>
             <MenuItem Header="View Blocking Plan" Click="ViewBlockingSidePlan_Click"/>
         </ContextMenu>
@@ -68,6 +69,7 @@
                 <MenuItem.Icon><TextBlock Text="📊"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
+            <MenuItem Header="View Deadlock Graph" Click="ViewDeadlockGraph_Click"/>
             <MenuItem Header="View Plan" Click="ViewDeadlockProcessPlan_Click"/>
         </ContextMenu>
 
@@ -302,6 +304,18 @@
 
                     <!-- Collection Health Sub-Tab -->
                     <TabItem Header="Collection Health">
+                      <DockPanel>
+                        <!-- Banner shown when collection has stopped (jobs disabled / Agent down / collectors failing).
+                             Populated by the app's own check, so it surfaces here even when collection is off. -->
+                        <Border x:Name="CollectionStoppedBanner" DockPanel.Dock="Top" Visibility="Collapsed"
+                                Background="#5C2626" BorderBrush="#8B3A3A" BorderThickness="1" CornerRadius="3"
+                                Padding="10,6" Margin="5,5,5,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#x26A0;" FontSize="14" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="White"/>
+                                <TextBlock x:Name="CollectionStoppedBannerText" VerticalAlignment="Center" Foreground="White"
+                                           TextWrapping="Wrap" FontWeight="SemiBold"/>
+                            </StackPanel>
+                        </Border>
                         <TabControl ItemContainerStyle="{DynamicResource SubTabItemStyle}">
                             <TabItem Header="Health Summary">
                                 <Grid>
@@ -394,6 +408,7 @@
                                 <ScottPlot:WpfPlot x:Name="CollectorDurationChart" Margin="4"/>
                             </TabItem>
                         </TabControl>
+                      </DockPanel>
                     </TabItem>
 
                     <!-- Running Jobs Sub-Tab -->
@@ -665,6 +680,7 @@
                             </Grid.RowDefinitions>
                             <controls:TimeRangeSlicerControl x:Name="BlockingSlicer" Grid.Row="0"/>
                         <DataGrid x:Name="BlockingEventsDataGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                                      MouseDoubleClick="BlockingEventsDataGrid_MouseDoubleClick"
                                       GridLinesVisibility="Horizontal" CanUserResizeColumns="True"
                                       RowStyle="{StaticResource BlockingEventsPlanRowStyle}"
                                       ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
@@ -674,6 +690,14 @@
                                             <StackPanel Orientation="Horizontal">
                                                 <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="EventTime" Click="BlockingEventsFilter_Click" Margin="0,0,4,0"/>
                                                 <TextBlock Text="Event Time" FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Source}" Width="130">
+                                        <DataGridTextColumn.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Source" Click="BlockingEventsFilter_Click" Margin="0,0,4,0"/>
+                                                <TextBlock Text="Source" FontWeight="Bold" VerticalAlignment="Center"/>
                                             </StackPanel>
                                         </DataGridTextColumn.Header>
                                     </DataGridTextColumn>
@@ -839,7 +863,7 @@
                                             <DataTemplate>
                                                 <Button Content="Download"
                                                         Click="DownloadBlockingXml_Click"
-                                                        IsEnabled="{Binding BlockedProcessReportXml, Converter={StaticResource NullToBooleanConverter}}"
+                                                        IsEnabled="{Binding HasBlockedProcessReport}"
                                                         Width="75" Height="22" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
@@ -861,6 +885,7 @@
                         <DataGrid x:Name="DeadlocksDataGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                                       RowHeight="28" GridLinesVisibility="Horizontal" CanUserResizeColumns="True"
                                       RowStyle="{StaticResource DeadlocksPlanRowStyle}"
+                                      MouseDoubleClick="DeadlocksDataGrid_MouseDoubleClick"
                                       ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Binding="{Binding EventDate, Converter={StaticResource ServerTimeConverter}}" Width="150">
@@ -1042,9 +1067,10 @@
                                     <DataGridTemplateColumn Header="Graph" Width="90">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
+                                                <!-- Always enabled: the graph is fetched on demand (deferred out of the grid query); a deadlock always has one. -->
                                                 <Button Content="Download"
                                                         Click="DownloadDeadlockGraph_Click"
-                                                        IsEnabled="{Binding DeadlockGraph, Converter={StaticResource NullToBooleanConverter}}"
+                                                        IsEnabled="True"
                                                         Width="75" Height="22" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>

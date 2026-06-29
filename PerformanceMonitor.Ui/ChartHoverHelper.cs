@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -12,11 +14,24 @@ namespace PerformanceMonitor.Ui;
 /// Adds mouse-hover tooltips to a ScottPlot chart with multiple scatter series.
 /// Shows the series name, value, and timestamp in a popup that follows the mouse.
 /// Uses X-axis (time) proximity for reliable detection on time-series charts.
+///
+/// Also owns the shared <b>click-to-isolate</b> mechanic: clicking a series' built-in legend key
+/// (or its line) dims every other series and auto-fits the Y axis to the clicked one, so a series
+/// that is flat/hidden under the big lines becomes readable; clicking it again (or an empty area)
+/// restores the full view. A re-render (<see cref="Clear"/>) resets isolate. The mechanic lives
+/// here because every dynamic-legend chart in both apps already funnels its series through this
+/// helper, so all charts get it from one change.
 /// </summary>
 internal sealed class ChartHoverHelper
 {
+    /// <summary>A registered series: the scatter, its full (untruncated) label, and the unmutated
+    /// identity color captured at registration (see <see cref="Add"/>).</summary>
+    internal readonly record struct SeriesEntry(
+        ScottPlot.Plottables.Scatter Scatter, string Label, ScottPlot.Color Identity,
+        ScottPlot.Color OrigLineColor, float OrigLineWidth, float OrigMarkerSize, bool OrigFillY);
+
     private readonly ScottPlot.WPF.WpfPlot _chart;
-    private readonly List<(ScottPlot.Plottables.Scatter Scatter, string Label)> _scatters = new();
+    private readonly List<SeriesEntry> _series = new();
     private readonly List<(ScottPlot.Plottables.BarPlot BarPlot, string Label)> _barPlots = new();
     private readonly Popup _popup;
     private readonly TextBlock _text;
@@ -24,10 +39,30 @@ internal sealed class ChartHoverHelper
     private DateTime _lastUpdate;
     private bool _needsReanchor = true;
 
-    public ChartHoverHelper(ScottPlot.WPF.WpfPlot chart, string unit)
+    // ── Click-to-isolate state ─────────────────────────────────────────────────────────────────
+    private readonly bool _enableClickIsolate;
+    private string? _isolatedLabel;                              // null = nothing isolated
+    private bool _leftPressed;
+    private Point _pressPos;
+    private bool _suppressNextLeftUp;                          // set on double-click so the 2nd up can't re-isolate
+
+    /// <summary>The faint line/marker alpha applied to non-isolated series while isolated.</summary>
+    internal const byte DimAlpha = 40;
+
+    /// <summary>How far (device-independent px) the mouse may move between press and release and
+    /// still count as a click rather than a pan-drag.</summary>
+    private const double ClickDragThresholdPx = 5.0;
+
+    /// <summary>Chart → helper lookup so the per-app autoscale handlers (which are static and hold
+    /// no helper reference) can clear an active isolate before rescaling. Weak-keyed: entries
+    /// disappear when the chart is collected.</summary>
+    private static readonly ConditionalWeakTable<ScottPlot.WPF.WpfPlot, ChartHoverHelper> _registry = new();
+
+    public ChartHoverHelper(ScottPlot.WPF.WpfPlot chart, string unit, bool enableClickIsolate = true)
     {
         _chart = chart;
         _unit = unit;
+        _enableClickIsolate = enableClickIsolate;
 
         _text = new TextBlock
         {
@@ -64,6 +99,19 @@ internal sealed class ChartHoverHelper
         chart.IsVisibleChanged += OnChartVisibilityChanged;
         chart.Unloaded += OnChartUnloaded;
         chart.Loaded += OnChartLoaded;
+
+        if (_enableClickIsolate)
+        {
+            // Preview-down records the press point before ScottPlot's pan logic; bubbling Up decides
+            // click-vs-drag. We never set e.Handled, so pan/zoom/right-click keep working.
+            chart.PreviewMouseLeftButtonDown += OnPreviewLeftButtonDown;
+            chart.MouseLeftButtonUp += OnLeftButtonUp;
+            // Double-click is the autoscale/restore gesture (the per-app handler restores). Flag it so
+            // the second mouse-up can't re-isolate — deterministic, vs. relying on e.ClickCount on the up.
+            chart.MouseDoubleClick += OnDoubleClick;
+        }
+
+        _registry.AddOrUpdate(chart, this);
     }
 
     public string Unit { get => _unit; set => _unit = value; }
@@ -75,8 +123,12 @@ internal sealed class ChartHoverHelper
         _chart.IsVisibleChanged -= OnChartVisibilityChanged;
         _chart.Unloaded -= OnChartUnloaded;
         _chart.Loaded -= OnChartLoaded;
+        _chart.PreviewMouseLeftButtonDown -= OnPreviewLeftButtonDown;
+        _chart.MouseLeftButtonUp -= OnLeftButtonUp;
+        _chart.MouseDoubleClick -= OnDoubleClick;
+        _registry.Remove(_chart);
         _popup.IsOpen = false;
-        _scatters.Clear();
+        _series.Clear();
         _barPlots.Clear();
     }
 
@@ -94,12 +146,22 @@ internal sealed class ChartHoverHelper
 
     public void Clear()
     {
-        _scatters.Clear();
+        // A re-render resets isolate.
+        _isolatedLabel = null;
+        _series.Clear();
         _barPlots.Clear();
     }
 
     public void Add(ScottPlot.Plottables.Scatter scatter, string label) =>
-        _scatters.Add((scatter, label));
+        /* Capture the IDENTITY color from the marker fill, NOT scatter.Color: Add runs after
+           ChartStyle.StyleScatter, which has already mutated the line color to identity.WithAlpha(215)
+           but never touches the marker fill — so MarkerStyle.FillColor still holds the pure identity
+           used to dim/restore this series. Also snapshot the full visual state as the chart left it, so
+           restore is faithful for line-only charts (CollectorDuration / trend charts use MarkerSize 0,
+           no fill, and never call StyleScatter) as well as the StyleScatter'd fill charts. */
+        _series.Add(new SeriesEntry(
+            scatter, label, scatter.MarkerStyle.FillColor,
+            scatter.LineColor, scatter.LineWidth, scatter.MarkerSize, scatter.FillY));
 
     public void Add(ScottPlot.Plottables.BarPlot barPlot, string label) =>
         _barPlots.Add((barPlot, label));
@@ -110,7 +172,7 @@ internal sealed class ChartHoverHelper
     /// </summary>
     public (string Label, DateTime Time)? GetNearestSeries(Point mousePos)
     {
-        if (_scatters.Count == 0 && _barPlots.Count == 0) return null;
+        if (_series.Count == 0 && _barPlots.Count == 0) return null;
         try
         {
             var dpi = VisualTreeHelper.GetDpi(_chart);
@@ -124,9 +186,9 @@ internal sealed class ChartHoverHelper
             string bestLabel = "";
             bool found = false;
 
-            foreach (var (scatter, label) in _scatters)
+            foreach (var entry in _series)
             {
-                var nearest = scatter.Data.GetNearest(mouseCoords, _chart.Plot.LastRender);
+                var nearest = entry.Scatter.Data.GetNearest(mouseCoords, _chart.Plot.LastRender);
                 if (!nearest.IsReal) continue;
                 var nearestPixel = _chart.Plot.GetPixel(
                     new ScottPlot.Coordinates(nearest.X, nearest.Y));
@@ -136,7 +198,7 @@ internal sealed class ChartHoverHelper
                 {
                     bestYDistance = dy;
                     bestPoint = nearest;
-                    bestLabel = label;
+                    bestLabel = entry.Label;
                     found = true;
                 }
             }
@@ -182,7 +244,7 @@ internal sealed class ChartHoverHelper
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
-        if (_scatters.Count == 0 && _barPlots.Count == 0) return;
+        if (_series.Count == 0 && _barPlots.Count == 0) return;
         var now = DateTime.UtcNow;
         if ((now - _lastUpdate).TotalMilliseconds < 30) return;
         _lastUpdate = now;
@@ -204,9 +266,9 @@ internal sealed class ChartHoverHelper
             string bestLabel = "";
             bool found = false;
 
-            foreach (var (scatter, label) in _scatters)
+            foreach (var entry in _series)
             {
-                var nearest = scatter.Data.GetNearest(mouseCoords, _chart.Plot.LastRender);
+                var nearest = entry.Scatter.Data.GetNearest(mouseCoords, _chart.Plot.LastRender);
                 if (!nearest.IsReal) continue;
 
                 var nearestPixel = _chart.Plot.GetPixel(
@@ -220,7 +282,7 @@ internal sealed class ChartHoverHelper
                 {
                     bestYDistance = dy;
                     bestPoint = nearest;
-                    bestLabel = label;
+                    bestLabel = entry.Label;
                     found = true;
                 }
             }
@@ -265,4 +327,219 @@ internal sealed class ChartHoverHelper
     {
         _popup.IsOpen = false;
     }
+
+    // ── Click-to-isolate ───────────────────────────────────────────────────────────────────────
+
+    /// <summary>Finds the live helper wrapping a chart, if one is registered. Used by the per-app
+    /// autoscale handlers to clear an active isolate before rescaling.</summary>
+    internal static bool TryGetForChart(ScottPlot.WPF.WpfPlot chart, out ChartHoverHelper helper)
+        => _registry.TryGetValue(chart, out helper!);
+
+    private void OnPreviewLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _leftPressed = true;
+        _pressPos = e.GetPosition(_chart);
+    }
+
+    // Fires on the 2nd down of a double-click, before the terminal up — so the up below is suppressed.
+    private void OnDoubleClick(object sender, MouseButtonEventArgs e) => _suppressNextLeftUp = true;
+
+    private void OnLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        // The 2nd-down's PreviewMouseLeftButtonDown is marked Handled by Control.HandleDoubleClick, so our
+        // press handler is skipped and _leftPressed is already false on a double-click's terminal up.
+        // Consume the suppress flag (set by OnDoubleClick) BEFORE the _leftPressed gate, or it sticks and
+        // swallows the next genuine click. This flag is the deterministic re-isolate guard; double-click
+        // is the autoscale/restore gesture (SetupChartContextMenu calls Restore()) and must not re-isolate.
+        if (_suppressNextLeftUp) { _suppressNextLeftUp = false; _leftPressed = false; return; }
+        if (!_leftPressed) return;
+        _leftPressed = false;
+
+        if (e.ClickCount != 1) return;   // cheap secondary guard for a double-click's terminal up
+
+        var pos = e.GetPosition(_chart);
+        double dx = pos.X - _pressPos.X;
+        double dy = pos.Y - _pressPos.Y;
+        // A drag is a pan, not a click — ignore it (don't isolate).
+        if ((dx * dx + dy * dy) > (ClickDragThresholdPx * ClickDragThresholdPx)) return;
+
+        try { HandleLeftClick(pos); }
+        catch { /* never break the input pipeline on a hit-test edge case */ }
+    }
+
+    private void HandleLeftClick(Point pos)
+    {
+        var dpi = VisualTreeHelper.GetDpi(_chart);
+        var clickPixel = new ScottPlot.Pixel(
+            (float)(pos.X * dpi.DpiScaleX),
+            (float)(pos.Y * dpi.DpiScaleY));
+
+        // Branch ONCE on legend-panel containment. Inside the panel → legend hit-test only (never
+        // fall through to the line hit-test); else → line hit-test.
+        if (TryLegendHitTest(clickPixel, out var plottable))
+        {
+            if (plottable is not null)
+            {
+                // A real legend key. Map to a registered series by reference (labels are truncated
+                // in the legend, so never match by string). A key that maps to no scatter — e.g. a
+                // bar plot — is a deliberate no-op (bars are deferred).
+                var label = LabelForPlottable(plottable);
+                if (label is not null) ToggleIsolate(label);
+            }
+            else if (_isolatedLabel is not null)
+            {
+                // Click landed in the legend padding band (no key) — treat like an empty-area click.
+                Restore();
+            }
+            return;
+        }
+
+        // Outside the legend panel: hit-test the lines.
+        var hit = GetNearestSeries(pos);
+        if (hit is not null) ToggleIsolate(hit.Value.Label);
+        else if (_isolatedLabel is not null) Restore();
+    }
+
+    /// <summary>
+    /// Hit-tests the click against the bottom legend's per-item label/symbol rectangles.
+    /// Returns true when the click is anywhere inside the legend panel (the caller must then NOT
+    /// fall through to the line hit-test); <paramref name="plottable"/> is the matched item's
+    /// plottable (possibly null for a manual legend item, or when the click was in the padding band
+    /// between keys). Returns false when there is no bottom legend or the click is outside it.
+    /// Recipe mirrors ScottPlot's own LegendPanel.Render path at 5.1.58.
+    /// </summary>
+    private bool TryLegendHitTest(ScottPlot.Pixel clickPixel, out ScottPlot.IPlottable? plottable)
+    {
+        plottable = null;
+
+        var lr = _chart.Plot.LastRender;
+        if (lr.Count == 0) return false;                                  // not yet rendered
+        var layout = lr.Layout;
+
+        var panel = layout.PanelSizes.Keys.OfType<ScottPlot.Panels.LegendPanel>().FirstOrDefault();
+        if (panel is null) return false;                                  // no bottom legend on this chart
+
+        using var paint = ScottPlot.Paint.NewDisposablePaint();
+        var rect = panel.GetPanelRect(layout.DataRect, layout.PanelSizes[panel], layout.PanelOffsets[panel], paint);
+        if (!rect.Contains(clickPixel)) return false;                     // click is not in the legend panel
+
+        // Inside the legend panel from here on. The tight layout is anchored at origin (0,0); align
+        // it inside the panel rect exactly as LegendPanel.Render does, then offset each item rect once.
+        var tight = _chart.Plot.Legend.GetLayout(rect.Size, paint);
+        var placed = tight.LegendRect.AlignedInside(rect, panel.Alignment);
+        var off = new ScottPlot.PixelOffset(placed.Left, placed.Top);
+
+        for (int i = 0; i < tight.LegendItems.Length; i++)
+        {
+            if (tight.LabelRects[i].WithOffset(off).Contains(clickPixel) ||
+                tight.SymbolRects[i].WithOffset(off).Contains(clickPixel))
+            {
+                plottable = tight.LegendItems[i].Plottable;               // may be null (manual item)
+                return true;
+            }
+        }
+        return true;                                                      // in panel, but on no key
+    }
+
+    private string? LabelForPlottable(ScottPlot.IPlottable plottable)
+    {
+        foreach (var entry in _series)
+            if (ReferenceEquals(entry.Scatter, plottable))
+                return entry.Label;
+        return null;
+    }
+
+    private void ToggleIsolate(string label)
+    {
+        if (NextIsolate(_isolatedLabel, label) is null)
+            Restore();
+        else
+            Isolate(label);
+    }
+
+    private void Isolate(string label)
+    {
+        if (_series.Count == 0) return;
+
+        // Dim every other series; leave the isolated one at its true original look. The Y axis is left
+        // untouched — isolate is a focus aid, not a zoom. (To inspect a buried series, deselect the big
+        // ones in the picker, which re-renders + autoscales.)
+        foreach (var entry in _series)
+        {
+            var visual = ResolveSeriesVisual(label, entry.Label);
+            if (visual.Dim)
+            {
+                // Faint line + marker, and drop the gradient fill ribbon so it doesn't stay vivid.
+                entry.Scatter.Color = entry.Identity.WithAlpha(visual.LineAlpha);
+                entry.Scatter.FillY = visual.FillRibbon;   // false while dimmed
+            }
+            else
+            {
+                // The isolated series back at its true original look (faithful for line-only charts too).
+                RestoreSeriesVisual(entry);
+            }
+        }
+
+        _isolatedLabel = label;
+        _chart.Refresh();
+    }
+
+    /// <summary>Un-dims every series back to the full multi-series view. A no-op when nothing is isolated
+    /// (so the per-app autoscale hook can call it unconditionally).</summary>
+    internal void Restore()
+    {
+        if (_isolatedLabel is null) return;
+
+        foreach (var entry in _series)
+            RestoreSeriesVisual(entry);                                   // faithful for fill + line-only charts
+        _isolatedLabel = null;
+        _chart.Refresh();
+    }
+
+    /// <summary>Returns one series to its captured original look. Fill charts (OrigFillY true) are
+    /// rebuilt by StyleScatter — it regenerates the gradient from the unchanged data. Line-only charts
+    /// (no fill: CollectorDuration / trend charts use MarkerSize 0 and never call StyleScatter) get their
+    /// captured line + marker values written back directly; running StyleScatter on those would wrongly
+    /// add density markers and a fill ribbon they never had.</summary>
+    internal static void RestoreSeriesVisual(in SeriesEntry e)
+    {
+        if (e.OrigFillY)
+        {
+            e.Scatter.Color = e.Identity;
+            ChartStyle.StyleScatter(e.Scatter);
+        }
+        else
+        {
+            // Color sets line + marker to the opaque identity; then put the captured line look back.
+            e.Scatter.Color = e.Identity;
+            e.Scatter.LineColor = e.OrigLineColor;
+            e.Scatter.LineWidth = e.OrigLineWidth;
+            e.Scatter.MarkerSize = e.OrigMarkerSize;
+            e.Scatter.FillY = false;
+        }
+    }
+
+    // ── Pure helpers (unit tested; no live WpfPlot needed) ──────────────────────────────────────
+
+    /// <summary>The next isolate target given the current one and a freshly clicked label: clicking
+    /// the already-isolated series toggles OFF (null); clicking any other series isolates it.</summary>
+    internal static string? NextIsolate(string? current, string clicked)
+        => string.Equals(current, clicked, StringComparison.Ordinal) ? null : clicked;
+
+    /// <summary>How a series should look under a given isolate state: the target (or every series
+    /// when nothing is isolated) renders full with its fill ribbon; all others dim with no fill.</summary>
+    internal static IsolateVisual ResolveSeriesVisual(string? isolatedLabel, string seriesLabel)
+        => (isolatedLabel is not null && !string.Equals(isolatedLabel, seriesLabel, StringComparison.Ordinal))
+            ? IsolateVisual.Dimmed
+            : IsolateVisual.Full;
+
+    /// <summary>The visual decision for one series under isolate. <see cref="Dim"/> false means the
+    /// series keeps its identity color and fill; true means line/marker drop to <see cref="DimAlpha"/>
+    /// and the fill ribbon is removed.</summary>
+    internal readonly record struct IsolateVisual(bool Dim, byte LineAlpha, bool FillRibbon)
+    {
+        public static readonly IsolateVisual Dimmed = new(true, DimAlpha, false);
+        public static readonly IsolateVisual Full = new(false, 255, true);
+    }
+
 }

@@ -44,14 +44,18 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    status = "healthy",
-                    message = "No significant findings. All metrics are within normal ranges.",
-                    analysis_time = analysisService.LastAnalysisTime?.ToString("o")
-                }, McpHelpers.JsonOptions);
+                /* A successful analysis that found nothing wrong: a true negative ("all clear"),
+                   surfaced with the shared miss vocabulary so callers branch on it uniformly. */
+                return McpHelpers.Status(
+                    "empty",
+                    "No significant findings. All metrics are within normal ranges.",
+                    new { analysis_time = analysisService.LastAnalysisTime?.ToString("o") });
             }
+
+            // Correlate-and-focus slice 1 (review §1d): each finding's "what else fired this window".
+            var coFiredTitles = new List<(string, double)>(findings.Count);
+            foreach (var wf in findings)
+                coFiredTitles.Add((FactAdvice.GetForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
 
             return JsonSerializer.Serialize(new
             {
@@ -81,6 +85,8 @@ public sealed class McpAnalysisTools
                         fact_count = f.FactCount,
                         drill_down = f.DrillDown,
                         next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredTitles),
                         advice = advice is null ? null : new
                         {
                             headline = advice.Headline,
@@ -131,12 +137,11 @@ public sealed class McpAnalysisTools
 
             if (facts.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    fact_count = 0,
-                    message = "No facts collected. The collector may not have run yet, or no data exists in the requested time range."
-                }, McpHelpers.JsonOptions);
+                /* No scored facts means the underlying collectors produced nothing for the window —
+                   not retrievable now rather than an all-clear (mirrors get_perfmon_trend's empty case). */
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No facts collected. The collector may not have run yet, or no data exists in the requested time range.");
             }
 
             var filtered = facts.AsEnumerable();
@@ -313,8 +318,8 @@ public sealed class McpAnalysisTools
                 11 => "Azure Synapse serverless",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var recommendations = new List<ConfigRecommendation>();
 
@@ -347,39 +352,37 @@ public sealed class McpAnalysisTools
                 }
             }
 
-            // MAXDOP audit
+            // MAXDOP audit — topology-based (min(cores-per-socket, 8)), NOT edition-based.
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
+                var recommended = (int)FactRemediation.RecommendedMaxdop(coresPerSocket);
 
                 if (maxdop == 0)
                 {
-                    var suggested = isExpress ? 1 : isEnterprise ? 8 : 4;
-                    recommendations.Add(new("max degree of parallelism", maxdop, suggested, "warning",
-                        $"MAXDOP is 0 (unlimited). This allows queries to use all schedulers, " +
-                        $"leading to CXPACKET waits and thread exhaustion under load. " +
-                        $"For {editionName} edition, start with MAXDOP {suggested} and adjust based on workload."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "warning",
+                        $"MAXDOP is 0 (unlimited). This lets one query fan out across all schedulers, " +
+                        $"leading to CXPACKET waits and thread exhaustion under load. Microsoft's guidance is " +
+                        $"topology-based: keep MAXDOP at or under the logical processors in a single NUMA node, capped at 8. " +
+                        $"Start with {recommended} (this server's cores-per-socket, capped at 8) and adjust to the workload."));
                 }
-                else if (maxdop == 1)
+                else if (maxdop == 1 && recommended > 1)
                 {
-                    var suggested = isExpress ? 1 : 4;
-                    recommendations.Add(new("max degree of parallelism", maxdop, suggested,
-                        isExpress ? "ok" : "review",
-                        isExpress
-                            ? "MAXDOP 1 is appropriate for Express edition."
-                            : $"MAXDOP 1 forces all queries serial. Large analytical queries, index rebuilds, and DBCC operations " +
-                              $"will be significantly slower. Consider MAXDOP {suggested} unless this was set to fix a specific parallelism problem."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "review",
+                        $"MAXDOP 1 forces every query serial. Large analytical queries, index rebuilds, and DBCC operations " +
+                        $"will be significantly slower. Consider {recommended} unless this was set to fix a specific parallelism problem."));
                 }
-                else if (maxdop > 8 && !isEnterprise)
+                else if (maxdop > recommended)
                 {
-                    recommendations.Add(new("max degree of parallelism", maxdop, 4, "review",
-                        $"MAXDOP {maxdop} is high for {editionName} edition. Standard edition is limited to " +
-                        $"fewer schedulers. Consider MAXDOP 4."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "review",
+                        $"MAXDOP {maxdop} is above the topology-based guidance of {recommended} " +
+                        $"(logical processors in a single NUMA node, capped at 8). Review whether queries here genuinely " +
+                        $"benefit from the higher degree, or lower it to {recommended}."));
                 }
                 else
                 {
                     recommendations.Add(new("max degree of parallelism", maxdop, maxdop, "ok",
-                        $"MAXDOP {maxdop} is in a reasonable range for {editionName} edition."));
+                        $"MAXDOP {maxdop} is within the topology-based guidance (≤ {recommended})."));
                 }
             }
 
@@ -523,12 +526,19 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    finding_count = 0,
-                    message = "No findings in the requested time range. Run analyze_server to generate new findings."
-                }, McpHelpers.JsonOptions);
+                return McpHelpers.Status(
+                    "empty",
+                    "No findings in the requested time range. Run analyze_server to generate new findings.");
+            }
+
+            // Correlate-and-focus slice 1 (review §1d): "what else fired", scoped per analysis run
+            // (this read can span multiple runs, unlike analyze_server's single run).
+            var coFiredByRun = new Dictionary<DateTime, List<(string, double)>>();
+            foreach (var wf in findings)
+            {
+                if (!coFiredByRun.TryGetValue(wf.AnalysisTime, out var list))
+                    coFiredByRun[wf.AnalysisTime] = list = new List<(string, double)>();
+                list.Add((FactAdvice.GetComposedForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
             }
 
             return JsonSerializer.Serialize(new
@@ -539,10 +549,13 @@ public sealed class McpAnalysisTools
                 {
                     // Persisted findings carry no drill-down (it is ephemeral —
                     // see AnalysisModels.cs), so generate advice prose only.
+                    // The prose IS value-stated: GetComposedForFinding reads the
+                    // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
+                    // StoryText at analysis time, falling back to the static block.
                     // suggested_remediation_sql is intentionally omitted: it
                     // would always be null here. The operator re-runs
                     // analyze_server when they need the copy-paste T-SQL.
-                    var advice = FactAdvice.GetForFactKey(f.RootFactKey);
+                    var advice = FactAdvice.GetComposedForFinding(f);
                     return new
                     {
                         finding_id = f.FindingId,
@@ -557,6 +570,8 @@ public sealed class McpAnalysisTools
                         story_path = f.StoryPath,
                         story_path_hash = f.StoryPathHash,
                         fact_count = f.FactCount,
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredByRun[f.AnalysisTime]),
                         time_range = new
                         {
                             start = f.TimeRangeStart?.ToString("o"),
@@ -766,12 +781,6 @@ internal static class ToolRecommendations
             new("analyze_query_store_plan", "Compare the regressed plan against the prior plan to see what the optimizer changed"),
             new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
             new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
-        ],
-        ["PERFMON_PLE"] =
-        [
-            new("get_memory_stats", "Check buffer pool and memory allocation"),
-            new("get_memory_clerks", "See where memory is allocated"),
-            new("get_memory_trend", "Track memory usage over time")
         ],
         ["LATCH_EX"] =
         [

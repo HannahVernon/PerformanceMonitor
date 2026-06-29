@@ -20,6 +20,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\PlanIcons\*.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="PerformanceMonitorLite" />
     <InternalsVisibleTo Include="PerformanceMonitorDashboard" />
     <InternalsVisibleTo Include="Lite.Tests" />
