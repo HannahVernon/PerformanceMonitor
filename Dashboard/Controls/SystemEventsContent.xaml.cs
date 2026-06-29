@@ -74,13 +74,11 @@ namespace PerformanceMonitorDashboard.Controls
         private DateTime? _memoryNodeOOMFromDate;
         private DateTime? _memoryNodeOOMToDate;
 
-        // Filter state dictionaries for each DataGrid
+        // Filter state dictionary for the SevereErrors DataGrid
         private Dictionary<string, ColumnFilterState> _severeErrorsFilters = new();
-        private Dictionary<string, ColumnFilterState> _memoryBrokerFilters = new();
 
-        // Unfiltered data caches
+        // Unfiltered data cache
         private List<HealthParserSevereErrorItem>? _severeErrorsUnfilteredData;
-        private List<HealthParserMemoryBrokerItem>? _memoryBrokerUnfilteredData;
 
         // Shared popup controls
         private Popup? _filterPopup;

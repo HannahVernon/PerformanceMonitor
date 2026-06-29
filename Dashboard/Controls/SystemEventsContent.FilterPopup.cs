@@ -78,11 +78,6 @@ namespace PerformanceMonitorDashboard.Controls
                     ApplySevereErrorsFilters();
                     UpdateSevereErrorsFilterButtonStyles();
                     break;
-                case "MemoryBroker":
-                    UpdateFilterState(_memoryBrokerFilters, e.FilterState);
-                    ApplyMemoryBrokerFilters();
-                    UpdateMemoryBrokerFilterButtonStyles();
-                    break;
             }
         }
 
