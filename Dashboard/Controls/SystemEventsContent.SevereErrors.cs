@@ -161,16 +161,6 @@ namespace PerformanceMonitorDashboard.Controls
             }
         }
 
-        private void SevereErrorsFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(SevereErrorsDataGrid, sender as TextBox);
-        }
-
-        private void SevereErrorsNumericFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(SevereErrorsDataGrid, sender as TextBox);
-        }
-
         #endregion
     }
 }
