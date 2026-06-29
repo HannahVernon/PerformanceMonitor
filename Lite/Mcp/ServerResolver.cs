@@ -56,6 +56,21 @@ internal static class ServerResolver
         return null;
     }
 
+    /// <summary>
+    /// Resolves a server name, returning either the resolved (server_id, name) or a ready-to-return
+    /// error string listing the available servers. Lets MCP tools collapse the repeated resolve-and-bail
+    /// block to: var (resolved, error) = ResolveOrError(...); if (error != null) return error;
+    /// </summary>
+    public static ((int ServerId, string ServerName)? resolved, string? error) ResolveOrError(
+        ServerManager serverManager,
+        string? serverName)
+    {
+        var resolved = Resolve(serverManager, serverName);
+        return resolved is null
+            ? (null, $"Could not resolve server. Available servers:\n{ListAvailableServers(serverManager)}")
+            : (resolved, null);
+    }
+
     public static string ListAvailableServers(ServerManager serverManager)
     {
         var servers = serverManager.GetEnabledServers();
