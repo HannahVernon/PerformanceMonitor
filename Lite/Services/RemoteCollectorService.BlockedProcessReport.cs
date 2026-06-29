@@ -55,6 +55,17 @@ public partial class RemoteCollectorService
                 await EnsureBlockedProcessXeSessionOnPremAsync(connection, server, cancellationToken);
             }
         }
+        catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+        {
+            /* The session is already present + running. On Azure SQL DB the XE existence catalogs are
+               visibility-scoped per principal (sys.database_event_sessions needs VIEW DATABASE PERFORMANCE
+               STATE, sys.dm_xe_database_sessions needs VIEW DATABASE STATE), so a pre-check can come back
+               empty even when the session exists -- the CREATE/START path then reports "already exists"
+               (25631) / "already started" (25705). That confirms the session is up; it is success, not a
+               failure to surface as an unhealthy collector or log every cycle (#1251). */
+            _logger?.LogDebug("Blocked process XE session already present on '{Server}' (benign)", server.DisplayName);
+            AppLogger.Info("XeSession", $"[{server.DisplayName}] Blocked process XE session already present (benign, #1251)");
+        }
         catch (SqlException ex)
         {
             _logger?.LogWarning("Failed to ensure blocked process XE session on '{Server}': {Message}",
@@ -261,6 +272,33 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
 
         _logger?.LogInformation("Created and started blocked process XE session (database-scoped, Azure SQL DB)");
         AppLogger.Info("XeSession", $"[Azure SQL DB] Created and started blocked process XE session (database-scoped)");
+    }
+
+    /// <summary>
+    /// True when every error is a benign "the session is already there" extended-events error:
+    /// 25631 (event session already exists) or 25705 (already started). On Azure SQL DB the XE
+    /// existence catalogs (sys.database_event_sessions / sys.dm_xe_database_sessions) are visibility-
+    /// scoped per principal and can come back empty even when the session is present + running, so the
+    /// CREATE/START path reports these -- they confirm the session is up, not a failure to surface (#1251).
+    /// Shared by the blocked-process and deadlock ensure paths (same partial class).
+    /// </summary>
+    private static bool IsBenignXeSessionAlreadyPresent(SqlException ex)
+    {
+        if (ex.Errors.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (Microsoft.Data.SqlClient.SqlError error in ex.Errors)
+        {
+            /* 25631 = event session already exists; 25705 = already started. */
+            if (error.Number != 25631 && error.Number != 25705)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
