@@ -1360,17 +1360,6 @@ public partial class ServerTab : UserControl
         CorrelatedLanes.ReapplyTheme();
     }
 
-    private static IEnumerable<ScottPlot.WPF.WpfPlot> GetAllCharts(DependencyObject root)
-    {
-        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
-        {
-            if (child is ScottPlot.WPF.WpfPlot plot)
-                yield return plot;
-            foreach (var nested in GetAllCharts(child))
-                yield return nested;
-        }
-    }
-
     /// <summary>
     /// Reapplies theme-appropriate axis text colors/sizes after DateTimeTicksBottom() resets them.
     /// Delegates to the shared <see cref="ChartStyle"/>.

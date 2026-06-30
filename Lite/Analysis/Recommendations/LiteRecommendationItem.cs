@@ -71,9 +71,6 @@ public sealed class LiteRecommendationItem
     /// </summary>
     public string? CopyPasteSql { get; set; }
 
-    /// <summary>The finding's root fact key — drives the advice lookup and the Ask-AI prompt.</summary>
-    public string RootFactKey { get; set; } = string.Empty;
-
     /// <summary>
     /// The finding's incident id (correlate-and-focus) — the group key the surface collapses cards
     /// under, so related findings render as one report. Empty for findings analyzed before incident_id
