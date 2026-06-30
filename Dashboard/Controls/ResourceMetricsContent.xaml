@@ -101,7 +101,7 @@
             </Grid>
         </TabItem>
         <!-- TempDB Stats Sub-Tab -->
-        <TabItem Header="TempDB Stats">
+        <TabItem Header="tempdb">
             <!-- TempDB Stats - usage / size / latency charts + summary -->
             <Grid Margin="5">
                 <Grid.RowDefinitions>

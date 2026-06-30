@@ -1298,7 +1298,7 @@
             </TabItem>
 
             <!-- TempDB Tab -->
-            <TabItem Header="TempDB">
+            <TabItem Header="tempdb">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*"/>
