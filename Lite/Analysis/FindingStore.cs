@@ -222,21 +222,6 @@ VALUES ($1, $2, $3, $4, $5, $6)";
     }
 
     /// <summary>
-    /// Unmutes a story pattern.
-    /// </summary>
-    public async Task UnmuteStoryAsync(long muteId)
-    {
-        using var readLock = _duckDb.AcquireReadLock();
-        using var connection = _duckDb.CreateConnection();
-        await connection.OpenAsync();
-
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM analysis_muted WHERE mute_id = $1";
-        cmd.Parameters.Add(new DuckDBParameter { Value = muteId });
-        await cmd.ExecuteNonQueryAsync();
-    }
-
-    /// <summary>
     /// Cleans up old findings beyond the retention period.
     /// </summary>
     public async Task CleanupOldFindingsAsync(int retentionDays = 30)

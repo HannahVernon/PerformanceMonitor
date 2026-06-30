@@ -39,7 +39,7 @@
         <TextBlock Grid.Row="5" Text="Authentication" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
         <StackPanel Grid.Row="6" Margin="0,0,0,12">
             <!-- Credential source: inline (per-server) vs a shared credential profile -->
-            <RadioButton x:Name="ConfigureOnServerRadio" Content="Configure credentials on this server"
+            <RadioButton Content="Configure credentials on this server"
                          Foreground="{DynamicResource ForegroundBrush}" IsChecked="True"
                          Checked="CredentialSource_Changed" Margin="0,0,0,4"/>
             <RadioButton x:Name="UseProfileRadio" Content="Use a credential profile"

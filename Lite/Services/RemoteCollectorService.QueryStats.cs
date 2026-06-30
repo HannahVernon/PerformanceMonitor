@@ -275,14 +275,14 @@ OPTION(RECOMPILE);";
                     /* Delta calculations keyed by plan_handle to prevent cross-contamination
                        when multiple plans exist for the same query_hash */
                     var deltaKey = planHandle ?? queryHash;
-                    var deltaExecCount = _deltaCalculator.CalculateDelta(serverId, "query_stats_exec", deltaKey, executionCount, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaWorkerTime = _deltaCalculator.CalculateDelta(serverId, "query_stats_worker", deltaKey, totalWorkerTime, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaElapsedTime = _deltaCalculator.CalculateDelta(serverId, "query_stats_elapsed", deltaKey, totalElapsedTime, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaLogicalReads = _deltaCalculator.CalculateDelta(serverId, "query_stats_reads", deltaKey, totalLogicalReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaLogicalWrites = _deltaCalculator.CalculateDelta(serverId, "query_stats_writes", deltaKey, totalLogicalWrites, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaPhysicalReads = _deltaCalculator.CalculateDelta(serverId, "query_stats_phys_reads", deltaKey, totalPhysicalReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaRows = _deltaCalculator.CalculateDelta(serverId, "query_stats_rows", deltaKey, totalRows, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaSpills = _deltaCalculator.CalculateDelta(serverId, "query_stats_spills", deltaKey, totalSpills, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaExecCount = _deltaCalculator.CalculateDelta(serverId, "query_stats_exec", deltaKey, executionCount, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWorkerTime = _deltaCalculator.CalculateDelta(serverId, "query_stats_worker", deltaKey, totalWorkerTime, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaElapsedTime = _deltaCalculator.CalculateDelta(serverId, "query_stats_elapsed", deltaKey, totalElapsedTime, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaLogicalReads = _deltaCalculator.CalculateDelta(serverId, "query_stats_reads", deltaKey, totalLogicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaLogicalWrites = _deltaCalculator.CalculateDelta(serverId, "query_stats_writes", deltaKey, totalLogicalWrites, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaPhysicalReads = _deltaCalculator.CalculateDelta(serverId, "query_stats_phys_reads", deltaKey, totalPhysicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaRows = _deltaCalculator.CalculateDelta(serverId, "query_stats_rows", deltaKey, totalRows, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaSpills = _deltaCalculator.CalculateDelta(serverId, "query_stats_spills", deltaKey, totalSpills, collectionTime: collectionTime, maxGapSeconds: 300);
 
                     /* Appender column order must match DuckDB table definition exactly */
                     var row = appender.CreateRow();

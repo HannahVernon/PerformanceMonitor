@@ -47,31 +47,6 @@ CREATE TABLE IF NOT EXISTS analysis_muted (
     reason VARCHAR
 )";
 
-    public const string CreateAnalysisExclusionsTable = @"
-CREATE TABLE IF NOT EXISTS analysis_exclusions (
-    exclusion_id BIGINT PRIMARY KEY,
-    exclusion_type VARCHAR NOT NULL,
-    exclusion_value VARCHAR NOT NULL,
-    server_id INTEGER,
-    database_name VARCHAR,
-    is_enabled BOOLEAN NOT NULL DEFAULT true,
-    created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    description VARCHAR
-)";
-
-    public const string CreateAnalysisThresholdsTable = @"
-CREATE TABLE IF NOT EXISTS analysis_thresholds (
-    threshold_id BIGINT PRIMARY KEY,
-    category VARCHAR NOT NULL,
-    fact_key VARCHAR NOT NULL,
-    threshold_type VARCHAR NOT NULL,
-    threshold_value DOUBLE NOT NULL,
-    server_id INTEGER,
-    database_name VARCHAR,
-    is_enabled BOOLEAN NOT NULL DEFAULT true,
-    modified_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-)";
-
     public const string CreateAnalysisFindingsTimeIndex = @"
 CREATE INDEX IF NOT EXISTS idx_analysis_findings_time
     ON analysis_findings(server_id, analysis_time)";
@@ -84,10 +59,6 @@ CREATE INDEX IF NOT EXISTS idx_analysis_findings_hash
 CREATE INDEX IF NOT EXISTS idx_analysis_muted_hash
     ON analysis_muted(story_path_hash)";
 
-    public const string CreateAnalysisThresholdsLookupIndex = @"
-CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
-    ON analysis_thresholds(category, fact_key)";
-
     /// <summary>
     /// Returns all analysis table creation statements.
     /// </summary>
@@ -95,8 +66,6 @@ CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
     {
         yield return CreateAnalysisFindingsTable;
         yield return CreateAnalysisMutedTable;
-        yield return CreateAnalysisExclusionsTable;
-        yield return CreateAnalysisThresholdsTable;
     }
 
     /// <summary>
@@ -127,6 +96,5 @@ CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
         yield return CreateAnalysisFindingsTimeIndex;
         yield return CreateAnalysisFindingsHashIndex;
         yield return CreateAnalysisMutedHashIndex;
-        yield return CreateAnalysisThresholdsLookupIndex;
     }
 }

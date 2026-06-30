@@ -148,7 +148,6 @@ public sealed class LiteRecommendationsReader
             RawSeverity = finding.Severity,
             Database = string.IsNullOrEmpty(finding.DatabaseName) ? null : finding.DatabaseName,
             Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
-            ProblemArea = finding.Category,
             AdviceText = ComposeAdvice(advice),
             CopyPasteSql = NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
             RootFactKey = finding.RootFactKey,

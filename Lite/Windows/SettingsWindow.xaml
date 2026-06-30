@@ -527,6 +527,7 @@
                           Background="Transparent" BorderThickness="0"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                           MinHeight="80" MaxHeight="200"
+                          ContextMenu="{StaticResource DataGridContextMenu}"
                           MouseDoubleClick="ServerScheduleGrid_DoubleClick">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Server" Binding="{Binding ServerName}" Width="*"/>

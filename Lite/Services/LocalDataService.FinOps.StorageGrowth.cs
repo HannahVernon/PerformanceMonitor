@@ -16,45 +16,6 @@ namespace PerformanceMonitorLite.Services;
 public partial class LocalDataService
 {
     /// <summary>
-    /// Gets database size trend (total_size_mb per database per collection) for a specific server.
-    /// </summary>
-    public async Task<List<DatabaseSizeTrendPoint>> GetDatabaseSizeTrendAsync(int serverId, int daysBack = 30)
-    {
-        using var connection = await OpenConnectionAsync();
-        using var command = connection.CreateCommand();
-
-        var cutoff = DateTime.UtcNow.AddDays(-daysBack);
-
-        command.CommandText = @"
-SELECT
-    collection_time,
-    database_name,
-    SUM(total_size_mb) AS total_size_mb
-FROM v_database_size_stats
-WHERE server_id = $1
-AND   collection_time >= $2
-GROUP BY collection_time, database_name
-ORDER BY collection_time, database_name";
-
-        command.Parameters.Add(new DuckDBParameter { Value = serverId });
-        command.Parameters.Add(new DuckDBParameter { Value = cutoff });
-
-        var items = new List<DatabaseSizeTrendPoint>();
-        using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-        {
-            items.Add(new DatabaseSizeTrendPoint
-            {
-                CollectionTime = reader.GetDateTime(0),
-                DatabaseName = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                TotalSizeMb = reader.IsDBNull(2) ? 0m : Convert.ToDecimal(reader.GetValue(2))
-            });
-        }
-
-        return items;
-    }
-
-    /// <summary>
     /// Gets per-database storage growth trends comparing current size to 7d and 30d ago.
     /// </summary>
     public async Task<List<StorageGrowthRow>> GetStorageGrowthAsync(int serverId)

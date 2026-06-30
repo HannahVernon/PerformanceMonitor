@@ -525,10 +525,6 @@ public class ServerManager
             try { File.Copy(_configFilePath, _configFilePath + ".bak", overwrite: true); }
             catch { /* best effort */ }
 
-            // MIGRATION: Backward compatibility for existing servers.json files
-            // Migration from old UseWindowsAuth property happens automatically during deserialization
-            MigrateServerAuthentication(_servers);
-
             // Initialize status tracking for all loaded servers
             foreach (var server in _servers)
             {
@@ -550,9 +546,6 @@ public class ServerManager
                     string bakJson = File.ReadAllText(bakPath);
                     var bakConfig = JsonSerializer.Deserialize<ServersConfig>(bakJson);
                     _servers = bakConfig?.Servers ?? new List<ServerConnection>();
-                    
-                    // MIGRATION: Backward compatibility
-                    MigrateServerAuthentication(_servers);
                     
                     foreach (var server in _servers)
                     {
@@ -641,22 +634,6 @@ public class ServerManager
                 _logger?.LogError(ex, "Failed to save servers.json");
                 throw;
             }
-        }
-    }
-
-    /// <summary>
-    /// Migrates server authentication configuration for backward compatibility.
-    /// Note: Migration from old UseWindowsAuth property happens automatically via
-    /// the UseWindowsAuth setter during JSON deserialization.
-    /// </summary>
-    private void MigrateServerAuthentication(List<ServerConnection> servers)
-    {
-        // Migration is now automatic via UseWindowsAuth property setter
-        // Just log the loaded servers for debugging
-        foreach (var server in servers)
-        {
-            _logger?.LogDebug("Server '{DisplayName}' loaded with AuthenticationType={AuthType}", 
-                server.DisplayName, server.AuthenticationType);
         }
     }
 

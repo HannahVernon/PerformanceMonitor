@@ -129,18 +129,9 @@ public partial class CollectorScheduleEditorWindow : Window
 
         bool usesDefault = UseDefaultCheckBox.IsChecked == true;
 
-        if (!usesDefault)
-        {
-            /* Switching from default to custom — copy current defaults as starting point */
-            _editingSchedules = CloneScheduleList(_scheduleManager.GetDefaultSchedule());
-            ScheduleGrid.ItemsSource = _editingSchedules;
-        }
-        else
-        {
-            /* Switching to default — show the default schedule (read-only) */
-            _editingSchedules = CloneScheduleList(_scheduleManager.GetDefaultSchedule());
-            ScheduleGrid.ItemsSource = _editingSchedules;
-        }
+        /* Reset to a fresh copy of the default schedule; UpdateEditableState makes it read-only when 'use default' is checked. */
+        _editingSchedules = CloneScheduleList(_scheduleManager.GetDefaultSchedule());
+        ScheduleGrid.ItemsSource = _editingSchedules;
 
         UpdateEditableState(usesDefault);
         DetectActivePreset();

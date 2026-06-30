@@ -385,32 +385,6 @@ ORDER BY collection_time";
     }
 
     /// <summary>
-    /// Gets distinct databases that have Query Store data collected.
-    /// </summary>
-    public async Task<List<string>> GetQueryStoreDatabasesAsync(int serverId, int hoursBack = 24)
-    {
-        using var connection = await OpenConnectionAsync();
-        using var command = connection.CreateCommand();
-        command.CommandText = @"
-SELECT DISTINCT database_name
-FROM v_query_store_stats
-WHERE server_id = $1
-AND   collection_time >= $2
-ORDER BY database_name";
-
-        command.Parameters.Add(new DuckDBParameter { Value = serverId });
-        command.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow.AddHours(-hoursBack) });
-
-        var items = new List<string>();
-        using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-        {
-            items.Add(reader.GetString(0));
-        }
-        return items;
-    }
-
-    /// <summary>
     /// Fetches a query plan on-demand from Query Store by plan_id.
     /// Uses three-part naming with sp_executesql for Azure SQL DB compatibility.
     /// </summary>

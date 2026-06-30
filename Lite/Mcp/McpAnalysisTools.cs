@@ -96,8 +96,8 @@ public sealed class McpAnalysisTools
                         // are null/0 so the inaction side shows the weak-case baseline).
                         destructive_risk_disclosure = advice?.Risks is null ? null : new
                         {
-                            risks_of_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfChanging, r => r.Text)),
-                            risks_of_not_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfNotChanging, r => r.Text))
+                            risks_of_changing = advice.Risks.RisksOfChanging.Select(r => r.Text).ToArray(),
+                            risks_of_not_changing = advice.Risks.RisksOfNotChanging.Select(r => r.Text).ToArray()
                         }
                     };
                 })

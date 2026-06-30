@@ -109,6 +109,7 @@ internal static class McpInstructions
         |------|---------|----------------|
         | `get_alert_history` | Recent alert history: what fired, when, email status | `hours_back` (default 24), `limit` (default 50) |
         | `get_alert_settings` | Current alert thresholds and SMTP configuration | none |
+        | `get_mute_rules` | Configured mute rules that suppress specific recurring alerts (still logged) | `enabled_only` (default true) |
 
         ### Job Tools
         | Tool | Purpose | Key Parameters |
@@ -193,16 +194,15 @@ internal static class McpInstructions
         | `CXPACKET` / `CXCONSUMER` | Parallelism | `get_top_queries_by_cpu` with `parallel_only=true` |
         | `PAGEIOLATCH_*` | Disk I/O | `get_file_io_stats`, `get_file_io_trend` |
         | `WRITELOG` | Transaction log I/O | `get_file_io_stats` (check log file latency) |
-        | `LCK_M_*` | Lock contention | `get_blocking`, `get_blocked_process_reports` |
+        | `LCK_M_*` | Lock contention | `get_blocked_process_reports` |
         | `RESOURCE_SEMAPHORE` | Memory grant pressure | `get_memory_grants` |
         | `LATCH_*` | Internal contention | `get_tempdb_trend` |
 
-        ## Blocking vs Blocked Process Reports
+        ## Blocked Process Reports
 
-        - **`get_blocking`**: Captures blocking chains from `sys.dm_exec_requests` at each collection snapshot. Shows who is blocking whom.
-        - **`get_blocked_process_reports`**: Captures events from SQL Server's Blocked Process Report extended event (via sp_HumanEventsBlockViewer). Fires when a session has been blocked longer than the configured threshold. Includes richer detail: isolation levels, transaction names, full query text for both blocker and blocked.
+        - **`get_blocked_process_reports`**: Captures events from SQL Server's Blocked Process Report extended event (via sp_HumanEventsBlockViewer). Fires when a session has been blocked longer than the configured threshold. Includes rich detail: isolation levels, transaction names, and full query text for both the blocker and the blocked session.
 
-        **Use `get_blocking` first** for a quick overview. **Use `get_blocked_process_reports`** when you need detailed analysis of prolonged blocking events.
+        Use it for detailed analysis of prolonged blocking events; pair it with `get_blocking_trend` to see whether blocking frequency is new, worsening, or resolved.
 
         ## Interpreting Memory Pressure Events
 

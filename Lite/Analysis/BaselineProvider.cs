@@ -95,16 +95,6 @@ public class BaselineProvider
         return BaselineBucket.Empty;
     }
 
-    /// <summary>
-    /// Gets all baseline buckets for a metric/server. Used by UI for rendering
-    /// expected-range bands across all time slots.
-    /// </summary>
-    public async Task<Dictionary<(int HourOfDay, int DayOfWeek), BaselineBucket>?> GetAllBaselinesAsync(
-        int serverId, string metricName, DateTime analysisTime)
-    {
-        return await GetOrComputeBaselinesAsync(serverId, metricName, analysisTime);
-    }
-
     /// <summary>Forces cache eviction for a server — used during testing.</summary>
     public void InvalidateCache(int serverId)
     {
@@ -347,18 +337,6 @@ GROUP BY hour_of_day, day_of_week",
 
             // ── Chart-unit baselines (for UI bands — units match what the chart displays) ──
 
-            // Buffer pool MB (chart shows this, not pressure %)
-            MetricNames.MemoryBufferPoolMb => @"
-SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
-       EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
-       AVG(buffer_pool_mb::DOUBLE) AS mean_val,
-       STDDEV_SAMP(buffer_pool_mb::DOUBLE) AS stddev_val,
-       COUNT(*) AS sample_count
-FROM v_memory_stats
-WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
-AND   buffer_pool_mb > 0
-GROUP BY hour_of_day, day_of_week",
-
             // Wait ms per second (chart shows this, not total ms per collection)
             MetricNames.WaitMsPerSec => @"
 WITH per_collection AS (
@@ -541,7 +519,6 @@ public static class MetricNames
     public const string Memory = "memory";
 
     // Chart-unit metrics (for UI bands — units match what the chart displays)
-    public const string MemoryBufferPoolMb = "memory_buffer_pool_mb";
     public const string WaitMsPerSec = "wait_ms_per_sec";
     public const string BlockingPerMinute = "blocking_per_minute";
 }

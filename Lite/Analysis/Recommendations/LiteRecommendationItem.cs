@@ -55,12 +55,6 @@ public sealed class LiteRecommendationItem
     public string Title { get; set; } = string.Empty;
 
     /// <summary>
-    /// The problem-area / category grouping (the finding's <c>Category</c>). Kept distinct
-    /// from <see cref="Title"/> for any future grouping/filtering.
-    /// </summary>
-    public string ProblemArea { get; set; } = string.Empty;
-
-    /// <summary>
     /// Operator-facing advice prose, composed from <see cref="PerformanceMonitor.Analysis.FactAdvice"/>
     /// for the finding's root fact key (remediation line + investigation line). Falls back to the
     /// finding's own story text when no advice block matches. Null only when neither is available.

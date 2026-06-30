@@ -1000,27 +1000,6 @@ WHERE NOT EXISTS (
     }
 
     /// <summary>
-    /// Runs a manual WAL checkpoint. Call this between collection cycles
-    /// to flush the WAL during idle time instead of during collector writes.
-    /// </summary>
-    public async Task CheckpointAsync()
-    {
-        using var writeLock = AcquireWriteLock();
-        try
-        {
-            using var connection = CreateConnection();
-            await connection.OpenAsync();
-            using var command = connection.CreateCommand();
-            command.CommandText = "CHECKPOINT";
-            await command.ExecuteNonQueryAsync();
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogDebug(ex, "Manual checkpoint failed (non-critical)");
-        }
-    }
-
-    /// <summary>
     /// Executes a non-query SQL statement.
     /// </summary>
     private async Task ExecuteNonQueryAsync(DuckDBConnection connection, string sql)
@@ -1041,7 +1020,7 @@ WHERE NOT EXISTS (
     /// <summary>
     /// Checks if the database file exists.
     /// </summary>
-    public bool DatabaseExists()
+    private bool DatabaseExists()
     {
         return File.Exists(_databasePath);
     }

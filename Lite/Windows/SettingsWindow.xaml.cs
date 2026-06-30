@@ -318,6 +318,28 @@ public partial class SettingsWindow : Window
         };
     }
 
+    /// <summary>
+    /// Reads settings.json (or starts fresh), applies <paramref name="mutate"/>, and writes it back
+    /// indented; logs and swallows any error under <paramref name="what"/>. Shared by the single-value
+    /// Save* methods so the read/merge/write/catch boilerplate lives in one place.
+    /// </summary>
+    private static void WriteSetting(string what, Action<JsonNode> mutate)
+    {
+        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
+        try
+        {
+            JsonNode root = File.Exists(settingsPath)
+                ? JsonNode.Parse(File.ReadAllText(settingsPath)) ?? new JsonObject()
+                : new JsonObject();
+            mutate(root);
+            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Settings", $"Failed to save {what}: {ex.Message}");
+        }
+    }
+
     private void SaveDefaultTimeRange()
     {
         var hours = DefaultTimeRangeCombo.SelectedIndex switch
@@ -332,29 +354,7 @@ public partial class SettingsWindow : Window
 
         App.DefaultTimeRangeHours = hours;
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["default_time_range_hours"] = hours;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save default time range: {ex.Message}");
-        }
+        WriteSetting("default time range", root => root["default_time_range_hours"] = hours);
     }
 
     private void CopyMcpCommandButton_Click(object sender, RoutedEventArgs e)
@@ -392,29 +392,7 @@ public partial class SettingsWindow : Window
             App.ConnectionTimeoutSeconds = timeout;
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["connection_timeout_seconds"] = App.ConnectionTimeoutSeconds;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save connection timeout: {ex.Message}");
-        }
+        WriteSetting("connection timeout", root => root["connection_timeout_seconds"] = App.ConnectionTimeoutSeconds);
     }
 
     private void LoadCsvSeparator()
@@ -438,29 +416,7 @@ public partial class SettingsWindow : Window
             App.CsvSeparator = sep;
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["csv_separator"] = App.CsvSeparator;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save CSV separator: {ex.Message}");
-        }
+        WriteSetting("CSV separator", root => root["csv_separator"] = App.CsvSeparator);
     }
 
     private bool _isLoadingTheme;
@@ -499,29 +455,7 @@ public partial class SettingsWindow : Window
             ThemeManager.Apply(theme);
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["color_theme"] = App.ColorTheme;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save color theme: {ex.Message}");
-        }
+        WriteSetting("color theme", root => root["color_theme"] = App.ColorTheme);
     }
 
     private void LoadTimeDisplayMode()
@@ -547,29 +481,7 @@ public partial class SettingsWindow : Window
                 ServerTimeHelper.CurrentDisplayMode = tdm;
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["time_display_mode"] = App.TimeDisplayMode;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save time display mode: {ex.Message}");
-        }
+        WriteSetting("time display mode", root => root["time_display_mode"] = App.TimeDisplayMode);
     }
 
     private void LoadAlertSettings()
