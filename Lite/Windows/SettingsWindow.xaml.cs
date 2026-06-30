@@ -741,7 +741,7 @@ public partial class SettingsWindow : Window
         if (AlertLongRunningQueryCheckBox.IsChecked == true)
             parts.Add($"queries > {AlertLongRunningQueryThresholdBox.Text}min");
         if (AlertTempDbSpaceCheckBox.IsChecked == true)
-            parts.Add($"TempDB > {AlertTempDbSpaceThresholdBox.Text}%");
+            parts.Add($"tempdb > {AlertTempDbSpaceThresholdBox.Text}%");
         if (AlertLowDiskCheckBox.IsChecked == true)
             parts.Add($"disk free < {AlertLowDiskThresholdPercentBox.Text}% or {AlertLowDiskThresholdGbBox.Text}GB");
         if (AlertLongRunningJobCheckBox.IsChecked == true)

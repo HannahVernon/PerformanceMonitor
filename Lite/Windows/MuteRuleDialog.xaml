@@ -72,7 +72,7 @@
             <ComboBoxItem Content="High CPU"/>
             <ComboBoxItem Content="Poison Wait"/>
             <ComboBoxItem Content="Long-Running Query"/>
-            <ComboBoxItem Content="TempDB Space"/>
+            <ComboBoxItem Content="tempdb Space"/>
             <ComboBoxItem Content="Volume Free Space"/>
             <ComboBoxItem Content="Long-Running Job"/>
         </ComboBox>

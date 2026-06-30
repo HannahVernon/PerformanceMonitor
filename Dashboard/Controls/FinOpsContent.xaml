@@ -1926,7 +1926,7 @@
                     </Expander>
 
                     <!-- Tempdb Pressure -->
-                    <Expander Header="Tempdb Pressure" IsExpanded="True" Margin="0,0,0,8">
+                    <Expander Header="tempdb Pressure" IsExpanded="True" Margin="0,0,0,8">
                         <StackPanel>
                             <DataGrid x:Name="TempdbPressureDataGrid" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                       AutoGenerateColumns="False"

@@ -439,7 +439,7 @@ public class AlertHistoryRow
     private static string FormatValue(string metricName, double value) => metricName switch
     {
         /* Percent metrics — CPU/TempDB usage, free space, and the job's "% of average". */
-        "High CPU" or "TempDB Space" or "Volume Free Space" or "Long-Running Job" => $"{value:F1}%",
+        "High CPU" or "tempdb Space" or "Volume Free Space" or "Long-Running Job" => $"{value:F1}%",
 
         /* Poison wait carries an average ms/wait; long-running query carries elapsed minutes. */
         "Poison Wait" => $"{value:F0} ms",

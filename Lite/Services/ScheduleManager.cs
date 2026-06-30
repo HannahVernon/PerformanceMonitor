@@ -567,7 +567,7 @@ public class ScheduleManager
             new() { Name = "memory_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Memory statistics from sys.dm_os_sys_memory and performance counters" },
             new() { Name = "memory_clerks", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Memory clerk allocations from sys.dm_os_memory_clerks" },
             new() { Name = "memory_pressure_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Memory pressure notifications from RING_BUFFER_RESOURCE_MONITOR" },
-            new() { Name = "tempdb_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "TempDB space usage from sys.dm_db_file_space_usage" },
+            new() { Name = "tempdb_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "tempdb space usage from sys.dm_db_file_space_usage" },
             new() { Name = "perfmon_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Key performance counters from sys.dm_os_performance_counters" },
             new() { Name = "deadlocks", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Deadlocks from a dedicated PerformanceMonitor_Deadlock XE session (xml_deadlock_report)" },
             new() { Name = "server_config", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Server configuration (on-load only)" },

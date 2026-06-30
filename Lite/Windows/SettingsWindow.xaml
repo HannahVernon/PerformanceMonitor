@@ -216,7 +216,7 @@
                           Content="Exclude CDC capture jobs (sp_MScdc_capture_job, sp_cdc_scan)"
                           Foreground="{DynamicResource ForegroundBrush}" Margin="20,0,0,0"/>
                 <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
-                    <CheckBox x:Name="AlertTempDbSpaceCheckBox" Content="TempDB space usage over" VerticalAlignment="Center"
+                    <CheckBox x:Name="AlertTempDbSpaceCheckBox" Content="tempdb space usage over" VerticalAlignment="Center"
                               Foreground="{DynamicResource ForegroundBrush}"/>
                     <TextBox x:Name="AlertTempDbSpaceThresholdBox" Width="45" Text="80" Margin="6,0,0,0" VerticalAlignment="Center"/>
                     <TextBlock Text="%" VerticalAlignment="Center" Margin="2,0,0,0"
@@ -491,7 +491,7 @@
                     <Run Foreground="#DC2626" FontWeight="Bold" Text="&#x25A0; Red" /> — Critical (Deadlocks, Poison Waits, Server Unreachable)
                 </TextBlock>
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,2">
-                    <Run Foreground="#D97706" FontWeight="Bold" Text="&#x25A0; Orange" /> — Alert / Warning (Blocking, Long-Running Queries, TempDB, Jobs)
+                    <Run Foreground="#D97706" FontWeight="Bold" Text="&#x25A0; Orange" /> — Alert / Warning (Blocking, Long-Running Queries, tempdb, Jobs)
                 </TextBlock>
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,2">
                     <Run Foreground="#F59E0B" FontWeight="Bold" Text="&#x25A0; Yellow" /> — Warning (High CPU)

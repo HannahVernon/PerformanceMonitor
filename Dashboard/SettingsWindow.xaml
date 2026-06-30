@@ -252,7 +252,7 @@
                                       Margin="0,0,0,0"/>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                 <CheckBox x:Name="NotifyOnTempDbSpaceCheckBox"
-                                          Content="TempDB space usage over"
+                                          Content="tempdb space usage over"
                                           VerticalAlignment="Center"
                                           Checked="NotifyOnTempDbSpaceCheckBox_Changed"
                                           Unchecked="NotifyOnTempDbSpaceCheckBox_Changed"/>
@@ -571,7 +571,7 @@
                             <Run Foreground="#DC2626" FontWeight="Bold" Text="&#x25A0; Red" /> — Critical (Deadlocks, Poison Waits, Server Unreachable)
                         </TextBlock>
                         <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="Gray" Margin="0,0,0,2">
-                            <Run Foreground="#D97706" FontWeight="Bold" Text="&#x25A0; Orange" /> — Alert / Warning (Blocking, Long-Running Queries, TempDB, Jobs)
+                            <Run Foreground="#D97706" FontWeight="Bold" Text="&#x25A0; Orange" /> — Alert / Warning (Blocking, Long-Running Queries, tempdb, Jobs)
                         </TextBlock>
                         <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="Gray" Margin="0,0,0,2">
                             <Run Foreground="#F59E0B" FontWeight="Bold" Text="&#x25A0; Yellow" /> — Warning (High CPU)

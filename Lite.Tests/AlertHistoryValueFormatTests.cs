@@ -28,7 +28,7 @@ public class AlertHistoryValueFormatTests
 
     [Theory]
     [InlineData("High CPU", 45.0, "45.0%")]
-    [InlineData("TempDB Space", 87.3, "87.3%")]
+    [InlineData("tempdb Space", 87.3, "87.3%")]
     [InlineData("Volume Free Space", 9.74, "9.7%")]
     [InlineData("Long-Running Job", 247.8, "247.8%")] // job's "% of average"
     public void PercentMetrics_RenderOneDecimalPercent(string metric, double value, string expected)

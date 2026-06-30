@@ -430,18 +430,18 @@ public partial class MainWindow : Window
                     _activeTempDbSpaceAlert[key] = true;
                     if (!suppressPopups && (!_lastTempDbSpaceAlert.TryGetValue(key, out var lastTempDb) || now - lastTempDb >= alertCooldown))
                     {
-                        var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "TempDB Space" };
+                        var muteCtx = new AlertMuteContext { ServerName = summary.DisplayName, MetricName = "tempdb Space" };
                         bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                         _lastTempDbSpaceAlert[key] = now;
 
                         if (!isMuted)
                         {
                             _trayService.ShowSnoozableNotification(
-                                "TempDB Space",
-                                $"{summary.DisplayName}: TempDB {tempDb.UsedPercent:F0}% used",
+                                "tempdb Space",
+                                $"{summary.DisplayName}: tempdb {tempDb.UsedPercent:F0}% used",
                                 Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning,
                                 summary.DisplayName,
-                                "TempDB Space",
+                                "tempdb Space",
                                 _muteRuleService);
                         }
 
@@ -449,7 +449,7 @@ public partial class MainWindow : Window
                         var detailText = ContextToDetailText(tempDbContext);
 
                         await _emailAlertService.TrySendAlertEmailAsync(
-                            "TempDB Space",
+                            "tempdb Space",
                             summary.DisplayName,
                             $"{tempDb.UsedPercent:F0}% used ({tempDb.TotalReservedMb:F0} MB)",
                             $"{App.AlertTempDbSpaceThresholdPercent}%",
@@ -468,8 +468,8 @@ public partial class MainWindow : Window
                     {
                         var pct = tempDb != null ? $"{tempDb.UsedPercent:F0}%" : "N/A";
                         _trayService.ShowStyledNotification(
-                            "TempDB Space Resolved",
-                            $"{summary.DisplayName}: TempDB usage back to {pct}",
+                            "tempdb Space Resolved",
+                            $"{summary.DisplayName}: tempdb usage back to {pct}",
                             ToastSeverity.Success);
                     }
                 }
@@ -1075,7 +1075,7 @@ public partial class MainWindow : Window
             var context = new AlertContext();
             context.Details.Add(new AlertDetailItem
             {
-                Heading = $"TempDB — {tempDb.UsedPercent:F0}% Used",
+                Heading = $"tempdb — {tempDb.UsedPercent:F0}% Used",
                 Fields = new()
                 {
                     ("Total Reserved", $"{tempDb.TotalReservedMb:F0} MB"),

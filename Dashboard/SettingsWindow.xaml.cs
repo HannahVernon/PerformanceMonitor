@@ -429,7 +429,7 @@ namespace PerformanceMonitorDashboard
             if (NotifyOnLongRunningQueriesCheckBox.IsChecked == true)
                 parts.Add($"queries > {LongRunningQueryThresholdTextBox.Text}min");
             if (NotifyOnTempDbSpaceCheckBox.IsChecked == true)
-                parts.Add($"TempDB > {TempDbSpaceThresholdTextBox.Text}%");
+                parts.Add($"tempdb > {TempDbSpaceThresholdTextBox.Text}%");
             if (NotifyOnLowDiskCheckBox.IsChecked == true)
                 parts.Add($"disk free < {LowDiskThresholdPercentTextBox.Text}% or {LowDiskThresholdGbTextBox.Text}GB");
             if (NotifyOnLongRunningJobsCheckBox.IsChecked == true)
@@ -738,7 +738,7 @@ namespace PerformanceMonitorDashboard
             if (int.TryParse(TempDbSpaceThresholdTextBox.Text, out int tempDbThreshold) && tempDbThreshold > 0 && tempDbThreshold <= 100)
                 prefs.TempDbSpaceThresholdPercent = tempDbThreshold;
             else if (prefs.NotifyOnTempDbSpace)
-                validationErrors.Add("TempDB space threshold must be between 1 and 100");
+                validationErrors.Add("tempdb space threshold must be between 1 and 100");
 
             prefs.NotifyOnLowDisk = NotifyOnLowDiskCheckBox.IsChecked == true;
             if (int.TryParse(LowDiskThresholdPercentTextBox.Text, out int lowDiskPct) && lowDiskPct >= 0 && lowDiskPct <= 100)
