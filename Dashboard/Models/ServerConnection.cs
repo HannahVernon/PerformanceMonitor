@@ -45,9 +45,23 @@ namespace PerformanceMonitorDashboard.Models
         }
 
         /// <summary>
-        /// Authentication type: Windows, SqlServer, or EntraMFA.
+        /// Authentication type: Windows, SqlServer, EntraMFA, ServicePrincipal, or ManagedIdentity.
         /// </summary>
         public string AuthenticationType { get; set; } = AuthenticationTypes.Windows;
+
+        /// <summary>
+        /// Service-principal application/client id (used as UserID for ServicePrincipal auth).
+        /// Non-secret; safe to persist in servers.json. The SP secret is NEVER stored here —
+        /// it lives only in Windows Credential Manager (DPAPI) via CredentialService.
+        /// </summary>
+        public string? AzureClientId { get; set; }
+
+        /// <summary>
+        /// Optional user-assigned managed identity client id. Blank = system-assigned identity.
+        /// Non-secret; safe to persist in servers.json.
+        /// </summary>
+        public string? ManagedIdentityClientId { get; set; }
+
         public string? Description { get; set; }
         public DateTime CreatedDate { get; set; } = DateTime.Now;
         public DateTime LastConnected { get; set; } = DateTime.Now;
@@ -129,6 +143,8 @@ namespace PerformanceMonitorDashboard.Models
         {
             AuthenticationTypes.EntraMFA => "Microsoft Entra MFA",
             AuthenticationTypes.SqlServer => "SQL Server",
+            AuthenticationTypes.ServicePrincipal => "Azure — Service Principal",
+            AuthenticationTypes.ManagedIdentity => "Azure — Managed Identity",
             _ => "Windows"
         };
 
@@ -141,40 +157,36 @@ namespace PerformanceMonitorDashboard.Models
         /// <returns>Connection string for SQL Server</returns>
         public string GetConnectionString(ICredentialService credentialService)
         {
-            if (AuthenticationType == AuthenticationTypes.EntraMFA)
+            // Single builder for every auth mode; the auth-specific keywords are applied by the shared
+            // ApplyAuthentication helper so this production path can never drift from the Add/Edit
+            // dialog's Test-Connection builder. These non-auth settings match the prior EntraMFA builder.
+            var builder = new SqlConnectionStringBuilder
             {
-                // Build MFA connection string with ActiveDirectoryInteractive
-                var mfaBuilder = new SqlConnectionStringBuilder
+                DataSource = ServerName,
+                InitialCatalog = "PerformanceMonitor",
+                ApplicationName = "PerformanceMonitorDashboard",
+                ConnectTimeout = 15,
+                MultipleActiveResultSets = true,
+                TrustServerCertificate = TrustServerCertificate,
+                Encrypt = EncryptMode switch
                 {
-                    DataSource = ServerName,
-                    InitialCatalog = "PerformanceMonitor",
-                    ApplicationName = "PerformanceMonitorDashboard",
-                    ConnectTimeout = 15,
-                    MultipleActiveResultSets = true,
-                    TrustServerCertificate = TrustServerCertificate,
-                    Encrypt = EncryptMode switch
-                    {
-                        "Optional" => SqlConnectionEncryptOption.Optional,
-                        "Strict" => SqlConnectionEncryptOption.Strict,
-                        _ => SqlConnectionEncryptOption.Mandatory
-                    },
-                    ApplicationIntent = ReadOnlyIntent ? ApplicationIntent.ReadOnly : ApplicationIntent.ReadWrite,
-                    MultiSubnetFailover = MultiSubnetFailover,
-                    Authentication = SqlAuthenticationMethod.ActiveDirectoryInteractive
-                };
+                    "Optional" => SqlConnectionEncryptOption.Optional,
+                    "Strict" => SqlConnectionEncryptOption.Strict,
+                    _ => SqlConnectionEncryptOption.Mandatory
+                },
+                ApplicationIntent = ReadOnlyIntent ? ApplicationIntent.ReadOnly : ApplicationIntent.ReadWrite,
+                MultiSubnetFailover = MultiSubnetFailover
+            };
 
-                // Optionally pre-populate username from credential store
-                var mfaCred = credentialService.GetCredential(Id);
-                if (mfaCred.HasValue && !string.IsNullOrEmpty(mfaCred.Value.Username))
-                    mfaBuilder.UserID = mfaCred.Value.Username;
-
-                return mfaBuilder.ConnectionString;
-            }
-
+            // Resolve credentials from secure storage per auth mode (mirrors Lite's inline resolution):
+            //   SqlServer / ServicePrincipal -> stored username + password (SP: client id + client secret)
+            //   EntraMFA                     -> stored username hint only (pre-populates the interactive prompt)
+            //   ManagedIdentity / Windows    -> no stored secret
             string? username = null;
             string? password = null;
 
-            if (AuthenticationType == AuthenticationTypes.SqlServer)
+            if (AuthenticationType == AuthenticationTypes.SqlServer ||
+                AuthenticationType == AuthenticationTypes.ServicePrincipal)
             {
                 var cred = credentialService.GetCredential(Id);
                 if (cred.HasValue)
@@ -183,17 +195,81 @@ namespace PerformanceMonitorDashboard.Models
                     password = cred.Value.Password;
                 }
             }
+            else if (AuthenticationType == AuthenticationTypes.EntraMFA)
+            {
+                // Preserve the existing behavior: pre-populate UserID from the stored username hint.
+                var cred = credentialService.GetCredential(Id);
+                if (cred.HasValue && !string.IsNullOrEmpty(cred.Value.Username))
+                {
+                    username = cred.Value.Username;
+                }
+            }
 
-            return DatabaseService.BuildConnectionString(
-                ServerName,
-                UseWindowsAuth,
-                username,
-                password,
-                EncryptMode,
-                TrustServerCertificate,
-                ReadOnlyIntent,
-                MultiSubnetFailover
-            ).ConnectionString;
+            ApplyAuthentication(builder, AuthenticationType, username, password, AzureClientId, ManagedIdentityClientId);
+
+            return builder.ConnectionString;
+        }
+
+        // SYNC: verbatim mirror of Lite ServerConnection.ApplyAuthentication — keep the two in lockstep.
+        // Guarded by Dashboard.Tests/AzureAuthConnectionStringTests + Lite.Tests/AzureAuthConnectionStringTests.
+        /// <summary>
+        /// Applies the authentication-mode keywords (IntegratedSecurity / Authentication / UserID /
+        /// Password) to a connection-string builder. Shared by <see cref="GetConnectionString"/> and
+        /// the Add/Edit dialog's Test-Connection builder so the two build sites never diverge.
+        /// </summary>
+        /// <param name="builder">The builder to mutate.</param>
+        /// <param name="authenticationType">One of the <see cref="AuthenticationTypes"/> constants.</param>
+        /// <param name="username">SQL username, Entra UPN, or SP client id (depending on mode).</param>
+        /// <param name="password">SQL password or SP client secret (depending on mode). Never logged.</param>
+        /// <param name="azureClientId">SP client id fallback when <paramref name="username"/> is null.</param>
+        /// <param name="managedIdentityClientId">User-assigned MI client id; blank = system-assigned.</param>
+        internal static void ApplyAuthentication(
+            SqlConnectionStringBuilder builder,
+            string authenticationType,
+            string? username,
+            string? password,
+            string? azureClientId,
+            string? managedIdentityClientId)
+        {
+            if (authenticationType == AuthenticationTypes.Windows)
+            {
+                builder.IntegratedSecurity = true;
+            }
+            else if (authenticationType == AuthenticationTypes.SqlServer)
+            {
+                builder.IntegratedSecurity = false;
+                builder.UserID = username ?? string.Empty;
+                builder.Password = password ?? string.Empty;
+            }
+            else if (authenticationType == AuthenticationTypes.EntraMFA)
+            {
+                // Microsoft Entra MFA (Azure AD Interactive)
+                builder.IntegratedSecurity = false;
+                builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryInteractive;
+                // Optionally set UserID (email/UPN)
+                if (!string.IsNullOrWhiteSpace(username))
+                {
+                    builder.UserID = username;
+                }
+            }
+            else if (authenticationType == AuthenticationTypes.ServicePrincipal)
+            {
+                // Microsoft Entra service principal (non-interactive): client id + secret.
+                builder.IntegratedSecurity = false;
+                builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryServicePrincipal;
+                builder.UserID = username ?? azureClientId ?? string.Empty;   // client/app id
+                builder.Password = password ?? string.Empty;                  // client secret (from Credential Manager)
+            }
+            else if (authenticationType == AuthenticationTypes.ManagedIdentity)
+            {
+                // Azure managed identity (non-interactive): no secret.
+                builder.IntegratedSecurity = false;
+                builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryManagedIdentity;
+                if (!string.IsNullOrWhiteSpace(managedIdentityClientId))
+                {
+                    builder.UserID = managedIdentityClientId;   // user-assigned MI; omit for system-assigned
+                }
+            }
         }
 
         /// <summary>
@@ -201,14 +277,18 @@ namespace PerformanceMonitorDashboard.Models
         /// Used to validate that SQL auth servers have credentials available.
         /// </summary>
         /// <param name="credentialService">The credential service to use for checking credentials</param>
-        /// <returns>True if Windows auth or MFA is used, or if credentials exist in credential manager</returns>
+        /// <returns>True for zero-touch modes (Windows, MFA, Managed Identity), or if a credential exists in credential manager</returns>
         public bool HasStoredCredentials(ICredentialService credentialService)
         {
-            if (AuthenticationType == AuthenticationTypes.Windows || AuthenticationType == AuthenticationTypes.EntraMFA)
+            // Zero-touch auth modes need no stored secret.
+            if (AuthenticationType == AuthenticationTypes.Windows ||
+                AuthenticationType == AuthenticationTypes.EntraMFA ||
+                AuthenticationType == AuthenticationTypes.ManagedIdentity)
             {
                 return true;
             }
 
+            // SqlServer (password) and ServicePrincipal (client secret) require a stored credential.
             return credentialService.CredentialExists(Id);
         }
     }

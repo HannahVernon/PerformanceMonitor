@@ -54,6 +54,16 @@ public static class InstallationService
     /// <summary>
     /// Build a connection string from the provided parameters.
     /// </summary>
+    /// <param name="authenticationType">
+    /// Optional explicit auth type for the non-interactive Entra modes. When set to the
+    /// PerformanceMonitor.Common.AuthenticationTypes values "ServicePrincipal" or "ManagedIdentity"
+    /// it takes precedence over <paramref name="useWindowsAuth"/>/<paramref name="useEntraAuth"/>.
+    /// Left null by the CLI installer, which only offers Windows/SQL/Entra-interactive — those paths
+    /// are unchanged. (Installer.Core intentionally has no reference to PerformanceMonitor.Common, so
+    /// the values are matched as string literals here; they must stay in sync with that enum.)
+    /// </param>
+    /// <param name="azureClientId">Service-principal client id fallback when <paramref name="username"/> is null.</param>
+    /// <param name="managedIdentityClientId">User-assigned managed identity client id; blank = system-assigned.</param>
     public static string BuildConnectionString(
         string server,
         bool useWindowsAuth,
@@ -61,7 +71,10 @@ public static class InstallationService
         string? password = null,
         string encryption = "Mandatory",
         bool trustCertificate = false,
-        bool useEntraAuth = false)
+        bool useEntraAuth = false,
+        string? authenticationType = null,
+        string? azureClientId = null,
+        string? managedIdentityClientId = null)
     {
         var builder = new SqlConnectionStringBuilder
         {
@@ -78,7 +91,24 @@ public static class InstallationService
             _ => SqlConnectionEncryptOption.Mandatory
         };
 
-        if (useEntraAuth)
+        // Non-interactive Entra modes (service principal / managed identity) take precedence when an
+        // explicit authentication type is supplied. The useWindowsAuth/useEntraAuth path below is
+        // preserved unchanged for callers that leave authenticationType null (e.g. the CLI installer).
+        if (authenticationType == "ServicePrincipal")
+        {
+            builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryServicePrincipal;
+            builder.UserID = username ?? azureClientId ?? string.Empty;   // client/app id
+            builder.Password = password ?? string.Empty;                  // client secret
+        }
+        else if (authenticationType == "ManagedIdentity")
+        {
+            builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryManagedIdentity;
+            if (!string.IsNullOrWhiteSpace(managedIdentityClientId))
+            {
+                builder.UserID = managedIdentityClientId;   // user-assigned MI; omit for system-assigned
+            }
+        }
+        else if (useEntraAuth)
         {
             builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryInteractive;
             builder.UserID = username;
