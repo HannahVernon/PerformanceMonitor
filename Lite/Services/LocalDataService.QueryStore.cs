@@ -344,7 +344,19 @@ SELECT
     CAST(avg_rowcount AS DOUBLE) AS avg_rowcount,
     last_execution_time,
     min_dop,
-    max_dop
+    max_dop,
+    execution_type_desc,
+    first_execution_time,
+    module_name,
+    CAST(avg_num_physical_io_reads AS DOUBLE) AS avg_num_physical_reads,
+    CAST(min_num_physical_io_reads AS DOUBLE) AS min_num_physical_reads,
+    CAST(max_num_physical_io_reads AS DOUBLE) AS max_num_physical_reads,
+    avg_clr_time_us / 1000.0 AS avg_clr_time_ms,
+    min_clr_time_us / 1000.0 AS min_clr_time_ms,
+    max_clr_time_us / 1000.0 AS max_clr_time_ms,
+    CAST(avg_log_bytes_used AS DOUBLE) / 1048576.0 AS avg_log_mb,
+    CAST(min_log_bytes_used AS DOUBLE) / 1048576.0 AS min_log_mb,
+    CAST(max_log_bytes_used AS DOUBLE) / 1048576.0 AS max_log_mb
 FROM v_query_store_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -377,7 +389,19 @@ ORDER BY collection_time";
                 AvgRowcount = reader.IsDBNull(7) ? 0 : ToDouble(reader.GetValue(7)),
                 LastExecutionTime = reader.IsDBNull(8) ? (DateTime?)null : reader.GetDateTime(8),
                 MinDop = reader.IsDBNull(9) ? 0 : Convert.ToInt64(reader.GetValue(9)),
-                MaxDop = reader.IsDBNull(10) ? 0 : Convert.ToInt64(reader.GetValue(10))
+                MaxDop = reader.IsDBNull(10) ? 0 : Convert.ToInt64(reader.GetValue(10)),
+                ExecutionTypeDesc = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                FirstExecutionTime = reader.IsDBNull(12) ? (DateTime?)null : reader.GetDateTime(12),
+                ModuleName = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                AvgNumPhysicalReads = reader.IsDBNull(14) ? 0 : ToDouble(reader.GetValue(14)),
+                MinNumPhysicalReads = reader.IsDBNull(15) ? 0 : ToDouble(reader.GetValue(15)),
+                MaxNumPhysicalReads = reader.IsDBNull(16) ? 0 : ToDouble(reader.GetValue(16)),
+                AvgClrTimeMs = reader.IsDBNull(17) ? 0 : ToDouble(reader.GetValue(17)),
+                MinClrTimeMs = reader.IsDBNull(18) ? 0 : ToDouble(reader.GetValue(18)),
+                MaxClrTimeMs = reader.IsDBNull(19) ? 0 : ToDouble(reader.GetValue(19)),
+                AvgLogMb = reader.IsDBNull(20) ? 0 : ToDouble(reader.GetValue(20)),
+                MinLogMb = reader.IsDBNull(21) ? 0 : ToDouble(reader.GetValue(21)),
+                MaxLogMb = reader.IsDBNull(22) ? 0 : ToDouble(reader.GetValue(22))
             });
         }
 
@@ -525,8 +549,34 @@ public class QueryStoreHistoryRow
     public DateTime? LastExecutionTime { get; set; }
     public long MinDop { get; set; }
     public long MaxDop { get; set; }
+
+    // Execution type (Regular / Aborted / Exception)
+    public string ExecutionTypeDesc { get; set; } = "";
+
+    // First execution time in the interval
+    public DateTime? FirstExecutionTime { get; set; }
+
+    // Module (proc/function) the query came from
+    public string ModuleName { get; set; } = "";
+
+    // Number of physical IO reads (avg/min/max)
+    public double AvgNumPhysicalReads { get; set; }
+    public double MinNumPhysicalReads { get; set; }
+    public double MaxNumPhysicalReads { get; set; }
+
+    // CLR time, already converted to ms in SQL (avg/min/max)
+    public double AvgClrTimeMs { get; set; }
+    public double MinClrTimeMs { get; set; }
+    public double MaxClrTimeMs { get; set; }
+
+    // Log bytes used, already converted to MB in SQL (avg/min/max)
+    public double AvgLogMb { get; set; }
+    public double MinLogMb { get; set; }
+    public double MaxLogMb { get; set; }
+
     public double TotalDurationMs => ExecutionCount * AvgDurationMs;
     public double TotalCpuMs => ExecutionCount * AvgCpuTimeMs;
     public string CollectionTimeLocal => ServerTimeHelper.FormatServerTime(CollectionTime);
+    public string FirstExecutionTimeLocal => ServerTimeHelper.FormatServerTime(FirstExecutionTime);
     public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
 }
