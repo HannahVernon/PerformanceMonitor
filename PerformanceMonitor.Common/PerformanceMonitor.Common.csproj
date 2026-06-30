@@ -9,7 +9,8 @@
     <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
-    <NoWarn>CA1849;CA2007;CA1508;CA1822;CA1805;CA1510;CA1816;CA1861;CA1845;CA2201;CA1848;CA1852;CA1305;CA1860;CA1707;CA1507;CA1806;CA2254</NoWarn>
+    <!-- NU1701: CredentialManagement package has no .NET 10 build (matches Dashboard/Lite suppression). -->
+    <NoWarn>CA1849;CA2007;CA1508;CA1822;CA1805;CA1510;CA1816;CA1861;CA1845;CA2201;CA1848;CA1852;CA1305;CA1860;CA1707;CA1507;CA1806;CA2254;NU1701</NoWarn>
     <WarningsAsErrors>CS4014</WarningsAsErrors>
   </PropertyGroup>
 
@@ -17,6 +18,10 @@
     <!-- MCP SDK: required by Mcp/McpSchemaCompat.cs (Gemini-compatible tool registration, issue #1074).
          Brings ModelContextProtocol.Core + Microsoft.Extensions.AI.Abstractions transitively. -->
     <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+    <!-- Windows Credential Manager (DPAPI) for the shared CredentialStore; version matches Dashboard/Lite. -->
+    <PackageReference Include="CredentialManagement" Version="1.0.2" />
+    <!-- ILogger abstraction used by CredentialStore; version matches the apps' logging stack. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>
