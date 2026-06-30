@@ -319,7 +319,7 @@ public partial class RemoteCollectorService
             if (serverStatus.IsOnline == false)
             {
                 skippedOffline++;
-                _logger?.LogDebug("Skipping offline server '{Server}'", server.DisplayName);
+                AppLogger.Debug("Scheduler", $"Skipping offline server '{server.DisplayName}'");
                 continue;
             }
             onlineServers.Add(server);
@@ -330,8 +330,7 @@ public partial class RemoteCollectorService
             return;
         }
 
-        _logger?.LogInformation("Checking per-server schedules for {OnlineCount}/{TotalCount} servers ({SkippedCount} offline, skipped)",
-            onlineServers.Count, enabledServers.Count, skippedOffline);
+        AppLogger.Info("Scheduler", $"Checking per-server schedules for {onlineServers.Count}/{enabledServers.Count} servers ({skippedOffline} offline, skipped)");
 
         /* Run servers in parallel, but collectors within each server sequentially.
            DuckDB is single-writer; running all collectors in parallel causes spin-wait
@@ -363,7 +362,7 @@ public partial class RemoteCollectorService
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Post-collection checkpoint failed (non-critical)");
+            AppLogger.Debug("Collector", $"Post-collection checkpoint failed (non-critical): {ex.Message}");
         }
     }
 
@@ -384,9 +383,7 @@ public partial class RemoteCollectorService
         /* Persist edition/version to DuckDB for the analysis engine */
         await PersistServerMetadataAsync(server, serverStatus);
 
-        AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)})");
-        _logger?.LogInformation("Running {Count} collectors for server '{Server}' (initial load)",
-            enabledSchedules.Count, server.DisplayName);
+        AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)}, initial load)");
 
         foreach (var schedule in enabledSchedules)
         {
@@ -396,8 +393,7 @@ public partial class RemoteCollectorService
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Initial collector '{Collector}' failed for server '{Server}'",
-                    schedule.Name, server.DisplayName);
+                AppLogger.Error("Collector", $"Initial collector '{schedule.Name}' failed for server '{server.DisplayName}'", ex);
             }
         }
     }
@@ -433,8 +429,6 @@ public partial class RemoteCollectorService
             if (server.AuthenticationType == AuthenticationTypes.EntraMFA && serverStatus.UserCancelledMfa)
             {
                 AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED - MFA authentication cancelled by user");
-                _logger?.LogDebug("Skipping collector '{Collector}' for server '{Server}' - user cancelled MFA",
-                    collectorName, server.DisplayName);
                 return;
             }
 
@@ -442,13 +436,11 @@ public partial class RemoteCollectorService
             // this session. Flag is in-memory — next app start retries once (see #857).
             if (IsCollectorPermissionRestricted(GetServerId(server), collectorName))
             {
-                _logger?.LogDebug("Skipping collector '{Collector}' for server '{Server}' - permission denied this session",
-                    collectorName, server.DisplayName);
+                AppLogger.Debug("Collector", $"Skipping collector '{collectorName}' for server '{server.DisplayName}' - permission denied this session");
                 return;
             }
 
-            _logger?.LogDebug("Running collector '{Collector}' for server '{Server}'",
-                collectorName, server.DisplayName);
+            AppLogger.Debug("Collector", $"Running collector '{collectorName}' for server '{server.DisplayName}'");
 
             /* Ensure the backing XE session exists before reading its ring buffer.
                Runs on every cycle (cheap existence check when already present) so a
@@ -512,8 +504,6 @@ public partial class RemoteCollectorService
                 : "ERROR";
             xeSessionUnavailable = true;
             AppLogger.Error("Collector", $"  [{server.DisplayName}] {collectorName} {ex.Message}");
-            _logger?.LogWarning("Collector '{Collector}' XE session unavailable for server '{Server}': {Message}",
-                collectorName, server.DisplayName, ex.Message);
         }
         catch (SqlException ex)
         {
@@ -523,24 +513,20 @@ public partial class RemoteCollectorService
 
             if (RetryHelper.IsTransient(ex))
             {
-                _logger?.LogWarning("Collector '{Collector}' transient SQL error #{ErrorNumber} for server '{Server}': {Message}",
-                    collectorName, ex.Number, server.DisplayName, ex.Message);
+                AppLogger.Warn("Collector", $"Collector '{collectorName}' transient SQL error #{ex.Number} for server '{server.DisplayName}': {ex.Message}");
             }
             else if (ex.Number == 207) /* Invalid column name - likely version incompatibility */
             {
-                _logger?.LogWarning("Collector '{Collector}' column not found for server '{Server}' (possible version incompatibility): {Message}",
-                    collectorName, server.DisplayName, ex.Message);
+                AppLogger.Warn("Collector", $"Collector '{collectorName}' column not found for server '{server.DisplayName}' (possible version incompatibility): {ex.Message}");
             }
             else if (ex.Number == 229 || ex.Number == 297 || ex.Number == 300)
             {
                 status = "PERMISSIONS";
-                _logger?.LogWarning("Collector '{Collector}' permission denied for server '{Server}': {Message}",
-                    collectorName, server.DisplayName, ex.Message);
+                AppLogger.Warn("Collector", $"Collector '{collectorName}' permission denied for server '{server.DisplayName}': {ex.Message}");
             }
             else
             {
-                _logger?.LogError(ex, "Collector '{Collector}' SQL error #{ErrorNumber} for server '{Server}'",
-                    collectorName, ex.Number, server.DisplayName);
+                AppLogger.Error("Collector", $"Collector '{collectorName}' SQL error #{ex.Number} for server '{server.DisplayName}'", ex);
             }
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("MFA authentication cancelled"))
@@ -554,15 +540,14 @@ public partial class RemoteCollectorService
         {
             status = "CANCELLED";
             errorMessage = "Collection cancelled";
-            _logger?.LogDebug("Collector '{Collector}' cancelled for server '{Server}'", collectorName, server.DisplayName);
+            AppLogger.Debug("Collector", $"Collector '{collectorName}' cancelled for server '{server.DisplayName}'");
         }
         catch (Exception ex)
         {
             status = "ERROR";
             errorMessage = ex.Message;
             AppLogger.Error("Collector", $"  [{server.DisplayName}] {collectorName} {ex.GetType().Name}: {ex.Message}");
-            _logger?.LogError(ex, "Collector '{Collector}' failed for server '{Server}'",
-                collectorName, server.DisplayName);
+            AppLogger.Error("Collector", $"Collector '{collectorName}' failed for server '{server.DisplayName}'", ex);
         }
 
         // Track collector health
@@ -652,7 +637,7 @@ WHERE server_id = $3";
             {
                 /* First few failures: log at Error level with full detail */
                 AppLogger.Error("Collector", $"COLLECTION LOGGING FAILED ({_logInsertFailures}x): {ex.GetType().Name}: {ex.Message}");
-                _logger?.LogError(ex, "Failed to log collection for {Collector} (failure #{Count})", collectorName, _logInsertFailures);
+                AppLogger.Error("Collector", $"Failed to log collection for {collectorName} (failure #{_logInsertFailures})", ex);
             }
             else if (_logInsertFailures % 100 == 0)
             {
@@ -880,8 +865,7 @@ WHERE server_id = $3";
                         {
                             var serverStatus = _serverManager.GetConnectionStatus(server.Id);
                             serverStatus.UserCancelledMfa = true;
-                            AppLogger.Info("Collector", $"  [{server.DisplayName}] MFA authentication cancelled by user");
-                            _logger?.LogInformation("MFA authentication cancelled by user for server '{DisplayName}' - flagging to abort other pending connections", server.DisplayName);
+                            AppLogger.Info("Collector", $"  [{server.DisplayName}] MFA authentication cancelled by user - flagging to abort other pending connections");
                         }
                         throw;
                     }

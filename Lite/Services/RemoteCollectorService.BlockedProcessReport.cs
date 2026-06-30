@@ -14,7 +14,6 @@ using System.Threading.Tasks;
 using System.Xml.Linq;
 using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
 using PerformanceMonitorLite.Models;
 
 namespace PerformanceMonitorLite.Services;
@@ -63,13 +62,10 @@ public partial class RemoteCollectorService
                empty even when the session exists -- the CREATE/START path then reports "already exists"
                (25631) / "already started" (25705). That confirms the session is up; it is success, not a
                failure to surface as an unhealthy collector or log every cycle (#1251). */
-            _logger?.LogDebug("Blocked process XE session already present on '{Server}' (benign)", server.DisplayName);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Blocked process XE session already present (benign, #1251)");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to ensure blocked process XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure blocked process XE session: {ex.Message}");
 
             /* Propagate so RunCollectorAsync marks the collector unhealthy instead
@@ -120,7 +116,6 @@ SELECT @threshold;", connection);
 
             if (threshold == 0)
             {
-                _logger?.LogInformation("Configured blocked process threshold to 5 seconds on '{Server}'", server.DisplayName);
                 AppLogger.Info("XeSession", $"[{server.DisplayName}] Configured blocked process threshold to 5 seconds");
             }
         }
@@ -156,20 +151,17 @@ WHERE ses.name = @session_name;", connection))
                             $"ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON SERVER STATE = START;", connection);
                         startCmd.CommandTimeout = CommandTimeoutSeconds;
                         await startCmd.ExecuteNonQueryAsync(cancellationToken);
-                        _logger?.LogInformation("Started blocked process XE session on '{Server}'", server.DisplayName);
                         AppLogger.Info("XeSession", $"[{server.DisplayName}] Started blocked process XE session");
                     }
                     catch (SqlException ex)
                     {
-                        _logger?.LogWarning("Failed to start blocked process XE session on '{Server}': {Message}",
-                            server.DisplayName, ex.Message);
                         AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to start blocked process XE session: {ex.Message}");
                         throw;
                     }
                 }
                 else
                 {
-                    _logger?.LogDebug("Blocked process XE session is running on '{Server}'", server.DisplayName);
+                    AppLogger.Debug("XeSession", $"Blocked process XE session is running on '{server.DisplayName}'");
                 }
                 return;
             }
@@ -195,13 +187,10 @@ WITH
 ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON SERVER STATE = START;", connection);
             createCmd.CommandTimeout = CommandTimeoutSeconds;
             await createCmd.ExecuteNonQueryAsync(cancellationToken);
-            _logger?.LogInformation("Created and started blocked process XE session on '{Server}'", server.DisplayName);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Created and started blocked process XE session");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to create blocked process XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to create blocked process XE session: {ex.Message}");
             throw;
         }
@@ -243,7 +232,6 @@ END;", connection);
                 startCmd.CommandTimeout = CommandTimeoutSeconds;
                 await startCmd.ExecuteNonQueryAsync(cancellationToken);
 
-                _logger?.LogDebug("Blocked process XE session already exists (database-scoped, Azure SQL DB)");
                 AppLogger.Info("XeSession", $"[Azure SQL DB] Blocked process XE session verified (database-scoped)");
                 return;
             }
@@ -270,7 +258,6 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        _logger?.LogInformation("Created and started blocked process XE session (database-scoped, Azure SQL DB)");
         AppLogger.Info("XeSession", $"[Azure SQL DB] Created and started blocked process XE session (database-scoped)");
     }
 
@@ -748,13 +735,11 @@ OPTION(RECOMPILE);";
         catch (SqlException ex) when (ex.Number == 297 || ex.Number == 15151 || ex.Message.Contains("XE session"))
         {
             /* XE session not found or not accessible */
-            _logger?.LogDebug("Blocked process XE session not available on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Blocked process XE session not available: {ex.Message}");
             return 0;
         }
 
-        _logger?.LogDebug("Collected {RowCount} blocked process reports for server '{Server}'", rowsCollected, server.DisplayName);
+        AppLogger.Debug("Collector", $"Collected {rowsCollected} blocked process reports for server '{server.DisplayName}'");
         return rowsCollected;
     }
 

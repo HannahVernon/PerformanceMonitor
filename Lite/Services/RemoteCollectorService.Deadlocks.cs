@@ -14,7 +14,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
 using PerformanceMonitorLite.Models;
 
 namespace PerformanceMonitorLite.Services;
@@ -61,13 +60,10 @@ public partial class RemoteCollectorService
                XE existence catalogs are visibility-scoped per principal, so the pre-check can miss an
                existing session and CREATE/START then reports "already exists" (25631) / "already started"
                (25705). That's success, not a failure to surface as unhealthy or log every cycle (#1251). */
-            _logger?.LogDebug("Deadlock XE session already present on '{Server}' (benign)", server.DisplayName);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Deadlock XE session already present (benign, #1251)");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to ensure deadlock XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure deadlock XE session: {ex.Message}");
 
             /* Propagate so RunCollectorAsync marks the collector unhealthy instead
@@ -107,20 +103,17 @@ WHERE ses.name = @session_name;", connection))
                             $"ALTER EVENT SESSION [{DeadlockXeSessionName}] ON SERVER STATE = START;", connection);
                         startCmd.CommandTimeout = CommandTimeoutSeconds;
                         await startCmd.ExecuteNonQueryAsync(cancellationToken);
-                        _logger?.LogInformation("Started deadlock XE session on '{Server}'", server.DisplayName);
                         AppLogger.Info("XeSession", $"[{server.DisplayName}] Started deadlock XE session");
                     }
                     catch (SqlException ex)
                     {
-                        _logger?.LogWarning("Failed to start deadlock XE session on '{Server}': {Message}",
-                            server.DisplayName, ex.Message);
                         AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to start deadlock XE session: {ex.Message}");
                         throw;
                     }
                 }
                 else
                 {
-                    _logger?.LogDebug("Deadlock XE session is running on '{Server}'", server.DisplayName);
+                    AppLogger.Debug("XeSession", $"Deadlock XE session is running on '{server.DisplayName}'");
                 }
                 return;
             }
@@ -149,13 +142,10 @@ WITH
 ALTER EVENT SESSION [{DeadlockXeSessionName}] ON SERVER STATE = START;", connection);
             createCmd.CommandTimeout = CommandTimeoutSeconds;
             await createCmd.ExecuteNonQueryAsync(cancellationToken);
-            _logger?.LogInformation("Created and started deadlock XE session on '{Server}'", server.DisplayName);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Created and started deadlock XE session");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to create deadlock XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to create deadlock XE session: {ex.Message}");
             throw;
         }
@@ -234,7 +224,6 @@ END;", connection);
                     startCmd.CommandTimeout = CommandTimeoutSeconds;
                     await startCmd.ExecuteNonQueryAsync(cancellationToken);
 
-                    _logger?.LogDebug("Deadlock XE session already exists (database-scoped, Azure SQL DB)");
                     AppLogger.Info("XeSession", $"[Azure SQL DB] Deadlock XE session verified (database-scoped)");
                     return;
                 }
@@ -264,7 +253,6 @@ ALTER EVENT SESSION [{DeadlockXeSessionName}] ON DATABASE STATE = START;", conne
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        _logger?.LogInformation("Created and started deadlock XE session (database-scoped, Azure SQL DB)");
         AppLogger.Info("XeSession", $"[Azure SQL DB] Created and started deadlock XE session (database-scoped)");
     }
 
@@ -435,13 +423,11 @@ OPTION(RECOMPILE);";
         catch (SqlException ex) when (ex.Number == 297 || ex.Number == 15151 || ex.Message.Contains("XE session"))
         {
             /* XE session not found or not accessible */
-            _logger?.LogDebug("Deadlock XE session not available on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Deadlock XE session not available: {ex.Message}");
             return 0;
         }
 
-        _logger?.LogDebug("Collected {RowCount} deadlocks for server '{Server}'", rowsCollected, server.DisplayName);
+        AppLogger.Debug("Collector", $"Collected {rowsCollected} deadlocks for server '{server.DisplayName}'");
         return rowsCollected;
     }
 
