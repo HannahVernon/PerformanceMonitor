@@ -173,7 +173,7 @@ namespace PerformanceMonitorDashboard.Services
                             Writes = SafeToInt64(reader.GetValue(15), "writes"),
                             PhysicalReads = SafeToInt64(reader.GetValue(16), "physical_reads"),
                             ContextSwitches = SafeToInt64(reader.GetValue(17), "context_switches"),
-                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory"),
+                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory") / 128m,
                             TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current"),
                             TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations"),
                             TranLogWrites = reader.IsDBNull(21) ? null : reader.GetValue(21)?.ToString(),
@@ -183,9 +183,9 @@ namespace PerformanceMonitorDashboard.Services
                             TranStartTime = reader.IsDBNull(25) ? null : reader.GetDateTime(25),
                             RequestId = SafeToInt16(reader.GetValue(26), "request_id"),
                             AdditionalInfo = reader.IsDBNull(27) ? null : reader.GetValue(27)?.ToString(),
-                            RequestedMemoryMb = SafeToDecimal(reader.GetValue(28), "requested_memory"),
-                            GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory"),
-                            MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory"),
+                            RequestedMemoryMb = SafeToDecimal(reader.GetValue(28), "requested_memory") / 128m,
+                            GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory") / 128m,
+                            MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory") / 128m,
                             Tasks = SafeToInt64(reader.GetValue(31), "tasks"),
                             PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io")
                             // QueryPlan fetched on-demand via GetQuerySnapshotPlanAsync
@@ -376,7 +376,7 @@ namespace PerformanceMonitorDashboard.Services
                             Writes = SafeToInt64(reader.GetValue(15), "writes"),
                             PhysicalReads = SafeToInt64(reader.GetValue(16), "physical_reads"),
                             ContextSwitches = SafeToInt64(reader.GetValue(17), "context_switches"),
-                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory"),
+                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory") / 128m,
                             TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current"),
                             TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations"),
                             TranLogWrites = reader.IsDBNull(21) ? null : reader.GetValue(21)?.ToString(),
@@ -386,9 +386,9 @@ namespace PerformanceMonitorDashboard.Services
                             TranStartTime = reader.IsDBNull(25) ? null : reader.GetDateTime(25),
                             RequestId = SafeToInt16(reader.GetValue(26), "request_id"),
                             AdditionalInfo = reader.IsDBNull(27) ? null : reader.GetValue(27)?.ToString(),
-                            RequestedMemoryMb = SafeToDecimal(reader.GetValue(28), "requested_memory"),
-                            GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory"),
-                            MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory"),
+                            RequestedMemoryMb = SafeToDecimal(reader.GetValue(28), "requested_memory") / 128m,
+                            GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory") / 128m,
+                            MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory") / 128m,
                             Tasks = SafeToInt64(reader.GetValue(31), "tasks"),
                             PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io")
                         });

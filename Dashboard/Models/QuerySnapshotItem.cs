@@ -33,6 +33,9 @@ namespace PerformanceMonitorDashboard.Models
         public long? ContextSwitches { get; set; }
         public long? Tasks { get; set; }
         public long? PhysicalIo { get; set; }
+
+        // Query-grant memory in MB. sp_WhoIsActive reports these as 8KB-page counts;
+        // the reader converts to MB (1 MB = 128 pages).
         public decimal? UsedMemoryMb { get; set; }
         public decimal? RequestedMemoryMb { get; set; }
         public decimal? GrantedMemoryMb { get; set; }
