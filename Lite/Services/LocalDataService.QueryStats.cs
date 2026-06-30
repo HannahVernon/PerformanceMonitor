@@ -125,7 +125,16 @@ WITH ranked AS (
         MAX(max_spills) AS max_spills,
         MAX(query_plan_hash) AS query_plan_hash,
         MAX(sql_handle) AS sql_handle,
-        MAX(plan_handle) AS plan_handle
+        MAX(plan_handle) AS plan_handle,
+        MIN(min_used_grant_kb) AS min_used_grant_kb,
+        MAX(max_used_grant_kb) AS max_used_grant_kb,
+        MIN(min_ideal_grant_kb) AS min_ideal_grant_kb,
+        MAX(max_ideal_grant_kb) AS max_ideal_grant_kb,
+        MIN(min_reserved_threads) AS min_reserved_threads,
+        MAX(max_reserved_threads) AS max_reserved_threads,
+        MIN(min_used_threads) AS min_used_threads,
+        MAX(max_used_threads) AS max_used_threads,
+        MAX(total_clr_time) AS total_clr_time
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -198,8 +207,17 @@ LIMIT $4";
                 QueryPlanHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
                 SqlHandle = reader.IsDBNull(27) ? "" : reader.GetString(27),
                 PlanHandle = reader.IsDBNull(28) ? "" : reader.GetString(28),
-                QueryText = reader.IsDBNull(29) ? "" : reader.GetString(29),
-                QueryPlan = reader.IsDBNull(30) ? null : reader.GetString(30)
+                MinUsedGrantKb = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
+                MaxUsedGrantKb = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
+                MinIdealGrantKb = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
+                MaxIdealGrantKb = reader.IsDBNull(32) ? 0 : reader.GetInt64(32),
+                MinReservedThreads = reader.IsDBNull(33) ? 0 : reader.GetInt64(33),
+                MaxReservedThreads = reader.IsDBNull(34) ? 0 : reader.GetInt64(34),
+                MinUsedThreads = reader.IsDBNull(35) ? 0 : reader.GetInt64(35),
+                MaxUsedThreads = reader.IsDBNull(36) ? 0 : reader.GetInt64(36),
+                TotalClrUs = reader.IsDBNull(37) ? 0 : reader.GetInt64(37),
+                QueryText = reader.IsDBNull(38) ? "" : reader.GetString(38),
+                QueryPlan = reader.IsDBNull(39) ? null : reader.GetString(39)
             });
         }
 
@@ -1213,6 +1231,15 @@ public class QueryStatsRow
     public long MaxRows { get; set; }
     public long MinGrantKb { get; set; }
     public long MaxGrantKb { get; set; }
+    public long MinUsedGrantKb { get; set; }
+    public long MaxUsedGrantKb { get; set; }
+    public long MinIdealGrantKb { get; set; }
+    public long MaxIdealGrantKb { get; set; }
+    public long MinReservedThreads { get; set; }
+    public long MaxReservedThreads { get; set; }
+    public long MinUsedThreads { get; set; }
+    public long MaxUsedThreads { get; set; }
+    public long TotalClrUs { get; set; }
     public long MinSpills { get; set; }
     public long MaxSpills { get; set; }
     public string QueryPlanHash { get; set; } = "";
@@ -1230,6 +1257,8 @@ public class QueryStatsRow
     public double MaxCpuMs => MaxCpuUs / 1000.0;
     public double MinElapsedMs => MinElapsedUs / 1000.0;
     public double MaxElapsedMs => MaxElapsedUs / 1000.0;
+    // total_clr_time is stored in microseconds (like worker/elapsed time)
+    public double TotalClrMs => TotalClrUs / 1000.0;
 }
 
 public class ProcedureStatsRow

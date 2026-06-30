@@ -45,6 +45,15 @@ namespace PerformanceMonitorDashboard.Models
         public short? MaxDop { get; set; }
         public long? MinGrantKb { get; set; }
         public long? MaxGrantKb { get; set; }
+        public long? MinUsedGrantKb { get; set; }
+        public long? MaxUsedGrantKb { get; set; }
+        public long? MinIdealGrantKb { get; set; }
+        public long? MaxIdealGrantKb { get; set; }
+        public long? MinReservedThreads { get; set; }
+        public long? MaxReservedThreads { get; set; }
+        public long? MinUsedThreads { get; set; }
+        public long? MaxUsedThreads { get; set; }
+        public long TotalClrTime { get; set; }
         public long? MinSpills { get; set; }
         public long? MaxSpills { get; set; }
 
@@ -52,6 +61,13 @@ namespace PerformanceMonitorDashboard.Models
         public double TotalWorkerTimeSec => TotalWorkerTime / 1000000.0;
         public double TotalElapsedTimeSec => TotalElapsedTime / 1000000.0;
         public double? MaxGrantMb => MaxGrantKb.HasValue ? MaxGrantKb.Value / 1024.0 : null;
+        public double? MinGrantMb => MinGrantKb.HasValue ? MinGrantKb.Value / 1024.0 : null;
+        public double? MinUsedGrantMb => MinUsedGrantKb.HasValue ? MinUsedGrantKb.Value / 1024.0 : null;
+        public double? MaxUsedGrantMb => MaxUsedGrantKb.HasValue ? MaxUsedGrantKb.Value / 1024.0 : null;
+        public double? MinIdealGrantMb => MinIdealGrantKb.HasValue ? MinIdealGrantKb.Value / 1024.0 : null;
+        public double? MaxIdealGrantMb => MaxIdealGrantKb.HasValue ? MaxIdealGrantKb.Value / 1024.0 : null;
+        // total_clr_time is stored in microseconds (like worker/elapsed time)
+        public double TotalClrTimeMs => TotalClrTime / 1000.0;
 
         // CPU time aliases (Worker time = CPU time in SQL Server)
         public double TotalCpuTimeMs => TotalWorkerTime / 1000.0;

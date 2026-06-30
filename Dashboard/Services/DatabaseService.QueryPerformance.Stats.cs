@@ -73,7 +73,16 @@ namespace PerformanceMonitorDashboard.Services
             max_spills = MAX(qs.max_spills),
             query_plan_hash = MAX(qs.query_plan_hash),
             sql_handle = MAX(qs.sql_handle),
-            plan_handle = MAX(qs.plan_handle)
+            plan_handle = MAX(qs.plan_handle),
+            min_used_grant_kb = MIN(qs.min_used_grant_kb),
+            max_used_grant_kb = MAX(qs.max_used_grant_kb),
+            min_ideal_grant_kb = MIN(qs.min_ideal_grant_kb),
+            max_ideal_grant_kb = MAX(qs.max_ideal_grant_kb),
+            min_reserved_threads = MIN(qs.min_reserved_threads),
+            max_reserved_threads = MAX(qs.max_reserved_threads),
+            min_used_threads = MIN(qs.min_used_threads),
+            max_used_threads = MAX(qs.max_used_threads),
+            total_clr_time = MAX(qs.total_clr_time)
         INTO #per_lifetime
         FROM collect.query_stats AS qs
         WHERE (
@@ -143,7 +152,16 @@ namespace PerformanceMonitorDashboard.Services
             max_spills = MAX(pl.max_spills),
             query_plan_hash = CONVERT(nvarchar(20), MAX(pl.query_plan_hash), 1),
             sql_handle = CONVERT(nvarchar(130), MAX(pl.sql_handle), 1),
-            plan_handle = CONVERT(nvarchar(130), MAX(pl.plan_handle), 1)
+            plan_handle = CONVERT(nvarchar(130), MAX(pl.plan_handle), 1),
+            min_used_grant_kb = MIN(pl.min_used_grant_kb),
+            max_used_grant_kb = MAX(pl.max_used_grant_kb),
+            min_ideal_grant_kb = MIN(pl.min_ideal_grant_kb),
+            max_ideal_grant_kb = MAX(pl.max_ideal_grant_kb),
+            min_reserved_threads = MIN(pl.min_reserved_threads),
+            max_reserved_threads = MAX(pl.max_reserved_threads),
+            min_used_threads = MIN(pl.min_used_threads),
+            max_used_threads = MAX(pl.max_used_threads),
+            total_clr_time = SUM(pl.total_clr_time)
         INTO #top_ranked
         FROM #per_lifetime AS pl
         GROUP BY
@@ -200,7 +218,16 @@ namespace PerformanceMonitorDashboard.Services
             query_plan_xml = CONVERT(nvarchar(max), NULL),
             tr.query_plan_hash,
             tr.sql_handle,
-            tr.plan_handle
+            tr.plan_handle,
+            tr.min_used_grant_kb,
+            tr.max_used_grant_kb,
+            tr.min_ideal_grant_kb,
+            tr.max_ideal_grant_kb,
+            tr.min_reserved_threads,
+            tr.max_reserved_threads,
+            tr.min_used_threads,
+            tr.max_used_threads,
+            tr.total_clr_time
         FROM #top_ranked AS tr
         OUTER APPLY
         (
@@ -266,7 +293,16 @@ namespace PerformanceMonitorDashboard.Services
                             QueryPlanXml = reader.IsDBNull(35) ? null : reader.GetString(35),
                             QueryPlanHash = reader.IsDBNull(36) ? null : reader.GetString(36),
                             SqlHandle = reader.IsDBNull(37) ? null : reader.GetString(37),
-                            PlanHandle = reader.IsDBNull(38) ? null : reader.GetString(38)
+                            PlanHandle = reader.IsDBNull(38) ? null : reader.GetString(38),
+                            MinUsedGrantKb = reader.IsDBNull(39) ? null : reader.GetInt64(39),
+                            MaxUsedGrantKb = reader.IsDBNull(40) ? null : reader.GetInt64(40),
+                            MinIdealGrantKb = reader.IsDBNull(41) ? null : reader.GetInt64(41),
+                            MaxIdealGrantKb = reader.IsDBNull(42) ? null : reader.GetInt64(42),
+                            MinReservedThreads = reader.IsDBNull(43) ? null : reader.GetInt64(43),
+                            MaxReservedThreads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
+                            MinUsedThreads = reader.IsDBNull(45) ? null : reader.GetInt64(45),
+                            MaxUsedThreads = reader.IsDBNull(46) ? null : reader.GetInt64(46),
+                            TotalClrTime = reader.IsDBNull(47) ? 0 : reader.GetInt64(47)
                         });
                     }
 
