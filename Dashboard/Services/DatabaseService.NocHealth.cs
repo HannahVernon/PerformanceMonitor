@@ -587,41 +587,17 @@ namespace PerformanceMonitorDashboard.Services
 
         private async Task GetBlockingStatusAsync(SqlConnection connection, ServerHealthStatus status)
         {
-            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+            // Delegates to GetBlockingValuesAsync, the single source of the sys.sysprocesses LCK
+            // blocking query, so the health-status and alert paths can never drift. Empty exclusions
+            // reproduces this path's historical no-database-filter behavior (the query is then
+            // byte-identical to the old inline one). GetBlockingValuesAsync already swallows failures
+            // and returns (0, 0), so no try/catch is needed here.
+            var (totalBlocked, longestSeconds) = await GetBlockingValuesAsync(connection, Array.Empty<string>());
 
-                SELECT
-                    total_blocked = COUNT_BIG(*),
-                    longest_blocked_seconds = ISNULL(MAX(s.waittime), 0) / 1000.0
-                FROM sys.sysprocesses AS s
-                WHERE s.blocked <> 0
-                AND   s.lastwaittype LIKE N'LCK%'
-                OPTION(MAXDOP 1, RECOMPILE);";
+            status.TotalBlocked = totalBlocked;
+            status.LongestBlockedSeconds = longestSeconds;
 
-            try
-            {
-                using var cmd = new SqlCommand(query, connection);
-                cmd.CommandTimeout = 10;
-                using var reader = await cmd.ExecuteReaderAsync();
-
-                if (await reader.ReadAsync())
-                {
-                    // Use GetValue + Convert for safety with varying SQL types
-                    var totalBlockedValue = reader.GetValue(0);
-                    var longestSecondsValue = reader.GetValue(1);
-                    
-                    var totalBlocked = Convert.ToInt64(totalBlockedValue, System.Globalization.CultureInfo.InvariantCulture);
-                    var longestSeconds = Convert.ToDecimal(longestSecondsValue, System.Globalization.CultureInfo.InvariantCulture);
-                    
-                    status.TotalBlocked = totalBlocked;
-                    status.LongestBlockedSeconds = longestSeconds;
-                    
-                    Logger.Info($"Blocking status: {totalBlocked} blocked, longest {longestSeconds}s");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning($"Failed to get blocking status: {ex.Message}");
-            }
+            Logger.Info($"Blocking status: {totalBlocked} blocked, longest {longestSeconds}s");
         }
 
         private async Task GetThreadStatusAsync(SqlConnection connection, ServerHealthStatus status)
