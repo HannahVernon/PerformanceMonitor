@@ -61,6 +61,9 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>Fired when the Queries sub-tab changes, so the global Compare dropdown can update.</summary>
         public event Action? SubTabChanged;
 
+        /// <summary>Raised when user drills down on a chart point. Args: (chartType, serverLocalTime)</summary>
+        public event Action<string, DateTime>? ChartDrillDownRequested;
+
         private CancellationTokenSource? _actualPlanCts;
 
         /// <summary>Cancels the in-flight actual plan execution, if any.</summary>
@@ -873,12 +876,41 @@ namespace PerformanceMonitorDashboard.Controls
             }
         }
 
+        private void AddDrillDown(ScottPlot.WPF.WpfPlot chart, ContextMenu menu,
+            Func<ChartHoverHelper?> hoverGetter, string label, string chartType)
+        {
+            menu.Items.Insert(0, new Separator());
+            var item = new MenuItem { Header = label };
+            menu.Items.Insert(0, item);
+
+            menu.Opened += (s, _) =>
+            {
+                var pos = System.Windows.Input.Mouse.GetPosition(chart);
+                var nearest = hoverGetter()?.GetNearestSeries(pos);
+                item.Tag = nearest?.Time;
+                item.IsEnabled = nearest.HasValue;
+            };
+
+            item.Click += (s, _) =>
+            {
+                if (item.Tag is DateTime time)
+                    ChartDrillDownRequested?.Invoke(chartType, time);
+            };
+        }
+
         private void SetupChartSaveMenus()
         {
-            TabHelpers.SetupChartContextMenu(QueryPerfTrendsQueryChart, "Query_Durations", "report.query_stats_summary");
-            TabHelpers.SetupChartContextMenu(QueryPerfTrendsProcChart, "Procedure_Durations", "report.procedure_stats_summary");
-            TabHelpers.SetupChartContextMenu(QueryPerfTrendsQsChart, "QueryStore_Durations", "report.query_store_summary");
-            TabHelpers.SetupChartContextMenu(QueryPerfTrendsExecChart, "Execution_Counts", "collect.query_stats");
+            var queryMenu = TabHelpers.SetupChartContextMenu(QueryPerfTrendsQueryChart, "Query_Durations", "report.query_stats_summary");
+            AddDrillDown(QueryPerfTrendsQueryChart, queryMenu, () => _queryDurationHover, "Show Active Queries at This Time", "QueryPerfTrendsQuery");
+
+            var procMenu = TabHelpers.SetupChartContextMenu(QueryPerfTrendsProcChart, "Procedure_Durations", "report.procedure_stats_summary");
+            AddDrillDown(QueryPerfTrendsProcChart, procMenu, () => _procDurationHover, "Show Active Queries at This Time", "QueryPerfTrendsProc");
+
+            var qsMenu = TabHelpers.SetupChartContextMenu(QueryPerfTrendsQsChart, "QueryStore_Durations", "report.query_store_summary");
+            AddDrillDown(QueryPerfTrendsQsChart, qsMenu, () => _qsDurationHover, "Show Active Queries at This Time", "QueryPerfTrendsQs");
+
+            var execMenu = TabHelpers.SetupChartContextMenu(QueryPerfTrendsExecChart, "Execution_Counts", "collect.query_stats");
+            AddDrillDown(QueryPerfTrendsExecChart, execMenu, () => _execTrendsHover, "Show Active Queries at This Time", "QueryPerfTrendsExec");
         }
 
         // ── Active Queries refresh ──

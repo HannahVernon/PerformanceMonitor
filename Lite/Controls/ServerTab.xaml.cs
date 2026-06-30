@@ -317,10 +317,14 @@ public partial class ServerTab : UserControl
         /* Chart context menus (right-click save/export) */
         var waitStatsMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(WaitStatsChart, "Wait_Stats");
         AddWaitDrillDownMenuItem(WaitStatsChart, waitStatsMenu);
-        Helpers.ContextMenuHelper.SetupChartContextMenu(QueryDurationTrendChart, "Query_Duration_Trends");
-        Helpers.ContextMenuHelper.SetupChartContextMenu(ProcDurationTrendChart, "Procedure_Duration_Trends");
-        Helpers.ContextMenuHelper.SetupChartContextMenu(QueryStoreDurationTrendChart, "QueryStore_Duration_Trends");
-        Helpers.ContextMenuHelper.SetupChartContextMenu(ExecutionCountTrendChart, "Execution_Count_Trends");
+        var queryDurationTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(QueryDurationTrendChart, "Query_Duration_Trends");
+        AddChartDrillDownMenuItem(QueryDurationTrendChart, queryDurationTrendMenu, _queryDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var procDurationTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(ProcDurationTrendChart, "Procedure_Duration_Trends");
+        AddChartDrillDownMenuItem(ProcDurationTrendChart, procDurationTrendMenu, _procDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var queryStoreDurationTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(QueryStoreDurationTrendChart, "QueryStore_Duration_Trends");
+        AddChartDrillDownMenuItem(QueryStoreDurationTrendChart, queryStoreDurationTrendMenu, _queryStoreDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var executionCountTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(ExecutionCountTrendChart, "Execution_Count_Trends");
+        AddChartDrillDownMenuItem(ExecutionCountTrendChart, executionCountTrendMenu, _executionCountTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var cpuMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CpuChart, "CPU_Usage");
         AddChartDrillDownMenuItem(CpuChart, cpuMenu, _cpuHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var memoryMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryChart, "Memory_Usage");
