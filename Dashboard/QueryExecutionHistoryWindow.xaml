@@ -320,12 +320,12 @@
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
 
-                <!-- TempDB (MB) -->
+                <!-- tempdb (MB) -->
                 <DataGridTextColumn Binding="{Binding AvgTempdbMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115">
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgTempdbMb" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="Avg TempDB (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="Avg tempdb (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
@@ -333,7 +333,7 @@
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinTempdbMb" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="Min TempDB (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="Min tempdb (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
@@ -341,7 +341,7 @@
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxTempdbMb" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="Max TempDB (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="Max tempdb (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>

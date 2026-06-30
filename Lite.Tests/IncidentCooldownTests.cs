@@ -109,7 +109,7 @@ public class IncidentCooldownTests
         // Same metric within window -> suppressed (today's behavior).
         Assert.False((await cd.EvaluateAsync("1", "High CPU", null, Window)).ShouldSend);
         // A different metric is its own key -> fresh.
-        Assert.True((await cd.EvaluateAsync("1", "TempDB Space", new List<AlertIncident>(), Window)).ShouldSend);
+        Assert.True((await cd.EvaluateAsync("1", "tempdb Space", new List<AlertIncident>(), Window)).ShouldSend);
         // A different server is its own key -> fresh.
         Assert.True((await cd.EvaluateAsync("2", "High CPU", null, Window)).ShouldSend);
     }

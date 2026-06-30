@@ -179,7 +179,7 @@
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TempdbCurrentMb" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="TempDB Cur (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="tempdb Cur (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
@@ -187,7 +187,7 @@
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TempdbAllocations" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="TempDB Alloc" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="tempdb Alloc" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>

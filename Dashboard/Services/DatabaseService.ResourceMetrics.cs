@@ -73,9 +73,9 @@ namespace PerformanceMonitorDashboard.Services
             recommendation =
                 CASE
                     WHEN ts.version_store_reserved_page_count * 8 / 1024 > 1000 THEN N'Check for long-running transactions, snapshot isolation'
-                    WHEN ts.unallocated_extent_page_count * 8 / 1024 < 100 THEN N'Consider increasing TempDB file sizes'
+                    WHEN ts.unallocated_extent_page_count * 8 / 1024 < 100 THEN N'Consider increasing tempdb file sizes'
                     WHEN ts.internal_object_reserved_page_count > ts.user_object_reserved_page_count * 2 THEN N'High internal usage - check sorts/hash ops'
-                    ELSE N'TempDB usage is within normal range'
+                    ELSE N'tempdb usage is within normal range'
                 END
         FROM collect.tempdb_stats AS ts
         {dateFilter}

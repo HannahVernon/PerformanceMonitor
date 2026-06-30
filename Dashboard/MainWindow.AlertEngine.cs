@@ -600,7 +600,7 @@ namespace PerformanceMonitorDashboard
                 _activeTempDbSpaceAlert[serverId] = true;
                 if (!_lastTempDbSpaceAlert.TryGetValue(serverId, out var lastAlert) || (now - lastAlert) >= alertCooldown)
                 {
-                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "TempDB Space" };
+                    var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "tempdb Space" };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastTempDbSpaceAlert[serverId] = now;
                     var tempDbContext = BuildTempDbSpaceContext(tempDb);
@@ -609,22 +609,22 @@ namespace PerformanceMonitorDashboard
                     if (!isMuted)
                     {
                         _notificationService?.ShowSnoozableNotification(
-                            "TempDB Space",
-                            $"{serverName}: TempDB {tempDb.UsedPercent:F0}% used",
+                            "tempdb Space",
+                            $"{serverName}: tempdb {tempDb.UsedPercent:F0}% used",
                             NotificationType.Warning,
                             serverName,
-                            "TempDB Space",
+                            "tempdb Space",
                             _muteRuleService);
                     }
 
-                    _emailAlertService.RecordAlert(serverId, serverName, "TempDB Space",
+                    _emailAlertService.RecordAlert(serverId, serverName, "tempdb Space",
                         $"{tempDb.UsedPercent:F0}% used ({tempDb.TotalReservedMb:F0} MB)",
                         $"{prefs.TempDbSpaceThresholdPercent}%", !isMuted, isMuted ? "muted" : "tray", muted: isMuted, detailText: detailText);
 
                     if (!isMuted)
                     {
                         await _emailAlertService.TrySendAlertEmailAsync(
-                            "TempDB Space",
+                            "tempdb Space",
                             serverName,
                             $"{tempDb.UsedPercent:F0}% used ({tempDb.TotalReservedMb:F0} MB)",
                             $"{prefs.TempDbSpaceThresholdPercent}%",
@@ -636,9 +636,9 @@ namespace PerformanceMonitorDashboard
             else if (_activeTempDbSpaceAlert.TryRemove(serverId, out var wasTempDb) && wasTempDb)
             {
                 var pct = health.TempDbSpace != null ? $"{health.TempDbSpace.UsedPercent:F0}%" : "N/A";
-                _notificationService?.ShowStyledNotification("TempDB Space Resolved",
-                    $"{serverName}: TempDB usage back to {pct}", ToastSeverity.Success);
-                _emailAlertService.RecordAlert(serverId, serverName, "TempDB Space Resolved",
+                _notificationService?.ShowStyledNotification("tempdb Space Resolved",
+                    $"{serverName}: tempdb usage back to {pct}", ToastSeverity.Success);
+                _emailAlertService.RecordAlert(serverId, serverName, "tempdb Space Resolved",
                     pct, $"{prefs.TempDbSpaceThresholdPercent}%", true, "tray");
             }
 
@@ -1245,7 +1245,7 @@ namespace PerformanceMonitorDashboard
             var context = new AlertContext();
             context.Details.Add(new AlertDetailItem
             {
-                Heading = $"TempDB — {tempDb.UsedPercent:F0}% Used",
+                Heading = $"tempdb — {tempDb.UsedPercent:F0}% Used",
                 Fields = new()
                 {
                     ("Total Reserved", $"{tempDb.TotalReservedMb:F0} MB"),

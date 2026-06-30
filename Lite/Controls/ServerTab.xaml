@@ -940,7 +940,7 @@
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgClrTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg CLR (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
                                     <DataGridTextColumn Binding="{Binding AvgTempdbSpaceUsed, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="120">
-                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgTempdbSpaceUsed" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg TempDB Pages" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgTempdbSpaceUsed" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg tempdb Pages" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
                                     <DataGridTextColumn Binding="{Binding AvgLogBytesUsed, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgLogBytesUsed" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Log Bytes" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
@@ -1297,7 +1297,7 @@
                 </Grid>
             </TabItem>
 
-            <!-- TempDB Tab -->
+            <!-- tempdb Tab -->
             <TabItem Header="tempdb">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>

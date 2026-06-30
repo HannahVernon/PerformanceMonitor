@@ -52,7 +52,7 @@ internal static class AlertSeverity
             "High CPU" => ("#F59E0B", "WARNING", "\U0001F7E1"),
             "Poison Wait" => ("#DC2626", "CRITICAL", "\U0001F534"),
             "Long-Running Query" => ("#D97706", "WARNING", "\U0001F7E0"),
-            "TempDB Space" => ("#D97706", "WARNING", "\U0001F7E0"),
+            "tempdb Space" => ("#D97706", "WARNING", "\U0001F7E0"),
             "Long-Running Job" => ("#D97706", "WARNING", "\U0001F7E0"),
             // Emailed/webhooked and fired as a Warning toast — was falling through to INFO-blue.
             "Failed Agent Job" => ("#D97706", "WARNING", "\U0001F7E0"),

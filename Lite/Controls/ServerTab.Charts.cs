@@ -468,7 +468,7 @@ public partial class ServerTab : UserControl
 
         TempDbFileIoChart.Plot.Axes.DateTimeTicksBottomDateChange();
         ReapplyAxisColors(TempDbFileIoChart);
-        TempDbFileIoChart.Plot.YLabel("TempDB File I/O Latency (ms)");
+        TempDbFileIoChart.Plot.YLabel("tempdb File I/O Latency (ms)");
         SetChartYLimitsWithLegendPadding(TempDbFileIoChart, 0, maxLatency > 0 ? maxLatency : 10);
         ShowChartLegend(TempDbFileIoChart);
         TempDbFileIoChart.Refresh();
