@@ -114,6 +114,32 @@ namespace PerformanceMonitorDashboard
                     PasswordBox.Password = cred.Value.Password;
                 }
             }
+            else if (existingServer.AuthenticationType == AuthenticationTypes.ServicePrincipal)
+            {
+                ServicePrincipalAuthRadio.IsChecked = true;
+                ServicePrincipalClientIdBox.Text = existingServer.AzureClientId ?? string.Empty;
+
+                // Pre-fill the client id and the client secret from Credential Manager, matching how SQL
+                // Server auth pre-fills its password above (and how Lite pre-fills the SP secret). The
+                // model's AzureClientId takes precedence for the client id, falling back to the stored
+                // credential username. The user can leave the secret untouched to keep it, or overwrite to
+                // rotate it — the save path re-persists whatever is in the box.
+                var credentialService = new CredentialService();
+                var cred = credentialService.GetCredential(existingServer.Id);
+                if (cred.HasValue)
+                {
+                    if (string.IsNullOrEmpty(ServicePrincipalClientIdBox.Text) && !string.IsNullOrEmpty(cred.Value.Username))
+                    {
+                        ServicePrincipalClientIdBox.Text = cred.Value.Username;
+                    }
+                    ServicePrincipalSecretBox.Password = cred.Value.Password;
+                }
+            }
+            else if (existingServer.AuthenticationType == AuthenticationTypes.ManagedIdentity)
+            {
+                ManagedIdentityAuthRadio.IsChecked = true;
+                ManagedIdentityClientIdBox.Text = existingServer.ManagedIdentityClientId ?? string.Empty;
+            }
             else
             {
                 WindowsAuthRadio.IsChecked = true;
@@ -130,13 +156,22 @@ namespace PerformanceMonitorDashboard
 
         private void AuthType_Changed(object sender, RoutedEventArgs e)
         {
-            if (SqlAuthPanel != null && EntraMfaPanel != null)
+            if (SqlAuthPanel != null && EntraMfaPanel != null &&
+                ServicePrincipalPanel != null && ManagedIdentityPanel != null)
             {
                 SqlAuthPanel.Visibility = SqlAuthRadio.IsChecked == true
                     ? System.Windows.Visibility.Visible
                     : System.Windows.Visibility.Collapsed;
 
                 EntraMfaPanel.Visibility = EntraMfaAuthRadio.IsChecked == true
+                    ? System.Windows.Visibility.Visible
+                    : System.Windows.Visibility.Collapsed;
+
+                ServicePrincipalPanel.Visibility = ServicePrincipalAuthRadio.IsChecked == true
+                    ? System.Windows.Visibility.Visible
+                    : System.Windows.Visibility.Collapsed;
+
+                ManagedIdentityPanel.Visibility = ManagedIdentityAuthRadio.IsChecked == true
                     ? System.Windows.Visibility.Visible
                     : System.Windows.Visibility.Collapsed;
             }
@@ -185,24 +220,46 @@ namespace PerformanceMonitorDashboard
                 MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true
             };
 
+            // Resolve auth type + per-mode credentials from the live controls, then apply via the SHARED
+            // helper so this Test-Connection builder can never diverge from ServerConnection's production
+            // builder (the two-bodies trap). See ServerConnection.ApplyAuthentication.
+            string authType;
+            string? userId = null;
+            string? secret = null;
+            string? managedIdentityClientId = null;
+
             if (WindowsAuthRadio.IsChecked == true)
             {
-                builder.IntegratedSecurity = true;
+                authType = AuthenticationTypes.Windows;
             }
             else if (SqlAuthRadio.IsChecked == true)
             {
-                builder.IntegratedSecurity = false;
-                builder.UserID = UsernameTextBox.Text.Trim();
-                builder.Password = PasswordBox.Password;
+                authType = AuthenticationTypes.SqlServer;
+                userId = UsernameTextBox.Text.Trim();
+                secret = PasswordBox.Password;
             }
             else if (EntraMfaAuthRadio.IsChecked == true)
             {
-                builder.IntegratedSecurity = false;
-                builder.Authentication = SqlAuthenticationMethod.ActiveDirectoryInteractive;
-                var mfaUsername = EntraMfaUsernameBox.Text.Trim();
-                if (!string.IsNullOrEmpty(mfaUsername))
-                    builder.UserID = mfaUsername;
+                authType = AuthenticationTypes.EntraMFA;
+                userId = EntraMfaUsernameBox.Text.Trim();
             }
+            else if (ServicePrincipalAuthRadio.IsChecked == true)
+            {
+                authType = AuthenticationTypes.ServicePrincipal;
+                userId = ServicePrincipalClientIdBox.Text.Trim();
+                secret = ServicePrincipalSecretBox.Password;
+            }
+            else if (ManagedIdentityAuthRadio.IsChecked == true)
+            {
+                authType = AuthenticationTypes.ManagedIdentity;
+                managedIdentityClientId = ManagedIdentityClientIdBox.Text.Trim();
+            }
+            else
+            {
+                authType = AuthenticationTypes.Windows;
+            }
+
+            ServerConnection.ApplyAuthentication(builder, authType, userId, secret, azureClientId: null, managedIdentityClientId);
 
             return builder;
         }
@@ -214,6 +271,9 @@ namespace PerformanceMonitorDashboard
             bool useEntraAuth = EntraMfaAuthRadio.IsChecked == true;
             string? username = null;
             string? password = null;
+            string? authenticationType = null;
+            string? azureClientId = null;
+            string? managedIdentityClientId = null;
 
             if (SqlAuthRadio.IsChecked == true)
             {
@@ -224,6 +284,18 @@ namespace PerformanceMonitorDashboard
             {
                 username = EntraMfaUsernameBox.Text.Trim();
             }
+            else if (ServicePrincipalAuthRadio.IsChecked == true)
+            {
+                authenticationType = AuthenticationTypes.ServicePrincipal;
+                azureClientId = ServicePrincipalClientIdBox.Text.Trim();
+                username = azureClientId;
+                password = ServicePrincipalSecretBox.Password;
+            }
+            else if (ManagedIdentityAuthRadio.IsChecked == true)
+            {
+                authenticationType = AuthenticationTypes.ManagedIdentity;
+                managedIdentityClientId = ManagedIdentityClientIdBox.Text.Trim();
+            }
 
             return InstallationService.BuildConnectionString(
                 server,
@@ -232,7 +304,10 @@ namespace PerformanceMonitorDashboard
                 password,
                 GetSelectedEncryptMode(),
                 TrustServerCertificateCheckBox.IsChecked == true,
-                useEntraAuth);
+                useEntraAuth,
+                authenticationType,
+                azureClientId,
+                managedIdentityClientId);
         }
 
         private static string GetAppVersion()
@@ -290,6 +365,31 @@ namespace PerformanceMonitorDashboard
                     MessageBoxImage.Warning
                 );
                 return false;
+            }
+
+            if (ServicePrincipalAuthRadio.IsChecked == true)
+            {
+                if (string.IsNullOrWhiteSpace(ServicePrincipalClientIdBox.Text))
+                {
+                    MessageBox.Show(
+                        "Please enter the Application (Client) ID for service principal authentication.",
+                        "Validation Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning
+                    );
+                    return false;
+                }
+
+                if (string.IsNullOrEmpty(ServicePrincipalSecretBox.Password))
+                {
+                    MessageBox.Show(
+                        "Please enter the client secret for service principal authentication.",
+                        "Validation Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning
+                    );
+                    return false;
+                }
             }
 
             return true;
@@ -852,9 +952,14 @@ namespace PerformanceMonitorDashboard
             WindowsAuthRadio.IsEnabled = enabled;
             SqlAuthRadio.IsEnabled = enabled;
             EntraMfaAuthRadio.IsEnabled = enabled;
+            ServicePrincipalAuthRadio.IsEnabled = enabled;
+            ManagedIdentityAuthRadio.IsEnabled = enabled;
             UsernameTextBox.IsEnabled = enabled;
             PasswordBox.IsEnabled = enabled;
             EntraMfaUsernameBox.IsEnabled = enabled;
+            ServicePrincipalClientIdBox.IsEnabled = enabled;
+            ServicePrincipalSecretBox.IsEnabled = enabled;
+            ManagedIdentityClientIdBox.IsEnabled = enabled;
             EncryptModeComboBox.IsEnabled = enabled;
             TrustServerCertificateCheckBox.IsEnabled = enabled;
             ReadOnlyIntentCheckBox.IsEnabled = enabled;
@@ -908,6 +1013,8 @@ namespace PerformanceMonitorDashboard
 
             // Determine authentication type and credentials
             string authenticationType;
+            string? azureClientId = null;
+            string? managedIdentityClientId = null;
             if (WindowsAuthRadio.IsChecked == true)
             {
                 authenticationType = AuthenticationTypes.Windows;
@@ -918,6 +1025,25 @@ namespace PerformanceMonitorDashboard
             {
                 authenticationType = AuthenticationTypes.EntraMFA;
                 Username = EntraMfaUsernameBox.Text.Trim();
+                Password = null;
+            }
+            else if (ServicePrincipalAuthRadio.IsChecked == true)
+            {
+                authenticationType = AuthenticationTypes.ServicePrincipal;
+                // Surface the client id as the Username and the secret as the Password so the existing
+                // ServerManager credential-save path persists them (client id + client secret).
+                azureClientId = ServicePrincipalClientIdBox.Text.Trim();
+                Username = azureClientId;
+                Password = ServicePrincipalSecretBox.Password;
+            }
+            else if (ManagedIdentityAuthRadio.IsChecked == true)
+            {
+                authenticationType = AuthenticationTypes.ManagedIdentity;
+                managedIdentityClientId = string.IsNullOrWhiteSpace(ManagedIdentityClientIdBox.Text)
+                    ? null
+                    : ManagedIdentityClientIdBox.Text.Trim();
+                // No credential to store for managed identity.
+                Username = null;
                 Password = null;
             }
             else
@@ -949,6 +1075,8 @@ namespace PerformanceMonitorDashboard
                 ServerConnection.DisplayName = displayName;
                 ServerConnection.ServerName = ServerNameTextBox.Text.Trim();
                 ServerConnection.AuthenticationType = authenticationType;
+                ServerConnection.AzureClientId = azureClientId;
+                ServerConnection.ManagedIdentityClientId = managedIdentityClientId;
                 ServerConnection.Description = DescriptionTextBox.Text.Trim();
                 ServerConnection.IsFavorite = IsFavoriteCheckBox.IsChecked == true;
                 ServerConnection.EncryptMode = GetSelectedEncryptMode();
@@ -970,6 +1098,8 @@ namespace PerformanceMonitorDashboard
                     DisplayName = displayName,
                     ServerName = ServerNameTextBox.Text.Trim(),
                     AuthenticationType = authenticationType,
+                    AzureClientId = azureClientId,
+                    ManagedIdentityClientId = managedIdentityClientId,
                     Description = DescriptionTextBox.Text.Trim(),
                     IsFavorite = IsFavoriteCheckBox.IsChecked == true,
                     CreatedDate = DateTime.Now,

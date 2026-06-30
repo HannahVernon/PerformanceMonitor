@@ -153,9 +153,12 @@ namespace PerformanceMonitorDashboard.Services
                 SaveServersInternal();
             }
 
-            if (server.AuthenticationType == AuthenticationTypes.SqlServer && !string.IsNullOrEmpty(username) && password != null)
+            if ((server.AuthenticationType == AuthenticationTypes.SqlServer ||
+                 server.AuthenticationType == AuthenticationTypes.ServicePrincipal) &&
+                !string.IsNullOrEmpty(username) && password != null)
             {
-                // For SQL Server auth, save both username and password
+                // SQL Server auth (username + password) and Service Principal (client id + client secret)
+                // both persist a secret in Windows Credential Manager.
                 if (!_credentialService.SaveCredential(server.Id, username, password))
                 {
                     throw new InvalidOperationException("Failed to save credentials to Windows Credential Manager");
@@ -169,6 +172,7 @@ namespace PerformanceMonitorDashboard.Services
                     throw new InvalidOperationException("Failed to save username to Windows Credential Manager");
                 }
             }
+            // ManagedIdentity stores no credential.
 
             // Initialize status as unknown for new server
             _connectionStatuses[server.Id] = new ServerConnectionStatus { ServerId = server.Id };
@@ -189,25 +193,40 @@ namespace PerformanceMonitorDashboard.Services
                 SaveServersInternal();
             }
 
-            if (server.AuthenticationType == AuthenticationTypes.SqlServer && !string.IsNullOrEmpty(username) && password != null)
+            if ((server.AuthenticationType == AuthenticationTypes.SqlServer ||
+                 server.AuthenticationType == AuthenticationTypes.ServicePrincipal) &&
+                !string.IsNullOrEmpty(username) && password != null)
             {
-                // For SQL Server auth, update both username and password
+                // SQL Server auth (username + password) and Service Principal (client id + client secret)
+                // both persist a secret in Windows Credential Manager.
                 if (!_credentialService.UpdateCredential(server.Id, username, password))
                 {
                     throw new InvalidOperationException("Failed to update credentials in Windows Credential Manager");
                 }
             }
-            else if (server.AuthenticationType == AuthenticationTypes.EntraMFA && !string.IsNullOrEmpty(username))
+            else if (server.AuthenticationType == AuthenticationTypes.EntraMFA)
             {
-                // For MFA auth, update username hint only (no password needed)
-                if (!_credentialService.UpdateCredential(server.Id, username, string.Empty))
+                if (!string.IsNullOrEmpty(username))
                 {
-                    throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
+                    // For MFA auth, update the username hint only (no password needed).
+                    if (!_credentialService.UpdateCredential(server.Id, username, string.Empty))
+                    {
+                        throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
+                    }
+                }
+                else
+                {
+                    // No username hint to store. Remove any credential left over from a previous
+                    // secret-bearing mode (SqlServer/ServicePrincipal) so the old secret can't linger
+                    // orphaned when a server is switched to MFA with a blank username.
+                    _credentialService.DeleteCredential(server.Id);
                 }
             }
-            else if (server.AuthenticationType == AuthenticationTypes.Windows)
+            else if (server.AuthenticationType == AuthenticationTypes.Windows ||
+                     server.AuthenticationType == AuthenticationTypes.ManagedIdentity)
             {
-                // For Windows auth, remove any stored credentials
+                // Windows and Managed Identity use no stored secret — remove any credential left over
+                // from a previous auth mode so it can't linger orphaned in Credential Manager.
                 _credentialService.DeleteCredential(server.Id);
             }
         }
