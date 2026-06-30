@@ -892,6 +892,8 @@
       "performancemonitor.common": {
         "type": "Project",
         "dependencies": {
+          "CredentialManagement": "[1.0.2, )",
+          "Microsoft.Extensions.Logging.Abstractions": "[10.0.9, )",
           "ModelContextProtocol": "[1.4.0, )"
         }
       },
