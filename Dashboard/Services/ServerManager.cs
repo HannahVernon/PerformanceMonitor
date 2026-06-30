@@ -204,12 +204,22 @@ namespace PerformanceMonitorDashboard.Services
                     throw new InvalidOperationException("Failed to update credentials in Windows Credential Manager");
                 }
             }
-            else if (server.AuthenticationType == AuthenticationTypes.EntraMFA && !string.IsNullOrEmpty(username))
+            else if (server.AuthenticationType == AuthenticationTypes.EntraMFA)
             {
-                // For MFA auth, update username hint only (no password needed)
-                if (!_credentialService.UpdateCredential(server.Id, username, string.Empty))
+                if (!string.IsNullOrEmpty(username))
                 {
-                    throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
+                    // For MFA auth, update the username hint only (no password needed).
+                    if (!_credentialService.UpdateCredential(server.Id, username, string.Empty))
+                    {
+                        throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
+                    }
+                }
+                else
+                {
+                    // No username hint to store. Remove any credential left over from a previous
+                    // secret-bearing mode (SqlServer/ServicePrincipal) so the old secret can't linger
+                    // orphaned when a server is switched to MFA with a blank username.
+                    _credentialService.DeleteCredential(server.Id);
                 }
             }
             else if (server.AuthenticationType == AuthenticationTypes.Windows ||
