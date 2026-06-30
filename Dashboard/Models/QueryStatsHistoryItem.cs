@@ -112,8 +112,11 @@ namespace PerformanceMonitorDashboard.Models
         public double? AvgRows => ExecutionCount > 0 ? TotalRows / (double)ExecutionCount : null;
 
         // Memory in MB
+        public double MinGrantMb => MinGrantKb / 1024.0;
         public double MaxGrantMb => MaxGrantKb / 1024.0;
+        public double MinUsedGrantMb => MinUsedGrantKb / 1024.0;
         public double MaxUsedGrantMb => MaxUsedGrantKb / 1024.0;
+        public double MinIdealGrantMb => MinIdealGrantKb / 1024.0;
         public double MaxIdealGrantMb => MaxIdealGrantKb / 1024.0;
     }
 }
