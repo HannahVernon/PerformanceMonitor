@@ -385,8 +385,6 @@ END;";
         {
             Message = "Starting installation...",
             Status = "Info",
-            CurrentStep = 0,
-            TotalSteps = scriptFiles.Count,
             ProgressPercent = 0
         });
 
@@ -413,8 +411,6 @@ END;";
             {
                 Message = $"Executing {fileName}...",
                 Status = "Info",
-                CurrentStep = i + 1,
-                TotalSteps = scriptFiles.Count,
                 ProgressPercent = (int)(((i + 1) / (double)scriptFiles.Count) * 100)
             });
 
@@ -496,8 +492,6 @@ END;";
                 {
                     Message = $"{fileName} - Success",
                     Status = "Success",
-                    CurrentStep = i + 1,
-                    TotalSteps = scriptFiles.Count,
                     ProgressPercent = (int)(((i + 1) / (double)scriptFiles.Count) * 100)
                 });
 
@@ -512,9 +506,7 @@ END;";
                 progress?.Report(new InstallationProgress
                 {
                     Message = $"{fileName} - FAILED: {ex.Message}",
-                    Status = "Error",
-                    CurrentStep = i + 1,
-                    TotalSteps = scriptFiles.Count
+                    Status = "Error"
                 });
 
                 result.FilesFailed++;
@@ -888,24 +880,6 @@ END;";
                 sb.AppendLine($"Error: {errorMsg}");
                 sb.AppendLine();
             }
-        }
-
-        if (result.LogMessages.Count > 0)
-        {
-            sb.AppendLine("DETAILED INSTALLATION LOG");
-            sb.AppendLine("--------------------------------------------------------------------------------");
-            foreach (var (message, status) in result.LogMessages)
-            {
-                string prefix = status switch
-                {
-                    "Success" => "[OK] ",
-                    "Error" => "[ERROR] ",
-                    "Warning" => "[WARN] ",
-                    _ => ""
-                };
-                sb.AppendLine($"{prefix}{message}");
-            }
-            sb.AppendLine();
         }
 
         sb.AppendLine("================================================================================");

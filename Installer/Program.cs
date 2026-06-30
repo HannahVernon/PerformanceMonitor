@@ -64,6 +64,7 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  --reinstall          Drop existing database and perform clean install");
                 Console.WriteLine("  --uninstall          Remove database, Agent jobs, and XE sessions");
                 Console.WriteLine("  --reset-schedule     Reset collection schedule to recommended defaults");
+                Console.WriteLine("  --troubleshoot       Run installation diagnostics (99_installer_troubleshooting.sql)");
                 Console.WriteLine("  --encrypt=<level>    Connection encryption: mandatory (default), optional, strict");
                 Console.WriteLine("  --trust-cert         Trust server certificate without validation");
                 Console.WriteLine("  --entra <email>      Use Microsoft Entra ID interactive authentication (MFA)");
@@ -83,6 +84,8 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  6  SQL files not found");
                 Console.WriteLine("  7  Uninstall failed");
                 Console.WriteLine("  8  Upgrade failed");
+                Console.WriteLine("  9  Clean install failed");
+                Console.WriteLine("  10 Diagnostics found errors or failed to run");
                 return 0;
             }
 
@@ -90,6 +93,7 @@ namespace PerformanceMonitorInstaller
             bool reinstallMode = args.Any(a => a.Equals("--reinstall", StringComparison.OrdinalIgnoreCase));
             bool uninstallMode = args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase));
             bool resetSchedule = args.Any(a => a.Equals("--reset-schedule", StringComparison.OrdinalIgnoreCase));
+            bool troubleshootMode = args.Any(a => a.Equals("--troubleshoot", StringComparison.OrdinalIgnoreCase));
             bool trustCert = args.Any(a => a.Equals("--trust-cert", StringComparison.OrdinalIgnoreCase));
             bool entraMode = args.Any(a => a.Equals("--entra", StringComparison.OrdinalIgnoreCase));
 
@@ -295,22 +299,21 @@ namespace PerformanceMonitorInstaller
                     return (int)InstallationResultCode.InvalidArguments;
                 }
 
-                Console.Write("Trust server certificate? (Y/N, default Y): ");
+                Console.Write("Trust server certificate? (Y/N, default N): ");
                 string? trustResponse = Console.ReadLine()?.Trim();
-                trustCert = string.IsNullOrWhiteSpace(trustResponse)
-                    || trustResponse.Equals("Y", StringComparison.OrdinalIgnoreCase);
+                trustCert = trustResponse?.Equals("Y", StringComparison.OrdinalIgnoreCase) ?? false;
 
                 Console.WriteLine("Encryption level:");
-                Console.WriteLine("  [O] Optional (default)");
-                Console.WriteLine("  [M] Mandatory");
+                Console.WriteLine("  [M] Mandatory (default)");
+                Console.WriteLine("  [O] Optional");
                 Console.WriteLine("  [S] Strict");
-                Console.Write("Choice (O/M/S, default O): ");
+                Console.Write("Choice (M/O/S, default M): ");
                 string? encryptResponse = Console.ReadLine()?.Trim();
                 encryptionLevel = encryptResponse?.ToUpperInvariant() switch
                 {
-                    "M" => "Mandatory",
+                    "O" => "Optional",
                     "S" => "Strict",
-                    _ => "Optional"
+                    _ => "Mandatory"
                 };
 
                 Console.WriteLine("Authentication type:");
@@ -485,6 +488,12 @@ namespace PerformanceMonitorInstaller
             }
 
             scriptProvider = ScriptProvider.FromDirectory(monitorRootDirectory);
+
+            if (troubleshootMode)
+            {
+                return await PerformTroubleshootAsync(connectionString, scriptProvider, automatedMode);
+            }
+
             var sqlFiles = scriptProvider.GetInstallFiles();
 
             Console.WriteLine();
@@ -711,8 +720,6 @@ namespace PerformanceMonitorInstaller
                         case "Success":
                             if (p.Message.EndsWith(" - Success", StringComparison.Ordinal))
                             {
-                                /*File success: replicate the original "Executing <file>... Success" format*/
-                                string fileName = p.Message.Replace(" - Success", "", StringComparison.Ordinal);
                                 /*The "Executing..." was already printed by the Info message*/
                                 WriteSuccess("Success");
                             }
@@ -745,7 +752,7 @@ namespace PerformanceMonitorInstaller
                             if (p.Message.StartsWith("Executing ", StringComparison.Ordinal) && p.Message.EndsWith("...", StringComparison.Ordinal))
                             {
                                 /*Replicate "Executing <file>... " format (no newline yet)*/
-                                Console.Write(p.Message.Replace("Executing ", "Executing ", StringComparison.Ordinal) + " ");
+                                Console.Write(p.Message + " ");
                             }
                             else if (p.Message == "Resetting schedule to recommended defaults...")
                             {
@@ -1093,6 +1100,78 @@ namespace PerformanceMonitorInstaller
                 WaitForExit();
             }
             return (int)InstallationResultCode.Success;
+        }
+
+        /// <summary>
+        /// Runs installation diagnostics (99_installer_troubleshooting.sql) against the server and
+        /// prints the [OK]/[WARN]/[ERROR] results. Exit code 0 when no errors are found, otherwise 10.
+        /// </summary>
+        private static async Task<int> PerformTroubleshootAsync(string connectionString, ScriptProvider scriptProvider, bool automatedMode)
+        {
+            Console.WriteLine();
+            Console.WriteLine("================================================================================");
+            Console.WriteLine("TROUBLESHOOT MODE");
+            Console.WriteLine("================================================================================");
+            Console.WriteLine();
+            Console.WriteLine("Running installation diagnostics (99_installer_troubleshooting.sql)...");
+            Console.WriteLine();
+
+            bool noErrors;
+            try
+            {
+                noErrors = await InstallationService.RunTroubleshootingAsync(
+                    connectionString,
+                    scriptProvider,
+                    new Progress<InstallationProgress>(p =>
+                    {
+                        switch (p.Status)
+                        {
+                            case "Success":
+                                WriteSuccess(p.Message);
+                                break;
+                            case "Error":
+                                WriteError(p.Message);
+                                break;
+                            case "Warning":
+                                WriteWarning(p.Message);
+                                break;
+                            case "Info":
+                                Console.WriteLine(p.Message);
+                                break;
+                            case "Debug":
+                                break;
+                            default:
+                                Console.WriteLine(p.Message);
+                                break;
+                        }
+                    })).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"Diagnostics failed: {ex.Message}");
+                if (!automatedMode)
+                {
+                    WaitForExit();
+                }
+                return (int)InstallationResultCode.DiagnosticsFailed;
+            }
+
+            Console.WriteLine();
+            if (noErrors)
+            {
+                WriteSuccess("Diagnostics completed: no errors found.");
+            }
+            else
+            {
+                WriteWarning("Diagnostics completed: issues were reported above ([WARN]/[ERROR]).");
+            }
+
+            if (!automatedMode)
+            {
+                WaitForExit();
+            }
+            return noErrors ? (int)InstallationResultCode.Success : (int)InstallationResultCode.DiagnosticsFailed;
         }
 
         /*

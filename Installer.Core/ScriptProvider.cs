@@ -29,63 +29,9 @@ public abstract class ScriptProvider
         => new EmbeddedResourceScriptProvider(assembly ?? typeof(ScriptProvider).Assembly);
 
     /// <summary>
-    /// Auto-discover: search filesystem starting from CWD and executable directory,
-    /// walking up to 5 parent directories. Falls back to embedded resources.
-    /// </summary>
-    /// <param name="log">Optional logging callback for diagnostics.</param>
-    public static ScriptProvider AutoDiscover(Action<string>? log = null)
-    {
-        var startDirs = new[] { Directory.GetCurrentDirectory(), AppDomain.CurrentDomain.BaseDirectory }
-            .Distinct()
-            .ToList();
-
-        log?.Invoke($"AutoDiscover: searching from [{string.Join(", ", startDirs)}]");
-
-        foreach (string startDir in startDirs)
-        {
-            DirectoryInfo? searchDir = new DirectoryInfo(startDir);
-            for (int i = 0; i < 6 && searchDir != null; i++)
-            {
-                string installFolder = Path.Combine(searchDir.FullName, "install");
-                if (Directory.Exists(installFolder))
-                {
-                    var sqlFiles = Directory.GetFiles(installFolder, "*.sql")
-                        .Where(f => Patterns.SqlFilePattern().IsMatch(Path.GetFileName(f)))
-                        .ToList();
-                    if (sqlFiles.Count > 0)
-                    {
-                        log?.Invoke($"AutoDiscover: found {sqlFiles.Count} scripts in {installFolder}");
-                        return new FileSystemScriptProvider(searchDir.FullName);
-                    }
-                }
-
-                var rootFiles = Directory.GetFiles(searchDir.FullName, "*.sql")
-                    .Where(f => Patterns.SqlFilePattern().IsMatch(Path.GetFileName(f)))
-                    .ToList();
-                if (rootFiles.Count > 0)
-                {
-                    log?.Invoke($"AutoDiscover: found {rootFiles.Count} scripts in {searchDir.FullName}");
-                    return new FileSystemScriptProvider(searchDir.FullName);
-                }
-
-                log?.Invoke($"AutoDiscover: no scripts in {searchDir.FullName}, trying parent");
-                searchDir = searchDir.Parent;
-            }
-        }
-
-        log?.Invoke("AutoDiscover: no filesystem scripts found, falling back to embedded resources");
-        return FromEmbeddedResources();
-    }
-
-    /// <summary>
     /// Returns the filtered, sorted list of install scripts (excludes 00_/97_/99_).
     /// </summary>
     public abstract List<ScriptFile> GetInstallFiles();
-
-    /// <summary>
-    /// Reads the content of an install script.
-    /// </summary>
-    public abstract string ReadScript(ScriptFile file);
 
     /// <summary>
     /// Reads the content of an install script asynchronously.
@@ -224,9 +170,6 @@ internal sealed class FileSystemScriptProvider : ScriptProvider
             .ToList();
     }
 
-    public override string ReadScript(ScriptFile file) =>
-        File.ReadAllText(file.Identifier);
-
     public override Task<string> ReadScriptAsync(ScriptFile file, CancellationToken cancellationToken = default) =>
         File.ReadAllTextAsync(file.Identifier, cancellationToken);
 
@@ -316,9 +259,6 @@ internal sealed class EmbeddedResourceScriptProvider : ScriptProvider
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
     }
-
-    public override string ReadScript(ScriptFile file) =>
-        ReadResource(file.Identifier);
 
     public override Task<string> ReadScriptAsync(ScriptFile file, CancellationToken cancellationToken = default) =>
         Task.FromResult(ReadResource(file.Identifier));
