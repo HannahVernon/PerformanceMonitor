@@ -1601,6 +1601,14 @@
                             </StackPanel>
                         </DataGridTextColumn.Header>
                     </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding AvgClrTimeMs, StringFormat='{}{0:N2}'}" ElementStyle="{StaticResource NumericCell}" Width="100">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgClrTimeMs" Click="QueryStoreFilter_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Avg CLR (ms)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Binding="{Binding MinClrTimeMs, StringFormat='{}{0:N2}'}" ElementStyle="{StaticResource NumericCell}" Width="100">
                         <DataGridTextColumn.Header>
                             <StackPanel Orientation="Horizontal">
@@ -1617,6 +1625,14 @@
                             </StackPanel>
                         </DataGridTextColumn.Header>
                     </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding AvgNumPhysicalIoReads, StringFormat='{}{0:N0}'}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgNumPhysicalIoReads" Click="QueryStoreFilter_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Avg Phys IO Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Binding="{Binding MinNumPhysicalIoReads, StringFormat='{}{0:N0}'}" ElementStyle="{StaticResource NumericCell}" Width="110">
                         <DataGridTextColumn.Header>
                             <StackPanel Orientation="Horizontal">
@@ -1630,6 +1646,14 @@
                             <StackPanel Orientation="Horizontal">
                                 <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxNumPhysicalIoReads" Click="QueryStoreFilter_Click" Margin="0,0,4,0"/>
                                 <TextBlock Text="Max Phys IO Reads" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding AvgLogBytesUsed, StringFormat='{}{0:N0}'}" ElementStyle="{StaticResource NumericCell}" Width="100">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgLogBytesUsed" Click="QueryStoreFilter_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Avg Log Bytes" FontWeight="Bold" VerticalAlignment="Center"/>
                             </StackPanel>
                         </DataGridTextColumn.Header>
                     </DataGridTextColumn>
