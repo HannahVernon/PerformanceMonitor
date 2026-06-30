@@ -93,7 +93,6 @@ public class LiteRecommendationsReaderTests
         Assert.Equal(LiteRecommendationSeverity.Critical, item.Severity);
         Assert.Equal(1.6, item.RawSeverity);
         Assert.Equal(ServerName, item.ServerName);
-        Assert.Equal("SOS_SCHEDULER_YIELD", item.RootFactKey);
         Assert.False(string.IsNullOrEmpty(item.AdviceText));
     }
 
@@ -235,7 +234,11 @@ public class LiteRecommendationsReaderTests
 
         var items = LiteRecommendationsReader.MapFindings(findings, ServerName);
         Assert.Single(items);
-        Assert.Equal("CPU_SQL_PERCENT", items[0].RootFactKey);
+        // RootFactKey is no longer surfaced on the card; verify the newer batch (CPU_SQL_PERCENT)
+        // won via its mapped Title (same fallback MapFinding uses: advice headline, else the key).
+        var cpuAdvice = FactAdvice.GetForFactKey("CPU_SQL_PERCENT");
+        var expectedTitle = !string.IsNullOrEmpty(cpuAdvice?.Headline) ? cpuAdvice!.Headline : "CPU_SQL_PERCENT";
+        Assert.Equal(expectedTitle, items[0].Title);
     }
 
     [Fact]

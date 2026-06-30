@@ -69,15 +69,6 @@ public partial class ServerTab : UserControl
         return date.AddHours(hour).AddMinutes(minute);
     }
 
-    private void SetPickersFromDateTime(DateTime serverTime, DatePicker datePicker, ComboBox hourCombo, ComboBox minuteCombo)
-    {
-        /* Convert server time to the current display mode for UI */
-        var displayTime = ServerTimeHelper.ConvertForDisplay(serverTime, ServerTimeHelper.CurrentDisplayMode);
-        datePicker.SelectedDate = displayTime.Date;
-        hourCombo.SelectedIndex = displayTime.Hour;
-        minuteCombo.SelectedIndex = displayTime.Minute / 15;
-    }
-
     /// <summary>
     /// Gets the selected time range in hours.
     /// </summary>

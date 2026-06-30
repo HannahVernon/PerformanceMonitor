@@ -150,7 +150,6 @@ public sealed class LiteRecommendationsReader
             Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
             AdviceText = ComposeAdvice(advice),
             CopyPasteSql = NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
-            RootFactKey = finding.RootFactKey,
             IncidentId = finding.IncidentId,
             ServerName = serverName ?? string.Empty,
             WindowStartUtc = AsUtc(finding.TimeRangeStart),
