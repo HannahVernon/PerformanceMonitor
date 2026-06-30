@@ -417,18 +417,7 @@ public partial class FinOpsTab : UserControl
         empty.Width = new GridLength(Math.Max(100 - clamped, 0.1), GridUnitType.Star);
     }
 
-    private int GetResourceUsageHoursBack()
-    {
-        return ResourceUsageTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
+    private int HoursBackFromIndex(System.Windows.Controls.ComboBox combo) => combo.SelectedIndex switch { 0 => 1, 1 => 4, 2 => 12, 3 => 24, 4 => 168, _ => 24 };
 
     private async void ResourceUsageTimeRange_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
@@ -444,7 +433,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var hoursBack = GetResourceUsageHoursBack();
+            var hoursBack = HoursBackFromIndex(ResourceUsageTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetDatabaseResourceUsageAsync(serverId, hoursBack));
             _dbResourcesFilterMgr!.UpdateData(data);
             NoDatabaseResourcesMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -647,26 +636,13 @@ public partial class FinOpsTab : UserControl
         }
     }
 
-    private int GetHighImpactHoursBack()
-    {
-        return HighImpactTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
-
     private async System.Threading.Tasks.Task LoadHighImpactQueriesAsync(int serverId)
     {
         if (_dataService == null) return;
 
         try
         {
-            var hoursBack = GetHighImpactHoursBack();
+            var hoursBack = HoursBackFromIndex(HighImpactTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetHighImpactQueriesAsync(serverId, hoursBack));
             _highImpactFilterMgr!.UpdateData(data);
             HighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -678,39 +654,13 @@ public partial class FinOpsTab : UserControl
         }
     }
 
-    private int GetWaitStatsHoursBack()
-    {
-        return WaitStatsTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
-
-    private int GetExpensiveQueriesHoursBack()
-    {
-        return ExpensiveQueriesTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
-
     private async System.Threading.Tasks.Task LoadWaitCategorySummaryAsync(int serverId)
     {
         if (_dataService == null) return;
 
         try
         {
-            var hoursBack = GetWaitStatsHoursBack();
+            var hoursBack = HoursBackFromIndex(WaitStatsTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetWaitCategorySummaryAsync(serverId, hoursBack));
 
             // Compute proportional cost shares — scaled to time window
@@ -740,7 +690,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var hoursBack = GetExpensiveQueriesHoursBack();
+            var hoursBack = HoursBackFromIndex(ExpensiveQueriesTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetExpensiveQueriesAsync(serverId, hoursBack));
 
             // Compute proportional cost shares — scaled to time window

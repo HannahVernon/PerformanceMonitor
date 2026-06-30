@@ -29,8 +29,6 @@ public class ScheduleManager
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    public static readonly string[] PresetNames = ["Low-Impact", "Balanced", "Aggressive"];
-
     private static readonly Dictionary<string, Dictionary<string, int>> s_presets = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Aggressive"] = new(StringComparer.OrdinalIgnoreCase)
@@ -92,90 +90,8 @@ public class ScheduleManager
     }
 
     // ──────────────────────────────────────────────────────────────────
-    //  Existing public API — operates on the default schedule.
-    //  These methods are unchanged from v1 so existing callers keep working.
+    //  Default-schedule public API.
     // ──────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Gets all configured collector schedules (default schedule).
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetAllSchedules()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets only enabled and scheduled collectors (default schedule).
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetEnabledSchedules()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.Where(s => s.Enabled && s.IsScheduled).ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets collectors that are due to run (default schedule, global run state).
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetDueCollectors()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.Where(s => s.IsDue).ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets on-load only collectors (frequency = 0) from the default schedule.
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetOnLoadCollectors()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.Where(s => s.Enabled && !s.IsScheduled).ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets a specific collector schedule by name (default schedule).
-    /// </summary>
-    public CollectorSchedule? GetSchedule(string collectorName)
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.FirstOrDefault(s =>
-                s.Name.Equals(collectorName, StringComparison.OrdinalIgnoreCase));
-        }
-    }
-
-    /// <summary>
-    /// Marks a collector as having been run (default schedule, global run state).
-    /// </summary>
-    public void MarkCollectorRun(string collectorName, DateTime runTime)
-    {
-        lock (_lock)
-        {
-            var schedule = _defaultSchedule.FirstOrDefault(s =>
-                s.Name.Equals(collectorName, StringComparison.OrdinalIgnoreCase));
-
-            if (schedule != null)
-            {
-                schedule.LastRunTime = runTime;
-
-                if (schedule.IsScheduled)
-                {
-                    schedule.NextRunTime = runTime.AddMinutes(schedule.FrequencyMinutes);
-                }
-
-                _logger?.LogDebug("Marked collector '{Name}' as run at {Time}, next run at {NextTime}",
-                    collectorName, runTime, schedule.NextRunTime);
-            }
-        }
-    }
 
     /// <summary>
     /// Updates a collector's schedule settings (default schedule).
@@ -222,26 +138,6 @@ public class ScheduleManager
         lock (_lock)
         {
             return DetectPreset(_defaultSchedule);
-        }
-    }
-
-    /// <summary>
-    /// Applies a named preset to the default schedule.
-    /// Does not modify enabled/disabled state or on-load (frequency=0) collectors.
-    /// </summary>
-    public void ApplyPreset(string presetName)
-    {
-        if (!s_presets.TryGetValue(presetName, out var intervals))
-        {
-            throw new ArgumentException($"Unknown preset: {presetName}");
-        }
-
-        lock (_lock)
-        {
-            ApplyPresetToList(_defaultSchedule, intervals);
-            SaveSchedules();
-
-            _logger?.LogInformation("Applied collection preset '{Preset}' to default schedule", presetName);
         }
     }
 
@@ -406,40 +302,6 @@ public class ScheduleManager
     }
 
     /// <summary>
-    /// Applies a preset to a single server's schedule.
-    /// Creates an override if one doesn't exist (copies default first).
-    /// </summary>
-    public void ApplyPresetForServer(string serverId, string presetName)
-    {
-        if (!s_presets.TryGetValue(presetName, out var intervals))
-        {
-            throw new ArgumentException($"Unknown preset: {presetName}");
-        }
-
-        lock (_lock)
-        {
-            if (!_serverOverrides.TryGetValue(serverId, out var over))
-            {
-                over = new ServerScheduleOverride { Collectors = CloneScheduleList(_defaultSchedule) };
-                _serverOverrides[serverId] = over;
-            }
-
-            ApplyPresetToList(over.Collectors, intervals);
-            SaveSchedules();
-
-            _logger?.LogInformation("Applied preset '{Preset}' to server {ServerId}", presetName, serverId);
-        }
-    }
-
-    /// <summary>
-    /// Applies a preset to the default schedule (alias for ApplyPreset).
-    /// </summary>
-    public void ApplyPresetToDefault(string presetName)
-    {
-        ApplyPreset(presetName);
-    }
-
-    /// <summary>
     /// Detects which preset matches a server's active schedule.
     /// </summary>
     public string GetActivePresetForServer(string serverId)
@@ -451,31 +313,6 @@ public class ScheduleManager
                 : _defaultSchedule;
 
             return DetectPreset(schedules);
-        }
-    }
-
-    /// <summary>
-    /// Removes orphaned overrides for servers that no longer exist.
-    /// </summary>
-    public void CleanupRemovedServers(IEnumerable<string> activeServerIds)
-    {
-        lock (_lock)
-        {
-            var activeSet = new HashSet<string>(activeServerIds);
-            var orphaned = _serverOverrides.Keys.Where(id => !activeSet.Contains(id)).ToList();
-
-            if (orphaned.Count == 0)
-                return;
-
-            foreach (var id in orphaned)
-            {
-                _serverOverrides.Remove(id);
-                _serverRunState.Remove(id);
-            }
-
-            SaveSchedules();
-
-            _logger?.LogInformation("Cleaned up {Count} orphaned server schedule override(s)", orphaned.Count);
         }
     }
 
@@ -688,22 +525,6 @@ public class ScheduleManager
             if (matches) return presetName;
         }
         return "Custom";
-    }
-
-    /// <summary>
-    /// Applies preset intervals to a collector list. Does not touch enabled/disabled or on-load collectors.
-    /// </summary>
-    private static void ApplyPresetToList(List<CollectorSchedule> schedules, Dictionary<string, int> intervals)
-    {
-        foreach (var (collector, freq) in intervals)
-        {
-            var schedule = schedules.FirstOrDefault(s =>
-                s.Name.Equals(collector, StringComparison.OrdinalIgnoreCase));
-            if (schedule != null)
-            {
-                schedule.FrequencyMinutes = freq;
-            }
-        }
     }
 
     /// <summary>

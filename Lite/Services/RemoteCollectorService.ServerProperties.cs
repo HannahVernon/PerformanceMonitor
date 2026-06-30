@@ -23,11 +23,6 @@ public partial class RemoteCollectorService
     /// Collects server edition, version, CPU/memory hardware metadata for
     /// license audit and FinOps cost attribution. On-load only collector.
     /// </summary>
-    // RAM floor below which LPIM-off is not worth flagging (shared rule with the Dashboard
-    // SqlServerFactCollector). On a small buffer pool the OS paging SQL out is not the practical
-    // risk it is on a large dedicated host.
-    private const long LpimAdvisoryMinPhysicalMemoryMb = 32 * 1024;
-
     private async Task<int> CollectServerPropertiesAsync(ServerConnection server, CancellationToken cancellationToken)
     {
         var serverStatus = _serverManager.GetConnectionStatus(server.Id);

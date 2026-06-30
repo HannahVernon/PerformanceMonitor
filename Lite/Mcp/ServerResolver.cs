@@ -8,7 +8,7 @@ namespace PerformanceMonitorLite.Mcp;
 /// </summary>
 internal static class ServerResolver
 {
-    public static (int ServerId, string ServerName)? Resolve(
+    private static (int ServerId, string ServerName)? Resolve(
         ServerManager serverManager,
         string? serverName)
     {
@@ -71,7 +71,7 @@ internal static class ServerResolver
             : (resolved, null);
     }
 
-    public static string ListAvailableServers(ServerManager serverManager)
+    private static string ListAvailableServers(ServerManager serverManager)
     {
         var servers = serverManager.GetEnabledServers();
         if (servers.Count == 0)

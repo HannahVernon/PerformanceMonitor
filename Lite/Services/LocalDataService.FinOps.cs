@@ -221,13 +221,6 @@ public class ServerPropertyRow
     public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
 }
 
-public class DatabaseSizeTrendPoint
-{
-    public DateTime CollectionTime { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public decimal TotalSizeMb { get; set; }
-}
-
 public class StorageGrowthRow
 {
     public string DatabaseName { get; set; } = "";

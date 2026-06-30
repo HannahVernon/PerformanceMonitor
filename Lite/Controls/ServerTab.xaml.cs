@@ -322,9 +322,9 @@ public partial class ServerTab : UserControl
         Helpers.ContextMenuHelper.SetupChartContextMenu(QueryStoreDurationTrendChart, "QueryStore_Duration_Trends");
         Helpers.ContextMenuHelper.SetupChartContextMenu(ExecutionCountTrendChart, "Execution_Count_Trends");
         var cpuMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CpuChart, "CPU_Usage");
-        AddChartDrillDownMenuItem(CpuChart, cpuMenu, _cpuHover, "Show Active Queries at This Time", OnCpuDrillDown);
+        AddChartDrillDownMenuItem(CpuChart, cpuMenu, _cpuHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var memoryMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryChart, "Memory_Usage");
-        AddChartDrillDownMenuItem(MemoryChart, memoryMenu, _memoryHover, "Show Active Queries at This Time", OnMemoryDrillDown);
+        AddChartDrillDownMenuItem(MemoryChart, memoryMenu, _memoryHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var memoryClerksMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryClerksChart, "Memory_Clerks");
         AddChartDrillDownMenuItem(MemoryClerksChart, memoryClerksMenu, _memoryClerksHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var memoryGrantSizingMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryGrantSizingChart, "Memory_Grant_Sizing");
@@ -342,7 +342,7 @@ public partial class ServerTab : UserControl
         var fileIoWriteThroughputMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteThroughputChart, "File_IO_Write_Throughput");
         AddChartDrillDownMenuItem(FileIoWriteThroughputChart, fileIoWriteThroughputMenu, _fileIoWriteThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var tempDbMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbChart, "TempDB_Stats");
-        AddChartDrillDownMenuItem(TempDbChart, tempDbMenu, _tempDbHover, "Show Active Queries at This Time", OnTempDbDrillDown);
+        AddChartDrillDownMenuItem(TempDbChart, tempDbMenu, _tempDbHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var tempDbSizeMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbSizeChart, "TempDB_Allocated_Size");
         AddChartDrillDownMenuItem(TempDbSizeChart, tempDbSizeMenu, _tempDbSizeHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         var tempDbFileIoMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbFileIoChart, "TempDB_File_IO");

@@ -32,7 +32,7 @@ public static class ServerTimeHelper
     /// Converts a local DateTime (from date picker) to server time.
     /// Use when the user picks dates in their local timezone but the database stores server time.
     /// </summary>
-    public static DateTime LocalToServerTime(DateTime localTime)
+    private static DateTime LocalToServerTime(DateTime localTime)
     {
         var utcTime = localTime.ToUniversalTime();
         return utcTime.AddMinutes(_utcOffsetMinutes);
@@ -42,7 +42,7 @@ public static class ServerTimeHelper
     /// Converts a server DateTime to local time.
     /// Use this when displaying server timestamps to the user in the UI.
     /// </summary>
-    public static DateTime ToLocalTime(DateTime serverTime)
+    private static DateTime ToLocalTime(DateTime serverTime)
     {
         /* Convert server time to UTC, then to local */
         var utcTime = serverTime.AddMinutes(-_utcOffsetMinutes);

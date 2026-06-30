@@ -142,48 +142,8 @@ ORDER BY SUM(memory_mb) DESC";
     }
 
     /// <summary>
-    /// Gets memory clerk trend data for a single clerk type for charting.
-    /// </summary>
-    public async Task<List<MemoryClerkTrendPoint>> GetMemoryClerkTrendAsync(int serverId, string clerkType, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
-    {
-        using var connection = await OpenConnectionAsync();
-        using var command = connection.CreateCommand();
-
-        var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
-
-        command.CommandText = @"
-SELECT
-    collection_time,
-    memory_mb
-FROM v_memory_clerks
-WHERE server_id = $1
-AND   clerk_type = $2
-AND   collection_time >= $3
-AND   collection_time <= $4
-ORDER BY collection_time";
-
-        command.Parameters.Add(new DuckDBParameter { Value = serverId });
-        command.Parameters.Add(new DuckDBParameter { Value = clerkType });
-        command.Parameters.Add(new DuckDBParameter { Value = startTime });
-        command.Parameters.Add(new DuckDBParameter { Value = endTime });
-
-        var items = new List<MemoryClerkTrendPoint>();
-        using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-        {
-            items.Add(new MemoryClerkTrendPoint
-            {
-                CollectionTime = reader.GetDateTime(0),
-                MemoryMb = reader.IsDBNull(1) ? 0 : ToDouble(reader.GetValue(1))
-            });
-        }
-
-        return items;
-    }
-
-    /// <summary>
-    /// Batched sibling of <see cref="GetMemoryClerkTrendAsync"/>: fetches the trend for ALL selected
-    /// clerk types in ONE query (replacing an N+1 query-per-clerk loop), grouped by clerk type.
+    /// Fetches the memory clerk trend for ALL selected clerk types in ONE query
+    /// (replacing an N+1 query-per-clerk loop), grouped by clerk type.
     /// </summary>
     public async Task<Dictionary<string, List<MemoryClerkTrendPoint>>> GetMemoryClerkTrendsByTypesAsync(int serverId, List<string> clerkTypes, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
     {

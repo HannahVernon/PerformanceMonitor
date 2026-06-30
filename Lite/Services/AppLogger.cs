@@ -97,11 +97,6 @@ public static class AppLogger
 #endif
     }
 
-    public static void DataDiag(string source, string message)
-    {
-        Log("DATA", source, message);
-    }
-
     private static void Log(string level, string source, string message)
     {
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level,-5}] [{source}] {message}";

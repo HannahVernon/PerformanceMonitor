@@ -998,18 +998,8 @@ public partial class MainWindow : Window
         {
             _alertStateService.SilenceServer(serverId);
 
-            /* Find and hide the badge for this server */
-            if (_openServerTabs.TryGetValue(serverId, out var tab) && tab.Header is StackPanel panel)
-            {
-                foreach (var child in panel.Children)
-                {
-                    if (child is System.Windows.Controls.Border border && border.Tag as string == "AlertBadge")
-                    {
-                        border.Visibility = Visibility.Collapsed;
-                        break;
-                    }
-                }
-            }
+            /* Hide the badge for this server (same loop as the acknowledge path). */
+            HideServerBadge(serverId);
         }
     }
 

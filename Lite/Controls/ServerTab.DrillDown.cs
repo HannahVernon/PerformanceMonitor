@@ -116,7 +116,7 @@ public partial class ServerTab : UserControl
     /// <summary>
     /// Generic "Show Active Queries at This Time" drill-down for resource charts that have no
     /// more specific target (memory clerks/grants/pressure, tempdb size + file I/O, file I/O
-    /// latency + throughput, current waits, perfmon). Same behavior as <see cref="OnCpuDrillDown"/>.
+    /// latency + throughput, current waits, perfmon).
     /// </summary>
     private async void OnActiveQueriesDrillDown(DateTime time)
     {
@@ -124,49 +124,6 @@ public partial class ServerTab : UserControl
         var toDate = time.AddMinutes(30);
         SetDrillDownTimeRange(fromDate, toDate);
 
-        SelectActiveQueriesForDrillDown();
-        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
-        _querySnapshotsFilterMgr!.UpdateData(snapshots);
-        LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
-        _ = LoadActiveQueriesSlicerAsync();
-    }
-
-    private async void OnCpuDrillDown(DateTime time)
-    {
-        var fromDate = time.AddMinutes(-30);
-        var toDate = time.AddMinutes(30);
-
-        // Populate custom date pickers so user can explore other tabs
-        SetDrillDownTimeRange(fromDate, toDate);
-
-        // Navigate to Queries > Active Queries with ±15 min window
-        SelectActiveQueriesForDrillDown();
-        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
-        _querySnapshotsFilterMgr!.UpdateData(snapshots);
-        LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
-        _ = LoadActiveQueriesSlicerAsync();
-    }
-
-    private async void OnMemoryDrillDown(DateTime time)
-    {
-        var fromDate = time.AddMinutes(-30);
-        var toDate = time.AddMinutes(30);
-        SetDrillDownTimeRange(fromDate, toDate);
-
-        SelectActiveQueriesForDrillDown();
-        var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
-        _querySnapshotsFilterMgr!.UpdateData(snapshots);
-        LiveSnapshotIndicator.Text = $"Drill-down: {ServerTimeHelper.FormatServerTime(fromDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")} → {ServerTimeHelper.FormatServerTime(toDate.AddMinutes(-UtcOffsetMinutes), "HH:mm")}";
-        _ = LoadActiveQueriesSlicerAsync();
-    }
-
-    private async void OnTempDbDrillDown(DateTime time)
-    {
-        var fromDate = time.AddMinutes(-30);
-        var toDate = time.AddMinutes(30);
-        SetDrillDownTimeRange(fromDate, toDate);
-
-        // Navigate to Active Queries — TempDB spills are visible there
         SelectActiveQueriesForDrillDown();
         var snapshots = await System.Threading.Tasks.Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, 0, fromDate, toDate));
         _querySnapshotsFilterMgr!.UpdateData(snapshots);

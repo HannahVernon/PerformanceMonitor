@@ -628,7 +628,6 @@ public class WaitStatsRow
     public string SignalWaitTimeFormatted => FormatMs(TotalSignalWaitTimeMs);
     public string ResourceWaitTimeFormatted => FormatMs(ResourceWaitTimeMs);
     public double SignalWaitPercent => TotalWaitTimeMs > 0 ? (double)TotalSignalWaitTimeMs / TotalWaitTimeMs * 100 : 0;
-    public bool IsHighWait => TotalWaitTimeMs > 60000;
 
     private static string FormatMs(long ms)
     {

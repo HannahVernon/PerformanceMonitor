@@ -182,7 +182,7 @@ OPTION(RECOMPILE);";
                        prevents inflated deltas after app restarts */
                     var deltaKey = $"{objectName}|{counterName}|{instanceName}";
                     var deltaCntrValue = _deltaCalculator.CalculateDelta(serverId, "perfmon", deltaKey, cntrValue,
-                        baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                        collectionTime: collectionTime, maxGapSeconds: 300);
 
                     var row = appender.CreateRow();
                     row.AppendValue(GenerateCollectionId())

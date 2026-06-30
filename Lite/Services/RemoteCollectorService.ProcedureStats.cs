@@ -291,12 +291,12 @@ OPTION(RECOMPILE);";
                     /* Delta key: plan_handle to prevent cross-contamination
                        when multiple plans exist for the same object */
                     var deltaKey = planHandle ?? $"{dbName}.{schemaName}.{objectName}";
-                    var deltaExec = _deltaCalculator.CalculateDelta(serverId, "proc_stats_exec", deltaKey, execCount, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaWorker = _deltaCalculator.CalculateDelta(serverId, "proc_stats_worker", deltaKey, workerTime, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaElapsed = _deltaCalculator.CalculateDelta(serverId, "proc_stats_elapsed", deltaKey, elapsedTime, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaExec = _deltaCalculator.CalculateDelta(serverId, "proc_stats_exec", deltaKey, execCount, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWorker = _deltaCalculator.CalculateDelta(serverId, "proc_stats_worker", deltaKey, workerTime, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaElapsed = _deltaCalculator.CalculateDelta(serverId, "proc_stats_elapsed", deltaKey, elapsedTime, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
 
                     /* Appender column order must match DuckDB table definition exactly */
                     var row = appender.CreateRow();

@@ -106,15 +106,6 @@
             <Style x:Key="DeadlockRowStyle" TargetType="DataGridRow">
                 <Setter Property="ContextMenu" Value="{StaticResource DeadlockContextMenu}"/>
             </Style>
-
-            <!-- Row style for wait stats - highlight high-wait types -->
-            <Style x:Key="WaitStatsRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource GridRowStyle}">
-                <Style.Triggers>
-                    <DataTrigger Binding="{Binding IsHighWait}" Value="True">
-                        <Setter Property="Background" Value="#33FFA500"/>
-                    </DataTrigger>
-                </Style.Triggers>
-            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 

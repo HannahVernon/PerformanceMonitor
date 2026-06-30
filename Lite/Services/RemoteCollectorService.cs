@@ -35,11 +35,8 @@ public class CollectorHealthEntry
     public int ServerId { get; set; }
     public string CollectorName { get; set; } = "";
     public DateTime? LastSuccessTime { get; set; }
-    public DateTime? LastErrorTime { get; set; }
     public string? LastErrorMessage { get; set; }
     public int ConsecutiveErrors { get; set; }
-    public int TotalErrors { get; set; }
-    public int TotalSuccesses { get; set; }
 
     /*
      * Set when a collector hits a non-transient permission error
@@ -148,7 +145,6 @@ public partial class RemoteCollectorService
     /// Tracks consecutive failures of the collection_log INSERT itself.
     /// </summary>
     private int _logInsertFailures;
-    private string? _lastLogInsertError;
 
     /// <summary>
     /// Per-server flag indicating that master DB enumeration has failed with an access-denied
@@ -177,11 +173,6 @@ public partial class RemoteCollectorService
     /// Should be called once during application startup.
     /// </summary>
     public Task SeedDeltaCacheAsync() => _deltaCalculator.SeedFromDatabaseAsync(_duckDb);
-
-    /// <summary>
-    /// Runs a manual DuckDB WAL checkpoint during idle time between collection cycles.
-    /// </summary>
-    public Task CheckpointAsync() => _duckDb.CheckpointAsync();
 
     /// <summary>
     /// Gets a summary of collector health for a specific server connection.
@@ -275,7 +266,6 @@ public partial class RemoteCollectorService
             {
                 entry.LastSuccessTime = DateTime.UtcNow;
                 entry.ConsecutiveErrors = 0;
-                entry.TotalSuccesses++;
             }
             else if (status == "PERMISSIONS")
             {
@@ -284,16 +274,13 @@ public partial class RemoteCollectorService
                    Record the error message so the user can see what's wrong,
                    and flag the collector so the scheduler stops retrying for
                    the rest of the app session. */
-                entry.LastErrorTime = DateTime.UtcNow;
                 entry.LastErrorMessage = errorMessage;
                 entry.IsPermissionRestricted = true;
             }
             else
             {
-                entry.LastErrorTime = DateTime.UtcNow;
                 entry.LastErrorMessage = errorMessage;
                 entry.ConsecutiveErrors++;
-                entry.TotalErrors++;
             }
         }
     }
@@ -655,13 +642,11 @@ WHERE server_id = $3";
             {
                 AppLogger.Info("Collector", $"Collection logging recovered after {_logInsertFailures} failure(s)");
                 _logInsertFailures = 0;
-                _lastLogInsertError = null;
             }
         }
         catch (Exception ex)
         {
             _logInsertFailures++;
-            _lastLogInsertError = ex.Message;
 
             if (_logInsertFailures <= 3)
             {
@@ -972,32 +957,6 @@ WHERE server_id = $3";
             /* If DuckDB query fails, caller uses fallback window */
         }
         return null;
-    }
-
-    /// <summary>
-    /// Safely converts a SQL Server float/real value to decimal.
-    /// Returns 0 for Infinity, NaN, or values outside decimal range.
-    /// </summary>
-    protected static decimal SafeToDecimal(object value)
-    {
-        try
-        {
-            if (value is double d)
-            {
-                if (double.IsInfinity(d) || double.IsNaN(d))
-                    return 0m;
-            }
-            else if (value is float f)
-            {
-                if (float.IsInfinity(f) || float.IsNaN(f))
-                    return 0m;
-            }
-            return Convert.ToDecimal(value);
-        }
-        catch (OverflowException)
-        {
-            return 0m;
-        }
     }
 
     /// <summary>

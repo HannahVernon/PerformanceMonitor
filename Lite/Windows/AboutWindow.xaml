@@ -37,12 +37,12 @@
         <!-- Links -->
         <StackPanel Grid.Row="4">
             <TextBlock FontSize="12" Margin="0,0,0,5">
-                <Hyperlink x:Name="GitHubLink" Click="GitHubLink_Click">
+                <Hyperlink Click="GitHubLink_Click">
                     GitHub Repository
                 </Hyperlink>
             </TextBlock>
             <TextBlock FontSize="12" Margin="0,0,0,5">
-                <Hyperlink x:Name="ReportIssueLink" Click="ReportIssueLink_Click">
+                <Hyperlink Click="ReportIssueLink_Click">
                     Report an Issue
                 </Hyperlink>
             </TextBlock>
@@ -52,7 +52,7 @@
                            Foreground="{DynamicResource ForegroundMutedBrush}" Visibility="Collapsed"/>
             </StackPanel>
             <TextBlock FontSize="12">
-                <Hyperlink x:Name="DarlingDataLink" Click="DarlingDataLink_Click">
+                <Hyperlink Click="DarlingDataLink_Click">
                     www.erikdarling.com
                 </Hyperlink>
             </TextBlock>

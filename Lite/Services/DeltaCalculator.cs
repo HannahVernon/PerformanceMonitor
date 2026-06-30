@@ -70,14 +70,14 @@ public class DeltaCalculator
 
     /// <summary>
     /// Calculates the delta between the current value and the previous cached value.
-    /// First-ever sighting (no baseline): returns currentValue so single-execution queries appear.
+    /// First-ever sighting (no baseline): returns 0 and stores the value as the new baseline.
     /// Counter reset (value decreased): returns 0 to avoid inflated deltas from plan cache churn.
     /// Gap detection: if collectionTime and maxGapSeconds are provided and the gap since the
     /// last cached value exceeds maxGapSeconds, returns 0 to avoid inflated deltas after restarts.
     /// Thread-safe via atomic AddOrUpdate.
     /// </summary>
     public long CalculateDelta(int serverId, string collectorName, string key, long currentValue,
-        bool baselineOnly = false, DateTime? collectionTime = null, int maxGapSeconds = 0)
+        DateTime? collectionTime = null, int maxGapSeconds = 0)
     {
         var serverCache = _cache.GetOrAdd(serverId, _ => new ConcurrentDictionary<string, ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>>());
         var collectorCache = serverCache.GetOrAdd(collectorName, _ => new ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>());
@@ -86,12 +86,11 @@ public class DeltaCalculator
 
         collectorCache.AddOrUpdate(
             key,
-            /* Add: first time seeing this key.
-               baselineOnly = true: store baseline only, return 0 (for cumulative counters like perfmon).
-               baselineOnly = false: use current value as delta so single-execution queries surface. */
+            /* Add: first time seeing this key — store the baseline only and return 0.
+               All callers track cumulative counters (perfmon, wait stats, file IO, etc.). */
             _ =>
             {
-                delta = baselineOnly ? 0 : currentValue;
+                delta = 0;
                 return (currentValue, collectionTime);
             },
             /* Update: compute delta atomically */
