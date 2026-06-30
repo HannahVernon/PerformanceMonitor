@@ -1172,6 +1172,8 @@ namespace PerformanceMonitorDashboard
                 var item = new AlertDetailItem { Heading = j.JobName, Fields = new() };
                 item.Fields.Add(("Job", j.JobName));
                 item.Fields.Add(("Failed At", j.RunDateTimeFormatted));
+                if (j.StepId > 0 && !string.IsNullOrEmpty(j.StepName))
+                    item.Fields.Add(("Step", $"{j.StepId} — {j.StepName}"));
                 if (!string.IsNullOrEmpty(j.Message))
                     item.Fields.Add(("Message", Truncate(j.Message, 300)));
                 context.Details.Add(item);

@@ -191,8 +191,10 @@ OPTION(RECOMPILE);";
     }
 
     /// <summary>
-    /// Live query against the monitored server's msdb for SQL Agent job runs (step_id = 0 outcome
-    /// row, run_status = 0 = Failed) that failed within the lookback window.
+    /// Live query against the monitored server's msdb for SQL Agent job runs that FAILED within the
+    /// lookback window (the step_id = 0 outcome row, run_status = 0), also correlating the actual
+    /// failing step (step_id > 0, run_status = 0) from that run via instance_id so step_id/step_name/
+    /// message describe the failing step rather than the generic "(Job outcome)" row.
     /// Runs at alert-check time — failure outcomes are not part of the collected running_jobs
     /// snapshot. run_date/run_time integers are converted to a server-local datetime and filtered
     /// to the last N minutes. Reuses the collector's connection path (MFA serialization, throttle,
@@ -220,12 +222,37 @@ SELECT TOP (50)
             (jh.run_time % 100),
             CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
         ),
-    step_id = jh.step_id,
-    step_name = jh.step_name,
-    message = jh.message
+    step_id = ISNULL(fs.step_id, jh.step_id),
+    step_name = ISNULL(fs.step_name, jh.step_name),
+    message = ISNULL(fs.message, jh.message)
 FROM msdb.dbo.sysjobhistory AS jh
 JOIN msdb.dbo.sysjobs AS j
   ON j.job_id = jh.job_id
+OUTER APPLY
+(
+    /* The actual failing step (step_id > 0, run_status = 0) from THIS run, correlated by
+       instance_id and bounded to be after this job's previous outcome row, so the alert names
+       the failing step instead of the generic job-outcome row. Falls back to the outcome row
+       for a rare job-level failure with no failed step row. */
+    SELECT TOP (1)
+        s.step_id,
+        s.step_name,
+        s.message
+    FROM msdb.dbo.sysjobhistory AS s
+    WHERE s.job_id = jh.job_id
+    AND   s.step_id > 0
+    AND   s.run_status = 0
+    AND   s.instance_id < jh.instance_id
+    AND   s.instance_id >
+          (
+              SELECT ISNULL(MAX(p.instance_id), 0)
+              FROM msdb.dbo.sysjobhistory AS p
+              WHERE p.job_id = jh.job_id
+              AND   p.step_id = 0
+              AND   p.instance_id < jh.instance_id
+          )
+    ORDER BY s.instance_id DESC
+) AS fs
 WHERE jh.step_id = 0
 AND   jh.run_status = 0
 AND   jh.run_date >= CONVERT(integer, CONVERT(varchar(8), DATEADD(MINUTE, -@lookback_minutes, GETDATE()), 112))

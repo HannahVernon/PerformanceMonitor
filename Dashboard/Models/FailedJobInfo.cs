@@ -9,9 +9,11 @@ using System;
 namespace PerformanceMonitorDashboard.Models
 {
     /// <summary>
-    /// A SQL Agent job run (step_id = 0 outcome row) that FAILED within the alert
-    /// lookback window. Sourced from a live msdb.dbo.sysjobhistory query at alert-check
-    /// time — failure outcomes are not part of the collected running_jobs snapshot.
+    /// A SQL Agent job run that FAILED within the alert lookback window. Sourced from a live
+    /// msdb.dbo.sysjobhistory query at alert-check time (failure outcomes are not part of the
+    /// collected running_jobs snapshot). StepId/StepName/Message describe the actual failing step
+    /// (correlated from the run's step rows), falling back to the job-outcome row when a job-level
+    /// failure has no failed step.
     /// </summary>
     public class FailedJobInfo
     {
