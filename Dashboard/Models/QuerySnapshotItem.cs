@@ -31,7 +31,12 @@ namespace PerformanceMonitorDashboard.Models
         public long? Writes { get; set; }
         public long? PhysicalReads { get; set; }
         public long? ContextSwitches { get; set; }
+        public long? Tasks { get; set; }
+        public long? PhysicalIo { get; set; }
         public decimal? UsedMemoryMb { get; set; }
+        public decimal? RequestedMemoryMb { get; set; }
+        public decimal? GrantedMemoryMb { get; set; }
+        public decimal? MaxUsedMemoryMb { get; set; }
         public decimal? TempdbCurrentMb { get; set; }
         public decimal? TempdbAllocations { get; set; }
         public string? TranLogWrites { get; set; }

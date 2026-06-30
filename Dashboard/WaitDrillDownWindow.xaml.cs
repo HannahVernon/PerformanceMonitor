@@ -465,6 +465,42 @@ public partial class WaitDrillDownWindow : Window
             $"Actual Plan - SPID {item.SessionId}");
     }
 
+    private async void DownloadWaitQueryPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.DataContext is not QuerySnapshotItem item) return;
+
+        try
+        {
+            // The query plan is fetched on demand (not loaded with the grid) — same as the Active Queries grid.
+            var queryPlan = await _databaseService.GetQuerySnapshotPlanAsync(item.CollectionTime, item.SessionId);
+
+            if (string.IsNullOrWhiteSpace(queryPlan))
+            {
+                MessageBox.Show("No query plan available.", "No Plan", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+            var saveFileDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = $"wait_query_plan_{item.SessionId}_{timestamp}.sqlplan",
+                DefaultExt = ".sqlplan",
+                Filter = "SQL Plan (*.sqlplan)|*.sqlplan|XML Files (*.xml)|*.xml|All Files (*.*)|*.*",
+                Title = "Save Query Plan"
+            };
+
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                System.IO.File.WriteAllText(saveFileDialog.FileName, queryPlan);
+                MessageBox.Show($"Query plan saved to:\n{saveFileDialog.FileName}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error fetching/saving query plan:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private static QuerySnapshotItem? GetSnapshotItem(object sender)
     {
         if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
