@@ -72,7 +72,12 @@ SELECT
         (SELECT COUNT(*)
          FROM v_cpu_utilization_stats
          WHERE server_id = $1
-         AND   sqlserver_cpu_utilization >= 80
+         /* Total host CPU = SQL + other-process, matching the alert engine (CpuAlertMode.Total),
+            the Overview headline (TotalCpuPercent = sqlserver + (other_process ?? 0)), and
+            Dashboard's report.daily_summary (#1004). other_process_cpu_utilization is NULL on SQL
+            Server on Linux (host CPU not derivable, #1048), so COALESCE(.,0) collapses this to the
+            SQL-only figure there -- the same fallback as Dashboard's ISNULL(total, sqlserver). */
+         AND   (sqlserver_cpu_utilization + COALESCE(other_process_cpu_utilization, 0)) >= 80
          AND   collection_time >= $2 AND collection_time < $3), 0
     ) AS high_cpu_events,
     COALESCE(
