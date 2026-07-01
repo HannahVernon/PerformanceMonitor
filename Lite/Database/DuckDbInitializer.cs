@@ -194,6 +194,15 @@ public class DuckDbInitializer
                 await SetSchemaVersionAsync(connection, CurrentSchemaVersion);
             }
 
+            /* Table count on the init connection — makes a failed reset (schema not persisting to the
+               file for the next connection to see) diagnosable from the log alone. */
+            using (var tableCountCmd = connection.CreateCommand())
+            {
+                tableCountCmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main'";
+                var tableCount = Convert.ToInt64(await tableCountCmd.ExecuteScalarAsync());
+                _logger?.LogInformation("Schema initialization created {Count} tables", tableCount);
+            }
+
             _logger?.LogInformation("Database initialization complete. Schema version: {Version}", CurrentSchemaVersion);
         }
 
@@ -905,6 +914,18 @@ public class DuckDbInitializer
     {
         using var connection = CreateConnection();
         await connection.OpenAsync();
+
+        /* This fresh connection must see every table InitializeAsync just created. If it sees none,
+           the reset left an empty database — surface it loudly rather than only failing per-table below. */
+        using (var tableCountCmd = connection.CreateCommand())
+        {
+            tableCountCmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main'";
+            var tableCount = Convert.ToInt64(await tableCountCmd.ExecuteScalarAsync());
+            if (tableCount == 0)
+                _logger?.LogError("Archive-view refresh opened a database with no tables — the reset did not persist the schema; collectors will fail until restart");
+            else
+                _logger?.LogInformation("Archive-view refresh sees {Count} tables", tableCount);
+        }
 
         foreach (var table in ArchivableTables)
         {

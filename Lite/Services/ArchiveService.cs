@@ -675,7 +675,17 @@ COPY (
                This runs outside the write lock using an in-memory DuckDB connection
                and only touches filesystem files — no contention with collectors. */
             _logger?.LogInformation("Compacting parquet files into monthly archives");
-            CompactParquetFiles();
+            try
+            {
+                CompactParquetFiles();
+            }
+            catch (Exception compactEx)
+            {
+                /* Compaction is best-effort (merging per-cycle parquet into monthly files); a failure
+                   must not abort the archive/reset. Previously unlogged — surface it so a stuck or
+                   oversized backlog is visible instead of silently degrading. */
+                _logger?.LogError(compactEx, "Parquet compaction failed; continuing with archive and reset");
+            }
 
             /* Nuke and reinitialize outside the using-connection scope so all handles are closed */
             _logger?.LogInformation("Deleting and reinitializing database");
