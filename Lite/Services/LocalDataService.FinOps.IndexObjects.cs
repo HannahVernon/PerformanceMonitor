@@ -39,7 +39,7 @@ WITH boundaries AS (
     SELECT
         MAX(collection_time) AS latest_time,
         MIN(collection_time) AS earliest_time,
-        date_diff('day', MIN(collection_time), MAX(collection_time)) AS days_of_data
+        CAST(MAX(collection_time) AS DATE) - CAST(MIN(collection_time) AS DATE) AS days_of_data
     FROM v_index_object_stats
     WHERE server_id = $1
 ),

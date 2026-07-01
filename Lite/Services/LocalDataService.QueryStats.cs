@@ -516,7 +516,7 @@ SELECT
     total_physical_reads,
     total_logical_writes,
     delta_spills,
-    date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS sample_interval_seconds
+    CAST(extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS BIGINT) AS sample_interval_seconds
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -1040,7 +1040,7 @@ WITH raw AS
         collection_time,
         SUM(delta_elapsed_time) / 1000.0 AS total_elapsed_ms,
         SUM(delta_execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -1089,7 +1089,7 @@ WITH raw AS
         collection_time,
         SUM(delta_elapsed_time) / 1000.0 AS total_elapsed_ms,
         SUM(delta_execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_procedure_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -1137,7 +1137,7 @@ WITH raw AS
     SELECT
         collection_time,
         SUM(delta_execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2

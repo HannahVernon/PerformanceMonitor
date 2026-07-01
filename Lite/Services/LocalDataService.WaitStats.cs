@@ -123,7 +123,7 @@ WITH raw AS
         delta_wait_time_ms,
         delta_signal_wait_time_ms,
         delta_waiting_tasks,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   wait_type = $2
@@ -185,7 +185,7 @@ WITH raw AS
         delta_wait_time_ms,
         delta_signal_wait_time_ms,
         delta_waiting_tasks,
-        date_diff('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -247,7 +247,7 @@ WITH per_collection AS
     SELECT
         collection_time,
         SUM(delta_wait_time_ms) AS total_delta_ms,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   collection_time >= $2
