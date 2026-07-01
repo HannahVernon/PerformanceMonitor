@@ -57,6 +57,11 @@ namespace PerformanceMonitorDashboard.Models
         public long? MinSpills { get; set; }
         public long? MaxSpills { get; set; }
 
+        // Signals: plan stability (plan_generation_num — higher = more plan churn) and peak CPU
+        // rate (worker_time_per_second — ms of CPU per wall-clock second; 1000 ≈ one full core)
+        public long? PlanGenerationNum { get; set; }
+        public double? WorkerTimePerSecond { get; set; }
+
         // Display helpers
         public double TotalWorkerTimeSec => TotalWorkerTime / 1000000.0;
         public double TotalElapsedTimeSec => TotalElapsedTime / 1000000.0;
