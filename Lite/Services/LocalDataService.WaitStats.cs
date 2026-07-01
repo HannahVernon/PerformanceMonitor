@@ -363,7 +363,8 @@ SELECT
     host_name,
     program_name,
     open_transaction_count,
-    percent_complete
+    percent_complete,
+    query_hash
 FROM v_query_snapshots
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -408,7 +409,8 @@ LIMIT 500";
                 HostName = reader.IsDBNull(22) ? "" : reader.GetString(22),
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
-                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25))
+                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26)
             });
         }
 
@@ -455,7 +457,8 @@ SELECT
     host_name,
     program_name,
     open_transaction_count,
-    percent_complete
+    percent_complete,
+    query_hash
 FROM v_query_snapshots
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -498,7 +501,8 @@ LIMIT 2000";
                 HostName = reader.IsDBNull(22) ? "" : reader.GetString(22),
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
-                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25))
+                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26)
             });
         }
 

@@ -154,7 +154,8 @@ SELECT
     host_name,
     program_name,
     open_transaction_count,
-    percent_complete
+    percent_complete,
+    query_hash
 FROM v_query_snapshots
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -197,7 +198,8 @@ ORDER BY collection_time DESC, cpu_time_ms DESC";
                 HostName = reader.IsDBNull(22) ? "" : reader.GetString(22),
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
-                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25))
+                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26)
             });
         }
 
@@ -1076,6 +1078,7 @@ public class QuerySnapshotRow
     public string ProgramName { get; set; } = "";
     public int OpenTransactionCount { get; set; }
     public decimal PercentComplete { get; set; }
+    public string QueryHash { get; set; } = "";
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
     public bool HasLiveQueryPlan => !string.IsNullOrEmpty(LiveQueryPlan);
     public string CollectionTimeLocal => CollectionTime == DateTime.MinValue ? "" : ServerTimeHelper.FormatServerTime(CollectionTime);
