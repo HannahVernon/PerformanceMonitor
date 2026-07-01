@@ -713,7 +713,7 @@ WITH raw AS
         collection_time,
         wait_type,
         delta_wait_time_ms,
-        date_diff('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   wait_type LIKE 'LCK%'

@@ -593,7 +593,7 @@ WITH raw AS
         collection_time,
         SUM(execution_count * avg_duration_us / 1000.0) AS total_duration_ms,
         SUM(execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_query_store_stats
     WHERE server_id = $1
     AND   collection_time >= $2

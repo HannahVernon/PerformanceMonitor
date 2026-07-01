@@ -342,7 +342,7 @@ GROUP BY hour_of_day, day_of_week",
 WITH per_collection AS (
     SELECT collection_time,
            SUM(delta_wait_time_ms)::DOUBLE PRECISION AS total_wait_ms,
-           date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_sec
+           extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_sec
     FROM v_wait_stats
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
     AND   delta_wait_time_ms >= 0
