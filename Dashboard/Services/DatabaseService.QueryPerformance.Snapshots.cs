@@ -176,8 +176,9 @@ namespace PerformanceMonitorDashboard.Services
                             PhysicalReads = SafeToInt64(reader.GetValue(16), "physical_reads"),
                             ContextSwitches = SafeToInt64(reader.GetValue(17), "context_switches"),
                             UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory") / 128m,
-                            TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current"),
-                            TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations"),
+                            /* sp_WhoIsActive tempdb counters are 8KB-page counts — /128 to MB (same fix as the memory columns, #1274) */
+                            TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current") / 128m,
+                            TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations") / 128m,
                             TranLogWrites = reader.IsDBNull(21) ? null : reader.GetValue(21)?.ToString(),
                             OpenTranCount = SafeToInt16(reader.GetValue(22), "open_tran_count"),
                             PercentComplete = SafeToDecimal(reader.GetValue(23), "percent_complete"),
@@ -382,8 +383,9 @@ namespace PerformanceMonitorDashboard.Services
                             PhysicalReads = SafeToInt64(reader.GetValue(16), "physical_reads"),
                             ContextSwitches = SafeToInt64(reader.GetValue(17), "context_switches"),
                             UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory") / 128m,
-                            TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current"),
-                            TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations"),
+                            /* sp_WhoIsActive tempdb counters are 8KB-page counts — /128 to MB (same fix as the memory columns, #1274) */
+                            TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current") / 128m,
+                            TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations") / 128m,
                             TranLogWrites = reader.IsDBNull(21) ? null : reader.GetValue(21)?.ToString(),
                             OpenTranCount = SafeToInt16(reader.GetValue(22), "open_tran_count"),
                             PercentComplete = SafeToDecimal(reader.GetValue(23), "percent_complete"),

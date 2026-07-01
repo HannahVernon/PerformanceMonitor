@@ -374,7 +374,15 @@ SELECT
     q.open_transaction_count,
     q.percent_complete,
     q.query_hash,
-    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count
+    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count,
+    q.requested_memory_mb,
+    q.used_memory_mb,
+    q.max_used_memory_mb,
+    q.tempdb_current_mb,
+    q.tempdb_allocations_mb,
+    q.tran_log_used_mb,
+    q.tran_start_time,
+    q.request_id
 FROM v_query_snapshots q
 LEFT JOIN blocked_counts bc
   ON  bc.collection_time = q.collection_time
@@ -424,7 +432,15 @@ LIMIT 500";
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
                 PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
                 QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
-                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27))
+                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27)),
+                RequestedMemoryMb = reader.IsDBNull(28) ? 0 : ToDouble(reader.GetValue(28)),
+                UsedMemoryMb = reader.IsDBNull(29) ? 0 : ToDouble(reader.GetValue(29)),
+                MaxUsedMemoryMb = reader.IsDBNull(30) ? 0 : ToDouble(reader.GetValue(30)),
+                TempdbCurrentMb = reader.IsDBNull(31) ? 0 : ToDouble(reader.GetValue(31)),
+                TempdbAllocationsMb = reader.IsDBNull(32) ? 0 : ToDouble(reader.GetValue(32)),
+                TranLogUsedMb = reader.IsDBNull(33) ? 0 : ToDouble(reader.GetValue(33)),
+                TranStartTime = reader.IsDBNull(34) ? (DateTime?)null : reader.GetDateTime(34),
+                RequestId = reader.IsDBNull(35) ? 0 : reader.GetInt32(35)
             });
         }
 
@@ -482,7 +498,15 @@ SELECT
     q.open_transaction_count,
     q.percent_complete,
     q.query_hash,
-    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count
+    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count,
+    q.requested_memory_mb,
+    q.used_memory_mb,
+    q.max_used_memory_mb,
+    q.tempdb_current_mb,
+    q.tempdb_allocations_mb,
+    q.tran_log_used_mb,
+    q.tran_start_time,
+    q.request_id
 FROM v_query_snapshots q
 LEFT JOIN blocked_counts bc
   ON  bc.collection_time = q.collection_time
@@ -530,7 +554,15 @@ LIMIT 2000";
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
                 PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
                 QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
-                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27))
+                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27)),
+                RequestedMemoryMb = reader.IsDBNull(28) ? 0 : ToDouble(reader.GetValue(28)),
+                UsedMemoryMb = reader.IsDBNull(29) ? 0 : ToDouble(reader.GetValue(29)),
+                MaxUsedMemoryMb = reader.IsDBNull(30) ? 0 : ToDouble(reader.GetValue(30)),
+                TempdbCurrentMb = reader.IsDBNull(31) ? 0 : ToDouble(reader.GetValue(31)),
+                TempdbAllocationsMb = reader.IsDBNull(32) ? 0 : ToDouble(reader.GetValue(32)),
+                TranLogUsedMb = reader.IsDBNull(33) ? 0 : ToDouble(reader.GetValue(33)),
+                TranStartTime = reader.IsDBNull(34) ? (DateTime?)null : reader.GetDateTime(34),
+                RequestId = reader.IsDBNull(35) ? 0 : reader.GetInt32(35)
             });
         }
 
