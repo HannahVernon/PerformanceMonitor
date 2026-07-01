@@ -138,6 +138,7 @@
                 <DataGridTextColumn Header="Avg Rows" Binding="{Binding AvgRows, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
                 <DataGridTextColumn Header="Min Rows" Binding="{Binding MinRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
                 <DataGridTextColumn Header="Max Rows" Binding="{Binding MaxRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
+                <DataGridTextColumn Header="Rows Delta" Binding="{Binding IntervalRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
 
                 <!-- Parallelism -->
                 <DataGridTextColumn Header="Min DOP" Binding="{Binding MinDop}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
@@ -161,6 +162,7 @@
                 <DataGridTextColumn Header="Total Spills" Binding="{Binding TotalSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
                 <DataGridTextColumn Header="Min Spills" Binding="{Binding MinSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
                 <DataGridTextColumn Header="Max Spills" Binding="{Binding MaxSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
+                <DataGridTextColumn Header="Spills Delta" Binding="{Binding IntervalSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
 
                 <!-- CLR Time -->
                 <DataGridTextColumn Header="Total CLR Time" Binding="{Binding TotalClrTime, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>

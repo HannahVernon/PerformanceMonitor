@@ -142,6 +142,7 @@ public partial class ProcedureHistoryWindow : Window
         "DeltaExecutions" => row.DeltaExecutions,
         "DeltaCpuMs" => row.DeltaCpuMs,
         "DeltaLogicalReads" => row.DeltaLogicalReads,
+        "DeltaSpills" => row.DeltaSpills,
         _ => row.AvgCpuMs
     };
 

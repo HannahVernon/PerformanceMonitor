@@ -14,7 +14,6 @@ namespace PerformanceMonitorDashboard.Models
     {
         public long CollectionId { get; set; }
         public DateTime CollectionTime { get; set; }
-        public DateTime ServerStartTime { get; set; }
         public string ObjectType { get; set; } = string.Empty;
         public string? TypeDesc { get; set; }
         public DateTime CachedTime { get; set; }
@@ -23,6 +22,10 @@ namespace PerformanceMonitorDashboard.Models
         // Cumulative values
         public long ExecutionCount { get; set; }
         public long IntervalExecutions { get; set; }
+
+        // Per-interval spills, computed at load time by the same CachedTime-lifetime walk
+        // that produces IntervalExecutions (no SQL-side spills delta exists).
+        public long IntervalSpills { get; set; }
         public long TotalWorkerTime { get; set; }
         public long MinWorkerTime { get; set; }
         public long MaxWorkerTime { get; set; }
@@ -58,13 +61,20 @@ namespace PerformanceMonitorDashboard.Models
         // Query plan
         public string? QueryPlanXml { get; set; }
 
-        // Computed/display helpers
-        public double? AvgWorkerTimeMs => ExecutionCount > 0 ? (double)TotalWorkerTime / ExecutionCount / 1000.0 : null;
-        public double? AvgElapsedTimeMs => ExecutionCount > 0 ? (double)TotalElapsedTime / ExecutionCount / 1000.0 : null;
-        public double? AvgLogicalReads => ExecutionCount > 0 ? (double)TotalLogicalReads / ExecutionCount : null;
-        public double? AvgPhysicalReads => ExecutionCount > 0 ? (double)TotalPhysicalReads / ExecutionCount : null;
-        public double? AvgLogicalWrites => ExecutionCount > 0 ? (double)TotalLogicalWrites / ExecutionCount : null;
-        public double? AvgSpills => ExecutionCount > 0 && TotalSpills.HasValue ? (double)TotalSpills.Value / ExecutionCount : null;
+        /* Averages are PER-INTERVAL (delta / delta executions), matching Lite. Lifetime-cumulative
+           averages (total / execution_count since cache) flatten out over time and hide recent
+           regressions; the Total* columns still expose the raw cumulative counters. */
+        public double? AvgWorkerTimeMs => ExecutionCountDelta > 0 && TotalWorkerTimeDelta.HasValue
+            ? TotalWorkerTimeDelta.Value / (double)ExecutionCountDelta!.Value / 1000.0 : null;
+        public double? AvgElapsedTimeMs => ExecutionCountDelta > 0 && TotalElapsedTimeDelta.HasValue
+            ? TotalElapsedTimeDelta.Value / (double)ExecutionCountDelta!.Value / 1000.0 : null;
+        public double? AvgLogicalReads => ExecutionCountDelta > 0 && TotalLogicalReadsDelta.HasValue
+            ? TotalLogicalReadsDelta.Value / (double)ExecutionCountDelta!.Value : null;
+        public double? AvgPhysicalReads => ExecutionCountDelta > 0 && TotalPhysicalReadsDelta.HasValue
+            ? TotalPhysicalReadsDelta.Value / (double)ExecutionCountDelta!.Value : null;
+        public double? AvgLogicalWrites => ExecutionCountDelta > 0 && TotalLogicalWritesDelta.HasValue
+            ? TotalLogicalWritesDelta.Value / (double)ExecutionCountDelta!.Value : null;
+        public double? AvgSpills => IntervalExecutions > 0 ? IntervalSpills / (double)IntervalExecutions : null;
 
         // Worker time = CPU time in SQL Server (microseconds to ms)
         public double MinWorkerTimeMs => MinWorkerTime / 1000.0;

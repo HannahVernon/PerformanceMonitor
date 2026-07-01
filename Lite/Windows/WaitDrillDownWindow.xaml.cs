@@ -192,7 +192,8 @@ public partial class WaitDrillDownWindow : Window
         {
             if (snapshotLookup.TryGetValue((hb.CollectionTime, hb.SessionId), out var row))
             {
-                row.ChainBlockedCount = hb.BlockedSessionCount;
+                // Overwrite the SQL-derived same-snapshot count with the chain walker's transitive count
+                row.BlockedSessionCount = hb.BlockedSessionCount;
                 row.ChainBlockingPath = hb.BlockingPath;
                 headBlockerRows.Add(row);
             }
@@ -219,12 +220,9 @@ public partial class WaitDrillDownWindow : Window
 
     private void InsertChainColumns()
     {
-        // Insert "Blocked Sessions" and "Blocking Path" columns at the beginning of the grid
-        var blockedCountCol = CreateFilterColumn("Blocked Sessions", "ChainBlockedCount", 105, isNumeric: true);
+        // Insert "Blocking Path" at the beginning — "Blocked Sessions" is a static XAML column now
         var blockingPathCol = CreateFilterColumn("Blocking Path", "ChainBlockingPath", 250);
-
-        ResultsDataGrid.Columns.Insert(0, blockedCountCol);
-        ResultsDataGrid.Columns.Insert(1, blockingPathCol);
+        ResultsDataGrid.Columns.Insert(0, blockingPathCol);
     }
 
     private DataGridTextColumn CreateFilterColumn(string headerText, string bindingPath, int width,

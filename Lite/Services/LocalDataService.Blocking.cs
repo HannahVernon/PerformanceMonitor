@@ -1083,7 +1083,10 @@ public class QuerySnapshotRow
     public bool HasLiveQueryPlan => !string.IsNullOrEmpty(LiveQueryPlan);
     public string CollectionTimeLocal => CollectionTime == DateTime.MinValue ? "" : ServerTimeHelper.FormatServerTime(CollectionTime);
 
+    // Sessions this session is blocking at the same collection_time (SQL-derived in the
+    // snapshot queries; Chain mode overwrites it with the chain walker's transitive count)
+    public int BlockedSessionCount { get; set; }
+
     // Chain mode — set by WaitDrillDownWindow when showing head blockers
-    public int ChainBlockedCount { get; set; }
     public string ChainBlockingPath { get; set; } = "";
 }

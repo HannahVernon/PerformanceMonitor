@@ -399,7 +399,11 @@ FULL OUTER JOIN baseline_period b
     /// <summary>
     /// Gets collection-level history for a specific Query Store query (for drilldown).
     /// </summary>
-    public async Task<List<QueryStoreHistoryRow>> GetQueryStoreHistoryAsync(int serverId, string databaseName, long queryId, long planId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    /// <summary>
+    /// Gets collection-level history for ALL plans of a Query Store query (query-scoped, matching
+    /// the Dashboard drilldown) so plan switches and regressions are visible over time.
+    /// </summary>
+    public async Task<List<QueryStoreHistoryRow>> GetQueryStoreHistoryAsync(int serverId, string databaseName, long queryId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
@@ -428,20 +432,45 @@ SELECT
     max_clr_time_us / 1000.0 AS max_clr_time_ms,
     CAST(avg_log_bytes_used AS DOUBLE) / 1048576.0 AS avg_log_mb,
     CAST(min_log_bytes_used AS DOUBLE) / 1048576.0 AS min_log_mb,
-    CAST(max_log_bytes_used AS DOUBLE) / 1048576.0 AS max_log_mb
+    CAST(max_log_bytes_used AS DOUBLE) / 1048576.0 AS max_log_mb,
+    plan_id,
+    min_duration_us / 1000.0 AS min_duration_ms,
+    max_duration_us / 1000.0 AS max_duration_ms,
+    min_cpu_time_us / 1000.0 AS min_cpu_time_ms,
+    max_cpu_time_us / 1000.0 AS max_cpu_time_ms,
+    CAST(min_logical_io_reads AS DOUBLE) AS min_logical_reads,
+    CAST(max_logical_io_reads AS DOUBLE) AS max_logical_reads,
+    CAST(min_logical_io_writes AS DOUBLE) AS min_logical_writes,
+    CAST(max_logical_io_writes AS DOUBLE) AS max_logical_writes,
+    CAST(min_physical_io_reads AS DOUBLE) AS min_physical_reads,
+    CAST(max_physical_io_reads AS DOUBLE) AS max_physical_reads,
+    CAST(min_rowcount AS DOUBLE) AS min_rowcount,
+    CAST(max_rowcount AS DOUBLE) AS max_rowcount,
+    CAST(avg_query_max_used_memory AS DOUBLE) * 8.0 / 1024.0 AS avg_memory_mb,
+    CAST(min_query_max_used_memory AS DOUBLE) * 8.0 / 1024.0 AS min_memory_mb,
+    CAST(max_query_max_used_memory AS DOUBLE) * 8.0 / 1024.0 AS max_memory_mb,
+    CAST(avg_tempdb_space_used AS DOUBLE) * 8.0 / 1024.0 AS avg_tempdb_mb,
+    CAST(min_tempdb_space_used AS DOUBLE) * 8.0 / 1024.0 AS min_tempdb_mb,
+    CAST(max_tempdb_space_used AS DOUBLE) * 8.0 / 1024.0 AS max_tempdb_mb,
+    plan_type,
+    is_forced_plan,
+    force_failure_count,
+    last_force_failure_reason,
+    plan_forcing_type,
+    compatibility_level,
+    query_hash,
+    query_plan_hash
 FROM v_query_store_stats
 WHERE server_id = $1
 AND   database_name = $2
 AND   query_id = $3
-AND   plan_id = $4
-AND   collection_time >= $5
-AND   collection_time <= $6
+AND   collection_time >= $4
+AND   collection_time <= $5
 ORDER BY collection_time";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = databaseName });
         command.Parameters.Add(new DuckDBParameter { Value = queryId });
-        command.Parameters.Add(new DuckDBParameter { Value = planId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
 
@@ -473,7 +502,34 @@ ORDER BY collection_time";
                 MaxClrTimeMs = reader.IsDBNull(19) ? 0 : ToDouble(reader.GetValue(19)),
                 AvgLogMb = reader.IsDBNull(20) ? 0 : ToDouble(reader.GetValue(20)),
                 MinLogMb = reader.IsDBNull(21) ? 0 : ToDouble(reader.GetValue(21)),
-                MaxLogMb = reader.IsDBNull(22) ? 0 : ToDouble(reader.GetValue(22))
+                MaxLogMb = reader.IsDBNull(22) ? 0 : ToDouble(reader.GetValue(22)),
+                PlanId = reader.IsDBNull(23) ? 0 : reader.GetInt64(23),
+                MinDurationMs = reader.IsDBNull(24) ? 0 : ToDouble(reader.GetValue(24)),
+                MaxDurationMs = reader.IsDBNull(25) ? 0 : ToDouble(reader.GetValue(25)),
+                MinCpuTimeMs = reader.IsDBNull(26) ? 0 : ToDouble(reader.GetValue(26)),
+                MaxCpuTimeMs = reader.IsDBNull(27) ? 0 : ToDouble(reader.GetValue(27)),
+                MinLogicalReads = reader.IsDBNull(28) ? 0 : ToDouble(reader.GetValue(28)),
+                MaxLogicalReads = reader.IsDBNull(29) ? 0 : ToDouble(reader.GetValue(29)),
+                MinLogicalWrites = reader.IsDBNull(30) ? 0 : ToDouble(reader.GetValue(30)),
+                MaxLogicalWrites = reader.IsDBNull(31) ? 0 : ToDouble(reader.GetValue(31)),
+                MinPhysicalReads = reader.IsDBNull(32) ? 0 : ToDouble(reader.GetValue(32)),
+                MaxPhysicalReads = reader.IsDBNull(33) ? 0 : ToDouble(reader.GetValue(33)),
+                MinRowcount = reader.IsDBNull(34) ? 0 : ToDouble(reader.GetValue(34)),
+                MaxRowcount = reader.IsDBNull(35) ? 0 : ToDouble(reader.GetValue(35)),
+                AvgMemoryMb = reader.IsDBNull(36) ? 0 : ToDouble(reader.GetValue(36)),
+                MinMemoryMb = reader.IsDBNull(37) ? 0 : ToDouble(reader.GetValue(37)),
+                MaxMemoryMb = reader.IsDBNull(38) ? 0 : ToDouble(reader.GetValue(38)),
+                AvgTempdbMb = reader.IsDBNull(39) ? 0 : ToDouble(reader.GetValue(39)),
+                MinTempdbMb = reader.IsDBNull(40) ? 0 : ToDouble(reader.GetValue(40)),
+                MaxTempdbMb = reader.IsDBNull(41) ? 0 : ToDouble(reader.GetValue(41)),
+                PlanType = reader.IsDBNull(42) ? "" : reader.GetString(42),
+                IsForcedPlan = !reader.IsDBNull(43) && reader.GetBoolean(43),
+                ForceFailureCount = reader.IsDBNull(44) ? 0 : reader.GetInt64(44),
+                LastForceFailureReason = reader.IsDBNull(45) ? "" : reader.GetString(45),
+                PlanForcingType = reader.IsDBNull(46) ? "" : reader.GetString(46),
+                CompatibilityLevel = reader.IsDBNull(47) ? 0 : reader.GetInt32(47),
+                QueryHash = reader.IsDBNull(48) ? "" : reader.GetString(48),
+                QueryPlanHash = reader.IsDBNull(49) ? "" : reader.GetString(49)
             });
         }
 
@@ -672,6 +728,36 @@ public class QueryStoreHistoryRow
     public double AvgLogMb { get; set; }
     public double MinLogMb { get; set; }
     public double MaxLogMb { get; set; }
+
+    // Per-plan identity + min/max spreads + memory/tempdb + plan-forcing metadata,
+    // for parity with the Dashboard Query Store drilldown (QueryExecutionHistoryWindow).
+    public long PlanId { get; set; }
+    public double MinDurationMs { get; set; }
+    public double MaxDurationMs { get; set; }
+    public double MinCpuTimeMs { get; set; }
+    public double MaxCpuTimeMs { get; set; }
+    public double MinLogicalReads { get; set; }
+    public double MaxLogicalReads { get; set; }
+    public double MinLogicalWrites { get; set; }
+    public double MaxLogicalWrites { get; set; }
+    public double MinPhysicalReads { get; set; }
+    public double MaxPhysicalReads { get; set; }
+    public double MinRowcount { get; set; }
+    public double MaxRowcount { get; set; }
+    public double AvgMemoryMb { get; set; }
+    public double MinMemoryMb { get; set; }
+    public double MaxMemoryMb { get; set; }
+    public double AvgTempdbMb { get; set; }
+    public double MinTempdbMb { get; set; }
+    public double MaxTempdbMb { get; set; }
+    public string PlanType { get; set; } = "";
+    public bool IsForcedPlan { get; set; }
+    public long ForceFailureCount { get; set; }
+    public string LastForceFailureReason { get; set; } = "";
+    public string PlanForcingType { get; set; } = "";
+    public int CompatibilityLevel { get; set; }
+    public string QueryHash { get; set; } = "";
+    public string QueryPlanHash { get; set; } = "";
 
     public double TotalDurationMs => ExecutionCount * AvgDurationMs;
     public double TotalCpuMs => ExecutionCount * AvgCpuTimeMs;

@@ -124,27 +124,23 @@ namespace PerformanceMonitorDashboard
                     ? await _databaseService.GetProcedureStatsHistoryAsync(_databaseName, _schemaName, _procedureName, _hoursBack, _fromDate, _toDate)
                     : await _databaseService.GetProcedureStatsHistoryAsync(_databaseName, _objectId, _hoursBack, _fromDate, _toDate);
 
-                // Compute per-interval executions. DMV counters are cumulative and reset on plan
-                // eviction, so we walk oldest→newest, detecting lifetime boundaries by CachedTime.
+                // Compute per-interval executions/spills. DMV counters are cumulative and reset on
+                // plan eviction, so we walk oldest→newest, detecting lifetime boundaries by CachedTime.
                 // Data arrives sorted by CollectionTime DESC, so walk from end to start.
+                // (Spills have no SQL-side delta column, hence the client-side walk.)
                 for (int i = _historyData.Count - 1; i >= 0; i--)
                 {
                     var item = _historyData[i];
-                    if (i == _historyData.Count - 1)
+                    var olderItem = i == _historyData.Count - 1 ? null : _historyData[i + 1];
+                    if (olderItem == null || item.CachedTime != olderItem.CachedTime)
                     {
                         item.IntervalExecutions = item.ExecutionCount;
+                        item.IntervalSpills = item.TotalSpills ?? 0;
                     }
                     else
                     {
-                        var olderItem = _historyData[i + 1];
-                        if (item.CachedTime != olderItem.CachedTime)
-                        {
-                            item.IntervalExecutions = item.ExecutionCount;
-                        }
-                        else
-                        {
-                            item.IntervalExecutions = Math.Max(0, item.ExecutionCount - olderItem.ExecutionCount);
-                        }
+                        item.IntervalExecutions = Math.Max(0, item.ExecutionCount - olderItem.ExecutionCount);
+                        item.IntervalSpills = Math.Max(0, (item.TotalSpills ?? 0) - (olderItem.TotalSpills ?? 0));
                     }
                 }
 

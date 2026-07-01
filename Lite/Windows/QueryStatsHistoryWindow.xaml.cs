@@ -141,7 +141,7 @@ public partial class QueryStatsHistoryWindow : Window
         "DeltaExecutions" => row.DeltaExecutions,
         "DeltaCpuMs" => row.DeltaCpuMs,
         "DeltaLogicalReads" => row.DeltaLogicalReads,
-        "TotalSpills" => row.DeltaSpills,
+        "DeltaSpills" => row.DeltaSpills,
         _ => row.AvgCpuMs
     };
 

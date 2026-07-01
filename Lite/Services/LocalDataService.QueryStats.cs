@@ -369,7 +369,6 @@ SELECT
     max_worker_time,
     min_elapsed_time,
     max_elapsed_time,
-    query_plan_xml,
     query_plan_hash,
     min_grant_kb,
     max_grant_kb,
@@ -387,7 +386,21 @@ SELECT
     max_rows,
     min_spills,
     max_spills,
-    total_clr_time
+    total_clr_time,
+    creation_time,
+    last_execution_time,
+    execution_count,
+    total_worker_time,
+    total_elapsed_time,
+    total_logical_reads,
+    total_logical_writes,
+    total_physical_reads,
+    total_rows,
+    total_spills,
+    sql_handle,
+    plan_handle,
+    query_hash,
+    sample_interval_seconds
 FROM v_query_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -423,25 +436,38 @@ ORDER BY collection_time";
                 MaxCpuUs = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
                 MinElapsedUs = reader.IsDBNull(13) ? 0 : reader.GetInt64(13),
                 MaxElapsedUs = reader.IsDBNull(14) ? 0 : reader.GetInt64(14),
-                QueryPlan = reader.IsDBNull(15) ? null : reader.GetString(15),
-                QueryPlanHash = reader.IsDBNull(16) ? "" : reader.GetString(16),
-                MinGrantKb = reader.IsDBNull(17) ? 0 : reader.GetInt64(17),
-                MaxGrantKb = reader.IsDBNull(18) ? 0 : reader.GetInt64(18),
-                MinUsedGrantKb = reader.IsDBNull(19) ? 0 : reader.GetInt64(19),
-                MaxUsedGrantKb = reader.IsDBNull(20) ? 0 : reader.GetInt64(20),
-                MinIdealGrantKb = reader.IsDBNull(21) ? 0 : reader.GetInt64(21),
-                MaxIdealGrantKb = reader.IsDBNull(22) ? 0 : reader.GetInt64(22),
-                MinReservedThreads = reader.IsDBNull(23) ? 0 : reader.GetInt64(23),
-                MaxReservedThreads = reader.IsDBNull(24) ? 0 : reader.GetInt64(24),
-                MinUsedThreads = reader.IsDBNull(25) ? 0 : reader.GetInt64(25),
-                MaxUsedThreads = reader.IsDBNull(26) ? 0 : reader.GetInt64(26),
-                MinPhysicalReads = reader.IsDBNull(27) ? 0 : reader.GetInt64(27),
-                MaxPhysicalReads = reader.IsDBNull(28) ? 0 : reader.GetInt64(28),
-                MinRows = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
-                MaxRows = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
-                MinSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
-                MaxSpills = reader.IsDBNull(32) ? 0 : reader.GetInt64(32),
-                TotalClrTimeUs = reader.IsDBNull(33) ? 0 : reader.GetInt64(33)
+                QueryPlanHash = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                MinGrantKb = reader.IsDBNull(16) ? 0 : reader.GetInt64(16),
+                MaxGrantKb = reader.IsDBNull(17) ? 0 : reader.GetInt64(17),
+                MinUsedGrantKb = reader.IsDBNull(18) ? 0 : reader.GetInt64(18),
+                MaxUsedGrantKb = reader.IsDBNull(19) ? 0 : reader.GetInt64(19),
+                MinIdealGrantKb = reader.IsDBNull(20) ? 0 : reader.GetInt64(20),
+                MaxIdealGrantKb = reader.IsDBNull(21) ? 0 : reader.GetInt64(21),
+                MinReservedThreads = reader.IsDBNull(22) ? 0 : reader.GetInt64(22),
+                MaxReservedThreads = reader.IsDBNull(23) ? 0 : reader.GetInt64(23),
+                MinUsedThreads = reader.IsDBNull(24) ? 0 : reader.GetInt64(24),
+                MaxUsedThreads = reader.IsDBNull(25) ? 0 : reader.GetInt64(25),
+                MinPhysicalReads = reader.IsDBNull(26) ? 0 : reader.GetInt64(26),
+                MaxPhysicalReads = reader.IsDBNull(27) ? 0 : reader.GetInt64(27),
+                MinRows = reader.IsDBNull(28) ? 0 : reader.GetInt64(28),
+                MaxRows = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
+                MinSpills = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
+                MaxSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
+                TotalClrTimeUs = reader.IsDBNull(32) ? 0 : reader.GetInt64(32),
+                CreationTime = reader.IsDBNull(33) ? (DateTime?)null : reader.GetDateTime(33),
+                LastExecutionTime = reader.IsDBNull(34) ? (DateTime?)null : reader.GetDateTime(34),
+                TotalExecutions = reader.IsDBNull(35) ? 0 : reader.GetInt64(35),
+                TotalCpuUs = reader.IsDBNull(36) ? 0 : reader.GetInt64(36),
+                TotalElapsedUs = reader.IsDBNull(37) ? 0 : reader.GetInt64(37),
+                TotalLogicalReads = reader.IsDBNull(38) ? 0 : reader.GetInt64(38),
+                TotalLogicalWrites = reader.IsDBNull(39) ? 0 : reader.GetInt64(39),
+                TotalPhysicalReads = reader.IsDBNull(40) ? 0 : reader.GetInt64(40),
+                TotalRows = reader.IsDBNull(41) ? 0 : reader.GetInt64(41),
+                TotalSpills = reader.IsDBNull(42) ? 0 : reader.GetInt64(42),
+                SqlHandle = reader.IsDBNull(43) ? "" : reader.GetString(43),
+                PlanHandle = reader.IsDBNull(44) ? "" : reader.GetString(44),
+                QueryHash = reader.IsDBNull(45) ? "" : reader.GetString(45),
+                SampleIntervalSeconds = reader.IsDBNull(46) ? (int?)null : reader.GetInt32(46)
             });
         }
 
@@ -479,7 +505,18 @@ SELECT
     min_spills,
     max_spills,
     sql_handle,
-    plan_handle
+    plan_handle,
+    cached_time,
+    last_execution_time,
+    object_type,
+    execution_count,
+    total_worker_time,
+    total_elapsed_time,
+    total_logical_reads,
+    total_physical_reads,
+    total_logical_writes,
+    delta_spills,
+    date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS sample_interval_seconds
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -523,7 +560,18 @@ ORDER BY collection_time";
                 MinSpills = reader.IsDBNull(18) ? 0 : reader.GetInt64(18),
                 MaxSpills = reader.IsDBNull(19) ? 0 : reader.GetInt64(19),
                 SqlHandle = reader.IsDBNull(20) ? "" : reader.GetString(20),
-                PlanHandle = reader.IsDBNull(21) ? "" : reader.GetString(21)
+                PlanHandle = reader.IsDBNull(21) ? "" : reader.GetString(21),
+                CachedTime = reader.IsDBNull(22) ? (DateTime?)null : reader.GetDateTime(22),
+                LastExecutionTime = reader.IsDBNull(23) ? (DateTime?)null : reader.GetDateTime(23),
+                ObjectType = reader.IsDBNull(24) ? "" : reader.GetString(24),
+                TotalExecutions = reader.IsDBNull(25) ? 0 : reader.GetInt64(25),
+                TotalCpuUs = reader.IsDBNull(26) ? 0 : reader.GetInt64(26),
+                TotalElapsedUs = reader.IsDBNull(27) ? 0 : reader.GetInt64(27),
+                TotalLogicalReads = reader.IsDBNull(28) ? 0 : reader.GetInt64(28),
+                TotalPhysicalReads = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
+                TotalLogicalWrites = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
+                DeltaSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
+                SampleIntervalSeconds = reader.IsDBNull(32) ? (int?)null : Convert.ToInt32(reader.GetValue(32))
             });
         }
 
@@ -1401,20 +1449,39 @@ public class QueryStatsHistoryRow
     public long MinSpills { get; set; }
     public long MaxSpills { get; set; }
     public long TotalClrTimeUs { get; set; }
-    public string? QueryPlan { get; set; }
     public string QueryPlanHash { get; set; } = "";
-    public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
+    public DateTime? CreationTime { get; set; }
+    public DateTime? LastExecutionTime { get; set; }
+    public long TotalExecutions { get; set; }
+    public long TotalCpuUs { get; set; }
+    public long TotalElapsedUs { get; set; }
+    public long TotalLogicalReads { get; set; }
+    public long TotalLogicalWrites { get; set; }
+    public long TotalPhysicalReads { get; set; }
+    public long TotalRows { get; set; }
+    public long TotalSpills { get; set; }
+    public string SqlHandle { get; set; } = "";
+    public string PlanHandle { get; set; } = "";
+    public string QueryHash { get; set; } = "";
+    public int? SampleIntervalSeconds { get; set; }
     public double DeltaCpuMs => DeltaCpuUs / 1000.0;
     public double DeltaElapsedMs => DeltaElapsedUs / 1000.0;
     public double AvgCpuMs => DeltaExecutions > 0 ? DeltaCpuMs / DeltaExecutions : 0;
     public double AvgElapsedMs => DeltaExecutions > 0 ? DeltaElapsedMs / DeltaExecutions : 0;
     public double AvgReads => DeltaExecutions > 0 ? (double)DeltaLogicalReads / DeltaExecutions : 0;
+    public double AvgPhysicalReads => DeltaExecutions > 0 ? (double)DeltaPhysicalReads / DeltaExecutions : 0;
+    public double AvgWrites => DeltaExecutions > 0 ? (double)DeltaLogicalWrites / DeltaExecutions : 0;
+    public double AvgRows => DeltaExecutions > 0 ? (double)DeltaRows / DeltaExecutions : 0;
     public double MinCpuMs => MinCpuUs / 1000.0;
     public double MaxCpuMs => MaxCpuUs / 1000.0;
     public double MinElapsedMs => MinElapsedUs / 1000.0;
     public double MaxElapsedMs => MaxElapsedUs / 1000.0;
     public double TotalClrMs => TotalClrTimeUs / 1000.0;
+    public double TotalCpuMs => TotalCpuUs / 1000.0;
+    public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public string CollectionTimeLocal => ServerTimeHelper.FormatServerTime(CollectionTime);
+    public string CreationTimeLocal => ServerTimeHelper.FormatServerTime(CreationTime);
+    public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
 }
 
 public class ProcedureStatsHistoryRow
@@ -1441,14 +1508,32 @@ public class ProcedureStatsHistoryRow
     public long MaxSpills { get; set; }
     public string SqlHandle { get; set; } = "";
     public string PlanHandle { get; set; } = "";
+    public DateTime? CachedTime { get; set; }
+    public DateTime? LastExecutionTime { get; set; }
+    public string ObjectType { get; set; } = "";
+    public long TotalExecutions { get; set; }
+    public long TotalCpuUs { get; set; }
+    public long TotalElapsedUs { get; set; }
+    public long TotalLogicalReads { get; set; }
+    public long TotalPhysicalReads { get; set; }
+    public long TotalLogicalWrites { get; set; }
+    public long DeltaSpills { get; set; }
+    public int? SampleIntervalSeconds { get; set; }
     public double DeltaCpuMs => DeltaCpuUs / 1000.0;
     public double DeltaElapsedMs => DeltaElapsedUs / 1000.0;
     public double AvgCpuMs => DeltaExecutions > 0 ? DeltaCpuMs / DeltaExecutions : 0;
     public double AvgElapsedMs => DeltaExecutions > 0 ? DeltaElapsedMs / DeltaExecutions : 0;
     public double AvgReads => DeltaExecutions > 0 ? (double)DeltaLogicalReads / DeltaExecutions : 0;
+    public double AvgPhysicalReads => DeltaExecutions > 0 ? (double)DeltaPhysicalReads / DeltaExecutions : 0;
+    public double AvgWrites => DeltaExecutions > 0 ? (double)DeltaLogicalWrites / DeltaExecutions : 0;
+    public double AvgSpills => DeltaExecutions > 0 ? (double)DeltaSpills / DeltaExecutions : 0;
     public double MinCpuMs => MinWorkerTimeUs / 1000.0;
     public double MaxCpuMs => MaxWorkerTimeUs / 1000.0;
     public double MinElapsedMs => MinElapsedTimeUs / 1000.0;
     public double MaxElapsedMs => MaxElapsedTimeUs / 1000.0;
+    public double TotalCpuMs => TotalCpuUs / 1000.0;
+    public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public string CollectionTimeLocal => ServerTimeHelper.FormatServerTime(CollectionTime);
+    public string CachedTimeLocal => ServerTimeHelper.FormatServerTime(CachedTime);
+    public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
 }

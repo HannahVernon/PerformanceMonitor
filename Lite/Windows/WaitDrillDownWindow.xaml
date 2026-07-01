@@ -114,6 +114,9 @@
                 <DataGridTextColumn Binding="{Binding BlockingSessionId}" ElementStyle="{StaticResource NumericCell}" Width="70">
                     <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingSessionId" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                 </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding BlockedSessionCount}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedSessionCount" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
                 <DataGridTextColumn Binding="{Binding Dop}" ElementStyle="{StaticResource NumericCell}" Width="45">
                     <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Dop" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="DOP" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                 </DataGridTextColumn>
