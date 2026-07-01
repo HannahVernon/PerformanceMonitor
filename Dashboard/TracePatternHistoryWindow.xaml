@@ -98,6 +98,7 @@
                 <DataGridTextColumn Header="Application" Binding="{Binding ApplicationName}" Width="150"/>
                 <DataGridTextColumn Header="Host" Binding="{Binding HostName}" Width="120"/>
                 <DataGridTextColumn Header="SPID" Binding="{Binding Spid}" ElementStyle="{StaticResource NumericCell}" Width="60"/>
+                <DataGridTextColumn Header="Client PID" Binding="{Binding ClientProcessId}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
                 <DataGridTextColumn Header="Object ID" Binding="{Binding ObjectId}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
                 <DataGridTemplateColumn Width="*" MinWidth="300">
                     <DataGridTemplateColumn.Header>

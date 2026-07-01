@@ -62,9 +62,9 @@
                     <ComboBoxItem Content="Avg Duration (ms)" Tag="AvgElapsedMs"/>
                     <ComboBoxItem Content="Avg Logical Reads" Tag="AvgReads"/>
                     <ComboBoxItem Content="Execution Count Delta" Tag="DeltaExecutions"/>
-                    <ComboBoxItem Content="Total CPU (ms)" Tag="DeltaCpuMs"/>
-                    <ComboBoxItem Content="Total Logical Reads" Tag="DeltaLogicalReads"/>
-                    <ComboBoxItem Content="Total Spills" Tag="TotalSpills"/>
+                    <ComboBoxItem Content="CPU Delta (ms)" Tag="DeltaCpuMs"/>
+                    <ComboBoxItem Content="Logical Reads Delta" Tag="DeltaLogicalReads"/>
+                    <ComboBoxItem Content="Spills Delta" Tag="DeltaSpills"/>
                 </ComboBox>
                 <scottplot:WpfPlot x:Name="HistoryChart" Margin="0,0,0,0"/>
             </Grid>
@@ -78,17 +78,30 @@
                   ContextMenu="{StaticResource DataGridContextMenu}">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Creation Time" Binding="{Binding CreationTimeLocal}" Width="130"/>
                 <DataGridTextColumn Header="Exec Delta" Binding="{Binding DeltaExecutions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Executions" Binding="{Binding TotalExecutions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
                 <DataGridTextColumn Header="CPU Delta (ms)" Binding="{Binding DeltaCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
                 <DataGridTextColumn Header="Duration Delta (ms)" Binding="{Binding DeltaElapsedMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
                 <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgElapsedMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalElapsedMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
                 <DataGridTextColumn Header="Logical Reads" Binding="{Binding DeltaLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Logical Reads" Binding="{Binding TotalLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="125"/>
                 <DataGridTextColumn Header="Rows" Binding="{Binding DeltaRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Avg Rows" Binding="{Binding AvgRows, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Rows" Binding="{Binding TotalRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="95"/>
                 <DataGridTextColumn Header="Writes" Binding="{Binding DeltaLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Avg Writes" Binding="{Binding AvgWrites, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="95"/>
+                <DataGridTextColumn Header="Total Writes" Binding="{Binding TotalLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Physical Reads" Binding="{Binding DeltaPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg Phys Reads" Binding="{Binding AvgPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Total Phys Reads" Binding="{Binding TotalPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
                 <DataGridTextColumn Header="Spills" Binding="{Binding DeltaSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                <DataGridTextColumn Header="Total Spills" Binding="{Binding TotalSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="95"/>
                 <DataGridTextColumn Header="Min CPU (ms)" Binding="{Binding MinCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Max CPU (ms)" Binding="{Binding MaxCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Min Duration (ms)" Binding="{Binding MinElapsedMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
@@ -112,6 +125,10 @@
                 <DataGridTextColumn Header="Min Used Threads" Binding="{Binding MinUsedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
                 <DataGridTextColumn Header="Max Used Threads" Binding="{Binding MaxUsedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
                 <DataGridTextColumn Header="Total CLR (ms)" Binding="{Binding TotalClrMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Interval (sec)" Binding="{Binding SampleIntervalSeconds}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="SQL Handle" Binding="{Binding SqlHandle}" Width="140"/>
+                <DataGridTextColumn Header="Plan Handle" Binding="{Binding PlanHandle}" Width="140"/>
+                <DataGridTextColumn Header="Query Hash" Binding="{Binding QueryHash}" Width="140"/>
                 <DataGridTextColumn Header="Plan Hash" Binding="{Binding QueryPlanHash}" Width="140"/>
                 <DataGridTemplateColumn Header="Plan" Width="Auto" MinWidth="80">
                     <DataGridTemplateColumn.CellTemplate>

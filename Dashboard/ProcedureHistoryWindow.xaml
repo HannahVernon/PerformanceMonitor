@@ -140,6 +140,7 @@
                 <DataGridTextColumn Header="Avg Spills" Binding="{Binding AvgSpills, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
                 <DataGridTextColumn Header="Min Spills" Binding="{Binding MinSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
                 <DataGridTextColumn Header="Max Spills" Binding="{Binding MaxSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
+                <DataGridTextColumn Header="Spills Delta" Binding="{Binding IntervalSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
 
                 <!-- Sample Interval -->
                 <DataGridTextColumn Header="Interval (sec)" Binding="{Binding SampleIntervalSeconds}" ElementStyle="{StaticResource NumericCell}" Width="85"/>

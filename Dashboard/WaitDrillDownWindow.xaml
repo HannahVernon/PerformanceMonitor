@@ -93,6 +93,7 @@
                 <DataGridTextColumn Header="tempdb Alloc" Binding="{Binding TempdbAllocations, StringFormat='{}{0:N2}'}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
                 <DataGridTextColumn Header="Tran Log" Binding="{Binding TranLogWrites}" ElementStyle="{StaticResource NumericCell}" Width="100" SortMemberPath="TranLogWritesSort"/>
                 <DataGridTextColumn Header="Open Tran" Binding="{Binding OpenTranCount}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Isolation" Binding="{Binding IsolationLevel}" Width="110"/>
                 <DataGridTextColumn Header="% Complete" Binding="{Binding PercentComplete, StringFormat='{}{0:N1}%'}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
                 <DataGridTextColumn Header="Start Time" Binding="{Binding StartTime, StringFormat='MM/dd HH:mm:ss'}" Width="140"/>
                 <DataGridTextColumn Header="Tran Start" Binding="{Binding TranStartTime, StringFormat='MM/dd HH:mm:ss'}" Width="140"/>

@@ -103,6 +103,9 @@ namespace PerformanceMonitorDashboard.Models
         public double AvgDurationMs => AvgDuration / 1000.0;
         public double MinDurationMs => MinDuration / 1000.0;
         public double MaxDurationMs => MaxDuration / 1000.0;
+        // Per-interval workload weight (Query Store stats are already per-interval averages)
+        public double TotalDurationMs => CountExecutions * AvgDurationMs;
+        public double TotalCpuMs => CountExecutions * AvgCpuTimeMs;
         public double AvgCpuTimeMs => AvgCpuTime / 1000.0;
         public double MinCpuTimeMs => MinCpuTime / 1000.0;
         public double MaxCpuTimeMs => MaxCpuTime / 1000.0;

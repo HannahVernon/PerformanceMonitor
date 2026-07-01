@@ -36,6 +36,7 @@ public partial class QueryStoreHistoryWindow : Window
     private readonly PlanNavigationController _planActions;
     private List<QueryStoreHistoryRow> _historyData = new();
     private ChartHoverHelper? _chartHover;
+    private ScottPlot.IPanel? _legendPanel;
     private DataGridFilterManager<QueryStoreHistoryRow>? _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
@@ -64,7 +65,7 @@ public partial class QueryStoreHistoryWindow : Window
         _filterManager.UpdateFilterButtonStyles();
 
         var displayText = queryText.Length > 120 ? queryText[..120] + "..." : queryText;
-        QueryIdentifierText.Text = $"Query Store History: Query {queryId}, Plan {planId} in [{databaseName}]";
+        QueryIdentifierText.Text = $"Query Store History: Query {queryId} in [{databaseName}]";
         SummaryText.Text = displayText;
         Loaded += async (_, _) => await LoadHistoryAsync();
         ThemeManager.ThemeChanged += OnThemeChanged;
@@ -75,16 +76,18 @@ public partial class QueryStoreHistoryWindow : Window
     {
         try
         {
-            _historyData = await _dataService.GetQueryStoreHistoryAsync(_serverId, _databaseName, _queryId, _planId, _hoursBack);
+            _historyData = await _dataService.GetQueryStoreHistoryAsync(_serverId, _databaseName, _queryId, _hoursBack);
             _filterManager!.UpdateData(_historyData);
 
             if (_historyData.Count > 0)
             {
                 var totalExec = _historyData.Sum(r => r.ExecutionCount);
+                var planCount = _historyData.Select(r => r.PlanId).Distinct().Count();
                 var first = _historyData.First().CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes);
                 var last = _historyData.Last().CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes);
                 SummaryText.Text = $"{_historyData.Count} samples from {first:MM/dd HH:mm} to {last:MM/dd HH:mm} | " +
-                                   $"Total Executions: {totalExec:N0}";
+                                   $"Total Executions: {totalExec:N0} | " +
+                                   (planCount > 1 ? $"{planCount} different plans" : "Single plan");
             }
             else
             {
@@ -108,19 +111,16 @@ public partial class QueryStoreHistoryWindow : Window
             return;
         }
 
+        if (_legendPanel != null)
+        {
+            HistoryChart.Plot.Axes.Remove(_legendPanel);
+            _legendPanel = null;
+        }
         HistoryChart.Plot.Clear();
 
         var selected = MetricSelector.SelectedItem as ComboBoxItem;
         var tag = selected?.Tag?.ToString() ?? "AvgCpuTimeMs";
         var label = selected?.Content?.ToString() ?? "Avg CPU (ms)";
-
-        var xs = _historyData.Select(r => r.CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes).ToOADate()).ToArray();
-        var ys = _historyData.Select(r => GetMetricValue(r, tag)).ToArray();
-
-        var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
-        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
-        ChartStyle.StyleScatter(scatter);
-        scatter.LegendText = label;
 
         var unit = tag.Contains("Ms") ? "ms" : "";
         if (_chartHover == null)
@@ -128,9 +128,33 @@ public partial class QueryStoreHistoryWindow : Window
         else
             _chartHover.Unit = unit;
         _chartHover.Clear();
-        _chartHover.Add(scatter, label);
+
+        // One series per plan so plan switches/regressions are visible — same as the Dashboard drilldown.
+        var planGroups = _historyData.GroupBy(r => r.PlanId).OrderBy(g => g.Key).ToList();
+        var colors = ChartPalette.CyclingPalette.Select(ScottPlot.Color.FromHex).ToArray();
+
+        int colorIndex = 0;
+        foreach (var planGroup in planGroups)
+        {
+            var ordered = planGroup.OrderBy(r => r.CollectionTime).ToList();
+            var xs = ordered.Select(r => r.CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes).ToOADate()).ToArray();
+            var ys = ordered.Select(r => GetMetricValue(r, tag)).ToArray();
+
+            var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
+            scatter.Color = colors[colorIndex % colors.Length];
+            ChartStyle.StyleScatter(scatter);
+            var seriesLabel = planGroups.Count > 1 ? $"Plan {planGroup.Key}" : label;
+            scatter.LegendText = seriesLabel;
+            _chartHover.Add(scatter, seriesLabel);
+            colorIndex++;
+        }
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
+        if (planGroups.Count > 1)
+        {
+            _legendPanel = HistoryChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
+            HistoryChart.Plot.Legend.FontSize = 12;
+        }
         ApplyTheme(HistoryChart);
 
         HistoryChart.Refresh();
@@ -153,13 +177,15 @@ public partial class QueryStoreHistoryWindow : Window
     private async void DownloadPlan_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn) return;
-        if (string.IsNullOrEmpty(_connectionString) || string.IsNullOrEmpty(_databaseName) || _planId == 0) return;
+        // Rows can now span multiple plans — download the plan for THIS row, not the launching one.
+        var rowPlanId = (btn.DataContext as QueryStoreHistoryRow)?.PlanId ?? _planId;
+        if (string.IsNullOrEmpty(_connectionString) || string.IsNullOrEmpty(_databaseName) || rowPlanId == 0) return;
 
         btn.IsEnabled = false;
         btn.Content = "...";
         try
         {
-            var plan = await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, _planId);
+            var plan = await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, rowPlanId);
             if (string.IsNullOrEmpty(plan))
             {
                 MessageBox.Show("No query plan found in Query Store for this plan ID.", "Plan Not Found", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -170,7 +196,7 @@ public partial class QueryStoreHistoryWindow : Window
             {
                 Filter = "SQL Plan files (*.sqlplan)|*.sqlplan|All files (*.*)|*.*",
                 DefaultExt = ".sqlplan",
-                FileName = $"qs_plan_{_queryId}_{_planId}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
+                FileName = $"qs_plan_{_queryId}_{rowPlanId}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
             };
 
             if (dialog.ShowDialog() != true) return;
@@ -252,14 +278,20 @@ public partial class QueryStoreHistoryWindow : Window
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "query_store_history", App.CsvSeparator);
 
-    private async System.Threading.Tasks.Task<string?> FetchPlanAsync()
+    private long SelectedPlanId =>
+        ((HistoryDataGrid.CurrentItem ?? HistoryDataGrid.SelectedItem) as QueryStoreHistoryRow)?.PlanId ?? _planId;
+
+    private async System.Threading.Tasks.Task<string?> FetchPlanAsync(long planId)
     {
-        if (string.IsNullOrEmpty(_connectionString) || _planId == 0) return null;
-        return await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, _planId);
+        if (string.IsNullOrEmpty(_connectionString) || planId == 0) return null;
+        return await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, planId);
     }
 
     private async void ViewPlan_Click(object sender, RoutedEventArgs e)
-        => await _planActions.ViewPlanAsync(FetchPlanAsync, $"Est Plan - QS {_queryId}/{_planId}", _queryText);
+    {
+        var planId = SelectedPlanId;
+        await _planActions.ViewPlanAsync(() => FetchPlanAsync(planId), $"Est Plan - QS {_queryId}/{planId}", _queryText);
+    }
 
     private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
         => await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - QS {_queryId}");

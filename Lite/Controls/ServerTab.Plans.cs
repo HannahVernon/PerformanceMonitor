@@ -285,8 +285,10 @@ public partial class ServerTab : UserControl
                     planXml = await FetchPlanByHash(stats.QueryHash);
                 break;
             case QueryStatsHistoryRow hist:
-                planXml = hist.QueryPlan;
                 label = "Est Plan - History";
+                // History rows no longer carry per-row plan XML — fetch on demand by hash
+                if (!string.IsNullOrEmpty(hist.QueryHash))
+                    planXml = await FetchPlanByHash(hist.QueryHash);
                 break;
             case ProcedureStatsRow proc:
                 label = $"Est Plan - {proc.FullName}";

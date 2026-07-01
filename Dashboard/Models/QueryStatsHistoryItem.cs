@@ -14,7 +14,6 @@ namespace PerformanceMonitorDashboard.Models
     {
         public long CollectionId { get; set; }
         public DateTime CollectionTime { get; set; }
-        public DateTime ServerStartTime { get; set; }
         public string ObjectType { get; set; } = string.Empty;
         public DateTime CreationTime { get; set; }
         public DateTime LastExecutionTime { get; set; }
@@ -23,6 +22,11 @@ namespace PerformanceMonitorDashboard.Models
         public long ExecutionCount { get; set; }
         public long? ExecutionCountDelta { get; set; }
         public long IntervalExecutions { get; set; }
+
+        // Per-interval rows/spills, computed at load time by the same CreationTime-lifetime
+        // walk that produces IntervalExecutions (no SQL-side delta exists for these two).
+        public long IntervalRows { get; set; }
+        public long IntervalSpills { get; set; }
 
         // Worker time (CPU) - microseconds in database
         public long TotalWorkerTime { get; set; }
@@ -98,18 +102,27 @@ namespace PerformanceMonitorDashboard.Models
         public double MinWorkerTimeMs => MinWorkerTime / 1000.0;
         public double MaxWorkerTimeMs => MaxWorkerTime / 1000.0;
         public double? TotalWorkerTimeDeltaMs => TotalWorkerTimeDelta / 1000.0;
-        public double? AvgWorkerTimeMs => ExecutionCount > 0 ? TotalWorkerTime / (double)ExecutionCount / 1000.0 : null;
+
+        /* Averages are PER-INTERVAL (delta / delta executions), matching Lite. Lifetime-cumulative
+           averages (total / execution_count since plan creation) flatten out over time and hide
+           recent regressions; the Total* columns still expose the raw cumulative counters. */
+        public double? AvgWorkerTimeMs => ExecutionCountDelta > 0 && TotalWorkerTimeDelta.HasValue
+            ? TotalWorkerTimeDelta.Value / (double)ExecutionCountDelta!.Value / 1000.0 : null;
 
         public double TotalElapsedTimeMs => TotalElapsedTime / 1000.0;
         public double MinElapsedTimeMs => MinElapsedTime / 1000.0;
         public double MaxElapsedTimeMs => MaxElapsedTime / 1000.0;
         public double? TotalElapsedTimeDeltaMs => TotalElapsedTimeDelta / 1000.0;
-        public double? AvgElapsedTimeMs => ExecutionCount > 0 ? TotalElapsedTime / (double)ExecutionCount / 1000.0 : null;
+        public double? AvgElapsedTimeMs => ExecutionCountDelta > 0 && TotalElapsedTimeDelta.HasValue
+            ? TotalElapsedTimeDelta.Value / (double)ExecutionCountDelta!.Value / 1000.0 : null;
 
-        public double? AvgLogicalReads => ExecutionCount > 0 ? TotalLogicalReads / (double)ExecutionCount : null;
-        public double? AvgPhysicalReads => ExecutionCount > 0 ? TotalPhysicalReads / (double)ExecutionCount : null;
-        public double? AvgLogicalWrites => ExecutionCount > 0 ? TotalLogicalWrites / (double)ExecutionCount : null;
-        public double? AvgRows => ExecutionCount > 0 ? TotalRows / (double)ExecutionCount : null;
+        public double? AvgLogicalReads => ExecutionCountDelta > 0 && TotalLogicalReadsDelta.HasValue
+            ? TotalLogicalReadsDelta.Value / (double)ExecutionCountDelta!.Value : null;
+        public double? AvgPhysicalReads => ExecutionCountDelta > 0 && TotalPhysicalReadsDelta.HasValue
+            ? TotalPhysicalReadsDelta.Value / (double)ExecutionCountDelta!.Value : null;
+        public double? AvgLogicalWrites => ExecutionCountDelta > 0 && TotalLogicalWritesDelta.HasValue
+            ? TotalLogicalWritesDelta.Value / (double)ExecutionCountDelta!.Value : null;
+        public double? AvgRows => IntervalExecutions > 0 ? IntervalRows / (double)IntervalExecutions : null;
 
         // Memory in MB
         public double MinGrantMb => MinGrantKb / 1024.0;

@@ -86,7 +86,8 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.granted_memory,
                                 qs.max_used_memory,
                                 qs.tasks,
-                                qs.physical_io
+                                qs.physical_io,
+                                isolation_level = qs.additional_info.value('(additional_info/transaction_isolation_level/text())[1]', 'nvarchar(40)')
                                 /* query_plan fetched on-demand via GetQuerySnapshotPlanAsync */
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= @from_date
@@ -134,7 +135,8 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.granted_memory,
                                 qs.max_used_memory,
                                 qs.tasks,
-                                qs.physical_io
+                                qs.physical_io,
+                                isolation_level = qs.additional_info.value('(additional_info/transaction_isolation_level/text())[1]', 'nvarchar(40)')
                                 /* query_plan fetched on-demand via GetQuerySnapshotPlanAsync */
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())
@@ -187,7 +189,8 @@ namespace PerformanceMonitorDashboard.Services
                             GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory") / 128m,
                             MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory") / 128m,
                             Tasks = SafeToInt64(reader.GetValue(31), "tasks"),
-                            PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io")
+                            PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io"),
+                            IsolationLevel = reader.IsDBNull(33) ? null : reader.GetValue(33)?.ToString()
                             // QueryPlan fetched on-demand via GetQuerySnapshotPlanAsync
                         });
 
@@ -294,7 +297,8 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.granted_memory,
                                 qs.max_used_memory,
                                 qs.tasks,
-                                qs.physical_io
+                                qs.physical_io,
+                                isolation_level = qs.additional_info.value('(additional_info/transaction_isolation_level/text())[1]', 'nvarchar(40)')
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= @from_date
                             AND   qs.collection_time <= @to_date
@@ -338,7 +342,8 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.granted_memory,
                                 qs.max_used_memory,
                                 qs.tasks,
-                                qs.physical_io
+                                qs.physical_io,
+                                isolation_level = qs.additional_info.value('(additional_info/transaction_isolation_level/text())[1]', 'nvarchar(40)')
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())
                             AND   CONVERT(nvarchar(max), qs.wait_info) LIKE N'%)' + @wait_type + N'%'
@@ -390,7 +395,8 @@ namespace PerformanceMonitorDashboard.Services
                             GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory") / 128m,
                             MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory") / 128m,
                             Tasks = SafeToInt64(reader.GetValue(31), "tasks"),
-                            PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io")
+                            PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io"),
+                            IsolationLevel = reader.IsDBNull(33) ? null : reader.GetValue(33)?.ToString()
                         });
                     }
 

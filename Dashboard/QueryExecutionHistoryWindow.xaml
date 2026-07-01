@@ -105,11 +105,13 @@
                 <DataGridTextColumn Header="Executions" Binding="{Binding CountExecutions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
 
                 <!-- Duration (ms) -->
+                <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalDurationMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
                 <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
                 <DataGridTextColumn Header="Min Duration (ms)" Binding="{Binding MinDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
                 <DataGridTextColumn Header="Max Duration (ms)" Binding="{Binding MaxDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
 
                 <!-- CPU (ms) -->
+                <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
                 <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Min CPU (ms)" Binding="{Binding MinCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Max CPU (ms)" Binding="{Binding MaxCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>

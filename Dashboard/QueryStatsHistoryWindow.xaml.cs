@@ -116,30 +116,28 @@ namespace PerformanceMonitorDashboard
             {
                 _historyData = await _databaseService.GetQueryStatsHistoryAsync(_databaseName, _queryHash, _hoursBack, _fromDate, _toDate);
 
-                // Compute per-interval executions. DMV counters are cumulative and reset on plan
-                // eviction, so we walk oldest→newest, detecting lifetime boundaries by CreationTime.
-                // Data arrives sorted by CollectionTime DESC, so walk from end to start.
+                // Compute per-interval executions/rows/spills. DMV counters are cumulative and reset
+                // on plan eviction, so we walk oldest→newest, detecting lifetime boundaries by
+                // CreationTime. Data arrives sorted by CollectionTime DESC, so walk from end to start.
+                // (Rows and spills have no SQL-side delta column, hence the client-side walk.)
                 for (int i = _historyData.Count - 1; i >= 0; i--)
                 {
                     var item = _historyData[i];
-                    if (i == _historyData.Count - 1)
+                    var olderItem = i == _historyData.Count - 1 ? null : _historyData[i + 1];
+                    if (olderItem == null || item.CreationTime != olderItem.CreationTime)
                     {
-                        // Oldest row in window: credit all executions (no prior reference)
+                        // Oldest row in window, or a new plan lifetime (eviction + re-cache):
+                        // credit the full cumulative counters (no prior reference in this lifetime)
                         item.IntervalExecutions = item.ExecutionCount;
+                        item.IntervalRows = item.TotalRows;
+                        item.IntervalSpills = item.TotalSpills;
                     }
                     else
                     {
-                        var olderItem = _historyData[i + 1];
-                        if (item.CreationTime != olderItem.CreationTime)
-                        {
-                            // New plan lifetime (eviction + re-cache): credit all executions
-                            item.IntervalExecutions = item.ExecutionCount;
-                        }
-                        else
-                        {
-                            // Same lifetime: delta from previous snapshot
-                            item.IntervalExecutions = Math.Max(0, item.ExecutionCount - olderItem.ExecutionCount);
-                        }
+                        // Same lifetime: delta from previous snapshot
+                        item.IntervalExecutions = Math.Max(0, item.ExecutionCount - olderItem.ExecutionCount);
+                        item.IntervalRows = Math.Max(0, item.TotalRows - olderItem.TotalRows);
+                        item.IntervalSpills = Math.Max(0, item.TotalSpills - olderItem.TotalSpills);
                     }
                 }
 

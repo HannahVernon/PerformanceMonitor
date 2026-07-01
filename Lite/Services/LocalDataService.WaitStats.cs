@@ -337,40 +337,53 @@ LIMIT 3";
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
         command.CommandText = @"
+WITH blocked_counts AS (
+    SELECT collection_time, blocking_session_id AS blocker_session_id, COUNT(*) AS blocked_session_count
+    FROM v_query_snapshots
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   blocking_session_id > 0
+    GROUP BY collection_time, blocking_session_id
+)
 SELECT
-    session_id,
-    database_name,
-    elapsed_time_formatted,
-    query_text,
-    status,
-    blocking_session_id,
-    wait_type,
-    wait_time_ms,
-    wait_resource,
-    cpu_time_ms,
-    total_elapsed_time_ms,
-    reads,
-    writes,
-    logical_reads,
-    granted_query_memory_gb,
-    transaction_isolation_level,
-    dop,
-    parallel_worker_count,
-    query_plan,
-    live_query_plan,
-    collection_time,
-    login_name,
-    host_name,
-    program_name,
-    open_transaction_count,
-    percent_complete,
-    query_hash
-FROM v_query_snapshots
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-AND   wait_type = $4
-ORDER BY wait_time_ms DESC
+    q.session_id,
+    q.database_name,
+    q.elapsed_time_formatted,
+    q.query_text,
+    q.status,
+    q.blocking_session_id,
+    q.wait_type,
+    q.wait_time_ms,
+    q.wait_resource,
+    q.cpu_time_ms,
+    q.total_elapsed_time_ms,
+    q.reads,
+    q.writes,
+    q.logical_reads,
+    q.granted_query_memory_gb,
+    q.transaction_isolation_level,
+    q.dop,
+    q.parallel_worker_count,
+    q.query_plan,
+    q.live_query_plan,
+    q.collection_time,
+    q.login_name,
+    q.host_name,
+    q.program_name,
+    q.open_transaction_count,
+    q.percent_complete,
+    q.query_hash,
+    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count
+FROM v_query_snapshots q
+LEFT JOIN blocked_counts bc
+  ON  bc.collection_time = q.collection_time
+  AND bc.blocker_session_id = q.session_id
+WHERE q.server_id = $1
+AND   q.collection_time >= $2
+AND   q.collection_time <= $3
+AND   q.wait_type = $4
+ORDER BY q.wait_time_ms DESC
 LIMIT 500";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -410,7 +423,8 @@ LIMIT 500";
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
                 PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
-                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26)
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27))
             });
         }
 
@@ -431,39 +445,52 @@ LIMIT 500";
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
         command.CommandText = @"
+WITH blocked_counts AS (
+    SELECT collection_time, blocking_session_id AS blocker_session_id, COUNT(*) AS blocked_session_count
+    FROM v_query_snapshots
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   blocking_session_id > 0
+    GROUP BY collection_time, blocking_session_id
+)
 SELECT
-    session_id,
-    database_name,
-    elapsed_time_formatted,
-    query_text,
-    status,
-    blocking_session_id,
-    wait_type,
-    wait_time_ms,
-    wait_resource,
-    cpu_time_ms,
-    total_elapsed_time_ms,
-    reads,
-    writes,
-    logical_reads,
-    granted_query_memory_gb,
-    transaction_isolation_level,
-    dop,
-    parallel_worker_count,
-    query_plan,
-    live_query_plan,
-    collection_time,
-    login_name,
-    host_name,
-    program_name,
-    open_transaction_count,
-    percent_complete,
-    query_hash
-FROM v_query_snapshots
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-ORDER BY collection_time DESC
+    q.session_id,
+    q.database_name,
+    q.elapsed_time_formatted,
+    q.query_text,
+    q.status,
+    q.blocking_session_id,
+    q.wait_type,
+    q.wait_time_ms,
+    q.wait_resource,
+    q.cpu_time_ms,
+    q.total_elapsed_time_ms,
+    q.reads,
+    q.writes,
+    q.logical_reads,
+    q.granted_query_memory_gb,
+    q.transaction_isolation_level,
+    q.dop,
+    q.parallel_worker_count,
+    q.query_plan,
+    q.live_query_plan,
+    q.collection_time,
+    q.login_name,
+    q.host_name,
+    q.program_name,
+    q.open_transaction_count,
+    q.percent_complete,
+    q.query_hash,
+    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count
+FROM v_query_snapshots q
+LEFT JOIN blocked_counts bc
+  ON  bc.collection_time = q.collection_time
+  AND bc.blocker_session_id = q.session_id
+WHERE q.server_id = $1
+AND   q.collection_time >= $2
+AND   q.collection_time <= $3
+ORDER BY q.collection_time DESC
 LIMIT 2000";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -502,7 +529,8 @@ LIMIT 2000";
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
                 PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
-                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26)
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27))
             });
         }
 
