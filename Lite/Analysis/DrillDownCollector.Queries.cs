@@ -318,8 +318,8 @@ plan_agg AS
         any_value(query_plan_hash) AS query_plan_hash,
         any_value(query_text) AS query_text,
         SUM(execution_count) AS execs,
-        SUM(avg_cpu_time_us * execution_count) / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
-        SUM(avg_duration_us * execution_count) / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
+        SUM(avg_cpu_time_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
+        SUM(avg_duration_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
         MAX(last_execution_time) AS last_exec
     FROM deduped
     WHERE rn = 1

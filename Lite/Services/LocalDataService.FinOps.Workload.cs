@@ -29,7 +29,7 @@ public partial class LocalDataService
 WITH workload AS (
     SELECT
         database_name,
-        SUM(delta_worker_time) / 1000 AS cpu_time_ms,
+        SUM(delta_worker_time) / 1000.0 AS cpu_time_ms,
         SUM(delta_logical_reads) AS logical_reads,
         SUM(delta_physical_reads) AS physical_reads,
         SUM(delta_logical_writes) AS logical_writes,
@@ -175,7 +175,7 @@ ORDER BY max_connections DESC";
 WITH workload AS (
     SELECT
         database_name,
-        SUM(delta_worker_time) / 1000 AS cpu_time_ms,
+        SUM(delta_worker_time) / 1000.0 AS cpu_time_ms,
         SUM(delta_execution_count) AS execution_count
     FROM v_query_stats
     WHERE server_id = $1
@@ -256,7 +256,7 @@ LIMIT $3";
 WITH workload AS (
     SELECT
         database_name,
-        SUM(delta_worker_time) / 1000 AS cpu_time_ms,
+        SUM(delta_worker_time) / 1000.0 AS cpu_time_ms,
         SUM(delta_execution_count) AS execution_count
     FROM v_query_stats
     WHERE server_id = $1
@@ -414,7 +414,7 @@ ORDER BY bc.total_wait_time_ms DESC";
         command.CommandText = @"
 SELECT
     database_name,
-    SUM(delta_worker_time) / 1000 AS total_cpu_ms,
+    SUM(delta_worker_time) / 1000.0 AS total_cpu_ms,
     CAST(SUM(delta_worker_time) / 1000.0 / NULLIF(SUM(delta_execution_count), 0) AS DECIMAL(19,2)) AS avg_cpu_ms,
     SUM(delta_logical_reads) AS total_reads,
     CAST(SUM(delta_logical_reads) * 1.0 / NULLIF(SUM(delta_execution_count), 0) AS DECIMAL(19,0)) AS avg_reads,
