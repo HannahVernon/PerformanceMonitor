@@ -13,7 +13,9 @@ using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using Microsoft.Win32;
+using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
 using PerformanceMonitor.Common;
@@ -32,6 +34,10 @@ public partial class QueryStatsHistoryWindow : Window
     private readonly string? _queryText;
     private readonly PlanNavigationController _planActions;
     private List<QueryStatsHistoryRow> _historyData = new();
+    private ChartHoverHelper? _chartHover;
+    private DataGridFilterManager<QueryStatsHistoryRow>? _filterManager;
+    private Popup? _filterPopup;
+    private ColumnFilterPopup? _filterPopupContent;
 
     public QueryStatsHistoryWindow(LocalDataService dataService, int serverId, string databaseName, string queryHash, int hoursBack, string? queryText = null, string? connectionString = null)
     {
@@ -51,6 +57,10 @@ public partial class QueryStatsHistoryWindow : Window
                 _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
             "the monitored server");
 
+        _filterManager = new DataGridFilterManager<QueryStatsHistoryRow>(HistoryDataGrid);
+        DataGridFilterColumns.AddFilterButtons(HistoryDataGrid, Filter_Click);
+        _filterManager.UpdateFilterButtonStyles();
+
         QueryIdentifierText.Text = $"Query Stats History: {queryHash} in [{databaseName}]";
         Loaded += async (_, _) => await LoadHistoryAsync();
         ThemeManager.ThemeChanged += OnThemeChanged;
@@ -62,7 +72,7 @@ public partial class QueryStatsHistoryWindow : Window
         try
         {
             _historyData = await _dataService.GetQueryStatsHistoryAsync(_serverId, _databaseName, _queryHash, _hoursBack);
-            HistoryDataGrid.ItemsSource = _historyData;
+            _filterManager!.UpdateData(_historyData);
 
             if (_historyData.Count > 0)
             {
@@ -108,6 +118,14 @@ public partial class QueryStatsHistoryWindow : Window
         scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
         ChartStyle.StyleScatter(scatter);
         scatter.LegendText = label;
+
+        var unit = tag.Contains("Ms") ? "ms" : "";
+        if (_chartHover == null)
+            _chartHover = new ChartHoverHelper(HistoryChart, unit);
+        else
+            _chartHover.Unit = unit;
+        _chartHover.Clear();
+        _chartHover.Add(scatter, label);
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
         ApplyTheme(HistoryChart);
@@ -194,7 +212,59 @@ public partial class QueryStatsHistoryWindow : Window
     {
         ApplyTheme(HistoryChart);
         HistoryChart.Refresh();
+        _filterManager?.UpdateFilterButtonStyles();
     }
+
+    #region Column Filter Popup
+
+    private void EnsureFilterPopup()
+    {
+        if (_filterPopup == null)
+        {
+            _filterPopupContent = new ColumnFilterPopup();
+            _filterPopup = new Popup
+            {
+                Child = _filterPopupContent,
+                StaysOpen = false,
+                Placement = PlacementMode.Bottom,
+                AllowsTransparency = true
+            };
+        }
+    }
+
+    private void Filter_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string columnName) return;
+        if (_filterManager == null) return;
+
+        EnsureFilterPopup();
+
+        _filterPopupContent!.FilterApplied -= FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
+        _filterPopupContent.FilterApplied += FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared += FilterPopup_FilterCleared;
+
+        _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
+        _filterPopupContent.Initialize(columnName, existingFilter);
+
+        _filterPopup!.PlacementTarget = button;
+        _filterPopup.IsOpen = true;
+    }
+
+    private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+        _filterManager?.SetFilter(e.FilterState);
+    }
+
+    private void FilterPopup_FilterCleared(object? sender, EventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+    }
+
+    #endregion
 
     private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
     private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
