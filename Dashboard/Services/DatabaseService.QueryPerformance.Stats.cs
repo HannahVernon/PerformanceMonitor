@@ -606,10 +606,13 @@ namespace PerformanceMonitorDashboard.Services
             force_failure_count = SUM(qsd.force_failure_count),
             last_force_failure_reason_desc = MAX(qsd.last_force_failure_reason_desc),
             plan_forcing_type = MAX(qsd.plan_forcing_type),
+            avg_clr_time_ms = SUM(qsd.avg_clr_time * qsd.count_executions) / 1000.0 / NULLIF(SUM(qsd.count_executions), 0),
             min_clr_time_ms = MIN(qsd.min_clr_time) / 1000.0,
             max_clr_time_ms = MAX(qsd.max_clr_time) / 1000.0,
+            avg_num_physical_io_reads = SUM(qsd.avg_num_physical_io_reads * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
             min_num_physical_io_reads = MIN(qsd.min_num_physical_io_reads),
             max_num_physical_io_reads = MAX(qsd.max_num_physical_io_reads),
+            avg_log_bytes_used = SUM(qsd.avg_log_bytes_used * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
             min_log_bytes_used = MIN(qsd.min_log_bytes_used),
             max_log_bytes_used = MAX(qsd.max_log_bytes_used)
         INTO #qs_top_ranked
@@ -709,13 +712,16 @@ namespace PerformanceMonitorDashboard.Services
                             ForceFailureCount = reader.IsDBNull(38) ? null : reader.GetInt64(38),
                             LastForceFailureReasonDesc = reader.IsDBNull(39) ? null : reader.GetString(39),
                             PlanForcingType = reader.IsDBNull(40) ? null : reader.GetString(40),
-                            MinClrTimeMs = reader.IsDBNull(41) ? null : Convert.ToDouble(reader.GetValue(41), CultureInfo.InvariantCulture),
-                            MaxClrTimeMs = reader.IsDBNull(42) ? null : Convert.ToDouble(reader.GetValue(42), CultureInfo.InvariantCulture),
-                            MinNumPhysicalIoReads = reader.IsDBNull(43) ? null : reader.GetInt64(43),
-                            MaxNumPhysicalIoReads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
-                            MinLogBytesUsed = reader.IsDBNull(45) ? null : reader.GetInt64(45),
-                            MaxLogBytesUsed = reader.IsDBNull(46) ? null : reader.GetInt64(46),
-                            QuerySqlText = reader.IsDBNull(47) ? null : reader.GetString(47)
+                            AvgClrTimeMs = reader.IsDBNull(41) ? null : Convert.ToDouble(reader.GetValue(41), CultureInfo.InvariantCulture),
+                            MinClrTimeMs = reader.IsDBNull(42) ? null : Convert.ToDouble(reader.GetValue(42), CultureInfo.InvariantCulture),
+                            MaxClrTimeMs = reader.IsDBNull(43) ? null : Convert.ToDouble(reader.GetValue(43), CultureInfo.InvariantCulture),
+                            AvgNumPhysicalIoReads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
+                            MinNumPhysicalIoReads = reader.IsDBNull(45) ? null : reader.GetInt64(45),
+                            MaxNumPhysicalIoReads = reader.IsDBNull(46) ? null : reader.GetInt64(46),
+                            AvgLogBytesUsed = reader.IsDBNull(47) ? null : reader.GetInt64(47),
+                            MinLogBytesUsed = reader.IsDBNull(48) ? null : reader.GetInt64(48),
+                            MaxLogBytesUsed = reader.IsDBNull(49) ? null : reader.GetInt64(49),
+                            QuerySqlText = reader.IsDBNull(50) ? null : reader.GetString(50)
                             // QueryPlanXml is fetched on-demand via GetQueryStorePlanXmlAsync
                         });
                     }
