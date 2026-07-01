@@ -136,7 +136,7 @@ WITH ranked AS (
         MAX(max_used_threads) AS max_used_threads,
         MAX(total_clr_time) AS total_clr_time,
         MAX(plan_generation_num) AS plan_generation_num,
-        MAX(CAST(delta_worker_time AS DOUBLE) / NULLIF(sample_interval_seconds, 0) / 1000.0) AS worker_time_per_second
+        MAX(CAST(delta_worker_time AS DOUBLE PRECISION) / NULLIF(sample_interval_seconds, 0) / 1000.0) AS worker_time_per_second
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -273,9 +273,9 @@ top_hashes AS (
 current_period AS (
     SELECT th.database_name, th.query_hash,
            SUM(qs.delta_execution_count) AS exec_count,
-           SUM(qs.delta_elapsed_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(qs.delta_worker_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(qs.delta_physical_reads)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
+           SUM(qs.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(qs.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(qs.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
            MAX(qs.query_text) AS query_text
     FROM top_hashes th
     INNER JOIN v_query_stats qs
@@ -289,9 +289,9 @@ current_period AS (
 baseline_period AS (
     SELECT th.database_name, th.query_hash,
            SUM(qs.delta_execution_count) AS exec_count,
-           SUM(qs.delta_elapsed_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(qs.delta_worker_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(qs.delta_physical_reads)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
+           SUM(qs.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(qs.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(qs.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
            MAX(qs.query_text) AS query_text
     FROM top_hashes th
     INNER JOIN v_query_stats qs
@@ -848,7 +848,7 @@ SELECT
     MAX(last_execution_time) AS last_execution_time,
     MAX(sql_handle) AS sql_handle,
     MAX(plan_handle) AS plan_handle,
-    CAST(SUM(delta_spills) AS DOUBLE) / NULLIF(SUM(delta_execution_count), 0) AS avg_spills
+    CAST(SUM(delta_spills) AS DOUBLE PRECISION) / NULLIF(SUM(delta_execution_count), 0) AS avg_spills
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -951,9 +951,9 @@ top_procs AS (
 current_period AS (
     SELECT tp.database_name, tp.schema_name, tp.object_name,
            SUM(ps.delta_execution_count) AS exec_count,
-           SUM(ps.delta_elapsed_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(ps.delta_worker_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(ps.delta_physical_reads)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
+           SUM(ps.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(ps.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(ps.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
     FROM top_procs tp
     INNER JOIN v_procedure_stats ps
       ON  ps.database_name IS NOT DISTINCT FROM tp.database_name
@@ -967,9 +967,9 @@ current_period AS (
 baseline_period AS (
     SELECT tp.database_name, tp.schema_name, tp.object_name,
            SUM(ps.delta_execution_count) AS exec_count,
-           SUM(ps.delta_elapsed_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(ps.delta_worker_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(ps.delta_physical_reads)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
+           SUM(ps.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(ps.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(ps.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
     FROM top_procs tp
     INNER JOIN v_procedure_stats ps
       ON  ps.database_name IS NOT DISTINCT FROM tp.database_name
@@ -1050,7 +1050,7 @@ WITH raw AS
 SELECT
     collection_time,
     CASE WHEN interval_seconds > 0 THEN total_elapsed_ms / interval_seconds ELSE 0 END AS elapsed_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE) / interval_seconds ELSE 0 END AS executions_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS executions_per_second
 FROM raw
 ORDER BY collection_time";
 
@@ -1099,7 +1099,7 @@ WITH raw AS
 SELECT
     collection_time,
     CASE WHEN interval_seconds > 0 THEN total_elapsed_ms / interval_seconds ELSE 0 END AS elapsed_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE) / interval_seconds ELSE 0 END AS executions_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS executions_per_second
 FROM raw
 ORDER BY collection_time";
 
@@ -1146,7 +1146,7 @@ WITH raw AS
 )
 SELECT
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE) / interval_seconds ELSE 0 END AS executions_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS executions_per_second
 FROM raw
 ORDER BY collection_time";
 
@@ -1182,9 +1182,9 @@ ORDER BY collection_time";
     {
         HeatmapMetric.Duration => "(delta_elapsed_time / 1000.0) / NULLIF(delta_execution_count, 0)",
         HeatmapMetric.Cpu => "(delta_worker_time / 1000.0) / NULLIF(delta_execution_count, 0)",
-        HeatmapMetric.LogicalReads => "CAST(delta_logical_reads AS DOUBLE) / NULLIF(delta_execution_count, 0)",
-        HeatmapMetric.LogicalWrites => "CAST(delta_logical_writes AS DOUBLE) / NULLIF(delta_execution_count, 0)",
-        HeatmapMetric.ExecutionCount => "CAST(delta_execution_count AS DOUBLE)",
+        HeatmapMetric.LogicalReads => "CAST(delta_logical_reads AS DOUBLE PRECISION) / NULLIF(delta_execution_count, 0)",
+        HeatmapMetric.LogicalWrites => "CAST(delta_logical_writes AS DOUBLE PRECISION) / NULLIF(delta_execution_count, 0)",
+        HeatmapMetric.ExecutionCount => "CAST(delta_execution_count AS DOUBLE PRECISION)",
         _ => "(delta_elapsed_time / 1000.0) / NULLIF(delta_execution_count, 0)"
     };
 

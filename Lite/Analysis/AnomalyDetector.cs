@@ -722,7 +722,7 @@ AND   delta_cntr_value >= 0";
             cmd.CommandText = @"
 WITH per_collection AS (
     SELECT collection_time,
-           SUM(connection_count)::DOUBLE AS total_connections
+           SUM(connection_count)::DOUBLE PRECISION AS total_connections
     FROM v_session_stats
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
     GROUP BY collection_time
@@ -798,7 +798,7 @@ FROM per_collection";
             cmd.CommandText = @"
 WITH per_collection AS (
     SELECT collection_time,
-           SUM(delta_elapsed_time)::DOUBLE AS total_elapsed
+           SUM(delta_elapsed_time)::DOUBLE PRECISION AS total_elapsed
     FROM v_query_stats
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
     AND   delta_execution_count > 0
@@ -875,8 +875,8 @@ FROM per_collection";
 
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
-SELECT AVG(total_server_memory_mb::DOUBLE / NULLIF(target_server_memory_mb::DOUBLE, 0) * 100) AS avg_pressure,
-       MAX(total_server_memory_mb::DOUBLE / NULLIF(target_server_memory_mb::DOUBLE, 0) * 100) AS peak_pressure,
+SELECT AVG(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS avg_pressure,
+       MAX(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS peak_pressure,
        COUNT(*) AS sample_count
 FROM v_memory_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
