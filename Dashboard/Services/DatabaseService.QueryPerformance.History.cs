@@ -75,14 +75,28 @@ namespace PerformanceMonitorDashboard.Services
             force_failure_count = MAX(qsd.force_failure_count),
             last_force_failure_reason_desc = MAX(qsd.last_force_failure_reason_desc),
             plan_forcing_type = MAX(qsd.plan_forcing_type),
-            compatibility_level = MAX(qsd.compatibility_level)
+            compatibility_level = MAX(qsd.compatibility_level),
+            qsd.execution_type_desc,
+            server_first_execution_time = MIN(qsd.server_first_execution_time),
+            server_last_execution_time = MAX(qsd.server_last_execution_time),
+            module_name = MAX(qsd.module_name),
+            avg_num_physical_io_reads = SUM(qsd.avg_num_physical_io_reads * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
+            min_num_physical_io_reads = MIN(qsd.min_num_physical_io_reads),
+            max_num_physical_io_reads = MAX(qsd.max_num_physical_io_reads),
+            avg_clr_time = SUM(qsd.avg_clr_time * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
+            min_clr_time = MIN(qsd.min_clr_time),
+            max_clr_time = MAX(qsd.max_clr_time),
+            avg_log_bytes_used = SUM(qsd.avg_log_bytes_used * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
+            min_log_bytes_used = MIN(qsd.min_log_bytes_used),
+            max_log_bytes_used = MAX(qsd.max_log_bytes_used)
         FROM collect.query_store_data AS qsd
         WHERE qsd.database_name = @database_name
         AND   qsd.query_id = @query_id
         {timeFilter}
         GROUP BY
             qsd.collection_time,
-            qsd.plan_id
+            qsd.plan_id,
+            qsd.execution_type_desc
         ORDER BY
             qsd.collection_time DESC;";
 
@@ -144,7 +158,20 @@ namespace PerformanceMonitorDashboard.Services
                             ForceFailureCount = reader.IsDBNull(34) ? null : reader.GetInt64(34),
                             LastForceFailureReasonDesc = reader.IsDBNull(35) ? null : reader.GetString(35),
                             PlanForcingType = reader.IsDBNull(36) ? null : reader.GetString(36),
-                            CompatibilityLevel = reader.IsDBNull(37) ? null : reader.GetInt16(37)
+                            CompatibilityLevel = reader.IsDBNull(37) ? null : reader.GetInt16(37),
+                            ExecutionTypeDesc = reader.IsDBNull(38) ? null : reader.GetString(38),
+                            ServerFirstExecutionTime = reader.IsDBNull(39) ? null : reader.GetDateTime(39),
+                            ServerLastExecutionTime = reader.IsDBNull(40) ? null : reader.GetDateTime(40),
+                            ModuleName = reader.IsDBNull(41) ? null : reader.GetString(41),
+                            AvgNumPhysicalReads = reader.IsDBNull(42) ? null : reader.GetInt64(42),
+                            MinNumPhysicalReads = reader.IsDBNull(43) ? null : reader.GetInt64(43),
+                            MaxNumPhysicalReads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
+                            AvgClrTime = reader.GetInt64(45),
+                            MinClrTime = reader.GetInt64(46),
+                            MaxClrTime = reader.GetInt64(47),
+                            AvgLogBytesUsed = reader.IsDBNull(48) ? null : reader.GetInt64(48),
+                            MinLogBytesUsed = reader.IsDBNull(49) ? null : reader.GetInt64(49),
+                            MaxLogBytesUsed = reader.IsDBNull(50) ? null : reader.GetInt64(50)
                         });
                     }
 
