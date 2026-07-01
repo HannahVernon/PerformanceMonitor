@@ -41,7 +41,6 @@ namespace PerformanceMonitorDashboard.Models
         public DateTime? TranStartTime { get; set; }
         public short? RequestId { get; set; }
         public string? AdditionalInfo { get; set; }
-        public string? Locks { get; set; }
         public string? QueryPlan { get; set; }
 
         // Property alias for XAML binding compatibility

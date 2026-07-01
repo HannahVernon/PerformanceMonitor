@@ -73,7 +73,9 @@ namespace PerformanceMonitorDashboard.Services
             max_spills = MAX(qs.max_spills),
             query_plan_hash = MAX(qs.query_plan_hash),
             sql_handle = MAX(qs.sql_handle),
-            plan_handle = MAX(qs.plan_handle)
+            plan_handle = MAX(qs.plan_handle),
+            plan_generation_num = MAX(qs.plan_generation_num),
+            worker_time_per_second = MAX(qs.worker_time_per_second)
         INTO #per_lifetime
         FROM collect.query_stats AS qs
         WHERE (
@@ -143,7 +145,9 @@ namespace PerformanceMonitorDashboard.Services
             max_spills = MAX(pl.max_spills),
             query_plan_hash = CONVERT(nvarchar(20), MAX(pl.query_plan_hash), 1),
             sql_handle = CONVERT(nvarchar(130), MAX(pl.sql_handle), 1),
-            plan_handle = CONVERT(nvarchar(130), MAX(pl.plan_handle), 1)
+            plan_handle = CONVERT(nvarchar(130), MAX(pl.plan_handle), 1),
+            plan_generation_num = MAX(pl.plan_generation_num),
+            worker_time_per_second = MAX(pl.worker_time_per_second)
         INTO #top_ranked
         FROM #per_lifetime AS pl
         GROUP BY
@@ -200,7 +204,9 @@ namespace PerformanceMonitorDashboard.Services
             query_plan_xml = CONVERT(nvarchar(max), NULL),
             tr.query_plan_hash,
             tr.sql_handle,
-            tr.plan_handle
+            tr.plan_handle,
+            tr.plan_generation_num,
+            tr.worker_time_per_second
         FROM #top_ranked AS tr
         OUTER APPLY
         (
@@ -266,7 +272,9 @@ namespace PerformanceMonitorDashboard.Services
                             QueryPlanXml = reader.IsDBNull(35) ? null : reader.GetString(35),
                             QueryPlanHash = reader.IsDBNull(36) ? null : reader.GetString(36),
                             SqlHandle = reader.IsDBNull(37) ? null : reader.GetString(37),
-                            PlanHandle = reader.IsDBNull(38) ? null : reader.GetString(38)
+                            PlanHandle = reader.IsDBNull(38) ? null : reader.GetString(38),
+                            PlanGenerationNum = reader.IsDBNull(39) ? null : reader.GetInt64(39),
+                            WorkerTimePerSecond = reader.IsDBNull(40) ? null : Convert.ToDouble(reader.GetValue(40), CultureInfo.InvariantCulture)
                         });
                     }
 

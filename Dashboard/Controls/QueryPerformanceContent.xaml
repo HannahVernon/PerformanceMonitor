@@ -690,6 +690,22 @@
                             </StackPanel>
                         </DataGridTextColumn.Header>
                     </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding WorkerTimePerSecond, StringFormat='{}{0:N1}'}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WorkerTimePerSecond" Click="QueryStatsFilter_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Peak CPU (ms/s)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding PlanGenerationNum, StringFormat='{}{0:N0}'}" ElementStyle="{StaticResource NumericCell}" Width="85">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PlanGenerationNum" Click="QueryStatsFilter_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Plan Gen" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Binding="{Binding MinWorkerTime}" ElementStyle="{StaticResource NumericCell}" Width="100">
                         <DataGridTextColumn.Header>
                             <StackPanel Orientation="Horizontal">
@@ -1198,6 +1214,14 @@
                             <StackPanel Orientation="Horizontal">
                                 <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalSpills" Click="ProcStatsFilter_Click" Margin="0,0,4,0"/>
                                 <TextBlock Text="Total Spills (pages)" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding AvgSpills, StringFormat='{}{0:N2}'}" ElementStyle="{StaticResource NumericCell}" Width="90">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgSpills" Click="ProcStatsFilter_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Avg Spills (pages)" FontWeight="Bold" VerticalAlignment="Center"/>
                             </StackPanel>
                         </DataGridTextColumn.Header>
                     </DataGridTextColumn>
