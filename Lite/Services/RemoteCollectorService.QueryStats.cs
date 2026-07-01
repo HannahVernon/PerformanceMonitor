@@ -91,7 +91,8 @@ SELECT /* PerformanceMonitorLite */ TOP (200)
                         END - qs.statement_start_offset
                     ) / 2 + 1
                 )
-        END
+        END,
+    plan_generation_num = qs.plan_generation_num
 FROM sys.dm_exec_query_stats AS qs
 OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
 CROSS APPLY
@@ -175,7 +176,8 @@ SELECT /* PerformanceMonitorLite */ TOP (200)
                         END - qs.statement_start_offset
                     ) / 2 + 1
                 )
-        END
+        END,
+    plan_generation_num = qs.plan_generation_num
 FROM sys.dm_exec_query_stats AS qs
 OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
 WHERE st.text NOT LIKE N'%PerformanceMonitorLite%'
@@ -256,7 +258,7 @@ OPTION(RECOMPILE);";
                        28=min_ideal_grant_kb, 29=max_ideal_grant_kb,
                        30=min_reserved_threads, 31=max_reserved_threads, 32=min_used_threads, 33=max_used_threads,
                        34=min_spills, 35=max_spills,
-                       36=sql_handle, 37=plan_handle, 38=query_text */
+                       36=sql_handle, 37=plan_handle, 38=query_text, 39=plan_generation_num */
                     var queryHash = reader.IsDBNull(1) ? "" : reader.GetString(1);
                     var creationTime = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3);
                     var lastExecTime = reader.IsDBNull(4) ? (DateTime?)null : reader.GetDateTime(4);
@@ -271,12 +273,15 @@ OPTION(RECOMPILE);";
                     var totalSpills = reader.IsDBNull(13) ? 0L : reader.GetInt64(13);
                     var sqlHandle = reader.IsDBNull(36) ? (string?)null : reader.GetString(36);
                     var planHandle = reader.IsDBNull(37) ? (string?)null : reader.GetString(37);
+                    var planGenerationNum = reader.IsDBNull(39) ? 0L : reader.GetInt64(39);
 
                     /* Delta calculations keyed by plan_handle to prevent cross-contamination
                        when multiple plans exist for the same query_hash */
                     var deltaKey = planHandle ?? queryHash;
                     var deltaExecCount = _deltaCalculator.CalculateDelta(serverId, "query_stats_exec", deltaKey, executionCount, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaWorkerTime = _deltaCalculator.CalculateDelta(serverId, "query_stats_worker", deltaKey, totalWorkerTime, collectionTime: collectionTime, maxGapSeconds: 300);
+                    /* Capture the collection interval alongside the CPU delta so the display can derive
+                       worker_time_per_second (peak CPU-ms per wall-clock second) over the window. */
+                    var deltaWorkerTime = _deltaCalculator.CalculateDeltaWithInterval(serverId, "query_stats_worker", deltaKey, totalWorkerTime, out var sampleIntervalSeconds, collectionTime: collectionTime, maxGapSeconds: 300);
                     var deltaElapsedTime = _deltaCalculator.CalculateDelta(serverId, "query_stats_elapsed", deltaKey, totalElapsedTime, collectionTime: collectionTime, maxGapSeconds: 300);
                     var deltaLogicalReads = _deltaCalculator.CalculateDelta(serverId, "query_stats_reads", deltaKey, totalLogicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
                     var deltaLogicalWrites = _deltaCalculator.CalculateDelta(serverId, "query_stats_writes", deltaKey, totalLogicalWrites, collectionTime: collectionTime, maxGapSeconds: 300);
@@ -338,6 +343,8 @@ OPTION(RECOMPILE);";
                        .AppendValue(deltaPhysicalReads)                                                     /* delta_physical_reads */
                        .AppendValue(deltaRows)                                                              /* delta_rows */
                        .AppendValue(deltaSpills)                                                            /* delta_spills */
+                       .AppendValue(planGenerationNum)                                                      /* plan_generation_num */
+                       .AppendValue(sampleIntervalSeconds)                                                  /* sample_interval_seconds */
                        .EndRow();
 
                     rowsCollected++;

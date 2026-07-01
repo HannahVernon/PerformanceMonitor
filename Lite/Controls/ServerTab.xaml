@@ -453,6 +453,12 @@
                                     <DataGridTextColumn Binding="{Binding AvgCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgCpuMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg CPU (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding WorkerTimePerSecond, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WorkerTimePerSecond" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Peak CPU (ms/s)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding PlanGenerationNum, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PlanGenerationNum" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Plan Gen" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
                                     <DataGridTextColumn Binding="{Binding TotalClrMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalClrMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total CLR (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
@@ -759,6 +765,9 @@
                                     </DataGridTextColumn>
                                     <DataGridTextColumn Binding="{Binding TotalSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalSpills" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total Spills" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding AvgSpills, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="90">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgSpills" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Spills" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
                                     <DataGridTextColumn Binding="{Binding MinCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinCpuMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Min CPU (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>

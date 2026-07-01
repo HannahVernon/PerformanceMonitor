@@ -134,7 +134,9 @@ WITH ranked AS (
         MAX(max_reserved_threads) AS max_reserved_threads,
         MIN(min_used_threads) AS min_used_threads,
         MAX(max_used_threads) AS max_used_threads,
-        MAX(total_clr_time) AS total_clr_time
+        MAX(total_clr_time) AS total_clr_time,
+        MAX(plan_generation_num) AS plan_generation_num,
+        MAX(CAST(delta_worker_time AS DOUBLE) / NULLIF(sample_interval_seconds, 0) / 1000.0) AS worker_time_per_second
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -216,8 +218,10 @@ LIMIT $4";
                 MinUsedThreads = reader.IsDBNull(35) ? 0 : reader.GetInt64(35),
                 MaxUsedThreads = reader.IsDBNull(36) ? 0 : reader.GetInt64(36),
                 TotalClrUs = reader.IsDBNull(37) ? 0 : reader.GetInt64(37),
-                QueryText = reader.IsDBNull(38) ? "" : reader.GetString(38),
-                QueryPlan = reader.IsDBNull(39) ? null : reader.GetString(39)
+                PlanGenerationNum = reader.IsDBNull(38) ? 0 : reader.GetInt64(38),
+                WorkerTimePerSecond = reader.IsDBNull(39) ? 0 : ToDouble(reader.GetValue(39)),
+                QueryText = reader.IsDBNull(40) ? "" : reader.GetString(40),
+                QueryPlan = reader.IsDBNull(41) ? null : reader.GetString(41)
             });
         }
 
@@ -789,13 +793,14 @@ SELECT
     MAX(max_physical_reads) AS max_physical_reads,
     MIN(min_logical_writes) AS min_logical_writes,
     MAX(max_logical_writes) AS max_logical_writes,
-    SUM(total_spills) AS total_spills,
+    SUM(delta_spills) AS total_spills,
     MIN(min_spills) AS min_spills,
     MAX(max_spills) AS max_spills,
     MAX(cached_time) AS cached_time,
     MAX(last_execution_time) AS last_execution_time,
     MAX(sql_handle) AS sql_handle,
-    MAX(plan_handle) AS plan_handle
+    MAX(plan_handle) AS plan_handle,
+    CAST(SUM(delta_spills) AS DOUBLE) / NULLIF(SUM(delta_execution_count), 0) AS avg_spills
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -846,7 +851,8 @@ LIMIT $4";
                 CachedTime = reader.IsDBNull(23) ? (DateTime?)null : reader.GetDateTime(23),
                 LastExecutionTime = reader.IsDBNull(24) ? (DateTime?)null : reader.GetDateTime(24),
                 SqlHandle = reader.IsDBNull(25) ? "" : reader.GetString(25),
-                PlanHandle = reader.IsDBNull(26) ? "" : reader.GetString(26)
+                PlanHandle = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                AvgSpills = reader.IsDBNull(27) ? 0 : ToDouble(reader.GetValue(27))
             });
         }
 
@@ -1296,6 +1302,8 @@ public class QueryStatsRow
     public long TotalClrUs { get; set; }
     public long MinSpills { get; set; }
     public long MaxSpills { get; set; }
+    public long PlanGenerationNum { get; set; }
+    public double WorkerTimePerSecond { get; set; }
     public string QueryPlanHash { get; set; } = "";
     public string SqlHandle { get; set; } = "";
     public string PlanHandle { get; set; } = "";
@@ -1338,6 +1346,7 @@ public class ProcedureStatsRow
     public long MinLogicalWrites { get; set; }
     public long MaxLogicalWrites { get; set; }
     public long TotalSpills { get; set; }
+    public double AvgSpills { get; set; }
     public long MinSpills { get; set; }
     public long MaxSpills { get; set; }
     public DateTime? CachedTime { get; set; }

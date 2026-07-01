@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 32;
+    internal const int CurrentSchemaVersion = 33;
 
     private readonly string _archivePath;
 
@@ -807,6 +807,29 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v32 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 33)
+        {
+            /* v33: procedure_stats gains delta_spills, and query_stats gains plan_generation_num +
+               sample_interval_seconds. All appended at the end to keep the positional appenders aligned; the
+               v_ views (SELECT *) surface them; old parquet reads back NULL (union BY NAME). The collectors now
+               write these columns, so an un-migrated DB would mis-align — these ALTERs are required.
+               - procedure_stats.delta_spills: spill-delta parity with query_stats (proc Total/Avg Spills now
+                 reflect per-window work, not summed cumulative DMV totals).
+               - query_stats.plan_generation_num: plan-stability signal.
+               - query_stats.sample_interval_seconds: lets the display derive worker_time_per_second (CPU-ms/sec). */
+            _logger?.LogInformation("Running migration to v33: proc delta_spills + query_stats signal columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS delta_spills BIGINT");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_stats ADD COLUMN IF NOT EXISTS plan_generation_num BIGINT");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_stats ADD COLUMN IF NOT EXISTS sample_interval_seconds INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v33 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }
