@@ -92,7 +92,9 @@ SELECT /* PerformanceMonitorLite */ TOP (200)
                     ) / 2 + 1
                 )
         END,
-    plan_generation_num = qs.plan_generation_num
+    plan_generation_num = qs.plan_generation_num,
+    statement_start_offset = qs.statement_start_offset,
+    statement_end_offset = qs.statement_end_offset
 FROM sys.dm_exec_query_stats AS qs
 OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
 CROSS APPLY
@@ -177,7 +179,9 @@ SELECT /* PerformanceMonitorLite */ TOP (200)
                     ) / 2 + 1
                 )
         END,
-    plan_generation_num = qs.plan_generation_num
+    plan_generation_num = qs.plan_generation_num,
+    statement_start_offset = qs.statement_start_offset,
+    statement_end_offset = qs.statement_end_offset
 FROM sys.dm_exec_query_stats AS qs
 OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
 WHERE st.text NOT LIKE N'%PerformanceMonitorLite%'
@@ -258,7 +262,8 @@ OPTION(RECOMPILE);";
                        28=min_ideal_grant_kb, 29=max_ideal_grant_kb,
                        30=min_reserved_threads, 31=max_reserved_threads, 32=min_used_threads, 33=max_used_threads,
                        34=min_spills, 35=max_spills,
-                       36=sql_handle, 37=plan_handle, 38=query_text, 39=plan_generation_num */
+                       36=sql_handle, 37=plan_handle, 38=query_text, 39=plan_generation_num,
+                       40=statement_start_offset, 41=statement_end_offset */
                     var queryHash = reader.IsDBNull(1) ? "" : reader.GetString(1);
                     var creationTime = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3);
                     var lastExecTime = reader.IsDBNull(4) ? (DateTime?)null : reader.GetDateTime(4);
@@ -274,10 +279,17 @@ OPTION(RECOMPILE);";
                     var sqlHandle = reader.IsDBNull(36) ? (string?)null : reader.GetString(36);
                     var planHandle = reader.IsDBNull(37) ? (string?)null : reader.GetString(37);
                     var planGenerationNum = reader.IsDBNull(39) ? 0L : reader.GetInt64(39);
+                    var statementStartOffset = reader.IsDBNull(40) ? 0 : reader.GetInt32(40);
+                    var statementEndOffset = reader.IsDBNull(41) ? 0 : reader.GetInt32(41);
 
-                    /* Delta calculations keyed by plan_handle to prevent cross-contamination
-                       when multiple plans exist for the same query_hash */
-                    var deltaKey = planHandle ?? queryHash;
+                    /* Delta key = the dm_exec_query_stats row identity, matching the Dashboard's delta framework
+                       (sql_handle + statement_start_offset + statement_end_offset + plan_handle). Keying on
+                       plan_handle alone cross-contaminated the multiple statements that share one plan (a proc or
+                       multi-statement batch is ONE plan_handle with MANY statements at different offsets): within a
+                       collection the calculator got called repeatedly with the same key but each statement's
+                       cumulative value, so one statement's total became another's "previous" — yielding garbage
+                       resource-deltas (large CPU/reads deltas with zero execution delta) that inflated the totals. */
+                    var deltaKey = $"{sqlHandle}:{statementStartOffset}:{statementEndOffset}:{planHandle}";
                     var deltaExecCount = _deltaCalculator.CalculateDelta(serverId, "query_stats_exec", deltaKey, executionCount, collectionTime: collectionTime, maxGapSeconds: 300);
                     /* Capture the collection interval alongside the CPU delta so the display can derive
                        worker_time_per_second (peak CPU-ms per wall-clock second) over the window. */
