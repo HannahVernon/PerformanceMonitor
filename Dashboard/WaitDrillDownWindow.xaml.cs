@@ -33,8 +33,7 @@ public partial class WaitDrillDownWindow : Window
     private readonly DateTime? _toDate;
 
     // Filter state
-    private Dictionary<string, ColumnFilterState> _filters = new();
-    private List<QuerySnapshotItem>? _unfilteredData;
+    private readonly DataGridFilterManager<QuerySnapshotItem> _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
     private readonly PlanNavigationController _planActions;
@@ -59,6 +58,10 @@ public partial class WaitDrillDownWindow : Window
             (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
                 _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
             "the monitored server");
+
+        _filterManager = new DataGridFilterManager<QuerySnapshotItem>(ResultsDataGrid);
+        DataGridFilterColumns.AddFilterButtons(ResultsDataGrid, Filter_Click);
+        _filterManager.UpdateFilterButtonStyles();
 
         Title = $"Wait Drill-Down: {waitType}";
 
@@ -119,10 +122,7 @@ public partial class WaitDrillDownWindow : Window
     private void LoadDirectData(List<QuerySnapshotItem> data, WaitClassification classification)
     {
         data = SortByProperty(data, classification.SortProperty);
-        _unfilteredData = data;
-        _filters.Clear();
-        ResultsDataGrid.ItemsSource = data;
-        UpdateFilterButtonStyles();
+        _filterManager.UpdateData(data);
 
         var timeRange = GetTimeRangeDescription(data);
         var truncated = data.Count >= 500 ? " (limited to 500 rows)" : "";
@@ -143,10 +143,7 @@ public partial class WaitDrillDownWindow : Window
         if (headBlockerInfos.Count == 0)
         {
             // No chain found — fall back to showing direct data
-            _unfilteredData = data;
-            _filters.Clear();
-            ResultsDataGrid.ItemsSource = data;
-            UpdateFilterButtonStyles();
+            _filterManager.UpdateData(data);
             var timeRange = GetTimeRangeDescription(data);
             SummaryText.Text = $"{data.Count} snapshot(s) | {classification.Description} | {timeRange} | No blocking chains found, showing waiters";
             return;
@@ -172,10 +169,7 @@ public partial class WaitDrillDownWindow : Window
         if (headBlockerRows.Count == 0)
         {
             // Head blockers not in data — show original data
-            _unfilteredData = data;
-            _filters.Clear();
-            ResultsDataGrid.ItemsSource = data;
-            UpdateFilterButtonStyles();
+            _filterManager.UpdateData(data);
             var timeRange = GetTimeRangeDescription(data);
             SummaryText.Text = $"{data.Count} snapshot(s) | {classification.Description} | {timeRange} | Head blockers not in snapshots, showing waiters";
             return;
@@ -183,11 +177,10 @@ public partial class WaitDrillDownWindow : Window
 
         // Insert chain-specific columns into the existing XAML columns
         InsertChainColumns();
+        // The inserted column's filter button gets its glyph from UpdateFilterButtonStyles
+        _filterManager.UpdateFilterButtonStyles();
 
-        _unfilteredData = headBlockerRows;
-        _filters.Clear();
-        ResultsDataGrid.ItemsSource = headBlockerRows;
-        UpdateFilterButtonStyles();
+        _filterManager.UpdateData(headBlockerRows);
 
         var timeRangeDesc = GetTimeRangeDescription(headBlockerRows);
         SummaryText.Text = $"{headBlockerRows.Count} head blocker(s) from {data.Count} waiting session(s) | " +
@@ -335,7 +328,7 @@ public partial class WaitDrillDownWindow : Window
 
     private void OnThemeChanged(string _)
     {
-        UpdateFilterButtonStyles();
+        _filterManager.UpdateFilterButtonStyles();
     }
 
     #region Column Filter Popup
@@ -359,7 +352,7 @@ public partial class WaitDrillDownWindow : Window
             };
         }
 
-        _filters.TryGetValue(columnName, out var existingFilter);
+        _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
         _filterPopupContent!.Initialize(columnName, existingFilter);
 
         _filterPopup.PlacementTarget = button;
@@ -369,68 +362,12 @@ public partial class WaitDrillDownWindow : Window
     private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
     {
         if (_filterPopup != null) _filterPopup.IsOpen = false;
-
-        if (e.FilterState.IsActive)
-            _filters[e.FilterState.ColumnName] = e.FilterState;
-        else
-            _filters.Remove(e.FilterState.ColumnName);
-
-        ApplyFilters();
-        UpdateFilterButtonStyles();
+        _filterManager.SetFilter(e.FilterState);
     }
 
     private void FilterPopup_FilterCleared(object? sender, EventArgs e)
     {
         if (_filterPopup != null) _filterPopup.IsOpen = false;
-    }
-
-    private void ApplyFilters()
-    {
-        if (_unfilteredData == null) return;
-
-        if (_filters.Count == 0)
-        {
-            ResultsDataGrid.ItemsSource = _unfilteredData;
-            return;
-        }
-
-        var filtered = _unfilteredData.Where(item =>
-        {
-            foreach (var filter in _filters.Values)
-            {
-                if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
-                    return false;
-            }
-            return true;
-        }).ToList();
-
-        ResultsDataGrid.ItemsSource = filtered;
-    }
-
-    private void UpdateFilterButtonStyles()
-    {
-        foreach (var column in ResultsDataGrid.Columns)
-        {
-            if (column.Header is StackPanel stackPanel)
-            {
-                var filterButton = stackPanel.Children.OfType<Button>().FirstOrDefault();
-                if (filterButton?.Tag is string columnName)
-                {
-                    bool hasActive = _filters.TryGetValue(columnName, out var filter) && filter.IsActive;
-                    filterButton.Content = new System.Windows.Controls.TextBlock
-                    {
-                        Text = "\uE71C",
-                        FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
-                        Foreground = hasActive
-                            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD7, 0x00))
-                            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-                    };
-                    filterButton.ToolTip = hasActive && filter != null
-                        ? $"Filter: {filter.DisplayText}\n(Click to modify)"
-                        : "Click to filter";
-                }
-            }
-        }
     }
 
     #endregion

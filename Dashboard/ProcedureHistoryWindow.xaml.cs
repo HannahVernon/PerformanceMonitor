@@ -42,8 +42,7 @@ namespace PerformanceMonitorDashboard
         private ChartHoverHelper? _chartHover;
 
         // Filter state
-        private Dictionary<string, ColumnFilterState> _filters = new();
-        private List<ProcedureExecutionHistoryItem>? _unfilteredData;
+        private readonly DataGridFilterManager<ProcedureExecutionHistoryItem> _filterManager;
         private Popup? _filterPopup;
         private ColumnFilterPopup? _filterPopupContent;
 
@@ -76,6 +75,10 @@ namespace PerformanceMonitorDashboard
                 (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
                     _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
                 "the monitored server");
+
+            _filterManager = new DataGridFilterManager<ProcedureExecutionHistoryItem>(HistoryDataGrid);
+            DataGridFilterColumns.AddFilterButtons(HistoryDataGrid, Filter_Click);
+            _filterManager.UpdateFilterButtonStyles();
 
             ProcedureIdentifierText.Text = $"Procedure Execution History: {objectName} in [{databaseName}]";
 
@@ -145,10 +148,7 @@ namespace PerformanceMonitorDashboard
                     }
                 }
 
-                _unfilteredData = _historyData;
-                _filters.Clear();
-                HistoryDataGrid.ItemsSource = _historyData;
-                UpdateFilterButtonStyles();
+                _filterManager.UpdateData(_historyData);
 
                 if (_historyData.Count > 0)
                 {
@@ -313,7 +313,7 @@ namespace PerformanceMonitorDashboard
                 };
             }
 
-            _filters.TryGetValue(columnName, out var existingFilter);
+            _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
             _filterPopupContent!.Initialize(columnName, existingFilter);
 
             _filterPopup.PlacementTarget = button;
@@ -323,68 +323,12 @@ namespace PerformanceMonitorDashboard
         private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
         {
             if (_filterPopup != null) _filterPopup.IsOpen = false;
-
-            if (e.FilterState.IsActive)
-                _filters[e.FilterState.ColumnName] = e.FilterState;
-            else
-                _filters.Remove(e.FilterState.ColumnName);
-
-            ApplyFilters();
-            UpdateFilterButtonStyles();
+            _filterManager.SetFilter(e.FilterState);
         }
 
         private void FilterPopup_FilterCleared(object? sender, EventArgs e)
         {
             if (_filterPopup != null) _filterPopup.IsOpen = false;
-        }
-
-        private void ApplyFilters()
-        {
-            if (_unfilteredData == null) return;
-
-            if (_filters.Count == 0)
-            {
-                HistoryDataGrid.ItemsSource = _unfilteredData;
-                return;
-            }
-
-            var filtered = _unfilteredData.Where(item =>
-            {
-                foreach (var filter in _filters.Values)
-                {
-                    if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
-                        return false;
-                }
-                return true;
-            }).ToList();
-
-            HistoryDataGrid.ItemsSource = filtered;
-        }
-
-        private void UpdateFilterButtonStyles()
-        {
-            foreach (var column in HistoryDataGrid.Columns)
-            {
-                if (column.Header is StackPanel stackPanel)
-                {
-                    var filterButton = stackPanel.Children.OfType<Button>().FirstOrDefault();
-                    if (filterButton?.Tag is string columnName)
-                    {
-                        bool hasActive = _filters.TryGetValue(columnName, out var filter) && filter.IsActive;
-                        filterButton.Content = new System.Windows.Controls.TextBlock
-                        {
-                            Text = "\uE71C",
-                            FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
-                            Foreground = hasActive
-                                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD7, 0x00))
-                                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-                        };
-                        filterButton.ToolTip = hasActive && filter != null
-                            ? $"Filter: {filter.DisplayText}\n(Click to modify)"
-                            : "Click to filter";
-                    }
-                }
-            }
         }
 
         #endregion
