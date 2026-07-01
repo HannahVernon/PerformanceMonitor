@@ -232,8 +232,8 @@ SELECT
     execution_count,
     min_worker_time,
     max_worker_time,
-    max_worker_time::DOUBLE / NULLIF(min_worker_time, 0) AS worker_ratio,
-    max_grant_kb::DOUBLE / NULLIF(min_grant_kb, 0) AS grant_ratio,
+    max_worker_time::DOUBLE PRECISION / NULLIF(min_worker_time, 0) AS worker_ratio,
+    max_grant_kb::DOUBLE PRECISION / NULLIF(min_grant_kb, 0) AS grant_ratio,
     CASE WHEN max_spills > 0 AND min_spills = 0 THEN 1 ELSE 0 END AS spill_divergence,
     LEFT(query_text, 500) AS query_text
 FROM latest
@@ -242,7 +242,7 @@ AND   min_worker_time >= 10000
 AND   max_worker_time >= 250000
 AND   execution_count >= 20
 AND   creation_time <= $2
-AND   max_worker_time::DOUBLE / NULLIF(min_worker_time, 0) >= 10
+AND   max_worker_time::DOUBLE PRECISION / NULLIF(min_worker_time, 0) >= 10
 ORDER BY worker_ratio DESC
 LIMIT 5";
 
@@ -318,8 +318,8 @@ plan_agg AS
         any_value(query_plan_hash) AS query_plan_hash,
         any_value(query_text) AS query_text,
         SUM(execution_count) AS execs,
-        SUM(avg_cpu_time_us * execution_count) / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
-        SUM(avg_duration_us * execution_count) / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
+        SUM(avg_cpu_time_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
+        SUM(avg_duration_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
         MAX(last_execution_time) AS last_exec
     FROM deduped
     WHERE rn = 1
@@ -438,13 +438,13 @@ SELECT database_name, query_hash,
        LEFT(MAX(query_text), 500) AS query_text,
        SUM(delta_execution_count)::BIGINT AS exec_count,
        CASE WHEN SUM(delta_execution_count) > 0
-            THEN SUM(delta_worker_time)::DOUBLE / SUM(delta_execution_count) / 1000.0
+            THEN SUM(delta_worker_time)::DOUBLE PRECISION / SUM(delta_execution_count) / 1000.0
             ELSE 0 END AS avg_cpu_ms,
        CASE WHEN SUM(delta_execution_count) > 0
-            THEN SUM(delta_elapsed_time)::DOUBLE / SUM(delta_execution_count) / 1000.0
+            THEN SUM(delta_elapsed_time)::DOUBLE PRECISION / SUM(delta_execution_count) / 1000.0
             ELSE 0 END AS avg_elapsed_ms,
        CASE WHEN SUM(delta_execution_count) > 0
-            THEN SUM(delta_logical_reads)::DOUBLE / SUM(delta_execution_count)
+            THEN SUM(delta_logical_reads)::DOUBLE PRECISION / SUM(delta_execution_count)
             ELSE 0 END AS avg_reads,
        SUM(delta_worker_time)::BIGINT AS total_cpu_us,
        SUM(delta_logical_reads)::BIGINT AS total_reads,

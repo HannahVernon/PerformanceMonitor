@@ -723,7 +723,7 @@ WITH raw AS
 SELECT
     collection_time,
     wait_type,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
 FROM raw
 WHERE delta_wait_time_ms >= 0
 ORDER BY collection_time, wait_type";

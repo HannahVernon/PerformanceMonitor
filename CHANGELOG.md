@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Lite: DuckDB SQL normalized to the PostgreSQL-shared dialect (headless groundwork, phase 1a)** ([#1262]) — every `DOUBLE` type spelling in Lite's DuckDB SQL becomes the standard `DOUBLE PRECISION` (43 `::DOUBLE` casts, 90 `CAST(... AS DOUBLE)`, schema/ALTER DDL — DuckDB aliases the two spellings to the same type, so existing databases, values, and introspection are unchanged), and a three-way audit of all 257 SQL division sites hardened the 8 that relied on implicit engine-specific promotion (execution-weighted per-exec averages in the analysis engine gain an explicit `::DOUBLE PRECISION` numerator; FinOps workload CPU-ms sums divide by `1000.0` instead of `1000`, matching their siblings). The remaining 162 DuckDB divisions were verified already float-safe, and the 87 divisions in collector T-SQL are intentionally untouched (SQL Server semantics, including intended integer truncation). No behavior change on DuckDB — groundwork so the same query text can later serve the planned Postgres/TimescaleDB headless store
+
 ## [3.1.0] - 2026-06-28
 
 ### Added
@@ -170,6 +174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1245]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1245
 [#1246]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1246
 [#1248]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1248
+[#1262]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1262
 [#1148]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1148
 [#1155]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1155
 [#1157]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1157

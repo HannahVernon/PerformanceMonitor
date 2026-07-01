@@ -132,9 +132,9 @@ WITH raw AS
 )
 SELECT
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
-    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
+    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
 FROM raw
 ORDER BY collection_time";
 
@@ -195,9 +195,9 @@ WITH raw AS
 SELECT
     wait_type,
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
-    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
+    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
 FROM raw
 ORDER BY wait_type, collection_time";
 
@@ -257,7 +257,7 @@ WITH per_collection AS
 )
 SELECT
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_delta_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_delta_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
 FROM per_collection
 ORDER BY collection_time";
 
@@ -294,7 +294,7 @@ SELECT
     delta_wait_time_ms AS delta_ms,
     delta_waiting_tasks AS delta_tasks,
     CASE WHEN delta_waiting_tasks > 0
-    THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks
+    THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / delta_waiting_tasks
     ELSE 0 END AS avg_ms_per_wait
 FROM v_wait_stats
 WHERE server_id = $1

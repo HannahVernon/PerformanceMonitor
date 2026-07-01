@@ -305,8 +305,8 @@ GROUP BY hour_of_day, day_of_week",
             MetricNames.Blocking => @"
 SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
-       COUNT(*)::DOUBLE / GREATEST(COUNT(DISTINCT collection_time::DATE), 1) AS mean_val,
-       0::DOUBLE AS stddev_val,
+       COUNT(*)::DOUBLE PRECISION / GREATEST(COUNT(DISTINCT collection_time::DATE), 1) AS mean_val,
+       0::DOUBLE PRECISION AS stddev_val,
        COUNT(DISTINCT collection_time::DATE) AS sample_count
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
@@ -316,8 +316,8 @@ GROUP BY hour_of_day, day_of_week",
             MetricNames.Deadlock => @"
 SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
-       COUNT(*)::DOUBLE / GREATEST(COUNT(DISTINCT collection_time::DATE), 1) AS mean_val,
-       0::DOUBLE AS stddev_val,
+       COUNT(*)::DOUBLE PRECISION / GREATEST(COUNT(DISTINCT collection_time::DATE), 1) AS mean_val,
+       0::DOUBLE PRECISION AS stddev_val,
        COUNT(DISTINCT collection_time::DATE) AS sample_count
 FROM v_deadlocks
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
@@ -327,8 +327,8 @@ GROUP BY hour_of_day, day_of_week",
             MetricNames.Memory => @"
 SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
-       AVG(total_server_memory_mb::DOUBLE / NULLIF(target_server_memory_mb::DOUBLE, 0) * 100) AS mean_val,
-       STDDEV_SAMP(total_server_memory_mb::DOUBLE / NULLIF(target_server_memory_mb::DOUBLE, 0) * 100) AS stddev_val,
+       AVG(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS mean_val,
+       STDDEV_SAMP(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS stddev_val,
        COUNT(*) AS sample_count
 FROM v_memory_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
@@ -341,7 +341,7 @@ GROUP BY hour_of_day, day_of_week",
             MetricNames.WaitMsPerSec => @"
 WITH per_collection AS (
     SELECT collection_time,
-           SUM(delta_wait_time_ms)::DOUBLE AS total_wait_ms,
+           SUM(delta_wait_time_ms)::DOUBLE PRECISION AS total_wait_ms,
            date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_sec
     FROM v_wait_stats
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
@@ -368,7 +368,7 @@ GROUP BY hour_of_day, day_of_week",
             MetricNames.BlockingPerMinute => @"
 WITH per_minute AS (
     SELECT DATE_TRUNC('minute', collection_time) AS minute_bucket,
-           COUNT(*)::DOUBLE AS event_count
+           COUNT(*)::DOUBLE PRECISION AS event_count
     FROM v_blocked_process_reports
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
     GROUP BY minute_bucket

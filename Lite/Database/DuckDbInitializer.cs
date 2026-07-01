@@ -853,12 +853,12 @@ public class DuckDbInitializer
             _logger?.LogInformation("Running migration to v34: query_snapshots memory-grant/tempdb/transaction columns");
             try
             {
-                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS requested_memory_mb DOUBLE");
-                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS used_memory_mb DOUBLE");
-                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS max_used_memory_mb DOUBLE");
-                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_current_mb DOUBLE");
-                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_allocations_mb DOUBLE");
-                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_log_used_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS requested_memory_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS used_memory_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS max_used_memory_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_current_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_allocations_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_log_used_mb DOUBLE PRECISION");
                 await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_start_time TIMESTAMP");
                 await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS request_id INTEGER");
             }

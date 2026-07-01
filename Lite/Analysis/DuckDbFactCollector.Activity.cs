@@ -33,13 +33,13 @@ SELECT
     query_hash,
     SUM(delta_execution_count)::BIGINT AS exec_count,
     CASE WHEN SUM(delta_execution_count) > 0
-         THEN SUM(delta_worker_time)::DOUBLE / SUM(delta_execution_count) / 1000.0
+         THEN SUM(delta_worker_time)::DOUBLE PRECISION / SUM(delta_execution_count) / 1000.0
          ELSE 0 END AS avg_cpu_ms,
     CASE WHEN SUM(delta_execution_count) > 0
-         THEN SUM(delta_elapsed_time)::DOUBLE / SUM(delta_execution_count) / 1000.0
+         THEN SUM(delta_elapsed_time)::DOUBLE PRECISION / SUM(delta_execution_count) / 1000.0
          ELSE 0 END AS avg_elapsed_ms,
     CASE WHEN SUM(delta_execution_count) > 0
-         THEN SUM(delta_logical_reads)::DOUBLE / SUM(delta_execution_count)
+         THEN SUM(delta_logical_reads)::DOUBLE PRECISION / SUM(delta_execution_count)
          ELSE 0 END AS avg_reads,
     SUM(delta_worker_time)::BIGINT AS total_cpu_us,
     SUM(delta_logical_reads)::BIGINT AS total_reads,
@@ -53,7 +53,7 @@ AND   collection_time <= $3
 AND   delta_execution_count > 0
 GROUP BY database_name, query_hash
 HAVING SUM(delta_execution_count) >= 100
-ORDER BY SUM(delta_worker_time)::DOUBLE / GREATEST(SUM(delta_execution_count), 1) *
+ORDER BY SUM(delta_worker_time)::DOUBLE PRECISION / GREATEST(SUM(delta_execution_count), 1) *
          LN(GREATEST(SUM(delta_execution_count), 1)) DESC
 LIMIT 5";
 

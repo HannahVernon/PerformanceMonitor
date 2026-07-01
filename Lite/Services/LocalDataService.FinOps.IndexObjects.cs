@@ -84,7 +84,7 @@ SELECT
     l.current_reserved_mb - COALESCE(p7.reserved_mb, o.reserved_mb, l.current_reserved_mb) AS growth_7d_mb,
     l.current_reserved_mb - COALESCE(p30.reserved_mb, p7.reserved_mb, o.reserved_mb, l.current_reserved_mb) AS growth_30d_mb,
     CASE WHEN b.days_of_data >= 1
-         THEN (l.current_reserved_mb - COALESCE(o.reserved_mb, l.current_reserved_mb)) / CAST(b.days_of_data AS DOUBLE)
+         THEN (l.current_reserved_mb - COALESCE(o.reserved_mb, l.current_reserved_mb)) / CAST(b.days_of_data AS DOUBLE PRECISION)
          ELSE 0 END AS daily_growth_rate_mb,
     CASE WHEN COALESCE(p30.reserved_mb, p7.reserved_mb, o.reserved_mb) > 0
          THEN (l.current_reserved_mb - COALESCE(p30.reserved_mb, p7.reserved_mb, o.reserved_mb)) * 100.0
