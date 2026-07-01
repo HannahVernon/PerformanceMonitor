@@ -81,7 +81,12 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.start_time,
                                 qs.tran_start_time,
                                 qs.request_id,
-                                additional_info = CONVERT(nvarchar(max), qs.additional_info)
+                                additional_info = CONVERT(nvarchar(max), qs.additional_info),
+                                qs.requested_memory,
+                                qs.granted_memory,
+                                qs.max_used_memory,
+                                qs.tasks,
+                                qs.physical_io
                                 /* query_plan fetched on-demand via GetQuerySnapshotPlanAsync */
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= @from_date
@@ -124,7 +129,12 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.start_time,
                                 qs.tran_start_time,
                                 qs.request_id,
-                                additional_info = CONVERT(nvarchar(max), qs.additional_info)
+                                additional_info = CONVERT(nvarchar(max), qs.additional_info),
+                                qs.requested_memory,
+                                qs.granted_memory,
+                                qs.max_used_memory,
+                                qs.tasks,
+                                qs.physical_io
                                 /* query_plan fetched on-demand via GetQuerySnapshotPlanAsync */
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())
@@ -163,7 +173,7 @@ namespace PerformanceMonitorDashboard.Services
                             Writes = SafeToInt64(reader.GetValue(15), "writes"),
                             PhysicalReads = SafeToInt64(reader.GetValue(16), "physical_reads"),
                             ContextSwitches = SafeToInt64(reader.GetValue(17), "context_switches"),
-                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory"),
+                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory") / 128m,
                             TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current"),
                             TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations"),
                             TranLogWrites = reader.IsDBNull(21) ? null : reader.GetValue(21)?.ToString(),
@@ -172,7 +182,12 @@ namespace PerformanceMonitorDashboard.Services
                             StartTime = reader.IsDBNull(24) ? null : reader.GetDateTime(24),
                             TranStartTime = reader.IsDBNull(25) ? null : reader.GetDateTime(25),
                             RequestId = SafeToInt16(reader.GetValue(26), "request_id"),
-                            AdditionalInfo = reader.IsDBNull(27) ? null : reader.GetValue(27)?.ToString()
+                            AdditionalInfo = reader.IsDBNull(27) ? null : reader.GetValue(27)?.ToString(),
+                            RequestedMemoryMb = SafeToDecimal(reader.GetValue(28), "requested_memory") / 128m,
+                            GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory") / 128m,
+                            MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory") / 128m,
+                            Tasks = SafeToInt64(reader.GetValue(31), "tasks"),
+                            PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io")
                             // QueryPlan fetched on-demand via GetQuerySnapshotPlanAsync
                         });
 
@@ -274,7 +289,12 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.start_time,
                                 qs.tran_start_time,
                                 qs.request_id,
-                                additional_info = CONVERT(nvarchar(max), qs.additional_info)
+                                additional_info = CONVERT(nvarchar(max), qs.additional_info),
+                                qs.requested_memory,
+                                qs.granted_memory,
+                                qs.max_used_memory,
+                                qs.tasks,
+                                qs.physical_io
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= @from_date
                             AND   qs.collection_time <= @to_date
@@ -313,7 +333,12 @@ namespace PerformanceMonitorDashboard.Services
                                 qs.start_time,
                                 qs.tran_start_time,
                                 qs.request_id,
-                                additional_info = CONVERT(nvarchar(max), qs.additional_info)
+                                additional_info = CONVERT(nvarchar(max), qs.additional_info),
+                                qs.requested_memory,
+                                qs.granted_memory,
+                                qs.max_used_memory,
+                                qs.tasks,
+                                qs.physical_io
                             FROM report.query_snapshots AS qs
                             WHERE qs.collection_time >= DATEADD(HOUR, @hours_back, SYSDATETIME())
                             AND   CONVERT(nvarchar(max), qs.wait_info) LIKE N'%)' + @wait_type + N'%'
@@ -351,7 +376,7 @@ namespace PerformanceMonitorDashboard.Services
                             Writes = SafeToInt64(reader.GetValue(15), "writes"),
                             PhysicalReads = SafeToInt64(reader.GetValue(16), "physical_reads"),
                             ContextSwitches = SafeToInt64(reader.GetValue(17), "context_switches"),
-                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory"),
+                            UsedMemoryMb = SafeToDecimal(reader.GetValue(18), "used_memory") / 128m,
                             TempdbCurrentMb = SafeToDecimal(reader.GetValue(19), "tempdb_current"),
                             TempdbAllocations = SafeToDecimal(reader.GetValue(20), "tempdb_allocations"),
                             TranLogWrites = reader.IsDBNull(21) ? null : reader.GetValue(21)?.ToString(),
@@ -360,7 +385,12 @@ namespace PerformanceMonitorDashboard.Services
                             StartTime = reader.IsDBNull(24) ? null : reader.GetDateTime(24),
                             TranStartTime = reader.IsDBNull(25) ? null : reader.GetDateTime(25),
                             RequestId = SafeToInt16(reader.GetValue(26), "request_id"),
-                            AdditionalInfo = reader.IsDBNull(27) ? null : reader.GetValue(27)?.ToString()
+                            AdditionalInfo = reader.IsDBNull(27) ? null : reader.GetValue(27)?.ToString(),
+                            RequestedMemoryMb = SafeToDecimal(reader.GetValue(28), "requested_memory") / 128m,
+                            GrantedMemoryMb = SafeToDecimal(reader.GetValue(29), "granted_memory") / 128m,
+                            MaxUsedMemoryMb = SafeToDecimal(reader.GetValue(30), "max_used_memory") / 128m,
+                            Tasks = SafeToInt64(reader.GetValue(31), "tasks"),
+                            PhysicalIo = SafeToInt64(reader.GetValue(32), "physical_io")
                         });
                     }
 

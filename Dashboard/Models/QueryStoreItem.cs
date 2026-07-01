@@ -70,14 +70,17 @@ namespace PerformanceMonitorDashboard.Models
         public string? PlanForcingType { get; set; }
 
         // CLR time (pre-calculated in ms)
+        public double? AvgClrTimeMs { get; set; }
         public double? MinClrTimeMs { get; set; }
         public double? MaxClrTimeMs { get; set; }
 
         // Physical IO reads (memory-optimized tables, SQL 2017+)
+        public long? AvgNumPhysicalIoReads { get; set; }
         public long? MinNumPhysicalIoReads { get; set; }
         public long? MaxNumPhysicalIoReads { get; set; }
 
         // Log bytes used (SQL 2017+)
+        public long? AvgLogBytesUsed { get; set; }
         public long? MinLogBytesUsed { get; set; }
         public long? MaxLogBytesUsed { get; set; }
 

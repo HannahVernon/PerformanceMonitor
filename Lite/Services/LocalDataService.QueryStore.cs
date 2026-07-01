@@ -106,7 +106,31 @@ WITH ranked AS (
         MAX(plan_type) AS plan_type,
         MAX(force_failure_count) AS force_failure_count,
         MAX(last_force_failure_reason) AS last_force_failure_reason,
-        MAX(compatibility_level) AS compatibility_level
+        MAX(compatibility_level) AS compatibility_level,
+        MIN(CAST(min_duration_us AS DOUBLE)) / 1000.0 AS min_duration_ms,
+        MAX(CAST(max_duration_us AS DOUBLE)) / 1000.0 AS max_duration_ms,
+        MIN(CAST(min_cpu_time_us AS DOUBLE)) / 1000.0 AS min_cpu_time_ms,
+        MAX(CAST(max_cpu_time_us AS DOUBLE)) / 1000.0 AS max_cpu_time_ms,
+        MIN(CAST(min_logical_io_reads AS DOUBLE)) AS min_logical_reads,
+        MAX(CAST(max_logical_io_reads AS DOUBLE)) AS max_logical_reads,
+        MIN(CAST(min_logical_io_writes AS DOUBLE)) AS min_logical_writes,
+        MAX(CAST(max_logical_io_writes AS DOUBLE)) AS max_logical_writes,
+        MIN(CAST(min_physical_io_reads AS DOUBLE)) AS min_physical_reads,
+        MAX(CAST(max_physical_io_reads AS DOUBLE)) AS max_physical_reads,
+        MIN(CAST(min_clr_time_us AS DOUBLE)) / 1000.0 AS min_clr_time_ms,
+        MAX(CAST(max_clr_time_us AS DOUBLE)) / 1000.0 AS max_clr_time_ms,
+        MIN(CAST(min_rowcount AS DOUBLE)) AS min_rowcount,
+        MAX(CAST(max_rowcount AS DOUBLE)) AS max_rowcount,
+        MIN(CAST(min_log_bytes_used AS DOUBLE)) AS min_log_bytes_used,
+        MAX(CAST(max_log_bytes_used AS DOUBLE)) AS max_log_bytes_used,
+        MIN(CAST(min_tempdb_space_used AS DOUBLE)) AS min_tempdb_space_used,
+        MAX(CAST(max_tempdb_space_used AS DOUBLE)) AS max_tempdb_space_used,
+        AVG(CAST(avg_query_max_used_memory AS DOUBLE)) * 8.0 / 1024.0 AS avg_memory_mb,
+        MIN(CAST(min_query_max_used_memory AS DOUBLE)) * 8.0 / 1024.0 AS min_memory_mb,
+        MAX(CAST(max_query_max_used_memory AS DOUBLE)) * 8.0 / 1024.0 AS max_memory_mb,
+        AVG(CAST(avg_num_physical_io_reads AS DOUBLE)) AS avg_num_physical_io_reads,
+        MIN(CAST(min_num_physical_io_reads AS DOUBLE)) AS min_num_physical_io_reads,
+        MAX(CAST(max_num_physical_io_reads AS DOUBLE)) AS max_num_physical_io_reads
     FROM v_query_store_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -145,7 +169,31 @@ SELECT
     r.plan_type,
     r.force_failure_count,
     r.last_force_failure_reason,
-    r.compatibility_level
+    r.compatibility_level,
+    r.min_duration_ms,
+    r.max_duration_ms,
+    r.min_cpu_time_ms,
+    r.max_cpu_time_ms,
+    r.min_logical_reads,
+    r.max_logical_reads,
+    r.min_logical_writes,
+    r.max_logical_writes,
+    r.min_physical_reads,
+    r.max_physical_reads,
+    r.min_clr_time_ms,
+    r.max_clr_time_ms,
+    r.min_rowcount,
+    r.max_rowcount,
+    r.min_log_bytes_used,
+    r.max_log_bytes_used,
+    r.min_tempdb_space_used,
+    r.max_tempdb_space_used,
+    r.avg_memory_mb,
+    r.min_memory_mb,
+    r.max_memory_mb,
+    r.avg_num_physical_io_reads,
+    r.min_num_physical_io_reads,
+    r.max_num_physical_io_reads
 FROM ranked r
 LEFT JOIN LATERAL (
     SELECT query_text
@@ -201,7 +249,31 @@ LIMIT $4";
                 PlanType = reader.IsDBNull(25) ? "" : reader.GetString(25),
                 ForceFailureCount = reader.IsDBNull(26) ? 0 : Convert.ToInt64(reader.GetValue(26)),
                 LastForceFailureReason = reader.IsDBNull(27) ? "" : reader.GetString(27),
-                CompatibilityLevel = reader.IsDBNull(28) ? 0 : Convert.ToInt32(reader.GetValue(28))
+                CompatibilityLevel = reader.IsDBNull(28) ? 0 : Convert.ToInt32(reader.GetValue(28)),
+                MinDurationMs = reader.IsDBNull(29) ? 0 : ToDouble(reader.GetValue(29)),
+                MaxDurationMs = reader.IsDBNull(30) ? 0 : ToDouble(reader.GetValue(30)),
+                MinCpuTimeMs = reader.IsDBNull(31) ? 0 : ToDouble(reader.GetValue(31)),
+                MaxCpuTimeMs = reader.IsDBNull(32) ? 0 : ToDouble(reader.GetValue(32)),
+                MinLogicalReads = reader.IsDBNull(33) ? 0 : ToDouble(reader.GetValue(33)),
+                MaxLogicalReads = reader.IsDBNull(34) ? 0 : ToDouble(reader.GetValue(34)),
+                MinLogicalWrites = reader.IsDBNull(35) ? 0 : ToDouble(reader.GetValue(35)),
+                MaxLogicalWrites = reader.IsDBNull(36) ? 0 : ToDouble(reader.GetValue(36)),
+                MinPhysicalReads = reader.IsDBNull(37) ? 0 : ToDouble(reader.GetValue(37)),
+                MaxPhysicalReads = reader.IsDBNull(38) ? 0 : ToDouble(reader.GetValue(38)),
+                MinClrTimeMs = reader.IsDBNull(39) ? 0 : ToDouble(reader.GetValue(39)),
+                MaxClrTimeMs = reader.IsDBNull(40) ? 0 : ToDouble(reader.GetValue(40)),
+                MinRowcount = reader.IsDBNull(41) ? 0 : ToDouble(reader.GetValue(41)),
+                MaxRowcount = reader.IsDBNull(42) ? 0 : ToDouble(reader.GetValue(42)),
+                MinLogBytesUsed = reader.IsDBNull(43) ? 0 : ToDouble(reader.GetValue(43)),
+                MaxLogBytesUsed = reader.IsDBNull(44) ? 0 : ToDouble(reader.GetValue(44)),
+                MinTempdbSpaceUsed = reader.IsDBNull(45) ? 0 : ToDouble(reader.GetValue(45)),
+                MaxTempdbSpaceUsed = reader.IsDBNull(46) ? 0 : ToDouble(reader.GetValue(46)),
+                AvgMemoryMb = reader.IsDBNull(47) ? 0 : ToDouble(reader.GetValue(47)),
+                MinMemoryMb = reader.IsDBNull(48) ? 0 : ToDouble(reader.GetValue(48)),
+                MaxMemoryMb = reader.IsDBNull(49) ? 0 : ToDouble(reader.GetValue(49)),
+                AvgNumPhysicalIoReads = reader.IsDBNull(50) ? 0 : ToDouble(reader.GetValue(50)),
+                MinNumPhysicalIoReads = reader.IsDBNull(51) ? 0 : ToDouble(reader.GetValue(51)),
+                MaxNumPhysicalIoReads = reader.IsDBNull(52) ? 0 : ToDouble(reader.GetValue(52))
             });
         }
 
@@ -344,7 +416,19 @@ SELECT
     CAST(avg_rowcount AS DOUBLE) AS avg_rowcount,
     last_execution_time,
     min_dop,
-    max_dop
+    max_dop,
+    execution_type_desc,
+    first_execution_time,
+    module_name,
+    CAST(avg_num_physical_io_reads AS DOUBLE) AS avg_num_physical_reads,
+    CAST(min_num_physical_io_reads AS DOUBLE) AS min_num_physical_reads,
+    CAST(max_num_physical_io_reads AS DOUBLE) AS max_num_physical_reads,
+    avg_clr_time_us / 1000.0 AS avg_clr_time_ms,
+    min_clr_time_us / 1000.0 AS min_clr_time_ms,
+    max_clr_time_us / 1000.0 AS max_clr_time_ms,
+    CAST(avg_log_bytes_used AS DOUBLE) / 1048576.0 AS avg_log_mb,
+    CAST(min_log_bytes_used AS DOUBLE) / 1048576.0 AS min_log_mb,
+    CAST(max_log_bytes_used AS DOUBLE) / 1048576.0 AS max_log_mb
 FROM v_query_store_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -377,7 +461,19 @@ ORDER BY collection_time";
                 AvgRowcount = reader.IsDBNull(7) ? 0 : ToDouble(reader.GetValue(7)),
                 LastExecutionTime = reader.IsDBNull(8) ? (DateTime?)null : reader.GetDateTime(8),
                 MinDop = reader.IsDBNull(9) ? 0 : Convert.ToInt64(reader.GetValue(9)),
-                MaxDop = reader.IsDBNull(10) ? 0 : Convert.ToInt64(reader.GetValue(10))
+                MaxDop = reader.IsDBNull(10) ? 0 : Convert.ToInt64(reader.GetValue(10)),
+                ExecutionTypeDesc = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                FirstExecutionTime = reader.IsDBNull(12) ? (DateTime?)null : reader.GetDateTime(12),
+                ModuleName = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                AvgNumPhysicalReads = reader.IsDBNull(14) ? 0 : ToDouble(reader.GetValue(14)),
+                MinNumPhysicalReads = reader.IsDBNull(15) ? 0 : ToDouble(reader.GetValue(15)),
+                MaxNumPhysicalReads = reader.IsDBNull(16) ? 0 : ToDouble(reader.GetValue(16)),
+                AvgClrTimeMs = reader.IsDBNull(17) ? 0 : ToDouble(reader.GetValue(17)),
+                MinClrTimeMs = reader.IsDBNull(18) ? 0 : ToDouble(reader.GetValue(18)),
+                MaxClrTimeMs = reader.IsDBNull(19) ? 0 : ToDouble(reader.GetValue(19)),
+                AvgLogMb = reader.IsDBNull(20) ? 0 : ToDouble(reader.GetValue(20)),
+                MinLogMb = reader.IsDBNull(21) ? 0 : ToDouble(reader.GetValue(21)),
+                MaxLogMb = reader.IsDBNull(22) ? 0 : ToDouble(reader.GetValue(22))
             });
         }
 
@@ -505,6 +601,33 @@ public class QueryStoreRow
     public long ForceFailureCount { get; set; }
     public string LastForceFailureReason { get; set; } = "";
     public int CompatibilityLevel { get; set; }
+    // Min/max variants + memory-grant + num-physical-io-reads families, for parity with the Dashboard QS grid.
+    // Duration/CPU/CLR are in ms (converted from us in SQL); reads/writes/rows/tempdb pages are raw;
+    // log bytes are raw bytes; memory grant is converted pages->MB in SQL.
+    public double MinDurationMs { get; set; }
+    public double MaxDurationMs { get; set; }
+    public double MinCpuTimeMs { get; set; }
+    public double MaxCpuTimeMs { get; set; }
+    public double MinLogicalReads { get; set; }
+    public double MaxLogicalReads { get; set; }
+    public double MinLogicalWrites { get; set; }
+    public double MaxLogicalWrites { get; set; }
+    public double MinPhysicalReads { get; set; }
+    public double MaxPhysicalReads { get; set; }
+    public double MinClrTimeMs { get; set; }
+    public double MaxClrTimeMs { get; set; }
+    public double MinRowcount { get; set; }
+    public double MaxRowcount { get; set; }
+    public double MinLogBytesUsed { get; set; }
+    public double MaxLogBytesUsed { get; set; }
+    public double MinTempdbSpaceUsed { get; set; }
+    public double MaxTempdbSpaceUsed { get; set; }
+    public double AvgMemoryMb { get; set; }
+    public double MinMemoryMb { get; set; }
+    public double MaxMemoryMb { get; set; }
+    public double AvgNumPhysicalIoReads { get; set; }
+    public double MinNumPhysicalIoReads { get; set; }
+    public double MaxNumPhysicalIoReads { get; set; }
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlanText);
     public string FirstExecutionTimeLocal => ServerTimeHelper.FormatServerTime(FirstExecutionTime);
     public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
@@ -525,8 +648,34 @@ public class QueryStoreHistoryRow
     public DateTime? LastExecutionTime { get; set; }
     public long MinDop { get; set; }
     public long MaxDop { get; set; }
+
+    // Execution type (Regular / Aborted / Exception)
+    public string ExecutionTypeDesc { get; set; } = "";
+
+    // First execution time in the interval
+    public DateTime? FirstExecutionTime { get; set; }
+
+    // Module (proc/function) the query came from
+    public string ModuleName { get; set; } = "";
+
+    // Number of physical IO reads (avg/min/max)
+    public double AvgNumPhysicalReads { get; set; }
+    public double MinNumPhysicalReads { get; set; }
+    public double MaxNumPhysicalReads { get; set; }
+
+    // CLR time, already converted to ms in SQL (avg/min/max)
+    public double AvgClrTimeMs { get; set; }
+    public double MinClrTimeMs { get; set; }
+    public double MaxClrTimeMs { get; set; }
+
+    // Log bytes used, already converted to MB in SQL (avg/min/max)
+    public double AvgLogMb { get; set; }
+    public double MinLogMb { get; set; }
+    public double MaxLogMb { get; set; }
+
     public double TotalDurationMs => ExecutionCount * AvgDurationMs;
     public double TotalCpuMs => ExecutionCount * AvgCpuTimeMs;
     public string CollectionTimeLocal => ServerTimeHelper.FormatServerTime(CollectionTime);
+    public string FirstExecutionTimeLocal => ServerTimeHelper.FormatServerTime(FirstExecutionTime);
     public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
 }

@@ -78,16 +78,28 @@
                   ContextMenu="{StaticResource DataGridContextMenu}">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Exec Type" Binding="{Binding ExecutionTypeDesc}" Width="90"/>
+                <DataGridTextColumn Header="First Execution" Binding="{Binding FirstExecutionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Module" Binding="{Binding ModuleName}" Width="160"/>
                 <DataGridTextColumn Header="Executions" Binding="{Binding ExecutionCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
                 <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalDurationMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
                 <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
                 <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
                 <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg CLR (ms)" Binding="{Binding AvgClrTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min CLR (ms)" Binding="{Binding MinClrTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max CLR (ms)" Binding="{Binding MaxClrTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgLogicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
                 <DataGridTextColumn Header="Avg Writes" Binding="{Binding AvgLogicalWrites, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Avg Log (MB)" Binding="{Binding AvgLogMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min Log (MB)" Binding="{Binding MinLogMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max Log (MB)" Binding="{Binding MaxLogMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
                 <DataGridTextColumn Header="Avg Physical Reads" Binding="{Binding AvgPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Avg Num Physical Reads" Binding="{Binding AvgNumPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="150"/>
+                <DataGridTextColumn Header="Min Num Physical Reads" Binding="{Binding MinNumPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="150"/>
+                <DataGridTextColumn Header="Max Num Physical Reads" Binding="{Binding MaxNumPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="150"/>
                 <DataGridTextColumn Header="Avg Rows" Binding="{Binding AvgRowcount, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
-                <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
                 <DataGridTextColumn Header="Min DOP" Binding="{Binding MinDop}" Width="70"/>
                 <DataGridTextColumn Header="Max DOP" Binding="{Binding MaxDop}" Width="70"/>
                 <DataGridTemplateColumn Header="Plan" Width="Auto" MinWidth="80">
