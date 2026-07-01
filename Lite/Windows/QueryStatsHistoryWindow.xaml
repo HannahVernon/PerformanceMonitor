@@ -95,6 +95,23 @@
                 <DataGridTextColumn Header="Max Duration (ms)" Binding="{Binding MaxElapsedMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
                 <DataGridTextColumn Header="Min DOP" Binding="{Binding MinDop}" Width="70"/>
                 <DataGridTextColumn Header="Max DOP" Binding="{Binding MaxDop}" Width="70"/>
+                <DataGridTextColumn Header="Min Phys Reads" Binding="{Binding MinPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Max Phys Reads" Binding="{Binding MaxPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Min Rows" Binding="{Binding MinRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Max Rows" Binding="{Binding MaxRows, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Min Spills" Binding="{Binding MinSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Max Spills" Binding="{Binding MaxSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Min Grant KB" Binding="{Binding MinGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max Grant KB" Binding="{Binding MaxGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min Used Grant KB" Binding="{Binding MinUsedGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Max Used Grant KB" Binding="{Binding MaxUsedGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Min Ideal Grant KB" Binding="{Binding MinIdealGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Max Ideal Grant KB" Binding="{Binding MaxIdealGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Min Reserved Threads" Binding="{Binding MinReservedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                <DataGridTextColumn Header="Max Reserved Threads" Binding="{Binding MaxReservedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                <DataGridTextColumn Header="Min Used Threads" Binding="{Binding MinUsedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Max Used Threads" Binding="{Binding MaxUsedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Total CLR (ms)" Binding="{Binding TotalClrMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
                 <DataGridTextColumn Header="Plan Hash" Binding="{Binding QueryPlanHash}" Width="140"/>
                 <DataGridTemplateColumn Header="Plan" Width="Auto" MinWidth="80">
                     <DataGridTemplateColumn.CellTemplate>

@@ -375,6 +375,14 @@
                 </DataGridTextColumn>
 
                 <!-- Memory Grants -->
+                <DataGridTextColumn Binding="{Binding MinGrantMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="105">
+                    <DataGridTextColumn.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinGrantMb" Click="Filter_Click" Margin="0,0,4,0"/>
+                            <TextBlock Text="Min Grant (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
                 <DataGridTextColumn Binding="{Binding MaxGrantMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="105">
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
@@ -383,11 +391,27 @@
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding MinUsedGrantMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="105">
+                    <DataGridTextColumn.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinUsedGrantMb" Click="Filter_Click" Margin="0,0,4,0"/>
+                            <TextBlock Text="Min Used (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
                 <DataGridTextColumn Binding="{Binding MaxUsedGrantMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="105">
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxUsedGrantMb" Click="Filter_Click" Margin="0,0,4,0"/>
                             <TextBlock Text="Max Used (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding MinIdealGrantMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="105">
+                    <DataGridTextColumn.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinIdealGrantMb" Click="Filter_Click" Margin="0,0,4,0"/>
+                            <TextBlock Text="Min Ideal (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
@@ -401,19 +425,35 @@
                 </DataGridTextColumn>
 
                 <!-- Thread Usage -->
-                <DataGridTextColumn Binding="{Binding MinUsedThreads}" ElementStyle="{StaticResource NumericCell}" Width="85">
+                <DataGridTextColumn Binding="{Binding MinReservedThreads}" ElementStyle="{StaticResource NumericCell}" Width="110">
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
-                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinUsedThreads" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="Min Threads" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinReservedThreads" Click="Filter_Click" Margin="0,0,4,0"/>
+                            <TextBlock Text="Min Reserved Threads" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
-                <DataGridTextColumn Binding="{Binding MaxUsedThreads}" ElementStyle="{StaticResource NumericCell}" Width="85">
+                <DataGridTextColumn Binding="{Binding MaxReservedThreads}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                    <DataGridTextColumn.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxReservedThreads" Click="Filter_Click" Margin="0,0,4,0"/>
+                            <TextBlock Text="Max Reserved Threads" FontWeight="Bold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding MinUsedThreads}" ElementStyle="{StaticResource NumericCell}" Width="95">
+                    <DataGridTextColumn.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinUsedThreads" Click="Filter_Click" Margin="0,0,4,0"/>
+                            <TextBlock Text="Min Used Threads" FontWeight="Bold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding MaxUsedThreads}" ElementStyle="{StaticResource NumericCell}" Width="95">
                     <DataGridTextColumn.Header>
                         <StackPanel Orientation="Horizontal">
                             <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxUsedThreads" Click="Filter_Click" Margin="0,0,4,0"/>
-                            <TextBlock Text="Max Threads" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="Max Used Threads" FontWeight="Bold" VerticalAlignment="Center"/>
                         </StackPanel>
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
