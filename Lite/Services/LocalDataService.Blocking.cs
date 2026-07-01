@@ -1087,6 +1087,18 @@ public class QuerySnapshotRow
     // snapshot queries; Chain mode overwrites it with the chain walker's transitive count)
     public int BlockedSessionCount { get; set; }
 
+    // Wait-drilldown triage columns collected from dm_exec_query_memory_grants,
+    // session/task tempdb space usage, and dm_tran_* (schema v34)
+    public double RequestedMemoryMb { get; set; }
+    public double UsedMemoryMb { get; set; }
+    public double MaxUsedMemoryMb { get; set; }
+    public double TempdbCurrentMb { get; set; }
+    public double TempdbAllocationsMb { get; set; }
+    public double TranLogUsedMb { get; set; }
+    public DateTime? TranStartTime { get; set; }
+    public int RequestId { get; set; }
+    public string TranStartTimeLocal => ServerTimeHelper.FormatServerTime(TranStartTime);
+
     // Chain mode — set by WaitDrillDownWindow when showing head blockers
     public string ChainBlockingPath { get; set; } = "";
 }

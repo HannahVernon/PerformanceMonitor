@@ -351,7 +351,15 @@ CREATE TABLE IF NOT EXISTS query_snapshots (
     open_transaction_count INTEGER,
     percent_complete DECIMAL(5,2),
     is_cdc_capture BOOLEAN DEFAULT false,
-    query_hash VARCHAR
+    query_hash VARCHAR,
+    requested_memory_mb DOUBLE,
+    used_memory_mb DOUBLE,
+    max_used_memory_mb DOUBLE,
+    tempdb_current_mb DOUBLE,
+    tempdb_allocations_mb DOUBLE,
+    tran_log_used_mb DOUBLE,
+    tran_start_time TIMESTAMP,
+    request_id INTEGER
 )";
 
     public const string CreateTempdbStatsTable = @"

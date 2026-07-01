@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 33;
+    internal const int CurrentSchemaVersion = 34;
 
     private readonly string _archivePath;
 
@@ -839,6 +839,32 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v33 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 34)
+        {
+            /* v34: query_snapshots gains the wait-drilldown triage columns Dashboard collects via
+               sp_WhoIsActive — memory-grant requested/used/max-used (MB), tempdb current/allocations
+               (MB), transaction log used (MB) + transaction start time, and request_id. All appended
+               at the end to keep the positional appender aligned; the v_ view (SELECT *) surfaces
+               them and old parquet reads back NULL (union BY NAME). The snapshot collector writes
+               these columns, so an un-migrated DB would mis-align — these ALTERs are required. */
+            _logger?.LogInformation("Running migration to v34: query_snapshots memory-grant/tempdb/transaction columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS requested_memory_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS used_memory_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS max_used_memory_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_current_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_allocations_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_log_used_mb DOUBLE");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_start_time TIMESTAMP");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS request_id INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v34 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

@@ -247,7 +247,7 @@
                         <DataGridTextColumn.Header>
                             <StackPanel Orientation="Horizontal">
                                 <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TempdbAllocations" Click="ActiveQueriesFilter_Click" Margin="0,0,4,0"/>
-                                <TextBlock Text="tempdb Alloc (pages)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                <TextBlock Text="tempdb Alloc (MB)" FontWeight="Bold" VerticalAlignment="Center"/>
                             </StackPanel>
                         </DataGridTextColumn.Header>
                     </DataGridTextColumn>

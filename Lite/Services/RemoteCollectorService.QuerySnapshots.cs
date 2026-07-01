@@ -94,7 +94,15 @@ SELECT /* PerformanceMonitorLite */
                 THEN 1
                 ELSE 0
             END),
-    query_hash = CONVERT(varchar(18), der.query_hash, 1) /* #1140 long-running-query dedup key */
+    query_hash = CONVERT(varchar(18), der.query_hash, 1), /* #1140 long-running-query dedup key */
+    requested_memory_mb = CONVERT(decimal(38, 2), deqmg.requested_memory_kb / 1024.),
+    used_memory_mb = CONVERT(decimal(38, 2), deqmg.used_memory_kb / 1024.),
+    max_used_memory_mb = CONVERT(decimal(38, 2), deqmg.max_used_memory_kb / 1024.),
+    tempdb_current_mb = tsu.tempdb_current_mb,
+    tempdb_allocations_mb = tsu.tempdb_allocations_mb,
+    tran_log_used_mb = trn.tran_log_used_mb,
+    tran_start_time = trn.tran_start_time,
+    der.request_id
 FROM sys.dm_exec_requests AS der
 JOIN sys.dm_exec_sessions AS des
     ON des.session_id = der.session_id
@@ -102,6 +110,50 @@ OUTER APPLY sys.dm_exec_sql_text(COALESCE(der.sql_handle, der.plan_handle)) AS d
 OUTER APPLY sys.dm_exec_text_query_plan(der.plan_handle, der.statement_start_offset, der.statement_end_offset) AS deqp
 LEFT JOIN sys.databases AS d
   ON d.database_id = der.database_id
+LEFT JOIN sys.dm_exec_query_memory_grants AS deqmg
+  ON  deqmg.session_id = der.session_id
+  AND deqmg.request_id = der.request_id
+OUTER APPLY
+(
+    SELECT
+        tempdb_current_mb =
+            CONVERT(decimal(38, 2),
+                CASE
+                    WHEN SUM(x.alloc) - SUM(x.dealloc) < 0
+                    THEN 0.
+                    ELSE (SUM(x.alloc) - SUM(x.dealloc)) * 8. / 1024.
+                END),
+        tempdb_allocations_mb = CONVERT(decimal(38, 2), SUM(x.alloc) * 8. / 1024.)
+    FROM
+    (
+        SELECT
+            alloc = dssu.user_objects_alloc_page_count + dssu.internal_objects_alloc_page_count,
+            dealloc = dssu.user_objects_dealloc_page_count + dssu.internal_objects_dealloc_page_count
+        FROM sys.dm_db_session_space_usage AS dssu
+        WHERE dssu.session_id = der.session_id
+
+        UNION ALL
+
+        SELECT
+            dtsu.user_objects_alloc_page_count + dtsu.internal_objects_alloc_page_count,
+            dtsu.user_objects_dealloc_page_count + dtsu.internal_objects_dealloc_page_count
+        FROM sys.dm_db_task_space_usage AS dtsu
+        WHERE dtsu.session_id = der.session_id
+        AND   dtsu.request_id = der.request_id
+    ) AS x
+) AS tsu
+OUTER APPLY
+(
+    SELECT
+        tran_log_used_mb = CONVERT(decimal(38, 2), SUM(ddt.database_transaction_log_bytes_used) / 1048576.),
+        tran_start_time = MIN(dat.transaction_begin_time)
+    FROM sys.dm_tran_session_transactions AS dst
+    JOIN sys.dm_tran_active_transactions AS dat
+      ON dat.transaction_id = dst.transaction_id
+    LEFT JOIN sys.dm_tran_database_transactions AS ddt
+      ON ddt.transaction_id = dst.transaction_id
+    WHERE dst.session_id = der.session_id
+) AS trn
 {1}
 WHERE der.session_id <> @@SPID
 AND   der.session_id >= 50
@@ -150,7 +202,8 @@ SELECT
     der.dop,
     der.parallel_worker_count,
     der.percent_complete,
-    der.query_hash
+    der.query_hash,
+    der.request_id
 INTO #req
 FROM sys.dm_exec_requests AS der
 WHERE der.session_id <> @@SPID
@@ -204,7 +257,15 @@ SELECT /* PerformanceMonitorLite */
     der.percent_complete,
     /* Azure SQL Database has no SQL Agent / msdb.dbo.cdc_jobs (CDC there is scheduler-based), so no capture job to exclude. */
     is_cdc_capture = CONVERT(bit, 0),
-    query_hash = CONVERT(varchar(18), der.query_hash, 1) /* #1140 long-running-query dedup key */
+    query_hash = CONVERT(varchar(18), der.query_hash, 1), /* #1140 long-running-query dedup key */
+    requested_memory_mb = CONVERT(decimal(38, 2), deqmg.requested_memory_kb / 1024.),
+    used_memory_mb = CONVERT(decimal(38, 2), deqmg.used_memory_kb / 1024.),
+    max_used_memory_mb = CONVERT(decimal(38, 2), deqmg.max_used_memory_kb / 1024.),
+    tempdb_current_mb = tsu.tempdb_current_mb,
+    tempdb_allocations_mb = tsu.tempdb_allocations_mb,
+    tran_log_used_mb = trn.tran_log_used_mb,
+    tran_start_time = trn.tran_start_time,
+    der.request_id
 FROM #req AS der
 JOIN sys.dm_exec_sessions AS des
     ON des.session_id = der.session_id
@@ -212,6 +273,50 @@ OUTER APPLY sys.dm_exec_sql_text(COALESCE(der.sql_handle, der.plan_handle)) AS d
 OUTER APPLY sys.dm_exec_text_query_plan(der.plan_handle, der.statement_start_offset, der.statement_end_offset) AS deqp
 LEFT JOIN sys.databases AS d
   ON d.database_id = der.database_id
+LEFT JOIN sys.dm_exec_query_memory_grants AS deqmg
+  ON  deqmg.session_id = der.session_id
+  AND deqmg.request_id = der.request_id
+OUTER APPLY
+(
+    SELECT
+        tempdb_current_mb =
+            CONVERT(decimal(38, 2),
+                CASE
+                    WHEN SUM(x.alloc) - SUM(x.dealloc) < 0
+                    THEN 0.
+                    ELSE (SUM(x.alloc) - SUM(x.dealloc)) * 8. / 1024.
+                END),
+        tempdb_allocations_mb = CONVERT(decimal(38, 2), SUM(x.alloc) * 8. / 1024.)
+    FROM
+    (
+        SELECT
+            alloc = dssu.user_objects_alloc_page_count + dssu.internal_objects_alloc_page_count,
+            dealloc = dssu.user_objects_dealloc_page_count + dssu.internal_objects_dealloc_page_count
+        FROM sys.dm_db_session_space_usage AS dssu
+        WHERE dssu.session_id = der.session_id
+
+        UNION ALL
+
+        SELECT
+            dtsu.user_objects_alloc_page_count + dtsu.internal_objects_alloc_page_count,
+            dtsu.user_objects_dealloc_page_count + dtsu.internal_objects_dealloc_page_count
+        FROM sys.dm_db_task_space_usage AS dtsu
+        WHERE dtsu.session_id = der.session_id
+        AND   dtsu.request_id = der.request_id
+    ) AS x
+) AS tsu
+OUTER APPLY
+(
+    SELECT
+        tran_log_used_mb = CONVERT(decimal(38, 2), SUM(ddt.database_transaction_log_bytes_used) / 1048576.),
+        tran_start_time = MIN(dat.transaction_begin_time)
+    FROM sys.dm_tran_session_transactions AS dst
+    JOIN sys.dm_tran_active_transactions AS dat
+      ON dat.transaction_id = dst.transaction_id
+    LEFT JOIN sys.dm_tran_database_transactions AS ddt
+      ON ddt.transaction_id = dst.transaction_id
+    WHERE dst.session_id = der.session_id
+) AS trn
 {1}
 WHERE dest.text IS NOT NULL
 ORDER BY der.cpu_time DESC, der.parallel_worker_count DESC
@@ -332,6 +437,14 @@ DROP TABLE #req;
                    .AppendValue(reader.IsDBNull(24) ? 0m : Convert.ToDecimal(reader.GetValue(24)))        /* percent_complete */
                    .AppendValue(!reader.IsDBNull(25) && Convert.ToBoolean(reader.GetValue(25)))           /* is_cdc_capture */
                    .AppendValue(reader.IsDBNull(26) ? (string?)null : reader.GetString(26))                /* query_hash (#1140) */
+                   .AppendValue(reader.IsDBNull(27) ? (double?)null : Convert.ToDouble(reader.GetValue(27))) /* requested_memory_mb */
+                   .AppendValue(reader.IsDBNull(28) ? (double?)null : Convert.ToDouble(reader.GetValue(28))) /* used_memory_mb */
+                   .AppendValue(reader.IsDBNull(29) ? (double?)null : Convert.ToDouble(reader.GetValue(29))) /* max_used_memory_mb */
+                   .AppendValue(reader.IsDBNull(30) ? (double?)null : Convert.ToDouble(reader.GetValue(30))) /* tempdb_current_mb */
+                   .AppendValue(reader.IsDBNull(31) ? (double?)null : Convert.ToDouble(reader.GetValue(31))) /* tempdb_allocations_mb */
+                   .AppendValue(reader.IsDBNull(32) ? (double?)null : Convert.ToDouble(reader.GetValue(32))) /* tran_log_used_mb */
+                   .AppendValue(reader.IsDBNull(33) ? (DateTime?)null : reader.GetDateTime(33))            /* tran_start_time */
+                   .AppendValue(reader.IsDBNull(34) ? 0 : Convert.ToInt32(reader.GetValue(34)))            /* request_id */
                    .EndRow();
 
                 rowsCollected++;
