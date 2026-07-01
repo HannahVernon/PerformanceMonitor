@@ -285,6 +285,7 @@ OPTION(RECOMPILE);";
                     var logicalReads = reader.GetInt64(9);
                     var physicalReads = reader.GetInt64(10);
                     var logicalWrites = reader.GetInt64(11);
+                    var totalSpills = reader.GetInt64(22);
                     var sqlHandle = reader.IsDBNull(25) ? (string?)null : reader.GetString(25);
                     var planHandle = reader.IsDBNull(26) ? (string?)null : reader.GetString(26);
 
@@ -297,6 +298,7 @@ OPTION(RECOMPILE);";
                     var deltaReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_reads", deltaKey, logicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
                     var deltaWrites = _deltaCalculator.CalculateDelta(serverId, "proc_stats_writes", deltaKey, logicalWrites, collectionTime: collectionTime, maxGapSeconds: 300);
                     var deltaPhysReads = _deltaCalculator.CalculateDelta(serverId, "proc_stats_phys_reads", deltaKey, physicalReads, collectionTime: collectionTime, maxGapSeconds: 300);
+                    var deltaSpills = _deltaCalculator.CalculateDelta(serverId, "proc_stats_spills", deltaKey, totalSpills, collectionTime: collectionTime, maxGapSeconds: 300);
 
                     /* Appender column order must match DuckDB table definition exactly */
                     var row = appender.CreateRow();
@@ -326,7 +328,7 @@ OPTION(RECOMPILE);";
                        .AppendValue(reader.IsDBNull(19) ? 0L : reader.GetInt64(19))             /* max_physical_reads */
                        .AppendValue(reader.IsDBNull(20) ? 0L : reader.GetInt64(20))             /* min_logical_writes */
                        .AppendValue(reader.IsDBNull(21) ? 0L : reader.GetInt64(21))             /* max_logical_writes */
-                       .AppendValue(reader.GetInt64(22))                                        /* total_spills */
+                       .AppendValue(totalSpills)                                                /* total_spills */
                        .AppendValue(reader.GetInt64(23))                                        /* min_spills */
                        .AppendValue(reader.GetInt64(24))                                        /* max_spills */
                        .AppendValue(sqlHandle)                                                  /* sql_handle */
@@ -337,6 +339,7 @@ OPTION(RECOMPILE);";
                        .AppendValue(deltaReads)                                                 /* delta_logical_reads */
                        .AppendValue(deltaWrites)                                                /* delta_logical_writes */
                        .AppendValue(deltaPhysReads)                                             /* delta_physical_reads */
+                       .AppendValue(deltaSpills)                                                /* delta_spills */
                        .EndRow();
 
                     rowsCollected++;

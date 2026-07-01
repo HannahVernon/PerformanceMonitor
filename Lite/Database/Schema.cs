@@ -117,7 +117,9 @@ CREATE TABLE IF NOT EXISTS query_stats (
     delta_logical_writes BIGINT,
     delta_physical_reads BIGINT,
     delta_rows BIGINT,
-    delta_spills BIGINT
+    delta_spills BIGINT,
+    plan_generation_num BIGINT,
+    sample_interval_seconds INTEGER
 )";
 
     public const string CreateCpuUtilizationStatsTable = @"
@@ -252,7 +254,8 @@ CREATE TABLE IF NOT EXISTS procedure_stats (
     delta_elapsed_time BIGINT,
     delta_logical_reads BIGINT,
     delta_logical_writes BIGINT,
-    delta_physical_reads BIGINT
+    delta_physical_reads BIGINT,
+    delta_spills BIGINT
 )";
 
     public const string CreateQueryStoreStatsTable = @"

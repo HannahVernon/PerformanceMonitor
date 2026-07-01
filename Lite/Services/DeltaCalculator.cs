@@ -78,11 +78,24 @@ public class DeltaCalculator
     /// </summary>
     public long CalculateDelta(int serverId, string collectorName, string key, long currentValue,
         DateTime? collectionTime = null, int maxGapSeconds = 0)
+        => CalculateDeltaWithInterval(serverId, collectorName, key, currentValue, out _, collectionTime, maxGapSeconds);
+
+    /// <summary>
+    /// Same as <see cref="CalculateDelta"/>, but also reports the number of seconds between the
+    /// previous cached collection and the current one via <paramref name="intervalSeconds"/>.
+    /// The interval is 0 on the first sighting of a key or after a gap reset (no prior baseline to
+    /// measure against), mirroring the delta's own 0 in those cases. Callers can divide a delta by
+    /// this interval to derive a per-second rate (e.g. CPU-ms per wall-clock second).
+    /// Thread-safe via atomic AddOrUpdate.
+    /// </summary>
+    public long CalculateDeltaWithInterval(int serverId, string collectorName, string key, long currentValue,
+        out int intervalSeconds, DateTime? collectionTime = null, int maxGapSeconds = 0)
     {
         var serverCache = _cache.GetOrAdd(serverId, _ => new ConcurrentDictionary<string, ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>>());
         var collectorCache = serverCache.GetOrAdd(collectorName, _ => new ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>());
 
         long delta = 0;
+        int interval = 0;
 
         collectorCache.AddOrUpdate(
             key,
@@ -91,6 +104,7 @@ public class DeltaCalculator
             _ =>
             {
                 delta = 0;
+                interval = 0;
                 return (currentValue, collectionTime);
             },
             /* Update: compute delta atomically */
@@ -102,8 +116,15 @@ public class DeltaCalculator
                     && (collectionTime.Value - previous.Timestamp.Value).TotalSeconds > maxGapSeconds)
                 {
                     delta = 0;
+                    interval = 0;
                     return (currentValue, collectionTime);
                 }
+
+                /* Seconds between the previous and current collection, when both timestamps exist —
+                   the wall-clock span this delta accrued over. */
+                interval = (collectionTime.HasValue && previous.Timestamp.HasValue)
+                    ? (int)(collectionTime.Value - previous.Timestamp.Value).TotalSeconds
+                    : 0;
 
                 delta = currentValue < previous.Value
                     ? 0              /* counter reset (plan cache eviction/re-entry) — not real new work */
@@ -111,6 +132,7 @@ public class DeltaCalculator
                 return (currentValue, collectionTime);
             });
 
+        intervalSeconds = interval;
         return delta;
     }
 
