@@ -23,7 +23,7 @@ namespace PerformanceMonitor.Collectors;
 /// definition runs per database there (RunsPerDatabase) with database-level filtering handled by
 /// the host's database enumeration. Eight delta groups keyed "{database}|{file}".
 /// </summary>
-public sealed class FileIoStatsCollector : ICollectorDefinition<FileIoStatsCollector.Row>
+public sealed class FileIoStatsCollector : CollectorDefinitionBase<FileIoStatsCollector.Row>
 {
     public static FileIoStatsCollector Instance { get; } = new();
 
@@ -103,18 +103,18 @@ AND   vfs.database_id <> ISNULL(DB_ID(N'PerformanceMonitor'), 0)
 /*EXCLUSION_FILTER*/
 OPTION(RECOMPILE);";
 
-    public string Name => "file_io_stats";
+    public override string Name => "file_io_stats";
 
-    public string TargetTable => "file_io_stats";
+    public override string TargetTable => "file_io_stats";
 
-    public string? WatermarkColumn => null;
+    public override string? WatermarkColumn => null;
 
-    public bool AppliesTo(CollectorTargetInfo target) => true;
+    public override bool AppliesTo(CollectorTargetInfo target) => true;
 
     /// <summary>Azure SQL DB scopes dm_io_virtual_file_stats to the connected database.</summary>
-    public bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
 
-    public CollectorQuery BuildQuery(CollectorContext context)
+    public override CollectorQuery BuildQuery(CollectorContext context)
     {
         if (context.Target.IsAzureSqlDb)
         {
@@ -128,7 +128,7 @@ OPTION(RECOMPILE);";
             exclusionParameters);
     }
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("database_name", CollectorColumnType.Varchar),
         new CollectorColumn("file_name", CollectorColumnType.Varchar),
@@ -153,7 +153,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("delta_stall_queued_write_ms", CollectorColumnType.BigInt),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         var rows = new List<Row>();
 
@@ -180,7 +180,7 @@ OPTION(RECOMPILE);";
         return rows;
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         /* "{database}|{file}" delta key and the eight group names are the parity contract. */
         var deltaKey = $"{row.DatabaseName}|{row.FileName}";

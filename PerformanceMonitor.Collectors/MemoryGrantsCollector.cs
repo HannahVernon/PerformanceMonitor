@@ -20,7 +20,7 @@ namespace PerformanceMonitor.Collectors;
 /// for parity). Extracted verbatim from Lite's RemoteCollectorService.MemoryGrants.cs — the
 /// composite "{pool}_{semaphore}" delta key and the two delta groups are the parity contract.
 /// </summary>
-public sealed class MemoryGrantsCollector : ICollectorDefinition<MemoryGrantsCollector.Row>
+public sealed class MemoryGrantsCollector : CollectorDefinitionBase<MemoryGrantsCollector.Row>
 {
     public static MemoryGrantsCollector Instance { get; } = new();
 
@@ -42,17 +42,17 @@ public sealed class MemoryGrantsCollector : ICollectorDefinition<MemoryGrantsCol
         long TimeoutErrorCount,
         long ForcedGrantCount);
 
-    public string Name => "memory_grant_stats";
+    public override string Name => "memory_grant_stats";
 
-    public string TargetTable => "memory_grant_stats";
+    public override string TargetTable => "memory_grant_stats";
 
-    public string? WatermarkColumn => null;
+    public override string? WatermarkColumn => null;
 
-    public bool AppliesTo(CollectorTargetInfo target) => true;
+    public override bool AppliesTo(CollectorTargetInfo target) => true;
 
-    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => false;
 
-    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+    public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -74,7 +74,7 @@ FROM sys.dm_exec_query_resource_semaphores AS deqrs
 WHERE deqrs.max_target_memory_kb IS NOT NULL
 OPTION(RECOMPILE);";
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("resource_semaphore_id", CollectorColumnType.Integer),
         new CollectorColumn("pool_id", CollectorColumnType.Integer),
@@ -92,7 +92,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("forced_grant_count_delta", CollectorColumnType.BigInt),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         var rows = new List<Row>();
 
@@ -116,7 +116,7 @@ OPTION(RECOMPILE);";
         return rows;
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         /* Composite delta key and group names are the parity contract — do not change casually. */
         var deltaKey = $"{row.PoolId}_{row.ResourceSemaphoreId}";

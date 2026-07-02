@@ -61,6 +61,18 @@ public interface ICollectorDefinition<TRow>
     /// </summary>
     CollectorQuery BuildQuery(CollectorContext context);
 
+    /// <summary>
+    /// Optional second query run best-effort on the same (single-path) connection after
+    /// <see cref="ReadAsync"/> — e.g. server_properties' WS5 health probe. Null = none (the
+    /// common case). The host isolates its failure: any exception is logged at debug and the
+    /// cycle proceeds with the primary rows unchanged, so a supplemental can never fail the
+    /// collector. Not executed for per-database collectors.
+    /// </summary>
+    CollectorQuery? BuildSupplementalQuery(CollectorContext context);
+
+    /// <summary>Merges the supplemental reader's data into the already-read rows.</summary>
+    ValueTask ApplySupplementalAsync(List<TRow> rows, DbDataReader reader, CollectorContext context, CancellationToken cancellationToken);
+
     /// <summary>Payload columns in exactly the order <see cref="WritePayload"/> emits them.</summary>
     IReadOnlyList<CollectorColumn> PayloadColumns { get; }
 

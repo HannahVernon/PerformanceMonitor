@@ -98,9 +98,28 @@ public partial class RemoteCollectorService
         else
         {
             using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-            using var command = CreateCollectorCommand(plan, sqlConnection);
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            rows = await definition.ReadAsync(reader, context, cancellationToken);
+            using (var command = CreateCollectorCommand(plan, sqlConnection))
+            using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            {
+                rows = await definition.ReadAsync(reader, context, cancellationToken);
+            }
+
+            /* Optional best-effort second query on the same connection (e.g. server_properties'
+               WS5 health probe). Failure-isolated: it can never fail the primary rows. */
+            var supplementalPlan = definition.BuildSupplementalQuery(context);
+            if (supplementalPlan is not null)
+            {
+                try
+                {
+                    using var supplementalCommand = CreateCollectorCommand(supplementalPlan, sqlConnection);
+                    using var supplementalReader = await supplementalCommand.ExecuteReaderAsync(cancellationToken);
+                    await definition.ApplySupplementalAsync(rows, supplementalReader, context, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug(ex, "Supplemental query for {Collector} failed; continuing without it", definition.Name);
+                }
+            }
         }
 
         sqlSw.Stop();

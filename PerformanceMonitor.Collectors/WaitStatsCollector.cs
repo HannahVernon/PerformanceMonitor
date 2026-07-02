@@ -18,7 +18,7 @@ namespace PerformanceMonitor.Collectors;
 /// RemoteCollectorService.WaitStats.cs (query text, ignored-wait filtering, delta groups/keys/gap
 /// policy, and payload order are the parity contract — WaitStatsCollectorDefinitionTests pins them).
 /// </summary>
-public sealed class WaitStatsCollector : ICollectorDefinition<WaitStatsCollector.Row>
+public sealed class WaitStatsCollector : CollectorDefinitionBase<WaitStatsCollector.Row>
 {
     public static WaitStatsCollector Instance { get; } = new();
 
@@ -40,19 +40,19 @@ FROM sys.dm_os_wait_stats AS ws
 WHERE ws.wait_time_ms > 0
 OPTION(RECOMPILE);";
 
-    public string Name => "wait_stats";
+    public override string Name => "wait_stats";
 
-    public string TargetTable => "wait_stats";
+    public override string TargetTable => "wait_stats";
 
-    public string? WatermarkColumn => null;
+    public override string? WatermarkColumn => null;
 
-    public bool AppliesTo(CollectorTargetInfo target) => true;
+    public override bool AppliesTo(CollectorTargetInfo target) => true;
 
-    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => false;
 
-    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+    public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("wait_type", CollectorColumnType.Varchar),
         new CollectorColumn("waiting_tasks_count", CollectorColumnType.BigInt),
@@ -63,7 +63,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("delta_signal_wait_time_ms", CollectorColumnType.BigInt),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         var rows = new List<Row>();
 
@@ -87,7 +87,7 @@ OPTION(RECOMPILE);";
         return rows;
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         /* Delta groups, keys, and the 300 s gap policy are the parity contract — do not reorder. */
         var deltaWaitingTasks = context.Deltas.CalculateDelta(context.ServerId, "wait_stats_tasks", row.WaitType, row.WaitingTasks, collectionTime: context.CollectionTime, maxGapSeconds: 300);
