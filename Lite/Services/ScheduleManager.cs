@@ -551,9 +551,11 @@ public class ScheduleManager
     }
 
     /// <summary>
-    /// Gets the default collector schedules.
+    /// Gets the default collector schedules. Internal so the identity-pin test can assert this
+    /// table matches the shared <see cref="PerformanceMonitor.Collectors.CollectorScheduleDefaults"/>
+    /// (which the Darling service schedules by) — the two cannot drift.
     /// </summary>
-    private static List<CollectorSchedule> GetDefaultSchedules()
+    internal static List<CollectorSchedule> GetDefaultSchedules()
     {
         return new List<CollectorSchedule>
         {

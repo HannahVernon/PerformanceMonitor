@@ -38,4 +38,22 @@ public static class ServerIdHelper
             return hash;
         }
     }
+
+    /// <summary>
+    /// The canonical storage name a monitored server is identified by (hashed via
+    /// <see cref="GetDeterministicHashCode"/> to derive server_id). Appends the database name
+    /// for Azure SQL Database connections so different databases on one logical server get
+    /// distinct server_ids, and ":RO" for ReadOnlyIntent connections so they differ from
+    /// read-write connections to the same host. Extracted verbatim from Lite's
+    /// RemoteCollectorService.GetServerNameForStorage; every SKU MUST build storage names
+    /// through this one implementation so the same server derives the same id everywhere.
+    /// </summary>
+    public static string BuildStorageName(string serverName, string? databaseName, bool readOnlyIntent)
+    {
+        var name = string.IsNullOrWhiteSpace(databaseName)
+            ? serverName
+            : serverName + ":" + databaseName;
+
+        return readOnlyIntent ? name + ":RO" : name;
+    }
 }
