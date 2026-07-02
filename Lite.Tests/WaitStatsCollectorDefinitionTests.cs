@@ -40,7 +40,10 @@ OPTION(RECOMPILE);";
     [Fact]
     public void Query_IsTheVerbatimParityContract()
     {
-        Assert.Equal(ExpectedQuery, WaitStatsCollector.Instance.Query);
+        var context = CollectorTestContext.Make(new RecordingCollectorDeltaCalculator());
+        Assert.Equal(ExpectedQuery, WaitStatsCollector.Instance.BuildQuery(context).Text);
+        Assert.Empty(WaitStatsCollector.Instance.BuildQuery(context).Parameters);
+        Assert.Null(WaitStatsCollector.Instance.WatermarkColumn);
     }
 
     [Fact]
@@ -104,13 +107,19 @@ OPTION(RECOMPILE);";
 /// <summary>Shared context factory for collector-definition tests.</summary>
 internal static class CollectorTestContext
 {
-    public static CollectorContext Make(ICollectorDeltaCalculator deltas, IEnumerable<string>? ignored = null)
+    public static CollectorContext Make(
+        ICollectorDeltaCalculator deltas,
+        IEnumerable<string>? ignored = null,
+        bool isAzureSqlDb = false,
+        DateTime? watermark = null)
         => new()
         {
             ServerId = 42,
             ServerName = "test-server",
             CollectionTime = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc),
             Deltas = deltas,
+            Target = new CollectorTargetInfo { IsAzureSqlDb = isAzureSqlDb },
+            Watermark = watermark,
             IgnoredWaitTypes = new HashSet<string>(ignored ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase),
         };
 }

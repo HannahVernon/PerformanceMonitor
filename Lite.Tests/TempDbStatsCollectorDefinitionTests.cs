@@ -45,8 +45,9 @@ public sealed class TempDbStatsCollectorDefinitionTests
     [Fact]
     public void Query_TargetsBothTempDbDmvs()
     {
-        Assert.Contains("tempdb.sys.dm_db_file_space_usage", TempDbStatsCollector.Instance.Query, System.StringComparison.Ordinal);
-        Assert.Contains("sys.dm_db_session_space_usage", TempDbStatsCollector.Instance.Query, System.StringComparison.Ordinal);
+        var queryText = TempDbStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(new RecordingCollectorDeltaCalculator())).Text;
+        Assert.Contains("tempdb.sys.dm_db_file_space_usage", queryText, System.StringComparison.Ordinal);
+        Assert.Contains("sys.dm_db_session_space_usage", queryText, System.StringComparison.Ordinal);
         Assert.Equal("tempdb_stats", TempDbStatsCollector.Instance.Name);
         Assert.Equal("tempdb_stats", TempDbStatsCollector.Instance.TargetTable);
     }
