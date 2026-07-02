@@ -24,6 +24,96 @@
             <Setter Property="Foreground" Value="#E4E6EB"/>
             <Setter Property="Margin" Value="0,0,0,6"/>
         </Style>
+
+        <Style x:Key="EmptyHint" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8B93A1"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="MaxWidth" Value="480"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+            <Setter Property="Visibility" Value="Collapsed"/>
+        </Style>
+
+        <!-- One dark grid chrome shared by all four data grids (hoisted from the wave-1
+             HealthGrid inline styles — same setters, zero visual change). -->
+        <Style x:Key="DarkGridHeader" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#262932"/>
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="DarkGridRow" TargetType="DataGridRow">
+            <Setter Property="Background" Value="Transparent"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#1f232b"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="DarkGridCell" TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#2f3542"/>
+                    <Setter Property="Foreground" Value="#E4E6EB"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="DarkGrid" TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="SelectionUnit" Value="FullRow"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#2a2d35"/>
+            <Setter Property="Background" Value="#111217"/>
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="RowBackground" Value="#111217"/>
+            <Setter Property="AlternatingRowBackground" Value="#16181d"/>
+            <Setter Property="ColumnHeaderStyle" Value="{StaticResource DarkGridHeader}"/>
+            <Setter Property="RowStyle" Value="{StaticResource DarkGridRow}"/>
+            <Setter Property="CellStyle" Value="{StaticResource DarkGridCell}"/>
+        </Style>
+
+        <Style x:Key="DarkTabItem" TargetType="TabItem">
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd"
+                                Background="Transparent"
+                                CornerRadius="3,3,0,0"
+                                Padding="14,6"
+                                Margin="0,0,2,0">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1f232b"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2f3542"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="10">
@@ -93,94 +183,182 @@
                 </ListBox>
             </DockPanel>
 
-            <!-- Right: collection health over the wait trend -->
-            <Grid Grid.Column="1">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
+            <!-- Right: the surface tabs. Only the ACTIVE tab loads (Lite's visible-only rule);
+                 the 60-second refresh re-reads the active tab for the selected server. -->
+            <TabControl x:Name="MainTabs"
+                        Grid.Column="1"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="0"
+                        ItemContainerStyle="{StaticResource DarkTabItem}"
+                        SelectionChanged="MainTabs_SelectionChanged">
 
-                <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                    <TextBlock DockPanel.Dock="Top" Text="Collection Health" Style="{StaticResource SectionHeader}"/>
-                    <DataGrid x:Name="HealthGrid"
-                              AutoGenerateColumns="False"
-                              IsReadOnly="True"
-                              CanUserAddRows="False"
-                              HeadersVisibility="Column"
-                              SelectionMode="Single"
-                              SelectionUnit="FullRow"
-                              GridLinesVisibility="Horizontal"
-                              HorizontalGridLinesBrush="#2a2d35"
-                              Background="#111217"
-                              Foreground="#E4E6EB"
-                              BorderBrush="#2a2d35"
-                              BorderThickness="1"
-                              RowBackground="#111217"
-                              AlternatingRowBackground="#16181d">
-                        <DataGrid.ColumnHeaderStyle>
-                            <Style TargetType="DataGridColumnHeader">
-                                <Setter Property="Background" Value="#262932"/>
-                                <Setter Property="Foreground" Value="#E4E6EB"/>
-                                <Setter Property="BorderBrush" Value="#2a2d35"/>
-                                <Setter Property="BorderThickness" Value="0,0,1,1"/>
-                                <Setter Property="Padding" Value="8,5"/>
-                                <Setter Property="FontWeight" Value="SemiBold"/>
-                            </Style>
-                        </DataGrid.ColumnHeaderStyle>
-                        <DataGrid.RowStyle>
-                            <Style TargetType="DataGridRow">
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Style.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="#1f232b"/>
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </DataGrid.RowStyle>
-                        <DataGrid.CellStyle>
-                            <Style TargetType="DataGridCell">
-                                <Setter Property="BorderThickness" Value="0"/>
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Setter Property="Foreground" Value="#E4E6EB"/>
-                                <Style.Triggers>
-                                    <Trigger Property="IsSelected" Value="True">
-                                        <Setter Property="Background" Value="#2f3542"/>
-                                        <Setter Property="Foreground" Value="#E4E6EB"/>
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </DataGrid.CellStyle>
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Collector" Binding="{Binding CollectorName}" Width="2*"/>
-                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="{Binding Status, Converter={StaticResource StatusToBrush}}"/>
-                                        <Setter Property="ToolTip" Value="{Binding ErrorMessage}"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="Last Run (local)" Binding="{Binding CollectionTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="1.6*"/>
-                            <DataGridTextColumn Header="Rows" Binding="{Binding RowsCollected}" Width="*"/>
-                            <DataGridTextColumn Header="Duration (ms)" Binding="{Binding DurationMs}" Width="*"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </DockPanel>
+                <TabItem Header="Overview">
+                    <Grid Margin="0,8,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="1">
-                    <TextBlock DockPanel.Dock="Top" Text="Wait Stats — top 8 by delta wait time (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                    <Grid>
-                        <scottplot:WpfPlot x:Name="WaitTrendChart"/>
-                        <TextBlock x:Name="ChartHintText"
-                                   Text="no wait samples in the window yet"
-                                   Foreground="#8B93A1"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   IsHitTestVisible="False"
-                                   Visibility="Collapsed"/>
+                        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                            <TextBlock DockPanel.Dock="Top" Text="Collection Health" Style="{StaticResource SectionHeader}"/>
+                            <DataGrid x:Name="HealthGrid" Style="{StaticResource DarkGrid}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Collector" Binding="{Binding CollectorName}" Width="2*"/>
+                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{Binding Status, Converter={StaticResource StatusToBrush}}"/>
+                                                <Setter Property="ToolTip" Value="{Binding ErrorMessage}"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Last Run (local)" Binding="{Binding CollectionTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="1.6*"/>
+                                    <DataGridTextColumn Header="Rows" Binding="{Binding RowsCollected}" Width="*"/>
+                                    <DataGridTextColumn Header="Duration (ms)" Binding="{Binding DurationMs}" Width="*"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+
+                        <DockPanel Grid.Row="1">
+                            <TextBlock DockPanel.Dock="Top" Text="Wait Stats — top 8 by delta wait time (last 24 hours)" Style="{StaticResource SectionHeader}"/>
+                            <Grid>
+                                <scottplot:WpfPlot x:Name="WaitTrendChart"/>
+                                <TextBlock x:Name="ChartHintText"
+                                           Style="{StaticResource EmptyHint}"
+                                           Text="no wait samples in the window yet"/>
+                            </Grid>
+                        </DockPanel>
                     </Grid>
-                </DockPanel>
-            </Grid>
+                </TabItem>
+
+                <TabItem Header="Queries">
+                    <DockPanel Margin="0,8,0,0">
+                        <TextBlock DockPanel.Dock="Top" Text="Top 50 Queries by Total Duration (last 24 hours)" Style="{StaticResource SectionHeader}"/>
+                        <Grid>
+                            <DataGrid x:Name="QueriesGrid" Style="{StaticResource DarkGrid}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="140"/>
+                                    <DataGridTextColumn Header="Query Text" Binding="{Binding QueryTextPreview}" Width="3*" SortMemberPath="QueryText">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                <Setter Property="ToolTip" Value="{Binding QueryTextTooltip}"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Executions" Binding="{Binding Executions, StringFormat=N0}" Width="100"/>
+                                    <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" Width="120"/>
+                                    <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalElapsedMs, StringFormat=N1}" Width="140" SortDirection="Descending"/>
+                                    <DataGridTextColumn Header="Total Reads" Binding="{Binding TotalLogicalReads, StringFormat=N0}" Width="110"/>
+                                    <DataGridTextColumn Header="Last Execution (server)" Binding="{Binding LastExecutionTime, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="160"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock x:Name="QueriesHintText"
+                                       Style="{StaticResource EmptyHint}"
+                                       Text="no query stats in the window yet"/>
+                        </Grid>
+                    </DockPanel>
+                </TabItem>
+
+                <TabItem Header="Blocking">
+                    <DockPanel Margin="0,8,0,0">
+                        <TextBlock DockPanel.Dock="Top" Text="Blocked Processes — XE reports with DMV-snapshot fallback (last 24 hours)" Style="{StaticResource SectionHeader}"/>
+                        <Grid>
+                            <DataGrid x:Name="BlockingGrid" Style="{StaticResource DarkGrid}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Event Time (local)" Binding="{Binding EventTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="150"/>
+                                    <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="140">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="#8B93A1"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Blocked SPID" Binding="{Binding BlockedSpid}" Width="95"/>
+                                    <DataGridTextColumn Header="Blocking SPID" Binding="{Binding BlockingSpid}" Width="95"/>
+                                    <DataGridTextColumn Header="Wait Time" Binding="{Binding WaitTimeFormatted}" Width="90" SortMemberPath="WaitTimeMs"/>
+                                    <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="90"/>
+                                    <DataGridTextColumn Header="Contentious Object" Binding="{Binding ContentiousObject}" Width="1.5*"/>
+                                    <DataGridTextColumn Header="Blocked SQL" Binding="{Binding BlockedSqlPreview}" Width="2*" SortMemberPath="BlockedSqlText">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                <Setter Property="ToolTip" Value="{Binding BlockedSqlTooltip}"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Blocking SQL" Binding="{Binding BlockingSqlPreview}" Width="2*" SortMemberPath="BlockingSqlText">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                <Setter Property="ToolTip" Value="{Binding BlockingSqlTooltip}"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock x:Name="BlockingHintText"
+                                       Style="{StaticResource EmptyHint}"
+                                       Text="no blocked-process events in the window — the XE session and the DMV snapshot are both clean"/>
+                        </Grid>
+                    </DockPanel>
+                </TabItem>
+
+                <TabItem Header="Recommendations">
+                    <Grid Margin="0,8,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="3*"/>
+                            <RowDefinition Height="10"/>
+                            <RowDefinition Height="2*"/>
+                        </Grid.RowDefinitions>
+
+                        <DockPanel Grid.Row="0">
+                            <TextBlock x:Name="FindingsHeaderText" DockPanel.Dock="Top" Text="Latest Analysis Findings" Style="{StaticResource SectionHeader}"/>
+                            <Grid>
+                                <DataGrid x:Name="FindingsGrid"
+                                          Style="{StaticResource DarkGrid}"
+                                          SelectionChanged="FindingsGrid_SelectionChanged">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Severity" Binding="{Binding SeverityBand}" Width="100" SortMemberPath="RawSeverity" SortDirection="Descending">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{Binding SeverityBand, Converter={StaticResource StatusToBrush}}"/>
+                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="Finding" Binding="{Binding Title}" Width="3*"/>
+                                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="130"/>
+                                        <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="150"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock x:Name="FindingsHintText"
+                                           Style="{StaticResource EmptyHint}"
+                                           Text="no findings — analysis runs every 30 minutes once 24h of data exists."/>
+                            </Grid>
+                        </DockPanel>
+
+                        <DockPanel Grid.Row="2">
+                            <TextBlock DockPanel.Dock="Top" Text="Detail" Style="{StaticResource SectionHeader}"/>
+                            <Border Background="#111217" BorderBrush="#2a2d35" BorderThickness="1">
+                                <TextBox x:Name="FindingDetailText"
+                                         IsReadOnly="True"
+                                         Background="Transparent"
+                                         Foreground="#E4E6EB"
+                                         BorderThickness="0"
+                                         Padding="8"
+                                         FontFamily="Consolas"
+                                         FontSize="12"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="select a finding to see its story, advice, and stored remediation"/>
+                            </Border>
+                        </DockPanel>
+                    </Grid>
+                </TabItem>
+            </TabControl>
         </Grid>
 
         <!-- Full-window message state: missing config / unreachable store -->
