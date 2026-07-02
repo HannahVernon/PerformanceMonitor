@@ -1,8 +1,31 @@
 {
   // Copy this file to darling.json next to the service binary (or point the
   // DARLING_CONFIG environment variable at it) and edit. Comments are allowed.
+  //
+  // The Postgres store has TWO modes:
+  //
+  // 1) Managed (the shipped default, below): the service runs its own bundled
+  //    PostgreSQL 17 + TimescaleDB — on first run it unpacks pg-runtime.zip (shipped beside
+  //    the binary), initializes a cluster with scram-sha-256 auth and a generated password
+  //    (DPAPI-protected in pg-credential.dpapi beside the data directory; never trust auth,
+  //    even on localhost), preloads TimescaleDB, and starts the server on 127.0.0.1 only.
+  //    The connection string is DERIVED — do NOT also set connectionString (validation error).
+  //    "port" 5641 is deliberately uncommon so the bundled instance coexists with any
+  //    PostgreSQL (5432) already on the machine. "dataDirectory" null means
+  //    %ProgramData%\PerformanceMonitorDarling\pg. The service stops the server on shutdown
+  //    only when it started it. Windows-only.
+  //
+  // 2) Bring-your-own PostgreSQL: remove "managed"/"port"/"dataDirectory" and set
+  //    "connectionString" instead, e.g.
+  //      "postgres": {
+  //        "connectionString": "Host=localhost;Port=5432;Username=darling;Database=darling"
+  //      },
+  //    The service never touches that server's lifecycle; TimescaleDB is detected and used
+  //    automatically when present, plain PostgreSQL works too.
   "postgres": {
-    "connectionString": "Host=localhost;Port=5432;Username=darling;Database=darling"
+    "managed": true,
+    "port": 5641,
+    "dataDirectory": null
   },
   "servers": [
     {

@@ -52,7 +52,15 @@ public sealed class DarlingConfigTests
         Assert.True(config.Servers[1].UsesSqlAuth);
         Assert.Equal("monitor", config.Servers[1].Username);
         Assert.Equal(new[] { "StageDb" }, config.Servers[1].ExcludedDatabases);
-        Assert.NotEmpty(config.Postgres.ConnectionString);
+
+        /* The sample ships the MANAGED bundled-Postgres mode — the zero-admin default: the
+           connection string is derived at runtime, never set, and the whole sample validates
+           clean as shipped. */
+        Assert.True(config.Postgres.Managed);
+        Assert.Equal(5641, config.Postgres.Port);
+        Assert.Null(config.Postgres.DataDirectory);
+        Assert.Equal("", config.Postgres.ConnectionString);
+        Assert.Empty(config.Validate());
 
         /* Phase-5 slice D: the alert/delivery sections parse; the sample documents shape without
            enabling delivery (empty SMTP host/from, empty webhook URLs). */
@@ -83,6 +91,28 @@ public sealed class DarlingConfigTests
         var sqlNoCreds = ValidConfig(c => c.Servers[0].Auth = "sql").Validate();
         Assert.Contains(sqlNoCreds, p => p.Contains("requires username", StringComparison.Ordinal));
         Assert.Contains(sqlNoCreds, p => p.Contains("encryptedPassword", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_ManagedPostgresMatrix()
+    {
+        /* Managed alone is valid — the connection string is derived, not configured. */
+        Assert.Empty(ValidConfig(c => { c.Postgres.Managed = true; c.Postgres.ConnectionString = ""; }).Validate());
+
+        /* Managed + connectionString is a hard error (no silent precedence rule). */
+        Assert.Contains(ValidConfig(c => c.Postgres.Managed = true).Validate(),
+            p => p.Contains("pick one", StringComparison.Ordinal));
+
+        /* A nonsense managed port fails fast, before initdb ever bakes it into a cluster. */
+        Assert.Contains(
+            ValidConfig(c => { c.Postgres.Managed = true; c.Postgres.ConnectionString = ""; c.Postgres.Port = 0; }).Validate(),
+            p => p.Contains("postgres.port", StringComparison.Ordinal));
+
+        /* Unmanaged defaults are untouched: managed off + port 5641 + null data directory. */
+        var postgres = new PostgresConfig();
+        Assert.False(postgres.Managed);
+        Assert.Equal(5641, postgres.Port);
+        Assert.Null(postgres.DataDirectory);
     }
 
     [Fact]

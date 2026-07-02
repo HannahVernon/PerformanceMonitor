@@ -9,7 +9,9 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 using System.Windows.Media;
+using Npgsql;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
 
@@ -125,10 +127,62 @@ public sealed class ViewerDataServiceTests
 
 /// <summary>
 /// The viewer's sliver of darling.json: the service's resolution order and lenient JSON
-/// (comments, trailing commas, case-insensitive names), but only postgres.connectionString.
+/// (comments, trailing commas, case-insensitive names), but only the postgres section —
+/// including the managed bundled-Postgres mode, whose derivation (credential path convention +
+/// DPAPI entropy) is pinned against the SERVICE's DarlingSecrets/DarlingManagedPostgres here,
+/// because the viewer deliberately duplicates those constants instead of referencing the
+/// service project.
 /// </summary>
 public sealed class ViewerSettingsTests
 {
+    [Fact]
+    public void Parse_ManagedMode_DerivesFromTheServiceCredential()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
+
+        var root = Directory.CreateTempSubdirectory("darling-viewer-managed-");
+        try
+        {
+            /* The SERVICE writes the credential (DarlingSecrets + the DarlingManagedPostgres
+               path convention); the VIEWER must derive the identical connection string. */
+            var dataDirectory = Path.Combine(root.FullName, "pg");
+            var credentialPath = PerformanceMonitor.Darling.Service.DarlingManagedPostgres.CredentialPathFor(dataDirectory);
+            File.WriteAllText(credentialPath, PerformanceMonitor.Darling.Service.DarlingSecrets.Protect("pw-from-service"));
+
+            var json = $$"""
+                {
+                  "postgres": {
+                    "managed": true,
+                    "port": 5991,
+                    "dataDirectory": {{JsonSerializer.Serialize(dataDirectory)}}
+                  }
+                }
+                """;
+
+            var settings = ViewerSettings.Parse(json);
+            var parsed = new NpgsqlConnectionStringBuilder(settings.ConnectionString);
+            Assert.Equal("localhost", parsed.Host);
+            Assert.Equal(5991, parsed.Port);
+            Assert.Equal("darling", parsed.Username);
+            Assert.Equal("pw-from-service", parsed.Password);
+            Assert.Equal("darling", parsed.Database);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Parse_ManagedMode_MissingCredential_ThrowsAReadableFirstRunHint()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName(), "pg");
+        var json = $$"""{ "postgres": { "managed": true, "dataDirectory": {{JsonSerializer.Serialize(missing)}} } }""";
+
+        var ex = Assert.Throws<InvalidDataException>(() => ViewerSettings.Parse(json));
+        Assert.Contains("service", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Parse_ReadsTheConnectionString_WithCommentsAndTrailingCommas()
     {

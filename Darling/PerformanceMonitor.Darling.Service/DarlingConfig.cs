@@ -111,9 +111,31 @@ public sealed class DarlingConfig
     {
         var problems = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(Postgres?.ConnectionString))
+        if (Postgres is null)
         {
-            problems.Add("postgres.connectionString is required.");
+            problems.Add("postgres section is required.");
+        }
+        else if (Postgres.Managed)
+        {
+            /* Managed mode DERIVES the connection string (localhost + port + the generated
+               DPAPI-protected credential — see DarlingManagedPostgres); a hand-set string
+               would silently win or silently lose depending on code order, so both together
+               is a hard config error, not a precedence rule. */
+            if (!string.IsNullOrWhiteSpace(Postgres.ConnectionString))
+            {
+                problems.Add("postgres.managed is true AND postgres.connectionString is set — pick one: " +
+                    "managed mode derives the connection string itself (remove connectionString), or remove " +
+                    "\"managed\" to use your own PostgreSQL via connectionString.");
+            }
+
+            if (Postgres.Port is < 1 or > 65535)
+            {
+                problems.Add($"postgres.port must be between 1 and 65535 (got {Postgres.Port}).");
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(Postgres.ConnectionString))
+        {
+            problems.Add("postgres.connectionString is required (or set postgres.managed = true to run the bundled server).");
         }
 
         if (Servers is null || Servers.Count == 0)
@@ -154,10 +176,38 @@ public sealed class DarlingConfig
     }
 }
 
+/// <summary>
+/// The Postgres store — two modes. Unmanaged (default): <see cref="ConnectionString"/> points at
+/// an existing PostgreSQL and the service never touches its lifecycle. Managed (the shipped
+/// zero-admin default in darling.sample.json): <see cref="Managed"/> = true and the service
+/// unpacks, initializes, starts, and stops its own bundled PostgreSQL + TimescaleDB via
+/// <see cref="DarlingManagedPostgres"/>; the connection string is DERIVED
+/// (localhost + <see cref="Port"/> + the generated DPAPI-protected credential), so setting
+/// <see cref="ConnectionString"/> too is a validation error.
+/// </summary>
 public sealed class PostgresConfig
 {
     [JsonPropertyName("connectionString")]
     public string ConnectionString { get; set; } = "";
+
+    /// <summary>Run the bundled, service-managed PostgreSQL instead of pointing at an existing one.</summary>
+    [JsonPropertyName("managed")]
+    public bool Managed { get; set; }
+
+    /// <summary>
+    /// The managed server's loopback port. 5641 deliberately avoids PostgreSQL's default 5432 so
+    /// the bundled instance can coexist with a PostgreSQL the machine already runs.
+    /// </summary>
+    [JsonPropertyName("port")]
+    public int Port { get; set; } = 5641;
+
+    /// <summary>
+    /// The managed server's data directory; null (the default) means
+    /// %ProgramData%\PerformanceMonitorDarling\pg — a machine-wide, service-account-writable
+    /// convention created with inherited ACLs.
+    /// </summary>
+    [JsonPropertyName("dataDirectory")]
+    public string? DataDirectory { get; set; }
 }
 
 /// <summary>

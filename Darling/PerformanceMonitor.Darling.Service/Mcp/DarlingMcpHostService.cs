@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
@@ -84,7 +85,29 @@ public sealed class DarlingMcpHostService : BackgroundService
                 return;
             }
 
-            await using var postgres = NpgsqlDataSource.Create(config.Postgres.ConnectionString);
+            /* Managed mode: the WORKER owns the bundled server's lifecycle; the MCP host only
+               derives the same connection string from the stored DPAPI credential. */
+            string? storeConnectionString;
+            if (config.Postgres.Managed)
+            {
+                if (!OperatingSystem.IsWindows())
+                {
+                    _logger.LogError("MCP server not started: postgres.managed = true requires Windows");
+                    return;
+                }
+
+                storeConnectionString = await WaitForManagedConnectionStringAsync(config.Postgres, stoppingToken);
+                if (storeConnectionString is null)
+                {
+                    return;
+                }
+            }
+            else
+            {
+                storeConnectionString = config.Postgres.ConnectionString;
+            }
+
+            await using var postgres = NpgsqlDataSource.Create(storeConnectionString);
 
             /* serverId → connection string from config (first entry wins on a duplicate storage
                name, mirroring the worker's FirstOrDefault over runtimes). Resolution is lazy so
@@ -151,6 +174,42 @@ public sealed class DarlingMcpHostService : BackgroundService
         {
             _logger.LogError("MCP server failed: {Message}", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Managed mode's first-boot race, handled: the credential file appears only after the
+    /// worker's initdb finishes, so poll briefly (2 minutes) instead of racing it, then stand
+    /// down with a pointer at the worker log — the worker will already have logged any
+    /// bootstrap failure as critical.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private async Task<string?> WaitForManagedConnectionStringAsync(PostgresConfig config, CancellationToken stoppingToken)
+    {
+        for (var attempt = 0; attempt < 24; attempt++)
+        {
+            var connectionString = DarlingManagedPostgres.TryBuildConnectionStringFromStoredCredential(config);
+            if (connectionString is not null)
+            {
+                return connectionString;
+            }
+
+            if (attempt == 0)
+            {
+                _logger.LogInformation("Waiting for the managed Postgres credential (first-run initialization) before starting the MCP server");
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+
+        _logger.LogError("MCP server not started: the managed Postgres credential never appeared — see the worker log for the bootstrap failure");
+        return null;
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
