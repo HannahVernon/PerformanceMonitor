@@ -40,6 +40,20 @@ public sealed class ViewerFindingRow
 
     /// <summary>The batch's analysis time in the viewer machine's local time.</summary>
     public DateTime AnalysisTimeLocal => ViewerDataService.ToLocalTime(Finding.AnalysisTime);
+
+    /// <summary>
+    /// True when this finding's story pattern is in <c>analysis_muted</c> for the server (the
+    /// engine will drop it on the next analysis run; it stays in this already-persisted batch,
+    /// shown muted). Set after the mapping from the muted-story registry, so <see cref="MapFindings"/>
+    /// stays pure.
+    /// </summary>
+    public bool IsMuted { get; set; }
+
+    /// <summary>The <c>mute_id</c> of the matching registry row when <see cref="IsMuted"/>, for unmute.</summary>
+    public long? MuteId { get; set; }
+
+    /// <summary>Grid cell text for the muted state — "Muted" or blank.</summary>
+    public string MutedLabel => IsMuted ? "Muted" : "";
 }
 
 public sealed partial class ViewerDataService
@@ -60,7 +74,85 @@ public sealed partial class ViewerDataService
     {
         _findingStore ??= new PgFindingStore(_dataSource);
         var findings = await _findingStore.GetLatestFindingsAsync(serverId);
-        return MapFindings(findings);
+        var rows = MapFindings(findings);
+
+        /* Mark rows whose story pattern is already muted so the tab shows the state and can offer
+           the unmute. Muting doesn't retract this persisted batch — the engine filters the pattern
+           on the NEXT analysis run — so a just-muted finding stays visible here, flagged "Muted".
+
+           GetMutedStoriesAsync spans this server's mutes AND global (server_id IS NULL) ones. Only a
+           PER-SERVER mute carries a MuteId here — the viewer offers unmute for those — while a global
+           mute flags the finding muted but is left un-unmutable, because deleting it would unmute the
+           pattern for EVERY server (a scope the per-server viewer must not silently change). Among
+           duplicate per-server rows for one hash the smallest mute_id wins, so the choice is stable. */
+        var muted = await _findingStore.GetMutedStoriesAsync(serverId);
+        if (muted.Count > 0)
+        {
+            var perServerMuteId = new Dictionary<string, long>(StringComparer.Ordinal);
+            var globallyMuted = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var m in muted)
+            {
+                if (m.ServerId == serverId)
+                {
+                    if (!perServerMuteId.TryGetValue(m.StoryPathHash, out var existing) || m.MuteId < existing)
+                    {
+                        perServerMuteId[m.StoryPathHash] = m.MuteId;
+                    }
+                }
+                else
+                {
+                    globallyMuted.Add(m.StoryPathHash);
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                var hash = row.Finding.StoryPathHash;
+                if (perServerMuteId.TryGetValue(hash, out var muteId))
+                {
+                    row.IsMuted = true;
+                    row.MuteId = muteId;
+                }
+                else if (globallyMuted.Contains(hash))
+                {
+                    row.IsMuted = true; /* MuteId stays null — global mute, not unmutable from here. */
+                }
+            }
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Mutes a finding's story pattern for the selected server so the engine drops it on the next
+    /// analysis run — the viewer's user-initiated write, straight to Postgres through the SAME
+    /// <see cref="PgFindingStore.MuteStoryAsync"/> the MCP <c>mute_analysis_finding</c> tool uses.
+    /// The viewer always mutes per-selected-server (a real non-zero server_id), so it never takes
+    /// the MCP "all servers" server_id=0 path (see <see cref="PgFindingStore.GetMutedStoriesAsync"/>).
+    /// </summary>
+    public async Task MuteFindingAsync(int serverId, AnalysisFinding finding)
+    {
+        if (finding is null)
+        {
+            throw new ArgumentNullException(nameof(finding));
+        }
+
+        _findingStore ??= new PgFindingStore(_dataSource);
+        await _findingStore.MuteStoryAsync(
+            serverId,
+            finding.StoryPathHash,
+            string.IsNullOrEmpty(finding.StoryPath) ? finding.StoryPathHash : finding.StoryPath,
+            reason: "Muted from Recommendations");
+    }
+
+    /// <summary>
+    /// Removes a mute registry row (<see cref="PgFindingStore.UnmuteStoryAsync"/>), so the pattern
+    /// is reported again from the next analysis run.
+    /// </summary>
+    public async Task UnmuteFindingAsync(long muteId)
+    {
+        _findingStore ??= new PgFindingStore(_dataSource);
+        await _findingStore.UnmuteStoryAsync(muteId);
     }
 
     /// <summary>

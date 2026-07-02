@@ -19,6 +19,20 @@ using PerformanceMonitor.Notifications;
 namespace PerformanceMonitor.Darling.Analysis;
 
 /// <summary>
+/// One row of the <c>analysis_muted</c> registry, as the viewer's Recommendations tab needs it
+/// to mark a displayed finding muted and to offer the unmute (it needs the <c>mute_id</c>, which
+/// <see cref="PgFindingStore.GetMutedHashesSql"/> deliberately omits). <c>ServerId</c> is nullable
+/// because a mute can be global (<c>server_id IS NULL</c>).
+/// </summary>
+public sealed record MutedStory(
+    long MuteId,
+    int? ServerId,
+    string StoryPathHash,
+    string StoryPath,
+    DateTime MutedDate,
+    string? Reason);
+
+/// <summary>
 /// Persists analysis findings to Darling's Postgres store (the V4 <c>analysis_findings</c> /
 /// <c>analysis_muted</c> tables) and checks for muted story hashes — the write side of the
 /// analysis pipeline, ported with the DASHBOARD twin's method surface and semantics
@@ -104,6 +118,13 @@ ORDER BY severity DESC";
 
     public const string GetMutedHashesSql = @"
 SELECT story_path_hash FROM analysis_muted
+WHERE server_id = $1 OR server_id IS NULL";
+
+    /* Same per-server + global (NULL) span as GetMutedHashesSql, but carries mute_id/story_path so
+       the viewer can mark a finding muted and delete the exact registry row on unmute. */
+    public const string GetMutedStoriesSql = @"
+SELECT mute_id, server_id, story_path_hash, story_path, muted_date, reason
+FROM analysis_muted
 WHERE server_id = $1 OR server_id IS NULL";
 
     public const string MuteStorySql = @"
@@ -347,6 +368,45 @@ VALUES ($1, $2, $3, $4, $5, $6)";
         {
             _logger?.LogError("[PgFindingStore] UnmuteStoryAsync failed: {Message}", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Reads the muted-story registry rows visible to a server (its own plus the global
+    /// <c>server_id IS NULL</c> rows — the same span <see cref="GetMutedHashesSql"/> filters),
+    /// carrying each row's <c>mute_id</c> so the viewer can offer an unmute. Reads log and
+    /// degrade to an empty list like the store's other reads.
+    /// NOTE: the MCP "mute across all servers" path writes <c>server_id = 0</c> (not NULL — see
+    /// the mute_analysis_finding tool), so a 0-scoped mute is only visible to server 0; that is
+    /// the shared cross-app quirk this read mirrors rather than fixes.
+    /// </summary>
+    public async Task<List<MutedStory>> GetMutedStoriesAsync(int serverId)
+    {
+        var stories = new List<MutedStory>();
+
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync();
+            using var command = new NpgsqlCommand(GetMutedStoriesSql, connection);
+            command.Parameters.AddWithValue(serverId);
+
+            using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                stories.Add(new MutedStory(
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt32(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    AsUtc(reader.GetDateTime(4)),
+                    reader.IsDBNull(5) ? null : reader.GetString(5)));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgFindingStore] GetMutedStoriesAsync failed: {Message}", ex.Message);
+        }
+
+        return stories;
     }
 
     /// <summary>
