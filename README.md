@@ -129,8 +129,8 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | memory_pressure_events | 5 min | `sys.dm_os_ring_buffers` RING_BUFFER_RESOURCE_MONITOR |
 | query_store | 5 min | Query Store DMVs (per database) |
 | running_jobs | 5 min | `msdb` job history with duration vs avg/p95 |
-| database_size_stats | 15 min | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
-| server_properties | 15 min | `SERVERPROPERTY()` hardware and licensing metadata |
+| database_size_stats | 1 hour | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
+| server_properties | on connect | `SERVERPROPERTY()` hardware and licensing metadata |
 | index_object_stats | Daily | `sys.dm_db_partition_stats` + `sys.dm_db_index_usage_stats` + `sys.dm_db_index_operational_stats` |
 | server_config | On connect | `sys.configurations` |
 | database_config | On connect | `sys.databases` |
