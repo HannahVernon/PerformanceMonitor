@@ -43,7 +43,45 @@ public static class PgMigrations
     public static IReadOnlyList<Migration> Scripts { get; } = new[]
     {
         new Migration(1, "collector-tables", PgSchemaGenerator.GenerateFullSchema()),
+        new Migration(2, "server-registry-and-collection-log", V2Sql),
     };
+
+    /// <summary>
+    /// V2 — the service's observability store: the servers registry (upserted on every
+    /// successful connect) and the per-run collection_log. Column names deliberately mirror
+    /// Lite's DuckDB schema so viewer/analysis SQL can twin across stores — including
+    /// duckdb_duration_ms, which in Darling records the Postgres storage phase. Lite's servers
+    /// table also carries auth columns (use_windows_auth/username); Darling deliberately omits
+    /// them because auth lives in darling.json. servers keeps its PRIMARY KEY (a registry, not
+    /// a hypertable candidate); collection_log has none, same reasoning as the collector tables.
+    /// </summary>
+    private const string V2Sql = @"
+CREATE TABLE IF NOT EXISTS servers (
+    server_id integer NOT NULL PRIMARY KEY,
+    server_name text NOT NULL,
+    display_name text,
+    is_enabled boolean NOT NULL DEFAULT TRUE,
+    sql_engine_edition integer,
+    sql_major_version integer,
+    created_date timestamp,
+    modified_date timestamp
+);
+
+CREATE TABLE IF NOT EXISTS collection_log (
+    log_id bigint NOT NULL,
+    server_id integer NOT NULL,
+    server_name text,
+    collector_name text NOT NULL,
+    collection_time timestamp NOT NULL,
+    duration_ms integer,
+    status text NOT NULL,
+    error_message text,
+    rows_collected integer,
+    sql_duration_ms integer,
+    duckdb_duration_ms integer
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_log_time ON collection_log(server_id, collection_time);";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (
