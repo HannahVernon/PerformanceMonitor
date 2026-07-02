@@ -91,9 +91,18 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
 );";
 
     /// <summary>
+    /// Session-scoped advisory lock key serializing concurrent migrators — two connections
+    /// racing MigrateAsync (a second service instance misconfigured onto the same store, or
+    /// parallel test classes) would otherwise both read the same current version and collide on
+    /// the darling_schema_version primary key. Released explicitly and on connection close.
+    /// </summary>
+    private const long MigrationLockKey = 0x4441524C_494E47; /* "DARLING" */
+
+    /// <summary>
     /// Applies every migration newer than the store's current version, each in its own
     /// transaction, stamping darling_schema_version as it goes. Idempotent — a fully migrated
-    /// store is a no-op. The connection must be open.
+    /// store is a no-op — and safe under concurrent callers (advisory-locked). The connection
+    /// must be open.
     /// </summary>
     public static async Task<int> MigrateAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
     {
@@ -102,6 +111,33 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
             throw new ArgumentNullException(nameof(connection));
         }
 
+        using (var acquireLock = new NpgsqlCommand("SELECT pg_advisory_lock($1)", connection))
+        {
+            acquireLock.Parameters.AddWithValue(MigrationLockKey);
+            await acquireLock.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        try
+        {
+            return await MigrateLockedAsync(connection, cancellationToken);
+        }
+        finally
+        {
+            try
+            {
+                using var releaseLock = new NpgsqlCommand("SELECT pg_advisory_unlock($1)", connection);
+                releaseLock.Parameters.AddWithValue(MigrationLockKey);
+                await releaseLock.ExecuteNonQueryAsync(CancellationToken.None);
+            }
+            catch
+            {
+                /* Connection close releases session advisory locks anyway. */
+            }
+        }
+    }
+
+    private static async Task<int> MigrateLockedAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
         using (var createVersionTable = new NpgsqlCommand(VersionTableSql, connection))
         {
             await createVersionTable.ExecuteNonQueryAsync(cancellationToken);
