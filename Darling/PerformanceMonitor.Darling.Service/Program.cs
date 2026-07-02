@@ -10,6 +10,7 @@ using System;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using PerformanceMonitor.Darling.Service;
+using PerformanceMonitor.Darling.Service.Mcp;
 
 /* CLI verb: encrypt a SQL-auth password for darling.json. Reads from stdin (not an argument,
    so the plaintext never lands in shell history) and prints the DPAPI-LocalMachine blob. */
@@ -44,6 +45,10 @@ builder.Services.AddWindowsService(options =>
 });
 
 builder.Services.AddHostedService<DarlingWorker>();
+
+/* AN4: the analysis MCP tools over Streamable HTTP — registered always, self-gating on
+   darling.json's mcp.enabled (default OFF), so Program.cs stays config-free like the worker. */
+builder.Services.AddHostedService<DarlingMcpHostService>();
 
 builder.Build().Run();
 return 0;

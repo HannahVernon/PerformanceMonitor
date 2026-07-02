@@ -18,6 +18,11 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.9" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <!-- AN4: the analysis MCP tools over Streamable HTTP — Lite's exact MCP stack/version.
+         The AspNetCore package brings the Microsoft.AspNetCore.App framework reference
+         (Kestrel/WebApplication) transitively, same as it does for Lite. -->
+    <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
   </ItemGroup>
 
   <ItemGroup>
