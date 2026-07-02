@@ -63,6 +63,9 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, DateTime> _lastLongRunningJobAlert = new();
     private readonly DispatcherTimer _statusTimer;
     private LocalDataService? _dataService;
+    /* Phase-5 slice B: the alert loop's collected-store reads go through this seam (see
+       LiteAlertReadAdapter); the shared engine (slice D) consumes the same surface. */
+    private LiteAlertReadAdapter? _alertReadAdapter;
     private McpHostService? _mcpService;
     private readonly AlertStateService _alertStateService = new();
     private readonly IAlertSettings _alertSettings = new AppAlertSettings();
@@ -231,6 +234,7 @@ public partial class MainWindow : Window
 
             // Initialize data service for overview
             _dataService = new LocalDataService(_databaseInitializer);
+            _alertReadAdapter = new LiteAlertReadAdapter(_dataService);
 
             // Load mute rules from database
             await _muteRuleService.LoadAsync();
