@@ -45,6 +45,7 @@ public static class PgMigrations
         new Migration(1, "collector-tables", PgSchemaGenerator.GenerateFullSchema()),
         new Migration(2, "server-registry-and-collection-log", V2Sql),
         new Migration(3, "alerting-stores", V3Sql),
+        new Migration(4, "analysis-tables", V4Sql),
     };
 
     /// <summary>
@@ -135,6 +136,86 @@ CREATE TABLE IF NOT EXISTS config_mute_rules (
     wait_type_pattern text,
     job_name_pattern text
 );";
+
+    /// <summary>
+    /// V4 — the analysis-engine stores (Phase-5 analysis slice AN1) plus the passthrough views
+    /// the ported analysis SQL reads. <c>analysis_findings</c> is Lite's AnalysisSchema v3 shape
+    /// column-for-column PLUS the Dashboard's <c>remediation_action_json</c> (recommendations
+    /// rebuild D2: the BUILT RemediationAction persisted on the row, serialized by the shared
+    /// AlertContextSerializer) — no primary key, same hypertable/COPY reasoning as the collector
+    /// tables (TimescaleDB hypertables require the partition column in any unique constraint, and
+    /// bulk ingest doesn't want one); finding_id stays a NOT NULL bigint, and the two Lite index
+    /// column sets carry over. <c>analysis_muted</c> is a small mute registry and KEEPS its
+    /// primary key (like V2's servers); Lite's DuckDB <c>DEFAULT CURRENT_TIMESTAMP</c> on
+    /// muted_date is deliberately NOT carried — in Postgres that default would stamp the PG
+    /// server's LOCAL clock, and the store always supplies naive-UTC explicitly.
+    ///
+    /// The <c>v_&lt;table&gt;</c> views exist so analysis SQL ports VERBATIM (AN2/AN3): in Lite
+    /// they union the hot DuckDB table with the parquet archive; Darling has no parquet tier, so
+    /// they are plain passthroughs. Seventeen views — the fourteen the fact collectors read
+    /// (wait/query/query-store/cpu/memory-grant/memory/perfmon/session/file-io stats,
+    /// blocked_process_reports, deadlocks, dmv_blocking_snapshots, index_object_stats,
+    /// database_size_stats) plus the three Lite's drill-down/storage collectors also read
+    /// (v_tempdb_stats in DuckDbFactCollector.Storage + DrillDownCollector.Storage,
+    /// v_query_snapshots in DrillDownCollector.Queries, v_database_config in
+    /// DrillDownCollector.Config). Every view targets a V1 collector table, pinned by test.
+    /// </summary>
+    private const string V4Sql = @"
+CREATE TABLE IF NOT EXISTS analysis_findings (
+    finding_id bigint NOT NULL,
+    analysis_time timestamp NOT NULL,
+    server_id integer NOT NULL,
+    server_name text NOT NULL,
+    database_name text,
+    time_range_start timestamp,
+    time_range_end timestamp,
+    severity double precision NOT NULL,
+    confidence double precision NOT NULL,
+    category text NOT NULL,
+    story_path text NOT NULL,
+    story_path_hash text NOT NULL,
+    story_text text NOT NULL,
+    root_fact_key text NOT NULL,
+    root_fact_value double precision,
+    leaf_fact_key text,
+    leaf_fact_value double precision,
+    fact_count integer NOT NULL,
+    incident_id text,
+    remediation_action_json text
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_findings_time ON analysis_findings(server_id, analysis_time);
+CREATE INDEX IF NOT EXISTS idx_analysis_findings_hash ON analysis_findings(story_path_hash);
+
+CREATE TABLE IF NOT EXISTS analysis_muted (
+    mute_id bigint NOT NULL PRIMARY KEY,
+    server_id integer,
+    database_name text,
+    story_path_hash text NOT NULL,
+    story_path text NOT NULL,
+    muted_date timestamp NOT NULL,
+    reason text
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_muted_hash ON analysis_muted(story_path_hash);
+
+CREATE OR REPLACE VIEW v_wait_stats AS SELECT * FROM wait_stats;
+CREATE OR REPLACE VIEW v_query_stats AS SELECT * FROM query_stats;
+CREATE OR REPLACE VIEW v_query_store_stats AS SELECT * FROM query_store_stats;
+CREATE OR REPLACE VIEW v_cpu_utilization_stats AS SELECT * FROM cpu_utilization_stats;
+CREATE OR REPLACE VIEW v_memory_grant_stats AS SELECT * FROM memory_grant_stats;
+CREATE OR REPLACE VIEW v_memory_stats AS SELECT * FROM memory_stats;
+CREATE OR REPLACE VIEW v_perfmon_stats AS SELECT * FROM perfmon_stats;
+CREATE OR REPLACE VIEW v_session_stats AS SELECT * FROM session_stats;
+CREATE OR REPLACE VIEW v_file_io_stats AS SELECT * FROM file_io_stats;
+CREATE OR REPLACE VIEW v_blocked_process_reports AS SELECT * FROM blocked_process_reports;
+CREATE OR REPLACE VIEW v_deadlocks AS SELECT * FROM deadlocks;
+CREATE OR REPLACE VIEW v_dmv_blocking_snapshots AS SELECT * FROM dmv_blocking_snapshots;
+CREATE OR REPLACE VIEW v_index_object_stats AS SELECT * FROM index_object_stats;
+CREATE OR REPLACE VIEW v_database_size_stats AS SELECT * FROM database_size_stats;
+CREATE OR REPLACE VIEW v_tempdb_stats AS SELECT * FROM tempdb_stats;
+CREATE OR REPLACE VIEW v_query_snapshots AS SELECT * FROM query_snapshots;
+CREATE OR REPLACE VIEW v_database_config AS SELECT * FROM database_config;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

@@ -826,6 +826,16 @@
           "ModelContextProtocol": "[1.4.0, )"
         }
       },
+      "performancemonitor.darling.analysis": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Data.SqlClient": "[7.0.1, )",
+          "PerformanceMonitor.Analysis": "[1.0.0, )",
+          "PerformanceMonitor.Collectors": "[1.0.0, )",
+          "PerformanceMonitor.Darling.Storage": "[1.0.0, )",
+          "PerformanceMonitor.Notifications": "[1.0.0, )"
+        }
+      },
       "performancemonitor.darling.service": {
         "type": "Project",
         "dependencies": {
