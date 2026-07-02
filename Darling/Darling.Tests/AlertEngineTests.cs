@@ -1,0 +1,799 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using PerformanceMonitor.Alerting;
+using PerformanceMonitor.Notifications;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins the shared <see cref="AlertEngine"/>'s gating semantics (Phase-5 slice D) against fakes.
+/// Every expectation is derived from Lite's <c>MainWindow.AlertEngine.cs</c> (the transplant
+/// source) — the Lite line is cited per pin — so an engine change that diverges from Lite's
+/// behavior must consciously update both the pin and the forwarding plan.
+/// </summary>
+public sealed class AlertEngineTests
+{
+    private const string Key = "101";
+    private const string Name = "SRV-A";
+
+    /* ---------------- fakes ---------------- */
+
+    private sealed class FakeSettings : IAlertEngineSettings
+    {
+        /* Lite's App.xaml.cs defaults for thresholds; per-alert enables default OFF here so each
+           test switches on exactly the check it pins (a disabled check must not even fetch). */
+        public bool AlertsEnabled { get; set; } = true;
+        public bool CpuEnabled { get; set; }
+        public bool BlockingEnabled { get; set; }
+        public bool DeadlockEnabled { get; set; }
+        public bool PoisonWaitEnabled { get; set; }
+        public bool LongRunningQueryEnabled { get; set; }
+        public bool TempDbSpaceEnabled { get; set; }
+        public bool LowDiskEnabled { get; set; }
+        public bool LongRunningJobEnabled { get; set; }
+        public bool FailedJobEnabled { get; set; }
+        public int CpuThresholdPercent { get; set; } = 80;
+        public int BlockingCountThreshold { get; set; } = 1;
+        public int DeadlockCountThreshold { get; set; } = 1;
+        public int PoisonWaitThresholdMs { get; set; } = 500;
+        public int LongRunningQueryThresholdMinutes { get; set; } = 30;
+        public int LongRunningQueryMaxResults { get; set; } = 5;
+        public bool LongRunningQueryExcludeSpServerDiagnostics { get; set; } = true;
+        public bool LongRunningQueryExcludeWaitFor { get; set; } = true;
+        public bool LongRunningQueryExcludeBackups { get; set; } = true;
+        public bool LongRunningQueryExcludeMiscWaits { get; set; } = true;
+        public bool LongRunningQueryExcludeCdc { get; set; } = true;
+        public int TempDbSpaceThresholdPercent { get; set; } = 80;
+        public int LowDiskThresholdPercent { get; set; } = 10;
+        public int LowDiskThresholdGb { get; set; } = 5;
+        public int LongRunningJobMultiplier { get; set; } = 3;
+        public int FailedJobLookbackMinutes { get; set; } = 60;
+        public int CooldownMinutes { get; set; } = 5;
+        public List<string> ExcludedDatabasesList { get; } = new();
+        public IReadOnlyList<string> ExcludedDatabases => ExcludedDatabasesList;
+        public CpuAlertMode CpuAlertMode { get; set; } = CpuAlertMode.TotalServer;
+    }
+
+    private sealed class FakeReadAdapter : IAlertReadAdapter
+    {
+        public List<BlockedProcessAlertRow> Blocking { get; } = new();
+        public List<DeadlockAlertRow> Deadlocks { get; } = new();
+        public List<PoisonWaitDelta> PoisonWaits { get; } = new();
+        public List<LongRunningQueryInfo> LongRunning { get; } = new();
+        public List<VolumeFreeSpaceInfo> Volumes { get; } = new();
+        public TempDbSpaceInfo? TempDb { get; set; }
+        public List<AnomalousJobInfo> AnomalousJobs { get; } = new();
+
+        public int BlockingFetches { get; private set; }
+        public int DeadlockFetches { get; private set; }
+        public (int ThresholdMinutes, int MaxResults, bool Diag, bool WaitFor, bool Backups, bool Misc, bool Cdc, IReadOnlyList<string> Excluded)? LastLrqArgs { get; private set; }
+
+        public Task<List<BlockedProcessAlertRow>> GetRecentBlockedProcessReportsAsync(string serverKey, int hoursBack, CancellationToken cancellationToken = default)
+        {
+            BlockingFetches++;
+            return Task.FromResult(new List<BlockedProcessAlertRow>(Blocking));
+        }
+
+        public Task<List<DeadlockAlertRow>> GetRecentDeadlocksAsync(string serverKey, int hoursBack, CancellationToken cancellationToken = default)
+        {
+            DeadlockFetches++;
+            return Task.FromResult(new List<DeadlockAlertRow>(Deadlocks));
+        }
+
+        public Task<List<PoisonWaitDelta>> GetPoisonWaitDeltasAsync(string serverKey, double thresholdMs, CancellationToken cancellationToken = default) =>
+            /* The seam contract: fetch-then-filter client-side, like Lite's loop. */
+            Task.FromResult(PoisonWaits.FindAll(w => w.AvgMsPerWait >= thresholdMs));
+
+        public Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(
+            string serverKey, int thresholdMinutes, int maxResults,
+            bool excludeSpServerDiagnostics, bool excludeWaitFor, bool excludeBackups, bool excludeMiscWaits, bool excludeCdc,
+            IReadOnlyList<string> excludedDatabases, CancellationToken cancellationToken = default)
+        {
+            LastLrqArgs = (thresholdMinutes, maxResults, excludeSpServerDiagnostics, excludeWaitFor, excludeBackups, excludeMiscWaits, excludeCdc, excludedDatabases);
+            return Task.FromResult(new List<LongRunningQueryInfo>(LongRunning));
+        }
+
+        public Task<List<VolumeFreeSpaceInfo>> GetVolumeFreeSpaceAsync(string serverKey, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<VolumeFreeSpaceInfo>(Volumes));
+
+        public Task<TempDbSpaceInfo?> GetTempDbSpaceAsync(string serverKey, CancellationToken cancellationToken = default) =>
+            Task.FromResult(TempDb);
+
+        public Task<List<AnomalousJobInfo>> GetAnomalousJobsAsync(string serverKey, int multiplier, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<AnomalousJobInfo>(AnomalousJobs));
+    }
+
+    private sealed class FakeStateStore : IAlertStateStore
+    {
+        public Dictionary<(string Key, string Metric), int> EdgeWatermarks { get; } = new();
+        public Dictionary<string, DateTime> FailedJobWatermarks { get; } = new();
+        public List<(string Key, string Metric, int Watermark)> SavedEdge { get; } = new();
+        public List<(string Key, DateTime Watermark)> SavedFailedJob { get; } = new();
+
+        public Task<int?> LoadEdgeTriggerWatermarkAsync(string serverKey, string metricName) =>
+            Task.FromResult(EdgeWatermarks.TryGetValue((serverKey, metricName), out var w) ? (int?)w : null);
+
+        public Task SaveEdgeTriggerWatermarkAsync(string serverKey, string metricName, int watermark)
+        {
+            EdgeWatermarks[(serverKey, metricName)] = watermark;
+            SavedEdge.Add((serverKey, metricName, watermark));
+            return Task.CompletedTask;
+        }
+
+        public Task<DateTime?> LoadFailedJobWatermarkAsync(string serverKey) =>
+            Task.FromResult(FailedJobWatermarks.TryGetValue(serverKey, out var w) ? (DateTime?)w : null);
+
+        public Task SaveFailedJobWatermarkAsync(string serverKey, DateTime watermark)
+        {
+            FailedJobWatermarks[serverKey] = watermark;
+            SavedFailedJob.Add((serverKey, watermark));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingDeliverer : IAlertDeliverer
+    {
+        public List<AlertOutcome> Outcomes { get; } = new();
+
+        public Task DeliverAsync(AlertOutcome outcome, CancellationToken cancellationToken = default)
+        {
+            Outcomes.Add(outcome);
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>One engine + fakes + a controllable clock per test.</summary>
+    private sealed class Harness
+    {
+        public FakeSettings Settings { get; } = new();
+        public FakeReadAdapter Adapter { get; } = new();
+        public FakeStateStore StateStore { get; } = new();
+        public RecordingDeliverer Deliverer { get; } = new();
+        public List<AlertResolution> Resolutions { get; } = new();
+        public List<FailedJobInfo> FailedJobs { get; } = new();
+        public int FailedJobFetches { get; private set; }
+        public bool Muted { get; set; }
+        public DateTime Now { get; set; } = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        public AlertEngine Build(bool withFailedJobsFetcher = false) => new(
+            Settings, Adapter, StateStore, Deliverer,
+            isAlertMuted: _ => Muted,
+            failedJobsFetcher: withFailedJobsFetcher
+                ? (_, _, _) => { FailedJobFetches++; return Task.FromResult(new List<FailedJobInfo>(FailedJobs)); }
+                : null,
+            resolutionCallback: (r, _) => { Resolutions.Add(r); return Task.CompletedTask; },
+            logger: null,
+            utcNow: () => Now);
+
+        public static AlertServerSnapshot Snapshot(
+            double? sqlCpu = null, double? totalCpu = null,
+            bool isOnline = true, bool isAzureSqlDb = false, bool suppressed = false) =>
+            new(Key, Name, isOnline, sqlCpu, totalCpu, isAzureSqlDb, suppressed);
+    }
+
+    private static BlockedProcessAlertRow BlockingRow(
+        int blockedSpid, string source = BlockedProcessAlertRow.XeReportSource, string database = "StackOverflow") => new()
+    {
+        EventTime = new DateTime(2026, 7, 1, 11, 55, 0),
+        DatabaseName = database,
+        BlockedSpid = blockedSpid,
+        BlockingSpid = blockedSpid + 100,
+        WaitTimeMs = 12000,
+        LockMode = "X",
+        BlockedSqlText = "UPDATE Users SET x = 1",
+        BlockingSqlText = "BEGIN TRAN UPDATE Users",
+        ContentiousObject = "StackOverflow.dbo.Users",
+        Source = source
+    };
+
+    private static DeadlockAlertRow DeadlockRow(string database = "StackOverflow") => new()
+    {
+        VictimProcessId = "process1",
+        VictimSqlText = "UPDATE Users SET Reputation = 1",
+        DeadlockGraphXml =
+            $@"<deadlock><victim-list><victimProcess id=""process1""/></victim-list><process-list><process id=""process1"" spid=""55"" currentdbname=""{database}""><inputbuf>UPDATE Users SET Reputation = 1</inputbuf></process><process id=""process2"" spid=""60"" currentdbname=""{database}""><inputbuf>UPDATE Badges SET Name = 'x'</inputbuf></process></process-list><resource-list><keylock objectname=""{database}.dbo.Users""><owner id=""process2"" mode=""X""/><waiter id=""process1"" mode=""U""/></keylock></resource-list></deadlock>"
+    };
+
+    /* ---------------- master switch ---------------- */
+
+    [Fact]
+    public async Task AlertsDisabled_RunsNoChecksAtAll()
+    {
+        /* Lite AlertEngine.cs:38 — the master gate short-circuits the whole sweep. */
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        h.Settings.CpuEnabled = true;
+        h.Settings.BlockingEnabled = true;
+
+        await h.Build().EvaluateServerAsync(Harness.Snapshot(sqlCpu: 99, totalCpu: 99));
+
+        Assert.Empty(h.Deliverer.Outcomes);
+        Assert.Equal(0, h.Adapter.BlockingFetches);
+    }
+
+    /* ---------------- CPU ---------------- */
+
+    [Fact]
+    public async Task Cpu_FiresAtThresholdInclusive_ThenCooldownSuppressesRepeat()
+    {
+        /* Lite AlertEngine.cs:65-67 (>= threshold) and :72 (cooldown gates the repeat). */
+        var h = new Harness();
+        h.Settings.CpuEnabled = true;
+        var engine = h.Build();
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 80));
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("High CPU", fired.MetricName);
+        Assert.Equal("80% (Total CPU)", fired.CurrentValue);    /* :82 current-value shape, :64 label */
+        Assert.Equal("80%", fired.ThresholdValue);
+        Assert.Null(fired.Context);                              /* :91-98 — CPU passes no context */
+        Assert.Null(fired.NumericCurrentValue);                  /* ...and no numerics */
+        Assert.False(fired.Muted);
+
+        /* Same breach 1 minute later: inside the 5-minute cooldown — no repeat (:72). */
+        h.Now = h.Now.AddMinutes(1);
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 85));
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* After the cooldown elapses the standing breach re-fires (CPU is level-triggered). */
+        h.Now = h.Now.AddMinutes(5);
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 85));
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task Cpu_ModeSelection_HappensInsideTheEngine()
+    {
+        /* CpuPercentForAlert semantics (Lite LocalDataService.Overview.cs:143-144):
+           Total → TotalCpuPercent ?? CpuPercent; SqlOnly → CpuPercent. */
+        var h = new Harness();
+        h.Settings.CpuEnabled = true;
+
+        /* SqlProcess mode compares the SQL value even when total is higher. */
+        h.Settings.CpuAlertMode = CpuAlertMode.SqlProcess;
+        await h.Build().EvaluateServerAsync(Harness.Snapshot(sqlCpu: 50, totalCpu: 95));
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        await h.Build().EvaluateServerAsync(Harness.Snapshot(sqlCpu: 85, totalCpu: 95));
+        Assert.Equal("85% (SQL CPU)", Assert.Single(h.Deliverer.Outcomes).CurrentValue);
+
+        /* TotalServer mode falls back to the SQL value when no total is available. */
+        h.Deliverer.Outcomes.Clear();
+        h.Settings.CpuAlertMode = CpuAlertMode.TotalServer;
+        await h.Build().EvaluateServerAsync(Harness.Snapshot(sqlCpu: 90, totalCpu: null));
+        Assert.Equal("90% (Total CPU)", Assert.Single(h.Deliverer.Outcomes).CurrentValue);
+
+        /* No CPU sample at all → no alert (:66 HasValue gate). */
+        h.Deliverer.Outcomes.Clear();
+        await h.Build().EvaluateServerAsync(Harness.Snapshot(sqlCpu: null, totalCpu: null));
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Cpu_RecoveryEmitsResolution_WithLiteToastStrings_UnlessSuppressed()
+    {
+        /* Lite AlertEngine.cs:101-113 — active→inactive announces "CPU Resolved" gated on
+           !suppressPopups && enabled (:107). */
+        var h = new Harness();
+        h.Settings.CpuEnabled = true;
+        var engine = h.Build();
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 90));
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 20, totalCpu: 40));
+
+        var resolution = Assert.Single(h.Resolutions);
+        Assert.Equal("CPU Resolved", resolution.Title);                       /* :110 */
+        Assert.Equal("SRV-A: Total CPU back to 40%", resolution.Message);     /* :111 */
+        Assert.Equal("High CPU", resolution.MetricName);
+
+        /* Suppressed recovery still flips the active state but says nothing (:107). */
+        h.Resolutions.Clear();
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 90, suppressed: true));
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 20, totalCpu: 40, suppressed: true));
+        Assert.Empty(h.Resolutions);
+    }
+
+    [Fact]
+    public async Task Cpu_Suppressed_SetsActiveButDoesNotDeliverOrStampCooldown()
+    {
+        /* Lite AlertEngine.cs:71-72 — active is recorded, but the !suppressPopups gate sits
+           BEFORE the cooldown stamp, so nothing is delivered and nothing is stamped. */
+        var h = new Harness();
+        h.Settings.CpuEnabled = true;
+        var engine = h.Build();
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 90, suppressed: true));
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* Un-suppressed one second later: fires immediately — no cooldown was stamped. */
+        h.Now = h.Now.AddSeconds(1);
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 90));
+        Assert.Single(h.Deliverer.Outcomes);
+    }
+
+    /* ---------------- mute ---------------- */
+
+    [Fact]
+    public async Task MutedAlert_IsDeliveredFlaggedMuted_AndStampsTheCooldown()
+    {
+        /* Lite AlertEngine.cs:74-98 — the mute check resolves BEFORE the stamp (:76), the email
+           service is still called with muted: true (:97) so history records the muted fire. */
+        var h = new Harness();
+        h.Settings.CpuEnabled = true;
+        h.Muted = true;
+        var engine = h.Build();
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 90));
+        Assert.True(Assert.Single(h.Deliverer.Outcomes).Muted);
+
+        /* Unmuting inside the cooldown does not re-fire — the muted fire stamped it (:76). */
+        h.Muted = false;
+        h.Now = h.Now.AddMinutes(1);
+        await engine.EvaluateServerAsync(Harness.Snapshot(sqlCpu: 70, totalCpu: 90));
+        Assert.Single(h.Deliverer.Outcomes);
+    }
+
+    /* ---------------- blocking ---------------- */
+
+    [Fact]
+    public async Task Blocking_EdgeTrigger_FiresOnNewEventsOnly_AndPersistsTheWatermark()
+    {
+        /* Lite AlertEngine.cs:135-153 + RollingCountAlertGate (#1091/#1145). */
+        var h = new Harness();
+        h.Settings.BlockingEnabled = true;
+        var engine = h.Build();
+
+        h.Adapter.Blocking.Add(BlockingRow(55));
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Blocking Detected", fired.MetricName);
+        Assert.Equal("1", fired.CurrentValue);
+        Assert.NotNull(fired.Context);
+        Assert.Contains((Key, AlertEngine.BlockingWatermarkMetric, 1), h.StateStore.SavedEdge); /* :147-149 */
+
+        /* The SAME lingering report does not re-fire even after the cooldown elapses (#1091). */
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* A genuinely new report (count climbs past the watermark) fires again. */
+        h.Adapter.Blocking.Add(BlockingRow(77));
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+        Assert.Equal("2", h.Deliverer.Outcomes[1].CurrentValue);
+
+        /* Window empties: watermark resets to 0 (persisted) and "Blocking Cleared" is emitted
+           (:185-193 + RollingCountAlertGate.cs:64-66). */
+        h.Adapter.Blocking.Clear();
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Contains((Key, AlertEngine.BlockingWatermarkMetric, 0), h.StateStore.SavedEdge);
+        var resolution = Assert.Single(h.Resolutions);
+        Assert.Equal("Blocking Cleared", resolution.Title);                   /* :190 */
+        Assert.Equal("SRV-A: No active blocking", resolution.Message);        /* :191 */
+    }
+
+    [Fact]
+    public async Task Blocking_CountPrefersXeRows_FallsBackToDmvOnlyWhenNoXe()
+    {
+        /* Lite's overview count (LocalDataService.Overview.cs:74-77): COALESCE(NULLIF(xe,0),dmv). */
+        var h = new Harness();
+        h.Settings.BlockingEnabled = true;
+
+        /* 1 XE + 1 uncovered DMV row in the merged feed → the count is the XE count (1). */
+        h.Adapter.Blocking.Add(BlockingRow(55));
+        h.Adapter.Blocking.Add(BlockingRow(77, source: BlockedProcessAlertRow.DmvSnapshotSource));
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal("1", Assert.Single(h.Deliverer.Outcomes).CurrentValue);
+
+        /* No XE rows at all → the DMV fallback count (2). */
+        h.Deliverer.Outcomes.Clear();
+        h.Adapter.Blocking.Clear();
+        h.Adapter.Blocking.Add(BlockingRow(55, source: BlockedProcessAlertRow.DmvSnapshotSource));
+        h.Adapter.Blocking.Add(BlockingRow(77, source: BlockedProcessAlertRow.DmvSnapshotSource));
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal("2", Assert.Single(h.Deliverer.Outcomes).CurrentValue);
+    }
+
+    [Fact]
+    public async Task Blocking_Suppressed_EvaluatesWithoutDelivering_AndWatermarkDoesNotAdvance()
+    {
+        /* RollingCountAlertGate.cs:76-84 via Lite AlertEngine.cs:141 — an event arriving while
+           suppressed is NOT consumed; it fires on the next unsuppressed check. */
+        var h = new Harness();
+        h.Settings.BlockingEnabled = true;
+        var engine = h.Build();
+
+        h.Adapter.Blocking.Add(BlockingRow(55));
+        await engine.EvaluateServerAsync(Harness.Snapshot(suppressed: true));
+        Assert.Empty(h.Deliverer.Outcomes);
+        Assert.Empty(h.StateStore.SavedEdge);
+
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+        Assert.Contains((Key, AlertEngine.BlockingWatermarkMetric, 1), h.StateStore.SavedEdge);
+    }
+
+    [Fact]
+    public async Task Blocking_Disabled_NeverFetches()
+    {
+        /* Lite AlertEngine.cs:140-142 — the gate collapses to inactive; no store read happens
+           (Lite's count came from the summary; the engine skips its fetch entirely). */
+        var h = new Harness();
+        h.Adapter.Blocking.Add(BlockingRow(55));
+
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal(0, h.Adapter.BlockingFetches);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Blocking_ExcludedDatabases_ReduceTheEffectiveCount()
+    {
+        /* Lite AlertEngine.cs:118-127 — rows in excluded databases don't count (rows with no
+           database always pass). */
+        var h = new Harness();
+        h.Settings.BlockingEnabled = true;
+        h.Settings.ExcludedDatabasesList.Add("stackoverflow");
+
+        h.Adapter.Blocking.Add(BlockingRow(55, database: "StackOverflow"));
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        h.Adapter.Blocking.Add(BlockingRow(77, database: "OtherDb"));
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal("1", Assert.Single(h.Deliverer.Outcomes).CurrentValue);
+    }
+
+    /* ---------------- deadlocks ---------------- */
+
+    [Fact]
+    public async Task Deadlock_FiresWithFingerprintedContext_ThenWatermarkBlocksTheRefire()
+    {
+        /* Lite AlertEngine.cs:213-260 — the same #1091 gate, and the built context carries the
+           #1140 involved-object fingerprint. */
+        var h = new Harness();
+        h.Settings.DeadlockEnabled = true;
+        var engine = h.Build();
+
+        h.Adapter.Deadlocks.Add(DeadlockRow());
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Deadlocks Detected", fired.MetricName);
+        Assert.NotNull(fired.Context);
+        Assert.NotNull(fired.Context!.Incidents);
+        Assert.False(string.IsNullOrEmpty(fired.Context.Incidents![0].DedupKey));
+        Assert.Contains((Key, AlertEngine.DeadlockWatermarkMetric, 1), h.StateStore.SavedEdge);
+
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Deadlock_WatermarkSeededFromStore_PreventsThePostRestartRefire()
+    {
+        /* #1145 — Lite seeds its in-memory watermarks from the persisted store at startup
+           (MainWindow.xaml.cs:1563-1579); the engine seeds per-key on first evaluation. */
+        var h = new Harness();
+        h.Settings.DeadlockEnabled = true;
+        h.StateStore.EdgeWatermarks[(Key, AlertEngine.DeadlockWatermarkMetric)] = 1;
+
+        h.Adapter.Deadlocks.Add(DeadlockRow());
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Deadlock_WhollyExcludedDatabaseGraphs_DontCount()
+    {
+        /* Lite AlertEngine.cs:198-205 + AlertContextBuilders.IsDeadlockExcluded — a deadlock
+           whose processes ALL ran in excluded databases is dropped from the count. */
+        var h = new Harness();
+        h.Settings.DeadlockEnabled = true;
+        h.Settings.ExcludedDatabasesList.Add("ExcludedDb");
+
+        h.Adapter.Deadlocks.Add(DeadlockRow(database: "ExcludedDb"));
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        h.Adapter.Deadlocks.Add(DeadlockRow(database: "StackOverflow"));
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal("1", Assert.Single(h.Deliverer.Outcomes).CurrentValue);
+    }
+
+    /* ---------------- poison waits ---------------- */
+
+    [Fact]
+    public async Task PoisonWait_FiresWithWorstWaitNumerics_AndResolvesWhenGone()
+    {
+        /* Lite AlertEngine.cs:274-333. */
+        var h = new Harness();
+        h.Settings.PoisonWaitEnabled = true;
+        var engine = h.Build();
+
+        h.Adapter.PoisonWaits.Add(new PoisonWaitDelta { WaitType = "THREADPOOL", DeltaMs = 100000, DeltaTasks = 50, AvgMsPerWait = 2000 });
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Poison Wait", fired.MetricName);
+        Assert.Equal("THREADPOOL (2000ms)", fired.CurrentValue);              /* :286 */
+        Assert.Equal("500ms avg", fired.ThresholdValue);                      /* :314 */
+        Assert.Equal(2000d, fired.NumericCurrentValue);                       /* :317 */
+        Assert.Equal(500d, fired.NumericThresholdValue);                      /* :318 */
+
+        h.Adapter.PoisonWaits.Clear();
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var resolution = Assert.Single(h.Resolutions);
+        Assert.Equal("Poison Waits Cleared", resolution.Title);               /* :329 */
+        Assert.Equal("SRV-A: Poison wait avg below threshold", resolution.Message); /* :330 */
+    }
+
+    /* ---------------- long-running queries ---------------- */
+
+    [Fact]
+    public async Task LongRunningQuery_ForwardsEverySettingsKnobToTheAdapter_AndFires()
+    {
+        /* Lite AlertEngine.cs:346 — the read carries the threshold, cap, all five noise filters,
+           and the excluded databases; :354 — minutes are integer division of seconds. */
+        var h = new Harness();
+        h.Settings.LongRunningQueryEnabled = true;
+        h.Settings.ExcludedDatabasesList.Add("StageDb");
+
+        h.Adapter.LongRunning.Add(new LongRunningQueryInfo
+        {
+            SessionId = 71,
+            DatabaseName = "StackOverflow",
+            QueryText = "SELECT COUNT(*) FROM Users",
+            ElapsedSeconds = 2159, /* 35m 59s → "35m" via integer division */
+            CpuTimeMs = 1000,
+            QueryHash = "0x9AAF0129E4E9AD07"
+        });
+        await h.Build().EvaluateServerAsync(Harness.Snapshot());
+
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Long-Running Query", fired.MetricName);
+        Assert.Equal("1 query(s), longest 35m", fired.CurrentValue);          /* :385 */
+        Assert.Equal("30m", fired.ThresholdValue);
+        Assert.Equal(35d, fired.NumericCurrentValue);                         /* :389 */
+
+        var args = h.Adapter.LastLrqArgs!.Value;
+        Assert.Equal(30, args.ThresholdMinutes);
+        Assert.Equal(5, args.MaxResults);
+        Assert.True(args.Diag && args.WaitFor && args.Backups && args.Misc && args.Cdc);
+        Assert.Contains("StageDb", args.Excluded);
+    }
+
+    /* ---------------- tempdb ---------------- */
+
+    [Fact]
+    public async Task TempDb_FiresAtThreshold_AndResolutionCarriesTheCurrentPercent()
+    {
+        /* Lite AlertEngine.cs:420-465. */
+        var h = new Harness();
+        h.Settings.TempDbSpaceEnabled = true;
+        var engine = h.Build();
+
+        h.Adapter.TempDb = new TempDbSpaceInfo { TotalReservedMb = 800, UnallocatedMb = 200 }; /* 80% used */
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("tempdb Space", fired.MetricName);
+        Assert.Equal("80% used (800 MB)", fired.CurrentValue);                /* :446 */
+        Assert.Equal(80d, fired.NumericCurrentValue!.Value, precision: 3);    /* :450 */
+
+        h.Adapter.TempDb = new TempDbSpaceInfo { TotalReservedMb = 200, UnallocatedMb = 800 }; /* 20% used */
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var resolution = Assert.Single(h.Resolutions);
+        Assert.Equal("tempdb Space Resolved", resolution.Title);              /* :463 */
+        Assert.Equal("SRV-A: tempdb usage back to 20%", resolution.Message);  /* :461,:464 */
+    }
+
+    /* ---------------- low disk ---------------- */
+
+    [Fact]
+    public async Task LowDisk_GradesCriticallyLowBreaches_AndAStandingBreachDoesNotRefire()
+    {
+        /* Lite AlertEngine.cs:487-536 — #1136 severity grading + the #754 worsening gate. */
+        var h = new Harness();
+        h.Settings.LowDiskEnabled = true;
+        var engine = h.Build();
+
+        /* 8% free / 8 GB on a 100 GB volume: breached (<10%) but NOT critically low
+           (> 3% and > 2 GB) → no severity override. */
+        h.Adapter.Volumes.Add(new VolumeFreeSpaceInfo { MountPoint = "D:\\", TotalMb = 102400, FreeMb = 8192 });
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var warning = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Volume Free Space", warning.MetricName);
+        Assert.Null(warning.Severity);
+        Assert.Equal("10% / 5 GB", warning.ThresholdValue);                   /* :529 FormatLowDiskThreshold */
+
+        /* The SAME standing level does not re-fire after the cooldown (#754 gate, :495-497). */
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* Worsening to critically low (1% ≈ 1 GB free) re-fires, graded CRITICAL (:519-522). */
+        h.Adapter.Volumes[0].FreeMb = 1024;
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+        Assert.Equal(AlertSeverityLevel.Critical, h.Deliverer.Outcomes[1].Severity);
+        Assert.Equal(AlertSeverityLevel.Critical, h.Deliverer.Outcomes[1].Context!.SeverityOverride);
+
+        /* Recovery clears the worsening watermark and announces (:538-548)... */
+        h.Adapter.Volumes.Clear();
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal("Volume Free Space Resolved", Assert.Single(h.Resolutions).Title);
+
+        /* ...so a fresh breach at the ORIGINAL level alerts again (fresh = always notifies). */
+        h.Adapter.Volumes.Add(new VolumeFreeSpaceInfo { MountPoint = "D:\\", TotalMb = 102400, FreeMb = 8192 });
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal(3, h.Deliverer.Outcomes.Count);
+    }
+
+    /* ---------------- anomalous jobs ---------------- */
+
+    [Fact]
+    public async Task AnomalousJob_CooldownIsKeyedPerJobRun()
+    {
+        /* Lite AlertEngine.cs:575-614 — the cooldown key is {server}:{jobId}:{startTime:O}, so a
+           NEW run of the same job alerts without waiting out the old run's cooldown. */
+        var h = new Harness();
+        h.Settings.LongRunningJobEnabled = true;
+        var engine = h.Build();
+
+        var start = new DateTime(2026, 7, 1, 11, 0, 0);
+        h.Adapter.AnomalousJobs.Add(new AnomalousJobInfo
+        {
+            JobName = "Nightly ETL", JobId = "job-1", StartTime = start,
+            CurrentDurationSeconds = 3600, AvgDurationSeconds = 900, PercentOfAverage = 400
+        });
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Long-Running Job", fired.MetricName);
+        Assert.Equal("1 job(s) exceeding 3x average", fired.CurrentValue);    /* :606 */
+        Assert.Equal(400d, fired.NumericCurrentValue);                        /* :610 */
+        Assert.Equal(300d, fired.NumericThresholdValue);                      /* :611 multiplier*100 */
+
+        /* Same run, cooldown not yet elapsed → quiet (:581). */
+        h.Now = h.Now.AddMinutes(1);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* A NEW run (different start time) of the same job fires immediately (:579 key). */
+        h.Adapter.AnomalousJobs[0].StartTime = start.AddHours(2);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    /* ---------------- failed jobs ---------------- */
+
+    [Fact]
+    public async Task FailedJobs_WatermarkDedups_AndPersistsTheServerLocalRunTime()
+    {
+        /* Lite AlertEngine.cs:663-709 — only a strictly newer failure re-fires; the persisted
+           watermark is the newest failure's SERVER-LOCAL run time, saved on-change only (:682). */
+        var h = new Harness();
+        h.Settings.FailedJobEnabled = true;
+        var engine = h.Build(withFailedJobsFetcher: true);
+
+        var firstFailure = new DateTime(2026, 7, 1, 6, 55, 0); /* server-local, Kind-Unspecified */
+        h.FailedJobs.Add(new FailedJobInfo { JobName = "Backup.Full", JobId = "j1", RunDateTime = firstFailure, StepId = 2, StepName = "Backup", Message = "disk full" });
+
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Failed Agent Job", fired.MetricName);
+        Assert.Equal("1 job failure(s) in last 60m — Backup.Full", fired.CurrentValue); /* :701 */
+        Assert.Equal((Key, firstFailure), Assert.Single(h.StateStore.SavedFailedJob));
+
+        /* The same failure lingering in the lookback window never re-fires (:667). */
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* A strictly newer failure fires again and advances the watermark. */
+        h.FailedJobs.Insert(0, new FailedJobInfo { JobName = "Index.Rebuild", JobId = "j2", RunDateTime = firstFailure.AddMinutes(30) });
+        h.Now = h.Now.AddMinutes(6);
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+        Assert.Equal(firstFailure.AddMinutes(30), h.StateStore.FailedJobWatermarks[Key]);
+    }
+
+    [Fact]
+    public async Task FailedJobs_GatedOnOnlineAndNotAzure_AndSuppressionHoldsTheWatermark()
+    {
+        /* Lite AlertEngine.cs:649-653 (online + non-Azure gates; the msdb probe deliberately
+           did not transplant — Phase-5 review F11) and :669-682 (suppression sits before the
+           watermark advance, so a suppressed failure is reported later, not swallowed). */
+        var h = new Harness();
+        h.Settings.FailedJobEnabled = true;
+        var engine = h.Build(withFailedJobsFetcher: true);
+        h.FailedJobs.Add(new FailedJobInfo { JobName = "Backup.Full", JobId = "j1", RunDateTime = new DateTime(2026, 7, 1, 6, 55, 0) });
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(isAzureSqlDb: true));
+        Assert.Equal(0, h.FailedJobFetches);
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(isOnline: false));
+        Assert.Equal(0, h.FailedJobFetches);
+
+        await engine.EvaluateServerAsync(Harness.Snapshot(suppressed: true));
+        Assert.Equal(1, h.FailedJobFetches);
+        Assert.Empty(h.Deliverer.Outcomes);
+        Assert.Empty(h.StateStore.SavedFailedJob);
+
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+        Assert.Single(h.StateStore.SavedFailedJob);
+    }
+
+    /* ---------------- engine hygiene ---------------- */
+
+    [Fact]
+    public async Task AdapterFailure_SkipsThatCheck_WithoutDisturbingItsState()
+    {
+        /* Class-remarks adaptation (2): a failed blocking fetch must not run the gate against a
+           fabricated zero count (which would reset the watermark and later re-fire). */
+        var h = new Harness();
+        h.Settings.BlockingEnabled = true;
+        var engine = h.Build();
+
+        h.Adapter.Blocking.Add(BlockingRow(55));
+        await engine.EvaluateServerAsync(Harness.Snapshot());
+        Assert.Single(h.Deliverer.Outcomes);
+        h.StateStore.SavedEdge.Clear();
+
+        var throwingAdapter = new ThrowingAdapter();
+        var engine2 = new AlertEngine(h.Settings, throwingAdapter, h.StateStore, h.Deliverer, _ => false, utcNow: () => h.Now);
+        await engine2.EvaluateServerAsync(Harness.Snapshot());
+
+        /* No watermark churn, no resolution, no delivery from the failed sweep. */
+        Assert.Empty(h.StateStore.SavedEdge);
+        Assert.Single(h.Deliverer.Outcomes);
+    }
+
+    private sealed class ThrowingAdapter : IAlertReadAdapter
+    {
+        public Task<List<BlockedProcessAlertRow>> GetRecentBlockedProcessReportsAsync(string serverKey, int hoursBack, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+        public Task<List<DeadlockAlertRow>> GetRecentDeadlocksAsync(string serverKey, int hoursBack, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+        public Task<List<PoisonWaitDelta>> GetPoisonWaitDeltasAsync(string serverKey, double thresholdMs, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+        public Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(string serverKey, int thresholdMinutes, int maxResults, bool excludeSpServerDiagnostics, bool excludeWaitFor, bool excludeBackups, bool excludeMiscWaits, bool excludeCdc, IReadOnlyList<string> excludedDatabases, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+        public Task<List<VolumeFreeSpaceInfo>> GetVolumeFreeSpaceAsync(string serverKey, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+        public Task<TempDbSpaceInfo?> GetTempDbSpaceAsync(string serverKey, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+        public Task<List<AnomalousJobInfo>> GetAnomalousJobsAsync(string serverKey, int multiplier, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("store down");
+    }
+
+    [Fact]
+    public async Task StatePerServer_IsIndependent()
+    {
+        /* All engine state dictionaries key on serverKey — one server's cooldown or watermark
+           never gates another's (Lite: per-key dicts, MainWindow.xaml.cs:56-104). */
+        var h = new Harness();
+        h.Settings.CpuEnabled = true;
+        var engine = h.Build();
+
+        await engine.EvaluateServerAsync(new AlertServerSnapshot("101", "SRV-A", true, 70, 90, false, false));
+        await engine.EvaluateServerAsync(new AlertServerSnapshot("202", "SRV-B", true, 70, 90, false, false));
+
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+        Assert.Equal(new[] { "101", "202" }, h.Deliverer.Outcomes.Select(o => o.ServerKey).ToArray());
+    }
+}

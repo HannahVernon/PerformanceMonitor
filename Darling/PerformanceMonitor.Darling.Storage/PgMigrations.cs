@@ -44,6 +44,7 @@ public static class PgMigrations
     {
         new Migration(1, "collector-tables", PgSchemaGenerator.GenerateFullSchema()),
         new Migration(2, "server-registry-and-collection-log", V2Sql),
+        new Migration(3, "alerting-stores", V3Sql),
     };
 
     /// <summary>
@@ -82,6 +83,58 @@ CREATE TABLE IF NOT EXISTS collection_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_collection_log_time ON collection_log(server_id, collection_time);";
+
+    /// <summary>
+    /// V3 — the alerting stores behind the Phase-5 shared alert engine (slice D), each mirroring
+    /// its Lite DuckDB twin column-for-column so viewer/analysis SQL can twin across stores:
+    /// <c>config_alert_log</c> (one combined history row per fired alert — Lite's Schema.cs
+    /// CreateAlertLogTable), <c>config_edge_trigger_watermarks</c> (the #1091 rolling-count
+    /// watermarks + the time-based failed-job watermark, #1145 restart survival — Lite's
+    /// CreateEdgeTriggerWatermarksTable, including its (server_id, metric_name) primary key the
+    /// upserts conflict on), and <c>config_mute_rules</c> (Lite's CreateMuteRulesTable). The
+    /// alert-log index serves the per-(server, metric) MAX(alert_time) cooldown seeds.
+    /// </summary>
+    private const string V3Sql = @"
+CREATE TABLE IF NOT EXISTS config_alert_log (
+    alert_time timestamp NOT NULL,
+    server_id integer NOT NULL,
+    server_name text NOT NULL,
+    metric_name text NOT NULL,
+    current_value double precision NOT NULL,
+    threshold_value double precision NOT NULL,
+    alert_sent boolean NOT NULL DEFAULT FALSE,
+    notification_type text NOT NULL DEFAULT 'tray',
+    send_error text,
+    dismissed boolean NOT NULL DEFAULT FALSE,
+    muted boolean NOT NULL DEFAULT FALSE,
+    detail_text text,
+    context_json text
+);
+
+CREATE INDEX IF NOT EXISTS idx_config_alert_log_time ON config_alert_log(server_id, metric_name, alert_time);
+
+CREATE TABLE IF NOT EXISTS config_edge_trigger_watermarks (
+    server_id integer NOT NULL,
+    metric_name text NOT NULL,
+    watermark integer NOT NULL,
+    watermark_time timestamp,
+    updated_at timestamp NOT NULL,
+    PRIMARY KEY (server_id, metric_name)
+);
+
+CREATE TABLE IF NOT EXISTS config_mute_rules (
+    id text NOT NULL PRIMARY KEY,
+    enabled boolean NOT NULL DEFAULT TRUE,
+    created_at_utc timestamp NOT NULL,
+    expires_at_utc timestamp,
+    reason text,
+    server_name text,
+    metric_name text,
+    database_pattern text,
+    query_text_pattern text,
+    wait_type_pattern text,
+    job_name_pattern text
+);";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

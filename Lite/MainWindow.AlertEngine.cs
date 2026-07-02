@@ -25,9 +25,11 @@ using PerformanceMonitorLite.Services;
 using PerformanceMonitorLite.Windows;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
-/* Type alias (not a namespace import) so PerformanceMonitor.Alerting's CpuAlertMode enum can never
-   collide with this app's own CpuAlertMode used below. */
+/* Type aliases (not a namespace import) so PerformanceMonitor.Alerting's CpuAlertMode enum can never
+   collide with this app's own CpuAlertMode used below. RollingCountAlertGate moved to the shared
+   library in Phase-5 slice D (the shared AlertEngine runs the same gate). */
 using AlertContextBuilders = PerformanceMonitor.Alerting.AlertContextBuilders;
+using RollingCountAlertGate = PerformanceMonitor.Alerting.RollingCountAlertGate;
 
 namespace PerformanceMonitorLite;
 

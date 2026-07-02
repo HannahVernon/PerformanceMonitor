@@ -32,12 +32,13 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwoVersions_V2CreatesObservabilityTables()
+    public void MigrationScripts_ThreeVersions_V2CreatesObservabilityTables()
     {
-        Assert.Equal(2, PgMigrations.Scripts.Count);
+        Assert.Equal(3, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
-        Assert.Equal(2, StorageVersion.SchemaVersion);
+        Assert.Equal(3, PgMigrations.Scripts[2].Version);
+        Assert.Equal(3, StorageVersion.SchemaVersion);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
@@ -56,12 +57,12 @@ public sealed class DarlingObservabilityTests
         using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(TestContext.Current.CancellationToken);
 
-        /* Migrations are idempotent — a V1 store comes up to V2, a current store no-ops. */
+        /* Migrations are idempotent — an older store comes up to current, a current store no-ops. */
         await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(2L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(3L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

@@ -90,6 +90,29 @@ public interface IAlertEngineSettings
     /// <summary>Fire when a query's elapsed time is at/above this many minutes.</summary>
     int LongRunningQueryThresholdMinutes { get; }
 
+    /* The long-running-query read shape the engine forwards to
+       IAlertReadAdapter.GetLongRunningQueriesAsync — Lite exposes all six as real settings
+       (App.AlertLongRunningQueryMaxResults + the five opt-out noise filters), so they belong on
+       the engine surface for Lite to forward later. Lite/Darling defaults: 5 / all true. */
+
+    /// <summary>Row cap for the long-running-query read (Lite clamps 1–1000; default 5).</summary>
+    int LongRunningQueryMaxResults { get; }
+
+    /// <summary>Exclude sessions waiting on SP_SERVER_DIAGNOSTICS (default true).</summary>
+    bool LongRunningQueryExcludeSpServerDiagnostics { get; }
+
+    /// <summary>Exclude WAITFOR / BROKER_RECEIVE_WAITFOR sessions (default true).</summary>
+    bool LongRunningQueryExcludeWaitFor { get; }
+
+    /// <summary>Exclude BACKUPTHREAD / BACKUPIO sessions (default true).</summary>
+    bool LongRunningQueryExcludeBackups { get; }
+
+    /// <summary>Exclude XE_LIVE_TARGET_TVF sessions (default true).</summary>
+    bool LongRunningQueryExcludeMiscWaits { get; }
+
+    /// <summary>Exclude CDC capture sessions (default true).</summary>
+    bool LongRunningQueryExcludeCdc { get; }
+
     /// <summary>Fire when tempdb reserved space is at/above this % of total.</summary>
     int TempDbSpaceThresholdPercent { get; }
 
