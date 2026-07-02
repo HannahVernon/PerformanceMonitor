@@ -25,6 +25,9 @@ namespace Darling.Tests;
 /// snapshots' capture_time). Gated on DARLING_TEST_PG: the purge end-to-end against a dev
 /// Postgres — expired wait_stats and collection_log rows go, a fresh row survives.
 /// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
 public sealed class DarlingRetentionTests
 {
     /// <summary>Distinctive fake id — a real server_id is a storage-name hash, never this.</summary>

@@ -23,6 +23,9 @@ namespace Darling.Tests;
 /// second must not throw and must refresh modified_date), write one SUCCESS collection_log row,
 /// read both back, clean up.
 /// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
 public sealed class DarlingObservabilityTests
 {
     /// <summary>Distinctive fake id — a real server_id is a storage-name hash, never this.</summary>

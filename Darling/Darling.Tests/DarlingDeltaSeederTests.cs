@@ -24,6 +24,9 @@ namespace Darling.Tests;
 /// the LATEST stored row became the delta baseline — so the first collection after a service
 /// restart produces a real delta instead of 0.
 /// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
 public sealed class DarlingDeltaSeederTests
 {
     /// <summary>Distinctive fake id — a real server_id is a storage-name hash, never this.</summary>

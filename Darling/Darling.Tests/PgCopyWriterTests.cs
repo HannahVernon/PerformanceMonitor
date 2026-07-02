@@ -23,6 +23,9 @@ namespace Darling.Tests;
 /// Postgres (connection string), so CI stays green without one and the test lights up the moment
 /// a live instance exists.
 /// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
 public sealed class PgCopyWriterTests
 {
     [Fact]
