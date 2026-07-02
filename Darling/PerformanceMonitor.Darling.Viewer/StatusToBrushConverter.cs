@@ -14,16 +14,19 @@ using System.Windows.Media;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// Colors the Collection Health status cell text: SUCCESS green, PERMISSIONS orange, ERROR red,
-/// anything else (SKIPPED, unknown) the window's normal foreground. The hexes are the product's
-/// Material-300 cycling colors (green/orange/red from ChartPalette) so the grid reads like the
-/// charts. Brushes are frozen and shared across rows.
+/// Colors the Collection Health status cell text — SUCCESS green, PERMISSIONS orange, ERROR
+/// red — and (wave 2) the Recommendations severity bands: CRITICAL shares ERROR's red,
+/// WARNING shares PERMISSIONS' orange, INFO is the palette's light blue. Anything else
+/// (SKIPPED, unknown) gets the window's normal foreground. The hexes are the product's
+/// Material-300 cycling colors (ChartPalette) so both grids read like the charts. Brushes are
+/// frozen and shared across rows.
 /// </summary>
 public sealed class StatusToBrushConverter : IValueConverter
 {
     private static readonly SolidColorBrush s_success = Frozen("#81C784");
     private static readonly SolidColorBrush s_permissions = Frozen("#FFB74D");
     private static readonly SolidColorBrush s_error = Frozen("#E57373");
+    private static readonly SolidColorBrush s_info = Frozen("#4FC3F7");
     private static readonly SolidColorBrush s_default = Frozen("#E4E6EB");
 
     private static SolidColorBrush Frozen(string hex)
@@ -41,14 +44,21 @@ public sealed class StatusToBrushConverter : IValueConverter
             return s_success;
         }
 
-        if (string.Equals(status, "PERMISSIONS", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(status, "PERMISSIONS", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "WARNING", StringComparison.OrdinalIgnoreCase))
         {
             return s_permissions;
         }
 
-        if (string.Equals(status, "ERROR", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(status, "ERROR", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "CRITICAL", StringComparison.OrdinalIgnoreCase))
         {
             return s_error;
+        }
+
+        if (string.Equals(status, "INFO", StringComparison.OrdinalIgnoreCase))
+        {
+            return s_info;
         }
 
         return s_default;

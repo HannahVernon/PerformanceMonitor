@@ -47,14 +47,16 @@ public sealed record WaitSeries(string WaitType, DateTime[] Times, double[] Valu
 
 /// <summary>
 /// The viewer's reads of the Darling Postgres store — servers, per-collector collection health,
-/// and the top-N wait-stats trend. Connections come from a pooled <see cref="NpgsqlDataSource"/>,
+/// and the top-N wait-stats trend, plus the wave-2 surfaces in the partials
+/// (<c>ViewerDataService.QueryStats.cs</c>, <c>.Blocking.cs</c>, <c>.Findings.cs</c>).
+/// Connections come from a pooled <see cref="NpgsqlDataSource"/>,
 /// so the window can run its health and wait queries concurrently. The SQL lives in public
 /// constants so tests can pin the load-bearing clauses without a live Postgres.
 /// All timestamps in the store are naive UTC (`timestamp without time zone`), so DateTime
 /// parameters are sent with DateTimeKind.Unspecified — since Npgsql 6.0 a Kind=Utc DateTime
 /// maps strictly to timestamptz and throws against naive columns.
 /// </summary>
-public sealed class ViewerDataService : IAsyncDisposable
+public sealed partial class ViewerDataService : IAsyncDisposable
 {
     public const string ServersSql =
         "SELECT server_id, server_name, display_name, is_enabled, sql_major_version FROM servers ORDER BY display_name";
