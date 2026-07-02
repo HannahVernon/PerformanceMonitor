@@ -730,6 +730,12 @@
           "Microsoft.Data.SqlClient.Extensions.Azure": "[1.0.0, )"
         }
       },
+      "performancemonitor.alerting": {
+        "type": "Project",
+        "dependencies": {
+          "PerformanceMonitor.Notifications": "[1.0.0, )"
+        }
+      },
       "performancemonitor.analysis": {
         "type": "Project"
       },

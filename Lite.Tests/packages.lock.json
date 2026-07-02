@@ -886,6 +886,12 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "performancemonitor.alerting": {
+        "type": "Project",
+        "dependencies": {
+          "PerformanceMonitor.Notifications": "[1.0.0, )"
+        }
+      },
       "performancemonitor.analysis": {
         "type": "Project"
       },
@@ -934,6 +940,7 @@
           "Microsoft.Extensions.Logging": "[10.0.9, )",
           "ModelContextProtocol": "[1.4.0, )",
           "ModelContextProtocol.AspNetCore": "[1.4.0, )",
+          "PerformanceMonitor.Alerting": "[1.0.0, )",
           "PerformanceMonitor.Analysis": "[1.0.0, )",
           "PerformanceMonitor.Collectors": "[1.0.0, )",
           "PerformanceMonitor.Common": "[1.0.0, )",
