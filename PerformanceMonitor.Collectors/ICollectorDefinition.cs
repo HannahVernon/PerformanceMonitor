@@ -98,6 +98,17 @@ public interface ICollectorDefinition<TRow>
     /// </summary>
     CollectorQuery? BuildEnumerationQuery(CollectorContext context);
 
+    /// <summary>
+    /// Optional quick scalar probe on the enumeration path, run once after items are listed
+    /// (only when at least one item exists) and before the per-item loop — e.g. query_store's
+    /// live PRODUCTVERSION check that decides its version-gated columns (deliberately probed
+    /// per cycle rather than trusting cached connection status, which can be version-unknown).
+    /// The host runs it best-effort with a short timeout and exposes the scalar as
+    /// <see cref="CollectorContext.EnumerationProbeResult"/>; on any failure the result stays
+    /// null and the definition uses its documented default. Null = no probe (the common case).
+    /// </summary>
+    CollectorQuery? BuildEnumerationProbe(CollectorContext context);
+
     /// <summary>Builds the per-item query for one enumerated item (e.g. one database).</summary>
     CollectorQuery BuildPerItemQuery(string item, CollectorContext context);
 

@@ -46,6 +46,8 @@ public abstract class CollectorDefinitionBase<TRow> : ICollectorDefinition<TRow>
 
     public virtual CollectorQuery? BuildEnumerationQuery(CollectorContext context) => null;
 
+    public virtual CollectorQuery? BuildEnumerationProbe(CollectorContext context) => null;
+
     public virtual CollectorQuery BuildPerItemQuery(string item, CollectorContext context)
         => throw new System.NotSupportedException($"{Name} does not enumerate items.");
 

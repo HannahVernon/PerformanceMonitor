@@ -49,4 +49,13 @@ public sealed class CollectorContext
     /// definition's curated default list applies.
     /// </summary>
     public IReadOnlyList<string>? PerfmonCounterOverride { get; init; }
+
+    /// <summary>
+    /// Result of the definition's enumeration probe (see
+    /// <c>ICollectorDefinition.BuildEnumerationProbe</c>), set by the host between enumeration
+    /// and the per-item loop. Null when the definition declares no probe, the probe failed, or
+    /// it returned SQL NULL — the definition falls back to its documented default (query_store:
+    /// PRODUCTVERSION 13). The only context member the host mutates mid-cycle.
+    /// </summary>
+    public object? EnumerationProbeResult { get; set; }
 }
