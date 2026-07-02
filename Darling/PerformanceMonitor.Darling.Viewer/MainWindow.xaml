@@ -1,0 +1,17 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Performance Monitor Darling — viewer scaffold"
+        Width="640"
+        Height="360"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <TextBlock HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   TextAlignment="Center"
+                   FontSize="14">
+            Performance Monitor Darling — viewer scaffold (M0).<LineBreak/>
+            Connects to the central Postgres store starting at milestone M3.
+        </TextBlock>
+    </Grid>
+</Window>
