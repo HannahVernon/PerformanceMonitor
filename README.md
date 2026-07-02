@@ -572,6 +572,35 @@ Common issues:
 
 ---
 
+## Authentication
+
+Both editions support five authentication types, defined once in `PerformanceMonitor.Common.AuthenticationTypes` and shared by Dashboard, Lite, and the CLI installer:
+
+| Type | Interactive? | Credential stored? | Where |
+|---|---|---|---|
+| Windows | No | None | — |
+| SQL Server | No | Password | Windows Credential Manager |
+| Entra ID (MFA) | Yes, once per session | None | — |
+| Service Principal | No | Client secret | Windows Credential Manager |
+| Managed Identity | No | None | — |
+
+**Managed Identity and Service Principal** are non-interactive Azure AD (Entra ID) authentication modes, added for fleet onboarding of Azure SQL Database / Managed Instance without a per-server interactive MFA prompt (see [#1038](https://github.com/erikdarlingdata/PerformanceMonitor/issues/1038)). Both map directly to `Microsoft.Data.SqlClient`'s native `SqlAuthenticationMethod` (`ActiveDirectoryServicePrincipal` / `ActiveDirectoryManagedIdentity`) — PerformanceMonitor never acquires, caches, or stores a token itself; the official Microsoft driver handles that internally.
+
+- **Managed Identity** requires the machine running Dashboard/Lite to itself be an Azure resource (VM, App Service, etc.) with a system- or user-assigned managed identity. That identity is then provisioned as a user directly on each target database (see [Permissions](#permissions) below). Nothing is stored locally — not a secret, not a token.
+- **Service Principal** uses an Entra app registration's client id + secret. The client id is non-secret and stored in `servers.json` / `profiles.json`; the secret is stored only in Windows Credential Manager, same as a SQL auth password.
+
+Configure either from the Add Server dialog's Authentication Type selector, or by hand-editing `servers.json` with `"AuthenticationType": "ManagedIdentity"` and optionally `"ManagedIdentityClientId"` (blank uses the system-assigned identity; set it to target a specific user-assigned identity).
+
+### Credential Profiles (Lite only, fleet onboarding)
+
+For a fleet of servers sharing one identity — one managed identity or one service principal used across many Azure SQL databases — Lite has **Credential Profiles**: a named, reusable credential that any number of server entries can reference instead of each one carrying its own inline auth. Create one under **Manage Servers → Credential Profiles…**, then point server entries at it (the "use a shared credential profile" option in Add Server, or `"CredentialProfileId"` in `servers.json`). The profile supplies the authentication type and credential; each server entry keeps only its own connection facts (server name, database, encryption mode).
+
+Profiles live in `profiles.json` alongside `servers.json` (`%ProgramData%\PerformanceMonitorLite\config\`). As with server entries, a Managed Identity profile stores no secret at all — Service Principal and SQL Server profiles are the only kind with a secret, and it lives in Windows Credential Manager under `PerformanceMonitorLite_profile_{id}`, never in the JSON file.
+
+This is the recommended setup for onboarding a large number of Azure SQL databases under one managed identity: one Credential Profile, however many server entries pointing at it, pre-built and bulk-loaded via **Import Settings**.
+
+---
+
 ## Permissions
 
 ### Full Edition (On-Premises)
@@ -666,6 +695,16 @@ Azure SQL Database doesn't support server-level logins. Create a **contained dat
 CREATE USER [SQLServerPerfMon] WITH PASSWORD = 'YourStrongPassword';
 GRANT VIEW DATABASE STATE TO [SQLServerPerfMon];
 ```
+
+For [Managed Identity or Service Principal](#authentication) authentication, create the contained user from the identity's display name instead of a password — an Azure AD admin must already be configured on the logical server:
+
+```sql
+-- Connect to your target database (not master)
+CREATE USER [your-managed-identity-or-app-registration-name] FROM EXTERNAL PROVIDER;
+GRANT VIEW DATABASE STATE TO [your-managed-identity-or-app-registration-name];
+```
+
+For a large fleet, grant an Entra **group** instead of provisioning each identity individually where your architecture allows it, so you aren't hand-creating a user in every database.
 
 When connecting in Lite, specify the database name in the connection. SQL Agent and msdb are not available on Azure SQL Database — those collectors are skipped automatically.
 
