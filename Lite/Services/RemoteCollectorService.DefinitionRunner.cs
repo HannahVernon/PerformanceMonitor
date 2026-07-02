@@ -82,19 +82,21 @@ public partial class RemoteCollectorService
                database, skipping (and debug-logging) databases that error, matching the original
                hand-rolled collectors. */
             var plan = definition.BuildQuery(context);
+            var commandTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
             rows = new List<TRow>();
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
             foreach (var databaseName in databases)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     using var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
-                    using var dbCommand = CreateCollectorCommand(plan, dbConnection);
+                    using var dbCommand = CreateCollectorCommand(plan, dbConnection, commandTimeout);
                     using var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken);
                     rows.AddRange(await definition.ReadAsync(dbReader, context, cancellationToken));
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _logger?.LogDebug("Skipping database '{Database}' for {Collector}: {Error}", databaseName, definition.Name, ex.Message);
                 }
@@ -111,7 +113,9 @@ public partial class RemoteCollectorService
                    run one query per item ON THE SAME CONNECTION; an item that fails with a
                    SqlException is skipped with a warning, matching the original collectors. */
                 var items = new List<string>();
-                using (var enumerationCommand = CreateCollectorCommand(enumerationPlan, sqlConnection))
+                /* Enumeration always uses the host default timeout, matching the originals —
+                   the per-collector override applies only to the heavy per-item commands. */
+                using (var enumerationCommand = CreateCollectorCommand(enumerationPlan, sqlConnection, CommandTimeoutSeconds))
                 using (var enumerationReader = await enumerationCommand.ExecuteReaderAsync(cancellationToken))
                 {
                     while (await enumerationReader.ReadAsync(cancellationToken))
@@ -126,16 +130,18 @@ public partial class RemoteCollectorService
                     return 0;
                 }
 
+                var itemTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
                 rows = new List<TRow>();
                 foreach (var item in items)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
-                        using var itemCommand = CreateCollectorCommand(definition.BuildPerItemQuery(item, context), sqlConnection);
+                        using var itemCommand = CreateCollectorCommand(definition.BuildPerItemQuery(item, context), sqlConnection, itemTimeout);
                         using var itemReader = await itemCommand.ExecuteReaderAsync(cancellationToken);
                         await definition.ReadItemAsync(item, itemReader, rows, context, cancellationToken);
                     }
-                    catch (SqlException ex)
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         _logger?.LogWarning("Failed to collect {Collector} from [{Database}] on '{Server}': {Message}",
                             definition.Name, item, server.DisplayName, ex.Message);
@@ -146,7 +152,7 @@ public partial class RemoteCollectorService
             else
             {
                 var plan = definition.BuildQuery(context);
-                using (var command = CreateCollectorCommand(plan, sqlConnection))
+                using (var command = CreateCollectorCommand(plan, sqlConnection, definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds))
                 using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                 {
                     rows = await definition.ReadAsync(reader, context, cancellationToken);
@@ -161,7 +167,7 @@ public partial class RemoteCollectorService
                 {
                     try
                     {
-                        using var supplementalCommand = CreateCollectorCommand(supplementalPlan, sqlConnection);
+                        using var supplementalCommand = CreateCollectorCommand(supplementalPlan, sqlConnection, CommandTimeoutSeconds);
                         using var supplementalReader = await supplementalCommand.ExecuteReaderAsync(cancellationToken);
                         await definition.ApplySupplementalAsync(rows, supplementalReader, context, cancellationToken);
                     }
@@ -216,9 +222,9 @@ public partial class RemoteCollectorService
         return rowsWritten;
     }
 
-    private static SqlCommand CreateCollectorCommand(CollectorQuery plan, SqlConnection connection)
+    private static SqlCommand CreateCollectorCommand(CollectorQuery plan, SqlConnection connection, int commandTimeoutSeconds)
     {
-        var command = new SqlCommand(plan.Text, connection) { CommandTimeout = CommandTimeoutSeconds };
+        var command = new SqlCommand(plan.Text, connection) { CommandTimeout = commandTimeoutSeconds };
 
         foreach (var parameter in plan.Parameters)
         {
