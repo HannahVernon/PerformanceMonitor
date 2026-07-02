@@ -21,9 +21,9 @@ namespace Darling.Tests;
 public sealed class ScaffoldTests
 {
     [Fact]
-    public void StorageSchemaVersion_IsZero_BeforeFirstMigration()
+    public void StorageSchemaVersion_TracksLatestMigrationScript()
     {
-        Assert.Equal(0, StorageVersion.SchemaVersion);
+        Assert.Equal(PgMigrations.Scripts[^1].Version, StorageVersion.SchemaVersion);
     }
 
     [Fact]
