@@ -1,0 +1,119 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System.Collections.Generic;
+
+namespace PerformanceMonitor.Alerting;
+
+/// <summary>
+/// Which CPU metric the CPU alert evaluates against. The ENGINE — not the caller — selects which
+/// collected CPU value to compare based on this mode: <see cref="SqlProcess"/> compares the SQL
+/// Server scheduler ProcessUtilization %, <see cref="TotalServer"/> compares total non-idle CPU
+/// (SQL process + other processes, matching OS user+system — "is the box in trouble"). Callers
+/// only provide the mode; they never pre-select the value, so the selection rule cannot drift
+/// between hosts.
+/// <para>
+/// Deliberately a NEW enum with engine-descriptive value names rather than reusing either app's
+/// <c>CpuAlertMode</c> (<c>Total</c>/<c>SqlOnly</c>): the app enums are persisted in each app's
+/// settings store and are mapped to this one at the adapter seam.
+/// </para>
+/// </summary>
+public enum CpuAlertMode
+{
+    /// <summary>SQL Server scheduler ProcessUtilization only.</summary>
+    SqlProcess,
+
+    /// <summary>SQL process + other-process CPU — matches OS user+system.</summary>
+    TotalServer
+}
+
+/// <summary>
+/// The ENGINE threshold surface for the Phase-5 shared alert engine: every enabled flag and
+/// threshold the sweep evaluates alert conditions against. This is one of the three engine seams
+/// (with <see cref="IAlertStateStore"/> and <see cref="IAlertDeliverer"/>) consumed by the headless
+/// Darling alert engine first; Lite forwards its <c>App.*</c> alert statics through an adapter in a
+/// later slice, and Dashboard convergence is a separately-decided migration (its live engine reads
+/// <c>UserPreferences</c> directly today).
+/// <para>
+/// Deliberately SEPARATE from <c>PerformanceMonitor.Notifications.IAlertSettings</c>, which is the
+/// delivery-only surface (SMTP/webhook/analysis-notify). Delivery settings answer "how do I send an
+/// alert"; this interface answers "when does an alert exist". Keeping them apart lets a host wire
+/// delivery without the engine (Dashboard today) or the engine with a different deliverer (Darling).
+/// </para>
+/// <para>
+/// Blocking and deadlock thresholds here are COUNT-based — Lite's collected-store semantics (the
+/// number of blocked-process reports / deadlocks in the rolling window). The Dashboard's live
+/// engine instead thresholds blocking on longest-blocked SECONDS and deadlocks on a since-last-check
+/// DELTA; those semantics intentionally stay app-side and are NOT modeled here — a Dashboard
+/// migration would be a semantic change decided separately, not smuggled through this seam.
+/// </para>
+/// <para>
+/// All members are pass-through reads of live values — the engine reads them every sweep, so a
+/// settings reload is reflected immediately (no caching), matching the apps' direct settings reads.
+/// </para>
+/// </summary>
+public interface IAlertEngineSettings
+{
+    /// <summary>Master switch — when false the engine runs no alert sweep at all.</summary>
+    bool AlertsEnabled { get; }
+
+    /* Per-alert enabled flags. */
+    bool CpuEnabled { get; }
+    bool BlockingEnabled { get; }
+    bool DeadlockEnabled { get; }
+    bool PoisonWaitEnabled { get; }
+    bool LongRunningQueryEnabled { get; }
+    bool TempDbSpaceEnabled { get; }
+    bool LowDiskEnabled { get; }
+    bool LongRunningJobEnabled { get; }
+    bool FailedJobEnabled { get; }
+
+    /* Thresholds. */
+
+    /// <summary>Fire when the selected CPU metric (see <see cref="CpuAlertMode"/>) is at/above this %.</summary>
+    int CpuThresholdPercent { get; }
+
+    /// <summary>Fire when the rolling-window blocked-process-report count reaches this value (count-based; see class remarks).</summary>
+    int BlockingCountThreshold { get; }
+
+    /// <summary>Fire when the rolling-window deadlock count reaches this value (count-based; see class remarks).</summary>
+    int DeadlockCountThreshold { get; }
+
+    /// <summary>Fire when a poison wait type's average ms-per-wait is at/above this value.</summary>
+    int PoisonWaitThresholdMs { get; }
+
+    /// <summary>Fire when a query's elapsed time is at/above this many minutes.</summary>
+    int LongRunningQueryThresholdMinutes { get; }
+
+    /// <summary>Fire when tempdb reserved space is at/above this % of total.</summary>
+    int TempDbSpaceThresholdPercent { get; }
+
+    /// <summary>Fire when a volume's free space is below this % (0 disables the percent dimension).</summary>
+    int LowDiskThresholdPercent { get; }
+
+    /// <summary>Fire when a volume's free space is below this many GB (0 disables the GB dimension).</summary>
+    int LowDiskThresholdGb { get; }
+
+    /// <summary>Fire when a running job exceeds this multiple of its historical average duration.</summary>
+    int LongRunningJobMultiplier { get; }
+
+    /// <summary>How many minutes back to look for failed Agent job runs.</summary>
+    int FailedJobLookbackMinutes { get; }
+
+    /// <summary>Minimum minutes between repeated notifications for the same alert condition.</summary>
+    int CooldownMinutes { get; }
+
+    /// <summary>
+    /// Databases excluded from database-scoped alert evaluation (blocking/deadlock/long-running-query
+    /// rows in these databases don't count toward thresholds). Compared case-insensitively.
+    /// </summary>
+    IReadOnlyList<string> ExcludedDatabases { get; }
+
+    /// <summary>Which CPU value the engine compares against <see cref="CpuThresholdPercent"/>.</summary>
+    CpuAlertMode CpuAlertMode { get; }
+}

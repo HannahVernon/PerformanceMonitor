@@ -613,7 +613,8 @@ LIMIT 2000";
                     r.writes,
                     r.wait_type,
                     r.blocking_session_id,
-                    r.query_hash
+                    r.query_hash,
+                    r.program_name
                 FROM v_query_snapshots AS r
                 WHERE r.server_id = $1
                     AND r.collection_time = (SELECT MAX(vqs.collection_time) FROM v_query_snapshots AS vqs WHERE vqs.server_id = $1)
@@ -647,7 +648,11 @@ LIMIT 2000";
                 Writes = reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
                 WaitType = reader.IsDBNull(7) ? null : reader.GetString(7),
                 BlockingSessionId = reader.IsDBNull(8) ? null : (int?)reader.GetInt32(8),
-                QueryHash = reader.IsDBNull(9) ? null : reader.GetString(9)
+                QueryHash = reader.IsDBNull(9) ? null : reader.GetString(9),
+                /* Phase-5 A reconciliation: populate ProgramName so the shared
+                   BuildLongRunningQueryContext renders the ("Program", ...) detail item the
+                   Dashboard's alert already had. */
+                ProgramName = reader.IsDBNull(10) ? "" : reader.GetString(10)
             });
         }
 
@@ -655,28 +660,8 @@ LIMIT 2000";
     }
 }
 
-public class LongRunningQueryInfo
-{
-    public int SessionId { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public string QueryText { get; set; } = "";
-    public string ProgramName { get; set; } = "";
-    public long ElapsedSeconds { get; set; }
-    public long CpuTimeMs { get; set; }
-    public long Reads { get; set; }
-    public long Writes { get; set; }
-    public string? WaitType { get; set; }
-    public int? BlockingSessionId { get; set; }
-    public string? QueryHash { get; set; }
-}
-
-public class PoisonWaitDelta
-{
-    public string WaitType { get; set; } = "";
-    public long DeltaMs { get; set; }
-    public long DeltaTasks { get; set; }
-    public double AvgMsPerWait { get; set; }
-}
+/* LongRunningQueryInfo and PoisonWaitDelta moved to PerformanceMonitor.Alerting (Phase-5 A0);
+   the bare names resolve through the global using aliases in GlobalUsings.cs. */
 
 public class WaitStatsRow
 {

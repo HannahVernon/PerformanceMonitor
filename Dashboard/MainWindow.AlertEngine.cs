@@ -32,6 +32,9 @@ using System.Windows.Data;
 using System.Xml.Linq;
 using PerformanceMonitor.Ui;
 using PerformanceMonitor.Common;
+/* Type alias (not a namespace import) so PerformanceMonitor.Alerting's CpuAlertMode enum can never
+   collide with Models.CpuAlertMode used below. */
+using AlertContextBuilders = PerformanceMonitor.Alerting.AlertContextBuilders;
 
 namespace PerformanceMonitorDashboard
 {
@@ -182,7 +185,7 @@ namespace PerformanceMonitorDashboard
                     _lastBlockingAlert[serverId] = now;
 
                     var blockingContext = await BuildBlockingContextAsync(serverName, databaseService, prefs.AlertExcludedDatabases);
-                    var detailText = ContextToDetailText(blockingContext)
+                    var detailText = AlertContextBuilders.ContextToDetailText(blockingContext)
                         ?? $"Blocked Sessions: {(int)health.TotalBlocked}\nLongest Wait: {(int)health.LongestBlockedSeconds}s";
 
                     if (!isMuted)
@@ -248,7 +251,7 @@ namespace PerformanceMonitorDashboard
                     _lastDeadlockAlert[serverId] = now;
 
                     var deadlockContext = await BuildDeadlockContextAsync(serverName, databaseService, prefs.AlertExcludedDatabases);
-                    var detailText = ContextToDetailText(deadlockContext)
+                    var detailText = AlertContextBuilders.ContextToDetailText(deadlockContext)
                         ?? $"New Deadlocks: {effectiveDeadlockDelta}";
 
                     if (!isMuted)
@@ -482,8 +485,8 @@ namespace PerformanceMonitorDashboard
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Poison Wait", WaitType = worst.WaitType };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastPoisonWaitAlert[serverId] = now;
-                    var poisonContext = BuildPoisonWaitContext(triggeredWaits);
-                    var detailText = ContextToDetailText(poisonContext);
+                    var poisonContext = AlertContextBuilders.BuildPoisonWaitContext(triggeredWaits);
+                    var detailText = AlertContextBuilders.ContextToDetailText(poisonContext);
 
                     if (!isMuted)
                     {
@@ -539,7 +542,7 @@ namespace PerformanceMonitorDashboard
                 {
                     var worst = lrqList[0];
                     var elapsedMinutes = worst.ElapsedSeconds / 60;
-                    var preview = Truncate(worst.QueryText, 80);
+                    var preview = AlertContextBuilders.TruncateText(worst.QueryText, 80);
 
                     var muteCtx = new AlertMuteContext
                     {
@@ -550,8 +553,8 @@ namespace PerformanceMonitorDashboard
                     };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLongRunningQueryAlert[serverId] = now;
-                    var lrqContext = BuildLongRunningQueryContext(serverName, lrqList);
-                    var detailText = ContextToDetailText(lrqContext);
+                    var lrqContext = AlertContextBuilders.BuildLongRunningQueryContext(serverName, lrqList);
+                    var detailText = AlertContextBuilders.ContextToDetailText(lrqContext);
 
                     if (!isMuted)
                     {
@@ -603,8 +606,8 @@ namespace PerformanceMonitorDashboard
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "tempdb Space" };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastTempDbSpaceAlert[serverId] = now;
-                    var tempDbContext = BuildTempDbSpaceContext(tempDb);
-                    var detailText = ContextToDetailText(tempDbContext);
+                    var tempDbContext = AlertContextBuilders.BuildTempDbSpaceContext(tempDb);
+                    var detailText = AlertContextBuilders.ContextToDetailText(tempDbContext);
 
                     if (!isMuted)
                     {
@@ -644,7 +647,7 @@ namespace PerformanceMonitorDashboard
 
             /* Low volume free space alerts — not applicable to Azure SQL DB (health.Volumes is empty there) */
             var breachedVolumes = prefs.NotifyOnLowDisk
-                ? GetBreachedVolumes(health.Volumes, prefs)
+                ? AlertContextBuilders.GetBreachedVolumes(health.Volumes, prefs.LowDiskThresholdPercent, prefs.LowDiskThresholdGb)
                 : new List<VolumeFreeSpaceInfo>();
 
             if (breachedVolumes.Count > 0)
@@ -662,7 +665,7 @@ namespace PerformanceMonitorDashboard
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLowDiskAlert[serverId] = now;
                     _lastAlertedLowDiskPercent[serverId] = worst.FreePercent;
-                    var lowDiskContext = BuildVolumeFreeSpaceContext(serverName, breachedVolumes);
+                    var lowDiskContext = AlertContextBuilders.BuildVolumeFreeSpaceContext(serverName, breachedVolumes);
                     /* #1136: grade the alert — WARNING normally, CRITICAL when the worst volume is
                        critically low — so the email/webhook badge reflects how dire the breach is.
                        (lowDiskContext is non-null here — breachedVolumes.Count > 0 — but typed nullable.) */
@@ -670,9 +673,9 @@ namespace PerformanceMonitorDashboard
                     {
                         lowDiskContext.SeverityOverride = AlertSeverityLevel.Critical;
                     }
-                    var detailText = ContextToDetailText(lowDiskContext);
+                    var detailText = AlertContextBuilders.ContextToDetailText(lowDiskContext);
                     var currentValue = $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)";
-                    var thresholdValue = FormatLowDiskThreshold(prefs);
+                    var thresholdValue = AlertContextBuilders.FormatLowDiskThreshold(prefs.LowDiskThresholdPercent, prefs.LowDiskThresholdGb);
 
                     if (!isMuted)
                     {
@@ -706,7 +709,7 @@ namespace PerformanceMonitorDashboard
                 _notificationService?.ShowStyledNotification("Volume Free Space Resolved",
                     $"{serverName}: All volumes back above threshold", ToastSeverity.Success);
                 _emailAlertService.RecordAlert(serverId, serverName, "Volume Free Space Resolved",
-                    "OK", FormatLowDiskThreshold(prefs), true, "tray");
+                    "OK", AlertContextBuilders.FormatLowDiskThreshold(prefs.LowDiskThresholdPercent, prefs.LowDiskThresholdGb), true, "tray");
             }
 
             /* Anomalous Agent job alerts */
@@ -735,8 +738,8 @@ namespace PerformanceMonitorDashboard
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Long-Running Job", JobName = worst.JobName };
                     bool isMuted = _muteRuleService.IsAlertMuted(muteCtx);
                     _lastLongRunningJobAlert[jobKey] = now;
-                    var jobContext = BuildAnomalousJobContext(serverName, health.AnomalousJobs);
-                    var detailText = ContextToDetailText(jobContext);
+                    var jobContext = AlertContextBuilders.BuildAnomalousJobContext(serverName, health.AnomalousJobs);
+                    var detailText = AlertContextBuilders.ContextToDetailText(jobContext);
 
                     if (!isMuted)
                     {
@@ -809,8 +812,8 @@ namespace PerformanceMonitorDashboard
                        On-change only — only when a failed-job toast actually fires. */
                     prefs.FailedJobAlertWatermarkTicks[serverId] = newestFailure.Ticks;
                     _preferencesService.SavePreferences(prefs);
-                    var jobContext = BuildFailedJobContext(serverName, health.RecentlyFailedJobs);
-                    var detailText = ContextToDetailText(jobContext);
+                    var jobContext = AlertContextBuilders.BuildFailedJobContext(serverName, health.RecentlyFailedJobs);
+                    var detailText = AlertContextBuilders.ContextToDetailText(jobContext);
 
                     if (!isMuted)
                     {
@@ -841,13 +844,6 @@ namespace PerformanceMonitorDashboard
             }
         }
 
-        private static string Truncate(string text, int maxLength = 300)
-        {
-            if (string.IsNullOrEmpty(text)) return "";
-            text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
-            return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
-        }
-
         /* #1141: in Per-event mode, deliver one notification per distinct incident (capped at
            AlertPerEventMaxPerCycle, with a trailing "+N more" carrying the remaining fingerprints)
            instead of one batched summary card. Falls back to the single summary send in Summary mode
@@ -873,20 +869,6 @@ namespace PerformanceMonitorDashboard
 
             await _emailAlertService.TrySendAlertEmailAsync(
                 metricName, serverName, summaryCurrentValue, thresholdValue, serverId, context);
-        }
-
-        private static string? ContextToDetailText(AlertContext? context)
-        {
-            if (context == null || context.Details.Count == 0) return null;
-            var sb = new System.Text.StringBuilder();
-            foreach (var detail in context.Details)
-            {
-                if (sb.Length > 0) sb.AppendLine();
-                sb.AppendLine(detail.Heading);
-                foreach (var (label, value) in detail.Fields)
-                    sb.AppendLine($"  {label}: {value}");
-            }
-            return sb.ToString().TrimEnd();
         }
 
         private static async Task<AlertContext?> BuildBlockingContextAsync(string serverName, DatabaseService databaseService, List<string>? excludedDatabases = null)
@@ -920,7 +902,7 @@ namespace PerformanceMonitorDashboard
                     if (!string.IsNullOrEmpty(e.DatabaseName))
                         item.Fields.Add(("Database", e.DatabaseName));
                     if (!string.IsNullOrEmpty(e.QueryText))
-                        item.Fields.Add(("Query", Truncate(e.QueryText)));
+                        item.Fields.Add(("Query", AlertContextBuilders.TruncateText(e.QueryText)));
                     if (e.WaitTimeMs.HasValue)
                         item.Fields.Add(("Wait Time", $"{e.WaitTimeMs:N0} ms"));
                     if (!string.IsNullOrEmpty(e.LockMode))
@@ -996,7 +978,7 @@ namespace PerformanceMonitorDashboard
                         if (!string.IsNullOrEmpty(d.DatabaseName))
                             item.Fields.Add(("Database", d.DatabaseName));
                         if (!string.IsNullOrEmpty(d.Query))
-                            item.Fields.Add(("Query", Truncate(d.Query)));
+                            item.Fields.Add(("Query", AlertContextBuilders.TruncateText(d.Query)));
                         if (!string.IsNullOrEmpty(d.WaitResource))
                             item.Fields.Add(("Wait Resource", d.WaitResource));
                         if (!string.IsNullOrEmpty(d.LockMode))
@@ -1048,7 +1030,7 @@ namespace PerformanceMonitorDashboard
             if (rep is null) return null;
             var f = new List<AlertIncidentField>();
             if (!string.IsNullOrWhiteSpace(rep.DatabaseName)) f.Add(new AlertIncidentField("Database", rep.DatabaseName));
-            if (!string.IsNullOrWhiteSpace(rep.Query)) f.Add(new AlertIncidentField("Query", Truncate(rep.Query)));
+            if (!string.IsNullOrWhiteSpace(rep.Query)) f.Add(new AlertIncidentField("Query", AlertContextBuilders.TruncateText(rep.Query)));
             if (!string.IsNullOrWhiteSpace(rep.WaitResource)) f.Add(new AlertIncidentField("Wait Resource", rep.WaitResource));
             if (!string.IsNullOrWhiteSpace(rep.LockMode)) f.Add(new AlertIncidentField("Lock Mode", rep.LockMode));
             return f.Count > 0 ? f : null;
@@ -1072,196 +1054,11 @@ namespace PerformanceMonitorDashboard
             catch { return false; }
         }
 
-        private static AlertContext? BuildPoisonWaitContext(List<PoisonWaitDelta> triggeredWaits)
-        {
-            if (triggeredWaits.Count == 0) return null;
-
-            var context = new AlertContext();
-            foreach (var w in triggeredWaits)
-            {
-                context.Details.Add(new AlertDetailItem
-                {
-                    Heading = w.WaitType,
-                    Fields = new()
-                    {
-                        ("Avg ms/wait", $"{w.AvgMsPerWait:F1}"),
-                        ("Delta wait ms", $"{w.DeltaMs:N0}"),
-                        ("Delta tasks", $"{w.DeltaTasks:N0}")
-                    }
-                });
-            }
-            return context;
-        }
-
-        private static AlertContext? BuildLongRunningQueryContext(string serverName, List<LongRunningQueryInfo> queries)
-        {
-            if (queries.Count == 0) return null;
-
-            var context = new AlertContext();
-            var shown = queries.GetRange(0, Math.Min(3, queries.Count));
-            foreach (var q in shown)
-            {
-                var item = new AlertDetailItem
-                {
-                    Heading = $"Session #{q.SessionId} — {q.ElapsedSeconds / 60}m {q.ElapsedSeconds % 60}s",
-                    Fields = new()
-                };
-
-                if (!string.IsNullOrEmpty(q.DatabaseName))
-                    item.Fields.Add(("Database", q.DatabaseName));
-                if (!string.IsNullOrEmpty(q.ProgramName))
-                    item.Fields.Add(("Program", q.ProgramName));
-                if (!string.IsNullOrEmpty(q.QueryText))
-                    item.Fields.Add(("Query", Truncate(q.QueryText)));
-                item.Fields.Add(("CPU Time", $"{q.CpuTimeMs:N0} ms"));
-                item.Fields.Add(("Reads", $"{q.Reads:N0}"));
-                item.Fields.Add(("Writes", $"{q.Writes:N0}"));
-                if (!string.IsNullOrEmpty(q.WaitType))
-                    item.Fields.Add(("Wait Type", q.WaitType));
-                if (q.BlockingSessionId.HasValue && q.BlockingSessionId.Value > 0)
-                    item.Fields.Add(("Blocked By", $"Session #{q.BlockingSessionId.Value}"));
-
-                context.Details.Add(item);
-            }
-
-            /* #1140: dedup key = query_hash (stable across literals/plans). Null hash -> no incident. */
-            AlertIncidentRenderer.Apply(context, shown
-                .Select(q => AlertFingerprint.ForKey(serverName, AlertFingerprint.Query, q.QueryHash ?? "",
-                    string.IsNullOrEmpty(q.DatabaseName) ? System.Array.Empty<string>() : new[] { q.DatabaseName }))
-                .Where(i => i is not null).Select(i => i!).ToList());
-            return context;
-        }
-
-        private static AlertContext? BuildAnomalousJobContext(string serverName, List<AnomalousJobInfo> jobs)
-        {
-            if (jobs.Count == 0) return null;
-
-            var context = new AlertContext();
-            var shown = jobs.GetRange(0, Math.Min(3, jobs.Count));
-            foreach (var j in shown)
-            {
-                context.Details.Add(new AlertDetailItem
-                {
-                    Heading = j.JobName,
-                    Fields = new()
-                    {
-                        ("Current Duration", FormatDuration(j.CurrentDurationSeconds)),
-                        ("Avg Duration", FormatDuration(j.AvgDurationSeconds)),
-                        ("P95 Duration", FormatDuration(j.P95DurationSeconds)),
-                        ("% of Average", j.PercentOfAverage.HasValue ? $"{j.PercentOfAverage:F0}%" : "N/A"),
-                        ("Started", j.StartTime.ToString("yyyy-MM-dd HH:mm:ss"))
-                    }
-                });
-            }
-
-            /* #1140: dedup key per job (job name, scoped to the instance via serverName). */
-            AlertIncidentRenderer.Apply(context, shown
-                .Select(j => AlertFingerprint.ForKey(serverName, AlertFingerprint.Job, j.JobName, new[] { j.JobName }))
-                .Where(i => i is not null).Select(i => i!).ToList());
-            return context;
-        }
-
-        private static AlertContext? BuildFailedJobContext(string serverName, List<FailedJobInfo> jobs)
-        {
-            if (jobs.Count == 0) return null;
-
-            var context = new AlertContext();
-            var shown = jobs.GetRange(0, Math.Min(5, jobs.Count));
-            foreach (var j in shown)
-            {
-                var item = new AlertDetailItem { Heading = j.JobName, Fields = new() };
-                item.Fields.Add(("Job", j.JobName));
-                item.Fields.Add(("Failed At", j.RunDateTimeFormatted));
-                if (j.StepId > 0 && !string.IsNullOrEmpty(j.StepName))
-                    item.Fields.Add(("Step", $"{j.StepId} — {j.StepName}"));
-                if (!string.IsNullOrEmpty(j.Message))
-                    item.Fields.Add(("Message", Truncate(j.Message, 300)));
-                context.Details.Add(item);
-            }
-
-            /* #1140: dedup key per job (job name, scoped to the instance via serverName) — mirrors
-               BuildAnomalousJobContext so two distinct failed jobs are distinct incidents under the
-               #1154 per-fingerprint cooldown instead of coalescing on the metric key. */
-            AlertIncidentRenderer.Apply(context, shown
-                .Select(j => AlertFingerprint.ForKey(serverName, AlertFingerprint.Job, j.JobName, new[] { j.JobName }))
-                .Where(i => i is not null).Select(i => i!).ToList());
-            return context;
-        }
-
-        private static string FormatDuration(long seconds)
-        {
-            if (seconds < 60) return $"{seconds}s";
-            if (seconds < 3600) return $"{seconds / 60}m {seconds % 60}s";
-            return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
-        }
-
-        /* Returns the volumes whose free space is under the configured % or GB threshold (a 0 threshold
-           disables that dimension), worst (lowest free %) first, so the alert names the tightest volume. */
-        private static List<VolumeFreeSpaceInfo> GetBreachedVolumes(List<VolumeFreeSpaceInfo> volumes, UserPreferences prefs)
-        {
-            int pct = prefs.LowDiskThresholdPercent;
-            int gb = prefs.LowDiskThresholdGb;
-            return volumes
-                .Where(v => (pct > 0 && v.FreePercent < pct) || (gb > 0 && v.FreeGb < gb))
-                .OrderBy(v => v.FreePercent)
-                .ToList();
-        }
-
-        private static string FormatLowDiskThreshold(UserPreferences prefs)
-        {
-            var parts = new List<string>();
-            if (prefs.LowDiskThresholdPercent > 0) parts.Add($"{prefs.LowDiskThresholdPercent}%");
-            if (prefs.LowDiskThresholdGb > 0) parts.Add($"{prefs.LowDiskThresholdGb} GB");
-            return parts.Count > 0 ? string.Join(" / ", parts) : "—";
-        }
-
-        private static AlertContext? BuildVolumeFreeSpaceContext(string serverName, List<VolumeFreeSpaceInfo> volumes)
-        {
-            if (volumes.Count == 0) return null;
-
-            var context = new AlertContext();
-            var shown = volumes.GetRange(0, Math.Min(5, volumes.Count));
-            foreach (var v in shown)
-            {
-                context.Details.Add(new AlertDetailItem
-                {
-                    Heading = $"{v.MountPoint} — {v.FreePercent:F0}% Free",
-                    Fields = new()
-                    {
-                        ("Free Space", $"{v.FreeGb:F1} GB"),
-                        ("Total Size", $"{v.TotalMb / 1024.0:F1} GB"),
-                        ("Used", $"{(v.TotalMb - v.FreeMb) / 1024.0:F1} GB")
-                    }
-                });
-            }
-
-            /* #1140: dedup key per volume (the drive/mount point). */
-            AlertIncidentRenderer.Apply(context, shown
-                .Select(v => AlertFingerprint.ForKey(serverName, AlertFingerprint.Disk, v.MountPoint, new[] { v.MountPoint }))
-                .Where(i => i is not null).Select(i => i!).ToList());
-            return context;
-        }
-
-        private static AlertContext? BuildTempDbSpaceContext(TempDbSpaceInfo tempDb)
-        {
-            var context = new AlertContext();
-            context.Details.Add(new AlertDetailItem
-            {
-                Heading = $"tempdb — {tempDb.UsedPercent:F0}% Used",
-                Fields = new()
-                {
-                    ("Total Reserved", $"{tempDb.TotalReservedMb:F0} MB"),
-                    ("Unallocated", $"{tempDb.UnallocatedMb:F0} MB"),
-                    ("User Objects", $"{tempDb.UserObjectReservedMb:F0} MB"),
-                    ("Internal Objects", $"{tempDb.InternalObjectReservedMb:F0} MB"),
-                    ("Version Store", $"{tempDb.VersionStoreReservedMb:F0} MB"),
-                    ("Top Consumer", tempDb.TopConsumerSessionId > 0
-                        ? $"Session #{tempDb.TopConsumerSessionId} ({tempDb.TopConsumerMb:F0} MB)"
-                        : "None")
-                }
-            });
-            return context;
-        }
+        /* The six pure alert-context builders (poison wait, long-running query, volume free space,
+           tempdb space, anomalous job, failed job) and their pure helpers (ContextToDetailText,
+           Truncate/TruncateText, GetBreachedVolumes, FormatLowDiskThreshold) moved to the shared
+           PerformanceMonitor.Alerting.AlertContextBuilders (Phase-5 slice A). The async
+           blocking/deadlock builders above stay app-side — they query the Dashboard's own store. */
 
         #endregion
     }
