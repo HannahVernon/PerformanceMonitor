@@ -38,6 +38,14 @@ public partial class RemoteCollectorService
         _lastDuckDbMs = 0;
 
         var status = _serverManager.GetConnectionStatus(server.Id);
+        var target = new CollectorTargetInfo { IsAzureSqlDb = status.SqlEngineEdition == 5 };
+
+        /* Some collectors don't exist on some targets (e.g. ring buffers on Azure SQL DB) —
+           skip the cycle entirely, matching the original hand-rolled collectors. */
+        if (!definition.AppliesTo(target))
+        {
+            return 0;
+        }
 
         /* Watermark = the host store's latest already-collected value of the definition's time
            column (Darling reads Postgres here instead) — feeds server-side filters + client dedup. */
@@ -51,7 +59,7 @@ public partial class RemoteCollectorService
             ServerName = GetServerNameForStorage(server),
             CollectionTime = collectionTime,
             Deltas = _deltaCalculator,
-            Target = new CollectorTargetInfo { IsAzureSqlDb = status.SqlEngineEdition == 5 },
+            Target = target,
             Watermark = watermark,
             IgnoredWaitTypes = _ignoredWaitTypes.Value,
         };

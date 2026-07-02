@@ -44,6 +44,8 @@ public sealed class TempDbStatsCollector : ICollectorDefinition<TempDbStatsColle
 
     public string? WatermarkColumn => null;
 
+    public bool AppliesTo(CollectorTargetInfo target) => true;
+
     public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     private const string QueryText = @"

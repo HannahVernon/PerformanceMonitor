@@ -31,6 +31,13 @@ public interface ICollectorDefinition<TRow>
     string TargetTable { get; }
 
     /// <summary>
+    /// Whether this collector applies to the target at all — e.g. memory_pressure_events returns
+    /// false for Azure SQL DB because sys.dm_os_ring_buffers is not exposed there. Hosts skip the
+    /// cycle entirely (no query, zero rows) when false.
+    /// </summary>
+    bool AppliesTo(CollectorTargetInfo target);
+
+    /// <summary>
     /// Time column the host should read its latest already-collected value of (from the host's
     /// own store) before building the query — exposed to the definition as
     /// <see cref="CollectorContext.Watermark"/> for server-side filters and client-side dedup.

@@ -46,6 +46,8 @@ OPTION(RECOMPILE);";
 
     public string? WatermarkColumn => null;
 
+    public bool AppliesTo(CollectorTargetInfo target) => true;
+
     public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
