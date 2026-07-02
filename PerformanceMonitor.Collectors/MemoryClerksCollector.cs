@@ -50,6 +50,8 @@ OPTION(RECOMPILE);";
 
     public bool AppliesTo(CollectorTargetInfo target) => true;
 
+    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+
     public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]

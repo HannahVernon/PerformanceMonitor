@@ -120,6 +120,8 @@ OPTION(RECOMPILE);";
 
     public bool AppliesTo(CollectorTargetInfo target) => true;
 
+    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+
     public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("sample_time", CollectorColumnType.Timestamp),

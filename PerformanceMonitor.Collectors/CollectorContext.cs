@@ -40,4 +40,7 @@ public sealed class CollectorContext
 
     /// <summary>Wait types excluded from collection (Lite: ignored_wait_types.json — #1240).</summary>
     public IReadOnlySet<string> IgnoredWaitTypes { get; init; } = s_emptySet;
+
+    /// <summary>Per-server excluded database names (spliced via <see cref="DatabaseExclusionFilter"/>).</summary>
+    public IReadOnlyList<string> ExcludedDatabases { get; init; } = System.Array.Empty<string>();
 }
