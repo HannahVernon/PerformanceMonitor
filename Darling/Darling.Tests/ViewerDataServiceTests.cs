@@ -214,6 +214,40 @@ public sealed class ViewerSettingsTests
         Assert.Equal(@"C:\somewhere\darling.json", ViewerSettings.ResolveConfigPath(@"C:\somewhere\darling.json"));
     }
 
+    /// <summary>
+    /// The release-zip layout: viewer\ under the service root, darling.json beside the SERVICE
+    /// exe. Beside-binary wins when present; the parent probe covers the shipped layout; when
+    /// neither exists the beside-binary path comes back so the not-found hint names the
+    /// viewer's own directory.
+    /// </summary>
+    [Fact]
+    public void ResolveConfigPath_PackagedLayout_FallsBackToParentDirectory()
+    {
+        var root = Directory.CreateTempSubdirectory("darling-viewer-resolve-");
+        try
+        {
+            var viewerDirectory = Path.Combine(root.FullName, "viewer");
+            Directory.CreateDirectory(viewerDirectory);
+            var missing = Path.Combine(viewerDirectory, "darling.json");
+
+            /* Neither location has a config: report the viewer's own (missing) path. */
+            Assert.Equal(missing, ViewerSettings.ResolveConfigPath(baseDirectory: viewerDirectory));
+
+            /* Only the service root has one — the shipped-zip case. */
+            var atServiceRoot = Path.Combine(root.FullName, "darling.json");
+            File.WriteAllText(atServiceRoot, "{}");
+            Assert.Equal(atServiceRoot, ViewerSettings.ResolveConfigPath(baseDirectory: viewerDirectory));
+
+            /* Beside the viewer binary still wins over the parent when both exist. */
+            File.WriteAllText(missing, "{}");
+            Assert.Equal(missing, ViewerSettings.ResolveConfigPath(baseDirectory: viewerDirectory));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public void TryLoad_MissingFile_ReturnsNull()
     {

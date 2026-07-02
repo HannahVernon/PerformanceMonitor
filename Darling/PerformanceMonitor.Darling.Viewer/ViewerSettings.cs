@@ -22,9 +22,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// SQL Servers). This intentionally duplicates a sliver of the service's DarlingConfig — the
 /// resolution order and the postgres section — rather than referencing the service project;
 /// a shared config library is not warranted for one section yet.
-/// Resolution order matches the service exactly: explicit path → DARLING_CONFIG environment
-/// variable → darling.json next to the binary. Comments and trailing commas are allowed,
-/// property names are case-insensitive.
+/// Resolution order matches the service — explicit path → DARLING_CONFIG environment
+/// variable → darling.json next to the binary — plus one viewer-only fallback: the parent
+/// directory, because the release zip puts the viewer in a viewer\ subfolder under the
+/// service root where the operator's darling.json lives. Comments and trailing commas are
+/// allowed, property names are case-insensitive.
 /// Managed mode (<c>postgres.managed = true</c>, the shipped default): the SERVICE bootstraps
 /// and owns the bundled Postgres; the viewer only derives the same connection string —
 /// localhost + port + the darling user with the password the service generated on first run,
@@ -53,7 +55,9 @@ public sealed class ViewerSettings
         ConnectionString = connectionString;
     }
 
-    public static string ResolveConfigPath(string? explicitPath = null)
+    /// <param name="explicitPath">A path handed on the command line; wins outright.</param>
+    /// <param name="baseDirectory">The viewer binary's directory; null means AppContext.BaseDirectory (tests pass a temp directory).</param>
+    public static string ResolveConfigPath(string? explicitPath = null, string? baseDirectory = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitPath))
         {
@@ -66,7 +70,28 @@ public sealed class ViewerSettings
             return fromEnvironment;
         }
 
-        return Path.Combine(AppContext.BaseDirectory, "darling.json");
+        baseDirectory ??= AppContext.BaseDirectory;
+        var besideBinary = Path.Combine(baseDirectory, "darling.json");
+        if (File.Exists(besideBinary))
+        {
+            return besideBinary;
+        }
+
+        /* The release zip ships the viewer in a viewer\ subfolder under the service root, and
+           the operator's darling.json lives beside the SERVICE exe — so when there is nothing
+           beside the viewer, probe one level up. Miss both and we still return the
+           beside-binary path, so the not-found hint names the viewer's own directory. */
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(baseDirectory)));
+        if (!string.IsNullOrEmpty(parent))
+        {
+            var besideService = Path.Combine(parent, "darling.json");
+            if (File.Exists(besideService))
+            {
+                return besideService;
+            }
+        }
+
+        return besideBinary;
     }
 
     /// <summary>
