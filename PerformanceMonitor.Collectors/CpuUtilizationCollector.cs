@@ -118,6 +118,8 @@ OPTION(RECOMPILE);";
 
     public string? WatermarkColumn => "sample_time";
 
+    public bool AppliesTo(CollectorTargetInfo target) => true;
+
     public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("sample_time", CollectorColumnType.Timestamp),
