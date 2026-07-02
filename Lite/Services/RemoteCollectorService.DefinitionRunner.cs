@@ -70,6 +70,7 @@ public partial class RemoteCollectorService
             Watermark = watermark,
             IgnoredWaitTypes = _ignoredWaitTypes.Value,
             ExcludedDatabases = server.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
+            PerfmonCounterOverride = GetPerfmonCounterOverride(),
         };
 
         var sqlSw = Stopwatch.StartNew();

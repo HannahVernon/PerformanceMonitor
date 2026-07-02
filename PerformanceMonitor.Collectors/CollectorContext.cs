@@ -43,4 +43,10 @@ public sealed class CollectorContext
 
     /// <summary>Per-server excluded database names (spliced via <see cref="DatabaseExclusionFilter"/>).</summary>
     public IReadOnlyList<string> ExcludedDatabases { get; init; } = System.Array.Empty<string>();
+
+    /// <summary>
+    /// Host-configured perfmon counter override (Lite: perfmon_counters.json). Null means the
+    /// definition's curated default list applies.
+    /// </summary>
+    public IReadOnlyList<string>? PerfmonCounterOverride { get; init; }
 }
