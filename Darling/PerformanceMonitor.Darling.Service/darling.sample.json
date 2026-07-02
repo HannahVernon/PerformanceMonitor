@@ -58,5 +58,15 @@
   "webhooks": {
     "teamsUrl": "",
     "slackUrl": ""
+  },
+
+  // Embedded MCP server (optional): the six analysis tools (analyze_server, get_analysis_facts,
+  // compare_analysis, audit_config, get_analysis_findings, mute_analysis_finding) — the same
+  // analysis surface Lite and the Dashboard expose — over Streamable HTTP at
+  // http://localhost:{port}. Default OFF; port 5152 avoids the Dashboard (5150) and Lite (5151)
+  // defaults so all three can run on one machine.
+  "mcp": {
+    "enabled": false,
+    "port": 5152
   }
 }

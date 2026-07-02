@@ -533,6 +533,14 @@
           "ModelContextProtocol.Core": "1.4.0"
         }
       },
+      "ModelContextProtocol.AspNetCore": {
+        "type": "Transitive",
+        "resolved": "1.4.0",
+        "contentHash": "Q/xGhfhbCfZsoeEsEqBeiyzr6AJw2cBUTKN3Giz3QRmWyRzn62ISsgJCTnk2/VPMNj2/Spb2jYpPahnMZWvaPg==",
+        "dependencies": {
+          "ModelContextProtocol": "1.4.0"
+        }
+      },
       "ModelContextProtocol.Core": {
         "type": "Transitive",
         "resolved": "1.4.0",
@@ -843,6 +851,8 @@
           "Microsoft.Data.SqlClient": "[7.0.1, )",
           "Microsoft.Extensions.Hosting": "[10.0.9, )",
           "Microsoft.Extensions.Hosting.WindowsServices": "[10.0.9, )",
+          "ModelContextProtocol": "[1.4.0, )",
+          "ModelContextProtocol.AspNetCore": "[1.4.0, )",
           "PerformanceMonitor.Alerting": "[1.0.0, )",
           "PerformanceMonitor.Collectors": "[1.0.0, )",
           "PerformanceMonitor.Common": "[1.0.0, )",

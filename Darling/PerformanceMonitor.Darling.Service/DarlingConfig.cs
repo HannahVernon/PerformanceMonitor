@@ -60,6 +60,15 @@ public sealed class DarlingConfig
     [JsonPropertyName("webhooks")]
     public WebhooksConfig Webhooks { get; set; } = new();
 
+    /// <summary>
+    /// The embedded MCP server (analysis slice AN4): the six analysis tools — the same tool
+    /// surface Lite and the Dashboard expose — over Streamable HTTP on localhost. Default OFF:
+    /// a headless service should not open a local port unless the operator asks for it (both
+    /// apps default their MCP servers off too). Optional — omit the section entirely.
+    /// </summary>
+    [JsonPropertyName("mcp")]
+    public McpConfig Mcp { get; set; } = new();
+
     public static string ResolveConfigPath(string? explicitPath = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitPath))
@@ -267,6 +276,20 @@ public sealed class SmtpConfig
     /// <summary>Email/webhook channel cooldown between repeated alerts (Lite's default 15).</summary>
     [JsonPropertyName("emailCooldownMinutes")]
     public int EmailCooldownMinutes { get; set; } = 15;
+}
+
+/// <summary>
+/// The embedded MCP server's config. Port 5152 keeps the product's local MCP family
+/// non-colliding on one machine (Dashboard 5150, Lite 5151, Darling 5152).
+/// </summary>
+public sealed class McpConfig
+{
+    /// <summary>Default OFF — the headless twin of both apps' mcp_enabled=false default.</summary>
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("port")]
+    public int Port { get; set; } = 5152;
 }
 
 /// <summary>Teams/Slack incoming-webhook alert delivery; a channel is enabled by a non-empty URL.</summary>
