@@ -25,6 +25,8 @@ public abstract class CollectorDefinitionBase<TRow> : ICollectorDefinition<TRow>
 
     public abstract string TargetTable { get; }
 
+    public virtual bool IncludesCollectionId => true;
+
     public abstract IReadOnlyList<CollectorColumn> PayloadColumns { get; }
 
     public virtual string? WatermarkColumn => null;

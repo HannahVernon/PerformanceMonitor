@@ -76,7 +76,7 @@ OPTION(RECOMPILE);";
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
-        new CollectorColumn("resource_semaphore_id", CollectorColumnType.Integer),
+        new CollectorColumn("resource_semaphore_id", CollectorColumnType.SmallInt),
         new CollectorColumn("pool_id", CollectorColumnType.Integer),
         new CollectorColumn("target_memory_mb", CollectorColumnType.Decimal),
         new CollectorColumn("max_target_memory_mb", CollectorColumnType.Decimal),
