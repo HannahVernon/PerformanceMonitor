@@ -130,6 +130,29 @@ public partial class RemoteCollectorService
                     return 0;
                 }
 
+                /* Optional quick scalar probe (e.g. query_store's live PRODUCTVERSION check,
+                   deliberately probed per cycle rather than trusting cached status). Best-effort
+                   on a 10-second budget, matching the original; failure leaves the definition on
+                   its documented default via a null EnumerationProbeResult. */
+                var probePlan = definition.BuildEnumerationProbe(context);
+                if (probePlan is not null)
+                {
+                    try
+                    {
+                        using var probeCommand = CreateCollectorCommand(probePlan, sqlConnection, 10);
+                        var probeResult = await probeCommand.ExecuteScalarAsync(cancellationToken);
+                        if (probeResult is not null && probeResult != DBNull.Value)
+                        {
+                            context.EnumerationProbeResult = probeResult;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger?.LogDebug("Enumeration probe for {Collector} failed; using defaults: {Error}",
+                            definition.Name, ex.Message);
+                    }
+                }
+
                 var itemTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
                 rows = new List<TRow>();
                 foreach (var item in items)
