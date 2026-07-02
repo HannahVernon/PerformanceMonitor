@@ -25,6 +25,9 @@ namespace Darling.Tests;
 /// shared WaitStatsCollector definition twice, proving watermarks, deltas, and binary COPY
 /// against live engines.
 /// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
 public sealed class DarlingCollectorRunnerTests
 {
     [Fact]
@@ -68,6 +71,15 @@ public sealed class DarlingCollectorRunnerTests
         Assert.Equal(PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode(config.StorageName), runtime.ServerId);
 
         var runner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator());
+
+        /* Pre-clean: a prior service smoke against the same store leaves rows for this same
+           server_id, and the exact-count assertion below would misread them as COPY errors. */
+        await using (var precleanConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            using var preclean = new NpgsqlCommand("DELETE FROM wait_stats WHERE server_id = $1", precleanConnection);
+            preclean.Parameters.AddWithValue(runtime.ServerId);
+            await preclean.ExecuteNonQueryAsync(ct);
+        }
 
         try
         {

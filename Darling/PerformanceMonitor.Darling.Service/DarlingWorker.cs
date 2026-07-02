@@ -22,7 +22,9 @@ namespace PerformanceMonitor.Darling.Service;
 
 /// <summary>
 /// The 24/7 collection loop (headless plan M2): load darling.json, migrate the Postgres store,
-/// connect and probe each monitored server, ensure the XE sessions, run the on-load config
+/// re-seed delta baselines from it (restart continuity — the Postgres twin of Lite's DuckDB
+/// seeding, so a service restart doesn't zero the first cycle's deltas), connect and probe each
+/// monitored server, ensure the XE sessions, run the on-load config
 /// snapshots once, then run every scheduled collector on the shared
 /// <see cref="CollectorScheduleDefaults"/> cadence through <see cref="DarlingCollectorRunner"/>.
 /// A server that fails to connect is retried every sweep; a collector that errors is logged and
@@ -97,7 +99,13 @@ public sealed class DarlingWorker : BackgroundService
             return;
         }
 
-        var runner = new DarlingCollectorRunner(postgres, new CollectorDeltaCalculator(), _logger);
+        /* Restart continuity: re-seed delta baselines from the store (the Postgres twin of Lite's
+           DuckDB seeding) so the first cycle after a service restart produces real deltas instead
+           of zeroes. A seed failure logs a warning and collection proceeds with first-cycle-zero. */
+        var deltas = new DarlingDeltaCalculator();
+        await deltas.SeedFromStoreAsync(postgres, _logger, stoppingToken);
+
+        var runner = new DarlingCollectorRunner(postgres, deltas, _logger);
         var servers = new List<ServerLoopState>();
         foreach (var server in config.Servers)
         {
