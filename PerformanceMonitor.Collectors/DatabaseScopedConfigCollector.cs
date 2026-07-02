@@ -72,6 +72,11 @@ OPTION(RECOMPILE);";
 
     public override string TargetTable => "database_scoped_config";
 
+    /// <summary>The config snapshots' prefix is config_id/capture_time in Lite's schema; Darling mirrors it.</summary>
+    public override string PrefixIdColumnName => "config_id";
+
+    public override string PrefixTimeColumnName => "capture_time";
+
     /// <summary>Enumerating collector — the primary query is never used.</summary>
     public override CollectorQuery BuildQuery(CollectorContext context)
         => throw new NotSupportedException("database_scoped_config enumerates databases; BuildEnumerationQuery drives the cycle.");

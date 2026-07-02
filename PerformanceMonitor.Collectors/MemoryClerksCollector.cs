@@ -57,7 +57,7 @@ OPTION(RECOMPILE);";
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("clerk_type", CollectorColumnType.Varchar),
-        new CollectorColumn("memory_mb", CollectorColumnType.Decimal),
+        new CollectorColumn("memory_mb", CollectorColumnType.Decimal, 18, 2),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)

@@ -153,16 +153,16 @@ OPTION(RECOMPILE);";
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
-        new CollectorColumn("total_physical_memory_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("available_physical_memory_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("total_page_file_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("available_page_file_mb", CollectorColumnType.Decimal),
+        new CollectorColumn("total_physical_memory_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("available_physical_memory_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("total_page_file_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("available_page_file_mb", CollectorColumnType.Decimal, 18, 2),
         new CollectorColumn("system_memory_state", CollectorColumnType.Varchar),
         new CollectorColumn("sql_memory_model", CollectorColumnType.Varchar),
-        new CollectorColumn("target_server_memory_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("total_server_memory_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("buffer_pool_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("plan_cache_mb", CollectorColumnType.Decimal),
+        new CollectorColumn("target_server_memory_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("total_server_memory_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("buffer_pool_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("plan_cache_mb", CollectorColumnType.Decimal, 18, 2),
         new CollectorColumn("max_workers_count", CollectorColumnType.Integer),
         new CollectorColumn("current_workers_count", CollectorColumnType.Integer),
     };

@@ -83,6 +83,9 @@ public sealed class BlockedProcessReportCollector : CollectorDefinitionBase<Bloc
 
     public override string TargetTable => "blocked_process_reports";
 
+    /// <summary>Lite schema names this table's prefix id "blocked_report_id"; Darling mirrors it.</summary>
+    public override string PrefixIdColumnName => "blocked_report_id";
+
     /// <summary>
     /// Only events newer than the newest already-collected report are fetched, so a report
     /// lingering in the ring buffer across cycles is never inserted twice.

@@ -510,6 +510,9 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "performancemonitor.collectors": {
+        "type": "Project"
+      },
       "performancemonitor.common": {
         "type": "Project",
         "dependencies": {
@@ -529,7 +532,8 @@
       "performancemonitor.darling.storage": {
         "type": "Project",
         "dependencies": {
-          "Npgsql": "[10.0.3, )"
+          "Npgsql": "[10.0.3, )",
+          "PerformanceMonitor.Collectors": "[1.0.0, )"
         }
       }
     }

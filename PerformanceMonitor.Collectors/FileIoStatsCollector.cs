@@ -134,7 +134,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("file_name", CollectorColumnType.Varchar),
         new CollectorColumn("file_type", CollectorColumnType.Varchar),
         new CollectorColumn("physical_name", CollectorColumnType.Varchar),
-        new CollectorColumn("size_mb", CollectorColumnType.Decimal),
+        new CollectorColumn("size_mb", CollectorColumnType.Decimal, 18, 2),
         new CollectorColumn("num_of_reads", CollectorColumnType.BigInt),
         new CollectorColumn("num_of_writes", CollectorColumnType.BigInt),
         new CollectorColumn("read_bytes", CollectorColumnType.BigInt),

@@ -72,14 +72,14 @@ OPTION(RECOMPILE);";
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
-        new CollectorColumn("user_object_reserved_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("internal_object_reserved_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("version_store_reserved_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("total_reserved_mb", CollectorColumnType.Decimal),
-        new CollectorColumn("unallocated_mb", CollectorColumnType.Decimal),
+        new CollectorColumn("user_object_reserved_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("internal_object_reserved_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("version_store_reserved_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("total_reserved_mb", CollectorColumnType.Decimal, 18, 2),
+        new CollectorColumn("unallocated_mb", CollectorColumnType.Decimal, 18, 2),
         new CollectorColumn("total_sessions_using_tempdb", CollectorColumnType.BigInt),
         new CollectorColumn("top_session_id", CollectorColumnType.Integer),
-        new CollectorColumn("top_session_tempdb_mb", CollectorColumnType.Decimal),
+        new CollectorColumn("top_session_tempdb_mb", CollectorColumnType.Decimal, 18, 2),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
