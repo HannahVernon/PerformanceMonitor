@@ -24,6 +24,9 @@
     <ProjectReference Include="..\..\PerformanceMonitor.Alerting\PerformanceMonitor.Alerting.csproj" />
     <ProjectReference Include="..\..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
     <ProjectReference Include="..\..\PerformanceMonitor.Collectors\PerformanceMonitor.Collectors.csproj" />
+    <!-- AN3: the analysis pipeline (DarlingAnalysisService/PgPlanFetcher). Dependency points
+         service → analysis only; the analysis library never references the service. -->
+    <ProjectReference Include="..\PerformanceMonitor.Darling.Analysis\PerformanceMonitor.Darling.Analysis.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
   </ItemGroup>
 

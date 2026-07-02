@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
@@ -19,6 +20,7 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Alerting;
 using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Darling.Analysis;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Notifications;
 
@@ -36,7 +38,10 @@ namespace PerformanceMonitor.Darling.Service;
 /// the deadlock/blocked-process readers tolerate a missing XE session as zero rows, and
 /// trace_flags tolerates denied DBCC as zero rows with a warning. Every successful connect
 /// upserts the servers registry and every collector run writes a collection_log row — both
-/// failure-isolated (<see cref="DarlingObservability"/>).
+/// failure-isolated (<see cref="DarlingObservability"/>). On top of collection the loop runs
+/// the shared alert engine per server every 30 seconds and, since AN3, the analysis pipeline
+/// (<see cref="DarlingAnalysisService"/>) per server every 30 minutes with findings routed
+/// through the shared <see cref="AnalysisNotificationService"/>.
 /// </summary>
 public sealed class DarlingWorker : BackgroundService
 {
@@ -48,11 +53,26 @@ public sealed class DarlingWorker : BackgroundService
        edge-trigger gates shape delivery on top of this. */
     private static readonly TimeSpan s_alertSweepInterval = TimeSpan.FromSeconds(30);
 
+    /* The analysis pipeline's cadence + per-run budget — Lite's App defaults hardcoded
+       (AnalysisIntervalMinutes 30 / AnalysisTimeoutSeconds 120; defaults over speculative
+       config). Each run analyzes the last 4 hours (Lite's hoursBack default). */
+    private static readonly TimeSpan s_analysisInterval = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan s_analysisTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>Test hooks: the hardcoded analysis cadence/budget, pinned against Lite's defaults.</summary>
+    internal static TimeSpan AnalysisInterval => s_analysisInterval;
+    internal static TimeSpan AnalysisTimeout => s_analysisTimeout;
+
     private readonly ILogger<DarlingWorker> _logger;
     private readonly ILoggerFactory _loggerFactory;
 
     /* Set once by ExecuteAsync before the loop starts; the observability writes need it. */
     private NpgsqlDataSource? _postgres;
+
+    /* Server IDs whose scheduled analysis is currently running — prevents relaunching
+       analysis for a server whose previous (possibly hung) pass has not finished
+       (Lite's CollectionBackgroundService in-flight guard). */
+    private readonly ConcurrentDictionary<int, byte> _analysisInFlight = new();
 
     /* MinValue = the first sweep after startup runs the retention purge, then daily. */
     private DateTime _nextPurgeUtc = DateTime.MinValue;
@@ -72,6 +92,12 @@ public sealed class DarlingWorker : BackgroundService
 
         /* MinValue = the first loop pass after connect evaluates alerts immediately. */
         public DateTime NextAlertSweep { get; set; } = DateTime.MinValue;
+
+        /* MinValue = the first loop pass after connect runs analysis immediately; the
+           pipeline's own 24h data-span gate no-ops it until the store has enough history
+           (Lite's GetTotalDataSpanHoursAsync gate), so a fresh server simply re-checks
+           every interval while an already-populated store analyzes right away. */
+        public DateTime NextAnalysisDue { get; set; } = DateTime.MinValue;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -129,8 +155,38 @@ public sealed class DarlingWorker : BackgroundService
 
         /* Phase-5 slice D: the shared alert engine, wired to the PG-backed stores (V3) and the
            shared email/webhook delivery. Constructed once — the engine holds the per-server
-           edge-trigger state for the service's lifetime. */
-        var engine = await BuildAlertEngineAsync(config, postgres, servers);
+           edge-trigger state for the service's lifetime. The settings/history/webhook pieces
+           are hoisted here because the AN3 analysis-notification path below shares them. */
+        var alertSettings = new DarlingAlertSettings(config);
+        var historyStore = new PgAlertHistoryStore(postgres, _logger);
+        var webhookAlertService = new WebhookAlertService(
+            alertSettings, DarlingAlertDeliverer.Branding,
+            _loggerFactory.CreateLogger<WebhookAlertService>(), historyStore);
+        var engine = await BuildAlertEngineAsync(config, postgres, servers, alertSettings, historyStore, webhookAlertService);
+
+        /* Phase-5 analysis slice AN3: the analysis pipeline's shared pieces, constructed once.
+           The plan fetcher resolves a finding's serverId to the CONNECTED runtime's connection
+           string (the PgPlanFetcher seam — null for an unknown/disconnected server degrades the
+           fetch like Lite's ServerManager miss). The shared AnalysisNotificationService routes
+           high-severity findings through DarlingFindingAlertSender (email + webhook + history,
+           Lite's cadence); the serverId resolver is Lite's shape (the finding's int id as a
+           string), no silencing predicate and no tray sink (headless). */
+        var planFetcher = new PgPlanFetcher(
+            serverId => servers
+                .Select(s => s.Runtime)
+                .FirstOrDefault(r => r is not null && r.ServerId == serverId)?.ConnectionString,
+            _logger);
+        var notificationService = new AnalysisNotificationService(
+            new DarlingFindingAlertSender(alertSettings, historyStore, webhookAlertService, _logger),
+            alertSettings,
+            finding => finding.ServerId.ToString(CultureInfo.InvariantCulture),
+            _loggerFactory.CreateLogger<AnalysisNotificationService>());
+
+        /* Delivery gate: Lite gates finding delivery on its AnalysisNotificationsEnabled
+           setting while analysis always runs + persists; Darling's headless twin of that
+           gate is the master alerts.enabled switch — an operator who turned alerts off gets
+           no analysis-finding notifications either, but findings still land in the store. */
+        var notifyFindings = config.Alerts.Enabled;
 
         _logger.LogInformation("PerformanceMonitor Darling collection loop started");
 
@@ -159,12 +215,27 @@ public sealed class DarlingWorker : BackgroundService
                     server.NextAlertSweep = DateTime.UtcNow.Add(s_alertSweepInterval);
                     await EvaluateAlertsAsync(engine, server, stoppingToken);
                 }
+
+                /* AN3: the scheduled analysis pipeline, per-server on Lite's 30-minute
+                   cadence. The next-due stamp advances up front (Lite's scheduler shape), so
+                   a timed-out pass is skipped, not retried immediately. */
+                if (DateTime.UtcNow >= server.NextAnalysisDue)
+                {
+                    server.NextAnalysisDue = DateTime.UtcNow.Add(s_analysisInterval);
+                    await RunScheduledAnalysisAsync(server, planFetcher, notificationService, notifyFindings, stoppingToken);
+                }
             }
 
             if (DateTime.UtcNow >= _nextPurgeUtc)
             {
                 _nextPurgeUtc = DateTime.UtcNow.AddHours(24);
                 await DarlingRetention.PurgeAsync(postgres, _logger, stoppingToken);
+
+                /* AN3: findings retention. Both apps' finding stores declare a 30-day cleanup
+                   but neither app schedules it (Lite's DuckDB archive-reset bounds it
+                   incidentally); a 24/7 service must actually invoke it or analysis_findings
+                   grows unbounded. Rides the daily purge; never throws (logs + degrades). */
+                await new PgFindingStore(postgres, _logger).CleanupOldFindingsAsync(retentionDays: 30);
             }
 
             try
@@ -190,10 +261,9 @@ public sealed class DarlingWorker : BackgroundService
     /// headless stand-in for Lite's tray "Cleared" toasts).
     /// </summary>
     private async Task<AlertEngine> BuildAlertEngineAsync(
-        DarlingConfig config, NpgsqlDataSource postgres, List<ServerLoopState> servers)
+        DarlingConfig config, NpgsqlDataSource postgres, List<ServerLoopState> servers,
+        DarlingAlertSettings alertSettings, PgAlertHistoryStore historyStore, WebhookAlertService webhookAlertService)
     {
-        var alertSettings = new DarlingAlertSettings(config);
-        var historyStore = new PgAlertHistoryStore(postgres, _logger);
         var stateStore = new PgAlertStateStore(postgres, _logger);
 
         /* Mute rules load once at startup, like Lite's — the headless store starts empty
@@ -202,12 +272,9 @@ public sealed class DarlingWorker : BackgroundService
             new PgMuteRuleStore(postgres, _logger), _loggerFactory.CreateLogger<MuteRuleService>());
         await muteRuleService.LoadAsync();
 
-        /* The webhook service is constructed first and injected into the deliverer's send core
+        /* The webhook service was constructed first and injected into the deliverer's send core
            (Lite's MainWindow wiring); the shared history store seeds both channels' cooldowns
            across a service restart (#1145). */
-        var webhookAlertService = new WebhookAlertService(
-            alertSettings, DarlingAlertDeliverer.Branding,
-            _loggerFactory.CreateLogger<WebhookAlertService>(), historyStore);
         var deliverer = new DarlingAlertDeliverer(alertSettings, historyStore, webhookAlertService, _logger);
 
         return new AlertEngine(
@@ -296,6 +363,92 @@ LIMIT 1", connection);
 
         double? totalCpu = sqlCpu.HasValue ? sqlCpu.Value + (otherCpu ?? 0) : null;
         return (sqlCpu, totalCpu);
+    }
+
+    /// <summary>
+    /// Runs the AN3 analysis pipeline for one connected server and routes the findings to the
+    /// shared notification path — Lite's CollectionBackgroundService.RunAnalysisIfDueAsync
+    /// per-server body transplanted: the in-flight guard skips a server whose previous
+    /// (possibly hung) pass has not finished; a FRESH DarlingAnalysisService per run
+    /// (IsAnalyzing is a single instance flag, so a shared instance whose task is abandoned on
+    /// timeout would block analysis for every other server); the 120-second timeout moves the
+    /// loop on without clearing the in-flight marker (the continuation clears it only when the
+    /// task truly finishes, so a hung server is not relaunched); findings are persisted inside
+    /// AnalyzeAsync and only routed to the notification channels when delivery is on. The
+    /// finding identity is the STORAGE name + its hash id — the same identity the collectors
+    /// stamp on every row (Lite's GetServerNameForStorage semantics), so findings join the
+    /// collected data; the alert engine's DisplayName snapshot identity is deliberately not
+    /// used here.
+    /// </summary>
+    private async Task RunScheduledAnalysisAsync(
+        ServerLoopState server,
+        PgPlanFetcher planFetcher,
+        AnalysisNotificationService notificationService,
+        bool notifyFindings,
+        CancellationToken stoppingToken)
+    {
+        var runtime = server.Runtime;
+        if (runtime is null)
+        {
+            return;
+        }
+
+        var serverId = runtime.ServerId;
+
+        /* Skip a server whose previous analysis is still running — a hung
+           connection that outlived its timeout would otherwise pile up tasks. */
+        if (!_analysisInFlight.TryAdd(serverId, 0))
+        {
+            return;
+        }
+
+        try
+        {
+            var analysisService = new DarlingAnalysisService(_postgres!, planFetcher, _logger);
+            var analyzeTask = analysisService.AnalyzeAsync(serverId, runtime.StorageName, hoursBack: 4);
+
+            /* Clear the in-flight marker only when the task truly finishes — not
+               when the timeout below moves us on — so a hung server is not relaunched. */
+            _ = analyzeTask.ContinueWith(
+                completed => _analysisInFlight.TryRemove(serverId, out _),
+                TaskScheduler.Default);
+
+            var finished = await Task.WhenAny(analyzeTask, Task.Delay(s_analysisTimeout, stoppingToken));
+
+            if (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (finished != analyzeTask)
+            {
+                _logger.LogWarning(
+                    "[{Server}] Scheduled analysis exceeded {Timeout}s — skipped this cycle",
+                    server.Config.DisplayName, (int)s_analysisTimeout.TotalSeconds);
+                return;
+            }
+
+            /* Analysis already persisted its findings inside AnalyzeAsync. Only route them
+               to the notification channels when delivery is on (Lite's D0 split: production
+               unconditional, delivery gated). */
+            var findings = await analyzeTask;
+            if (notifyFindings)
+            {
+                await notificationService.NotifyAsync(findings);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            /* Shutting down — the loop's own cancellation check ends the sweep. */
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("[{Server}] Scheduled analysis failed: {Message}",
+                server.Config.DisplayName, ex.Message);
+            /* If analyzeTask was never created (e.g. ctor threw), the continuation
+               never ran — clear the marker defensively. */
+            _analysisInFlight.TryRemove(serverId, out _);
+        }
     }
 
     /// <summary>
