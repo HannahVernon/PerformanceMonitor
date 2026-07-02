@@ -152,9 +152,11 @@ public partial class RemoteCollectorService
                 }
 
                 /* Optional best-effort second query on the same connection (e.g. server_properties'
-                   WS5 health probe). Failure-isolated: it can never fail the primary rows. */
+                   WS5 health probe). Failure-isolated: it can never fail the primary rows. Skipped
+                   when the primary produced no rows, matching the originals (which only ran their
+                   second query after a successful primary read). */
                 var supplementalPlan = definition.BuildSupplementalQuery(context);
-                if (supplementalPlan is not null)
+                if (supplementalPlan is not null && rows.Count > 0)
                 {
                     try
                     {
@@ -187,10 +189,15 @@ public partial class RemoteCollectorService
                 foreach (var item in rows)
                 {
                     var row = appender.CreateRow();
-                    row.AppendValue(GenerateCollectionId())     /* collection_id BIGINT */
-                       .AppendValue(collectionTime)             /* collection_time TIMESTAMP */
-                       .AppendValue(serverId)                   /* server_id INTEGER */
-                       .AppendValue(context.ServerName);        /* server_name VARCHAR */
+
+                    if (definition.IncludesCollectionId)
+                    {
+                        row.AppendValue(GenerateCollectionId()); /* collection_id BIGINT */
+                    }
+
+                    row.AppendValue(collectionTime)              /* collection_time TIMESTAMP */
+                       .AppendValue(serverId)                    /* server_id INTEGER */
+                       .AppendValue(context.ServerName);         /* server_name VARCHAR */
 
                     writer.CurrentRow = row;
                     definition.WritePayload(item, writer, context);

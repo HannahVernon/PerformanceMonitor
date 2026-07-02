@@ -16,6 +16,7 @@ public enum CollectorColumnType
 {
     BigInt,
     Integer,
+    SmallInt,
     Varchar,
     Timestamp,
     Double,

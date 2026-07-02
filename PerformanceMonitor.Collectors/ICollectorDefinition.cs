@@ -31,6 +31,13 @@ public interface ICollectorDefinition<TRow>
     string TargetTable { get; }
 
     /// <summary>
+    /// Whether the target table's standard prefix includes a collection id as its first column.
+    /// Almost always true; running_jobs is keyed by (collection_time, server) alone and writes no
+    /// collection_id, so its definition returns false and hosts skip that prefix column.
+    /// </summary>
+    bool IncludesCollectionId { get; }
+
+    /// <summary>
     /// Whether this collector applies to the target at all — e.g. memory_pressure_events returns
     /// false for Azure SQL DB because sys.dm_os_ring_buffers is not exposed there. Hosts skip the
     /// cycle entirely (no query, zero rows) when false.
