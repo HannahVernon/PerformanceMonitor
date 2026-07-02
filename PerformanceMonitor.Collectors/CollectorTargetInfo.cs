@@ -17,4 +17,14 @@ public sealed class CollectorTargetInfo
 {
     /// <summary>True when the target is Azure SQL Database (engine edition 5).</summary>
     public bool IsAzureSqlDb { get; init; }
+
+    /// <summary>True when the target is Azure SQL Managed Instance (engine edition 8).</summary>
+    public bool IsAzureManagedInstance { get; init; }
+
+    /// <summary>
+    /// SQL Server major version (13 = 2016 … 17 = 2025); 0 when unknown. Definitions gate
+    /// version-specific columns on this (database_config treats 0 as "assume newest" to match
+    /// the original collector).
+    /// </summary>
+    public int SqlMajorVersion { get; init; }
 }

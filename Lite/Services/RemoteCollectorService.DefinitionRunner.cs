@@ -40,7 +40,12 @@ public partial class RemoteCollectorService
         _lastDuckDbMs = 0;
 
         var status = _serverManager.GetConnectionStatus(server.Id);
-        var target = new CollectorTargetInfo { IsAzureSqlDb = status.SqlEngineEdition == 5 };
+        var target = new CollectorTargetInfo
+        {
+            IsAzureSqlDb = status.SqlEngineEdition == 5,
+            IsAzureManagedInstance = status.SqlEngineEdition == 8,
+            SqlMajorVersion = status.SqlMajorVersion,
+        };
 
         /* Some collectors don't exist on some targets (e.g. ring buffers on Azure SQL DB) —
            skip the cycle entirely, matching the original hand-rolled collectors. */
