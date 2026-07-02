@@ -25,5 +25,35 @@
       "encryptMode": "Mandatory",
       "excludedDatabases": [ "StageDb" ]
     }
-  ]
+  ],
+
+  // The alert engine (optional section). Every default mirrors Performance Monitor Lite's:
+  // cpu 80% (total mode), blocking 1, deadlock 1, poison wait 500 ms, long-running query
+  // 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,
+  // cooldown 5 min. Omit the whole section (or any key) for those defaults.
+  "alerts": {
+    "enabled": true,
+    "cpuThresholdPercent": 80,
+    "cpuMode": "total", // "total" (SQL + other processes) or "sql" (SQL process only)
+    "excludedDatabases": []
+  },
+
+  // SMTP alert delivery (optional). Enabled when host + from + to are all set. For an
+  // authenticated relay, set username and run --encrypt-password for the password blob.
+  "smtp": {
+    "host": "",
+    "port": 587,
+    "useSsl": true,
+    "username": "",
+    "encryptedPassword": "",
+    "from": "",
+    "to": "dba-team@example.com",
+    "emailCooldownMinutes": 15
+  },
+
+  // Teams / Slack incoming webhooks (optional). A channel is enabled by a non-empty URL.
+  "webhooks": {
+    "teamsUrl": "",
+    "slackUrl": ""
+  }
 }

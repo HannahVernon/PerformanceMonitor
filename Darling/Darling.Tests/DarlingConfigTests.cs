@@ -53,6 +53,17 @@ public sealed class DarlingConfigTests
         Assert.Equal("monitor", config.Servers[1].Username);
         Assert.Equal(new[] { "StageDb" }, config.Servers[1].ExcludedDatabases);
         Assert.NotEmpty(config.Postgres.ConnectionString);
+
+        /* Phase-5 slice D: the alert/delivery sections parse; the sample documents shape without
+           enabling delivery (empty SMTP host/from, empty webhook URLs). */
+        Assert.True(config.Alerts.Enabled);
+        Assert.Equal(80, config.Alerts.CpuThresholdPercent);
+        Assert.Equal("total", config.Alerts.CpuMode);
+        Assert.Equal(587, config.Smtp.Port);
+        Assert.Equal("", config.Smtp.Host);
+        Assert.Equal("dba-team@example.com", config.Smtp.To);
+        Assert.Equal("", config.Webhooks.TeamsUrl);
+        Assert.Equal("", config.Webhooks.SlackUrl);
     }
 
     [Fact]

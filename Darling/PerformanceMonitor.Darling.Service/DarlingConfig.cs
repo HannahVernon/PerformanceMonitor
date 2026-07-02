@@ -37,6 +37,29 @@ public sealed class DarlingConfig
     [JsonPropertyName("servers")]
     public List<MonitoredServer> Servers { get; set; } = new();
 
+    /// <summary>
+    /// The shared alert engine's enabled flags and thresholds (Phase-5 slice D). Every default
+    /// mirrors Lite's <c>App.*</c> alert defaults exactly, so an empty section alerts like a
+    /// fresh Lite install. Optional — omit it entirely for the defaults.
+    /// </summary>
+    [JsonPropertyName("alerts")]
+    public AlertsConfig Alerts { get; set; } = new();
+
+    /// <summary>
+    /// SMTP delivery for fired alerts. Delivery is enabled when host + from + to are all set
+    /// (no separate flag — defaults over speculative config); the password uses the same DPAPI
+    /// --encrypt-password pattern as SQL auth. Optional.
+    /// </summary>
+    [JsonPropertyName("smtp")]
+    public SmtpConfig Smtp { get; set; } = new();
+
+    /// <summary>
+    /// Teams/Slack incoming-webhook delivery for fired alerts. A channel is enabled when its
+    /// URL is set. Optional.
+    /// </summary>
+    [JsonPropertyName("webhooks")]
+    public WebhooksConfig Webhooks { get; set; } = new();
+
     public static string ResolveConfigPath(string? explicitPath = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitPath))
@@ -126,6 +149,140 @@ public sealed class PostgresConfig
 {
     [JsonPropertyName("connectionString")]
     public string ConnectionString { get; set; } = "";
+}
+
+/// <summary>
+/// The alert engine's config section. Defaults mirror Lite's <c>App.xaml.cs</c> alert defaults
+/// member-for-member: cpu 80% (Total mode), blocking 1, deadlock 1, poison 500 ms, long-running
+/// query 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,
+/// cooldown 5 min. The long-running-query read shape (max results + the five noise filters) is
+/// deliberately NOT configurable here — Lite's defaults (5 / all on) are hardcoded in
+/// <see cref="DarlingAlertSettings"/> until someone actually needs a knob.
+/// </summary>
+public sealed class AlertsConfig
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("cpuEnabled")]
+    public bool CpuEnabled { get; set; } = true;
+
+    [JsonPropertyName("cpuThresholdPercent")]
+    public int CpuThresholdPercent { get; set; } = 80;
+
+    /// <summary>"total" (Lite's default: SQL + other-process CPU) or "sql" (SQL process only).</summary>
+    [JsonPropertyName("cpuMode")]
+    public string CpuMode { get; set; } = "total";
+
+    [JsonPropertyName("blockingEnabled")]
+    public bool BlockingEnabled { get; set; } = true;
+
+    [JsonPropertyName("blockingCountThreshold")]
+    public int BlockingCountThreshold { get; set; } = 1;
+
+    [JsonPropertyName("deadlockEnabled")]
+    public bool DeadlockEnabled { get; set; } = true;
+
+    [JsonPropertyName("deadlockCountThreshold")]
+    public int DeadlockCountThreshold { get; set; } = 1;
+
+    [JsonPropertyName("poisonWaitEnabled")]
+    public bool PoisonWaitEnabled { get; set; } = true;
+
+    [JsonPropertyName("poisonWaitThresholdMs")]
+    public int PoisonWaitThresholdMs { get; set; } = 500;
+
+    [JsonPropertyName("longRunningQueryEnabled")]
+    public bool LongRunningQueryEnabled { get; set; } = true;
+
+    [JsonPropertyName("longRunningQueryThresholdMinutes")]
+    public int LongRunningQueryThresholdMinutes { get; set; } = 30;
+
+    [JsonPropertyName("tempDbSpaceEnabled")]
+    public bool TempDbSpaceEnabled { get; set; } = true;
+
+    [JsonPropertyName("tempDbSpaceThresholdPercent")]
+    public int TempDbSpaceThresholdPercent { get; set; } = 80;
+
+    [JsonPropertyName("lowDiskEnabled")]
+    public bool LowDiskEnabled { get; set; } = true;
+
+    /// <summary>Alert when a volume's free space &lt; X% (0 disables this dimension).</summary>
+    [JsonPropertyName("lowDiskThresholdPercent")]
+    public int LowDiskThresholdPercent { get; set; } = 10;
+
+    /// <summary>Alert when a volume's free space &lt; X GB (0 disables this dimension).</summary>
+    [JsonPropertyName("lowDiskThresholdGb")]
+    public int LowDiskThresholdGb { get; set; } = 5;
+
+    [JsonPropertyName("longRunningJobEnabled")]
+    public bool LongRunningJobEnabled { get; set; } = true;
+
+    [JsonPropertyName("longRunningJobMultiplier")]
+    public int LongRunningJobMultiplier { get; set; } = 3;
+
+    [JsonPropertyName("failedJobEnabled")]
+    public bool FailedJobEnabled { get; set; } = true;
+
+    [JsonPropertyName("failedJobLookbackMinutes")]
+    public int FailedJobLookbackMinutes { get; set; } = 60;
+
+    /// <summary>Minimum minutes between repeated notifications for the same alert condition.</summary>
+    [JsonPropertyName("cooldownMinutes")]
+    public int CooldownMinutes { get; set; } = 5;
+
+    /// <summary>Databases excluded from blocking/deadlock/long-running-query alert evaluation.</summary>
+    [JsonPropertyName("excludedDatabases")]
+    public List<string> ExcludedDatabases { get; set; } = new();
+}
+
+/// <summary>
+/// SMTP alert delivery. Port/SSL/cooldown defaults mirror Lite's (587 / SSL on / 15 minutes).
+/// </summary>
+public sealed class SmtpConfig
+{
+    [JsonPropertyName("host")]
+    public string Host { get; set; } = "";
+
+    [JsonPropertyName("port")]
+    public int Port { get; set; } = 587;
+
+    [JsonPropertyName("useSsl")]
+    public bool UseSsl { get; set; } = true;
+
+    [JsonPropertyName("username")]
+    public string? Username { get; set; }
+
+    /// <summary>DPAPI-LocalMachine-protected SMTP password, base64 — produced by --encrypt-password.</summary>
+    [JsonPropertyName("encryptedPassword")]
+    public string? EncryptedPassword { get; set; }
+
+    [JsonPropertyName("from")]
+    public string From { get; set; } = "";
+
+    /// <summary>Comma-separated recipient list.</summary>
+    [JsonPropertyName("to")]
+    public string To { get; set; } = "";
+
+    /// <summary>Email/webhook channel cooldown between repeated alerts (Lite's default 15).</summary>
+    [JsonPropertyName("emailCooldownMinutes")]
+    public int EmailCooldownMinutes { get; set; } = 15;
+}
+
+/// <summary>Teams/Slack incoming-webhook alert delivery; a channel is enabled by a non-empty URL.</summary>
+public sealed class WebhooksConfig
+{
+    [JsonPropertyName("teamsUrl")]
+    public string TeamsUrl { get; set; } = "";
+
+    [JsonPropertyName("teamsProxy")]
+    public string TeamsProxy { get; set; } = "";
+
+    [JsonPropertyName("slackUrl")]
+    public string SlackUrl { get; set; } = "";
+
+    [JsonPropertyName("slackProxy")]
+    public string SlackProxy { get; set; } = "";
 }
 
 public sealed class MonitoredServer
