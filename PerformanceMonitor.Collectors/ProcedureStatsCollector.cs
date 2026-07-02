@@ -1,0 +1,404 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Data.Common;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace PerformanceMonitor.Collectors;
+
+/// <summary>
+/// Procedure/trigger/function statistics from sys.dm_exec_procedure_stats and friends.
+/// Extracted verbatim from Lite's RemoteCollectorService.ProcedureStats.cs: the standard path is
+/// dynamic SQL (spills columns don't exist in dm_exec_function_stats, so @spills_cols splices per
+/// branch, and the exclusion filter interpolates as double-escaped literals because @sql is itself
+/// a quoted string); Azure SQL DB skips plan_attributes (it reports dbid=1 for all plans) and has
+/// no trigger/function branches. Seven delta groups keyed on plan_handle (falling back to
+/// db.schema.object) to prevent cross-plan contamination.
+/// </summary>
+public sealed class ProcedureStatsCollector : CollectorDefinitionBase<ProcedureStatsCollector.Row>
+{
+    public static ProcedureStatsCollector Instance { get; } = new();
+
+    private ProcedureStatsCollector()
+    {
+    }
+
+    public readonly record struct Row(
+        string DatabaseName,
+        string SchemaName,
+        string ObjectName,
+        string ObjectType,
+        DateTime? CachedTime,
+        DateTime? LastExecutionTime,
+        long ExecutionCount,
+        long TotalWorkerTime,
+        long TotalElapsedTime,
+        long TotalLogicalReads,
+        long TotalPhysicalReads,
+        long TotalLogicalWrites,
+        long MinWorkerTime,
+        long MaxWorkerTime,
+        long MinElapsedTime,
+        long MaxElapsedTime,
+        long MinLogicalReads,
+        long MaxLogicalReads,
+        long MinPhysicalReads,
+        long MaxPhysicalReads,
+        long MinLogicalWrites,
+        long MaxLogicalWrites,
+        long TotalSpills,
+        long MinSpills,
+        long MaxSpills,
+        string? SqlHandle,
+        string? PlanHandle);
+
+    private const string StandardQueryText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+DECLARE
+    @spills_cols nvarchar(400) = N'total_spills = ISNULL(s.total_spills, 0), min_spills = ISNULL(s.min_spills, 0), max_spills = ISNULL(s.max_spills, 0),',
+    @fn_spills_cols nvarchar(400) = N'total_spills = CONVERT(bigint, 0), min_spills = CONVERT(bigint, 0), max_spills = CONVERT(bigint, 0),',
+    @sql nvarchar(max);
+
+SET @sql = CAST(N'
+SELECT /* PerformanceMonitorLite */ TOP (150) * FROM (
+SELECT
+    database_name = d.name,
+    schema_name = OBJECT_SCHEMA_NAME(s.object_id, s.database_id),
+    object_name = OBJECT_NAME(s.object_id, s.database_id),
+    object_type = N''PROCEDURE'',
+    cached_time = s.cached_time,
+    last_execution_time = s.last_execution_time,
+    execution_count = s.execution_count,
+    total_worker_time = s.total_worker_time,
+    total_elapsed_time = s.total_elapsed_time,
+    total_logical_reads = s.total_logical_reads,
+    total_physical_reads = s.total_physical_reads,
+    total_logical_writes = s.total_logical_writes,
+    min_worker_time = s.min_worker_time,
+    max_worker_time = s.max_worker_time,
+    min_elapsed_time = s.min_elapsed_time,
+    max_elapsed_time = s.max_elapsed_time,
+    min_logical_reads = s.min_logical_reads,
+    max_logical_reads = s.max_logical_reads,
+    min_physical_reads = s.min_physical_reads,
+    max_physical_reads = s.max_physical_reads,
+    min_logical_writes = s.min_logical_writes,
+    max_logical_writes = s.max_logical_writes,
+    ' AS nvarchar(max)) + @spills_cols + N'
+    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
+FROM sys.dm_exec_procedure_stats AS s
+CROSS APPLY
+(
+    SELECT
+        dbid = CONVERT(integer, pa.value)
+    FROM sys.dm_exec_plan_attributes(s.plan_handle) AS pa
+    WHERE pa.attribute = N''dbid''
+) AS pa
+INNER JOIN sys.databases AS d
+  ON pa.dbid = d.database_id
+WHERE d.state = 0
+AND   pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
+AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
+/*EXCLUSION_FILTER*/
+
+UNION ALL
+
+SELECT
+    database_name = d.name,
+    schema_name = ISNULL(OBJECT_SCHEMA_NAME(s.object_id, s.database_id), N''dbo''),
+    object_name = COALESCE(
+        OBJECT_NAME(s.object_id, s.database_id),
+        CASE
+            WHEN CHARINDEX(N''CREATE TRIGGER'', st.text) > 0
+            THEN LTRIM(RTRIM(REPLACE(REPLACE(
+                SUBSTRING(
+                    st.text,
+                    CHARINDEX(N''CREATE TRIGGER'', st.text) + 15,
+                    CHARINDEX(N'' ON '', st.text + N'' ON '', CHARINDEX(N''CREATE TRIGGER'', st.text) + 15) - CHARINDEX(N''CREATE TRIGGER'', st.text) - 15
+                ), N''['', N''''), N'']'', N'''')))
+            ELSE N''trigger_'' + CONVERT(nvarchar(20), s.object_id)
+        END
+    ),
+    object_type = N''TRIGGER'',
+    cached_time = s.cached_time,
+    last_execution_time = s.last_execution_time,
+    execution_count = s.execution_count,
+    total_worker_time = s.total_worker_time,
+    total_elapsed_time = s.total_elapsed_time,
+    total_logical_reads = s.total_logical_reads,
+    total_physical_reads = s.total_physical_reads,
+    total_logical_writes = s.total_logical_writes,
+    min_worker_time = s.min_worker_time,
+    max_worker_time = s.max_worker_time,
+    min_elapsed_time = s.min_elapsed_time,
+    max_elapsed_time = s.max_elapsed_time,
+    min_logical_reads = s.min_logical_reads,
+    max_logical_reads = s.max_logical_reads,
+    min_physical_reads = s.min_physical_reads,
+    max_physical_reads = s.max_physical_reads,
+    min_logical_writes = s.min_logical_writes,
+    max_logical_writes = s.max_logical_writes,
+    ' + @spills_cols + CAST(N'
+    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
+FROM sys.dm_exec_trigger_stats AS s
+CROSS APPLY sys.dm_exec_sql_text(s.sql_handle) AS st
+CROSS APPLY
+(
+    SELECT
+        dbid = CONVERT(integer, pa.value)
+    FROM sys.dm_exec_plan_attributes(s.plan_handle) AS pa
+    WHERE pa.attribute = N''dbid''
+) AS pa
+INNER JOIN sys.databases AS d
+  ON pa.dbid = d.database_id
+WHERE d.state = 0
+AND   pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
+AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
+/*EXCLUSION_FILTER*/
+
+UNION ALL
+
+SELECT
+    database_name = d.name,
+    schema_name = OBJECT_SCHEMA_NAME(s.object_id, s.database_id),
+    object_name = OBJECT_NAME(s.object_id, s.database_id),
+    object_type = N''FUNCTION'',
+    cached_time = s.cached_time,
+    last_execution_time = s.last_execution_time,
+    execution_count = s.execution_count,
+    total_worker_time = s.total_worker_time,
+    total_elapsed_time = s.total_elapsed_time,
+    total_logical_reads = s.total_logical_reads,
+    total_physical_reads = s.total_physical_reads,
+    total_logical_writes = s.total_logical_writes,
+    min_worker_time = s.min_worker_time,
+    max_worker_time = s.max_worker_time,
+    min_elapsed_time = s.min_elapsed_time,
+    max_elapsed_time = s.max_elapsed_time,
+    min_logical_reads = s.min_logical_reads,
+    max_logical_reads = s.max_logical_reads,
+    min_physical_reads = s.min_physical_reads,
+    max_physical_reads = s.max_physical_reads,
+    min_logical_writes = s.min_logical_writes,
+    max_logical_writes = s.max_logical_writes,
+    ' AS nvarchar(max)) + @fn_spills_cols + CAST(N'
+    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
+FROM sys.dm_exec_function_stats AS s
+CROSS APPLY
+(
+    SELECT
+        dbid = CONVERT(integer, pa.value)
+    FROM sys.dm_exec_plan_attributes(s.plan_handle) AS pa
+    WHERE pa.attribute = N''dbid''
+) AS pa
+INNER JOIN sys.databases AS d
+  ON pa.dbid = d.database_id
+WHERE d.state = 0
+AND   pa.dbid NOT IN (1, 3, 4, 32761, 32767, ISNULL(DB_ID(N''PerformanceMonitor''), 0))
+AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
+/*EXCLUSION_FILTER*/
+) AS combined
+ORDER BY total_elapsed_time DESC
+OPTION(RECOMPILE);' AS nvarchar(max));
+
+EXECUTE sys.sp_executesql @sql;";
+
+    private const string AzureSqlDbQueryText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT /* PerformanceMonitorLite */ TOP (150)
+    database_name = DB_NAME(),
+    schema_name = OBJECT_SCHEMA_NAME(s.object_id, s.database_id),
+    object_name = OBJECT_NAME(s.object_id, s.database_id),
+    object_type = N'PROCEDURE',
+    cached_time = s.cached_time,
+    last_execution_time = s.last_execution_time,
+    execution_count = s.execution_count,
+    total_worker_time = s.total_worker_time,
+    total_elapsed_time = s.total_elapsed_time,
+    total_logical_reads = s.total_logical_reads,
+    total_physical_reads = s.total_physical_reads,
+    total_logical_writes = s.total_logical_writes,
+    min_worker_time = s.min_worker_time,
+    max_worker_time = s.max_worker_time,
+    min_elapsed_time = s.min_elapsed_time,
+    max_elapsed_time = s.max_elapsed_time,
+    min_logical_reads = s.min_logical_reads,
+    max_logical_reads = s.max_logical_reads,
+    min_physical_reads = s.min_physical_reads,
+    max_physical_reads = s.max_physical_reads,
+    min_logical_writes = s.min_logical_writes,
+    max_logical_writes = s.max_logical_writes,
+    total_spills = ISNULL(s.total_spills, 0),
+    min_spills = ISNULL(s.min_spills, 0),
+    max_spills = ISNULL(s.max_spills, 0),
+    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
+FROM sys.dm_exec_procedure_stats AS s
+WHERE s.database_id = DB_ID()
+AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
+/*EXCLUSION_FILTER*/
+ORDER BY s.total_elapsed_time DESC
+OPTION(RECOMPILE);";
+
+    public override string Name => "procedure_stats";
+
+    public override string TargetTable => "procedure_stats";
+
+    public override CollectorQuery BuildQuery(CollectorContext context)
+    {
+        if (context.Target.IsAzureSqlDb)
+        {
+            /* Azure: single-database scope; the exclusion token is left in place unreplaced in the
+               original (no clause is spliced on Azure) — reproduce exactly. */
+            return new CollectorQuery(AzureSqlDbQueryText);
+        }
+
+        /* Standard query is dynamic SQL (built into @sql then passed to sp_executesql), so the
+           exclusion filter is interpolated as literal N'...' values rather than parameter bindings —
+           doubled escaping because @sql is itself a single-quoted T-SQL string. */
+        var exclusionClause = DatabaseExclusionFilter.BuildLiteralClause(
+            context.ExcludedDatabases, "d.name", forNestedDynamicSql: true);
+
+        return new CollectorQuery(StandardQueryText.Replace("/*EXCLUSION_FILTER*/", exclusionClause, StringComparison.Ordinal));
+    }
+
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    {
+        new CollectorColumn("database_name", CollectorColumnType.Varchar),
+        new CollectorColumn("schema_name", CollectorColumnType.Varchar),
+        new CollectorColumn("object_name", CollectorColumnType.Varchar),
+        new CollectorColumn("object_type", CollectorColumnType.Varchar),
+        new CollectorColumn("cached_time", CollectorColumnType.Timestamp),
+        new CollectorColumn("last_execution_time", CollectorColumnType.Timestamp),
+        new CollectorColumn("execution_count", CollectorColumnType.BigInt),
+        new CollectorColumn("total_worker_time", CollectorColumnType.BigInt),
+        new CollectorColumn("total_elapsed_time", CollectorColumnType.BigInt),
+        new CollectorColumn("total_logical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("total_physical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("total_logical_writes", CollectorColumnType.BigInt),
+        new CollectorColumn("min_worker_time", CollectorColumnType.BigInt),
+        new CollectorColumn("max_worker_time", CollectorColumnType.BigInt),
+        new CollectorColumn("min_elapsed_time", CollectorColumnType.BigInt),
+        new CollectorColumn("max_elapsed_time", CollectorColumnType.BigInt),
+        new CollectorColumn("min_logical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("max_logical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("min_physical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("max_physical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("min_logical_writes", CollectorColumnType.BigInt),
+        new CollectorColumn("max_logical_writes", CollectorColumnType.BigInt),
+        new CollectorColumn("total_spills", CollectorColumnType.BigInt),
+        new CollectorColumn("min_spills", CollectorColumnType.BigInt),
+        new CollectorColumn("max_spills", CollectorColumnType.BigInt),
+        new CollectorColumn("sql_handle", CollectorColumnType.Varchar),
+        new CollectorColumn("plan_handle", CollectorColumnType.Varchar),
+        new CollectorColumn("delta_execution_count", CollectorColumnType.BigInt),
+        new CollectorColumn("delta_worker_time", CollectorColumnType.BigInt),
+        new CollectorColumn("delta_elapsed_time", CollectorColumnType.BigInt),
+        new CollectorColumn("delta_logical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("delta_logical_writes", CollectorColumnType.BigInt),
+        new CollectorColumn("delta_physical_reads", CollectorColumnType.BigInt),
+        new CollectorColumn("delta_spills", CollectorColumnType.BigInt),
+    };
+
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    {
+        var rows = new List<Row>();
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new Row(
+                reader.IsDBNull(0) ? "" : reader.GetString(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? "" : reader.GetString(2),
+                reader.IsDBNull(3) ? "" : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetDateTime(4),
+                reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                reader.GetInt64(6),
+                reader.GetInt64(7),
+                reader.GetInt64(8),
+                reader.GetInt64(9),
+                reader.GetInt64(10),
+                reader.GetInt64(11),
+                reader.IsDBNull(12) ? 0L : reader.GetInt64(12),
+                reader.IsDBNull(13) ? 0L : reader.GetInt64(13),
+                reader.IsDBNull(14) ? 0L : reader.GetInt64(14),
+                reader.IsDBNull(15) ? 0L : reader.GetInt64(15),
+                reader.IsDBNull(16) ? 0L : reader.GetInt64(16),
+                reader.IsDBNull(17) ? 0L : reader.GetInt64(17),
+                reader.IsDBNull(18) ? 0L : reader.GetInt64(18),
+                reader.IsDBNull(19) ? 0L : reader.GetInt64(19),
+                reader.IsDBNull(20) ? 0L : reader.GetInt64(20),
+                reader.IsDBNull(21) ? 0L : reader.GetInt64(21),
+                reader.GetInt64(22),
+                reader.GetInt64(23),
+                reader.GetInt64(24),
+                reader.IsDBNull(25) ? null : reader.GetString(25),
+                reader.IsDBNull(26) ? null : reader.GetString(26)));
+        }
+
+        return rows;
+    }
+
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    {
+        /* Delta key: plan_handle to prevent cross-contamination when multiple plans exist for the
+           same object; the db.schema.object fallback and the seven group names are the parity contract. */
+        var deltaKey = row.PlanHandle ?? $"{row.DatabaseName}.{row.SchemaName}.{row.ObjectName}";
+        var deltaExec = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_exec", deltaKey, row.ExecutionCount, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+        var deltaWorker = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_worker", deltaKey, row.TotalWorkerTime, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+        var deltaElapsed = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_elapsed", deltaKey, row.TotalElapsedTime, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+        var deltaReads = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_reads", deltaKey, row.TotalLogicalReads, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+        var deltaWrites = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_writes", deltaKey, row.TotalLogicalWrites, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+        var deltaPhysReads = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_phys_reads", deltaKey, row.TotalPhysicalReads, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+        var deltaSpills = context.Deltas.CalculateDelta(context.ServerId, "proc_stats_spills", deltaKey, row.TotalSpills, collectionTime: context.CollectionTime, maxGapSeconds: 300);
+
+        writer
+            .Value(row.DatabaseName)
+            .Value(row.SchemaName)
+            .Value(row.ObjectName)
+            .Value(row.ObjectType)
+            .Value(row.CachedTime)
+            .Value(row.LastExecutionTime)
+            .Value(row.ExecutionCount)
+            .Value(row.TotalWorkerTime)
+            .Value(row.TotalElapsedTime)
+            .Value(row.TotalLogicalReads)
+            .Value(row.TotalPhysicalReads)
+            .Value(row.TotalLogicalWrites)
+            .Value(row.MinWorkerTime)
+            .Value(row.MaxWorkerTime)
+            .Value(row.MinElapsedTime)
+            .Value(row.MaxElapsedTime)
+            .Value(row.MinLogicalReads)
+            .Value(row.MaxLogicalReads)
+            .Value(row.MinPhysicalReads)
+            .Value(row.MaxPhysicalReads)
+            .Value(row.MinLogicalWrites)
+            .Value(row.MaxLogicalWrites)
+            .Value(row.TotalSpills)
+            .Value(row.MinSpills)
+            .Value(row.MaxSpills)
+            .Value(row.SqlHandle)
+            .Value(row.PlanHandle)
+            .Value(deltaExec)
+            .Value(deltaWorker)
+            .Value(deltaElapsed)
+            .Value(deltaReads)
+            .Value(deltaWrites)
+            .Value(deltaPhysReads)
+            .Value(deltaSpills);
+    }
+}

@@ -41,4 +41,35 @@ public static class DatabaseExclusionFilter
 
         return ($"AND {columnExpression} NOT IN ({string.Join(", ", paramNames)})", parameters);
     }
+
+    /// <summary>
+    /// Builds a SQL fragment with database names interpolated as literal N'...' values, for
+    /// dynamic-SQL paths where parameter binding is awkward (e.g. inside a string passed to
+    /// sp_executesql). Names come from user-picked checklists of existing databases, so literal
+    /// interpolation with single-quote escaping is safe. When <paramref name="forNestedDynamicSql"/>
+    /// is true, the escape is doubled for use inside an outer T-SQL string that itself becomes a
+    /// dynamic-SQL @sql variable. Ported verbatim from Lite's
+    /// RemoteCollectorService.BuildDatabaseExclusionLiteralClause (identity-pinned by test).
+    /// </summary>
+    public static string BuildLiteralClause(
+        IReadOnlyList<string>? excludedDatabaseNames, string columnExpression, bool forNestedDynamicSql = false)
+    {
+        if (excludedDatabaseNames is null || excludedDatabaseNames.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        string escapedQuote = forNestedDynamicSql ? "''" : "'";
+        string Escape(string s) => forNestedDynamicSql
+            ? s.Replace("'", "''''")
+            : s.Replace("'", "''");
+
+        var quoted = new List<string>(excludedDatabaseNames.Count);
+        foreach (var name in excludedDatabaseNames)
+        {
+            quoted.Add($"N{escapedQuote}{Escape(name)}{escapedQuote}");
+        }
+
+        return $"AND {columnExpression} NOT IN ({string.Join(", ", quoted)})";
+    }
 }
