@@ -745,6 +745,9 @@
       "performancemonitor.analysis": {
         "type": "Project"
       },
+      "performancemonitor.collectors": {
+        "type": "Project"
+      },
       "performancemonitor.common": {
         "type": "Project",
         "dependencies": {
