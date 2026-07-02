@@ -21,7 +21,7 @@ namespace PerformanceMonitor.Collectors;
 /// on-prem. Extracted verbatim from Lite's RemoteCollectorService.Memory.cs. Single row per cycle;
 /// zero rows when the query returns none.
 /// </summary>
-public sealed class MemoryStatsCollector : ICollectorDefinition<MemoryStatsCollector.Row>
+public sealed class MemoryStatsCollector : CollectorDefinitionBase<MemoryStatsCollector.Row>
 {
     public static MemoryStatsCollector Instance { get; } = new();
 
@@ -138,20 +138,20 @@ CROSS JOIN
 ) AS w
 OPTION(RECOMPILE);";
 
-    public string Name => "memory_stats";
+    public override string Name => "memory_stats";
 
-    public string TargetTable => "memory_stats";
+    public override string TargetTable => "memory_stats";
 
-    public string? WatermarkColumn => null;
+    public override string? WatermarkColumn => null;
 
-    public bool AppliesTo(CollectorTargetInfo target) => true;
+    public override bool AppliesTo(CollectorTargetInfo target) => true;
 
-    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => false;
 
-    public CollectorQuery BuildQuery(CollectorContext context)
+    public override CollectorQuery BuildQuery(CollectorContext context)
         => new(context.Target.IsAzureSqlDb ? AzureSqlDbQueryText : OnPremQueryText);
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("total_physical_memory_mb", CollectorColumnType.Decimal),
         new CollectorColumn("available_physical_memory_mb", CollectorColumnType.Decimal),
@@ -167,7 +167,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("current_workers_count", CollectorColumnType.Integer),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         var rows = new List<Row>();
 
@@ -193,7 +193,7 @@ OPTION(RECOMPILE);";
         return rows;
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         writer
             .Value(row.TotalPhysicalMemoryMb)

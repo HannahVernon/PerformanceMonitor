@@ -17,7 +17,7 @@ namespace PerformanceMonitor.Collectors;
 /// Top memory clerks from sys.dm_os_memory_clerks (TOP 25, above 1 MB). Extracted verbatim
 /// from Lite's RemoteCollectorService.Memory.cs.
 /// </summary>
-public sealed class MemoryClerksCollector : ICollectorDefinition<MemoryClerksCollector.Row>
+public sealed class MemoryClerksCollector : CollectorDefinitionBase<MemoryClerksCollector.Row>
 {
     public static MemoryClerksCollector Instance { get; } = new();
 
@@ -42,25 +42,25 @@ ORDER BY
     SUM(mc.pages_kb) DESC
 OPTION(RECOMPILE);";
 
-    public string Name => "memory_clerks";
+    public override string Name => "memory_clerks";
 
-    public string TargetTable => "memory_clerks";
+    public override string TargetTable => "memory_clerks";
 
-    public string? WatermarkColumn => null;
+    public override string? WatermarkColumn => null;
 
-    public bool AppliesTo(CollectorTargetInfo target) => true;
+    public override bool AppliesTo(CollectorTargetInfo target) => true;
 
-    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => false;
 
-    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+    public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("clerk_type", CollectorColumnType.Varchar),
         new CollectorColumn("memory_mb", CollectorColumnType.Decimal),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         var rows = new List<Row>();
 
@@ -72,7 +72,7 @@ OPTION(RECOMPILE);";
         return rows;
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         writer
             .Value(row.ClerkType)   /* clerk_type VARCHAR */

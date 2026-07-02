@@ -20,7 +20,7 @@ namespace PerformanceMonitor.Collectors;
 /// RemoteCollectorService.TempDb.cs. Always yields exactly one row — zeros when the result
 /// sets are empty — matching the original collector's behavior.
 /// </summary>
-public sealed class TempDbStatsCollector : ICollectorDefinition<TempDbStatsCollector.Row>
+public sealed class TempDbStatsCollector : CollectorDefinitionBase<TempDbStatsCollector.Row>
 {
     public static TempDbStatsCollector Instance { get; } = new();
 
@@ -38,17 +38,17 @@ public sealed class TempDbStatsCollector : ICollectorDefinition<TempDbStatsColle
         int TopSessionId,
         decimal TopSessionMb);
 
-    public string Name => "tempdb_stats";
+    public override string Name => "tempdb_stats";
 
-    public string TargetTable => "tempdb_stats";
+    public override string TargetTable => "tempdb_stats";
 
-    public string? WatermarkColumn => null;
+    public override string? WatermarkColumn => null;
 
-    public bool AppliesTo(CollectorTargetInfo target) => true;
+    public override bool AppliesTo(CollectorTargetInfo target) => true;
 
-    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => false;
 
-    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+    public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -70,7 +70,7 @@ FROM sys.dm_db_session_space_usage AS ssu
 ORDER BY (ssu.user_objects_alloc_page_count + ssu.internal_objects_alloc_page_count) DESC
 OPTION(RECOMPILE);";
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("user_object_reserved_mb", CollectorColumnType.Decimal),
         new CollectorColumn("internal_object_reserved_mb", CollectorColumnType.Decimal),
@@ -82,7 +82,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("top_session_tempdb_mb", CollectorColumnType.Decimal),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         decimal userObjMb = 0, internalObjMb = 0, versionStoreMb = 0, totalReservedMb = 0, unallocatedMb = 0;
         int topSessionId = 0;
@@ -111,7 +111,7 @@ OPTION(RECOMPILE);";
         };
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         writer
             .Value(row.UserObjectReservedMb)      /* user_object_reserved_mb DECIMAL */

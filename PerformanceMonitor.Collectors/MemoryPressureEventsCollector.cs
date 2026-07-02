@@ -21,7 +21,7 @@ namespace PerformanceMonitor.Collectors;
 /// Client-side watermark dedup — the computed sample_time cannot be filtered server-side.
 /// Extracted verbatim from Lite's RemoteCollectorService.Memory.cs.
 /// </summary>
-public sealed class MemoryPressureEventsCollector : ICollectorDefinition<MemoryPressureEventsCollector.Row>
+public sealed class MemoryPressureEventsCollector : CollectorDefinitionBase<MemoryPressureEventsCollector.Row>
 {
     public static MemoryPressureEventsCollector Instance { get; } = new();
 
@@ -56,20 +56,20 @@ FROM
 ORDER BY t.timestamp
 OPTION(RECOMPILE);";
 
-    public string Name => "memory_pressure_events";
+    public override string Name => "memory_pressure_events";
 
-    public string TargetTable => "memory_pressure_events";
+    public override string TargetTable => "memory_pressure_events";
 
-    public string? WatermarkColumn => "sample_time";
+    public override string? WatermarkColumn => "sample_time";
 
     /// <summary>Ring buffers are not exposed on Azure SQL DB — skip the cycle entirely.</summary>
-    public bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
 
-    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => false;
 
-    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+    public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
-    public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
         new CollectorColumn("sample_time", CollectorColumnType.Timestamp),
         new CollectorColumn("memory_notification", CollectorColumnType.Varchar),
@@ -77,7 +77,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("memory_indicators_system", CollectorColumnType.Integer),
     };
 
-    public async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
     {
         var rows = new List<Row>();
 
@@ -101,7 +101,7 @@ OPTION(RECOMPILE);";
         return rows;
     }
 
-    public void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
     {
         writer
             .Value(row.SampleTime)            /* sample_time TIMESTAMP */
