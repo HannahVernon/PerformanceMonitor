@@ -50,6 +50,8 @@ public sealed class MemoryGrantsCollector : ICollectorDefinition<MemoryGrantsCol
 
     public bool AppliesTo(CollectorTargetInfo target) => true;
 
+    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+
     public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     private const string QueryText = @"

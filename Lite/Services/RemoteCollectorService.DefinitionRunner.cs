@@ -7,8 +7,10 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
@@ -62,25 +64,45 @@ public partial class RemoteCollectorService
             Target = target,
             Watermark = watermark,
             IgnoredWaitTypes = _ignoredWaitTypes.Value,
+            ExcludedDatabases = server.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
         };
 
         var plan = definition.BuildQuery(context);
 
         var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(plan.Text, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
+        List<TRow> rows;
 
-        foreach (var parameter in plan.Parameters)
+        if (definition.RunsPerDatabase(context.Target))
         {
-            command.Parameters.Add(new SqlParameter(parameter.Name, ToSqlDbType(parameter.Type))
+            /* Azure SQL DB scopes some DMVs to the connected database — run the query once per
+               database, skipping (and debug-logging) databases that error, matching the original
+               hand-rolled collectors. */
+            rows = new List<TRow>();
+            var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
+
+            foreach (var databaseName in databases)
             {
-                Value = parameter.Value ?? DBNull.Value,
-            });
+                try
+                {
+                    using var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
+                    using var dbCommand = CreateCollectorCommand(plan, dbConnection);
+                    using var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken);
+                    rows.AddRange(await definition.ReadAsync(dbReader, context, cancellationToken));
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug("Skipping database '{Database}' for {Collector}: {Error}", databaseName, definition.Name, ex.Message);
+                }
+            }
+        }
+        else
+        {
+            using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
+            using var command = CreateCollectorCommand(plan, sqlConnection);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            rows = await definition.ReadAsync(reader, context, cancellationToken);
         }
 
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var rows = await definition.ReadAsync(reader, context, cancellationToken);
         sqlSw.Stop();
         _lastSqlMs = sqlSw.ElapsedMilliseconds;
 
@@ -119,9 +141,22 @@ public partial class RemoteCollectorService
         return rowsWritten;
     }
 
-    private static SqlDbType ToSqlDbType(CollectorParameterType type) => type switch
+    private static SqlCommand CreateCollectorCommand(CollectorQuery plan, SqlConnection connection)
     {
-        CollectorParameterType.DateTime2 => SqlDbType.DateTime2,
-        _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unmapped collector parameter type"),
+        var command = new SqlCommand(plan.Text, connection) { CommandTimeout = CommandTimeoutSeconds };
+
+        foreach (var parameter in plan.Parameters)
+        {
+            command.Parameters.Add(ToSqlParameter(parameter));
+        }
+
+        return command;
+    }
+
+    private static SqlParameter ToSqlParameter(CollectorParameter parameter) => parameter.Type switch
+    {
+        CollectorParameterType.DateTime2 => new SqlParameter(parameter.Name, SqlDbType.DateTime2) { Value = parameter.Value ?? DBNull.Value },
+        CollectorParameterType.NVarChar128 => new SqlParameter(parameter.Name, SqlDbType.NVarChar, 128) { Value = parameter.Value ?? DBNull.Value },
+        _ => throw new ArgumentOutOfRangeException(nameof(parameter), parameter.Type, "Unmapped collector parameter type"),
     };
 }

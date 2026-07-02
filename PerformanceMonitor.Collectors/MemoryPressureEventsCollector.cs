@@ -65,6 +65,8 @@ OPTION(RECOMPILE);";
     /// <summary>Ring buffers are not exposed on Azure SQL DB — skip the cycle entirely.</summary>
     public bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
 
+    public bool RunsPerDatabase(CollectorTargetInfo target) => false;
+
     public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]

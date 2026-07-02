@@ -38,6 +38,15 @@ public interface ICollectorDefinition<TRow>
     bool AppliesTo(CollectorTargetInfo target);
 
     /// <summary>
+    /// True when the query must run once per database with a per-database connection (Azure SQL
+    /// DB scopes some DMVs to the connected database — e.g. dm_io_virtual_file_stats). The host
+    /// enumerates databases, opens each connection, and calls <see cref="ReadAsync"/> per reader,
+    /// aggregating rows; a database that errors is skipped and logged, matching the original
+    /// collectors.
+    /// </summary>
+    bool RunsPerDatabase(CollectorTargetInfo target);
+
+    /// <summary>
     /// Time column the host should read its latest already-collected value of (from the host's
     /// own store) before building the query — exposed to the definition as
     /// <see cref="CollectorContext.Watermark"/> for server-side filters and client-side dedup.
