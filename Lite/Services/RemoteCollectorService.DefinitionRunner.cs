@@ -72,8 +72,6 @@ public partial class RemoteCollectorService
             ExcludedDatabases = server.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
         };
 
-        var plan = definition.BuildQuery(context);
-
         var sqlSw = Stopwatch.StartNew();
         List<TRow> rows;
 
@@ -82,6 +80,7 @@ public partial class RemoteCollectorService
             /* Azure SQL DB scopes some DMVs to the connected database — run the query once per
                database, skipping (and debug-logging) databases that error, matching the original
                hand-rolled collectors. */
+            var plan = definition.BuildQuery(context);
             rows = new List<TRow>();
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
@@ -103,26 +102,70 @@ public partial class RemoteCollectorService
         else
         {
             using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-            using (var command = CreateCollectorCommand(plan, sqlConnection))
-            using (var reader = await command.ExecuteReaderAsync(cancellationToken))
-            {
-                rows = await definition.ReadAsync(reader, context, cancellationToken);
-            }
 
-            /* Optional best-effort second query on the same connection (e.g. server_properties'
-               WS5 health probe). Failure-isolated: it can never fail the primary rows. */
-            var supplementalPlan = definition.BuildSupplementalQuery(context);
-            if (supplementalPlan is not null)
+            var enumerationPlan = definition.BuildEnumerationQuery(context);
+            if (enumerationPlan is not null)
             {
-                try
+                /* Enumeration shape (the [db].sys.sp_executesql idiom): list items first, then
+                   run one query per item ON THE SAME CONNECTION; an item that fails with a
+                   SqlException is skipped with a warning, matching the original collectors. */
+                var items = new List<string>();
+                using (var enumerationCommand = CreateCollectorCommand(enumerationPlan, sqlConnection))
+                using (var enumerationReader = await enumerationCommand.ExecuteReaderAsync(cancellationToken))
                 {
-                    using var supplementalCommand = CreateCollectorCommand(supplementalPlan, sqlConnection);
-                    using var supplementalReader = await supplementalCommand.ExecuteReaderAsync(cancellationToken);
-                    await definition.ApplySupplementalAsync(rows, supplementalReader, context, cancellationToken);
+                    while (await enumerationReader.ReadAsync(cancellationToken))
+                    {
+                        items.Add(enumerationReader.GetString(0));
+                    }
                 }
-                catch (Exception ex)
+
+                if (items.Count == 0)
                 {
-                    _logger?.LogDebug(ex, "Supplemental query for {Collector} failed; continuing without it", definition.Name);
+                    /* No items → no storage phase, matching the original's early return. */
+                    return 0;
+                }
+
+                rows = new List<TRow>();
+                foreach (var item in items)
+                {
+                    try
+                    {
+                        using var itemCommand = CreateCollectorCommand(definition.BuildPerItemQuery(item, context), sqlConnection);
+                        using var itemReader = await itemCommand.ExecuteReaderAsync(cancellationToken);
+                        await definition.ReadItemAsync(item, itemReader, rows, context, cancellationToken);
+                    }
+                    catch (SqlException ex)
+                    {
+                        _logger?.LogWarning("Failed to collect {Collector} from [{Database}] on '{Server}': {Message}",
+                            definition.Name, item, server.DisplayName, ex.Message);
+                    }
+                }
+
+            }
+            else
+            {
+                var plan = definition.BuildQuery(context);
+                using (var command = CreateCollectorCommand(plan, sqlConnection))
+                using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                {
+                    rows = await definition.ReadAsync(reader, context, cancellationToken);
+                }
+
+                /* Optional best-effort second query on the same connection (e.g. server_properties'
+                   WS5 health probe). Failure-isolated: it can never fail the primary rows. */
+                var supplementalPlan = definition.BuildSupplementalQuery(context);
+                if (supplementalPlan is not null)
+                {
+                    try
+                    {
+                        using var supplementalCommand = CreateCollectorCommand(supplementalPlan, sqlConnection);
+                        using var supplementalReader = await supplementalCommand.ExecuteReaderAsync(cancellationToken);
+                        await definition.ApplySupplementalAsync(rows, supplementalReader, context, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogDebug(ex, "Supplemental query for {Collector} failed; continuing without it", definition.Name);
+                    }
                 }
             }
         }

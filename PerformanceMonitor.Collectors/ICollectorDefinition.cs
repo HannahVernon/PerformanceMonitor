@@ -73,6 +73,22 @@ public interface ICollectorDefinition<TRow>
     /// <summary>Merges the supplemental reader's data into the already-read rows.</summary>
     ValueTask ApplySupplementalAsync(List<TRow> rows, DbDataReader reader, CollectorContext context, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Optional enumeration shape (the "[db].sys.sp_executesql" idiom): when non-null, the host
+    /// runs this query first (single string column, e.g. database names), then executes
+    /// <see cref="BuildPerItemQuery"/> once per item ON THE SAME CONNECTION, feeding each reader
+    /// to <see cref="ReadItemAsync"/>. An item whose query fails with a SqlException is skipped
+    /// with a warning, matching the original collectors. Zero items short-circuits the cycle.
+    /// <see cref="ReadAsync"/> is not called for enumerating collectors.
+    /// </summary>
+    CollectorQuery? BuildEnumerationQuery(CollectorContext context);
+
+    /// <summary>Builds the per-item query for one enumerated item (e.g. one database).</summary>
+    CollectorQuery BuildPerItemQuery(string item, CollectorContext context);
+
+    /// <summary>Reads one enumerated item's result rows, appending to the shared accumulator.</summary>
+    ValueTask ReadItemAsync(string item, DbDataReader reader, List<TRow> rows, CollectorContext context, CancellationToken cancellationToken);
+
     /// <summary>Payload columns in exactly the order <see cref="WritePayload"/> emits them.</summary>
     IReadOnlyList<CollectorColumn> PayloadColumns { get; }
 
