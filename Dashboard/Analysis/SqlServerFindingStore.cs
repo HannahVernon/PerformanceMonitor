@@ -140,34 +140,7 @@ IF COL_LENGTH(N'config.analysis_findings', N'incident_id') IS NULL
                 if (mutedHashes.Contains(story.StoryPathHash))
                     continue;
 
-                survivors.Add(new AnalysisFinding
-                {
-                    FindingId = _nextId++,
-                    AnalysisTime = analysisTime,
-                    ServerId = context.ServerId,
-                    ServerName = context.ServerName,
-                    // The context window is in the SERVER's local clock (so windowed reads match
-                    // the collectors' SYSDATETIME rows); convert back to UTC for persistence so the
-                    // stored time_range_* stay UTC — the reader's AsUtc, the deep-link offset math,
-                    // and the retention purge all continue to assume UTC. (offset = SYSDATETIME −
-                    // SYSUTCDATETIME, so local − offset = UTC.)
-                    TimeRangeStart = context.TimeRangeStart - context.ServerUtcOffset,
-                    TimeRangeEnd = context.TimeRangeEnd - context.ServerUtcOffset,
-                    Severity = story.Severity,
-                    Confidence = story.Confidence,
-                    Category = story.Category,
-                    StoryPath = story.StoryPath,
-                    StoryPathHash = story.StoryPathHash,
-                    IncidentId = story.IncidentId,
-                    StoryText = story.StoryText,
-                    RootFactKey = story.RootFactKey,
-                    RootFactValue = story.RootFactValue,
-                    LeafFactKey = story.LeafFactKey,
-                    LeafFactValue = story.LeafFactValue,
-                    FactCount = story.FactCount,
-                    // Carried in-memory only; no analysis_findings column for it.
-                    RootFactMetadata = story.RootFactMetadata
-                });
+                survivors.Add(MapStoryToFinding(story, context, analysisTime, _nextId++));
             }
         }
         catch (Exception ex)
@@ -176,6 +149,48 @@ IF COL_LENGTH(N'config.analysis_findings', N'incident_id') IS NULL
         }
 
         return survivors;
+    }
+
+    /// <summary>
+    /// Maps a scored story to the finding shape this store persists. Internal so the mapping is
+    /// unit-testable — the DatabaseName drop this extraction fixed survived unnoticed because the
+    /// mapping was buried in a connection-opening method.
+    /// </summary>
+    internal static AnalysisFinding MapStoryToFinding(AnalysisStory story, AnalysisContext context, DateTime analysisTime, long findingId)
+    {
+        return new AnalysisFinding
+        {
+            FindingId = findingId,
+            AnalysisTime = analysisTime,
+            ServerId = context.ServerId,
+            ServerName = context.ServerName,
+            // Lite's FindingStore has always persisted the story's database; the Dashboard twin
+            // dropped it here and stored NULL database_name on every finding (surfaced by the
+            // Darling PgFindingStore port), breaking per-database display and the database-scoped
+            // mute path for stored rows.
+            DatabaseName = story.DatabaseName,
+            // The context window is in the SERVER's local clock (so windowed reads match
+            // the collectors' SYSDATETIME rows); convert back to UTC for persistence so the
+            // stored time_range_* stay UTC — the reader's AsUtc, the deep-link offset math,
+            // and the retention purge all continue to assume UTC. (offset = SYSDATETIME −
+            // SYSUTCDATETIME, so local − offset = UTC.)
+            TimeRangeStart = context.TimeRangeStart - context.ServerUtcOffset,
+            TimeRangeEnd = context.TimeRangeEnd - context.ServerUtcOffset,
+            Severity = story.Severity,
+            Confidence = story.Confidence,
+            Category = story.Category,
+            StoryPath = story.StoryPath,
+            StoryPathHash = story.StoryPathHash,
+            IncidentId = story.IncidentId,
+            StoryText = story.StoryText,
+            RootFactKey = story.RootFactKey,
+            RootFactValue = story.RootFactValue,
+            LeafFactKey = story.LeafFactKey,
+            LeafFactValue = story.LeafFactValue,
+            FactCount = story.FactCount,
+            // Carried in-memory only; no analysis_findings column for it.
+            RootFactMetadata = story.RootFactMetadata
+        };
     }
 
     /// <summary>
@@ -278,7 +293,7 @@ SELECT
     time_range_start, time_range_end, severity, confidence, category,
     story_path, story_path_hash, story_text,
     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count,
-    incident_id
+    incident_id, remediation_action_json
 FROM config.analysis_findings
 WHERE server_id = @serverId
 AND   analysis_time = (
@@ -495,10 +510,12 @@ VALUES
             IncidentId = reader.FieldCount > 18 && !reader.IsDBNull(18) ? reader.GetString(18) : string.Empty
         };
 
-        // D2: GetRecentFindingsAsync selects remediation_action_json (now ordinal 19, after
-        // incident_id); GetLatestFindingsAsync omits it, so guard by field count before reading. The
-        // BUILT action is deserialized via the SAME serializer the alert path uses, so the
-        // Recommendations surface can drive Apply + the two-sided consent gate from storage.
+        // D2: both GetRecentFindingsAsync and GetLatestFindingsAsync now select
+        // remediation_action_json at ordinal 19 (GetLatest previously omitted it, forcing the
+        // Recommendations reader onto GetRecent + a manual latest-run trim); the field-count guard
+        // stays for safety. The BUILT action is deserialized via the SAME serializer the alert
+        // path uses, so the Recommendations surface can drive Apply + the two-sided consent gate
+        // from storage.
         if (reader.FieldCount > 19 && !reader.IsDBNull(19))
             finding.Remediation = AlertContextSerializer.DeserializeAction(reader.GetString(19));
 
