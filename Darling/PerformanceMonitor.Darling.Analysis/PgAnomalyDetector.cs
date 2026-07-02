@@ -1,0 +1,951 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Npgsql;
+using PerformanceMonitor.Analysis;
+
+namespace PerformanceMonitor.Darling.Analysis;
+
+/// <summary>
+/// Detects anomalies by comparing the analysis window's metrics against
+/// time-bucketed baselines (hour-of-day x day-of-week, 30-day rolling window) —
+/// Lite's AnomalyDetector (Lite/Analysis/AnomalyDetector.cs) ported for the
+/// analysis slice AN2b onto Darling's Postgres store: the same nine detector
+/// methods plus the HasBaselineDataAsync gate, the same fact keys, metadata
+/// keys, thresholds, and severity inputs, and the same per-detector try/catch
+/// tolerance (a failing detector logs and contributes nothing; it never fails
+/// the run).
+///
+/// Two detection patterns:
+/// - Z-score: (observed - mean) / stddev — used for continuous metrics
+///   (CPU, batch requests, I/O latency, session counts, query duration, memory)
+/// - Ratio: currentRate / baselineRate — used for rate/event metrics
+///   (wait stats, blocking, deadlocks)
+///
+/// Baseline computation and caching are handled by <see cref="PgBaselineProvider"/>.
+///
+/// <para>
+/// Postgres discipline (see PgFindingStore): the SQL is Lite-verbatim against the
+/// V4 passthrough views (already dialect-shared — no QUALIFY in the detector
+/// queries), with every window bound a naive-UTC Kind-Unspecified parameter.
+/// Lite's SQL contains no bare NOW()/CURRENT_TIMESTAMP; the one C#-side "now"
+/// (the 30-day baseline-data gate in <see cref="HasBaselineDataSql"/>'s $2) is
+/// bound as a naive-UTC parameter exactly like Lite binds DateTime.UtcNow.
+/// SQL is exposed const so Darling.Tests can pin the dialect ungated
+/// ($N positional parameters, no QUALIFY, no bare now(), no N'' literals) —
+/// the PgFindingStore/DarlingAlertReadAdapter pattern.
+/// </para>
+/// </summary>
+public class PgAnomalyDetector
+{
+    private readonly NpgsqlDataSource _postgres;
+    private readonly PgBaselineProvider _baselineProvider;
+    private readonly ILogger? _logger;
+
+    /// <summary>
+    /// Default number of standard deviations above baseline mean to flag as anomalous.
+    /// </summary>
+    private const double DefaultDeviationThreshold = 2.0;
+
+    /// <summary>
+    /// Default ratio threshold for rate-based anomaly detection (wait stats).
+    /// </summary>
+    private const double DefaultRatioThreshold = 5.0;
+
+    /// <summary>
+    /// Default ratio threshold for event-based anomaly detection (blocking/deadlocks).
+    /// </summary>
+    private const double DefaultEventRatioThreshold = 3.0;
+
+    /// <summary>
+    /// Per-metric deviation thresholds. Metrics not listed use DefaultDeviationThreshold.
+    /// </summary>
+    private readonly Dictionary<string, double> _deviationThresholds = new();
+
+    public PgAnomalyDetector(NpgsqlDataSource postgres, PgBaselineProvider baselineProvider, ILogger? logger = null)
+    {
+        _postgres = postgres ?? throw new ArgumentNullException(nameof(postgres));
+        _baselineProvider = baselineProvider ?? throw new ArgumentNullException(nameof(baselineProvider));
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Sets a custom deviation threshold for a specific metric.
+    /// </summary>
+    public void SetDeviationThreshold(string metricName, double threshold)
+    {
+        _deviationThresholds[metricName] = threshold;
+    }
+
+    private double GetDeviationThreshold(string metricName)
+    {
+        return _deviationThresholds.TryGetValue(metricName, out var threshold)
+            ? threshold
+            : DefaultDeviationThreshold;
+    }
+
+    /// <summary>
+    /// Adds baseline context metadata to an anomaly fact's metadata dictionary.
+    /// </summary>
+    private static void AddBaselineContext(Dictionary<string, double> metadata, BaselineBucket baseline)
+    {
+        metadata["baseline_hour"] = baseline.HourOfDay;
+        metadata["baseline_dow"] = baseline.DayOfWeek;
+        metadata["baseline_tier"] = (double)baseline.Tier;
+    }
+
+    /// <summary>
+    /// Detects anomalies by comparing the analysis window against time-bucketed baselines.
+    /// Returns anomaly facts to be merged into the main fact list.
+    /// </summary>
+    public async Task<List<Fact>> DetectAnomaliesAsync(AnalysisContext context)
+    {
+        var anomalies = new List<Fact>();
+
+        // Check if baseline period has any data at all — if not, skip all anomaly detection.
+        if (!await HasBaselineDataAsync(context.ServerId))
+            return anomalies;
+
+        // Existing detection methods (upgraded to time-bucketed baselines)
+        await DetectCpuAnomalies(context, anomalies);
+        await DetectWaitAnomalies(context, anomalies);
+        await DetectBlockingAnomalies(context, anomalies);
+        await DetectIoAnomalies(context, anomalies);
+
+        // New detection methods
+        await DetectBatchRequestAnomalies(context, anomalies);
+        await DetectSessionAnomalies(context, anomalies);
+        await DetectQueryDurationAnomalies(context, anomalies);
+        await DetectMemoryAnomalies(context, anomalies);
+        await DetectObjectStatsAnomalies(context, anomalies);
+
+        return anomalies;
+    }
+
+    /* ---------------- SQL (Lite-verbatim, PG dialect only where forced) ---------------- */
+
+    /// <summary>
+    /// Baseline-data gate: wait_stats as canary — if waits are collected, other data is too.
+    /// $2 is the ONLY "now"-derived bound in this class (DateTime.UtcNow.AddDays(-30), bound
+    /// naive-UTC Kind-Unspecified — never a bare now(), which would be timestamptz).
+    /// </summary>
+    public const string HasBaselineDataSql = @"
+SELECT (SELECT COUNT(*) FROM v_wait_stats
+        WHERE server_id = $1 AND collection_time >= $2)
+     + (SELECT COUNT(*) FROM v_cpu_utilization_stats
+        WHERE server_id = $1 AND collection_time >= $2)";
+
+    public const string CpuWindowSql = @"
+SELECT MAX(sqlserver_cpu_utilization) AS peak_cpu,
+       AVG(sqlserver_cpu_utilization) AS avg_cpu,
+       COUNT(*) AS sample_count,
+       (SELECT collection_time FROM v_cpu_utilization_stats
+        WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+        ORDER BY sqlserver_cpu_utilization DESC LIMIT 1) AS peak_time
+FROM v_cpu_utilization_stats
+WHERE server_id = $1
+AND   collection_time >= $2 AND collection_time < $3";
+
+    public const string WaitWindowSql = @"
+SELECT wait_type,
+       SUM(delta_wait_time_ms)::BIGINT AS total_ms
+FROM v_wait_stats
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+AND   delta_wait_time_ms > 0
+GROUP BY wait_type
+HAVING SUM(delta_wait_time_ms) > 10000
+ORDER BY total_ms DESC
+LIMIT 10";
+
+    /* current_blocking: prefer the blocked-process-report; fall back to the always-on DMV
+       snapshot so RDS (where the BPR session is empty) still counts blocking. Mirrors the
+       overview/alert path (Lite LocalDataService.Overview.cs / LocalDataService.Blocking.cs). */
+    public const string BlockingWindowSql = @"
+SELECT
+    COALESCE(NULLIF(
+        (SELECT COUNT(*) FROM v_blocked_process_reports
+         WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3), 0),
+        (SELECT COUNT(*) FROM v_dmv_blocking_snapshots
+         WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3)) AS current_blocking,
+    (SELECT COUNT(*) FROM v_deadlocks
+     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS current_deadlocks";
+
+    public const string IoWindowSql = @"
+SELECT AVG(delta_stall_read_ms * 1.0 / NULLIF(delta_reads, 0)) AS avg_read_lat,
+       AVG(delta_stall_write_ms * 1.0 / NULLIF(delta_writes, 0)) AS avg_write_lat
+FROM v_file_io_stats
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+AND   (delta_reads > 0 OR delta_writes > 0)";
+
+    public const string BatchRequestWindowSql = @"
+SELECT AVG(delta_cntr_value) AS avg_batch,
+       MAX(delta_cntr_value) AS peak_batch,
+       COUNT(*) AS sample_count
+FROM v_perfmon_stats
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+AND   counter_name = 'Batch Requests/sec'
+AND   delta_cntr_value >= 0";
+
+    public const string SessionWindowSql = @"
+WITH per_collection AS (
+    SELECT collection_time,
+           SUM(connection_count)::DOUBLE PRECISION AS total_connections
+    FROM v_session_stats
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    GROUP BY collection_time
+)
+SELECT AVG(total_connections) AS avg_connections,
+       MAX(total_connections) AS peak_connections,
+       COUNT(*) AS sample_count
+FROM per_collection";
+
+    public const string QueryDurationWindowSql = @"
+WITH per_collection AS (
+    SELECT collection_time,
+           SUM(delta_elapsed_time)::DOUBLE PRECISION AS total_elapsed
+    FROM v_query_stats
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    AND   delta_execution_count > 0
+    AND   delta_elapsed_time >= 0
+    GROUP BY collection_time
+)
+SELECT AVG(total_elapsed) AS avg_elapsed,
+       MAX(total_elapsed) AS peak_elapsed,
+       COUNT(*) AS sample_count
+FROM per_collection";
+
+    public const string MemoryWindowSql = @"
+SELECT AVG(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS avg_pressure,
+       MAX(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS peak_pressure,
+       COUNT(*) AS sample_count
+FROM v_memory_stats
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+AND   target_server_memory_mb > 0";
+
+    public const string ObjectGrowthSql = @"
+WITH snaps AS (SELECT DISTINCT collection_time FROM v_index_object_stats WHERE server_id = $1 ORDER BY collection_time DESC LIMIT 2),
+latest AS (SELECT MAX(collection_time) t FROM snaps),
+prior AS (SELECT MIN(collection_time) t FROM snaps),
+cur AS (SELECT database_name, object_id, MAX(schema_name) schema_name, MAX(table_name) table_name, SUM(reserved_mb) mb
+        FROM v_index_object_stats WHERE server_id = $1 AND collection_time = (SELECT t FROM latest) GROUP BY database_name, object_id),
+prv AS (SELECT database_name, object_id, SUM(reserved_mb) mb
+        FROM v_index_object_stats WHERE server_id = $1 AND collection_time = (SELECT t FROM prior) GROUP BY database_name, object_id)
+SELECT cur.database_name, cur.schema_name, cur.table_name, prv.mb AS prior_mb, cur.mb AS current_mb,
+       cur.mb - prv.mb AS growth_mb,
+       CASE WHEN prv.mb > 0 THEN (cur.mb - prv.mb) * 100.0 / prv.mb ELSE 0 END AS growth_pct
+FROM cur JOIN prv ON cur.database_name = prv.database_name AND cur.object_id = prv.object_id
+WHERE (SELECT t FROM latest) <> (SELECT t FROM prior)
+AND   cur.mb - prv.mb >= $2
+AND   (CASE WHEN prv.mb > 0 THEN (cur.mb - prv.mb) * 100.0 / prv.mb ELSE 0 END) >= $3
+ORDER BY growth_mb DESC LIMIT 1";
+
+    public const string ObjectContentionSql = @"
+WITH snaps AS (SELECT DISTINCT collection_time FROM v_index_object_stats WHERE server_id = $1 ORDER BY collection_time DESC LIMIT 2),
+latest AS (SELECT MAX(collection_time) t FROM snaps),
+prior AS (SELECT MIN(collection_time) t FROM snaps),
+cur AS (SELECT database_name, object_id, index_id, schema_name, table_name, index_name,
+               COALESCE(row_lock_wait_in_ms,0) ms, COALESCE(index_lock_promotion_count,0) esc
+        FROM v_index_object_stats WHERE server_id = $1 AND collection_time = (SELECT t FROM latest)),
+prv AS (SELECT database_name, object_id, index_id, COALESCE(row_lock_wait_in_ms,0) ms, COALESCE(index_lock_promotion_count,0) esc
+        FROM v_index_object_stats WHERE server_id = $1 AND collection_time = (SELECT t FROM prior))
+SELECT cur.database_name, cur.schema_name, cur.table_name, cur.index_name,
+       cur.ms - prv.ms AS ms_delta, cur.esc - prv.esc AS esc_delta
+FROM cur JOIN prv ON cur.database_name = prv.database_name AND cur.object_id = prv.object_id AND cur.index_id = prv.index_id
+WHERE (SELECT t FROM latest) <> (SELECT t FROM prior)
+AND   cur.ms >= prv.ms
+AND   cur.ms - prv.ms >= $2
+ORDER BY ms_delta DESC LIMIT 1";
+
+    /* ---------------- detectors (Lite-verbatim logic) ---------------- */
+
+    /// <summary>
+    /// Day-over-day object/index detection (delta-based, not stddev-baseline) since the
+    /// index_object_stats collector runs daily and its counters are cumulative.
+    /// Emits ANOMALY_OBJECT_GROWTH for the biggest table grower over threshold and
+    /// ANOMALY_OBJECT_CONTENTION for the index with the largest new lock-wait time.
+    /// </summary>
+    private const decimal ObjectGrowthMbThreshold = 100m;   // ignore tables that grew less than 100 MB
+    private const double ObjectGrowthPctThreshold = 20.0;   // ...and less than 20% day-over-day
+    private const long ObjectLockWaitMsDeltaThreshold = 60000; // 1 minute of new lock waits
+
+    private async Task DetectObjectStatsAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            // Growth: biggest day-over-day table grower (indexes rolled up) over threshold.
+            using (var cmd = new NpgsqlCommand(ObjectGrowthSql, connection))
+            {
+                cmd.Parameters.AddWithValue(context.ServerId);
+                cmd.Parameters.AddWithValue(ObjectGrowthMbThreshold);
+                cmd.Parameters.AddWithValue(ObjectGrowthPctThreshold);
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    var db = reader.GetString(0);
+                    var gSchema = reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString();
+                    var gTable = reader.IsDBNull(2) ? null : reader.GetValue(2)?.ToString();
+                    var growthMb = Convert.ToDouble(reader.GetValue(5));
+                    var growthPct = Convert.ToDouble(reader.GetValue(6));
+                    anomalies.Add(new Fact
+                    {
+                        Source = "anomaly",
+                        Key = "ANOMALY_OBJECT_GROWTH",
+                        Value = growthMb,
+                        ServerId = context.ServerId,
+                        DatabaseName = db,
+                        ObjectName = string.IsNullOrEmpty(gTable) ? null : string.IsNullOrEmpty(gSchema) ? gTable : $"{gSchema}.{gTable}",
+                        Metadata = new Dictionary<string, double>
+                        {
+                            ["prior_mb"] = Convert.ToDouble(reader.GetValue(3)),
+                            ["current_mb"] = Convert.ToDouble(reader.GetValue(4)),
+                            ["growth_mb"] = growthMb,
+                            ["growth_pct"] = growthPct,
+                            ["growth_ratio"] = growthPct / ObjectGrowthPctThreshold
+                        }
+                    });
+                }
+            }
+
+            // Contention: index with the largest new row-lock wait time (no reset).
+            using (var cmd = new NpgsqlCommand(ObjectContentionSql, connection))
+            {
+                cmd.Parameters.AddWithValue(context.ServerId);
+                cmd.Parameters.AddWithValue(ObjectLockWaitMsDeltaThreshold);
+
+                using var reader = await cmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    var db = reader.GetString(0);
+                    var cSchema = reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString();
+                    var cTable = reader.IsDBNull(2) ? null : reader.GetValue(2)?.ToString();
+                    var cIndex = reader.IsDBNull(3) ? null : reader.GetValue(3)?.ToString();
+                    var msDelta = Convert.ToDouble(reader.GetValue(4));
+                    string? contendedObject = null;
+                    if (!string.IsNullOrEmpty(cTable))
+                    {
+                        contendedObject = string.IsNullOrEmpty(cSchema) ? cTable : $"{cSchema}.{cTable}";
+                        if (!string.IsNullOrEmpty(cIndex))
+                            contendedObject += $", index {cIndex}";
+                    }
+                    anomalies.Add(new Fact
+                    {
+                        Source = "anomaly",
+                        Key = "ANOMALY_OBJECT_CONTENTION",
+                        Value = msDelta,
+                        ServerId = context.ServerId,
+                        DatabaseName = db,
+                        ObjectName = contendedObject,
+                        Metadata = new Dictionary<string, double>
+                        {
+                            ["lock_wait_ms_delta"] = msDelta,
+                            ["escalation_delta"] = Convert.ToDouble(reader.GetValue(5)),
+                            ["contention_ratio"] = msDelta / ObjectLockWaitMsDeltaThreshold
+                        }
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Object stats anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Checks if the server has enough historical data for meaningful baselines.
+    /// Uses wait_stats as canary — if waits are collected, other data is too.
+    /// </summary>
+    private async Task<bool> HasBaselineDataAsync(int serverId)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(HasBaselineDataSql, connection);
+            cmd.Parameters.AddWithValue(serverId);
+            /* Lite binds DateTime.UtcNow.AddDays(-30) here too — the parameterized "now",
+               made Kind-Unspecified for the naive-UTC timestamp columns. */
+            cmd.Parameters.AddWithValue(AsNaive(DateTime.UtcNow.AddDays(-30)));
+
+            var count = Convert.ToInt64(await cmd.ExecuteScalarAsync() ?? 0);
+            return count > 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Detects CPU utilization anomalies using z-score against time-bucketed baseline.
+    /// </summary>
+    private async Task DetectCpuAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.Cpu, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return; // Zero mean + zero stddev — skip
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(CpuWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var peakCpu = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var avgCpu = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var windowSamples = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+            var peakTime = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3);
+
+            if (windowSamples == 0) return;
+
+            var deviation = (peakCpu - baseline.Mean) / effectiveStdDev;
+            if (deviation < GetDeviationThreshold(MetricNames.Cpu) || peakCpu < 50) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["peak_cpu"] = peakCpu,
+                ["avg_cpu_in_window"] = avgCpu,
+                ["baseline_mean"] = baseline.Mean,
+                ["baseline_stddev"] = effectiveStdDev,
+                ["deviation_sigma"] = deviation,
+                ["baseline_samples"] = baseline.SampleCount,
+                ["window_samples"] = windowSamples,
+                ["confidence"] = 1.0,
+                ["peak_time_ticks"] = peakTime?.Ticks ?? 0
+            };
+            AddBaselineContext(metadata, baseline);
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_CPU_SPIKE",
+                Value = peakCpu,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] CPU anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects wait stat anomalies — total wait time significantly above
+    /// baseline rate for this time bucket. Uses ratio-based scoring.
+    /// </summary>
+    private async Task DetectWaitAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.WaitStats, context.TimeRangeStart);
+
+            // No baseline data at all — can't distinguish "new" waits from "always present."
+            // Skip rather than flagging everything as anomalous.
+            if (baseline.SampleCount == 0) return;
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            // Get per-wait-type totals in the analysis window
+            using var cmd = new NpgsqlCommand(WaitWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            var currentHours = (context.TimeRangeEnd - context.TimeRangeStart).TotalHours;
+            if (currentHours <= 0) currentHours = 1;
+
+            // Baseline mean is total wait ms per collection interval for this time bucket.
+            // If no baseline, use ratio=100 for significant new waits.
+            var baselineRate = baseline.SampleCount > 0 ? baseline.Mean : 0;
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var waitType = reader.GetString(0);
+                var currentMs = Convert.ToInt64(reader.GetValue(1));
+                var currentRate = currentMs / currentHours;
+
+                double ratio;
+                string anomalyType;
+
+                if (baselineRate <= 0 || baseline.SampleCount == 0)
+                {
+                    ratio = currentMs > 60_000 ? 100.0 : 0;
+                    anomalyType = "new";
+                }
+                else
+                {
+                    ratio = currentRate / baselineRate;
+                    anomalyType = "spike";
+                }
+
+                if (ratio < DefaultRatioThreshold) continue;
+
+                var metadata = new Dictionary<string, double>
+                {
+                    ["current_ms"] = currentMs,
+                    ["baseline_mean"] = baseline.Mean,
+                    ["ratio"] = ratio,
+                    ["is_new"] = anomalyType == "new" ? 1 : 0
+                };
+                AddBaselineContext(metadata, baseline);
+
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = $"ANOMALY_WAIT_{waitType}",
+                    Value = currentMs,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Wait anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects blocking/deadlock anomalies — event rates significantly above
+    /// baseline for this time bucket. Uses ratio-based scoring.
+    /// </summary>
+    private async Task DetectBlockingAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var blockingBaseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.Blocking, context.TimeRangeStart);
+            var deadlockBaseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.Deadlock, context.TimeRangeStart);
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(BlockingWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var currentBlocking = Convert.ToInt64(reader.GetValue(0));
+            var currentDeadlocks = Convert.ToInt64(reader.GetValue(1));
+
+            /* Baseline mean is events per hour-of-day/dow bucket (≈ events per hour at this time of
+               day). current_* are raw counts over the whole analysis window (hoursBack, default 4),
+               so normalize them to per-hour before the ratio — otherwise the ratio scales with the
+               window length, not the workload, and a steady event rate trips the spike threshold. */
+            var windowHours = (context.TimeRangeEnd - context.TimeRangeStart).TotalHours;
+            if (windowHours <= 0) windowHours = 1;
+            var currentBlockingPerHour = currentBlocking / windowHours;
+            var currentDeadlocksPerHour = currentDeadlocks / windowHours;
+
+            // Baseline mean = events per hour for this hour+dow bucket
+            var baselineBlockingRate = blockingBaseline.SampleCount > 0 ? blockingBaseline.Mean : 0;
+            var baselineDeadlockRate = deadlockBaseline.SampleCount > 0 ? deadlockBaseline.Mean : 0;
+
+            // Blocking spike: at least 5 events in the window AND per-hour rate >= 3x baseline (or no baseline)
+            if (currentBlocking >= 5 && (baselineBlockingRate <= 0 || currentBlockingPerHour / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
+            {
+                var metadata = new Dictionary<string, double>
+                {
+                    ["current_count"] = currentBlocking,
+                    ["baseline_rate"] = baselineBlockingRate,
+                    ["ratio"] = baselineBlockingRate > 0 ? currentBlockingPerHour / baselineBlockingRate : 100.0
+                };
+                AddBaselineContext(metadata, blockingBaseline);
+
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = "ANOMALY_BLOCKING_SPIKE",
+                    Value = currentBlocking,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
+            }
+
+            // Deadlock spike: at least 3 events in the window AND per-hour rate >= 3x baseline (or no baseline)
+            if (currentDeadlocks >= 3 && (baselineDeadlockRate <= 0 || currentDeadlocksPerHour / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
+            {
+                var metadata = new Dictionary<string, double>
+                {
+                    ["current_count"] = currentDeadlocks,
+                    ["baseline_rate"] = baselineDeadlockRate,
+                    ["ratio"] = baselineDeadlockRate > 0 ? currentDeadlocksPerHour / baselineDeadlockRate : 100.0
+                };
+                AddBaselineContext(metadata, deadlockBaseline);
+
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = "ANOMALY_DEADLOCK_SPIKE",
+                    Value = currentDeadlocks,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Blocking anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects I/O latency anomalies using z-score against time-bucketed baseline.
+    /// </summary>
+    private async Task DetectIoAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.IoLatency, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return;
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(IoWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var currentReadLat = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var currentWriteLat = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+
+            var ioThreshold = GetDeviationThreshold(MetricNames.IoLatency);
+
+            // Read latency anomaly
+            if (currentReadLat > 10)
+            {
+                var readDeviation = (currentReadLat - baseline.Mean) / effectiveStdDev;
+                if (readDeviation >= ioThreshold)
+                {
+                    var metadata = new Dictionary<string, double>
+                    {
+                        ["current_latency_ms"] = currentReadLat,
+                        ["baseline_mean_ms"] = baseline.Mean,
+                        ["baseline_stddev_ms"] = effectiveStdDev,
+                        ["deviation_sigma"] = readDeviation,
+                        ["baseline_samples"] = baseline.SampleCount
+                    };
+                    AddBaselineContext(metadata, baseline);
+
+                    anomalies.Add(new Fact
+                    {
+                        Source = "anomaly",
+                        Key = "ANOMALY_READ_LATENCY",
+                        Value = currentReadLat,
+                        ServerId = context.ServerId,
+                        Metadata = metadata
+                    });
+                }
+            }
+
+            // Write latency anomaly
+            if (currentWriteLat > 5)
+            {
+                var writeDeviation = (currentWriteLat - baseline.Mean) / effectiveStdDev;
+                if (writeDeviation >= ioThreshold)
+                {
+                    var metadata = new Dictionary<string, double>
+                    {
+                        ["current_latency_ms"] = currentWriteLat,
+                        ["baseline_mean_ms"] = baseline.Mean,
+                        ["baseline_stddev_ms"] = effectiveStdDev,
+                        ["deviation_sigma"] = writeDeviation,
+                        ["baseline_samples"] = baseline.SampleCount
+                    };
+                    AddBaselineContext(metadata, baseline);
+
+                    anomalies.Add(new Fact
+                    {
+                        Source = "anomaly",
+                        Key = "ANOMALY_WRITE_LATENCY",
+                        Value = currentWriteLat,
+                        ServerId = context.ServerId,
+                        Metadata = metadata
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] I/O anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects batch requests/sec anomalies using z-score against time-bucketed baseline.
+    /// </summary>
+    private async Task DetectBatchRequestAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.BatchRequests, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return;
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(BatchRequestWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var avgBatch = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var peakBatch = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var windowSamples = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+
+            if (windowSamples == 0) return;
+
+            var deviation = (peakBatch - baseline.Mean) / effectiveStdDev;
+            if (deviation < GetDeviationThreshold(MetricNames.BatchRequests)) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["peak_batch_requests"] = peakBatch,
+                ["avg_batch_requests"] = avgBatch,
+                ["baseline_mean"] = baseline.Mean,
+                ["baseline_stddev"] = effectiveStdDev,
+                ["deviation_sigma"] = deviation,
+                ["baseline_samples"] = baseline.SampleCount,
+                ["window_samples"] = windowSamples
+            };
+            AddBaselineContext(metadata, baseline);
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_BATCH_REQUESTS",
+                Value = peakBatch,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Batch request anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects session/connection count anomalies using z-score against time-bucketed baseline.
+    /// </summary>
+    private async Task DetectSessionAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.SessionCount, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return;
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(SessionWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var avgConnections = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var peakConnections = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var windowSamples = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+
+            if (windowSamples == 0) return;
+
+            var deviation = (peakConnections - baseline.Mean) / effectiveStdDev;
+            if (deviation < GetDeviationThreshold(MetricNames.SessionCount)) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["peak_connections"] = peakConnections,
+                ["avg_connections"] = avgConnections,
+                ["baseline_mean"] = baseline.Mean,
+                ["baseline_stddev"] = effectiveStdDev,
+                ["deviation_sigma"] = deviation,
+                ["baseline_samples"] = baseline.SampleCount,
+                ["window_samples"] = windowSamples
+            };
+            AddBaselineContext(metadata, baseline);
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_SESSION_SPIKE",
+                Value = peakConnections,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Session anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects query duration aggregate anomalies using z-score against time-bucketed baseline.
+    /// Measures total elapsed time across all queries per collection interval.
+    /// </summary>
+    private async Task DetectQueryDurationAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.QueryDuration, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return;
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(QueryDurationWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var avgElapsed = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var peakElapsed = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var windowSamples = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+
+            if (windowSamples == 0) return;
+
+            var deviation = (peakElapsed - baseline.Mean) / effectiveStdDev;
+            if (deviation < GetDeviationThreshold(MetricNames.QueryDuration)) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["peak_total_elapsed_us"] = peakElapsed,
+                ["avg_total_elapsed_us"] = avgElapsed,
+                ["baseline_mean"] = baseline.Mean,
+                ["baseline_stddev"] = effectiveStdDev,
+                ["deviation_sigma"] = deviation,
+                ["baseline_samples"] = baseline.SampleCount,
+                ["window_samples"] = windowSamples
+            };
+            AddBaselineContext(metadata, baseline);
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_QUERY_DURATION",
+                Value = peakElapsed,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Query duration anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Detects memory utilization anomalies using z-score against time-bucketed baseline.
+    /// Ported from Lite (the Dashboard does not collect memory metrics; Darling does).
+    /// Measures total_server_memory_mb / target_server_memory_mb as memory pressure %.
+    /// </summary>
+    private async Task DetectMemoryAnomalies(AnalysisContext context, List<Fact> anomalies)
+    {
+        try
+        {
+            var baseline = await _baselineProvider.GetBaselineAsync(
+                context.ServerId, MetricNames.Memory, context.TimeRangeStart);
+
+            if (baseline.SampleCount == 0) return;
+            var effectiveStdDev = baseline.EffectiveStdDev;
+            if (effectiveStdDev <= 0) return;
+
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(MemoryWindowSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var avgPressure = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var peakPressure = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var windowSamples = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2));
+
+            if (windowSamples == 0) return;
+
+            var deviation = (peakPressure - baseline.Mean) / effectiveStdDev;
+            if (deviation < GetDeviationThreshold(MetricNames.Memory)) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["peak_memory_pressure_pct"] = peakPressure,
+                ["avg_memory_pressure_pct"] = avgPressure,
+                ["baseline_mean"] = baseline.Mean,
+                ["baseline_stddev"] = effectiveStdDev,
+                ["deviation_sigma"] = deviation,
+                ["baseline_samples"] = baseline.SampleCount,
+                ["window_samples"] = windowSamples
+            };
+            AddBaselineContext(metadata, baseline);
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_MEMORY_PRESSURE",
+                Value = peakPressure,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[PgAnomalyDetector] Memory anomaly detection failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>Kind-Unspecified for query bounds — Npgsql 6+ rejects Kind-Utc against <c>timestamp</c>.</summary>
+    private static DateTime AsNaive(DateTime value) =>
+        DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
+}
