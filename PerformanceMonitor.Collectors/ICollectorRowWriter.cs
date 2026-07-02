@@ -24,6 +24,8 @@ public interface ICollectorRowWriter
     ICollectorRowWriter Value(long? value);
     ICollectorRowWriter Value(int value);
     ICollectorRowWriter Value(int? value);
+    ICollectorRowWriter Value(short value);
+    ICollectorRowWriter Value(short? value);
     ICollectorRowWriter Value(double value);
     ICollectorRowWriter Value(double? value);
     ICollectorRowWriter Value(decimal value);
