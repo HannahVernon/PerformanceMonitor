@@ -10,7 +10,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
-using System.Xml.Linq;
 using System.Net;
 using System.Threading;
 using System.Windows;
@@ -117,11 +116,11 @@ public partial class MainWindow : Window
         /* Blocking alerts */
         var effectiveBlockingCount = summary.BlockingCount;
         if (App.AlertBlockingEnabled && App.AlertExcludedDatabases.Count > 0
-            && summary.BlockingCount >= App.AlertBlockingThreshold && _dataService != null)
+            && summary.BlockingCount >= App.AlertBlockingThreshold && _alertReadAdapter != null)
         {
             try
             {
-                var blockingRows = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(summary.ServerId, hoursBack: 1));
+                var blockingRows = await _alertReadAdapter.GetRecentBlockedProcessReportsAsync(key, hoursBack: 1);
                 effectiveBlockingCount = blockingRows
                     .Count(r => string.IsNullOrEmpty(r.DatabaseName) ||
                         !App.AlertExcludedDatabases.Any(e =>
@@ -197,13 +196,13 @@ public partial class MainWindow : Window
         /* Deadlock alerts */
         var effectiveDeadlockCount = summary.DeadlockCount;
         if (App.AlertDeadlockEnabled && App.AlertExcludedDatabases.Count > 0
-            && summary.DeadlockCount >= App.AlertDeadlockThreshold && _dataService != null)
+            && summary.DeadlockCount >= App.AlertDeadlockThreshold && _alertReadAdapter != null)
         {
             try
             {
-                var deadlockRows = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(summary.ServerId, hoursBack: 1));
+                var deadlockRows = await _alertReadAdapter.GetRecentDeadlocksAsync(key, hoursBack: 1);
                 effectiveDeadlockCount = deadlockRows
-                    .Count(r => !IsDeadlockExcluded(r, App.AlertExcludedDatabases));
+                    .Count(r => !AlertContextBuilders.IsDeadlockExcluded(r, App.AlertExcludedDatabases));
             }
             catch (Exception ex)
             {
@@ -272,12 +271,11 @@ public partial class MainWindow : Window
         }
 
         /* Poison wait alerts */
-        if (App.AlertPoisonWaitEnabled && _dataService != null)
+        if (App.AlertPoisonWaitEnabled && _alertReadAdapter != null)
         {
             try
             {
-                var poisonWaits = await Task.Run(() => _dataService.GetLatestPoisonWaitAvgsAsync(summary.ServerId));
-                var triggered = poisonWaits.FindAll(w => w.AvgMsPerWait >= App.AlertPoisonWaitThresholdMs);
+                var triggered = await _alertReadAdapter.GetPoisonWaitDeltasAsync(key, App.AlertPoisonWaitThresholdMs);
 
                 if (triggered.Count > 0)
                 {
@@ -341,20 +339,11 @@ public partial class MainWindow : Window
         }
 
         /* Long-running query alerts */
-        if (App.AlertLongRunningQueryEnabled && _dataService != null)
+        if (App.AlertLongRunningQueryEnabled && _alertReadAdapter != null)
         {
             try
             {
-                var longRunning = await Task.Run(() => _dataService.GetLongRunningQueriesAsync(summary.ServerId, App.AlertLongRunningQueryThresholdMinutes, App.AlertLongRunningQueryMaxResults, App.AlertLongRunningQueryExcludeSpServerDiagnostics, App.AlertLongRunningQueryExcludeWaitFor, App.AlertLongRunningQueryExcludeBackups, App.AlertLongRunningQueryExcludeMiscWaits, App.AlertLongRunningQueryExcludeCdc));
-
-                if (App.AlertExcludedDatabases.Count > 0)
-                {
-                    longRunning = longRunning
-                        .Where(q => string.IsNullOrEmpty(q.DatabaseName) ||
-                            !App.AlertExcludedDatabases.Any(e =>
-                                string.Equals(e, q.DatabaseName, StringComparison.OrdinalIgnoreCase)))
-                        .ToList();
-                }
+                var longRunning = await _alertReadAdapter.GetLongRunningQueriesAsync(key, App.AlertLongRunningQueryThresholdMinutes, App.AlertLongRunningQueryMaxResults, App.AlertLongRunningQueryExcludeSpServerDiagnostics, App.AlertLongRunningQueryExcludeWaitFor, App.AlertLongRunningQueryExcludeBackups, App.AlertLongRunningQueryExcludeMiscWaits, App.AlertLongRunningQueryExcludeCdc, App.AlertExcludedDatabases);
 
                 if (longRunning.Count > 0)
                 {
@@ -422,11 +411,11 @@ public partial class MainWindow : Window
         }
 
         /* TempDB space alerts */
-        if (App.AlertTempDbSpaceEnabled && _dataService != null)
+        if (App.AlertTempDbSpaceEnabled && _alertReadAdapter != null)
         {
             try
             {
-                var tempDb = await Task.Run(() => _dataService.GetLatestTempDbSpaceAsync(summary.ServerId));
+                var tempDb = await _alertReadAdapter.GetTempDbSpaceAsync(key);
 
                 if (tempDb != null && tempDb.UsedPercent >= App.AlertTempDbSpaceThresholdPercent)
                 {
@@ -484,11 +473,11 @@ public partial class MainWindow : Window
         }
 
         /* Low volume free space alerts — not applicable to Azure SQL DB (no volume stats collected) */
-        if (App.AlertLowDiskEnabled && _dataService != null)
+        if (App.AlertLowDiskEnabled && _alertReadAdapter != null)
         {
             try
             {
-                var volumes = await Task.Run(() => _dataService.GetVolumeFreeSpaceAsync(summary.ServerId));
+                var volumes = await _alertReadAdapter.GetVolumeFreeSpaceAsync(key);
                 var breached = AlertContextBuilders.GetBreachedVolumes(volumes, App.AlertLowDiskThresholdPercent, App.AlertLowDiskThresholdGb);
 
                 /* Drive the server tab badge — a breached volume is a standing condition (#754).
@@ -566,11 +555,11 @@ public partial class MainWindow : Window
         }
 
         /* Anomalous Agent job alerts */
-        if (App.AlertLongRunningJobEnabled && _dataService != null)
+        if (App.AlertLongRunningJobEnabled && _alertReadAdapter != null)
         {
             try
             {
-                var anomalousJobs = await Task.Run(() => _dataService.GetAnomalousJobsAsync(summary.ServerId, App.AlertLongRunningJobMultiplier));
+                var anomalousJobs = await _alertReadAdapter.GetAnomalousJobsAsync(key, App.AlertLongRunningJobMultiplier);
 
                 /* _lastLongRunningJobAlert is keyed per job *run* ({server}:{jobId}:{startTime}),
                    so unlike the per-server cooldown dicts it grows without bound. Drop entries
@@ -779,75 +768,17 @@ public partial class MainWindow : Window
                 RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(s)) == serverId)
                 ?.AlertDeliveryModeOverride;
 
+        /* Phase-5 slice B: thin fetch-and-delegate wrappers. The rendering bodies moved verbatim to
+           the shared AlertContextBuilders (Lite's grouped rendering is canonical); the store reads
+           moved behind the IAlertReadAdapter seam (which includes the XE→DMV blocking fallback). */
         private async Task<AlertContext?> BuildBlockingContextAsync(int serverId, string serverName)
         {
             try
             {
-                if (_dataService == null) return null;
+                if (_alertReadAdapter == null) return null;
 
-                var events = await Task.Run(() => _dataService.GetRecentBlockedProcessReportsAsync(serverId, hoursBack: 1));
-                if (events == null || events.Count == 0) return null;
-
-                if (App.AlertExcludedDatabases.Count > 0)
-                {
-                    events = events
-                        .Where(e => string.IsNullOrEmpty(e.DatabaseName) ||
-                            !App.AlertExcludedDatabases.Any(ex =>
-                                string.Equals(ex, e.DatabaseName, StringComparison.OrdinalIgnoreCase)))
-                        .ToList();
-                    if (events.Count == 0) return null;
-                }
-
-                /* #1140/#1141: collapse samples of the same chain into one group (true occurrence count
-                   + wait range) instead of listing it once per sample, and attach the dedup fingerprint.
-                   Identity is the resolved contentious object (collected server-side, §5.3), falling back
-                   to database + literal-stripped query pair only when the object did not resolve. */
-                var groups = BlockingIncidentGrouper.Group(
-                    serverName,
-                    events.Select(e => new BlockingIncidentGrouper.BlockedEvent(
-                        e.DatabaseName, e.ContentiousObject, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs, e.LockMode)));
-
-                const int maxGroups = 10;
-                var shown = groups.Take(maxGroups).ToList();
-
-                var context = new AlertContext();
-                foreach (var g in shown)
-                {
-                    var item = new AlertDetailItem
-                    {
-                        Heading = g.OccurrenceCount > 1 ? $"Blocking chain (x{g.OccurrenceCount})" : "Blocking chain",
-                        Fields = new()
-                    };
-                    if (!string.IsNullOrEmpty(g.Database))
-                        item.Fields.Add(("Database", g.Database));
-                    if (!string.IsNullOrEmpty(g.BlockedQuery))
-                        item.Fields.Add(("Blocked Query", AlertContextBuilders.TruncateText(g.BlockedQuery)));
-                    if (!string.IsNullOrEmpty(g.BlockingQuery))
-                        item.Fields.Add(("Blocking Query", AlertContextBuilders.TruncateText(g.BlockingQuery)));
-                    item.Fields.Add(("Wait Range", g.Incident.WaitRange ?? g.MaxWaitMs.ToString()));
-                    context.Details.Add(item);
-                }
-
-                /* Surface the true total instead of silently dropping (gotqn's report). */
-                if (groups.Count > maxGroups)
-                {
-                    context.Details.Add(new AlertDetailItem
-                    {
-                        Heading = $"+{groups.Count - maxGroups} more distinct blocking incident(s)",
-                        Fields = new()
-                    });
-                }
-
-                var firstXml = events.FirstOrDefault(e => e.HasReportXml)?.BlockedProcessReportXml;
-                if (!string.IsNullOrEmpty(firstXml))
-                {
-                    context.AttachmentXml = firstXml;
-                    context.AttachmentFileName = "blocked_process_report.xml";
-                }
-
-                AlertIncidentRenderer.Apply(context, shown.Select(g => g.Incident).ToList());
-
-                return context.Details.Count == 0 ? null : context;
+                var events = await _alertReadAdapter.GetRecentBlockedProcessReportsAsync(serverId.ToString(), hoursBack: 1);
+                return AlertContextBuilders.BuildBlockingContext(serverName, events, App.AlertExcludedDatabases);
             }
             catch (Exception ex)
             {
@@ -860,57 +791,10 @@ public partial class MainWindow : Window
         {
             try
             {
-                if (_dataService == null) return null;
+                if (_alertReadAdapter == null) return null;
 
-                var deadlocks = await Task.Run(() => _dataService.GetRecentDeadlocksAsync(serverId, hoursBack: 1));
-                if (deadlocks == null || deadlocks.Count == 0) return null;
-
-                if (App.AlertExcludedDatabases.Count > 0)
-                {
-                    deadlocks = deadlocks
-                        .Where(d => !IsDeadlockExcluded(d, App.AlertExcludedDatabases))
-                        .ToList();
-                    if (deadlocks.Count == 0) return null;
-                }
-
-                var context = new AlertContext();
-                var firstGraph = (string?)null;
-
-                foreach (var d in deadlocks.Take(3))
-                {
-                    var item = new AlertDetailItem
-                    {
-                        Heading = "Deadlock Victim",
-                        Fields = new()
-                    };
-
-                    if (!string.IsNullOrEmpty(d.VictimSqlText))
-                        item.Fields.Add(("Victim SQL", AlertContextBuilders.TruncateText(d.VictimSqlText)));
-                    if (!string.IsNullOrEmpty(d.ProcessSummary))
-                        item.Fields.Add(("Processes", d.ProcessSummary));
-
-                    context.Details.Add(item);
-                    if (firstGraph == null && d.HasDeadlockXml)
-                        firstGraph = d.DeadlockGraphXml;
-                }
-
-                if (!string.IsNullOrEmpty(firstGraph))
-                {
-                    context.AttachmentXml = firstGraph;
-                    context.AttachmentFileName = "deadlock_graph.xml";
-                }
-
-                /* #1140: fingerprint each deadlock by its sorted involved-object set (parsed from the
-                   graph), across ALL deadlocks in the window — not just the 3 displayed — grouped so
-                   recurrences over the same objects collapse to one incident with a count. */
-                var groups = DeadlockIncidentGrouper.Group(
-                    serverName,
-                    deadlocks.Select(d => new DeadlockIncidentGrouper.DeadlockEvent(
-                        DeadlockObjectExtractor.FromGraphXml(d.DeadlockGraphXml),
-                        DeadlockDetailFields(d.VictimSqlText, d.ProcessSummary))));
-                AlertIncidentRenderer.Apply(context, groups.Select(g => g.Incident).ToList());
-
-                return context;
+                var deadlocks = await _alertReadAdapter.GetRecentDeadlocksAsync(serverId.ToString(), hoursBack: 1);
+                return AlertContextBuilders.BuildDeadlockContext(serverName, deadlocks, App.AlertExcludedDatabases);
             }
             catch (Exception ex)
             {
@@ -919,37 +803,9 @@ public partial class MainWindow : Window
             }
         }
 
-        /* #1141: forensic detail carried on a deadlock incident so per-event cards keep the victim SQL
-           + process summary (Summary mode shows them via the builder's own items). */
-        private static List<AlertIncidentField>? DeadlockDetailFields(string? victimSql, string? processes)
-        {
-            var f = new List<AlertIncidentField>();
-            if (!string.IsNullOrWhiteSpace(victimSql)) f.Add(new AlertIncidentField("Victim SQL", AlertContextBuilders.TruncateText(victimSql)));
-            if (!string.IsNullOrWhiteSpace(processes)) f.Add(new AlertIncidentField("Processes", processes!));
-            return f.Count > 0 ? f : null;
-        }
-
-        private static bool IsDeadlockExcluded(DeadlockRow row, List<string> excludedDatabases)
-        {
-            if (string.IsNullOrEmpty(row.DeadlockGraphXml)) return false;
-            try
-            {
-                var doc = XElement.Parse(row.DeadlockGraphXml);
-                var dbNames = doc.Descendants("process")
-                    .Select(p => p.Attribute("currentdbname")?.Value)
-                    .Where(n => !string.IsNullOrEmpty(n))
-                    .Cast<string>()
-                    .ToList();
-                if (dbNames.Count == 0) return false;
-                return dbNames.All(db => excludedDatabases.Any(e =>
-                    string.Equals(e, db, StringComparison.OrdinalIgnoreCase)));
-            }
-            catch { return false; }
-        }
-
-        /* The six pure alert-context builders (poison wait, long-running query, volume free space,
-           tempdb space, anomalous job, failed job) and their pure helpers (ContextToDetailText,
-           TruncateText, GetBreachedVolumes, FormatLowDiskThreshold) moved to the shared
-           PerformanceMonitor.Alerting.AlertContextBuilders (Phase-5 slice A). The async
-           blocking/deadlock builders above stay app-side — they query Lite's own store. */
+        /* The eight pure alert-context builders (poison wait, long-running query, volume free space,
+           tempdb space, anomalous job, failed job, blocking, deadlock) and their pure helpers
+           (ContextToDetailText, TruncateText, GetBreachedVolumes, FormatLowDiskThreshold,
+           IsDeadlockExcluded) live in the shared PerformanceMonitor.Alerting.AlertContextBuilders
+           (Phase-5 slices A + B); the collected-store reads live behind LiteAlertReadAdapter. */
 }

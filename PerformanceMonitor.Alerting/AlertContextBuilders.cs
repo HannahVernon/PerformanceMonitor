@@ -14,7 +14,7 @@ using PerformanceMonitor.Notifications;
 namespace PerformanceMonitor.Alerting;
 
 /// <summary>
-/// The six pure alert-context builders (Phase-5 slice A) both apps' alert engines call, plus the
+/// The pure alert-context builders (Phase-5 slices A + B) both apps' alert engines call, plus the
 /// small pure helpers they share (<see cref="ContextToDetailText"/>, <see cref="TruncateText"/>,
 /// <see cref="GetBreachedVolumes"/>, <see cref="FormatLowDiskThreshold"/>). Moved verbatim from the
 /// line-identical private copies in Lite's and the Dashboard's <c>MainWindow.AlertEngine.cs</c> so
@@ -26,12 +26,186 @@ namespace PerformanceMonitor.Alerting;
 /// copy lacked — so Lite's long-running-query alerts gain the Program field.
 /// </para>
 /// <para>
-/// The two async builders (blocking/deadlock) intentionally stay app-side: they query each app's
-/// own store and carry app-specific event shapes. They are a later slice.
+/// Slice B lifted the last two builders — <see cref="BuildBlockingContext"/> and
+/// <see cref="BuildDeadlockContext"/> — out of Lite's async wrappers (Lite's grouped rendering is
+/// canonical per the Phase-5 review): the fetch moved behind <see cref="IAlertReadAdapter"/> and
+/// the bodies are otherwise verbatim, with Lite's fields/settings (server name, excluded
+/// databases) as parameters. The Dashboard's async blocking/deadlock builders deliberately remain
+/// app-side — its rendering diverged and convergence is a separately-planned migration.
 /// </para>
 /// </summary>
 public static class AlertContextBuilders
 {
+    /// <summary>
+    /// The blocking-alert context from the store's blocked-process rows (XE + DMV-fallback merged —
+    /// see <see cref="IAlertReadAdapter.GetRecentBlockedProcessReportsAsync"/>). Body verbatim from
+    /// Lite's pre-slice-B <c>BuildBlockingContextAsync</c> minus the fetch: excluded databases drop
+    /// their rows (no-database rows always pass); samples of the same chain collapse into one group
+    /// (#1140/#1141) with true occurrence count + wait range; capped at 10 groups with a "+N more"
+    /// trailer; the first row with report XML becomes the attachment. Null when nothing renders.
+    /// </summary>
+    public static AlertContext? BuildBlockingContext(
+        string serverName, IReadOnlyList<BlockedProcessAlertRow>? events, IReadOnlyList<string> excludedDatabases)
+    {
+        if (events == null || events.Count == 0) return null;
+
+        IReadOnlyList<BlockedProcessAlertRow> filtered = events;
+        if (excludedDatabases is { Count: > 0 })
+        {
+            filtered = events
+                .Where(e => string.IsNullOrEmpty(e.DatabaseName) ||
+                    !excludedDatabases.Any(ex =>
+                        string.Equals(ex, e.DatabaseName, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (filtered.Count == 0) return null;
+        }
+
+        /* #1140/#1141: collapse samples of the same chain into one group (true occurrence count
+           + wait range) instead of listing it once per sample, and attach the dedup fingerprint.
+           Identity is the resolved contentious object (collected server-side, §5.3), falling back
+           to database + literal-stripped query pair only when the object did not resolve. */
+        var groups = BlockingIncidentGrouper.Group(
+            serverName,
+            filtered.Select(e => new BlockingIncidentGrouper.BlockedEvent(
+                e.DatabaseName, e.ContentiousObject, e.BlockedSqlText, e.BlockingSqlText, e.WaitTimeMs, e.LockMode)));
+
+        const int maxGroups = 10;
+        var shown = groups.Take(maxGroups).ToList();
+
+        var context = new AlertContext();
+        foreach (var g in shown)
+        {
+            var item = new AlertDetailItem
+            {
+                Heading = g.OccurrenceCount > 1 ? $"Blocking chain (x{g.OccurrenceCount})" : "Blocking chain",
+                Fields = new()
+            };
+            if (!string.IsNullOrEmpty(g.Database))
+                item.Fields.Add(("Database", g.Database));
+            if (!string.IsNullOrEmpty(g.BlockedQuery))
+                item.Fields.Add(("Blocked Query", TruncateText(g.BlockedQuery)));
+            if (!string.IsNullOrEmpty(g.BlockingQuery))
+                item.Fields.Add(("Blocking Query", TruncateText(g.BlockingQuery)));
+            item.Fields.Add(("Wait Range", g.Incident.WaitRange ?? g.MaxWaitMs.ToString()));
+            context.Details.Add(item);
+        }
+
+        /* Surface the true total instead of silently dropping (gotqn's report). */
+        if (groups.Count > maxGroups)
+        {
+            context.Details.Add(new AlertDetailItem
+            {
+                Heading = $"+{groups.Count - maxGroups} more distinct blocking incident(s)",
+                Fields = new()
+            });
+        }
+
+        var firstXml = filtered.FirstOrDefault(e => e.HasReportXml)?.BlockedProcessReportXml;
+        if (!string.IsNullOrEmpty(firstXml))
+        {
+            context.AttachmentXml = firstXml;
+            context.AttachmentFileName = "blocked_process_report.xml";
+        }
+
+        AlertIncidentRenderer.Apply(context, shown.Select(g => g.Incident).ToList());
+
+        return context.Details.Count == 0 ? null : context;
+    }
+
+    /// <summary>
+    /// The deadlock-alert context from the store's deadlock rows. Body verbatim from Lite's
+    /// pre-slice-B <c>BuildDeadlockContextAsync</c> minus the fetch: deadlocks whose processes ALL
+    /// ran in excluded databases are dropped (<see cref="IsDeadlockExcluded"/>); the first 3 render
+    /// as "Deadlock Victim" items; the first graph XML becomes the attachment; ALL deadlocks in the
+    /// window feed the #1140 involved-object fingerprint grouping. Null when nothing survives.
+    /// </summary>
+    public static AlertContext? BuildDeadlockContext(
+        string serverName, IReadOnlyList<DeadlockAlertRow>? deadlocks, IReadOnlyList<string> excludedDatabases)
+    {
+        if (deadlocks == null || deadlocks.Count == 0) return null;
+
+        IReadOnlyList<DeadlockAlertRow> filtered = deadlocks;
+        if (excludedDatabases is { Count: > 0 })
+        {
+            filtered = deadlocks
+                .Where(d => !IsDeadlockExcluded(d, excludedDatabases))
+                .ToList();
+            if (filtered.Count == 0) return null;
+        }
+
+        var context = new AlertContext();
+        var firstGraph = (string?)null;
+
+        foreach (var d in filtered.Take(3))
+        {
+            var item = new AlertDetailItem
+            {
+                Heading = "Deadlock Victim",
+                Fields = new()
+            };
+
+            if (!string.IsNullOrEmpty(d.VictimSqlText))
+                item.Fields.Add(("Victim SQL", TruncateText(d.VictimSqlText)));
+            if (!string.IsNullOrEmpty(d.ProcessSummary))
+                item.Fields.Add(("Processes", d.ProcessSummary));
+
+            context.Details.Add(item);
+            if (firstGraph == null && d.HasDeadlockXml)
+                firstGraph = d.DeadlockGraphXml;
+        }
+
+        if (!string.IsNullOrEmpty(firstGraph))
+        {
+            context.AttachmentXml = firstGraph;
+            context.AttachmentFileName = "deadlock_graph.xml";
+        }
+
+        /* #1140: fingerprint each deadlock by its sorted involved-object set (parsed from the
+           graph), across ALL deadlocks in the window — not just the 3 displayed — grouped so
+           recurrences over the same objects collapse to one incident with a count. */
+        var groups = DeadlockIncidentGrouper.Group(
+            serverName,
+            filtered.Select(d => new DeadlockIncidentGrouper.DeadlockEvent(
+                DeadlockObjectExtractor.FromGraphXml(d.DeadlockGraphXml),
+                DeadlockDetailFields(d.VictimSqlText, d.ProcessSummary))));
+        AlertIncidentRenderer.Apply(context, groups.Select(g => g.Incident).ToList());
+
+        return context;
+    }
+
+    /* #1141: forensic detail carried on a deadlock incident so per-event cards keep the victim SQL
+       + process summary (Summary mode shows them via the builder's own items). */
+    private static List<AlertIncidentField>? DeadlockDetailFields(string? victimSql, string? processes)
+    {
+        var f = new List<AlertIncidentField>();
+        if (!string.IsNullOrWhiteSpace(victimSql)) f.Add(new AlertIncidentField("Victim SQL", TruncateText(victimSql)));
+        if (!string.IsNullOrWhiteSpace(processes)) f.Add(new AlertIncidentField("Processes", processes!));
+        return f.Count > 0 ? f : null;
+    }
+
+    /// <summary>
+    /// True when EVERY process in the deadlock graph ran in an excluded database (case-insensitive
+    /// on the graph's <c>currentdbname</c>) — a deadlock touching any non-excluded database still
+    /// alerts. Unparseable or database-less graphs are never excluded. Public because the alert
+    /// loop's count filter uses it too, not just <see cref="BuildDeadlockContext"/>.
+    /// </summary>
+    public static bool IsDeadlockExcluded(DeadlockAlertRow row, IReadOnlyList<string> excludedDatabases)
+    {
+        if (string.IsNullOrEmpty(row.DeadlockGraphXml)) return false;
+        try
+        {
+            var doc = System.Xml.Linq.XElement.Parse(row.DeadlockGraphXml);
+            var dbNames = doc.Descendants("process")
+                .Select(p => p.Attribute("currentdbname")?.Value)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Cast<string>()
+                .ToList();
+            if (dbNames.Count == 0) return false;
+            return dbNames.All(db => excludedDatabases.Any(e =>
+                string.Equals(e, db, StringComparison.OrdinalIgnoreCase)));
+        }
+        catch { return false; }
+    }
     public static AlertContext? BuildPoisonWaitContext(List<PoisonWaitDelta> triggeredWaits)
     {
         if (triggeredWaits.Count == 0) return null;

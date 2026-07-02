@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Alerting;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Ui;
 using PerformanceMonitor.Common;
@@ -421,32 +422,14 @@ LIMIT 200";
                     BlockedLastTranStarted = reader.IsDBNull(16) ? null : reader.GetDateTime(16),
                     BlockingLastTranStarted = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
                     MonitorLoop = reader.IsDBNull(18) ? (int?)null : reader.GetInt32(18),
-                    Source = "DMV snapshot"
+                    Source = BlockedProcessAlertRow.DmvSnapshotSource
                 });
             }
         }
 
-        if (dmvItems.Count == 0) return;
-
-        // Dedup: keep all BPR rows; add a DMV row only if no BPR row covers the same (blocked, blocker)
-        // SPID within the same minute. BPR is preferred (richer report XML).
-        var seen = new HashSet<(int, int, long)>();
-        foreach (var b in items)
-            if (b.EventTime.HasValue)
-                seen.Add((b.BlockedSpid, b.BlockingSpid, b.EventTime.Value.Ticks / TimeSpan.TicksPerMinute));
-
-        foreach (var d in dmvItems)
-        {
-            var key = (d.BlockedSpid, d.BlockingSpid, (d.EventTime?.Ticks ?? 0) / TimeSpan.TicksPerMinute);
-            if (seen.Add(key))
-                items.Add(d);
-        }
-
-        // Re-cap to the grid's LIMIT, newest first. OrderByDescending is stable, so BPR rows (added
-        // first) win ties over DMV rows at the same event time — matching the Dashboard grid.
-        var merged = items.OrderByDescending(i => i.EventTime ?? DateTime.MinValue).Take(gridCap).ToList();
-        items.Clear();
-        items.AddRange(merged);
+        /* Dedup + re-cap moved verbatim to the shared BlockedProcessReportMerge (Phase-5 slice B)
+           so the Darling Postgres adapter reproduces EXACTLY these XE-preferred fallback semantics. */
+        BlockedProcessReportMerge.AppendDmvFallbackRows(items, dmvItems, gridCap);
     }
 
     /// <summary>
@@ -760,50 +743,16 @@ public class TrendPoint
     public int Count { get; set; }
 }
 
-public class DeadlockRow
+/// <summary>
+/// Lite's deadlock grid row. The alert-consumed members (victim process/SQL, graph XML, the parsed
+/// <c>ProcessSummary</c>) live on the shared <see cref="DeadlockAlertRow"/> base (Phase-5 slice B)
+/// so store reads flow into the shared alert builders without a mapping copy; only the
+/// grid-display extras stay here.
+/// </summary>
+public class DeadlockRow : DeadlockAlertRow
 {
     public DateTime CollectionTime { get; set; }
     public DateTime? DeadlockTime { get; set; }
-    public string VictimProcessId { get; set; } = "";
-    public string VictimSqlText { get; set; } = "";
-    public string DeadlockGraphXml { get; set; } = "";
-    public bool HasDeadlockXml => !string.IsNullOrEmpty(DeadlockGraphXml);
-
-    /// <summary>
-    /// Parses the deadlock graph XML and returns a summary of all processes involved.
-    /// </summary>
-    public string ProcessSummary
-    {
-        get
-        {
-            if (string.IsNullOrEmpty(DeadlockGraphXml))
-            {
-                return "";
-            }
-
-            try
-            {
-                var doc = System.Xml.Linq.XElement.Parse(DeadlockGraphXml);
-                var processes = doc.Descendants("process");
-                var summaries = new System.Collections.Generic.List<string>();
-
-                foreach (var proc in processes)
-                {
-                    var id = proc.Attribute("id")?.Value ?? "?";
-                    var spid = proc.Attribute("spid")?.Value ?? "?";
-                    var db = proc.Attribute("currentdb")?.Value ?? "";
-                    var isVictim = string.Equals(id, VictimProcessId, StringComparison.OrdinalIgnoreCase);
-                    summaries.Add($"SPID {spid}{(isVictim ? " (victim)" : "")}");
-                }
-
-                return string.Join(" vs ", summaries);
-            }
-            catch
-            {
-                return "";
-            }
-        }
-    }
 }
 
 public class DeadlockProcessDetail
@@ -993,27 +942,21 @@ public class DeadlockProcessDetail
     }
 }
 
-public class BlockedProcessReportRow
+/// <summary>
+/// Lite's blocked-process grid row. The alert-consumed members (event time, database, SPID pair,
+/// wait/lock, the query pair, report XML, contentious object, Source) live on the shared
+/// <see cref="BlockedProcessAlertRow"/> base (Phase-5 slice B) so store reads flow into the shared
+/// alert builders and the XE→DMV fallback merge without a mapping copy; only the grid-display
+/// extras stay here.
+/// </summary>
+public class BlockedProcessReportRow : BlockedProcessAlertRow
 {
     public DateTime CollectionTime { get; set; }
-    public DateTime? EventTime { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public int BlockedSpid { get; set; }
     public int BlockedEcid { get; set; }
-    public int BlockingSpid { get; set; }
     public int BlockingEcid { get; set; }
     public int? MonitorLoop { get; set; }
 
-    /// <summary>
-    /// Where this row came from: the blocked-process-report XE ("blocked-process-report") or the always-on
-    /// DMV snapshot fallback ("DMV snapshot"). Surfaced as a grid badge so a row captured when the
-    /// blocked-process threshold was unset (e.g. AWS RDS) is distinguishable.
-    /// </summary>
-    public string Source { get; set; } = "blocked-process-report";
-
-    public long WaitTimeMs { get; set; }
     public string WaitResource { get; set; } = "";
-    public string LockMode { get; set; } = "";
     public string BlockedStatus { get; set; } = "";
     public string BlockedIsolationLevel { get; set; } = "";
     public long BlockedLogUsed { get; set; }
@@ -1021,15 +964,11 @@ public class BlockedProcessReportRow
     public string BlockedClientApp { get; set; } = "";
     public string BlockedHostName { get; set; } = "";
     public string BlockedLoginName { get; set; } = "";
-    public string BlockedSqlText { get; set; } = "";
     public string BlockingStatus { get; set; } = "";
     public string BlockingIsolationLevel { get; set; } = "";
     public string BlockingClientApp { get; set; } = "";
     public string BlockingHostName { get; set; } = "";
     public string BlockingLoginName { get; set; } = "";
-    public string BlockingSqlText { get; set; } = "";
-    public string BlockedProcessReportXml { get; set; } = "";
-    public string ContentiousObject { get; set; } = "";
     public string BlockedTransactionName { get; set; } = "";
     public string BlockingTransactionName { get; set; } = "";
     public DateTime? BlockedLastTranStarted { get; set; }
@@ -1043,7 +982,6 @@ public class BlockedProcessReportRow
 
     public string EventTimeLocal => ServerTimeHelper.FormatServerTime(EventTime);
     public string WaitTimeFormatted => WaitTimeMs < 1000 ? $"{WaitTimeMs} ms" : $"{WaitTimeMs / 1000.0:F1} sec";
-    public bool HasReportXml => !string.IsNullOrEmpty(BlockedProcessReportXml);
     public bool IsLongBlock => WaitTimeMs > 30000;
     public string BlockedLastTranStartedLocal => ServerTimeHelper.FormatServerTime(BlockedLastTranStarted);
     public string BlockedLastBatchStartedLocal => ServerTimeHelper.FormatServerTime(BlockedLastBatchStarted);
