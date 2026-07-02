@@ -9,11 +9,12 @@
 namespace PerformanceMonitor.Darling.Storage;
 
 /// <summary>
-/// M0 scaffold marker. SchemaVersion 0 means no Postgres schema exists yet; the first real
-/// migration bumps it to 1, and the service applies pending versioned SQL migrations on startup
-/// (headless plan: "plain versioned SQL scripts the service applies on startup").
+/// The latest schema version this build knows — always the highest version in
+/// <see cref="PgMigrations.Scripts"/> (pinned by test). The service applies pending versioned
+/// SQL migrations on startup (headless plan: "plain versioned SQL scripts the service applies
+/// on startup"); a store at this version is fully migrated.
 /// </summary>
 public static class StorageVersion
 {
-    public const int SchemaVersion = 0;
+    public const int SchemaVersion = 1;
 }
