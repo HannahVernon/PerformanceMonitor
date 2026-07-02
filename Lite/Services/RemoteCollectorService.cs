@@ -103,7 +103,6 @@ public partial class RemoteCollectorService
     private readonly ILogger<RemoteCollectorService>? _logger;
     private readonly DeltaCalculator _deltaCalculator;
     public DeltaCalculator DeltaCalculator => _deltaCalculator;
-    private static long s_idCounter = DateTime.UtcNow.Ticks;
 
     /// <summary>
     /// Limits how many SQL connections are <em>opened</em> at once — the semaphore is released
@@ -887,27 +886,23 @@ WHERE server_id = $3";
     }
 
     /// <summary>
-    /// Generates a unique collection ID based on timestamp.
+    /// Generates a unique collection ID — forwards to the shared generator so both SKUs stamp
+    /// ids with the same idiom.
     /// </summary>
     protected static long GenerateCollectionId()
     {
-        return Interlocked.Increment(ref s_idCounter);
+        return PerformanceMonitor.Collectors.CollectionIdGenerator.Next();
     }
 
     /// <summary>
-    /// Gets the server name used for DuckDB storage and hashing.
-    /// Appends the database name for Azure SQL Database connections so that
-    /// different databases on the same logical server get distinct server_ids.
-    /// Appends ":RO" for ReadOnlyIntent connections so they get a
-    /// different server_id than read-write connections to the same host.
+    /// Gets the server name used for DuckDB storage and hashing — forwards to the shared
+    /// <see cref="PerformanceMonitor.Common.ServerIdHelper.BuildStorageName"/> (database-name and
+    /// :RO suffixing live there) so every SKU derives the same server_id for the same server.
     /// </summary>
     internal static string GetServerNameForStorage(ServerConnection server)
     {
-        var name = string.IsNullOrWhiteSpace(server.DatabaseName)
-            ? server.ServerName
-            : server.ServerName + ":" + server.DatabaseName;
-
-        return server.ReadOnlyIntent ? name + ":RO" : name;
+        return PerformanceMonitor.Common.ServerIdHelper.BuildStorageName(
+            server.ServerName, server.DatabaseName, server.ReadOnlyIntent);
     }
 
     /// <summary>
