@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Data;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,19 +37,39 @@ public partial class RemoteCollectorService
         _lastSqlMs = 0;
         _lastDuckDbMs = 0;
 
+        var status = _serverManager.GetConnectionStatus(server.Id);
+
+        /* Watermark = the host store's latest already-collected value of the definition's time
+           column (Darling reads Postgres here instead) — feeds server-side filters + client dedup. */
+        DateTime? watermark = definition.WatermarkColumn is null
+            ? null
+            : await GetLastCollectedTimeAsync(serverId, definition.TargetTable, definition.WatermarkColumn, cancellationToken);
+
         var context = new CollectorContext
         {
             ServerId = serverId,
             ServerName = GetServerNameForStorage(server),
             CollectionTime = collectionTime,
             Deltas = _deltaCalculator,
+            Target = new CollectorTargetInfo { IsAzureSqlDb = status.SqlEngineEdition == 5 },
+            Watermark = watermark,
             IgnoredWaitTypes = _ignoredWaitTypes.Value,
         };
 
+        var plan = definition.BuildQuery(context);
+
         var sqlSw = Stopwatch.StartNew();
         using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(definition.Query, sqlConnection);
+        using var command = new SqlCommand(plan.Text, sqlConnection);
         command.CommandTimeout = CommandTimeoutSeconds;
+
+        foreach (var parameter in plan.Parameters)
+        {
+            command.Parameters.Add(new SqlParameter(parameter.Name, ToSqlDbType(parameter.Type))
+            {
+                Value = parameter.Value ?? DBNull.Value,
+            });
+        }
 
         using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var rows = await definition.ReadAsync(reader, context, cancellationToken);
@@ -89,4 +110,10 @@ public partial class RemoteCollectorService
         _logger?.LogDebug("Collected {RowCount} {Collector} rows for server '{Server}'", rowsWritten, definition.Name, server.DisplayName);
         return rowsWritten;
     }
+
+    private static SqlDbType ToSqlDbType(CollectorParameterType type) => type switch
+    {
+        CollectorParameterType.DateTime2 => SqlDbType.DateTime2,
+        _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unmapped collector parameter type"),
+    };
 }

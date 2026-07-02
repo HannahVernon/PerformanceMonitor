@@ -28,11 +28,7 @@ public sealed class WaitStatsCollector : ICollectorDefinition<WaitStatsCollector
 
     public readonly record struct Row(string WaitType, long WaitingTasks, long WaitTimeMs, long SignalWaitTimeMs);
 
-    public string Name => "wait_stats";
-
-    public string TargetTable => "wait_stats";
-
-    public string Query => @"
+    private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT
@@ -43,6 +39,14 @@ SELECT
 FROM sys.dm_os_wait_stats AS ws
 WHERE ws.wait_time_ms > 0
 OPTION(RECOMPILE);";
+
+    public string Name => "wait_stats";
+
+    public string TargetTable => "wait_stats";
+
+    public string? WatermarkColumn => null;
+
+    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {

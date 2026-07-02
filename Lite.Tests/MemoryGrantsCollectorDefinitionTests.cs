@@ -53,7 +53,7 @@ public sealed class MemoryGrantsCollectorDefinitionTests
     {
         Assert.Equal("memory_grant_stats", MemoryGrantsCollector.Instance.Name);
         Assert.Equal("memory_grant_stats", MemoryGrantsCollector.Instance.TargetTable);
-        Assert.Contains("sys.dm_exec_query_resource_semaphores", MemoryGrantsCollector.Instance.Query, System.StringComparison.Ordinal);
+        Assert.Contains("sys.dm_exec_query_resource_semaphores", MemoryGrantsCollector.Instance.BuildQuery(CollectorTestContext.Make(new RecordingCollectorDeltaCalculator())).Text, System.StringComparison.Ordinal);
     }
 
     [Fact]

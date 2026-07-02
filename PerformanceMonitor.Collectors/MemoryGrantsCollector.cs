@@ -46,7 +46,11 @@ public sealed class MemoryGrantsCollector : ICollectorDefinition<MemoryGrantsCol
 
     public string TargetTable => "memory_grant_stats";
 
-    public string Query => @"
+    public string? WatermarkColumn => null;
+
+    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+
+    private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT

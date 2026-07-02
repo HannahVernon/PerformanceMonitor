@@ -28,6 +28,16 @@ public sealed class CollectorContext
 
     public required ICollectorDeltaCalculator Deltas { get; init; }
 
+    /// <summary>Target-server facts the definition may branch on (engine edition, etc.).</summary>
+    public CollectorTargetInfo Target { get; init; } = new();
+
+    /// <summary>
+    /// The most recent already-collected value of the definition's <c>WatermarkColumn</c>, fetched
+    /// by the host from ITS store (Lite: DuckDB; Darling: Postgres) before the query is built.
+    /// Null when the definition declares no watermark or nothing was collected yet.
+    /// </summary>
+    public DateTime? Watermark { get; init; }
+
     /// <summary>Wait types excluded from collection (Lite: ignored_wait_types.json — #1240).</summary>
     public IReadOnlySet<string> IgnoredWaitTypes { get; init; } = s_emptySet;
 }

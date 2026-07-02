@@ -30,8 +30,20 @@ public interface ICollectorDefinition<TRow>
     /// <summary>Destination table; hosts prepend their standard prefix columns when writing.</summary>
     string TargetTable { get; }
 
-    /// <summary>The T-SQL executed against the monitored SQL Server.</summary>
-    string Query { get; }
+    /// <summary>
+    /// Time column the host should read its latest already-collected value of (from the host's
+    /// own store) before building the query — exposed to the definition as
+    /// <see cref="CollectorContext.Watermark"/> for server-side filters and client-side dedup.
+    /// Null when the collector needs no watermark (the common case).
+    /// </summary>
+    string? WatermarkColumn { get; }
+
+    /// <summary>
+    /// Builds the T-SQL (and any bound parameters) for this cycle. Constant for most collectors;
+    /// target-aware definitions branch on <see cref="CollectorContext.Target"/> and
+    /// <see cref="CollectorContext.Watermark"/>.
+    /// </summary>
+    CollectorQuery BuildQuery(CollectorContext context);
 
     /// <summary>Payload columns in exactly the order <see cref="WritePayload"/> emits them.</summary>
     IReadOnlyList<CollectorColumn> PayloadColumns { get; }

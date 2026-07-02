@@ -42,7 +42,11 @@ public sealed class TempDbStatsCollector : ICollectorDefinition<TempDbStatsColle
 
     public string TargetTable => "tempdb_stats";
 
-    public string Query => @"
+    public string? WatermarkColumn => null;
+
+    public CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
+
+    private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT /* PerformanceMonitorLite */
