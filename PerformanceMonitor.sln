@@ -37,6 +37,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PerformanceMonitor.Darling.
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Darling.Tests", "Darling\Darling.Tests\Darling.Tests.csproj", "{850948DD-C9FA-4274-B94D-1F6AACAF50F1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PerformanceMonitor.Collectors", "PerformanceMonitor.Collectors\PerformanceMonitor.Collectors.csproj", "{C41CB250-1E3B-4A57-913E-7183C585CDD2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -239,6 +241,18 @@ Global
 		{850948DD-C9FA-4274-B94D-1F6AACAF50F1}.Release|x64.Build.0 = Release|Any CPU
 		{850948DD-C9FA-4274-B94D-1F6AACAF50F1}.Release|x86.ActiveCfg = Release|Any CPU
 		{850948DD-C9FA-4274-B94D-1F6AACAF50F1}.Release|x86.Build.0 = Release|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Debug|x64.Build.0 = Debug|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Debug|x86.Build.0 = Debug|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Release|x64.ActiveCfg = Release|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Release|x64.Build.0 = Release|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Release|x86.ActiveCfg = Release|Any CPU
+		{C41CB250-1E3B-4A57-913E-7183C585CDD2}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

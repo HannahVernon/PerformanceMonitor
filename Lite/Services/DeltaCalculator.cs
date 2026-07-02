@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
@@ -20,8 +21,10 @@ namespace PerformanceMonitorLite.Services;
 /// Calculates delta values for cumulative metrics between collection intervals.
 /// Caches previous values in memory for efficient delta calculation.
 /// Seeds from DuckDB on startup to survive application restarts.
+/// Implements the shared <see cref="ICollectorDeltaCalculator"/> contract so extracted
+/// collector definitions (PerformanceMonitor.Collectors) compute deltas through it.
 /// </summary>
-public class DeltaCalculator
+public class DeltaCalculator : ICollectorDeltaCalculator
 {
     /// <summary>
     /// Cache structure: serverId -> collectorName -> key -> (previousValue, timestamp)
