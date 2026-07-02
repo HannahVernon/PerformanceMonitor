@@ -11,8 +11,9 @@ using System.Windows;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// M0 scaffold shell for the Darling viewer (a Postgres client of the central store).
-/// Real startup (connection config, theming, single-instance) lands with milestone M3.
+/// The Darling viewer — a Postgres client of the central store. MainWindow owns startup:
+/// it loads the viewer's sliver of darling.json (<see cref="ViewerSettings"/>) and connects
+/// on first render. Theming and single-instance plumbing come in a later milestone.
 /// </summary>
 public partial class App : Application
 {

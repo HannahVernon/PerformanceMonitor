@@ -2,6 +2,18 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
+      "ScottPlot.WPF": {
+        "type": "Direct",
+        "requested": "[5.1.58, )",
+        "resolved": "5.1.58",
+        "contentHash": "BL6MecJPyhllqSYsM5N9SfrrVEdgkRSyDu3lYSeiFq4dGgS0obuoGEbRiXgJq5PAZWixo+6Hcxaz5OEwElC8aQ==",
+        "dependencies": {
+          "OpenTK": "4.9.4",
+          "OpenTK.GLWpfControl": "4.3.3",
+          "ScottPlot": "5.1.58",
+          "SkiaSharp.Views.WPF": "3.119.0"
+        }
+      },
       "CredentialManagement": {
         "type": "Transitive",
         "resolved": "1.0.2",
@@ -242,17 +254,6 @@
           "SkiaSharp.NativeAssets.Linux.NoDependencies": "3.119.0"
         }
       },
-      "ScottPlot.WPF": {
-        "type": "Transitive",
-        "resolved": "5.1.58",
-        "contentHash": "BL6MecJPyhllqSYsM5N9SfrrVEdgkRSyDu3lYSeiFq4dGgS0obuoGEbRiXgJq5PAZWixo+6Hcxaz5OEwElC8aQ==",
-        "dependencies": {
-          "OpenTK": "4.9.4",
-          "OpenTK.GLWpfControl": "4.3.3",
-          "ScottPlot": "5.1.58",
-          "SkiaSharp.Views.WPF": "3.119.0"
-        }
-      },
       "SkiaSharp": {
         "type": "Transitive",
         "resolved": "3.119.0",
@@ -305,6 +306,9 @@
           "SkiaSharp.Views.Desktop.Common": "3.119.0"
         }
       },
+      "performancemonitor.collectors": {
+        "type": "Project"
+      },
       "performancemonitor.common": {
         "type": "Project",
         "dependencies": {
@@ -316,7 +320,8 @@
       "performancemonitor.darling.storage": {
         "type": "Project",
         "dependencies": {
-          "Npgsql": "[10.0.3, )"
+          "Npgsql": "[10.0.3, )",
+          "PerformanceMonitor.Collectors": "[1.0.0, )"
         }
       },
       "performancemonitor.plananalysis": {

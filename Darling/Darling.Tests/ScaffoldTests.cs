@@ -23,7 +23,7 @@ public sealed class ScaffoldTests
     [Fact]
     public void StorageSchemaVersion_TracksLatestMigrationScript()
     {
-        Assert.Equal(PgMigrations.Scripts[^1].Version, StorageVersion.SchemaVersion);
+        Assert.Equal(StorageVersion.SchemaVersion, PgMigrations.Scripts[^1].Version);
     }
 
     [Fact]
