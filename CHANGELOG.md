@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Darling: scaffold for the net-new headless/centralized edition** ([#1262]) — a new top-level `Darling/` path (working name) holds the future 24/7 collector **service** (`PerformanceMonitor.Darling.Service`, a .NET Worker with Windows-service lifetime), the detached **viewer** (`PerformanceMonitor.Darling.Viewer`, WPF shell reusing the shared `PerformanceMonitor.Ui` controls), and the **Postgres/TimescaleDB storage layer** (`PerformanceMonitor.Darling.Storage`, Npgsql), plus `Darling.Tests` — all wired into the solution and CI. This is milestone M0 of the headless re-architecture: the projects build and run but do nothing yet (the service logs a heartbeat; the viewer shows a placeholder). **The portable Lite edition is architecturally untouched by this path** — Darling is net-new code that will share the monitoring brain through the existing `PerformanceMonitor.*` libraries
+
 ### Changed
 
 - **Lite: `date_diff` replaced with the PostgreSQL-shared spelling, bit-exactly (headless groundwork, phase 1a)** ([#1262]) — PostgreSQL has no `date_diff` function, and the naive `EXTRACT(EPOCH ...)` substitution is subtly different (elapsed time vs. DuckDB's boundary-crossing count — off by one around second/day boundaries). All 11 sites now use forms proven **value-identical** by adversarial probe: the ten per-collection rate denominators (`interval_seconds` via `LAG`) become `extract(epoch FROM (date_trunc('second', a) - date_trunc('second', b)))` (truncate-then-diff = exact boundary count; the one reader-exposed site keeps its BIGINT type via CAST), and the FinOps `days_of_data` becomes plain `DATE` subtraction (`CAST(max AS DATE) - CAST(min AS DATE)`), which both engines define as whole day-boundary counts. Probe also caught a portability trap avoided here: DuckDB's `date_trunc('day', ts)` returns a `DATE` where PostgreSQL returns a timestamp, so the day site deliberately avoids `date_trunc`
