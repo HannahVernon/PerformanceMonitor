@@ -129,8 +129,8 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | memory_pressure_events | 5 min | `sys.dm_os_ring_buffers` RING_BUFFER_RESOURCE_MONITOR |
 | query_store | 5 min | Query Store DMVs (per database) |
 | running_jobs | 5 min | `msdb` job history with duration vs avg/p95 |
-| database_size_stats | 15 min | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
-| server_properties | 15 min | `SERVERPROPERTY()` hardware and licensing metadata |
+| database_size_stats | 1 hour | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
+| server_properties | on connect | `SERVERPROPERTY()` hardware and licensing metadata |
 | index_object_stats | Daily | `sys.dm_db_partition_stats` + `sys.dm_db_index_usage_stats` + `sys.dm_db_index_operational_stats` |
 | server_config | On connect | `sys.configurations` |
 | database_config | On connect | `sys.databases` |
@@ -340,6 +340,10 @@ The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server 
 | Themes | Dark and light | Dark and light |
 | Portability | Server-bound | Single executable |
 | MCP server (LLM integration) | Built into Dashboard (66 tools) | Built-in (55 tools) |
+
+### Darling Edition (In Development) — Headless 24/7 Collection
+
+**Darling** is the in-progress headless edition for teams that want always-on monitoring without a desktop app driving collection: a Windows service collects from your servers around the clock into a central PostgreSQL store (TimescaleDB is detected and adopted automatically for compression and chunk-based retention), and a detached viewer reads that store from any seat. It runs the same monitoring brain as Lite — the same 26 collectors, alert engine, and analysis pipeline, shared at the library level — with alerts delivered by email and Teams/Slack webhooks, and the same six diagnostic-analysis MCP tools available on request. Configuration is a single JSON file with no schedule knobs: it collects on the same default cadences and retention horizons as a fresh Lite install. It currently builds and runs from source and is not yet part of the signed release artifacts. See the [Darling operator guide](Darling/README.md) for the quick start, configuration reference, permissions, and operations.
 
 ---
 
