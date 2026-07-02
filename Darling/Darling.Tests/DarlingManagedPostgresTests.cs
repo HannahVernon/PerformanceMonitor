@@ -176,9 +176,14 @@ public sealed class DarlingManagedPostgresTests
             Assert.Equal(credentialBytes, File.ReadAllBytes(credentialPath));
             Assert.Equal(connectionString, secondConnectionString);
 
+            /* Both up/down probes below must bypass Npgsql's pool: OpenAsync on a pooled string
+               can hand back an idle socket with no I/O at all, which "succeeds" against a stopped
+               server — the refused-connection assert below failed exactly that way live. */
+            var unpooled = new NpgsqlConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString;
+
             /* A non-owner's stop must be a no-op — the server keeps accepting connections. */
             await second.StopIfStartedByThisProcessAsync();
-            await using (var stillUp = new NpgsqlConnection(connectionString))
+            await using (var stillUp = new NpgsqlConnection(unpooled))
             {
                 await stillUp.OpenAsync(timeout.Token);
             }
@@ -188,7 +193,7 @@ public sealed class DarlingManagedPostgresTests
             Assert.False(owner.StartedByThisProcess);
             await Assert.ThrowsAnyAsync<Exception>(async () =>
             {
-                await using var refused = new NpgsqlConnection(connectionString);
+                await using var refused = new NpgsqlConnection(unpooled);
                 await refused.OpenAsync(timeout.Token);
             });
         }

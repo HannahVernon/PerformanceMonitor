@@ -34,7 +34,7 @@ Nothing is installed on the monitored SQL Servers by either edition beyond two l
 ### Prerequisites
 
 - **Windows** for the service host (Windows-service lifetime, DPAPI password protection) and for the viewer (WPF). Monitored servers can be SQL Server 2016–2025, Azure SQL Managed Instance, AWS RDS for SQL Server, or Azure SQL Database.
-- **A PostgreSQL server** for the central store — PostgreSQL 16 or 17 recommended (developed and validated against PostgreSQL 17). A database and a login the service can create tables in.
+- **A PostgreSQL store — bundled or your own.** In managed mode (the shipped default, see [Managed Bundled PostgreSQL](#managed-bundled-postgresql)) the service runs its own bundled PostgreSQL 17 + TimescaleDB and no database provisioning is needed. To bring your own instead, PostgreSQL 16 or 17 is recommended (developed and validated against PostgreSQL 17) with a database and a login the service can create tables in.
 - **TimescaleDB is optional and auto-adopted.** If the extension is installed (or pre-created by an administrator) in the store database, the service detects it at startup and automatically converts the collector tables to hypertables with compression; without it, the service runs in plain-PostgreSQL mode, which is fully supported. No configuration flag either way.
 - **.NET 10** to build and run.
 
@@ -58,7 +58,7 @@ The service reads one JSON file. It resolves the path in this order:
 
 Copy the shipped `darling.sample.json` (it lands next to the built binary) to `darling.json` and edit. Comments and trailing commas are allowed; property names are case-insensitive.
 
-Minimal working example — one server, integrated auth:
+Minimal working example — one server, integrated auth, bring-your-own PostgreSQL. (With the bundled store instead, replace the `postgres` block with `"postgres": { "managed": true }` and skip provisioning entirely — see [Managed Bundled PostgreSQL](#managed-bundled-postgresql).)
 
 ```json
 {
@@ -163,9 +163,14 @@ All sections except `postgres` and `servers` are optional — omit a section (or
 
 ### postgres
 
+Two mutually exclusive modes — setting both `managed: true` and `connectionString` is a validation error:
+
 | Key | Default | Notes |
 |---|---|---|
-| `connectionString` | *(required)* | Npgsql connection string for the central store, e.g. `Host=localhost;Port=5432;Username=darling;Password=...;Database=darling` |
+| `managed` | `false` | `true` runs the bundled PostgreSQL + TimescaleDB (Windows only; see [Managed Bundled PostgreSQL](#managed-bundled-postgresql)). The connection string is derived, never configured. |
+| `port` | `5641` | Managed mode only: the loopback port the bundled server listens on. Deliberately uncommon so it coexists with any PostgreSQL (5432) already on the machine. |
+| `dataDirectory` | *(null)* | Managed mode only: the cluster's data directory. `null` means `%ProgramData%\PerformanceMonitorDarling\pg`. |
+| `connectionString` | *(required unless managed)* | Npgsql connection string for a store you provision yourself, e.g. `Host=localhost;Port=5432;Username=darling;Password=...;Database=darling` |
 
 ### servers (array, at least one entry)
 
@@ -377,6 +382,26 @@ Fixed cadences, hardcoded on purpose:
 
 ---
 
-## Managed Bundled PostgreSQL — Shipping Soon
+## Managed Bundled PostgreSQL
 
-A managed-PostgreSQL mode is in the works: Darling will be able to bootstrap and manage a bundled PostgreSQL instance itself, so a from-zero install will not require provisioning a database server first — point the service at a data directory and go. Configuration keys for this mode will be documented here when it ships; everything above describes the bring-your-own-PostgreSQL setup that works today.
+With `postgres.managed = true` (the sample's default), the service runs its own bundled PostgreSQL 17 + TimescaleDB and a from-zero install needs no database provisioning at all. Windows only, like every DPAPI surface here.
+
+```json
+{
+  "postgres": {
+    "managed": true,
+    "port": 5641,
+    "dataDirectory": null
+  }
+}
+```
+
+**What first run does.** The service looks for `pg-runtime\pgsql\` beside its binary, extracting it from `pg-runtime.zip` when only the zip is present (deleting the extracted directory is therefore always safe — it self-heals). If the data directory has no cluster, it generates a 32-character random password, protects it with DPAPI LocalMachine into `pg-credential.dpapi` beside the data directory (credential first, so a crash mid-initdb never strands a cluster nobody can log into), then runs `initdb` with `scram-sha-256` auth, data checksums, and UTF8/C locale. A marker-guarded block appended to `postgresql.conf` preloads TimescaleDB, sets the port, and restricts listening to `127.0.0.1` — the append is re-checked on every start, so a crash between initdb and the append heals itself instead of silently degrading to plain PostgreSQL. Then `pg_ctl start`, `CREATE DATABASE darling`, and the normal startup path (migrations, TimescaleDB adoption — you should see `26/26 collector table(s) are hypertables`) continues exactly as in bring-your-own mode. The connection string is derived from the stored credential; the Viewer and the MCP host on the same machine derive it the same way, so nothing needs configuring there either.
+
+**Why scram and not trust, even loopback-only.** Trust auth would hand superuser to any local code that can open a loopback socket — every other local user, and network-capable-but-not-filesystem-capable attack primitives like SSRF from a co-hosted app. With scram the credential travels on the wire, failed attempts are auditable, and access is confined to what can read the DPAPI-protected credential file. `listen_addresses = '127.0.0.1'` keeps the server unreachable off the machine on top.
+
+**Lifecycle.** On shutdown the service stops the server (`pg_ctl stop -m fast`) **only when it started it**. A server that was already running — an operator's own `pg_ctl`, or a postmaster that survived a service crash — is adopted for connections but never stopped: you'll see `already running … will not stop it` in the log, and the service keeps collecting into it.
+
+**The runtime zip.** `pg-runtime.zip` ships beside the service binary in packaged releases. Building from source, produce it once with `Darling\tools\fetch-pg-runtime.ps1` — it downloads the pinned EDB PostgreSQL 17 binaries and TimescaleDB, verifies their SHA256, prunes what the service doesn't need, and writes the zip to `Darling\artifacts\`; copy it next to the built service exe.
+
+**Server log.** The bundled server's own log is `pg.log` beside the data directory — that's where PostgreSQL explains a refused start; bootstrap errors in the service log quote its tail.

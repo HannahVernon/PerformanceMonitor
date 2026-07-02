@@ -401,7 +401,7 @@ public sealed class DarlingManagedPostgres
     {
         _logger.LogInformation("Starting managed Postgres on 127.0.0.1:{Port} (log: {Log})", _config.Port, _serverLogPath);
 
-        var (exitCode, output) = await RunToolAsync(
+        var exitCode = await RunDetachingToolAsync(
             Path.Combine(binDirectory, "pg_ctl.exe"),
             $"-D \"{_dataDirectory}\" -o \"-p {_config.Port}\" -l \"{_serverLogPath}\" -w -t {PgCtlWaitSeconds} start",
             s_pgCtlTimeout,
@@ -411,7 +411,6 @@ public sealed class DarlingManagedPostgres
         {
             throw new InvalidOperationException(
                 $"pg_ctl start failed (exit code {exitCode}) for {_dataDirectory}.\n" +
-                $"pg_ctl output:\n{output}\n" +
                 $"Server log tail ({_serverLogPath}):\n{ReadServerLogTail()}");
         }
 
@@ -574,5 +573,70 @@ public sealed class DarlingManagedPostgres
         {
             return (process.ExitCode, output.ToString().Trim());
         }
+    }
+
+    /// <summary>
+    /// Runs the ONE tool whose spawned server outlives it — pg_ctl start — with NO output
+    /// redirection, waiting on process exit alone. Redirecting here is a guaranteed hang on
+    /// SUCCESS: pg_ctl launches postgres.exe with handle inheritance, the postmaster keeps the
+    /// pipe write-ends open for its whole lifetime, so the pipes never reach EOF — and
+    /// <see cref="Process.WaitForExitAsync(CancellationToken)"/> waits for redirected output to
+    /// drain (dotnet/runtime#42556), so a healthy start times out after pg_ctl itself has long
+    /// exited. Caught live by the gated bootstrap E2E. The lost pg_ctl console text is the
+    /// throwaway "waiting for server to start..." narration; the real failure story is the -l
+    /// server log, which the caller surfaces via <see cref="ReadServerLogTail"/>. initdb and
+    /// pg_ctl stop/status stay on <see cref="RunToolAsync"/> — nothing they spawn survives them,
+    /// so their pipes close and their captured output is worth having.
+    /// </summary>
+    private static async Task<int> RunDetachingToolAsync(
+        string exePath, string arguments, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(exePath))
+        {
+            throw new InvalidOperationException(
+                $"{exePath} is missing — the pg-runtime directory is incomplete. Rebuild pg-runtime.zip with " +
+                "Darling\\tools\\fetch-pg-runtime.ps1 and redeploy (deleting the pg-runtime directory makes the " +
+                "service re-extract the zip on its next start).");
+        }
+
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = exePath,
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Could not start {exePath}.");
+        }
+
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(timeout);
+        try
+        {
+            await process.WaitForExitAsync(timeoutSource.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            /* A start stuck past pg_ctl's own -w -t budget is a real failure; the tree kill
+               reaps the half-started postmaster while it is still pg_ctl's child. */
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+                /* Exited between the timeout and the kill. */
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new TimeoutException(
+                $"{Path.GetFileName(exePath)} {arguments} did not finish within {timeout.TotalSeconds:0}s.");
+        }
+
+        return process.ExitCode;
     }
 }
