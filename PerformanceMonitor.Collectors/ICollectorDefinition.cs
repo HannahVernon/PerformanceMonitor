@@ -31,6 +31,14 @@ public interface ICollectorDefinition<TRow>
     string TargetTable { get; }
 
     /// <summary>
+    /// Per-collector command timeout override in seconds, for collectors whose sweep is far
+    /// heavier than the default budget (index_object_stats: 300 s per database — the #1135 fix).
+    /// Null = the host's default timeout. Applies to the main/per-item/per-database commands;
+    /// enumeration queries always use the host default, matching the originals.
+    /// </summary>
+    int? CommandTimeoutSecondsOverride { get; }
+
+    /// <summary>
     /// Whether the target table's standard prefix includes a collection id as its first column.
     /// Almost always true; running_jobs is keyed by (collection_time, server) alone and writes no
     /// collection_id, so its definition returns false and hosts skip that prefix column.
