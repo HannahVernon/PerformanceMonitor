@@ -1,0 +1,29 @@
+{
+  // Copy this file to darling.json next to the service binary (or point the
+  // DARLING_CONFIG environment variable at it) and edit. Comments are allowed.
+  "postgres": {
+    "connectionString": "Host=localhost;Port=5432;Username=darling;Database=darling"
+  },
+  "servers": [
+    {
+      // Integrated auth (recommended): grant the service account VIEW SERVER STATE etc.
+      "name": "SQL2022",
+      "host": "SQL2022",
+      "auth": "integrated",
+      "excludedDatabases": []
+    },
+    {
+      // SQL auth: run `PerformanceMonitor.Darling.Service --encrypt-password` on THIS
+      // machine and paste the output below. Plaintext "password" also works for dev,
+      // but the service logs a warning. The blob is machine-bound (DPAPI LocalMachine).
+      "name": "PROD1",
+      "host": "prod1.example.com",
+      "auth": "sql",
+      "username": "monitor",
+      "encryptedPassword": "<output of --encrypt-password>",
+      "trustServerCertificate": false,
+      "encryptMode": "Mandatory",
+      "excludedDatabases": [ "StageDb" ]
+    }
+  ]
+}
