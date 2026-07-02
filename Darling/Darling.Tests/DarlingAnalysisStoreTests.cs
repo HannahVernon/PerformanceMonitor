@@ -1,0 +1,388 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Darling.Analysis;
+using PerformanceMonitor.Darling.Storage;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins the Phase-5 analysis slice AN1 storage foundation. Ungated: the V4 "analysis-tables"
+/// migration creates analysis_findings in Lite's v3 shape PLUS the Dashboard's
+/// remediation_action_json (no primary key — collector-table reasoning), the PK'd
+/// analysis_muted registry, and every passthrough view the ported analysis SQL reads (each
+/// pinned against the collector catalog so a view can never target a nonexistent table); the
+/// PgFindingStore SQL is PG-dialect ($N positional parameters, no bare now(), no N''
+/// literals); and PgPlanFetcher implements the shared seam with the Dashboard's query,
+/// degrading to null on a resolver miss without touching a server. Gated on DARLING_TEST_PG:
+/// migrate → 4 schema versions, then the full store round-trip — filter (absolution dropped)
+/// → insert with a BUILT RemediationAction → read back with every field intact including the
+/// deserialized action → mute excludes → unmute restores → cleanup purges aged rows —
+/// plus a v_wait_stats SELECT as the passthrough proof.
+/// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
+public sealed class DarlingAnalysisStoreTests
+{
+    /// <summary>Distinctive fake id — a real server_id is a storage-name hash, never this.</summary>
+    private const int TestServerId = -616161;
+    private const string TestServerName = "analysis-store-e2e";
+    private const string TestStoryPathHash = "an1-e2e-hash";
+
+    /// <summary>
+    /// Every v_&lt;table&gt; view the V4 migration must create: the fourteen the ported fact
+    /// collectors read plus the three Lite's drill-down/storage collectors also read
+    /// (tempdb_stats, query_snapshots, database_config).
+    /// </summary>
+    private static readonly string[] PassthroughViewTables =
+    {
+        "wait_stats",
+        "query_stats",
+        "query_store_stats",
+        "cpu_utilization_stats",
+        "memory_grant_stats",
+        "memory_stats",
+        "perfmon_stats",
+        "session_stats",
+        "file_io_stats",
+        "blocked_process_reports",
+        "deadlocks",
+        "dmv_blocking_snapshots",
+        "index_object_stats",
+        "database_size_stats",
+        "tempdb_stats",
+        "query_snapshots",
+        "database_config"
+    };
+
+    private static readonly string[] AllFindingStoreSql =
+    {
+        PgFindingStore.InsertFindingSql,
+        PgFindingStore.GetRecentFindingsSql,
+        PgFindingStore.GetLatestFindingsSql,
+        PgFindingStore.GetMutedHashesSql,
+        PgFindingStore.MuteStorySql,
+        PgFindingStore.UnmuteStorySql,
+        PgFindingStore.CleanupOldFindingsSql
+    };
+
+    /* ---------------- ungated: V4 migration pins ---------------- */
+
+    [Fact]
+    public void V4Migration_CreatesAnalysisTables_WithDashboardShape_AndAllPassthroughViews()
+    {
+        var v4 = PgMigrations.Scripts.Single(m => m.Version == 4);
+        Assert.Equal("analysis-tables", v4.Name);
+
+        /* analysis_findings — Lite AnalysisSchema v3 column-for-column... */
+        Assert.Contains("CREATE TABLE IF NOT EXISTS analysis_findings (", v4.Sql, StringComparison.Ordinal);
+        foreach (var column in new[]
+        {
+            "finding_id", "analysis_time", "server_id", "server_name", "database_name",
+            "time_range_start", "time_range_end", "severity", "confidence", "category",
+            "story_path", "story_path_hash", "story_text", "root_fact_key", "root_fact_value",
+            "leaf_fact_key", "leaf_fact_value", "fact_count", "incident_id"
+        })
+        {
+            Assert.Contains(column, v4.Sql, StringComparison.Ordinal);
+        }
+
+        /* ...PLUS the Dashboard's remediation column (recommendations rebuild D2). */
+        Assert.Contains("remediation_action_json text", v4.Sql, StringComparison.Ordinal);
+
+        /* No primary key on the findings table — the collector-table hypertable/COPY
+           reasoning. The only PRIMARY KEY in V4 belongs to the muted registry. */
+        var findingsSegment = v4.Sql.Substring(0, v4.Sql.IndexOf("CREATE TABLE IF NOT EXISTS analysis_muted", StringComparison.Ordinal));
+        Assert.DoesNotContain("PRIMARY KEY", findingsSegment, StringComparison.Ordinal);
+
+        /* The two Lite findings indexes, column-for-column. */
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_analysis_findings_time ON analysis_findings(server_id, analysis_time)",
+            v4.Sql, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_analysis_findings_hash ON analysis_findings(story_path_hash)",
+            v4.Sql, StringComparison.Ordinal);
+
+        /* analysis_muted — Lite's columns, keeping its small-registry PRIMARY KEY (like V2's
+           servers) and its hash index. */
+        Assert.Contains("CREATE TABLE IF NOT EXISTS analysis_muted (", v4.Sql, StringComparison.Ordinal);
+        Assert.Contains("mute_id bigint NOT NULL PRIMARY KEY", v4.Sql, StringComparison.Ordinal);
+        foreach (var column in new[] { "story_path_hash", "muted_date", "reason" })
+        {
+            Assert.Contains(column, v4.Sql, StringComparison.Ordinal);
+        }
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_analysis_muted_hash ON analysis_muted(story_path_hash)",
+            v4.Sql, StringComparison.Ordinal);
+
+        /* Lite's DuckDB DEFAULT CURRENT_TIMESTAMP is deliberately NOT carried — in PG it
+           would stamp the server's LOCAL clock; the store supplies naive-UTC explicitly. */
+        Assert.DoesNotContain("CURRENT_TIMESTAMP", v4.Sql, StringComparison.OrdinalIgnoreCase);
+
+        /* Every passthrough view, exactly the Lite-verbatim shape. */
+        foreach (var table in PassthroughViewTables)
+        {
+            Assert.Contains($"CREATE OR REPLACE VIEW v_{table} AS SELECT * FROM {table};",
+                v4.Sql, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void V4PassthroughViews_TargetOnlyRealCollectorTables()
+    {
+        /* A passthrough view over a missing table fails the migration — every view target
+           must be a V1 collector table from the shared catalog. */
+        var collectorTables = CollectorCatalog.All.Select(s => s.TargetTable).ToHashSet(StringComparer.Ordinal);
+        foreach (var table in PassthroughViewTables)
+        {
+            Assert.Contains(table, collectorTables);
+        }
+    }
+
+    /* ---------------- ungated: finding-store dialect pins ---------------- */
+
+    [Fact]
+    public void FindingStoreSql_PgDialect_NoBareNow_NoNLiterals_PositionalParams()
+    {
+        foreach (var sql in AllFindingStoreSql)
+        {
+            /* Bare now() is timestamptz — the naive-UTC columns would compare in the server's
+               time zone. Every "now" must arrive as a bound Kind-Unspecified parameter. */
+            Assert.DoesNotContain("now(", sql.ToLowerInvariant());
+            /* Postgres has no N'' literals and no @named parameters — $N positional only. */
+            Assert.DoesNotContain("N'", sql);
+            Assert.DoesNotContain("@", sql);
+            Assert.Contains("$1", sql);
+        }
+    }
+
+    [Fact]
+    public void FindingStoreSql_CarriesTheDashboardShape()
+    {
+        /* The write persists all 20 columns including the built action... */
+        Assert.Contains("remediation_action_json", PgFindingStore.InsertFindingSql);
+        Assert.Contains("$20", PgFindingStore.InsertFindingSql);
+
+        /* ...and BOTH reads return it (the Dashboard twin omits it from GetLatest — here the
+           reads share one column list), with the twins' ordering/window semantics. */
+        Assert.Contains("remediation_action_json", PgFindingStore.GetRecentFindingsSql);
+        Assert.Contains("ORDER BY analysis_time DESC, severity DESC", PgFindingStore.GetRecentFindingsSql);
+        Assert.Contains("LIMIT $3", PgFindingStore.GetRecentFindingsSql);
+        Assert.Contains("remediation_action_json", PgFindingStore.GetLatestFindingsSql);
+        Assert.Contains("SELECT MAX(analysis_time) FROM analysis_findings WHERE server_id = $1", PgFindingStore.GetLatestFindingsSql);
+
+        /* Mute reads span per-server AND global (NULL server_id) rows, like both twins. */
+        Assert.Contains("server_id = $1 OR server_id IS NULL", PgFindingStore.GetMutedHashesSql);
+    }
+
+    /* ---------------- ungated: plan fetcher pins ---------------- */
+
+    [Fact]
+    public void PlanFetcher_ImplementsTheSharedSeam_WithTheDashboardQuery()
+    {
+        Assert.True(typeof(IPlanFetcher).IsAssignableFrom(typeof(PgPlanFetcher)));
+        Assert.Contains("sys.dm_exec_query_plan(CONVERT(varbinary(64), @plan_handle, 1))",
+            PgPlanFetcher.PlanQuery, StringComparison.Ordinal);
+        Assert.Contains("SET NOCOUNT ON;", PgPlanFetcher.PlanQuery, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PlanFetcher_DegradesToNull_OnResolverMiss_AndSkipsResolveOnEmptyHandle()
+    {
+        /* Unknown/disconnected server: the resolver returns null and the fetch degrades
+           to null without touching any server (Lite's ServerManager-miss semantics). */
+        var resolved = false;
+        var fetcher = new PgPlanFetcher(_ => { resolved = true; return null; });
+        Assert.Null(await fetcher.FetchPlanXmlAsync(TestServerId, "0x0600FF00"));
+        Assert.True(resolved);
+
+        /* An empty plan handle short-circuits before the resolver is consulted. */
+        resolved = false;
+        Assert.Null(await fetcher.FetchPlanXmlAsync(TestServerId, ""));
+        Assert.False(resolved);
+    }
+
+    /* ---------------- gated: live store round-trip ---------------- */
+
+    [Fact]
+    public async Task EndToEnd_FindingStoreRoundTrip_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live finding-store test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+
+        /* Migrations are idempotent — an older store comes up to current, a current store no-ops. */
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+
+        using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
+        {
+            Assert.Equal(4L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        }
+
+        /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
+        await DeleteTestRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        var store = new PgFindingStore(postgres);
+
+        try
+        {
+            /* Whole-second window bounds so the PG microsecond timestamp round-trips exactly. */
+            var windowEnd = TruncateToSeconds(DateTime.UtcNow);
+            var windowStart = windowEnd.AddHours(-4);
+            var context = new AnalysisContext
+            {
+                ServerId = TestServerId,
+                ServerName = TestServerName,
+                TimeRangeStart = windowStart,
+                TimeRangeEnd = windowEnd,
+                ServerUtcOffset = TimeSpan.Zero
+            };
+
+            var stories = new List<AnalysisStory>
+            {
+                new AnalysisStory
+                {
+                    Severity = 1.2,
+                    Confidence = 0.8,
+                    Category = "cpu",
+                    StoryPath = "CPU_PRESSURE -> THREADPOOL",
+                    StoryPathHash = TestStoryPathHash,
+                    StoryText = "CPU pressure escalating into worker-thread starvation.",
+                    RootFactKey = "CPU_PRESSURE",
+                    RootFactValue = 91.5,
+                    LeafFactKey = "THREADPOOL",
+                    LeafFactValue = 0.42,
+                    FactCount = 3,
+                    IncidentId = "an1-incident",
+                    DatabaseName = "StackOverflow"
+                },
+                /* Absolution story — severity 0 confirms health and must be dropped. */
+                new AnalysisStory { Severity = 0, StoryPathHash = "an1-absolution", IsAbsolution = true }
+            };
+
+            /* Phase 1: filter — the absolution story is dropped, the real one survives. */
+            var survivors = await store.FilterMutedFindingsAsync(stories, context);
+            var finding = Assert.Single(survivors);
+            Assert.Equal("StackOverflow", finding.DatabaseName);
+
+            /* Phase 2: attach a BUILT action (what the orchestrator does between the phases)
+               and insert — remediation_action_json is persisted on the row. */
+            finding.Remediation = new RemediationAction(
+                "PLAN_REGRESSION",
+                "force",
+                new[] { new ForcePlanTarget("StackOverflow", 42, 7, "0xBEST", "0xLATEST", 1500.5, 250.25, 6.0) });
+            await store.InsertFindingsAsync(survivors, context);
+
+            /* Read back — every persisted field intact, including the deserialized action. */
+            var recent = await store.GetRecentFindingsAsync(TestServerId);
+            var roundTripped = Assert.Single(recent);
+            Assert.Equal(finding.FindingId, roundTripped.FindingId);
+            Assert.Equal(TestServerId, roundTripped.ServerId);
+            Assert.Equal(TestServerName, roundTripped.ServerName);
+            Assert.Equal("StackOverflow", roundTripped.DatabaseName);
+            Assert.Equal(windowStart, roundTripped.TimeRangeStart);
+            Assert.Equal(windowEnd, roundTripped.TimeRangeEnd);
+            Assert.Equal(1.2, roundTripped.Severity);
+            Assert.Equal(0.8, roundTripped.Confidence);
+            Assert.Equal("cpu", roundTripped.Category);
+            Assert.Equal("CPU_PRESSURE -> THREADPOOL", roundTripped.StoryPath);
+            Assert.Equal(TestStoryPathHash, roundTripped.StoryPathHash);
+            Assert.Equal("CPU pressure escalating into worker-thread starvation.", roundTripped.StoryText);
+            Assert.Equal("CPU_PRESSURE", roundTripped.RootFactKey);
+            Assert.Equal(91.5, roundTripped.RootFactValue);
+            Assert.Equal("THREADPOOL", roundTripped.LeafFactKey);
+            Assert.Equal(0.42, roundTripped.LeafFactValue);
+            Assert.Equal(3, roundTripped.FactCount);
+            Assert.Equal("an1-incident", roundTripped.IncidentId);
+            Assert.Equal(DateTimeKind.Utc, roundTripped.AnalysisTime.Kind);
+
+            Assert.NotNull(roundTripped.Remediation);
+            Assert.Equal("PLAN_REGRESSION", roundTripped.Remediation!.FactKey);
+            Assert.Equal("force", roundTripped.Remediation.Action);
+            var target = Assert.Single(roundTripped.Remediation.Targets);
+            Assert.Equal("StackOverflow", target.Database);
+            Assert.Equal(42, target.QueryId);
+            Assert.Equal(7, target.PlanId);
+            Assert.Equal(6.0, target.RegressionFactor);
+
+            /* GetLatest returns the same run, action included (the uniform read). */
+            var latest = await store.GetLatestFindingsAsync(TestServerId);
+            Assert.Equal(roundTripped.FindingId, Assert.Single(latest).FindingId);
+            Assert.NotNull(Assert.Single(latest).Remediation);
+
+            /* Mute the story — the same stories now filter to nothing. */
+            await store.MuteStoryAsync(TestServerId, TestStoryPathHash, "CPU_PRESSURE -> THREADPOOL", "e2e mute");
+            Assert.Empty(await store.FilterMutedFindingsAsync(stories, context));
+
+            /* Unmute (Dashboard-twin surface) — the story flows again. */
+            long muteId;
+            using (var readMute = new NpgsqlCommand(
+                "SELECT mute_id FROM analysis_muted WHERE server_id = $1 AND story_path_hash = $2", connection))
+            {
+                readMute.Parameters.AddWithValue(TestServerId);
+                readMute.Parameters.AddWithValue(TestStoryPathHash);
+                muteId = Assert.IsType<long>(await readMute.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            }
+            await store.UnmuteStoryAsync(muteId);
+            Assert.Single(await store.FilterMutedFindingsAsync(stories, context));
+
+            /* Retention: an aged finding is purged, the fresh one survives. */
+            var aged = new AnalysisFinding
+            {
+                FindingId = CollectionIdGenerator.Next(),
+                AnalysisTime = DateTime.SpecifyKind(DateTime.UtcNow.AddDays(-40), DateTimeKind.Unspecified),
+                ServerId = TestServerId,
+                ServerName = TestServerName,
+                Severity = 0.5,
+                Confidence = 0.5,
+                Category = "aged",
+                StoryPath = "AGED",
+                StoryPathHash = "an1-aged-hash",
+                StoryText = "aged row for the retention sweep",
+                RootFactKey = "AGED",
+                FactCount = 1
+            };
+            await store.InsertFindingsAsync(new List<AnalysisFinding> { aged }, context);
+            await store.CleanupOldFindingsAsync(retentionDays: 30);
+
+            var afterCleanup = await store.GetRecentFindingsAsync(TestServerId, hoursBack: 24 * 90);
+            Assert.Equal(roundTripped.FindingId, Assert.Single(afterCleanup).FindingId);
+
+            /* Passthrough proof: the ported analysis SQL's view names resolve. */
+            using (var view = new NpgsqlCommand("SELECT COUNT(*) FROM v_wait_stats WHERE server_id = $1", connection))
+            {
+                view.Parameters.AddWithValue(TestServerId);
+                Assert.Equal(0L, await view.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            }
+        }
+        finally
+        {
+            await DeleteTestRowsAsync(connection);
+        }
+    }
+
+    private static DateTime TruncateToSeconds(DateTime value) =>
+        DateTime.SpecifyKind(new DateTime(value.Ticks - (value.Ticks % TimeSpan.TicksPerSecond)), DateTimeKind.Unspecified);
+
+    private static async Task DeleteTestRowsAsync(NpgsqlConnection connection)
+    {
+        using var cleanup = new NpgsqlCommand(
+            $"DELETE FROM analysis_findings WHERE server_id = {TestServerId}; DELETE FROM analysis_muted WHERE server_id = {TestServerId};", connection);
+        await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+}

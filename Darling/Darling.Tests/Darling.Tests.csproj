@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PerformanceMonitor.Darling.Analysis\PerformanceMonitor.Darling.Analysis.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Service\PerformanceMonitor.Darling.Service.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Viewer\PerformanceMonitor.Darling.Viewer.csproj" />
