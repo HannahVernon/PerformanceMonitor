@@ -315,7 +315,7 @@ The service logs through standard .NET hosting: console output when run interact
 
 ### The Viewer
 
-`PerformanceMonitor.Darling.Viewer.exe` is a WPF app that talks **only to the PostgreSQL store** — it never connects to your monitored SQL Servers. It reads the same `darling.json` the service uses, but only `postgres.connectionString`, resolved in the same order (explicit path, then `DARLING_CONFIG`, then `darling.json` next to the binary) — so a viewer seat on another machine needs only a minimal `darling.json` containing the `postgres.connectionString`. If the file is missing it shows a hint instead of crashing.
+`PerformanceMonitor.Darling.Viewer.exe` is a WPF app that talks **only to the PostgreSQL store** — it never connects to your monitored SQL Servers. It reads the same `darling.json` the service uses, but only the `postgres` section, resolved in the same order (explicit path, then `DARLING_CONFIG`, then `darling.json` next to the binary) plus one viewer-only fallback: the parent directory, so the release zip's layout — viewer in a `viewer\` subfolder, `darling.json` beside the service exe — works with no setup. A viewer seat on another machine needs only a minimal `darling.json` containing the `postgres.connectionString`. If the file is missing it shows a hint instead of crashing.
 
 Four tabs, with a server list on the left (from the `servers` registry the service maintains):
 
