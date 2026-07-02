@@ -27,7 +27,10 @@ using PerformanceMonitor.Notifications;
 namespace PerformanceMonitor.Darling.Service;
 
 /// <summary>
-/// The 24/7 collection loop (headless plan M2): load darling.json, migrate the Postgres store,
+/// The 24/7 collection loop (headless plan M2): load darling.json, bootstrap the bundled
+/// Postgres first when <c>postgres.managed</c> is true (<see cref="DarlingManagedPostgres"/> —
+/// unpack/initdb/start before anything touches the store, stop-on-shutdown only if this
+/// process started it), migrate the Postgres store,
 /// detect optional TimescaleDB (hypertables + compression when present, plain PG otherwise —
 /// see TimescaleSupport), re-seed delta baselines from it (restart continuity — the Postgres
 /// twin of Lite's DuckDB
@@ -132,7 +135,65 @@ public sealed class DarlingWorker : BackgroundService
             return;
         }
 
-        await using var postgres = NpgsqlDataSource.Create(config.Postgres.ConnectionString);
+        /* Bundled-Postgres bootstrap (the shipped zero-admin default): in managed mode the
+           service unpacks/initializes/starts its own Postgres BEFORE the store connection
+           below, and the connection string is DERIVED (localhost + port + the generated
+           DPAPI credential), never configured. Windows-only, like every DPAPI surface here.
+           A bootstrap failure is the existing no-store behavior: LogCritical + clean exit. */
+        DarlingManagedPostgres? managedPostgres = null;
+        var storeConnectionString = config.Postgres.ConnectionString;
+        if (config.Postgres.Managed)
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                _logger.LogCritical(
+                    "postgres.managed = true requires Windows (the bundled runtime and the DPAPI-protected credential); " +
+                    "set postgres.managed = false and point postgres.connectionString at your own PostgreSQL instead.");
+                return;
+            }
+
+            managedPostgres = new DarlingManagedPostgres(config.Postgres, _logger);
+            try
+            {
+                storeConnectionString = await managedPostgres.EnsureRunningAsync(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical("Managed Postgres bootstrap failed: {Message}", ex.Message);
+                return;
+            }
+        }
+
+        try
+        {
+            await RunCollectionLoopAsync(config, storeConnectionString, stoppingToken);
+        }
+        finally
+        {
+            /* Stop the bundled server ONLY if this process started it — never one the operator
+               (or a surviving previous run) owns. Runs on every exit path, including a failed
+               migration, AFTER the loop's data source is disposed. The IsWindows re-check is a
+               CA1416 guard only — a non-null managedPostgres already implies Windows. */
+            if (managedPostgres is not null && OperatingSystem.IsWindows())
+            {
+                await managedPostgres.StopIfStartedByThisProcessAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Everything after the (optional) managed-Postgres bootstrap: store connection, migration,
+    /// Timescale adoption, delta seeding, and the collection/alert/analysis loop. Split from
+    /// <see cref="ExecuteAsync"/> so the bootstrap's finally can stop the bundled server after
+    /// this method's data source is disposed.
+    /// </summary>
+    private async Task RunCollectionLoopAsync(DarlingConfig config, string storeConnectionString, CancellationToken stoppingToken)
+    {
+        await using var postgres = NpgsqlDataSource.Create(storeConnectionString);
         _postgres = postgres;
         try
         {
