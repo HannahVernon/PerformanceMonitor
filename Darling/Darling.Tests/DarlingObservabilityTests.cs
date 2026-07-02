@@ -71,6 +71,7 @@ public sealed class DarlingObservabilityTests
             Target = new CollectorTargetInfo { SqlMajorVersion = 16 },
             StorageName = "obs-e2e-host",
             ServerId = TestServerId,
+            EngineEdition = 3,
         };
 
         await using var postgres = NpgsqlDataSource.Create(connectionString!);
@@ -87,7 +88,7 @@ public sealed class DarlingObservabilityTests
             Assert.Equal("obs-e2e-host", reader.GetString(0));
             Assert.Equal("obs-e2e", reader.GetString(1));
             Assert.True(reader.GetBoolean(2));
-            Assert.Equal(0, reader.GetInt32(3)); /* box — edition isn't probed distinctly yet */
+            Assert.Equal(3, reader.GetInt32(3)); /* the real probed engine edition (3 = Enterprise), not a derived 5/8/0 */
             Assert.Equal(16, reader.GetInt32(4));
             Assert.False(reader.IsDBNull(5));
             firstModified = reader.GetDateTime(6);

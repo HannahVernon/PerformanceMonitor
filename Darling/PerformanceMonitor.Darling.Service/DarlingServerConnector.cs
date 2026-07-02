@@ -37,6 +37,14 @@ public sealed class ServerRuntime
     public bool HasMsdbAccess { get; init; }
 
     public bool IsAwsRds { get; init; }
+
+    /// <summary>
+    /// The raw SERVERPROPERTY('EngineEdition') value from the detection probe — 1 Personal,
+    /// 2 Standard, 3 Enterprise, 4 Express, 5 Azure SQL DB, 8 Managed Instance, etc. — carried
+    /// whole so the servers registry records the real edition, not just the 5/8 classification
+    /// booleans on <see cref="Target"/>.
+    /// </summary>
+    public int EngineEdition { get; init; }
 }
 
 /// <summary>
@@ -116,6 +124,7 @@ FROM sys.dm_os_sys_info";
             ServerId = ServerIdHelper.GetDeterministicHashCode(storageName),
             HasMsdbAccess = hasMsdbAccess,
             IsAwsRds = isAwsRds,
+            EngineEdition = engineEdition,
         };
     }
 }

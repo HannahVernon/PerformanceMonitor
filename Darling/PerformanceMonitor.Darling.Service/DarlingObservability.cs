@@ -50,16 +50,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
     {
         try
         {
-            /* Engine edition mirrors the probe's classification (5 = Azure SQL DB, 8 = Managed
-               Instance); box editions aren't probed distinctly yet, so they store 0. */
-            var engineEdition = server.Target.IsAzureSqlDb ? 5 : server.Target.IsAzureManagedInstance ? 8 : 0;
-
             await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
             using var command = new NpgsqlCommand(UpsertServerSql, connection);
             command.Parameters.AddWithValue(server.ServerId);
             command.Parameters.AddWithValue(server.StorageName);
             command.Parameters.AddWithValue(server.Config.DisplayName);
-            command.Parameters.AddWithValue(engineEdition);
+            /* The raw probed SERVERPROPERTY('EngineEdition') — real box editions (2/3/4...), not
+               just the 5/8 Azure classifications. */
+            command.Parameters.AddWithValue(server.EngineEdition);
             command.Parameters.AddWithValue(server.Target.SqlMajorVersion);
             /* Naive-UTC storage: Npgsql 6+ rejects Kind=Utc against `timestamp` — see PgCollectorRowWriter. */
             command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified));
