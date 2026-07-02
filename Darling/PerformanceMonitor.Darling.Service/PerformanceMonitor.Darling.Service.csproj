@@ -29,4 +29,8 @@
   <ItemGroup>
     <None Include="darling.sample.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Darling.Tests" />
+  </ItemGroup>
 </Project>
