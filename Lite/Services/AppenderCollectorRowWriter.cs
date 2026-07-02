@@ -33,6 +33,10 @@ internal sealed class AppenderCollectorRowWriter : ICollectorRowWriter
 
     public ICollectorRowWriter Value(int? value) { if (value.HasValue) { Row.AppendValue(value.Value); } else { Row.AppendNullValue(); } return this; }
 
+    public ICollectorRowWriter Value(short value) { Row.AppendValue(value); return this; }
+
+    public ICollectorRowWriter Value(short? value) { if (value.HasValue) { Row.AppendValue(value.Value); } else { Row.AppendNullValue(); } return this; }
+
     public ICollectorRowWriter Value(double value) { Row.AppendValue(value); return this; }
 
     public ICollectorRowWriter Value(double? value) { if (value.HasValue) { Row.AppendValue(value.Value); } else { Row.AppendNullValue(); } return this; }
