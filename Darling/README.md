@@ -107,14 +107,16 @@ dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Dar
 ```
 
 ```
-sc create "PerformanceMonitor Darling" binPath= "C:\PerformanceMonitorDarling\PerformanceMonitor.Darling.Service.exe" start= auto
+sc create "PerformanceMonitor Darling" binPath= "C:\PerformanceMonitorDarling\PerformanceMonitor.Darling.Service.exe" start= auto obj= "NT SERVICE\PerformanceMonitor Darling"
 ```
 
 ```
 sc start "PerformanceMonitor Darling"
 ```
 
-Use **Services.msc → Log On** (or `sc config ... obj=`) to set the service account: for integrated auth to monitored servers this should be a domain account (or gMSA) holding the SQL-side grants below. Note the space after `binPath=` and `start=` — `sc` requires it.
+The `obj=` clause runs the service under a **virtual service account** (`NT SERVICE\<service name>` — password-less, per-service SID, unprivileged; the same convention SQL Server itself uses). That is the right account for SQL-auth monitoring, and with `postgres.managed = true` it is more than a preference: PostgreSQL refuses to execute with administrative privileges, so don't run the service as LocalSystem — a least-privilege account keeps the bundled store's initdb/start path on ground PostgreSQL supports. For integrated auth to monitored servers, set a domain account (or gMSA) holding the SQL-side grants below instead, via **Services.msc → Log On** or `sc config ... obj=`. Note the space after `binPath=`, `start=`, and `obj=` — `sc` requires it.
+
+One managed-mode handoff gotcha: if you test-drove the service from a console first, the bundled store's data directory belongs to *your* account, and the service account may not be able to write it. Point the service at a fresh `postgres.dataDirectory` (or delete the test directory) rather than fighting ACLs.
 
 ### What the Service Does on Monitored Servers
 
