@@ -20,8 +20,8 @@ namespace PerformanceMonitor.Collectors;
 /// days of successful outcome rows; flags jobs past their p95). Extracted verbatim from Lite's
 /// RemoteCollectorService.RunningJobs.cs. Note: running_jobs is the one table without a
 /// collection_id — <see cref="IncludesCollectionId"/> is false. The failed-jobs alert query
-/// (GetRecentlyFailedJobsAsync) is alert-engine surface and deliberately stays host-side until
-/// the Phase-5 alert-engine extraction.
+/// (GetRecentlyFailedJobsAsync) is alert-engine surface and lives in the alerting library
+/// (<c>PerformanceMonitor.Alerting.FailedJobsQuery</c>, Phase-5 slice E), not here.
 /// </summary>
 public sealed class RunningJobsCollector : CollectorDefinitionBase<RunningJobsCollector.Row>
 {

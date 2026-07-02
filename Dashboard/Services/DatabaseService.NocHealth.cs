@@ -10,8 +10,10 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Alerting;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 
@@ -1065,98 +1067,26 @@ namespace PerformanceMonitorDashboard.Services
 
         /// <summary>
         /// Live query against the monitored server's msdb for SQL Agent job runs that FAILED within
-        /// the lookback window (the step_id = 0 outcome row, run_status = 0). For each failure it
-        /// correlates the actual failing step (step_id > 0, run_status = 0) from that run via
-        /// instance_id, so step_id/step_name/message describe the failing step rather than the
-        /// generic "(Job outcome)" row.
-        /// run_date/run_time integers are converted to a server-local datetime and filtered to the
-        /// last N minutes. Degrades gracefully: a login without msdb / SQLAgentReaderRole access
-        /// raises a catchable SqlException (916/229/297/300) that returns an empty list rather than
-        /// failing the alert cycle. Azure SQL DB (no Agent) is skipped by the caller.
+        /// the lookback window — the SQL text and row mapping live in the shared
+        /// <see cref="FailedJobsQuery"/> (Phase-5 slice E; see its doc for the query semantics and
+        /// the server-local RunDateTime note). Runs at alert-check time — failure outcomes are not
+        /// part of the collected running_jobs snapshot. Degrades gracefully: a login without msdb /
+        /// SQLAgentReaderRole access raises a catchable SqlException (916/229/297/300) that returns
+        /// an empty list rather than failing the alert cycle. Azure SQL DB (no Agent) is skipped by
+        /// the caller.
         /// </summary>
         private async Task<List<FailedJobInfo>> GetRecentlyFailedJobsAsync(SqlConnection connection, int lookbackMinutes)
         {
             var results = new List<FailedJobInfo>();
 
-            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-                SELECT TOP (50)
-                    job_name = j.name,
-                    job_id = CONVERT(varchar(36), j.job_id),
-                    run_datetime =
-                        DATEADD
-                        (
-                            SECOND,
-                            (jh.run_time / 10000) * 3600 +
-                            ((jh.run_time / 100) % 100) * 60 +
-                            (jh.run_time % 100),
-                            CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
-                        ),
-                    step_id = ISNULL(fs.step_id, jh.step_id),
-                    step_name = ISNULL(fs.step_name, jh.step_name),
-                    message = ISNULL(fs.message, jh.message)
-                FROM msdb.dbo.sysjobhistory AS jh
-                JOIN msdb.dbo.sysjobs AS j
-                  ON j.job_id = jh.job_id
-                OUTER APPLY
-                (
-                    /* The actual failing step (step_id > 0, run_status = 0) from THIS run, correlated by
-                       instance_id and bounded to be after this job's previous outcome row, so the alert
-                       names the failing step instead of the generic job-outcome row. Falls back to the
-                       outcome row for a rare job-level failure with no failed step row. */
-                    SELECT TOP (1)
-                        s.step_id,
-                        s.step_name,
-                        s.message
-                    FROM msdb.dbo.sysjobhistory AS s
-                    WHERE s.job_id = jh.job_id
-                    AND   s.step_id > 0
-                    AND   s.run_status = 0
-                    AND   s.instance_id < jh.instance_id
-                    AND   s.instance_id >
-                          (
-                              SELECT ISNULL(MAX(p.instance_id), 0)
-                              FROM msdb.dbo.sysjobhistory AS p
-                              WHERE p.job_id = jh.job_id
-                              AND   p.step_id = 0
-                              AND   p.instance_id < jh.instance_id
-                          )
-                    ORDER BY s.instance_id DESC
-                ) AS fs
-                WHERE jh.step_id = 0
-                AND   jh.run_status = 0
-                AND   jh.run_date >= CONVERT(integer, CONVERT(varchar(8), DATEADD(MINUTE, -@lookback_minutes, GETDATE()), 112))
-                AND   DATEADD
-                      (
-                          SECOND,
-                          (jh.run_time / 10000) * 3600 +
-                          ((jh.run_time / 100) % 100) * 60 +
-                          (jh.run_time % 100),
-                          CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
-                      ) >= DATEADD(MINUTE, -@lookback_minutes, GETDATE())
-                ORDER BY
-                    run_datetime DESC
-                OPTION(RECOMPILE);";
-
             try
             {
-                using var cmd = new SqlCommand(query, connection);
+                using var cmd = new SqlCommand(FailedJobsQuery.Sql, connection);
                 cmd.CommandTimeout = 10;
-                cmd.Parameters.Add(new SqlParameter("@lookback_minutes", SqlDbType.Int) { Value = lookbackMinutes });
+                cmd.Parameters.Add(new SqlParameter(FailedJobsQuery.LookbackMinutesParameter, SqlDbType.Int) { Value = lookbackMinutes });
                 using var reader = await cmd.ExecuteReaderAsync();
 
-                while (await reader.ReadAsync())
-                {
-                    results.Add(new FailedJobInfo
-                    {
-                        JobName = reader.GetString(0),
-                        JobId = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                        RunDateTime = reader.GetDateTime(2),
-                        StepId = reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3), System.Globalization.CultureInfo.InvariantCulture),
-                        StepName = reader.IsDBNull(4) ? "" : reader.GetString(4),
-                        Message = reader.IsDBNull(5) ? "" : reader.GetString(5)
-                    });
-                }
+                results = await FailedJobsQuery.ReadAsync(reader, CancellationToken.None);
             }
             catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 229 or 297 or 300 or 916)
             {
