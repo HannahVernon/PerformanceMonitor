@@ -26,6 +26,9 @@ using PerformanceMonitorLite.Services;
 using PerformanceMonitorLite.Windows;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
+/* Type alias (not a namespace import) so PerformanceMonitor.Alerting's CpuAlertMode enum can never
+   collide with this app's own CpuAlertMode. */
+using AlertEngine = PerformanceMonitor.Alerting.AlertEngine;
 
 namespace PerformanceMonitorLite;
 
@@ -53,63 +56,25 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _previousConnectionStates = new();
     private readonly Dictionary<string, bool> _previousCollectorErrorStates = new();
     private readonly Dictionary<string, bool> _previousXeSessionFailureStates = new();
-    private readonly Dictionary<string, DateTime> _lastCpuAlert = new();
-    private readonly Dictionary<string, DateTime> _lastBlockingAlert = new();
-    private readonly Dictionary<string, DateTime> _lastDeadlockAlert = new();
-    private readonly Dictionary<string, DateTime> _lastPoisonWaitAlert = new();
-    private readonly Dictionary<string, DateTime> _lastLongRunningQueryAlert = new();
-    private readonly Dictionary<string, DateTime> _lastTempDbSpaceAlert = new();
-    private readonly Dictionary<string, DateTime> _lastLowDiskAlert = new();
-    private readonly Dictionary<string, DateTime> _lastLongRunningJobAlert = new();
     private readonly DispatcherTimer _statusTimer;
     private LocalDataService? _dataService;
     /* Phase-5 slice B: the alert loop's collected-store reads go through this seam (see
        LiteAlertReadAdapter); the shared engine (slice D) consumes the same surface. */
     private LiteAlertReadAdapter? _alertReadAdapter;
+    /* Phase-5 forwarding: the shared alert engine — the same evaluation code the headless Darling
+       service runs. It owns ALL per-check state the old loop kept in dictionaries here (cooldown
+       stamps, active-condition flags, #1091 edge-trigger watermarks, the #754 low-disk worsening
+       gate) and the #1145 restart-surviving watermark seed/persist through LiteAlertStateStore;
+       Lite-specific delivery (tray/badges/#1141 split) lives behind LiteAlertDeliverer. */
+    private AlertEngine? _alertEngine;
     private McpHostService? _mcpService;
     private readonly AlertStateService _alertStateService = new();
     private readonly IAlertSettings _alertSettings = new AppAlertSettings();
     private readonly MuteRuleService _muteRuleService;
     private EmailAlertService _emailAlertService;
-    /* Held so the edge-trigger watermark seed/persist (#1145) can reach the store directly. */
+    /* Held so the engine's edge-trigger watermark seed/persist (#1145, via LiteAlertStateStore)
+       shares one store with the webhook cooldown seeding below. */
     private readonly DuckDbAlertHistoryStore _alertHistoryStore;
-
-    /* Track active alert states for resolved notifications */
-    private readonly Dictionary<string, bool> _activeCpuAlert = new();
-    private readonly Dictionary<string, bool> _activeBlockingAlert = new();
-    private readonly Dictionary<string, bool> _activeDeadlockAlert = new();
-    private readonly Dictionary<string, bool> _activePoisonWaitAlert = new();
-    private readonly Dictionary<string, bool> _activeLongRunningQueryAlert = new();
-    private readonly Dictionary<string, bool> _activeTempDbSpaceAlert = new();
-    private readonly Dictionary<string, bool> _activeLowDiskAlert = new();
-    /* Worst free-% captured at the last low-disk alert per server (#754 follow-up): see the
-       Dashboard counterpart. Without it a standing full volume re-fired — and re-recorded an
-       alert-history row, defeating Dismiss — every cooldown. Gated by LowDiskAlertGate; removed on resolve. */
-    private readonly Dictionary<string, double> _lastAlertedLowDiskPercent = new();
-    private readonly Dictionary<string, bool> _activeLongRunningJobAlert = new();
-    private readonly Dictionary<string, DateTime> _lastFailedJobAlert = new();
-    /* Watermark of the most-recent failed-job run time already alerted per server. A failed run
-       lingers in the lookback window for the whole window, so a plain level check would re-fire
-       every cooldown; we only notify when a strictly newer failure appears. Bounded by server
-       count, so no pruning needed. (Server-local run times mean a fall-back DST hour / NTP step
-       could let one new failure tie the watermark and be skipped — a once-a-year, one-hour edge.) */
-    private readonly Dictionary<string, DateTime> _lastAlertedFailedJobTime = new();
-
-    /* Edge-trigger watermarks (#1091): the rolling 1-hour blocking/deadlock counts stay
-       above the threshold for the whole hour an event lingers in the window, so a plain
-       level check re-fires the same alert every cooldown. These hold the count at the last
-       fired alert; we only re-notify when the count climbs past it (a genuinely new event),
-       and reset to 0 when the window empties so the next event alerts again. */
-    private readonly Dictionary<string, int> _lastAlertedBlockingCount = new();
-    private readonly Dictionary<string, int> _lastAlertedDeadlockCount = new();
-
-    /* Persistence for the two watermarks above (#1145): seeded from the alert store at
-       startup (SeedEdgeTriggerWatermarksAsync) and upserted on change, so a restart does
-       not reset the watermark to 0 and re-fire / re-post a webhook for events still
-       lingering in the rolling 1-hour lookback window. The metric_name values are the
-       persisted-row keys; they need not match the alert "Detected" metric names. */
-    private const string BlockingWatermarkMetric = "Blocking Detected";
-    private const string DeadlockWatermarkMetric = "Deadlocks Detected";
 
     public MainWindow()
     {
@@ -184,13 +149,10 @@ public partial class MainWindow : Window
             // Initialize the DuckDB database
             await _databaseInitializer.InitializeAsync();
 
-            /* Restore edge-trigger watermarks now — after the DB (and the watermark table)
-               exist, but before ANY alert sweep can read the watermark dicts. RefreshServerList()
-               below ends in a fire-and-forget RefreshOverviewAsync() → CheckPerformanceAlerts, so
-               seeding here (not just before the explicit RefreshOverviewAsync later) keeps a
-               restart from re-firing / re-posting alerts for events still in the lookback
-               window (#1145), independent of whether the DuckDB reads ever yield. */
-            await SeedEdgeTriggerWatermarksAsync();
+            /* Edge-trigger watermark restore (#1145) now happens inside the shared AlertEngine:
+               it seeds each server's watermarks from LiteAlertStateStore before that server's
+               FIRST sweep (per-key twin of the old bulk SeedEdgeTriggerWatermarksAsync), so a
+               restart still cannot re-fire / re-post alerts for events lingering in the window. */
 
             // Initialize the collection engine (with loggers wired to AppLogger)
             _collectorService = new RemoteCollectorService(
@@ -235,6 +197,22 @@ public partial class MainWindow : Window
             // Initialize data service for overview
             _dataService = new LocalDataService(_databaseInitializer);
             _alertReadAdapter = new LiteAlertReadAdapter(_dataService);
+
+            /* Phase-5 forwarding: construct the shared alert engine once, over Lite's five seam
+               implementations — live App.* thresholds, the DuckDB read adapter, the DuckDB
+               watermark store (#1145), the tray/email/history deliverer (#1141/#1236 split
+               inside), and the mute check — plus the live-msdb failed-jobs fetcher and the
+               tray-only resolution toast. Wired before RefreshServerList() below can trigger the
+               first fire-and-forget sweep. */
+            _alertEngine = new AlertEngine(
+                new AppAlertEngineSettings(),
+                _alertReadAdapter,
+                new LiteAlertStateStore(_alertHistoryStore),
+                new LiteAlertDeliverer(_emailAlertService, _muteRuleService, _serverManager, () => _trayService, Dispatcher),
+                _muteRuleService.IsAlertMuted,
+                failedJobsFetcher: FetchFailedJobsForAlertAsync,
+                resolutionCallback: ShowAlertResolutionToastAsync,
+                logger: new AppLoggerAdapter<AlertEngine>());
 
             // Load mute rules from database
             await _muteRuleService.LoadAsync();
@@ -1551,45 +1529,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppLogger.Error("ConnectionAlerts", $"Connection check notify failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Seeds the in-memory edge-trigger watermarks from the persisted store (#1145) so a
-    /// restart does not reset them to 0 and re-fire / re-post a webhook for blocking/deadlock
-    /// events still lingering in the rolling 1-hour lookback window. Runs once at startup,
-    /// after the DB is initialized and before the first alert sweep.
-    /// </summary>
-    private async Task SeedEdgeTriggerWatermarksAsync()
-    {
-        try
-        {
-            var rows = await _alertHistoryStore.LoadEdgeTriggerWatermarksAsync();
-            foreach (var (serverId, metricName, watermark) in rows)
-            {
-                var key = serverId.ToString();
-                if (metricName == BlockingWatermarkMetric)
-                {
-                    _lastAlertedBlockingCount[key] = watermark;
-                }
-                else if (metricName == DeadlockWatermarkMetric)
-                {
-                    _lastAlertedDeadlockCount[key] = watermark;
-                }
-            }
-
-            /* Failed-job watermark (time-based): seed so a restart does not re-fire tray toasts
-               for failures still inside the lookback window that the user already saw and dismissed
-               before the restart — the failed-job equivalent of the blocking/deadlock seed above. */
-            var failedJobRows = await _alertHistoryStore.LoadFailedJobWatermarksAsync();
-            foreach (var (serverId, watermark) in failedJobRows)
-            {
-                _lastAlertedFailedJobTime[serverId.ToString()] = watermark;
-            }
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Alerts", $"Failed to seed edge-trigger watermarks: {ex.Message}");
         }
     }
 

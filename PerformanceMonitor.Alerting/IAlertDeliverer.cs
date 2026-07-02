@@ -29,6 +29,14 @@ namespace PerformanceMonitor.Alerting;
 /// <param name="NumericThresholdValue">Numeric threshold twin of <paramref name="NumericCurrentValue"/>.</param>
 /// <param name="Muted">True when a mute rule matched — the host records the alert but must not toast/send it.</param>
 /// <param name="Severity">Runtime severity override (e.g. low-disk grading WARNING vs CRITICAL, #1136), or null to use the per-metric severity map.</param>
+/// <param name="ShortMessage">
+/// One-line human-readable summary of the fired condition WITHOUT the server-name prefix —
+/// verbatim the per-metric tray-toast body Lite's pre-forwarding loop composed (e.g.
+/// "Total CPU at 92% (threshold: 80%)", "Session #55 running 45m — SELECT ..."). Composed by the
+/// engine because some bodies need per-row data (worst session id / query preview / job minutes)
+/// that the other display fields don't carry; interactive hosts render it as
+/// <c>$"{ServerName}: {ShortMessage}"</c>, headless hosts may log or ignore it.
+/// </param>
 public sealed record AlertOutcome(
     string ServerKey,
     string ServerName,
@@ -40,7 +48,8 @@ public sealed record AlertOutcome(
     double? NumericCurrentValue,
     double? NumericThresholdValue,
     bool Muted,
-    AlertSeverityLevel? Severity);
+    AlertSeverityLevel? Severity,
+    string? ShortMessage = null);
 
 /// <summary>
 /// The record-and-send seam for the Phase-5 shared alert engine: the engine evaluates conditions
