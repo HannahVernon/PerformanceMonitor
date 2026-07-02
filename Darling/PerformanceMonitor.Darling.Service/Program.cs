@@ -6,9 +6,33 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using PerformanceMonitor.Darling.Service;
+
+/* CLI verb: encrypt a SQL-auth password for darling.json. Reads from stdin (not an argument,
+   so the plaintext never lands in shell history) and prints the DPAPI-LocalMachine blob. */
+if (args.Length > 0 && string.Equals(args[0], "--encrypt-password", StringComparison.OrdinalIgnoreCase))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--encrypt-password requires Windows (DPAPI).");
+        return 1;
+    }
+
+    Console.Error.Write("Password: ");
+    var plaintext = Console.ReadLine();
+    if (string.IsNullOrEmpty(plaintext))
+    {
+        Console.Error.WriteLine("No password read from stdin.");
+        return 1;
+    }
+
+    Console.WriteLine(DarlingSecrets.Protect(plaintext));
+    Console.Error.WriteLine("Paste the line above into the server's \"encryptedPassword\" in darling.json.");
+    return 0;
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -22,3 +46,4 @@ builder.Services.AddWindowsService(options =>
 builder.Services.AddHostedService<DarlingWorker>();
 
 builder.Build().Run();
+return 0;
