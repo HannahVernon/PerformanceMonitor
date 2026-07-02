@@ -40,6 +40,14 @@ public abstract class CollectorDefinitionBase<TRow> : ICollectorDefinition<TRow>
     public virtual ValueTask ApplySupplementalAsync(List<TRow> rows, DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
         => ValueTask.CompletedTask;
 
+    public virtual CollectorQuery? BuildEnumerationQuery(CollectorContext context) => null;
+
+    public virtual CollectorQuery BuildPerItemQuery(string item, CollectorContext context)
+        => throw new System.NotSupportedException($"{Name} does not enumerate items.");
+
+    public virtual ValueTask ReadItemAsync(string item, DbDataReader reader, List<TRow> rows, CollectorContext context, CancellationToken cancellationToken)
+        => throw new System.NotSupportedException($"{Name} does not enumerate items.");
+
     public abstract ValueTask<List<TRow>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken);
 
     public abstract void WritePayload(TRow row, ICollectorRowWriter writer, CollectorContext context);
