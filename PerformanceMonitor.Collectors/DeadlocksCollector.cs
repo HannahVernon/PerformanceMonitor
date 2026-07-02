@@ -128,6 +128,9 @@ OPTION(RECOMPILE);";
 
     public override string TargetTable => "deadlocks";
 
+    /// <summary>Lite schema names this table's prefix id "deadlock_id"; Darling mirrors it.</summary>
+    public override string PrefixIdColumnName => "deadlock_id";
+
     /// <summary>
     /// Only events newer than the newest already-collected deadlock are fetched, so an event
     /// lingering in the ring buffer across cycles is never inserted twice.

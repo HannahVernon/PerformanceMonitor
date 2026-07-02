@@ -27,6 +27,10 @@ public abstract class CollectorDefinitionBase<TRow> : ICollectorDefinition<TRow>
 
     public virtual bool IncludesCollectionId => true;
 
+    public virtual string PrefixIdColumnName => "collection_id";
+
+    public virtual string PrefixTimeColumnName => "collection_time";
+
     public virtual int? CommandTimeoutSecondsOverride => null;
 
     public abstract IReadOnlyList<CollectorColumn> PayloadColumns { get; }

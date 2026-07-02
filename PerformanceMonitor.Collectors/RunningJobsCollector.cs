@@ -157,7 +157,7 @@ OPTION(RECOMPILE);";
         new CollectorColumn("p95_duration_seconds", CollectorColumnType.BigInt),
         new CollectorColumn("successful_run_count", CollectorColumnType.BigInt),
         new CollectorColumn("is_running_long", CollectorColumnType.Boolean),
-        new CollectorColumn("percent_of_average", CollectorColumnType.Decimal),
+        new CollectorColumn("percent_of_average", CollectorColumnType.Decimal, 10, 1),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)

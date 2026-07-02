@@ -36,7 +36,25 @@ public sealed class CollectorColumn
         Type = type;
     }
 
+    /// <summary>
+    /// Decimal column with explicit precision/scale, mirroring the column's declared type in
+    /// Lite's DuckDB schema (e.g. DECIMAL(18,2) memory MBs, DECIMAL(5,2) percent_complete) so
+    /// Darling's generated Postgres DDL matches column-for-column.
+    /// </summary>
+    public CollectorColumn(string name, CollectorColumnType type, int precision, int scale)
+        : this(name, type)
+    {
+        Precision = precision;
+        Scale = scale;
+    }
+
     public string Name { get; }
 
     public CollectorColumnType Type { get; }
+
+    /// <summary>Declared precision for <see cref="CollectorColumnType.Decimal"/> columns; 0 otherwise.</summary>
+    public int Precision { get; }
+
+    /// <summary>Declared scale for <see cref="CollectorColumnType.Decimal"/> columns; 0 otherwise.</summary>
+    public int Scale { get; }
 }

@@ -22,14 +22,8 @@ namespace PerformanceMonitor.Collectors;
 /// Definitions are stateless and thread-safe; per-cycle state rides in <see cref="CollectorContext"/>.
 /// </summary>
 /// <typeparam name="TRow">The definition's materialized result-row shape.</typeparam>
-public interface ICollectorDefinition<TRow>
+public interface ICollectorDefinition<TRow> : ICollectorSchemaInfo
 {
-    /// <summary>Collector name as used in schedules and collection logs (e.g. "wait_stats").</summary>
-    string Name { get; }
-
-    /// <summary>Destination table; hosts prepend their standard prefix columns when writing.</summary>
-    string TargetTable { get; }
-
     /// <summary>
     /// Per-collector command timeout override in seconds, for collectors whose sweep is far
     /// heavier than the default budget (index_object_stats: 300 s per database — the #1135 fix).
@@ -37,13 +31,6 @@ public interface ICollectorDefinition<TRow>
     /// enumeration queries always use the host default, matching the originals.
     /// </summary>
     int? CommandTimeoutSecondsOverride { get; }
-
-    /// <summary>
-    /// Whether the target table's standard prefix includes a collection id as its first column.
-    /// Almost always true; running_jobs is keyed by (collection_time, server) alone and writes no
-    /// collection_id, so its definition returns false and hosts skip that prefix column.
-    /// </summary>
-    bool IncludesCollectionId { get; }
 
     /// <summary>
     /// Whether this collector applies to the target at all — e.g. memory_pressure_events returns
@@ -114,9 +101,6 @@ public interface ICollectorDefinition<TRow>
 
     /// <summary>Reads one enumerated item's result rows, appending to the shared accumulator.</summary>
     ValueTask ReadItemAsync(string item, DbDataReader reader, List<TRow> rows, CollectorContext context, CancellationToken cancellationToken);
-
-    /// <summary>Payload columns in exactly the order <see cref="WritePayload"/> emits them.</summary>
-    IReadOnlyList<CollectorColumn> PayloadColumns { get; }
 
     /// <summary>
     /// Materializes result rows from the query's reader, applying any definition-owned filtering.

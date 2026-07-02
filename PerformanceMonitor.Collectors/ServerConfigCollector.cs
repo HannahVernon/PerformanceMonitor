@@ -44,6 +44,11 @@ OPTION(RECOMPILE);";
 
     public override string TargetTable => "server_config";
 
+    /// <summary>The config snapshots' prefix is config_id/capture_time in Lite's schema; Darling mirrors it.</summary>
+    public override string PrefixIdColumnName => "config_id";
+
+    public override string PrefixTimeColumnName => "capture_time";
+
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]

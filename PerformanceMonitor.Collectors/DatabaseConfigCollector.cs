@@ -66,6 +66,11 @@ public sealed class DatabaseConfigCollector : CollectorDefinitionBase<DatabaseCo
 
     public override string TargetTable => "database_config";
 
+    /// <summary>The config snapshots' prefix is config_id/capture_time in Lite's schema; Darling mirrors it.</summary>
+    public override string PrefixIdColumnName => "config_id";
+
+    public override string PrefixTimeColumnName => "capture_time";
+
     public override CollectorQuery BuildQuery(CollectorContext context)
     {
         var (has2019Columns, has2025Columns) = VersionGates(context.Target);
