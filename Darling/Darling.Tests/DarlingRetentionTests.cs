@@ -20,10 +20,12 @@ namespace Darling.Tests;
 /// <summary>
 /// Pins the retention contract. Ungated: every collector in the shared catalog has a
 /// <see cref="CollectorScheduleDefaults"/> entry with a positive RetentionDays (the purge can
-/// never skip a table silently or compute a nonsense cutoff), and the generated DELETE targets
+/// never skip a table silently or compute a nonsense cutoff), the generated DELETE targets
 /// each definition's own prefix time column (collection_time almost everywhere; the config
-/// snapshots' capture_time). Gated on DARLING_TEST_PG: the purge end-to-end against a dev
-/// Postgres — expired wait_stats and collection_log rows go, a fresh row survives.
+/// snapshots' capture_time), and the Timescale branch's drop_chunks statement carries each
+/// table's own shared horizon (the drop_chunks purge end-to-end lives in
+/// TimescaleSupportTests). Gated on DARLING_TEST_PG: the DELETE-path purge end-to-end against
+/// a dev Postgres — expired wait_stats and collection_log rows go, a fresh row survives.
 /// </summary>
 /* Live-fixture tests share one Postgres store; the collection serializes them so
    cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
@@ -54,6 +56,27 @@ public sealed class DarlingRetentionTests
             DarlingRetention.DeleteSqlFor(byName["wait_stats"]));
         Assert.Equal("DELETE FROM trace_flags WHERE capture_time < $1",
             DarlingRetention.DeleteSqlFor(byName["trace_flags"]));
+    }
+
+    /// <summary>
+    /// The Timescale branch: drop_chunks per table with the table's OWN shared horizon flowing
+    /// into make_interval (no time column appears — the partition column is implicit in the
+    /// hypertable dimension, so capture_time tables get the identical shape). The
+    /// DELETE-vs-drop_chunks branch itself is exercised end-to-end in TimescaleSupportTests.
+    /// </summary>
+    [Fact]
+    public void DropChunksSql_CarriesEachTablesOwnRetentionDays()
+    {
+        var byName = CollectorCatalog.All.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal("SELECT drop_chunks('wait_stats', older_than => make_interval(days => 30))",
+            DarlingRetention.DropChunksSqlFor(byName["wait_stats"], CollectorScheduleDefaults.All["wait_stats"].RetentionDays));
+        Assert.Equal("SELECT drop_chunks('trace_flags', older_than => make_interval(days => 30))",
+            DarlingRetention.DropChunksSqlFor(byName["trace_flags"], CollectorScheduleDefaults.All["trace_flags"].RetentionDays));
+        Assert.Equal("SELECT drop_chunks('index_object_stats', older_than => make_interval(days => 90))",
+            DarlingRetention.DropChunksSqlFor(byName["index_object_stats"], CollectorScheduleDefaults.All["index_object_stats"].RetentionDays));
+        Assert.Equal("SELECT drop_chunks('server_properties', older_than => make_interval(days => 365))",
+            DarlingRetention.DropChunksSqlFor(byName["server_properties"], CollectorScheduleDefaults.All["server_properties"].RetentionDays));
     }
 
     [Fact]
@@ -114,8 +137,11 @@ public sealed class DarlingRetentionTests
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* At least our two 40-day rows go; a shared dev store may shed more. */
-            var deleted = await DarlingRetention.PurgeAsync(postgres, null, ct);
+            /* At least our two 40-day rows go; a shared dev store may shed more. The
+               extension-free DELETE path on purpose (timescaleAvailable: false) — it must keep
+               working even on a store whose tables ARE hypertables (DELETE is
+               hypertable-agnostic); the drop_chunks branch is TimescaleSupportTests' job. */
+            var deleted = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
             Assert.True(deleted >= 2, $"expected the purge to delete at least the two expired test rows, got {deleted}");
 
             using (var read = new NpgsqlCommand(

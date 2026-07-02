@@ -19,8 +19,9 @@ namespace PerformanceMonitor.Darling.Storage;
 /// (headless plan: no migration framework). Each script runs once, inside its own transaction,
 /// tracked in darling_schema_version. V1 is generated from the collector definitions
 /// (<see cref="PgSchemaGenerator.GenerateFullSchema"/>); later versions are appended, never
-/// edited. TimescaleDB hypertable conversion is a future migration, applied only when the
-/// extension is present and validated against a live Postgres first.
+/// edited. Migrations stay engine-plain on purpose: TimescaleDB hypertable conversion is
+/// RUNTIME setup (<see cref="TimescaleSupport"/>), applied by the service only when the
+/// extension is detected — the same store must work on plain PostgreSQL.
 /// </summary>
 public static class PgMigrations
 {

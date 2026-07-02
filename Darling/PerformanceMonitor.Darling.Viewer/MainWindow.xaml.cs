@@ -19,10 +19,14 @@ using PerformanceMonitor.Ui;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The Darling viewer shell (headless plan M3): the server list from the central store, the
-/// per-collector Collection Health grid, and a top-8 wait-types trend chart, read straight from
-/// Postgres via <see cref="ViewerDataService"/>. Selecting a server loads its health + chart;
-/// a timer refreshes the selected server every 60 seconds. Every data load is async — the
+/// The Darling viewer shell (headless plan M3 + viewer wave 2): the server list from the
+/// central store on the left, and four surface tabs on the right — Overview (per-collector
+/// Collection Health + the top-8 wait-types trend), Queries (top-50 query-stats groups),
+/// Blocking (XE blocked-process reports with the DMV-snapshot fallback merged in), and
+/// Recommendations (the latest analysis findings with an advice/remediation detail pane) —
+/// all read straight from Postgres via <see cref="ViewerDataService"/>. Loads are lazy per
+/// tab (Lite's visible-only rule): selecting a server or a tab loads ONLY the active tab,
+/// and the 60-second timer refreshes only the active tab. Every data load is async — the
 /// Npgsql calls are awaited so the UI thread never blocks on a query — with results marshaled
 /// back by the dispatcher's await continuation.
 /// </summary>
@@ -31,7 +35,17 @@ namespace PerformanceMonitor.Darling.Viewer;
 public partial class MainWindow : Window
 {
     private static readonly TimeSpan s_refreshInterval = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan s_waitTrendWindow = TimeSpan.FromHours(24);
+
+    /// <summary>One window for every windowed surface: waits, queries, and blocking all read 24 hours.</summary>
+    private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
+
+    private const int OverviewTabIndex = 0;
+    private const int QueriesTabIndex = 1;
+    private const int BlockingTabIndex = 2;
+    private const int RecommendationsTabIndex = 3;
+
+    /// <summary>The detail pane's no-selection state (also its initial text in the XAML).</summary>
+    private const string FindingDetailPlaceholder = "select a finding to see its story, advice, and stored remediation";
 
     private ViewerDataService? _dataService;
     private DispatcherTimer? _refreshTimer;
@@ -92,6 +106,33 @@ public partial class MainWindow : Window
     private async void ServerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         => await RefreshSelectedServerAsync();
 
+    /// <summary>
+    /// Lazy per-tab load: switching tabs loads the newly visible tab. SelectionChanged is a
+    /// bubbling routed event, so selections inside the tab content (the findings grid, the
+    /// server list template) reach here too — only react to the TabControl's own.
+    /// </summary>
+    private async void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, MainTabs))
+        {
+            return;
+        }
+
+        await RefreshSelectedServerAsync();
+    }
+
+    private void FindingsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, FindingsGrid))
+        {
+            return;
+        }
+
+        FindingDetailText.Text = FindingsGrid.SelectedItem is ViewerFindingRow row
+            ? ViewerDataService.ComposeFindingDetailText(row.Finding)
+            : FindingDetailPlaceholder;
+    }
+
     private async Task LoadServersAsync()
     {
         if (_dataService is null)
@@ -107,7 +148,7 @@ public partial class MainWindow : Window
 
             if (servers.Count > 0)
             {
-                /* Triggers SelectionChanged, which loads health + chart for the first server. */
+                /* Triggers SelectionChanged, which loads the active tab for the first server. */
                 ServerList.SelectedIndex = 0;
             }
             else
@@ -121,6 +162,12 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Loads the ACTIVE tab for the selected server, with the overlap guard. If the user
+    /// switches server or tab while a load is in flight, the triggering event bounces off
+    /// the guard — so after each load, loop when the selection moved on and load again,
+    /// leaving no tab stranded with stale or empty data.
+    /// </summary>
     private async Task RefreshSelectedServerAsync()
     {
         if (_dataService is null || _refreshInFlight)
@@ -128,36 +175,132 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (ServerList.SelectedItem is not DarlingServer server)
-        {
-            HealthGrid.ItemsSource = null;
-            RenderWaitTrend(Array.Empty<WaitTrendPoint>());
-            return;
-        }
-
         _refreshInFlight = true;
         try
         {
-            var sinceUtc = DateTime.UtcNow - s_waitTrendWindow;
+            DarlingServer? loadedServer;
+            int loadedTab;
+            do
+            {
+                loadedServer = ServerList.SelectedItem as DarlingServer;
+                loadedTab = MainTabs.SelectedIndex;
 
-            /* Both queries run concurrently — NpgsqlDataSource pools a connection for each. */
-            var healthTask = _dataService.GetCollectionHealthAsync(server.ServerId);
-            var waitTask = _dataService.GetWaitTrendAsync(server.ServerId, sinceUtc);
-            var health = await healthTask;
-            var waits = await waitTask;
+                if (loadedServer is null)
+                {
+                    ClearAllTabs();
+                    return;
+                }
 
-            HealthGrid.ItemsSource = health;
-            RenderWaitTrend(waits);
+                await LoadTabAsync(loadedServer, loadedTab);
+            }
+            while (!ReferenceEquals(ServerList.SelectedItem, loadedServer) || MainTabs.SelectedIndex != loadedTab);
+        }
+        finally
+        {
+            _refreshInFlight = false;
+        }
+    }
+
+    private async Task LoadTabAsync(DarlingServer server, int tabIndex)
+    {
+        try
+        {
+            switch (tabIndex)
+            {
+                case QueriesTabIndex:
+                    await LoadQueriesAsync(server);
+                    break;
+                case BlockingTabIndex:
+                    await LoadBlockingAsync(server);
+                    break;
+                case RecommendationsTabIndex:
+                    await LoadRecommendationsAsync(server);
+                    break;
+                case OverviewTabIndex:
+                default:
+                    await LoadOverviewAsync(server);
+                    break;
+            }
+
             StatusText.Text = $"{server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}";
         }
         catch (Exception ex)
         {
             StatusText.Text = $"refresh failed: {ex.Message}";
         }
-        finally
+    }
+
+    private async Task LoadOverviewAsync(DarlingServer server)
+    {
+        var sinceUtc = DateTime.UtcNow - s_dataWindow;
+
+        /* Both queries run concurrently — NpgsqlDataSource pools a connection for each. */
+        var healthTask = _dataService!.GetCollectionHealthAsync(server.ServerId);
+        var waitTask = _dataService.GetWaitTrendAsync(server.ServerId, sinceUtc);
+        var health = await healthTask;
+        var waits = await waitTask;
+
+        HealthGrid.ItemsSource = health;
+        RenderWaitTrend(waits);
+    }
+
+    private async Task LoadQueriesAsync(DarlingServer server)
+    {
+        var sinceUtc = DateTime.UtcNow - s_dataWindow;
+        var rows = await _dataService!.GetTopQueriesAsync(server.ServerId, sinceUtc);
+
+        QueriesGrid.ItemsSource = rows;
+        QueriesHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async Task LoadBlockingAsync(DarlingServer server)
+    {
+        var endUtc = DateTime.UtcNow;
+        var rows = await _dataService!.GetRecentBlockedProcessReportsAsync(
+            server.ServerId, endUtc - s_dataWindow, endUtc);
+
+        BlockingGrid.ItemsSource = rows;
+        BlockingHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async Task LoadRecommendationsAsync(DarlingServer server)
+    {
+        /* Remember the selected finding so the 60-second refresh doesn't yank the detail
+           pane out from under the reader — reselect the same story if it's still there. */
+        var selectedHash = (FindingsGrid.SelectedItem as ViewerFindingRow)?.Finding.StoryPathHash;
+
+        var rows = await _dataService!.GetLatestFindingsAsync(server.ServerId);
+
+        FindingsGrid.ItemsSource = rows;
+        FindingsHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FindingsHeaderText.Text = rows.Count == 0
+            ? "Latest Analysis Findings"
+            : $"Latest Analysis Findings — {rows[0].AnalysisTimeLocal:yyyy-MM-dd HH:mm:ss} (local)";
+
+        var reselect = selectedHash is null
+            ? null
+            : rows.FirstOrDefault(r => r.Finding.StoryPathHash == selectedHash);
+        if (reselect is not null)
         {
-            _refreshInFlight = false;
+            FindingsGrid.SelectedItem = reselect;
         }
+        else if (FindingsGrid.SelectedItem is null)
+        {
+            FindingDetailText.Text = FindingDetailPlaceholder;
+        }
+    }
+
+    private void ClearAllTabs()
+    {
+        HealthGrid.ItemsSource = null;
+        RenderWaitTrend(Array.Empty<WaitTrendPoint>());
+        QueriesGrid.ItemsSource = null;
+        QueriesHintText.Visibility = Visibility.Collapsed;
+        BlockingGrid.ItemsSource = null;
+        BlockingHintText.Visibility = Visibility.Collapsed;
+        FindingsGrid.ItemsSource = null;
+        FindingsHintText.Visibility = Visibility.Collapsed;
+        FindingDetailText.Text = FindingDetailPlaceholder;
     }
 
     private void RenderWaitTrend(IReadOnlyList<WaitTrendPoint> points)
