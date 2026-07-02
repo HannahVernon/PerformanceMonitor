@@ -28,13 +28,16 @@ namespace PerformanceMonitor.Alerting;
 /// The headless Darling service is the first consumer; Lite forwards in a later slice.
 /// <para>
 /// Deliberate NON-transplants (UI-coupled Lite behavior that stays app-side):
-/// tray toasts and the <c>_trayService</c> null gate; the server-tab badge flags
-/// (#754/#749 <c>_badgeLowDisk</c>/<c>_badgeFailedJob</c> + acknowledgement clearing); the #1141
-/// Summary-vs-Per-event delivery split (an <see cref="IAlertDeliverer"/> concern per its contract);
-/// and the #1236 per-server delivery-mode override (same seam). Lite's tray-only
-/// "Resolved"/"Cleared" toasts surface through the optional resolution callback
-/// (<see cref="AlertResolution"/>) with Lite's exact strings — they never touch the deliverer
-/// because Lite records no history row for them.
+/// tray toast RENDERING and the <c>_trayService</c> null gate (the per-metric toast BODY ships as
+/// <see cref="AlertOutcome.ShortMessage"/> because it needs per-row data the other display fields
+/// don't carry); the server-tab badge flags (#754/#749 <c>_badgeLowDisk</c>/<c>_badgeFailedJob</c>
+/// + acknowledgement clearing — the two standing conditions they derive from are surfaced on the
+/// returned <see cref="AlertSweepResult"/>); the #1141 Summary-vs-Per-event delivery split (an
+/// <see cref="IAlertDeliverer"/> concern per its contract); and the #1236 per-server delivery-mode
+/// override (same seam). Lite's tray-only "Resolved"/"Cleared" toasts surface through the optional
+/// resolution callback (<see cref="AlertResolution"/>) with Lite's exact strings — they never
+/// touch the deliverer because Lite records no history row for them. Line citations per check
+/// refer to the pre-forwarding Lite loop (the transplant source, retrievable from git history).
 /// </para>
 /// <para>
 /// Two documented adaptations of the store reads: (1) Lite's loop received precomputed rolling
@@ -166,26 +169,29 @@ public sealed class AlertEngine
     /// Runs one full alert sweep for one server — Lite's <c>CheckPerformanceAlerts(summary)</c>.
     /// Per-server serialized (see class remarks). Channel/store failures never escape (the
     /// deliverer and state store contracts absorb them; per-check fetch failures are logged and
-    /// skip that check for the sweep); only cancellation propagates.
+    /// skip that check for the sweep); only cancellation propagates. Returns what the sweep
+    /// OBSERVED (see <see cref="AlertSweepResult"/>) so interactive hosts can drive their
+    /// standing-condition badges; headless hosts ignore the result.
     /// </summary>
-    public async Task EvaluateServerAsync(AlertServerSnapshot snapshot, CancellationToken cancellationToken = default)
+    public async Task<AlertSweepResult> EvaluateServerAsync(AlertServerSnapshot snapshot, CancellationToken cancellationToken = default)
     {
         if (snapshot is null)
         {
             throw new ArgumentNullException(nameof(snapshot));
         }
 
-        /* Master switch — Lite's AlertEngine.cs:38 (the _trayService null gate is UI-only). */
+        /* Master switch — Lite's AlertEngine.cs:38 (the _trayService null gate is UI-only).
+           NotEvaluated mirrors Lite's early return: the host leaves badge state untouched. */
         if (!_settings.AlertsEnabled)
         {
-            return;
+            return AlertSweepResult.NotEvaluated;
         }
 
         var gate = _serverGates.GetOrAdd(snapshot.ServerKey, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
-            await EvaluateCoreAsync(snapshot, cancellationToken);
+            return await EvaluateCoreAsync(snapshot, cancellationToken);
         }
         finally
         {
@@ -193,7 +199,7 @@ public sealed class AlertEngine
         }
     }
 
-    private async Task EvaluateCoreAsync(AlertServerSnapshot snapshot, CancellationToken ct)
+    private async Task<AlertSweepResult> EvaluateCoreAsync(AlertServerSnapshot snapshot, CancellationToken ct)
     {
         var key = snapshot.ServerKey;
         var serverName = snapshot.ServerName;
@@ -209,9 +215,11 @@ public sealed class AlertEngine
         await CheckPoisonWaitsAsync(key, serverName, now, alertCooldown, suppressed, ct);
         await CheckLongRunningQueriesAsync(key, serverName, now, alertCooldown, suppressed, ct);
         await CheckTempDbSpaceAsync(key, serverName, now, alertCooldown, suppressed, ct);
-        await CheckLowDiskAsync(key, serverName, now, alertCooldown, suppressed, ct);
+        bool lowDiskConditionPresent = await CheckLowDiskAsync(key, serverName, now, alertCooldown, suppressed, ct);
         await CheckAnomalousJobsAsync(key, serverName, now, alertCooldown, suppressed, ct);
-        await CheckFailedJobsAsync(snapshot, key, serverName, now, alertCooldown, suppressed, ct);
+        bool failedJobConditionPresent = await CheckFailedJobsAsync(snapshot, key, serverName, now, alertCooldown, suppressed, ct);
+
+        return new AlertSweepResult(true, lowDiskConditionPresent, failedJobConditionPresent);
     }
 
     /* ---------------- watermark seeding (#1145) ---------------- */
@@ -290,14 +298,16 @@ public sealed class AlertEngine
 
                 var cpuDetailText = $"  {cpuMetricLabel}: {alertCpuValue:F0}%\n  Threshold: {_settings.CpuThresholdPercent}%"; /* :89 */
 
-                /* :91-98 — CPU passes no context and no numerics, exactly Lite. */
+                /* :91-98 — CPU passes no context and no numerics, exactly Lite.
+                   ShortMessage = the toast body of :84 minus the server-name prefix. */
                 await _deliverer.DeliverAsync(new AlertOutcome(
                     key, serverName, "High CPU",
                     $"{alertCpuValue:F0}% ({cpuMetricLabel})",
                     $"{_settings.CpuThresholdPercent}%",
                     Context: null, DetailText: cpuDetailText,
                     NumericCurrentValue: null, NumericThresholdValue: null,
-                    Muted: isMuted, Severity: null), ct);
+                    Muted: isMuted, Severity: null,
+                    ShortMessage: $"{cpuMetricLabel} at {alertCpuValue:F0}% (threshold: {_settings.CpuThresholdPercent}%)"), ct);
             }
         }
         else if (_activeCpuAlert.TryGetValue(key, out var wasCpu) && wasCpu)        /* :101 */
@@ -390,14 +400,16 @@ public sealed class AlertEngine
             var detailText = AlertContextBuilders.ContextToDetailText(blockingContext);
 
             /* :175-183 — SendDetectedAlertAsync's #1141/#1236 delivery-mode fan-out is an
-               IAlertDeliverer concern; the engine emits one outcome. No numerics, exactly Lite. */
+               IAlertDeliverer concern; the engine emits one outcome. No numerics, exactly Lite.
+               ShortMessage = the toast body of :167. */
             await _deliverer.DeliverAsync(new AlertOutcome(
                 key, serverName, "Blocking Detected",
                 effectiveBlockingCount.ToString(),
                 _settings.BlockingCountThreshold.ToString(),
                 blockingContext, detailText,
                 NumericCurrentValue: null, NumericThresholdValue: null,
-                Muted: isMuted, Severity: blockingContext?.SeverityOverride), ct);
+                Muted: isMuted, Severity: blockingContext?.SeverityOverride,
+                ShortMessage: $"{effectiveBlockingCount} blocking session(s)"), ct);
         }
         else if (!blockingDecision.Active && wasBlockingActive)                     /* :185 */
         {
@@ -474,14 +486,15 @@ public sealed class AlertEngine
             var deadlockContext = AlertContextBuilders.BuildDeadlockContext(serverName, deadlockRows, _settings.ExcludedDatabases);
             var detailText = AlertContextBuilders.ContextToDetailText(deadlockContext);
 
-            /* :252-260 — no numerics, exactly Lite. */
+            /* :252-260 — no numerics, exactly Lite. ShortMessage = the toast body of :244. */
             await _deliverer.DeliverAsync(new AlertOutcome(
                 key, serverName, "Deadlocks Detected",
                 effectiveDeadlockCount.ToString(),
                 _settings.DeadlockCountThreshold.ToString(),
                 deadlockContext, detailText,
                 NumericCurrentValue: null, NumericThresholdValue: null,
-                Muted: isMuted, Severity: deadlockContext?.SeverityOverride), ct);
+                Muted: isMuted, Severity: deadlockContext?.SeverityOverride,
+                ShortMessage: $"{effectiveDeadlockCount} deadlock(s) in the last hour"), ct);
         }
         else if (!deadlockDecision.Active && wasDeadlockActive)                     /* :262 */
         {
@@ -526,7 +539,7 @@ public sealed class AlertEngine
                     var poisonContext = AlertContextBuilders.BuildPoisonWaitContext(triggered); /* :307 */
                     var detailText = AlertContextBuilders.ContextToDetailText(poisonContext);   /* :308 */
 
-                    /* :310-320 */
+                    /* :310-320. ShortMessage = the toast body of :302. */
                     await _deliverer.DeliverAsync(new AlertOutcome(
                         key, serverName, "Poison Wait",
                         allWaitNames,
@@ -534,7 +547,8 @@ public sealed class AlertEngine
                         poisonContext, detailText,
                         NumericCurrentValue: worst.AvgMsPerWait,
                         NumericThresholdValue: _settings.PoisonWaitThresholdMs,
-                        Muted: isMuted, Severity: poisonContext?.SeverityOverride), ct);
+                        Muted: isMuted, Severity: poisonContext?.SeverityOverride,
+                        ShortMessage: $"{worst.WaitType} avg {worst.AvgMsPerWait:F0}ms/wait"), ct);
                 }
             }
             else if (_activePoisonWaitAlert.TryGetValue(key, out var wasPoisonWait) && wasPoisonWait) /* :323 */
@@ -590,7 +604,9 @@ public sealed class AlertEngine
                 {
                     var worst = longRunning[0];                                     /* :353 */
                     var elapsedMinutes = worst.ElapsedSeconds / 60;                 /* :354 — integer division, exactly Lite */
-                    /* :355-356 (query-text preview) built only the tray toast — not transplanted. */
+                    /* :355-356 — the query-text preview feeds ShortMessage (the toast body). */
+                    var preview = AlertContextBuilders.TruncateText(worst.QueryText, 80);
+                    var previewSuffix = string.IsNullOrEmpty(preview) ? "" : $" — {preview}";
 
                     var muteCtx = new AlertMuteContext                              /* :358-364 */
                     {
@@ -605,7 +621,7 @@ public sealed class AlertEngine
                     var lrqContext = AlertContextBuilders.BuildLongRunningQueryContext(serverName, longRunning); /* :379 */
                     var detailText = AlertContextBuilders.ContextToDetailText(lrqContext);                       /* :380 */
 
-                    /* :382-392 */
+                    /* :382-392. ShortMessage = the toast body of :374. */
                     await _deliverer.DeliverAsync(new AlertOutcome(
                         key, serverName, "Long-Running Query",
                         $"{longRunning.Count} query(s), longest {elapsedMinutes}m",
@@ -613,7 +629,8 @@ public sealed class AlertEngine
                         lrqContext, detailText,
                         NumericCurrentValue: elapsedMinutes,
                         NumericThresholdValue: _settings.LongRunningQueryThresholdMinutes,
-                        Muted: isMuted, Severity: lrqContext?.SeverityOverride), ct);
+                        Muted: isMuted, Severity: lrqContext?.SeverityOverride,
+                        ShortMessage: $"Session #{worst.SessionId} running {elapsedMinutes}m{previewSuffix}"), ct);
                 }
             }
             else if (_activeLongRunningQueryAlert.TryGetValue(key, out var wasLongRunning) && wasLongRunning) /* :395 */
@@ -664,7 +681,7 @@ public sealed class AlertEngine
                     var tempDbContext = AlertContextBuilders.BuildTempDbSpaceContext(tempDb); /* :440 */
                     var detailText = AlertContextBuilders.ContextToDetailText(tempDbContext); /* :441 */
 
-                    /* :443-453 */
+                    /* :443-453. ShortMessage = the toast body of :435. */
                     await _deliverer.DeliverAsync(new AlertOutcome(
                         key, serverName, "tempdb Space",
                         $"{tempDb.UsedPercent:F0}% used ({tempDb.TotalReservedMb:F0} MB)",
@@ -672,7 +689,8 @@ public sealed class AlertEngine
                         tempDbContext, detailText,
                         NumericCurrentValue: tempDb.UsedPercent,
                         NumericThresholdValue: _settings.TempDbSpaceThresholdPercent,
-                        Muted: isMuted, Severity: tempDbContext?.SeverityOverride), ct);
+                        Muted: isMuted, Severity: tempDbContext?.SeverityOverride,
+                        ShortMessage: $"tempdb {tempDb.UsedPercent:F0}% used"), ct);
                 }
             }
             else if (_activeTempDbSpaceAlert.TryGetValue(key, out var wasTempDb) && wasTempDb) /* :456 */
@@ -700,19 +718,25 @@ public sealed class AlertEngine
 
     /* ---------------- volume free space (Lite AlertEngine.cs:475-555) ---------------- */
 
-    private async Task CheckLowDiskAsync(
+    /// <returns>
+    /// True when at least one volume is breached this sweep — the standing condition Lite's #754
+    /// tab badge derives from (:487 <c>curBadgeLowDisk</c>), computed BEFORE the worsening/cooldown/
+    /// suppression gates. False when the check is disabled or the read failed.
+    /// </returns>
+    private async Task<bool> CheckLowDiskAsync(
         string key, string serverName, DateTime now, TimeSpan alertCooldown, bool suppressed, CancellationToken ct)
     {
         if (!_settings.LowDiskEnabled)                                              /* :476 */
         {
-            return;
+            return false;
         }
 
+        bool conditionPresent = false;
         try
         {
             var volumes = await _readAdapter.GetVolumeFreeSpaceAsync(key, ct);      /* :480 */
             var breached = AlertContextBuilders.GetBreachedVolumes(volumes, _settings.LowDiskThresholdPercent, _settings.LowDiskThresholdGb); /* :481 */
-            /* :484-485 — the server-tab badge flag is UI-only (kept app-side). */
+            conditionPresent = breached.Count > 0;                                  /* :487 — feeds the sweep result */
 
             if (breached.Count > 0)
             {
@@ -738,7 +762,7 @@ public sealed class AlertEngine
                     }
                     var detailText = AlertContextBuilders.ContextToDetailText(lowDiskContext); /* :523 */
 
-                    /* :525-535 */
+                    /* :525-535. ShortMessage = the toast body of :510. */
                     await _deliverer.DeliverAsync(new AlertOutcome(
                         key, serverName, "Volume Free Space",
                         $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)",
@@ -746,7 +770,8 @@ public sealed class AlertEngine
                         lowDiskContext, detailText,
                         NumericCurrentValue: worst.FreePercent,
                         NumericThresholdValue: _settings.LowDiskThresholdPercent,
-                        Muted: isMuted, Severity: lowDiskContext?.SeverityOverride), ct);
+                        Muted: isMuted, Severity: lowDiskContext?.SeverityOverride,
+                        ShortMessage: $"{worst.MountPoint} {worst.FreePercent:F0}% free ({worst.FreeGb:F1} GB)"), ct);
                 }
             }
             else if (_activeLowDiskAlert.TryGetValue(key, out var wasLowDisk) && wasLowDisk) /* :538 */
@@ -770,6 +795,8 @@ public sealed class AlertEngine
         {
             _logger?.LogError("Failed to check volume free space for {Server}: {Message}", serverName, ex.Message); /* :553 */
         }
+
+        return conditionPresent;
     }
 
     /* ---------------- anomalous Agent jobs (Lite AlertEngine.cs:557-632) ---------------- */
@@ -804,7 +831,7 @@ public sealed class AlertEngine
 
                 if (!suppressed && (!_lastLongRunningJobAlert.TryGetValue(jobKey, out var lastJob) || now - lastJob >= alertCooldown)) /* :581 */
                 {
-                    /* :583 (currentMinutes) fed only the tray toast — not transplanted. */
+                    var currentMinutes = worst.CurrentDurationSeconds / 60;         /* :583 — feeds ShortMessage (the toast body) */
                     var muteCtx = new AlertMuteContext { ServerName = serverName, MetricName = "Long-Running Job", JobName = worst.JobName }; /* :585 */
                     bool isMuted = _isAlertMuted(muteCtx);                          /* :586 */
                     _lastLongRunningJobAlert[jobKey] = now;                         /* :587 */
@@ -812,7 +839,7 @@ public sealed class AlertEngine
                     var jobContext = AlertContextBuilders.BuildAnomalousJobContext(serverName, anomalousJobs); /* :600 */
                     var detailText = AlertContextBuilders.ContextToDetailText(jobContext);                     /* :601 */
 
-                    /* :603-613 */
+                    /* :603-613. ShortMessage = the toast body of :595. */
                     await _deliverer.DeliverAsync(new AlertOutcome(
                         key, serverName, "Long-Running Job",
                         $"{anomalousJobs.Count} job(s) exceeding {_settings.LongRunningJobMultiplier}x average",
@@ -820,7 +847,8 @@ public sealed class AlertEngine
                         jobContext, detailText,
                         NumericCurrentValue: (double)(worst.PercentOfAverage ?? 0),
                         NumericThresholdValue: _settings.LongRunningJobMultiplier * 100,
-                        Muted: isMuted, Severity: jobContext?.SeverityOverride), ct);
+                        Muted: isMuted, Severity: jobContext?.SeverityOverride,
+                        ShortMessage: $"{worst.JobName} at {worst.PercentOfAverage:F0}% of avg ({currentMinutes}m)"), ct);
                 }
             }
             else if (_activeLongRunningJobAlert.TryGetValue(key, out var wasJob) && wasJob) /* :616 */
@@ -847,15 +875,22 @@ public sealed class AlertEngine
 
     /* ---------------- failed Agent jobs (Lite AlertEngine.cs:634-717) ---------------- */
 
-    private async Task CheckFailedJobsAsync(
+    /// <returns>
+    /// True when the fetcher returned at least one failure in the lookback window — the standing
+    /// condition Lite's #749 tab badge derives from (:663 <c>curBadgeFailedJob</c>), computed
+    /// BEFORE the watermark/cooldown/suppression gates. False when the check is disabled, the
+    /// server is offline/Azure SQL DB, or the fetch failed.
+    /// </returns>
+    private async Task<bool> CheckFailedJobsAsync(
         AlertServerSnapshot snapshot, string key, string serverName,
         DateTime now, TimeSpan alertCooldown, bool suppressed, CancellationToken ct)
     {
         if (!_settings.FailedJobEnabled || _failedJobsFetcher is null)              /* :639 */
         {
-            return;
+            return false;
         }
 
+        bool conditionPresent = false;
         try
         {
             /* :649-653 — Lite gates on online + non-Azure-SQL-DB + HasMsdbAccess. The engine
@@ -865,11 +900,11 @@ public sealed class AlertEngine
                events: no "cleared" notification, watermark-dedup only (:634-638). */
             if (!snapshot.IsOnline || snapshot.IsAzureSqlDb)
             {
-                return;
+                return false;
             }
 
             var failedJobs = await _failedJobsFetcher(key, _settings.FailedJobLookbackMinutes, ct); /* :657 */
-            /* :659-661 — the server-tab badge flag is UI-only (kept app-side). */
+            conditionPresent = failedJobs.Count > 0;                                /* :663 — feeds the sweep result */
 
             if (failedJobs.Count > 0)
             {
@@ -893,7 +928,7 @@ public sealed class AlertEngine
                     var failedJobContext = AlertContextBuilders.BuildFailedJobContext(serverName, failedJobs); /* :695 */
                     var detailText = AlertContextBuilders.ContextToDetailText(failedJobContext);               /* :696 */
 
-                    /* :698-708 */
+                    /* :698-708. ShortMessage = the toast body of :690. */
                     await _deliverer.DeliverAsync(new AlertOutcome(
                         key, serverName, "Failed Agent Job",
                         $"{failedJobs.Count} job failure(s) in last {_settings.FailedJobLookbackMinutes}m — {jobNames}",
@@ -901,7 +936,8 @@ public sealed class AlertEngine
                         failedJobContext, detailText,
                         NumericCurrentValue: failedJobs.Count,
                         NumericThresholdValue: 0,
-                        Muted: isMuted, Severity: failedJobContext?.SeverityOverride), ct);
+                        Muted: isMuted, Severity: failedJobContext?.SeverityOverride,
+                        ShortMessage: $"{failedJobs.Count} job failure(s) — {jobNames}"), ct);
                 }
             }
         }
@@ -913,6 +949,8 @@ public sealed class AlertEngine
         {
             _logger?.LogError("Failed to check failed jobs for {Server}: {Message}", serverName, ex.Message); /* :715 */
         }
+
+        return conditionPresent;
     }
 
     /* ---------------- helpers ---------------- */
