@@ -31,6 +31,9 @@
   // cpu 80% (total mode), blocking 1, deadlock 1, poison wait 500 ms, long-running query
   // 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,
   // cooldown 5 min. Omit the whole section (or any key) for those defaults.
+  // "enabled" also gates scheduled-analysis finding notifications (the analysis itself
+  // always runs every 30 minutes per server and persists its findings; severity >= 1.5
+  // notifies with a 6-hour per-finding cooldown — Lite's defaults, not configurable here).
   "alerts": {
     "enabled": true,
     "cpuThresholdPercent": 80,

@@ -28,6 +28,9 @@
     <InternalsVisibleTo Include="PerformanceMonitor.PlanAnalysis" />
     <InternalsVisibleTo Include="PerformanceMonitorLite" />
     <InternalsVisibleTo Include="PerformanceMonitorDashboard" />
+    <!-- AN3: the ported PgDrillDownCollector renders plan warnings through McpHelpers.Truncate,
+         exactly like both apps' drill-down collectors. -->
+    <InternalsVisibleTo Include="PerformanceMonitor.Darling.Analysis" />
     <InternalsVisibleTo Include="Lite.Tests" />
     <InternalsVisibleTo Include="Dashboard.Tests" />
   </ItemGroup>
