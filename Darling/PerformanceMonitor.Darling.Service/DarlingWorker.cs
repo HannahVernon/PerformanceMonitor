@@ -43,6 +43,9 @@ public sealed class DarlingWorker : BackgroundService
     /* Set once by ExecuteAsync before the loop starts; the observability writes need it. */
     private NpgsqlDataSource? _postgres;
 
+    /* MinValue = the first sweep after startup runs the retention purge, then daily. */
+    private DateTime _nextPurgeUtc = DateTime.MinValue;
+
     public DarlingWorker(ILogger<DarlingWorker> logger)
     {
         _logger = logger;
@@ -127,6 +130,12 @@ public sealed class DarlingWorker : BackgroundService
                 }
 
                 await RunDueCollectorsAsync(server, runner, stoppingToken);
+            }
+
+            if (DateTime.UtcNow >= _nextPurgeUtc)
+            {
+                _nextPurgeUtc = DateTime.UtcNow.AddHours(24);
+                await DarlingRetention.PurgeAsync(postgres, _logger, stoppingToken);
             }
 
             try
