@@ -117,8 +117,8 @@ public static class PgSchemaGenerator
     /// <summary>
     /// The full collector-table schema script in catalog order — the body of Darling's first
     /// versioned migration. TimescaleDB hypertable conversion is deliberately NOT emitted here;
-    /// it is applied by the migration runner only when the extension is present (validated
-    /// against a live Postgres before it ships).
+    /// it is runtime setup (<see cref="TimescaleSupport"/>), applied by the service only when
+    /// the extension is detected, so this script stays valid on plain PostgreSQL.
     /// </summary>
     public static string GenerateFullSchema()
     {

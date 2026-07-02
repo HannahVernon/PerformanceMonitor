@@ -28,7 +28,9 @@ namespace PerformanceMonitor.Darling.Service;
 
 /// <summary>
 /// The 24/7 collection loop (headless plan M2): load darling.json, migrate the Postgres store,
-/// re-seed delta baselines from it (restart continuity — the Postgres twin of Lite's DuckDB
+/// detect optional TimescaleDB (hypertables + compression when present, plain PG otherwise —
+/// see TimescaleSupport), re-seed delta baselines from it (restart continuity — the Postgres
+/// twin of Lite's DuckDB
 /// seeding, so a service restart doesn't zero the first cycle's deltas), connect and probe each
 /// monitored server, ensure the XE sessions, run the on-load config
 /// snapshots once, then run every scheduled collector on the shared
@@ -76,6 +78,11 @@ public sealed class DarlingWorker : BackgroundService
 
     /* MinValue = the first sweep after startup runs the retention purge, then daily. */
     private DateTime _nextPurgeUtc = DateTime.MinValue;
+
+    /* Set once at startup by the TimescaleSupport detection (cached per data source — the
+       extension can't appear or vanish under a running service without a restart anyway);
+       branches the retention purge onto drop_chunks. */
+    private bool _timescaleAvailable;
 
     public DarlingWorker(ILogger<DarlingWorker> logger, ILoggerFactory loggerFactory)
     {
@@ -138,6 +145,31 @@ public sealed class DarlingWorker : BackgroundService
         {
             _logger.LogCritical("Cannot reach or migrate the Postgres store: {Message}", ex.Message);
             return;
+        }
+
+        /* Optional TimescaleDB adoption — runtime setup, deliberately NOT a versioned migration
+           (the store must work with or without the extension; migrations stay engine-plain).
+           Detected once at startup; when present, the collector tables become hypertables with
+           a 7-day compression policy (Darling's archival tier) and the daily retention purge
+           below switches to drop_chunks. All idempotent, so every restart re-converges. In its
+           own try/catch OUTSIDE the critical migrate block: an optional feature failing must
+           degrade to plain-PostgreSQL mode, never kill the service. */
+        try
+        {
+            await using var timescaleConnection = await postgres.OpenConnectionAsync(stoppingToken);
+            _timescaleAvailable = await TimescaleSupport.TryEnableAsync(timescaleConnection, _logger, stoppingToken);
+            if (_timescaleAvailable)
+            {
+                await TimescaleSupport.ConvertToHypertablesAsync(timescaleConnection, _logger, stoppingToken);
+                await TimescaleSupport.ApplyCompressionPolicyAsync(timescaleConnection, _logger, stoppingToken);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            /* A partially-converted store is fine: DELETE-based retention works on hypertables
+               too, so falling back to plain-PG mode is always safe. */
+            _timescaleAvailable = false;
+            _logger.LogWarning("TimescaleDB setup failed — continuing in plain-PostgreSQL mode: {Message}", ex.Message);
         }
 
         /* Restart continuity: re-seed delta baselines from the store (the Postgres twin of Lite's
@@ -229,7 +261,7 @@ public sealed class DarlingWorker : BackgroundService
             if (DateTime.UtcNow >= _nextPurgeUtc)
             {
                 _nextPurgeUtc = DateTime.UtcNow.AddHours(24);
-                await DarlingRetention.PurgeAsync(postgres, _logger, stoppingToken);
+                await DarlingRetention.PurgeAsync(postgres, _timescaleAvailable, _logger, stoppingToken);
 
                 /* AN3: findings retention. Both apps' finding stores declare a 30-day cleanup
                    but neither app schedules it (Lite's DuckDB archive-reset bounds it
