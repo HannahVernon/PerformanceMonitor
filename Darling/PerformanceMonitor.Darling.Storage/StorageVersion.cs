@@ -16,5 +16,5 @@ namespace PerformanceMonitor.Darling.Storage;
 /// </summary>
 public static class StorageVersion
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 }

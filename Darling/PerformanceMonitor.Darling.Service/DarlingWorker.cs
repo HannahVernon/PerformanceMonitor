@@ -28,13 +28,18 @@ namespace PerformanceMonitor.Darling.Service;
 /// A server that fails to connect is retried every sweep; a collector that errors is logged and
 /// retried on its next due time — the loop never dies for one bad cycle. Dispatch mirrors Lite's:
 /// the deadlock/blocked-process readers tolerate a missing XE session as zero rows, and
-/// trace_flags tolerates denied DBCC as zero rows with a warning.
+/// trace_flags tolerates denied DBCC as zero rows with a warning. Every successful connect
+/// upserts the servers registry and every collector run writes a collection_log row — both
+/// failure-isolated (<see cref="DarlingObservability"/>).
 /// </summary>
 public sealed class DarlingWorker : BackgroundService
 {
     private static readonly TimeSpan s_sweepInterval = TimeSpan.FromSeconds(15);
 
     private readonly ILogger<DarlingWorker> _logger;
+
+    /* Set once by ExecuteAsync before the loop starts; the observability writes need it. */
+    private NpgsqlDataSource? _postgres;
 
     public DarlingWorker(ILogger<DarlingWorker> logger)
     {
@@ -75,6 +80,7 @@ public sealed class DarlingWorker : BackgroundService
         }
 
         await using var postgres = NpgsqlDataSource.Create(config.Postgres.ConnectionString);
+        _postgres = postgres;
         try
         {
             await using var migrateConnection = await postgres.OpenConnectionAsync(stoppingToken);
@@ -144,6 +150,8 @@ public sealed class DarlingWorker : BackgroundService
                 server.Runtime.Target.IsAzureSqlDb ? "AzureSqlDb" : server.Runtime.Target.IsAzureManagedInstance ? "ManagedInstance" : "Box",
                 server.Runtime.ServerId);
 
+            await DarlingObservability.UpsertServerAsync(_postgres!, server.Runtime, _logger, cancellationToken);
+
             await DarlingXeSessions.EnsureAllAsync(server.Runtime, _logger, cancellationToken);
 
             /* On-load config snapshots (FrequencyMinutes 0) run once per connect, then every
@@ -193,16 +201,20 @@ public sealed class DarlingWorker : BackgroundService
 
     private async Task RunOneAsync(ServerLoopState server, DarlingCollectorRunner runner, string collectorName, CancellationToken cancellationToken)
     {
-        if (server.Runtime is null || !s_dispatch.TryGetValue(collectorName, out var run))
+        var runtime = server.Runtime;
+        if (runtime is null || !s_dispatch.TryGetValue(collectorName, out var run))
         {
             return;
         }
 
         try
         {
-            var result = await run(runner, server.Runtime, cancellationToken);
+            var result = await run(runner, runtime, cancellationToken);
             _logger.LogInformation("  [{Server}] {Collector} => {Rows} rows (sql:{SqlMs}ms, pg:{PgMs}ms)",
                 server.Config.DisplayName, collectorName, result.Rows, result.SqlMs, result.StorageMs);
+
+            await DarlingObservability.LogCollectionAsync(
+                _postgres!, runtime, collectorName, "SUCCESS", result.Rows, result.SqlMs, result.StorageMs, null, _logger, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -212,6 +224,9 @@ public sealed class DarlingWorker : BackgroundService
         {
             _logger.LogWarning("  [{Server}] {Collector} => insufficient permissions ({Number}): {Message}",
                 server.Config.DisplayName, collectorName, ex.Number, ex.Message);
+
+            await DarlingObservability.LogCollectionAsync(
+                _postgres!, runtime, collectorName, "PERMISSIONS", 0, 0, 0, ex.Message, _logger, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -225,6 +240,9 @@ public sealed class DarlingWorker : BackgroundService
                 server.NextConnectAttempt = DateTime.UtcNow.AddSeconds(60);
                 _logger.LogWarning("[{Server}] Connection-level failure — will reconnect", server.Config.DisplayName);
             }
+
+            await DarlingObservability.LogCollectionAsync(
+                _postgres!, runtime, collectorName, "ERROR", 0, 0, 0, ex.Message, _logger, cancellationToken);
         }
     }
 
