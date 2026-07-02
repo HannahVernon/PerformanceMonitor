@@ -129,6 +129,36 @@ jobs:
         if: steps.filter.outputs.code != 'false'
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
 
+      # Darling (headless edition): the Windows-service collector and the WPF viewer, published
+      # framework-dependent exactly like Dashboard/Lite. No Velopack — a Windows service has a
+      # different update story, deliberately deferred for v1; Darling ships as a plain zip only.
+      - name: Publish Darling Service
+        if: steps.filter.outputs.code != 'false'
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj -c Release -o publish/DarlingService
+
+      - name: Publish Darling Viewer
+        if: steps.filter.outputs.code != 'false'
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
+
+      # Darling bundles a PostgreSQL 17 + TimescaleDB runtime (pg-runtime.zip) that ships beside
+      # the service exe; DarlingManagedPostgres extracts it on first run. The fetch script pulls
+      # ~340MB of pinned EDB/TimescaleDB archives, so this is release-only and cached. The key is
+      # the fetch script's own content hash (the SHA256 pins live inside it): a re-release with
+      # unchanged pins restores the assembled zip and skips both the download and the assembly,
+      # and any pin/version bump edits the script and invalidates the cache automatically.
+      - name: Cache Darling pg-runtime.zip
+        if: github.event_name == 'release'
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip
+        if: github.event_name == 'release' && steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
+
       - name: Package release artifacts
         if: github.event_name == 'release'
         shell: pwsh
@@ -183,6 +213,26 @@ jobs:
           name: Installer-unsigned
           path: publish/Installer/
 
+      # Only our own .NET output (the service/viewer apphost exes + PerformanceMonitor.* dlls) is
+      # uploaded to SignPath. pg-runtime.zip is deliberately NOT here — the bundled EDB PostgreSQL
+      # binaries inside are EDB's and ship as opaque data, so the zip is placed into the package
+      # AFTER signing (see "Package Darling (signed)" below).
+      - name: Upload Darling Service for signing
+        if: github.event_name == 'release'
+        id: upload-darling-service
+        uses: actions/upload-artifact@v6
+        with:
+          name: DarlingService-unsigned
+          path: publish/DarlingService/
+
+      - name: Upload Darling Viewer for signing
+        if: github.event_name == 'release'
+        id: upload-darling-viewer
+        uses: actions/upload-artifact@v6
+        with:
+          name: DarlingViewer-unsigned
+          path: publish/DarlingViewer/
+
       - name: Sign Dashboard
         if: github.event_name == 'release'
         uses: signpath/github-action-submit-signing-request@v2
@@ -222,6 +272,36 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: 'signed/Installer'
 
+      # ACTION REQUIRED (Erik): the 'DarlingService' and 'DarlingViewer' artifact-configuration
+      # slugs must be created on signpath.io — that config (which files get signed) lives outside
+      # this repo. Configure each to sign the apphost exe + PerformanceMonitor.* dlls and to leave
+      # third-party assemblies alone. Until both slugs exist, these two steps fail the release.
+      - name: Sign Darling Service
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'DarlingService'
+          github-artifact-id: '${{ steps.upload-darling-service.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/DarlingService'
+
+      - name: Sign Darling Viewer
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'DarlingViewer'
+          github-artifact-id: '${{ steps.upload-darling-viewer.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/DarlingViewer'
+
       - name: Replace with signed artifacts
         if: github.event_name == 'release'
         shell: pwsh
@@ -234,6 +314,29 @@ jobs:
           Compress-Archive -Path 'signed/Lite/*' -DestinationPath "releases/PerformanceMonitorLite-$version.zip" -Force
           Remove-Item "releases/PerformanceMonitorInstaller-$version.zip" -ErrorAction SilentlyContinue
           Compress-Archive -Path 'signed/Installer/*' -DestinationPath "releases/PerformanceMonitorInstaller-$version.zip" -Force
+
+      - name: Package Darling (signed)
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          # One product, one zip (mirrors the one-zip-per-product convention above), assembled
+          # from the SIGNED binaries. The service is the primary deliverable so it sits at the
+          # archive root; the viewer goes in a viewer\ subfolder.
+          $stage = 'publish/Darling-package'
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path "$stage/viewer" | Out-Null
+
+          # Service at root (its darling.sample.json is already in the publish output) with
+          # pg-runtime.zip placed beside the service exe — exactly where DarlingManagedPostgres
+          # looks (AppContext.BaseDirectory) and extracts it on first run. The EDB PostgreSQL
+          # binaries inside pg-runtime.zip are shipped as opaque data and were never signed.
+          Copy-Item 'signed/DarlingService/*' $stage -Recurse
+          Copy-Item 'Darling/artifacts/pg-runtime.zip' $stage
+          Copy-Item 'signed/DarlingViewer/*' "$stage/viewer" -Recurse
+
+          Remove-Item "releases/PerformanceMonitorDarling-$version.zip" -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$stage/*" -DestinationPath "releases/PerformanceMonitorDarling-$version.zip" -Force
 
       # The Velopack (Setup.exe) path publishes a SEPARATE self-contained build
       # (publish/Dashboard-velopack, publish/Lite-velopack -- see the "self-contained
