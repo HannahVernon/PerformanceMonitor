@@ -23,11 +23,12 @@ using PerformanceMonitor.Ui;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The Darling viewer shell (headless plan M3 + viewer wave 2): the server list from the
-/// central store on the left, and four surface tabs on the right — Overview (per-collector
-/// Collection Health + the top-8 wait-types trend), Queries (top-50 query-stats groups),
-/// Blocking (XE blocked-process reports with the DMV-snapshot fallback merged in), and
-/// Recommendations (the latest analysis findings with an advice/remediation detail pane) —
+/// The Darling viewer shell (headless plan M3 + viewer waves 2-4): the server list from the
+/// central store on the left, and five surface tabs on the right — Overview (per-collector
+/// Collection Health plus CPU-utilization and wait-time-by-category trend charts), Queries
+/// (top-50 query-stats groups), Blocking (XE blocked-process reports with the DMV-snapshot
+/// fallback merged in), Recommendations (the latest analysis findings with an advice/remediation
+/// detail pane), and Alerts (config_alert_log history with mute-rule write-back) —
 /// all read straight from Postgres via <see cref="ViewerDataService"/>. Loads are lazy per
 /// tab (Lite's visible-only rule): selecting a server or a tab loads ONLY the active tab,
 /// and the 60-second timer refreshes only the active tab. Every data load is async — the
@@ -92,8 +93,10 @@ public partial class MainWindow : Window
 
         /* ThemeManager defaults to Dark, which is exactly this window's hardcoded palette —
            so the shared chart chrome applies without any theme wiring. */
-        ChartStyle.ApplyThemeToChart(WaitTrendChart);
-        WaitTrendChart.Refresh();
+        ChartStyle.ApplyThemeToChart(CpuTrendChart);
+        CpuTrendChart.Refresh();
+        ChartStyle.ApplyThemeToChart(WaitCategoryChart);
+        WaitCategoryChart.Refresh();
 
         await LoadServersAsync();
 
@@ -261,14 +264,17 @@ public partial class MainWindow : Window
     {
         var sinceUtc = DateTime.UtcNow - s_dataWindow;
 
-        /* Both queries run concurrently — NpgsqlDataSource pools a connection for each. */
+        /* The three reads run concurrently — NpgsqlDataSource pools a connection for each. */
         var healthTask = _dataService!.GetCollectionHealthAsync(server.ServerId);
-        var waitTask = _dataService.GetWaitTrendAsync(server.ServerId, sinceUtc);
+        var cpuTask = _dataService.GetCpuTrendAsync(server.ServerId, sinceUtc);
+        var waitTask = _dataService.GetWaitCategoryTrendAsync(server.ServerId, sinceUtc);
         var health = await healthTask;
+        var cpu = await cpuTask;
         var waits = await waitTask;
 
         HealthGrid.ItemsSource = health;
-        RenderWaitTrend(waits);
+        RenderCpuTrend(cpu);
+        RenderWaitCategoryTrend(waits);
     }
 
     private async Task LoadQueriesAsync(DarlingServer server)
@@ -510,7 +516,8 @@ public partial class MainWindow : Window
     private void ClearAllTabs()
     {
         HealthGrid.ItemsSource = null;
-        RenderWaitTrend(Array.Empty<WaitTrendPoint>());
+        RenderCpuTrend(Array.Empty<CpuTrendPoint>());
+        RenderWaitCategoryTrend(Array.Empty<WaitCategoryTrendPoint>());
         QueriesGrid.ItemsSource = null;
         QueriesHintText.Visibility = Visibility.Collapsed;
         BlockingGrid.ItemsSource = null;
@@ -524,35 +531,70 @@ public partial class MainWindow : Window
         AlertDetailText.Text = AlertDetailPlaceholder;
     }
 
-    private void RenderWaitTrend(IReadOnlyList<WaitTrendPoint> points)
+    private void RenderCpuTrend(IReadOnlyList<CpuTrendPoint> points)
     {
-        WaitTrendChart.Plot.Clear();
-        ChartStyle.ApplyThemeToChart(WaitTrendChart);
+        CpuTrendChart.Plot.Clear();
+        ChartStyle.ApplyThemeToChart(CpuTrendChart);
 
-        var series = ViewerDataService.PivotWaitSeries(points);
-        ChartHintText.Visibility = series.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        WaitTrendChart.Plot.Legend.IsVisible = series.Count > 0;
+        CpuChartHintText.Visibility = points.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        CpuTrendChart.Plot.Legend.IsVisible = points.Count > 0;
 
-        var colorIndex = 0;
+        if (points.Count > 0)
+        {
+            var xs = points.Select(p => ViewerDataService.ToLocalTime(p.CollectionTime).ToOADate()).ToArray();
+
+            /* Series names + colors mirror Lite's CPU chart (ServerTab.Charts.cs UpdateCpuChart):
+               "SQL Server" in the SqlCpu blue, "Other" in the OtherCpu red, both via SeriesColor. */
+            var sql = CpuTrendChart.Plot.Add.Scatter(xs, points.Select(p => p.SqlServerCpu).ToArray());
+            sql.LegendText = "SQL Server";
+            sql.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
+            ChartStyle.StyleScatter(sql);
+
+            var other = CpuTrendChart.Plot.Add.Scatter(xs, points.Select(p => p.OtherProcessCpu).ToArray());
+            other.LegendText = "Other";
+            other.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OtherCpu"));
+            ChartStyle.StyleScatter(other);
+
+            CpuTrendChart.Plot.Axes.DateTimeTicksBottom();
+            ChartStyle.ReapplyAxisColors(CpuTrendChart);
+            CpuTrendChart.Plot.YLabel("CPU %");
+            CpuTrendChart.Plot.Axes.AutoScale();
+            ChartStyle.SetChartYLimitsWithLegendPadding(CpuTrendChart);
+        }
+
+        CpuTrendChart.Refresh();
+    }
+
+    private void RenderWaitCategoryTrend(IReadOnlyList<WaitCategoryTrendPoint> points)
+    {
+        WaitCategoryChart.Plot.Clear();
+        ChartStyle.ApplyThemeToChart(WaitCategoryChart);
+
+        var series = ViewerDataService.RollUpWaitCategories(points);
+        WaitChartHintText.Visibility = series.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        WaitCategoryChart.Plot.Legend.IsVisible = series.Count > 0;
+
+        /* Each category is drawn in its fixed WaitColor — the same identity the plan-viewer wait
+           list uses — so a category reads as the same color everywhere in the product. */
         foreach (var s in series)
         {
             var xs = s.Times.Select(t => ViewerDataService.ToLocalTime(t).ToOADate()).ToArray();
-            var scatter = WaitTrendChart.Plot.Add.Scatter(xs, s.Values);
-            scatter.LegendText = s.WaitType;
-            scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(colorIndex++));
+            var scatter = WaitCategoryChart.Plot.Add.Scatter(xs, s.Values);
+            scatter.LegendText = s.Category;
+            scatter.Color = ScottPlot.Color.FromHex(ChartPalette.WaitColor(s.Category));
             ChartStyle.StyleScatter(scatter);
         }
 
         if (series.Count > 0)
         {
-            WaitTrendChart.Plot.Axes.DateTimeTicksBottom();
-            ChartStyle.ReapplyAxisColors(WaitTrendChart);
-            WaitTrendChart.Plot.YLabel("delta wait time (ms)");
-            WaitTrendChart.Plot.Axes.AutoScale();
-            ChartStyle.SetChartYLimitsWithLegendPadding(WaitTrendChart);
+            WaitCategoryChart.Plot.Axes.DateTimeTicksBottom();
+            ChartStyle.ReapplyAxisColors(WaitCategoryChart);
+            WaitCategoryChart.Plot.YLabel("delta wait time (ms)");
+            WaitCategoryChart.Plot.Axes.AutoScale();
+            ChartStyle.SetChartYLimitsWithLegendPadding(WaitCategoryChart);
         }
 
-        WaitTrendChart.Refresh();
+        WaitCategoryChart.Refresh();
     }
 
     private void ShowMessage(string message)
