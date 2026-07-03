@@ -33,15 +33,16 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       CPU, tempdb, Blocking, Collection Health) — ported tabs slot into Lite's positions as
-       they arrive, so the constants renumber when a wave lands between existing tabs. */
+       CPU, tempdb, Blocking, Configuration, Collection Health) — ported tabs slot into Lite's
+       positions as they arrive, so the constants renumber when a wave lands between existing tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
     private const int QueriesInnerTabIndex = 2;
     private const int CpuInnerTabIndex = 3;
     private const int TempDbInnerTabIndex = 4;
     private const int BlockingInnerTabIndex = 5;
-    private const int HealthInnerTabIndex = 6;
+    private const int ConfigurationInnerTabIndex = 6;
+    private const int HealthInnerTabIndex = 7;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -57,6 +58,10 @@ public partial class ViewerServerTab : UserControl
         _dataService = dataService;
         _server = server;
         InitializeComponent();
+
+        /* Column-filter managers for the Configuration sub-grids (copied from Lite's ServerTab filter
+           wiring) — after InitializeComponent so the named grids exist. */
+        InitializeFilterManagers();
 
         /* ThemeManager is fixed to Dark, matching this control's hardcoded palette — so the shared
            chart chrome applies without any per-control theme plumbing. */
@@ -145,6 +150,9 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case BlockingInnerTabIndex:
                     await LoadBlockingAsync();
+                    break;
+                case ConfigurationInnerTabIndex:
+                    await LoadConfigurationAsync();
                     break;
                 case HealthInnerTabIndex:
                     await LoadHealthAsync();
