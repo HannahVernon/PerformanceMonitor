@@ -36,6 +36,8 @@ public partial class ViewerServerTab : UserControl
     private const int QueriesInnerTabIndex = 1;
     private const int BlockingInnerTabIndex = 2;
     private const int HealthInnerTabIndex = 3;
+    private const int CpuInnerTabIndex = 4;
+    private const int TempDbInnerTabIndex = 5;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -58,6 +60,9 @@ public partial class ViewerServerTab : UserControl
         CpuTrendChart.Refresh();
         ChartStyle.ApplyThemeToChart(WaitCategoryChart);
         WaitCategoryChart.Refresh();
+
+        /* CPU + tempdb inner-tab charts (copied from Lite): theme up front + wire hover. */
+        InitializeCpuTempDbCharts();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -136,6 +141,12 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case HealthInnerTabIndex:
                     await LoadHealthAsync();
+                    break;
+                case CpuInnerTabIndex:
+                    await LoadCpuAsync();
+                    break;
+                case TempDbInnerTabIndex:
+                    await LoadTempDbAsync();
                     break;
                 case OverviewInnerTabIndex:
                 default:

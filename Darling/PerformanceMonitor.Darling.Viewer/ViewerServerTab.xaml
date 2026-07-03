@@ -225,5 +225,39 @@
                 </DataGrid>
             </DockPanel>
         </TabItem>
+
+        <!-- CPU Tab — copied from Lite's ServerTab.xaml CPU tab: one full-bleed chart of raw
+             per-sample CPU (SQL Server vs other processes), distinct from the Overview's
+             averaged-per-collection CPU trend. -->
+        <TabItem Header="CPU">
+            <Grid Margin="8">
+                <scottplot:WpfPlot x:Name="CpuChart"/>
+            </Grid>
+        </TabItem>
+
+        <!-- tempdb Tab — copied from Lite's ServerTab.xaml tempdb tab: three stacked charts —
+             space usage (user/internal/version-store), total allocated size, and per-file I/O
+             latency. -->
+        <TabItem Header="tempdb">
+            <Grid Margin="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Margin="0,0,0,4">
+                    <scottplot:WpfPlot x:Name="TempDbChart"/>
+                </Border>
+
+                <Border Grid.Row="1" Margin="0,4,0,4">
+                    <scottplot:WpfPlot x:Name="TempDbSizeChart"/>
+                </Border>
+
+                <Border Grid.Row="2" Margin="0,4,0,0">
+                    <scottplot:WpfPlot x:Name="TempDbFileIoChart"/>
+                </Border>
+            </Grid>
+        </TabItem>
     </TabControl>
 </UserControl>

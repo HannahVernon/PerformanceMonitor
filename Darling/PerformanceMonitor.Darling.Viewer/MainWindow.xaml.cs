@@ -278,6 +278,8 @@ public partial class MainWindow : Window
         if (tab.Content is ViewerServerTab serverTab)
         {
             serverTab.StatusChanged -= OnServerTabStatusChanged;
+            /* Tears down the CPU/tempdb chart hover helpers' chart event handlers. */
+            serverTab.Dispose();
         }
 
         MainTabs.Items.Remove(tab);
