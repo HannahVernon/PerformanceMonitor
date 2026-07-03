@@ -36,6 +36,9 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
     private DataGridFilterManager<ViewerBlockedProcessRow>? _blockedProcessFilterMgr;
     private DataGridFilterManager<DeadlockProcessDetail>? _deadlockFilterMgr;
+    private DataGridFilterManager<ViewerQueryStatsRow>? _queryStatsFilterMgr;
+    private DataGridFilterManager<ViewerProcedureStatsRow>? _procStatsFilterMgr;
+    private DataGridFilterManager<ViewerQueryStoreRow>? _queryStoreFilterMgr;
 
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
@@ -52,6 +55,9 @@ public partial class ViewerServerTab : UserControl
         _runningJobsFilterMgr = new DataGridFilterManager<RunningJobRow>(RunningJobsGrid);
         _blockedProcessFilterMgr = new DataGridFilterManager<ViewerBlockedProcessRow>(BlockedProcessReportGrid);
         _deadlockFilterMgr = new DataGridFilterManager<DeadlockProcessDetail>(DeadlockGrid);
+        _queryStatsFilterMgr = new DataGridFilterManager<ViewerQueryStatsRow>(QueryStatsGrid);
+        _procStatsFilterMgr = new DataGridFilterManager<ViewerProcedureStatsRow>(ProcedureStatsGrid);
+        _queryStoreFilterMgr = new DataGridFilterManager<ViewerQueryStoreRow>(QueryStoreGrid);
 
         _filterManagers[ServerConfigGrid] = _serverConfigFilterMgr;
         _filterManagers[DatabaseConfigGrid] = _databaseConfigFilterMgr;
@@ -60,6 +66,9 @@ public partial class ViewerServerTab : UserControl
         _filterManagers[RunningJobsGrid] = _runningJobsFilterMgr;
         _filterManagers[BlockedProcessReportGrid] = _blockedProcessFilterMgr;
         _filterManagers[DeadlockGrid] = _deadlockFilterMgr;
+        _filterManagers[QueryStatsGrid] = _queryStatsFilterMgr;
+        _filterManagers[ProcedureStatsGrid] = _procStatsFilterMgr;
+        _filterManagers[QueryStoreGrid] = _queryStoreFilterMgr;
     }
 
     /// <summary>
