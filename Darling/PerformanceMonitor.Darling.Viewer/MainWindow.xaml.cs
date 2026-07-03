@@ -12,8 +12,12 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
@@ -43,13 +47,18 @@ public partial class MainWindow : Window
     private const int QueriesTabIndex = 1;
     private const int BlockingTabIndex = 2;
     private const int RecommendationsTabIndex = 3;
+    private const int AlertsTabIndex = 4;
 
     /// <summary>The detail pane's no-selection state (also its initial text in the XAML).</summary>
     private const string FindingDetailPlaceholder = "select a finding to see its story, advice, and stored remediation";
 
+    /// <summary>The Alerts detail pane's no-selection state (also its initial text in the XAML).</summary>
+    private const string AlertDetailPlaceholder = "select an alert to see its detail and dedup fingerprint";
+
     private ViewerDataService? _dataService;
     private DispatcherTimer? _refreshTimer;
     private bool _refreshInFlight;
+    private bool _refreshRequested;
 
     public MainWindow()
     {
@@ -166,34 +175,49 @@ public partial class MainWindow : Window
     /// Loads the ACTIVE tab for the selected server, with the overlap guard. If the user
     /// switches server or tab while a load is in flight, the triggering event bounces off
     /// the guard — so after each load, loop when the selection moved on and load again,
-    /// leaving no tab stranded with stale or empty data.
+    /// leaving no tab stranded with stale or empty data. A trigger that arrives mid-load
+    /// (the 60-second tick, an explicit Refresh, a mute/unmute reload) sets
+    /// <see cref="_refreshRequested"/> instead of being dropped, so the running loop reloads
+    /// once more when it finishes — a user action is never silently swallowed by the guard.
     /// </summary>
     private async Task RefreshSelectedServerAsync()
     {
-        if (_dataService is null || _refreshInFlight)
+        if (_dataService is null)
         {
+            return;
+        }
+
+        if (_refreshInFlight)
+        {
+            _refreshRequested = true;
             return;
         }
 
         _refreshInFlight = true;
         try
         {
-            DarlingServer? loadedServer;
-            int loadedTab;
             do
             {
-                loadedServer = ServerList.SelectedItem as DarlingServer;
-                loadedTab = MainTabs.SelectedIndex;
+                _refreshRequested = false;
 
-                if (loadedServer is null)
+                DarlingServer? loadedServer;
+                int loadedTab;
+                do
                 {
-                    ClearAllTabs();
-                    return;
-                }
+                    loadedServer = ServerList.SelectedItem as DarlingServer;
+                    loadedTab = MainTabs.SelectedIndex;
 
-                await LoadTabAsync(loadedServer, loadedTab);
+                    if (loadedServer is null)
+                    {
+                        ClearAllTabs();
+                        break;
+                    }
+
+                    await LoadTabAsync(loadedServer, loadedTab);
+                }
+                while (!ReferenceEquals(ServerList.SelectedItem, loadedServer) || MainTabs.SelectedIndex != loadedTab);
             }
-            while (!ReferenceEquals(ServerList.SelectedItem, loadedServer) || MainTabs.SelectedIndex != loadedTab);
+            while (_refreshRequested);
         }
         finally
         {
@@ -215,6 +239,9 @@ public partial class MainWindow : Window
                     break;
                 case RecommendationsTabIndex:
                     await LoadRecommendationsAsync(server);
+                    break;
+                case AlertsTabIndex:
+                    await LoadAlertsAsync(server);
                     break;
                 case OverviewTabIndex:
                 default:
@@ -290,6 +317,196 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task LoadAlertsAsync(DarlingServer server)
+    {
+        /* Preserve the selected alert across the 60-second refresh so the detail pane doesn't jump. */
+        var selectedTime = (AlertsGrid.SelectedItem as ViewerAlertRow)?.AlertTime;
+
+        var sinceUtc = DateTime.UtcNow.AddHours(-GetSelectedAlertHours());
+        var rows = await _dataService!.GetAlertHistoryAsync(server.ServerId, sinceUtc);
+
+        AlertsGrid.ItemsSource = rows;
+        AlertsHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        AlertsCountText.Text = rows.Count > 0 ? $"{rows.Count} alert(s)" : "";
+
+        var reselect = selectedTime is null
+            ? null
+            : rows.FirstOrDefault(r => r.AlertTime == selectedTime.Value);
+        if (reselect is not null)
+        {
+            AlertsGrid.SelectedItem = reselect;
+        }
+        else if (AlertsGrid.SelectedItem is null)
+        {
+            AlertDetailText.Text = AlertDetailPlaceholder;
+        }
+    }
+
+    /// <summary>The Alerts time-range combo's hours-back tag (defaults to 24).</summary>
+    private int GetSelectedAlertHours()
+        => AlertsTimeRangeCombo.SelectedItem is ComboBoxItem item
+            && item.Tag is string tag
+            && int.TryParse(tag, out var hours)
+            ? hours
+            : 24;
+
+    // ── Recommendations: finding mute / unmute (wave-3 write-back) ──────────────────
+
+    /// <summary>Selects the row under a right-click so the context menu acts on it (both grids).</summary>
+    private void Grid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var source = e.OriginalSource as DependencyObject;
+        while (source is not null and not DataGridRow and not DataGridColumnHeader)
+        {
+            /* VisualTreeHelper.GetParent only walks Visuals; a ContentElement (e.g. an inline Run)
+               would throw. Both grids host only TextBlocks today, but bail defensively. */
+            if (source is not Visual)
+            {
+                return;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        if (source is DataGridRow row)
+        {
+            row.IsSelected = true;
+        }
+    }
+
+    /// <summary>
+    /// Enables Mute vs Unmute by the selected finding's state; suppresses the menu with no row.
+    /// Unmute is offered only when the finding carries a per-server mute id — a globally-muted
+    /// finding (MuteId null) shows as muted but is not unmutable here (that would affect all servers).
+    /// </summary>
+    private void FindingsGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (FindingsGrid.SelectedItem is not ViewerFindingRow row)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        MuteFindingMenuItem.IsEnabled = !row.IsMuted;
+        UnmuteFindingMenuItem.IsEnabled = row.MuteId is not null;
+    }
+
+    private async void MuteFinding_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null
+            || ServerList.SelectedItem is not DarlingServer server
+            || FindingsGrid.SelectedItem is not ViewerFindingRow row
+            || row.IsMuted)
+        {
+            return;
+        }
+
+        try
+        {
+            StatusText.Text = "Muting finding…";
+            await _dataService.MuteFindingAsync(server.ServerId, row.Finding);
+            await RefreshSelectedServerAsync();
+            StatusText.Text = $"finding muted — {DateTime.Now:HH:mm:ss}";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"mute failed: {ex.Message}";
+        }
+    }
+
+    private async void UnmuteFinding_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null
+            || FindingsGrid.SelectedItem is not ViewerFindingRow row
+            || row.MuteId is not { } muteId)
+        {
+            return;
+        }
+
+        try
+        {
+            StatusText.Text = "Unmuting finding…";
+            await _dataService.UnmuteFindingAsync(muteId);
+            await RefreshSelectedServerAsync();
+            StatusText.Text = $"finding unmuted — {DateTime.Now:HH:mm:ss}";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"unmute failed: {ex.Message}";
+        }
+    }
+
+    // ── Alerts tab (wave-3 read surface + mute-rule launchers) ──────────────────────
+
+    private void AlertsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, AlertsGrid))
+        {
+            return;
+        }
+
+        AlertDetailText.Text = AlertsGrid.SelectedItem is ViewerAlertRow row
+            ? ViewerDataService.ComposeAlertDetailText(row)
+            : AlertDetailPlaceholder;
+    }
+
+    private async void AlertsTimeRange_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsLoaded)
+        {
+            await RefreshSelectedServerAsync();
+        }
+    }
+
+    private async void AlertsRefresh_Click(object sender, RoutedEventArgs e)
+        => await RefreshSelectedServerAsync();
+
+    private void ManageMuteRules_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        var window = new MuteRulesWindow(_dataService) { Owner = this };
+        window.ShowDialog();
+    }
+
+    private async void CreateMuteRuleFromAlert_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null
+            || ServerList.SelectedItem is not DarlingServer server
+            || AlertsGrid.SelectedItem is not ViewerAlertRow alert)
+        {
+            return;
+        }
+
+        /* Same shape as Lite's AlertsHistoryTab "Mute This Alert": seed a mute rule from the alert's
+           server + metric + parsed detail-text context, let the user refine it, then persist. */
+        var context = new AlertMuteContext
+        {
+            ServerName = server.ServerName,
+            MetricName = alert.MetricName,
+        };
+        context.PopulateFromDetailText(alert.DetailText);
+
+        var dialog = new MuteRuleEditDialog(context) { Owner = this };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            await _dataService.InsertMuteRuleAsync(dialog.Rule);
+            StatusText.Text = $"mute rule created — {DateTime.Now:HH:mm:ss}";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"mute rule save failed: {ex.Message}";
+        }
+    }
+
     private void ClearAllTabs()
     {
         HealthGrid.ItemsSource = null;
@@ -301,6 +518,10 @@ public partial class MainWindow : Window
         FindingsGrid.ItemsSource = null;
         FindingsHintText.Visibility = Visibility.Collapsed;
         FindingDetailText.Text = FindingDetailPlaceholder;
+        AlertsGrid.ItemsSource = null;
+        AlertsHintText.Visibility = Visibility.Collapsed;
+        AlertsCountText.Text = "";
+        AlertDetailText.Text = AlertDetailPlaceholder;
     }
 
     private void RenderWaitTrend(IReadOnlyList<WaitTrendPoint> points)

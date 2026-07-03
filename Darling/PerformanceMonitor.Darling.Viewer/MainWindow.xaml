@@ -114,6 +114,139 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Recommendations rows dim when the finding's story pattern is muted (wave-3). -->
+        <Style x:Key="FindingsRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsMuted}" Value="True">
+                    <Setter Property="Opacity" Value="0.55"/>
+                    <Setter Property="FontStyle" Value="Italic"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Alerts-tab row emphasis, mirroring Lite's AlertRowStyle: critical/warning/resolved
+             tints via the shared AlertMetricClassifier, muted rows dimmed + italic. -->
+        <Style x:Key="AlertRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsCritical}" Value="True">
+                    <Setter Property="Background" Value="#33DC2626"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                    <Setter Property="Background" Value="#33D97706"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsResolved}" Value="True">
+                    <Setter Property="Background" Value="#3322C55E"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Muted}" Value="True">
+                    <Setter Property="Opacity" Value="0.5"/>
+                    <Setter Property="FontStyle" Value="Italic"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Dark ComboBox for the Alerts time-range picker (the only combo in this window), so it
+             matches the hardcoded Dark palette instead of the default light WPF chrome. -->
+        <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1f232b"/>
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2f3542"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark button for the Alerts toolbar (Refresh / Manage Mute Rules). -->
+        <Style x:Key="DarkButton" TargetType="Button">
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Background" Value="#2f3542"/>
+            <Setter Property="BorderBrush" Value="#3a4150"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#3a4150"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Background" Value="#1b1e24"/>
+                                <Setter Property="Foreground" Value="#5c6472"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DarkCombo" TargetType="ComboBox">
+            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Background" Value="#111217"/>
+            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboItem}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton" Focusable="False"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="#111217" BorderBrush="#2a2d35" BorderThickness="1" CornerRadius="3">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="20"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                      Data="M 0 0 L 4 4 L 8 0 Z" Fill="#8B93A1"/>
+                                            </Grid>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              Margin="{TemplateBinding Padding}"
+                                              VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                            <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Border Background="#16181d" BorderBrush="#2a2d35" BorderThickness="1"
+                                        MinWidth="{TemplateBinding ActualWidth}" MaxHeight="240">
+                                    <ScrollViewer>
+                                        <StackPanel IsItemsHost="True"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="10">
@@ -319,7 +452,16 @@
                             <Grid>
                                 <DataGrid x:Name="FindingsGrid"
                                           Style="{StaticResource DarkGrid}"
-                                          SelectionChanged="FindingsGrid_SelectionChanged">
+                                          RowStyle="{StaticResource FindingsRowStyle}"
+                                          SelectionChanged="FindingsGrid_SelectionChanged"
+                                          PreviewMouseRightButtonDown="Grid_PreviewMouseRightButtonDown"
+                                          ContextMenuOpening="FindingsGrid_ContextMenuOpening">
+                                    <DataGrid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem x:Name="MuteFindingMenuItem" Header="Mute finding" Click="MuteFinding_Click"/>
+                                            <MenuItem x:Name="UnmuteFindingMenuItem" Header="Unmute finding" Click="UnmuteFinding_Click"/>
+                                        </ContextMenu>
+                                    </DataGrid.ContextMenu>
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="Severity" Binding="{Binding SeverityBand}" Width="100" SortMemberPath="RawSeverity" SortDirection="Descending">
                                             <DataGridTextColumn.ElementStyle>
@@ -332,6 +474,14 @@
                                         <DataGridTextColumn Header="Finding" Binding="{Binding Title}" Width="3*"/>
                                         <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="130"/>
                                         <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="150"/>
+                                        <DataGridTextColumn Header="Muted" Binding="{Binding MutedLabel}" Width="70">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#8B93A1"/>
+                                                    <Setter Property="FontStyle" Value="Italic"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
                                     </DataGrid.Columns>
                                 </DataGrid>
                                 <TextBlock x:Name="FindingsHintText"
@@ -354,6 +504,75 @@
                                          TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
                                          Text="select a finding to see its story, advice, and stored remediation"/>
+                            </Border>
+                        </DockPanel>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Alerts">
+                    <Grid Margin="0,8,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="3*"/>
+                            <RowDefinition Height="10"/>
+                            <RowDefinition Height="2*"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Time Range:" VerticalAlignment="Center" Foreground="#8B93A1" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="AlertsTimeRangeCombo" Width="130" VerticalAlignment="Center"
+                                      Style="{StaticResource DarkCombo}"
+                                      SelectionChanged="AlertsTimeRange_SelectionChanged">
+                                <ComboBoxItem Content="Last 1 Hour" Tag="1"/>
+                                <ComboBoxItem Content="Last 4 Hours" Tag="4"/>
+                                <ComboBoxItem Content="Last 24 Hours" Tag="24" IsSelected="True"/>
+                                <ComboBoxItem Content="Last 7 Days" Tag="168"/>
+                                <ComboBoxItem Content="All" Tag="8760"/>
+                            </ComboBox>
+                            <Button Content="Refresh" Margin="10,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}" Click="AlertsRefresh_Click"/>
+                            <Button Content="Manage Mute Rules…" Margin="8,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}" Click="ManageMuteRules_Click"/>
+                            <TextBlock x:Name="AlertsCountText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#8B93A1"/>
+                        </StackPanel>
+
+                        <Grid Grid.Row="1">
+                            <DataGrid x:Name="AlertsGrid"
+                                      Style="{StaticResource DarkGrid}"
+                                      RowStyle="{StaticResource AlertRowStyle}"
+                                      SelectionChanged="AlertsGrid_SelectionChanged"
+                                      PreviewMouseRightButtonDown="Grid_PreviewMouseRightButtonDown">
+                                <DataGrid.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Create mute rule from this alert…" Click="CreateMuteRuleFromAlert_Click"/>
+                                    </ContextMenu>
+                                </DataGrid.ContextMenu>
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Time (local)" Binding="{Binding TimeLocal}" Width="150" SortMemberPath="AlertTime" SortDirection="Descending"/>
+                                    <DataGridTextColumn Header="Alert Type" Binding="{Binding MetricName}" Width="1.6*"/>
+                                    <DataGridTextColumn Header="Value" Binding="{Binding CurrentValueDisplay}" Width="120"/>
+                                    <DataGridTextColumn Header="Threshold" Binding="{Binding ThresholdValueDisplay}" Width="110"/>
+                                    <DataGridTextColumn Header="Channel" Binding="{Binding NotificationType}" Width="95"/>
+                                    <DataGridTextColumn Header="Status" Binding="{Binding StatusDisplay}" Width="100"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock x:Name="AlertsHintText"
+                                       Style="{StaticResource EmptyHint}"
+                                       Text="no alerts recorded in the selected time range"/>
+                        </Grid>
+
+                        <DockPanel Grid.Row="3">
+                            <TextBlock DockPanel.Dock="Top" Text="Alert Detail" Style="{StaticResource SectionHeader}"/>
+                            <Border Background="#111217" BorderBrush="#2a2d35" BorderThickness="1">
+                                <TextBox x:Name="AlertDetailText"
+                                         IsReadOnly="True"
+                                         Background="Transparent"
+                                         Foreground="#E4E6EB"
+                                         BorderThickness="0"
+                                         Padding="8"
+                                         FontFamily="Consolas"
+                                         FontSize="12"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="select an alert to see its detail and dedup fingerprint"/>
                             </Border>
                         </DockPanel>
                     </Grid>
