@@ -36,4 +36,9 @@
     <ProjectReference Include="..\PerformanceMonitor.Darling.Analysis\PerformanceMonitor.Darling.Analysis.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The tests pin pure viewer logic (e.g. the per-server tab dedupe registry) that stays internal. -->
+    <InternalsVisibleTo Include="Darling.Tests" />
+  </ItemGroup>
 </Project>

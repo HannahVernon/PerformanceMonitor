@@ -18,37 +18,25 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Notifications;
-using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The Darling viewer shell (headless plan M3 + viewer waves 2-4): the server list from the
-/// central store on the left, and five surface tabs on the right — Overview (per-collector
-/// Collection Health plus CPU-utilization and wait-time-by-category trend charts), Queries
-/// (top-50 query-stats groups), Blocking (XE blocked-process reports with the DMV-snapshot
-/// fallback merged in), Recommendations (the latest analysis findings with an advice/remediation
-/// detail pane), and Alerts (config_alert_log history with mute-rule write-back) —
-/// all read straight from Postgres via <see cref="ViewerDataService"/>. Loads are lazy per
-/// tab (Lite's visible-only rule): selecting a server or a tab loads ONLY the active tab,
-/// and the 60-second timer refreshes only the active tab. Every data load is async — the
-/// Npgsql calls are awaited so the UI thread never blocks on a query — with results marshaled
-/// back by the dispatcher's await continuation.
+/// The Darling viewer shell (headless plan M3 + viewer waves 2-4, W0 IA inversion): the server list
+/// from the central store on the left, and — mirroring Lite's navigation shape — ONE top tab strip on
+/// the right holding the fixed aggregate tabs (Recommendations and Alerts, server-scoped via the
+/// sidebar selection) plus dynamically-added, closable per-server tabs. Single-clicking a server
+/// drives the aggregate tabs; double-clicking opens (or focuses) that server's <see cref="ViewerServerTab"/>,
+/// whose inner tabs (Overview charts, Queries, Blocking, Collection Health) hold the per-server surfaces.
+/// All reads go straight to Postgres via <see cref="ViewerDataService"/>. Loads are lazy per visible
+/// tab (Lite's visible-only rule): the 60-second timer refreshes only the visible tab — an aggregate
+/// tab for the selected server, or the visible server tab's active inner tab. Every data load is async.
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
     Justification = "WPF windows are never disposed by the framework; the data service is disposed in OnClosed.")]
 public partial class MainWindow : Window
 {
     private static readonly TimeSpan s_refreshInterval = TimeSpan.FromSeconds(60);
-
-    /// <summary>One window for every windowed surface: waits, queries, and blocking all read 24 hours.</summary>
-    private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
-
-    private const int OverviewTabIndex = 0;
-    private const int QueriesTabIndex = 1;
-    private const int BlockingTabIndex = 2;
-    private const int RecommendationsTabIndex = 3;
-    private const int AlertsTabIndex = 4;
 
     /// <summary>The detail pane's no-selection state (also its initial text in the XAML).</summary>
     private const string FindingDetailPlaceholder = "select a finding to see its story, advice, and stored remediation";
@@ -60,6 +48,12 @@ public partial class MainWindow : Window
     private DispatcherTimer? _refreshTimer;
     private bool _refreshInFlight;
     private bool _refreshRequested;
+
+    /// <summary>
+    /// Open per-server tabs keyed by server id, so a double-click on an already-open server focuses its
+    /// existing tab instead of opening a duplicate (Lite's dedupe-by-id rule).
+    /// </summary>
+    private readonly OpenServerTabRegistry<TabItem> _openServerTabs = new();
 
     public MainWindow()
     {
@@ -91,13 +85,6 @@ public partial class MainWindow : Window
 
         _dataService = new ViewerDataService(settings.ConnectionString);
 
-        /* ThemeManager defaults to Dark, which is exactly this window's hardcoded palette —
-           so the shared chart chrome applies without any theme wiring. */
-        ChartStyle.ApplyThemeToChart(CpuTrendChart);
-        CpuTrendChart.Refresh();
-        ChartStyle.ApplyThemeToChart(WaitCategoryChart);
-        WaitCategoryChart.Refresh();
-
         await LoadServersAsync();
 
         _refreshTimer = new DispatcherTimer { Interval = s_refreshInterval };
@@ -113,15 +100,25 @@ public partial class MainWindow : Window
     }
 
     private async void OnRefreshTimerTick(object? sender, EventArgs e)
-        => await RefreshSelectedServerAsync();
+        => await RefreshVisibleAsync();
 
+    /// <summary>Single-click drives the aggregate tabs (Recommendations/Alerts) for the selected server.</summary>
     private async void ServerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        => await RefreshSelectedServerAsync();
+        => await RefreshVisibleAsync();
+
+    /// <summary>Double-click opens (or focuses) the selected server's per-server tab (Lite's rule).</summary>
+    private void ServerList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ServerList.SelectedItem is DarlingServer server)
+        {
+            OpenServerTab(server);
+        }
+    }
 
     /// <summary>
-    /// Lazy per-tab load: switching tabs loads the newly visible tab. SelectionChanged is a
-    /// bubbling routed event, so selections inside the tab content (the findings grid, the
-    /// server list template) reach here too — only react to the TabControl's own.
+    /// Lazy per-tab load: switching top-level tabs loads the newly visible one. SelectionChanged is a
+    /// bubbling routed event, so selections inside the tab content (a findings grid, an inner server
+    /// tab, the server list template) reach here too — only react to the top TabControl's own.
     /// </summary>
     private async void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -130,7 +127,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await RefreshSelectedServerAsync();
+        await RefreshVisibleAsync();
     }
 
     private void FindingsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -156,11 +153,15 @@ public partial class MainWindow : Window
         {
             var servers = await _dataService.GetServersAsync();
             ServerList.ItemsSource = servers;
-            ServersHintText.Visibility = servers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-            if (servers.Count > 0)
+            var hasServers = servers.Count > 0;
+            ServersHintText.Visibility = hasServers ? Visibility.Collapsed : Visibility.Visible;
+            EmptyStatePanel.Visibility = hasServers ? Visibility.Collapsed : Visibility.Visible;
+            MainTabs.Visibility = hasServers ? Visibility.Visible : Visibility.Collapsed;
+
+            if (hasServers)
             {
-                /* Triggers SelectionChanged, which loads the active tab for the first server. */
+                /* Triggers SelectionChanged, which loads the active aggregate tab for the first server. */
                 ServerList.SelectedIndex = 0;
             }
             else
@@ -175,15 +176,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Loads the ACTIVE tab for the selected server, with the overlap guard. If the user
-    /// switches server or tab while a load is in flight, the triggering event bounces off
-    /// the guard — so after each load, loop when the selection moved on and load again,
-    /// leaving no tab stranded with stale or empty data. A trigger that arrives mid-load
-    /// (the 60-second tick, an explicit Refresh, a mute/unmute reload) sets
-    /// <see cref="_refreshRequested"/> instead of being dropped, so the running loop reloads
-    /// once more when it finishes — a user action is never silently swallowed by the guard.
+    /// Refreshes whichever top-level tab is visible, with the overlap guard: a per-server tab delegates
+    /// to its own inner-tab refresh; the aggregate tabs reload for the sidebar-selected server. If the
+    /// user switches tab or server while a load is in flight, the triggering event bounces off the guard
+    /// and sets <see cref="_refreshRequested"/>, so the running loop reloads once more when it finishes —
+    /// no user action is silently swallowed.
     /// </summary>
-    private async Task RefreshSelectedServerAsync()
+    private async Task RefreshVisibleAsync()
     {
         if (_dataService is null)
         {
@@ -202,23 +201,7 @@ public partial class MainWindow : Window
             do
             {
                 _refreshRequested = false;
-
-                DarlingServer? loadedServer;
-                int loadedTab;
-                do
-                {
-                    loadedServer = ServerList.SelectedItem as DarlingServer;
-                    loadedTab = MainTabs.SelectedIndex;
-
-                    if (loadedServer is null)
-                    {
-                        ClearAllTabs();
-                        break;
-                    }
-
-                    await LoadTabAsync(loadedServer, loadedTab);
-                }
-                while (!ReferenceEquals(ServerList.SelectedItem, loadedServer) || MainTabs.SelectedIndex != loadedTab);
+                await LoadVisibleTabAsync();
             }
             while (_refreshRequested);
         }
@@ -228,31 +211,22 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task LoadTabAsync(DarlingServer server, int tabIndex)
+    private async Task LoadVisibleTabAsync()
     {
         try
         {
-            switch (tabIndex)
+            switch (MainTabs.SelectedItem)
             {
-                case QueriesTabIndex:
-                    await LoadQueriesAsync(server);
+                case TabItem { Content: ViewerServerTab serverTab }:
+                    await serverTab.RefreshActiveInnerTabAsync();
                     break;
-                case BlockingTabIndex:
-                    await LoadBlockingAsync(server);
+                case TabItem tab when ReferenceEquals(tab, RecommendationsTab):
+                    await LoadRecommendationsAsync(ServerList.SelectedItem as DarlingServer);
                     break;
-                case RecommendationsTabIndex:
-                    await LoadRecommendationsAsync(server);
-                    break;
-                case AlertsTabIndex:
-                    await LoadAlertsAsync(server);
-                    break;
-                case OverviewTabIndex:
-                default:
-                    await LoadOverviewAsync(server);
+                case TabItem tab when ReferenceEquals(tab, AlertsTab):
+                    await LoadAlertsAsync(ServerList.SelectedItem as DarlingServer);
                     break;
             }
-
-            StatusText.Text = $"{server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}";
         }
         catch (Exception ex)
         {
@@ -260,49 +234,116 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task LoadOverviewAsync(DarlingServer server)
+    // ── Per-server tabs (open / focus / close) ──────────────────────────────────────
+
+    /// <summary>
+    /// Opens the given server's per-server tab, or focuses it if already open (dedupe by server id).
+    /// The new tab's <see cref="ViewerServerTab"/> loads its active inner tab on first show.
+    /// </summary>
+    private void OpenServerTab(DarlingServer server)
     {
-        var sinceUtc = DateTime.UtcNow - s_dataWindow;
+        if (_dataService is null)
+        {
+            return;
+        }
 
-        /* The three reads run concurrently — NpgsqlDataSource pools a connection for each. */
-        var healthTask = _dataService!.GetCollectionHealthAsync(server.ServerId);
-        var cpuTask = _dataService.GetCpuTrendAsync(server.ServerId, sinceUtc);
-        var waitTask = _dataService.GetWaitCategoryTrendAsync(server.ServerId, sinceUtc);
-        var health = await healthTask;
-        var cpu = await cpuTask;
-        var waits = await waitTask;
+        if (_openServerTabs.TryGet(server.ServerId, out var existing))
+        {
+            MainTabs.SelectedItem = existing;
+            return;
+        }
 
-        HealthGrid.ItemsSource = health;
-        RenderCpuTrend(cpu);
-        RenderWaitCategoryTrend(waits);
+        var serverTab = new ViewerServerTab(_dataService, server);
+        serverTab.StatusChanged += OnServerTabStatusChanged;
+
+        var tabItem = new TabItem
+        {
+            Header = CreateServerTabHeader(server),
+            Content = serverTab
+        };
+
+        _openServerTabs.Add(server.ServerId, tabItem);
+        MainTabs.Items.Add(tabItem);
+        MainTabs.SelectedItem = tabItem;
     }
 
-    private async Task LoadQueriesAsync(DarlingServer server)
+    /// <summary>Removes a per-server tab and unwires it. WPF selects an adjacent tab when the closed one was active.</summary>
+    private void CloseServerTab(int serverId)
     {
-        var sinceUtc = DateTime.UtcNow - s_dataWindow;
-        var rows = await _dataService!.GetTopQueriesAsync(server.ServerId, sinceUtc);
+        if (!_openServerTabs.TryGet(serverId, out var tab))
+        {
+            return;
+        }
 
-        QueriesGrid.ItemsSource = rows;
-        QueriesHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (tab.Content is ViewerServerTab serverTab)
+        {
+            serverTab.StatusChanged -= OnServerTabStatusChanged;
+        }
+
+        MainTabs.Items.Remove(tab);
+        _openServerTabs.Remove(serverId);
     }
 
-    private async Task LoadBlockingAsync(DarlingServer server)
+    /// <summary>
+    /// The per-server tab header: the server name plus a close button. Mirrors Lite's CreateTabHeader
+    /// shape (minus the alert badge, which the viewer doesn't surface on tabs yet); the close affordance
+    /// uses the shared theme's TabCloseButton style.
+    /// </summary>
+    private StackPanel CreateServerTabHeader(DarlingServer server)
     {
-        var endUtc = DateTime.UtcNow;
-        var rows = await _dataService!.GetRecentBlockedProcessReportsAsync(
-            server.ServerId, endUtc - s_dataWindow, endUtc);
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
 
-        BlockingGrid.ItemsSource = rows;
-        BlockingHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        panel.Children.Add(new TextBlock
+        {
+            Text = server.DisplayName,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0)
+        });
+
+        var closeButton = new Button
+        {
+            Cursor = Cursors.Hand,
+            ToolTip = "Close tab"
+        };
+        if (TryFindResource("TabCloseButton") is Style closeStyle)
+        {
+            closeButton.Style = closeStyle;
+        }
+        else
+        {
+            closeButton.Content = "✕";
+        }
+        closeButton.Click += (s, e) => CloseServerTab(server.ServerId);
+        panel.Children.Add(closeButton);
+
+        return panel;
     }
 
-    private async Task LoadRecommendationsAsync(DarlingServer server)
+    private void OnServerTabStatusChanged(string message) => StatusText.Text = message;
+
+    // ── Recommendations tab (aggregate, server-scoped via the sidebar for now) ───────
+
+    private async Task LoadRecommendationsAsync(DarlingServer? server)
     {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        if (server is null)
+        {
+            FindingsGrid.ItemsSource = null;
+            FindingsHintText.Visibility = Visibility.Collapsed;
+            FindingsHeaderText.Text = "Latest Analysis Findings";
+            FindingDetailText.Text = FindingDetailPlaceholder;
+            return;
+        }
+
         /* Remember the selected finding so the 60-second refresh doesn't yank the detail
            pane out from under the reader — reselect the same story if it's still there. */
         var selectedHash = (FindingsGrid.SelectedItem as ViewerFindingRow)?.Finding.StoryPathHash;
 
-        var rows = await _dataService!.GetLatestFindingsAsync(server.ServerId);
+        var rows = await _dataService.GetLatestFindingsAsync(server.ServerId);
 
         FindingsGrid.ItemsSource = rows;
         FindingsHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -321,15 +362,33 @@ public partial class MainWindow : Window
         {
             FindingDetailText.Text = FindingDetailPlaceholder;
         }
+
+        StatusText.Text = $"{server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}";
     }
 
-    private async Task LoadAlertsAsync(DarlingServer server)
+    // ── Alerts tab (aggregate, server-scoped via the sidebar for now) ────────────────
+
+    private async Task LoadAlertsAsync(DarlingServer? server)
     {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        if (server is null)
+        {
+            AlertsGrid.ItemsSource = null;
+            AlertsHintText.Visibility = Visibility.Collapsed;
+            AlertsCountText.Text = "";
+            AlertDetailText.Text = AlertDetailPlaceholder;
+            return;
+        }
+
         /* Preserve the selected alert across the 60-second refresh so the detail pane doesn't jump. */
         var selectedTime = (AlertsGrid.SelectedItem as ViewerAlertRow)?.AlertTime;
 
         var sinceUtc = DateTime.UtcNow.AddHours(-GetSelectedAlertHours());
-        var rows = await _dataService!.GetAlertHistoryAsync(server.ServerId, sinceUtc);
+        var rows = await _dataService.GetAlertHistoryAsync(server.ServerId, sinceUtc);
 
         AlertsGrid.ItemsSource = rows;
         AlertsHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -346,6 +405,8 @@ public partial class MainWindow : Window
         {
             AlertDetailText.Text = AlertDetailPlaceholder;
         }
+
+        StatusText.Text = $"{server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}";
     }
 
     /// <summary>The Alerts time-range combo's hours-back tag (defaults to 24).</summary>
@@ -411,7 +472,7 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "Muting finding…";
             await _dataService.MuteFindingAsync(server.ServerId, row.Finding);
-            await RefreshSelectedServerAsync();
+            await RefreshVisibleAsync();
             StatusText.Text = $"finding muted — {DateTime.Now:HH:mm:ss}";
         }
         catch (Exception ex)
@@ -433,7 +494,7 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "Unmuting finding…";
             await _dataService.UnmuteFindingAsync(muteId);
-            await RefreshSelectedServerAsync();
+            await RefreshVisibleAsync();
             StatusText.Text = $"finding unmuted — {DateTime.Now:HH:mm:ss}";
         }
         catch (Exception ex)
@@ -460,12 +521,12 @@ public partial class MainWindow : Window
     {
         if (IsLoaded)
         {
-            await RefreshSelectedServerAsync();
+            await RefreshVisibleAsync();
         }
     }
 
     private async void AlertsRefresh_Click(object sender, RoutedEventArgs e)
-        => await RefreshSelectedServerAsync();
+        => await RefreshVisibleAsync();
 
     private void ManageMuteRules_Click(object sender, RoutedEventArgs e)
     {
@@ -511,90 +572,6 @@ public partial class MainWindow : Window
         {
             StatusText.Text = $"mute rule save failed: {ex.Message}";
         }
-    }
-
-    private void ClearAllTabs()
-    {
-        HealthGrid.ItemsSource = null;
-        RenderCpuTrend(Array.Empty<CpuTrendPoint>());
-        RenderWaitCategoryTrend(Array.Empty<WaitCategoryTrendPoint>());
-        QueriesGrid.ItemsSource = null;
-        QueriesHintText.Visibility = Visibility.Collapsed;
-        BlockingGrid.ItemsSource = null;
-        BlockingHintText.Visibility = Visibility.Collapsed;
-        FindingsGrid.ItemsSource = null;
-        FindingsHintText.Visibility = Visibility.Collapsed;
-        FindingDetailText.Text = FindingDetailPlaceholder;
-        AlertsGrid.ItemsSource = null;
-        AlertsHintText.Visibility = Visibility.Collapsed;
-        AlertsCountText.Text = "";
-        AlertDetailText.Text = AlertDetailPlaceholder;
-    }
-
-    private void RenderCpuTrend(IReadOnlyList<CpuTrendPoint> points)
-    {
-        CpuTrendChart.Plot.Clear();
-        ChartStyle.ApplyThemeToChart(CpuTrendChart);
-
-        CpuChartHintText.Visibility = points.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        CpuTrendChart.Plot.Legend.IsVisible = points.Count > 0;
-
-        if (points.Count > 0)
-        {
-            var xs = points.Select(p => ViewerDataService.ToLocalTime(p.CollectionTime).ToOADate()).ToArray();
-
-            /* Series names + colors mirror Lite's CPU chart (ServerTab.Charts.cs UpdateCpuChart):
-               "SQL Server" in the SqlCpu blue, "Other" in the OtherCpu red, both via SeriesColor. */
-            var sql = CpuTrendChart.Plot.Add.Scatter(xs, points.Select(p => p.SqlServerCpu).ToArray());
-            sql.LegendText = "SQL Server";
-            sql.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
-            ChartStyle.StyleScatter(sql);
-
-            var other = CpuTrendChart.Plot.Add.Scatter(xs, points.Select(p => p.OtherProcessCpu).ToArray());
-            other.LegendText = "Other";
-            other.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OtherCpu"));
-            ChartStyle.StyleScatter(other);
-
-            CpuTrendChart.Plot.Axes.DateTimeTicksBottom();
-            ChartStyle.ReapplyAxisColors(CpuTrendChart);
-            CpuTrendChart.Plot.YLabel("CPU %");
-            CpuTrendChart.Plot.Axes.AutoScale();
-            ChartStyle.SetChartYLimitsWithLegendPadding(CpuTrendChart);
-        }
-
-        CpuTrendChart.Refresh();
-    }
-
-    private void RenderWaitCategoryTrend(IReadOnlyList<WaitCategoryTrendPoint> points)
-    {
-        WaitCategoryChart.Plot.Clear();
-        ChartStyle.ApplyThemeToChart(WaitCategoryChart);
-
-        var series = ViewerDataService.RollUpWaitCategories(points);
-        WaitChartHintText.Visibility = series.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        WaitCategoryChart.Plot.Legend.IsVisible = series.Count > 0;
-
-        /* Each category is drawn in its fixed WaitColor — the same identity the plan-viewer wait
-           list uses — so a category reads as the same color everywhere in the product. */
-        foreach (var s in series)
-        {
-            var xs = s.Times.Select(t => ViewerDataService.ToLocalTime(t).ToOADate()).ToArray();
-            var scatter = WaitCategoryChart.Plot.Add.Scatter(xs, s.Values);
-            scatter.LegendText = s.Category;
-            scatter.Color = ScottPlot.Color.FromHex(ChartPalette.WaitColor(s.Category));
-            ChartStyle.StyleScatter(scatter);
-        }
-
-        if (series.Count > 0)
-        {
-            WaitCategoryChart.Plot.Axes.DateTimeTicksBottom();
-            ChartStyle.ReapplyAxisColors(WaitCategoryChart);
-            WaitCategoryChart.Plot.YLabel("delta wait time (ms)");
-            WaitCategoryChart.Plot.Axes.AutoScale();
-            ChartStyle.SetChartYLimitsWithLegendPadding(WaitCategoryChart);
-        }
-
-        WaitCategoryChart.Refresh();
     }
 
     private void ShowMessage(string message)

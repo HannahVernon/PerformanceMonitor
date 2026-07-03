@@ -7,14 +7,27 @@
  */
 
 using System.Windows;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The Darling viewer — a Postgres client of the central store. MainWindow owns startup:
+/// The Darling viewer — a Postgres client of the central store. MainWindow owns data startup:
 /// it loads the viewer's sliver of darling.json (<see cref="ViewerSettings"/>) and connects
-/// on first render. Theming and single-instance plumbing come in a later milestone.
+/// on first render. App startup applies the shared Dark theme through <see cref="ThemeManager"/>
+/// so copied Lite XAML resolves its theme keys; the theme is fixed to Dark for v1 (no picker), and
+/// <see cref="ThemeManager.CurrentTheme"/> stays "Dark" so <c>ChartStyle</c> draws dark chrome.
+/// Single-instance plumbing comes in a later milestone.
 /// </summary>
 public partial class App : Application
 {
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        /* Re-apply through ThemeManager (App.xaml already merges the same dictionary) so
+           ThemeManager owns the app-level merged dictionary at runtime, before StartupUri
+           creates MainWindow. Dark is the default; naming it keeps the source of truth explicit. */
+        ThemeManager.Apply("Dark");
+
+        base.OnStartup(e);
+    }
 }
