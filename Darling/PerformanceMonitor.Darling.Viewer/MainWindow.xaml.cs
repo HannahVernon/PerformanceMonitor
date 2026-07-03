@@ -278,6 +278,7 @@ public partial class MainWindow : Window
         if (tab.Content is ViewerServerTab serverTab)
         {
             serverTab.StatusChanged -= OnServerTabStatusChanged;
+            serverTab.DisposeChartHelpers();
         }
 
         MainTabs.Items.Remove(tab);

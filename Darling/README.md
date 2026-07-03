@@ -326,11 +326,12 @@ The service logs through standard .NET hosting: console output when run interact
 
 The layout mirrors the Lite desktop app: a left sidebar lists the servers from the `servers` registry the service maintains, and the top tab strip holds two fixed **aggregate tabs** — Recommendations and Alerts, which follow the sidebar's single-click selection — alongside a closable **per-server tab** for each server you open. **Double-click a server** in the sidebar to open (or focus) its tab, and close it with the × on the tab header; an empty-state panel is shown until the store has at least one server.
 
-Each per-server tab has four inner tabs:
+Each per-server tab has five inner tabs:
 
 | Inner tab | Contents |
 |---|---|
 | **Overview** | A CPU-utilization trend (SQL Server vs other-process CPU %) beside a wait trend grouped **by wait category** — the top categories by delta wait time, each in its fixed wait-category color from the shared taxonomy the plan-viewer wait list uses (a semantic roll-up that replaced the earlier per-individual-wait-type view) — over the last 24 hours |
+| **Wait Stats** | A searchable wait-type picker (poison + usual-suspect + `PAGELATCH_` defaults, checked-to-top, a 30-type selection guide) beside a per-**type** trend chart for the checked types over the last 24 hours, with a Wait Time (ms/sec) ↔ Avg Wait Time (ms/wait) metric toggle — the individual-wait-type companion to the Overview's by-category roll-up |
 | **Queries** | Top 50 queries by total duration over the last 24 hours — database, query text, executions, CPU, duration, reads, last execution |
 | **Blocking** | Blocked processes over the last 24 hours — XE blocked-process reports preferred, the always-on DMV blocking snapshot merged in as fallback, each row badged with its source |
 | **Collection Health** | Latest run per collector, status-colored, with row counts and durations |
