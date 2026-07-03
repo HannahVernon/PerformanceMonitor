@@ -110,9 +110,11 @@ public partial class ViewerServerTab : IDisposable
 
         if (data.Count == 0) { CpuChart.Refresh(); return; }
 
-        /* Deviation from Lite: Lite plots the raw server-LOCAL sample_time directly; the viewer has no
-           per-server offset, so sample_time runs through ToLocalTime (the store's naive-UTC-to-viewer-
-           local convention every Darling chart uses). */
+        /* sample_time is the monitored server's LOCAL wall clock in the store, so GetCpuUtilizationAsync
+           de-skews it to naive UTC in SQL (#1262); it then runs through ToLocalTime like every other
+           Darling chart. (Lite instead shifts the raw server-local sample_time by its per-server
+           ServerTimeHelper.UtcOffsetMinutes; the viewer has no such config and recovers the offset from
+           the collection batch in the read.) */
         var times = data.Select(d => ViewerDataService.ToLocalTime(d.SampleTime).ToOADate()).ToArray();
         var sqlCpu = data.Select(d => (double)d.SqlServerCpu).ToArray();
         var otherCpu = data.Select(d => (double)d.OtherProcessCpu).ToArray();

@@ -20,12 +20,11 @@
  *   - Time axis: Lite shifts by its per-server ServerTimeHelper.UtcOffsetMinutes; the viewer has no
  *     per-server offset, so every lane plots collection_time (naive-UTC) through
  *     ViewerDataService.ToLocalTime (the naive-UTC-to-viewer-local convention every Darling chart uses).
- *     The CPU lane plots the CPU table's server-LOCAL sample_time, also via ToLocalTime (matching the
- *     W1a CPU tab, which spreads the ~60 samples/collection across the minute). CAVEAT: ToLocalTime
- *     treats its input as UTC, so the CPU lane aligns with the other (collection_time) lanes only when
- *     the monitored server's clock is UTC; on a non-UTC server the CPU lane shifts relative to them by
- *     the server's UTC offset. Accepted for v1 — the deviation is carried from W1a's standalone CPU tab
- *     (where alignment was moot); flagged in the PR for a conscious call.
+ *     The CPU lane's sample_time is the monitored server's LOCAL wall clock, so GetCpuUtilizationAsync
+ *     de-skews it to naive UTC in SQL before it too goes through ToLocalTime (#1262: per-batch offset =
+ *     round(MAX(sample_time) over the batch - collection_time) to 15 min, recovered from the batch
+ *     because the viewer has no per-server timezone config). The CPU lane therefore aligns with the
+ *     collection_time lanes on any server timezone; a UTC server is unchanged.
  * Deliberately dropped for v1 (noted in the PR): Lite's comparison-range ghost-line overlay (the whole
  * comparisonRange block, AddGhostLine, ComparisonLabel). The "Show Active Queries at This Time"
  * drill-down event is KEPT but left unwired — the viewer has no Active Queries surface yet.
