@@ -61,4 +61,15 @@ public sealed class SqlServerFindingStoreMappingTests
         Assert.Equal("inc-1", finding.IncidentId);
         Assert.Equal(3, finding.FactCount);
     }
+
+    [Fact]
+    public void GetMutedHashesSql_HonorsGlobalNull_AndLegacyZeroServerId()
+    {
+        /* An all-servers mute persists server_id = NULL (the canonical global marker); legacy rows
+           written by the pre-fix MCP "all servers" tool path used server_id = 0. The reader must honor
+           both, plus the per-server id, so an all-servers mute actually mutes everywhere. */
+        Assert.Contains("server_id = @serverId", SqlServerFindingStore.GetMutedHashesSql, StringComparison.Ordinal);
+        Assert.Contains("server_id IS NULL", SqlServerFindingStore.GetMutedHashesSql, StringComparison.Ordinal);
+        Assert.Contains("server_id = 0", SqlServerFindingStore.GetMutedHashesSql, StringComparison.Ordinal);
+    }
 }

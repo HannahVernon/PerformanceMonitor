@@ -35,10 +35,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// Scope note (the cross-app "server_id" question previous agents flagged): <c>config_mute_rules</c>
 /// has NO server_id column — a rule scopes to a server by its <c>server_name</c> text
 /// (<see cref="MuteRule.ServerName"/>, nullable = all servers), exactly as Lite's
-/// <c>DuckDbMuteRuleStore</c>/<c>MuteRule.Matches</c> do. The <c>server_id = 0</c> "all servers"
-/// quirk lives in the ANALYSIS-FINDING mute path (<c>analysis_muted</c> — see
-/// <see cref="PerformanceMonitor.Darling.Analysis.PgFindingStore.GetMutedStoriesAsync"/>), not here.
-/// This surface mirrors Lite exactly and changes neither, pending a cross-app decision.
+/// <c>DuckDbMuteRuleStore</c>/<c>MuteRule.Matches</c> do. The separate ANALYSIS-FINDING mute path
+/// (<c>analysis_muted</c>) instead keys on an integer <c>server_id</c> where NULL = all servers; its
+/// MCP "all servers" tool path now persists NULL and honors legacy <c>server_id = 0</c> rows as global
+/// (see <see cref="PerformanceMonitor.Darling.Analysis.PgFindingStore.GetMutedStoriesAsync"/>). This
+/// mute-RULE surface has no server_id column at all and mirrors Lite exactly.
 /// </para>
 /// </summary>
 public sealed partial class ViewerDataService

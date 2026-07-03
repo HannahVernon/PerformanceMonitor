@@ -138,13 +138,15 @@ public sealed class ViewerWave3SqlTests
     [Fact]
     public void MutedStoriesSql_CarriesMuteId_AndSpansPerServerPlusGlobal()
     {
-        /* The finding-mute surface needs mute_id (GetMutedHashesSql omits it) and the same
-           per-server + global (NULL) span the engine's mute filter uses. */
+        /* The finding-mute surface needs mute_id (GetMutedHashesSql omits it) and the same per-server
+           + global span the engine's mute filter uses — NULL (the canonical all-servers marker) plus
+           legacy server_id = 0 rows written before the NULL fix. */
         Assert.Contains("mute_id", PgFindingStore.GetMutedStoriesSql, StringComparison.Ordinal);
         Assert.Contains("story_path_hash", PgFindingStore.GetMutedStoriesSql, StringComparison.Ordinal);
         Assert.Contains("story_path", PgFindingStore.GetMutedStoriesSql, StringComparison.Ordinal);
         Assert.Contains("FROM analysis_muted", PgFindingStore.GetMutedStoriesSql, StringComparison.Ordinal);
         Assert.Contains("server_id = $1 OR server_id IS NULL", PgFindingStore.GetMutedStoriesSql, StringComparison.Ordinal);
+        Assert.Contains("OR server_id = 0", PgFindingStore.GetMutedStoriesSql, StringComparison.Ordinal);
     }
 }
 

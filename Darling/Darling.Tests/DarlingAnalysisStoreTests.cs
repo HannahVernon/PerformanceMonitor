@@ -43,6 +43,15 @@ public sealed class DarlingAnalysisStoreTests
     private const string TestServerName = "analysis-store-e2e";
     private const string TestStoryPathHash = "an1-e2e-hash";
 
+    /* Global/all-servers mute coverage: distinctive hashes + ids for the NULL-persistence and legacy-0
+       honoring test, kept off the per-server round-trip's TestServerId. */
+    private const string GlobalNullHash = "an1-global-null-hash";
+    private const string LegacyZeroHash = "an1-legacy-zero-hash";
+    private const string OtherServerHash = "an1-other-server-hash";
+    private const string GlobalSurvivorHash = "an1-global-survivor-hash";
+    private const int GlobalReaderServerId = -929292;
+    private const int GlobalOtherServerId = -939393;
+
     /// <summary>
     /// Every v_&lt;table&gt; view the V4 migration must create: the fourteen the ported fact
     /// collectors read plus the three Lite's drill-down/storage collectors also read
@@ -182,8 +191,10 @@ public sealed class DarlingAnalysisStoreTests
         Assert.Contains("remediation_action_json", PgFindingStore.GetLatestFindingsSql);
         Assert.Contains("SELECT MAX(analysis_time) FROM analysis_findings WHERE server_id = $1", PgFindingStore.GetLatestFindingsSql);
 
-        /* Mute reads span per-server AND global (NULL server_id) rows, like both twins. */
+        /* Mute reads span per-server AND global rows — NULL (the canonical all-servers marker) plus
+           legacy server_id = 0 rows written by the pre-fix tool path — like both twins. */
         Assert.Contains("server_id = $1 OR server_id IS NULL", PgFindingStore.GetMutedHashesSql);
+        Assert.Contains("OR server_id = 0", PgFindingStore.GetMutedHashesSql);
     }
 
     /* ---------------- ungated: plan fetcher pins ---------------- */
@@ -383,6 +394,106 @@ public sealed class DarlingAnalysisStoreTests
     {
         using var cleanup = new NpgsqlCommand(
             $"DELETE FROM analysis_findings WHERE server_id = {TestServerId}; DELETE FROM analysis_muted WHERE server_id = {TestServerId};", connection);
+        await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    /* ---------------- gated: all-servers (NULL) + legacy-0 mute honoring ---------------- */
+
+    [Fact]
+    public async Task MuteReads_HonorGlobalNull_AndLegacyZero_ButNotOtherServers()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live all-servers mute test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteGlobalMuteRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        var store = new PgFindingStore(postgres);
+
+        try
+        {
+            /* The MCP "mute across all servers" path hands the store serverId 0; the write must persist
+               NULL (the canonical global marker), not the legacy 0 sentinel. */
+            await store.MuteStoryAsync(0, GlobalNullHash, "GLOBAL_NULL", "all-servers e2e mute");
+            using (var readServerId = new NpgsqlCommand(
+                "SELECT server_id FROM analysis_muted WHERE story_path_hash = $1", connection))
+            {
+                readServerId.Parameters.AddWithValue(GlobalNullHash);
+                var stored = await readServerId.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+                Assert.True(stored is null or DBNull, "all-servers mute must persist server_id NULL, not 0");
+            }
+
+            /* A legacy pre-fix all-servers row literally carries server_id = 0. */
+            await InsertMutedRowAsync(connection, serverId: 0, LegacyZeroHash, "LEGACY_ZERO");
+
+            /* A per-server mute for a DIFFERENT server must NOT leak into the reader's server. */
+            await InsertMutedRowAsync(connection, GlobalOtherServerId, OtherServerHash, "OTHER_SERVER");
+
+            var context = new AnalysisContext
+            {
+                ServerId = GlobalReaderServerId,
+                ServerName = "global-mute-reader",
+                TimeRangeStart = DateTime.UtcNow.AddHours(-4),
+                TimeRangeEnd = DateTime.UtcNow,
+            };
+            var stories = new List<AnalysisStory>
+            {
+                GlobalStory(GlobalNullHash, "GLOBAL_NULL"),     /* muted globally via NULL -> dropped */
+                GlobalStory(LegacyZeroHash, "LEGACY_ZERO"),     /* muted globally via legacy 0 -> dropped */
+                GlobalStory(OtherServerHash, "OTHER_SERVER"),   /* muted only for another server -> survives here */
+                GlobalStory(GlobalSurvivorHash, "SURVIVOR"),    /* never muted -> survives */
+            };
+
+            var survivors = await store.FilterMutedFindingsAsync(stories, context);
+            var survivorHashes = survivors.Select(s => s.StoryPathHash).ToHashSet();
+
+            Assert.DoesNotContain(GlobalNullHash, survivorHashes);    /* NULL global honored */
+            Assert.DoesNotContain(LegacyZeroHash, survivorHashes);    /* legacy 0 honored */
+            Assert.Contains(OtherServerHash, survivorHashes);         /* other server's mute did not leak */
+            Assert.Contains(GlobalSurvivorHash, survivorHashes);
+            Assert.Equal(2, survivors.Count);
+        }
+        finally
+        {
+            await DeleteGlobalMuteRowsAsync(connection);
+        }
+    }
+
+    private static AnalysisStory GlobalStory(string hash, string path) => new()
+    {
+        Severity = 1.5,
+        Confidence = 0.9,
+        Category = "cpu",
+        StoryPath = path,
+        StoryPathHash = hash,
+        StoryText = "global-mute reader story",
+        RootFactKey = path,
+        FactCount = 1
+    };
+
+    private static async Task InsertMutedRowAsync(
+        NpgsqlConnection connection, int serverId, string hash, string path)
+    {
+        using var command = new NpgsqlCommand(@"
+INSERT INTO analysis_muted (mute_id, server_id, story_path_hash, story_path, muted_date, reason)
+VALUES ($1, $2, $3, $4, $5, $6)", connection);
+        command.Parameters.AddWithValue(CollectionIdGenerator.Next());
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue(hash);
+        command.Parameters.AddWithValue(path);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue("global-mute test row");
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static async Task DeleteGlobalMuteRowsAsync(NpgsqlConnection connection)
+    {
+        using var cleanup = new NpgsqlCommand(
+            $"DELETE FROM analysis_muted WHERE story_path_hash IN ('{GlobalNullHash}', '{LegacyZeroHash}', '{OtherServerHash}', '{GlobalSurvivorHash}');", connection);
         await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 }
