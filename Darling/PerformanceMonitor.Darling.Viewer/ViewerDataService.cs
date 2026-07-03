@@ -39,19 +39,14 @@ public sealed record CollectorHealthRow(
     public DateTime CollectionTimeLocal => ViewerDataService.ToLocalTime(CollectionTime);
 }
 
-/// <summary>One wait_stats sample: a naive-UTC collection time, a wait type, and its delta.</summary>
-public sealed record WaitTrendPoint(DateTime CollectionTime, string WaitType, long DeltaWaitTimeMs);
-
-/// <summary>One chart series: a wait type with its aligned time/value arrays.</summary>
-public sealed record WaitSeries(string WaitType, DateTime[] Times, double[] Values);
-
 /// <summary>
-/// The viewer's reads of the Darling Postgres store — servers, per-collector collection health,
-/// and the top-N wait-stats trend, plus the wave-2 surfaces in the partials
-/// (<c>ViewerDataService.QueryStats.cs</c>, <c>.Blocking.cs</c>, <c>.Findings.cs</c>).
-/// Connections come from a pooled <see cref="NpgsqlDataSource"/>,
-/// so the window can run its health and wait queries concurrently. The SQL lives in public
-/// constants so tests can pin the load-bearing clauses without a live Postgres.
+/// The viewer's reads of the Darling Postgres store — servers and per-collector collection health,
+/// plus the surfaces in the partials (the Overview's CPU + wait-category trend charts in
+/// <c>ViewerDataService.Trends.cs</c>, and the wave-2/3 reads in <c>.QueryStats.cs</c>,
+/// <c>.Blocking.cs</c>, <c>.Findings.cs</c>, <c>.AlertHistory.cs</c>, and <c>.MuteRules.cs</c>).
+/// Connections come from a pooled <see cref="NpgsqlDataSource"/>, so the window can run its
+/// per-tab queries concurrently. The SQL lives in public constants so tests can pin the
+/// load-bearing clauses without a live Postgres.
 /// All timestamps in the store are naive UTC (`timestamp without time zone`), so DateTime
 /// parameters are sent with DateTimeKind.Unspecified — since Npgsql 6.0 a Kind=Utc DateTime
 /// maps strictly to timestamptz and throws against naive columns.
@@ -67,21 +62,6 @@ public sealed partial class ViewerDataService : IAsyncDisposable
         FROM collection_log
         WHERE server_id = $1
         ORDER BY collector_name, collection_time DESC
-        """;
-
-    public const string WaitTrendSql = """
-        SELECT collection_time, wait_type, delta_wait_time_ms
-        FROM wait_stats
-        WHERE server_id = $1
-        AND   collection_time >= $2
-        AND   wait_type IN (
-            SELECT wait_type FROM wait_stats
-            WHERE server_id = $1 AND collection_time >= $2
-            GROUP BY wait_type
-            ORDER BY SUM(delta_wait_time_ms) DESC
-            LIMIT 8
-        )
-        ORDER BY wait_type, collection_time
         """;
 
     private readonly NpgsqlDataSource _dataSource;
@@ -132,71 +112,6 @@ public sealed partial class ViewerDataService : IAsyncDisposable
         }
 
         return rows;
-    }
-
-    /// <summary>
-    /// The wait-stats series for one server since <paramref name="sinceUtc"/>, limited to the
-    /// top 8 wait types by summed delta wait time over the window. Rows come back ordered by
-    /// wait_type, collection_time — ready for <see cref="PivotWaitSeries"/>.
-    /// </summary>
-    public async Task<List<WaitTrendPoint>> GetWaitTrendAsync(int serverId, DateTime sinceUtc, CancellationToken cancellationToken = default)
-    {
-        var points = new List<WaitTrendPoint>();
-
-        await using var command = _dataSource.CreateCommand(WaitTrendSql);
-        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
-        command.Parameters.Add(new NpgsqlParameter<DateTime>
-        {
-            TypedValue = DateTime.SpecifyKind(sinceUtc, DateTimeKind.Unspecified),
-        });
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            points.Add(new WaitTrendPoint(
-                reader.GetDateTime(0),
-                reader.GetString(1),
-                reader.IsDBNull(2) ? 0 : reader.GetInt64(2)));
-        }
-
-        return points;
-    }
-
-    /// <summary>
-    /// Pivots the flat wait rows into one series per wait type, preserving the order wait types
-    /// first appear in (the SQL orders by wait_type, so alphabetical). Each series' time and
-    /// value arrays stay index-aligned for the chart.
-    /// </summary>
-    public static IReadOnlyList<WaitSeries> PivotWaitSeries(IReadOnlyList<WaitTrendPoint> points)
-    {
-        if (points is null)
-        {
-            throw new ArgumentNullException(nameof(points));
-        }
-
-        var order = new List<string>();
-        var byType = new Dictionary<string, (List<DateTime> Times, List<double> Values)>(StringComparer.Ordinal);
-
-        foreach (var point in points)
-        {
-            if (!byType.TryGetValue(point.WaitType, out var series))
-            {
-                series = (new List<DateTime>(), new List<double>());
-                byType[point.WaitType] = series;
-                order.Add(point.WaitType);
-            }
-
-            series.Times.Add(point.CollectionTime);
-            series.Values.Add(point.DeltaWaitTimeMs);
-        }
-
-        var result = new List<WaitSeries>(order.Count);
-        foreach (var waitType in order)
-        {
-            var (times, values) = byType[waitType];
-            result.Add(new WaitSeries(waitType, times.ToArray(), values.ToArray()));
-        }
-
-        return result;
     }
 
     /// <summary>

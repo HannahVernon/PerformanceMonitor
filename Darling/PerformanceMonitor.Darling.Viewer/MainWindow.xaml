@@ -353,15 +353,36 @@
                             </DataGrid>
                         </DockPanel>
 
-                        <DockPanel Grid.Row="1">
-                            <TextBlock DockPanel.Dock="Top" Text="Wait Stats — top 8 by delta wait time (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                            <Grid>
-                                <scottplot:WpfPlot x:Name="WaitTrendChart"/>
-                                <TextBlock x:Name="ChartHintText"
-                                           Style="{StaticResource EmptyHint}"
-                                           Text="no wait samples in the window yet"/>
-                            </Grid>
-                        </DockPanel>
+                        <!-- Bottom half: the two Overview trend charts, side by side, so Collection
+                             Health keeps the top half. Left = CPU utilization, right = wait time by
+                             category (the shared wait taxonomy the plan-viewer wait list uses). -->
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <DockPanel Grid.Column="0">
+                                <TextBlock DockPanel.Dock="Top" Text="CPU Utilization — SQL Server vs other processes (last 24 hours)" Style="{StaticResource SectionHeader}"/>
+                                <Grid>
+                                    <scottplot:WpfPlot x:Name="CpuTrendChart"/>
+                                    <TextBlock x:Name="CpuChartHintText"
+                                               Style="{StaticResource EmptyHint}"
+                                               Text="no CPU samples in the window yet"/>
+                                </Grid>
+                            </DockPanel>
+
+                            <DockPanel Grid.Column="2">
+                                <TextBlock DockPanel.Dock="Top" Text="Wait Time by Category — top 8 categories by delta wait time (last 24 hours)" Style="{StaticResource SectionHeader}"/>
+                                <Grid>
+                                    <scottplot:WpfPlot x:Name="WaitCategoryChart"/>
+                                    <TextBlock x:Name="WaitChartHintText"
+                                               Style="{StaticResource EmptyHint}"
+                                               Text="no wait samples in the window yet"/>
+                                </Grid>
+                            </DockPanel>
+                        </Grid>
                     </Grid>
                 </TabItem>
 
