@@ -84,6 +84,10 @@ public partial class ViewerServerTab : UserControl
         InitializeFileIoCharts();
         InitializeBlockingCharts();
 
+        /* Queries tab (W1f-1): the three grids' bar-cell maxima hook + slicer RangeChanged wiring
+           (copied from Lite's ServerTab). After InitializeComponent so the named grids/slicers exist. */
+        InitializeQueriesTab();
+
         /* Collection Health's Duration Trends chart (copied from Lite): up-front theme + hover. */
         InitializeCollectionHealthChart();
     }
@@ -211,14 +215,10 @@ public partial class ViewerServerTab : UserControl
         await OverviewLanes.RefreshAsync((int)s_dataWindow.TotalHours, null, null);
     }
 
-    private async Task LoadQueriesAsync()
-    {
-        var sinceUtc = DateTime.UtcNow - s_dataWindow;
-        var rows = await _dataService.GetTopQueriesAsync(_server.ServerId, sinceUtc);
-
-        QueriesGrid.ItemsSource = rows;
-        QueriesHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
+    /* LoadHealthAsync now lives in ViewerServerTab.CollectionHealth.cs (W1i moved it there with the
+       Collection Health sub-tabs), and LoadQueriesAsync now lives in ViewerServerTab.Queries.cs — it
+       dispatches to the Queries tab's active sub-tab (Top Queries / Top Procedures / Query Store),
+       loading that grid + its slicer + (when Compare is active) its comparison grid. */
 
     /* LoadBlockingAsync now lives in ViewerServerTab.Blocking.cs — it dispatches to the Blocking tab's
        active sub-tab (Trends / Current Waits / Blocked Process Reports) instead of loading the grid

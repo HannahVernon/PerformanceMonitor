@@ -20,54 +20,12 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins the viewer wave-2 SQL against the Darling store contract (no live Postgres needed):
-/// the Queries top-50 read, and the two blocking reads whose XE-preferred/DMV-fallback merge
-/// runs through the SHARED <see cref="BlockedProcessReportMerge"/> on the shared row shape.
+/// the two blocking reads whose XE-preferred/DMV-fallback merge runs through the SHARED
+/// <see cref="BlockedProcessReportMerge"/> on the shared row shape. The Queries read the absorbed
+/// top-50 grid used is now the full W1f-1 <c>TopQueriesSql</c> — its pins live in ViewerQueriesTests.
 /// </summary>
 public sealed class ViewerWave2SqlTests
 {
-    [Fact]
-    public void TopQueriesSql_GroupsQueryStatsByDatabaseAndHash_OverTheWindow()
-    {
-        Assert.Contains("FROM query_stats", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("WHERE server_id = $1", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("collection_time >= $2", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("GROUP BY database_name, query_hash", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        /* Delta-artifact rows (plan cached, never executed) are excluded like Lite's read. */
-        Assert.Contains("HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void TopQueriesSql_RanksByTotalElapsedDelta_LikeLitesDefaultSort()
-    {
-        /* Lite's grid default-sorts TotalElapsedMs descending and its SQL ranks by summed
-           delta_elapsed_time — the viewer mirrors that, over-fetching 5 like Lite's
-           LIMIT top + 5 so the WAITFOR trim can't shrink the page below 50. */
-        Assert.Contains("ORDER BY SUM(delta_elapsed_time) DESC", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("LIMIT 55", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("ORDER BY r.total_elapsed_us DESC", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("LIMIT 50", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("NOT LIKE 'WAITFOR%'", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void TopQueriesSql_FetchesTheLatestNonNullQueryText_ViaLateralJoin()
-    {
-        Assert.Contains("LEFT JOIN LATERAL", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("query_text IS NOT NULL", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("ORDER BY collection_time DESC", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("LIMIT 1", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void TopQueriesSql_CastsEveryAggregateBackToBigint()
-    {
-        /* Postgres SUM(bigint) returns numeric; without the CAST the typed GetInt64 readers throw. */
-        Assert.Contains("CAST(SUM(delta_execution_count) AS bigint)", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("CAST(SUM(delta_worker_time) AS bigint)", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("CAST(SUM(delta_elapsed_time) AS bigint)", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-        Assert.Contains("CAST(SUM(delta_logical_reads) AS bigint)", ViewerDataService.TopQueriesSql, StringComparison.Ordinal);
-    }
-
     [Theory]
     [InlineData(ViewerDataService.BlockedProcessReportsSql, "FROM v_blocked_process_reports")]
     [InlineData(ViewerDataService.DmvBlockingSnapshotsSql, "FROM v_dmv_blocking_snapshots")]
