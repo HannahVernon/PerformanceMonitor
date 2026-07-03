@@ -14,12 +14,13 @@ using System.Windows.Media;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// Colors the Collection Health status cell text — SUCCESS green, PERMISSIONS orange, ERROR
-/// red — and (wave 2) the Recommendations severity bands: CRITICAL shares ERROR's red,
-/// WARNING shares PERMISSIONS' orange, INFO is the palette's light blue. Anything else
-/// (SKIPPED, unknown) gets the window's normal foreground. The hexes are the product's
-/// Material-300 cycling colors (ChartPalette) so both grids read like the charts. Brushes are
-/// frozen and shared across rows.
+/// Colors the Recommendations severity bands: CRITICAL red, WARNING orange, INFO the palette's
+/// light blue. It also maps the collector status vocabulary — SUCCESS green, PERMISSIONS orange
+/// (shared with WARNING), ERROR red (shared with CRITICAL) — a holdover from the shell's original
+/// Collection Health grid, which W1i changed to Lite's plain-text status (no color), leaving the
+/// Recommendations grid the sole consumer. Anything else (SKIPPED, unknown) gets the window's
+/// normal foreground. The hexes are the product's Material-300 cycling colors (ChartPalette) so
+/// the grid reads like the charts. Brushes are frozen and shared across rows.
 /// </summary>
 public sealed class StatusToBrushConverter : IValueConverter
 {

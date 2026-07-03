@@ -32,15 +32,9 @@ public sealed class ViewerDataServiceTests
         Assert.Contains("server_id, server_name, display_name, is_enabled, sql_major_version", ViewerDataService.ServersSql, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void CollectionHealthSql_TakesTheLatestRunPerCollector()
-    {
-        Assert.Contains("DISTINCT ON (collector_name)", ViewerDataService.CollectionHealthSql, StringComparison.Ordinal);
-        Assert.Contains("FROM collection_log", ViewerDataService.CollectionHealthSql, StringComparison.Ordinal);
-        Assert.Contains("WHERE server_id = $1", ViewerDataService.CollectionHealthSql, StringComparison.Ordinal);
-        /* DISTINCT ON keeps the FIRST row per collector, so the time sort must be descending. */
-        Assert.Contains("ORDER BY collector_name, collection_time DESC", ViewerDataService.CollectionHealthSql, StringComparison.Ordinal);
-    }
+    /* The Collection Health SQL is no longer the shell's DISTINCT-ON latest-run placeholder; W1i
+       replaced it with Lite's 7-day aggregate, pinned in ViewerDailyHealthTests along with the Daily
+       Summary reads. */
 
     [Theory]
     [InlineData(13, "SQL Server 2016")]
@@ -74,14 +68,9 @@ public sealed class ViewerDataServiceTests
         Assert.Equal("SQL Server 2022", server.VersionLabel);
     }
 
-    [Fact]
-    public void CollectorHealthRow_CollectionTimeLocal_RoundTripsToTheStoredUtcValue()
-    {
-        var storedUtc = new DateTime(2026, 7, 1, 3, 30, 0, DateTimeKind.Unspecified);
-        var row = new CollectorHealthRow("wait_stats", storedUtc, "SUCCESS", 42, 17, null);
-
-        Assert.Equal(storedUtc.Ticks, row.CollectionTimeLocal.ToUniversalTime().Ticks);
-    }
+    /* The old placeholder CollectorHealthRow record (a single latest-run snapshot with
+       CollectionTimeLocal) was replaced by Lite's rich 7-day aggregate class in W1i; its HealthStatus
+       banding + formatting are pinned in ViewerDailyHealthTests. */
 }
 
 /// <summary>
