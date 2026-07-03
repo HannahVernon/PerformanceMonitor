@@ -20,9 +20,9 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins the CPU-tab and tempdb-tab reads (W1a viewer copy-parity) against the Darling store contract,
-/// no live Postgres. The CPU tab plots RAW per-sample rows (windowed on the naive-UTC collection_time,
-/// ordered by the server-local sample_time) — deliberately NOT the Overview's average-per-collection
-/// <see cref="ViewerDataService.CpuTrendSql"/>. The tempdb reads mirror Lite's view-based queries
+/// no live Postgres. The CPU tab (and, since W1d, the Overview's CPU lane) plots RAW per-sample rows
+/// (windowed on the naive-UTC collection_time, ordered by the server-local sample_time) — deliberately
+/// not an average-per-collection roll-up. The tempdb reads mirror Lite's view-based queries
 /// (v_tempdb_stats / v_file_io_stats): the numeric(18,2) MB columns are CAST to double precision for
 /// the typed reader, total_sessions_using_tempdb stays bigint (GetInt64), and the file-I/O read filters
 /// to tempdb and averages stall/op per file.
@@ -44,7 +44,7 @@ public sealed class ViewerCpuTempDbSqlTests
     [Fact]
     public void CpuUtilizationSql_IsRawNotAveraged_NoAvgOrGroupBy()
     {
-        /* The CPU tab plots every ring-buffer sample; unlike the Overview's CpuTrendSql it must NOT
+        /* The CPU tab (and the Overview's CPU lane) plots every ring-buffer sample; it must NOT
            average per collection. */
         Assert.DoesNotContain("AVG(", ViewerDataService.CpuUtilizationSql, StringComparison.Ordinal);
         Assert.DoesNotContain("GROUP BY", ViewerDataService.CpuUtilizationSql, StringComparison.Ordinal);

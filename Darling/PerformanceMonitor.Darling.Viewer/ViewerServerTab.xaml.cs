@@ -68,12 +68,12 @@ public partial class ViewerServerTab : UserControl
            wiring) — after InitializeComponent so the named grids exist. */
         InitializeFilterManagers();
 
-        /* ThemeManager is fixed to Dark, matching this control's hardcoded palette — so the shared
-           chart chrome applies without any per-control theme plumbing. */
-        ChartStyle.ApplyThemeToChart(CpuTrendChart);
-        CpuTrendChart.Refresh();
-        ChartStyle.ApplyThemeToChart(WaitCategoryChart);
-        WaitCategoryChart.Refresh();
+        /* Overview lanes (copied from Lite): init the data service + server up front so the lanes theme
+           their chrome and wire the correlated crosshair before the first load. The lanes' own
+           "Show Active Queries at This Time" drill-down event is deliberately NOT wired — the viewer has
+           no Active Queries surface yet (deferred). ThemeManager is fixed to Dark, so the shared chart
+           chrome applies without any per-control theme plumbing. */
+        OverviewLanes.Initialize(_dataService, _server.ServerId);
 
         /* CPU + tempdb inner-tab charts (copied from Lite): theme up front + wire hover. */
         InitializeCpuTempDbCharts();
@@ -197,16 +197,10 @@ public partial class ViewerServerTab : UserControl
 
     private async Task LoadOverviewChartsAsync()
     {
-        var sinceUtc = DateTime.UtcNow - s_dataWindow;
-
-        /* Both reads run concurrently — NpgsqlDataSource pools a connection for each. */
-        var cpuTask = _dataService.GetCpuTrendAsync(_server.ServerId, sinceUtc);
-        var waitTask = _dataService.GetWaitCategoryTrendAsync(_server.ServerId, sinceUtc);
-        var cpu = await cpuTask;
-        var waits = await waitTask;
-
-        RenderCpuTrend(cpu);
-        RenderWaitCategoryTrend(waits);
+        /* The lanes control reads its own six feeds + four baselines concurrently over the fixed
+           24-hour window (s_dataWindow); the viewer has no custom-range picker, so fromDate/toDate
+           are null. Replaces wave-4's CPU-trend + wait-category interim charts. */
+        await OverviewLanes.RefreshAsync((int)s_dataWindow.TotalHours, null, null);
     }
 
     private async Task LoadHealthAsync()
@@ -228,69 +222,7 @@ public partial class ViewerServerTab : UserControl
        active sub-tab (Trends / Current Waits / Blocked Process Reports) instead of loading the grid
        directly. */
 
-    private void RenderCpuTrend(List<CpuTrendPoint> points)
-    {
-        CpuTrendChart.Plot.Clear();
-        ChartStyle.ApplyThemeToChart(CpuTrendChart);
-
-        CpuChartHintText.Visibility = points.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        CpuTrendChart.Plot.Legend.IsVisible = points.Count > 0;
-
-        if (points.Count > 0)
-        {
-            var xs = points.Select(p => ViewerDataService.ToLocalTime(p.CollectionTime).ToOADate()).ToArray();
-
-            /* Series names + colors mirror Lite's CPU chart (ServerTab.Charts.cs UpdateCpuChart):
-               "SQL Server" in the SqlCpu blue, "Other" in the OtherCpu red, both via SeriesColor. */
-            var sql = CpuTrendChart.Plot.Add.Scatter(xs, points.Select(p => p.SqlServerCpu).ToArray());
-            sql.LegendText = "SQL Server";
-            sql.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
-            ChartStyle.StyleScatter(sql);
-
-            var other = CpuTrendChart.Plot.Add.Scatter(xs, points.Select(p => p.OtherProcessCpu).ToArray());
-            other.LegendText = "Other";
-            other.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("OtherCpu"));
-            ChartStyle.StyleScatter(other);
-
-            CpuTrendChart.Plot.Axes.DateTimeTicksBottom();
-            ChartStyle.ReapplyAxisColors(CpuTrendChart);
-            CpuTrendChart.Plot.YLabel("CPU %");
-            CpuTrendChart.Plot.Axes.AutoScale();
-            ChartStyle.SetChartYLimitsWithLegendPadding(CpuTrendChart);
-        }
-
-        CpuTrendChart.Refresh();
-    }
-
-    private void RenderWaitCategoryTrend(List<WaitCategoryTrendPoint> points)
-    {
-        WaitCategoryChart.Plot.Clear();
-        ChartStyle.ApplyThemeToChart(WaitCategoryChart);
-
-        var series = ViewerDataService.RollUpWaitCategories(points);
-        WaitChartHintText.Visibility = series.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        WaitCategoryChart.Plot.Legend.IsVisible = series.Count > 0;
-
-        /* Each category is drawn in its fixed WaitColor — the same identity the plan-viewer wait
-           list uses — so a category reads as the same color everywhere in the product. */
-        foreach (var s in series)
-        {
-            var xs = s.Times.Select(t => ViewerDataService.ToLocalTime(t).ToOADate()).ToArray();
-            var scatter = WaitCategoryChart.Plot.Add.Scatter(xs, s.Values);
-            scatter.LegendText = s.Category;
-            scatter.Color = ScottPlot.Color.FromHex(ChartPalette.WaitColor(s.Category));
-            ChartStyle.StyleScatter(scatter);
-        }
-
-        if (series.Count > 0)
-        {
-            WaitCategoryChart.Plot.Axes.DateTimeTicksBottom();
-            ChartStyle.ReapplyAxisColors(WaitCategoryChart);
-            WaitCategoryChart.Plot.YLabel("delta wait time (ms)");
-            WaitCategoryChart.Plot.Axes.AutoScale();
-            ChartStyle.SetChartYLimitsWithLegendPadding(WaitCategoryChart);
-        }
-
-        WaitCategoryChart.Refresh();
-    }
+    /* The Overview's rendering now lives entirely in the copied CorrelatedTimelineLanesControl
+       (OverviewLanes); wave-4's RenderCpuTrend / RenderWaitCategoryTrend and their reads
+       (ViewerDataService.Trends.cs) were superseded by the lanes and removed. */
 }
