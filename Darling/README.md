@@ -321,7 +321,7 @@ Five tabs, with a server list on the left (from the `servers` registry the servi
 
 | Tab | Contents |
 |---|---|
-| **Overview** | Collection health (latest run per collector, status-colored), a CPU-utilization trend (SQL Server vs other-process CPU %), and a wait-time-by-category trend (top categories by delta wait time, in the shared wait-category colors) — the last 24 hours |
+| **Overview** | Collection health (latest run per collector, status-colored), a CPU-utilization trend (SQL Server vs other-process CPU %), and a wait trend grouped **by wait category** — the top categories by delta wait time, each in its fixed wait-category color from the shared taxonomy the plan-viewer wait list uses (a semantic roll-up that replaces the earlier per-individual-wait-type view) — over the last 24 hours |
 | **Queries** | Top 50 queries by total duration over the last 24 hours — database, query text, executions, CPU, duration, reads, last execution |
 | **Blocking** | Blocked processes over the last 24 hours — XE blocked-process reports preferred, the always-on DMV blocking snapshot merged in as fallback, each row badged with its source |
 | **Recommendations** | The latest analysis run's findings, severity-banded, with a detail pane showing the finding's story, advice, and stored remediation script (read-only — the viewer never applies anything). Right-click a finding to **mute** or **unmute** its pattern; muted findings are flagged and drop out on the engine's next analysis run |
