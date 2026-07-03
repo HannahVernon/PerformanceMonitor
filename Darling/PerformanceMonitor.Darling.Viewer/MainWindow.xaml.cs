@@ -87,16 +87,59 @@ public partial class MainWindow : Window
 
         await LoadServersAsync();
 
+        /* --open-server <name>: deep-link straight into a server's per-server tab on startup —
+           the same tab a double-click opens. Case-insensitive on the registered server name;
+           an unknown name is ignored (the window still opens normally). */
+        var openServer = OpenServerNameFromArgs();
+        if (openServer is not null && ServerList.ItemsSource is IEnumerable<DarlingServer> loaded)
+        {
+            var match = loaded.FirstOrDefault(s =>
+                string.Equals(s.ServerName, openServer, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                OpenServerTab(match);
+            }
+        }
+
         _refreshTimer = new DispatcherTimer { Interval = s_refreshInterval };
         _refreshTimer.Tick += OnRefreshTimerTick;
         _refreshTimer.Start();
     }
 
-    /// <summary>First command-line argument = explicit config path, mirroring the service.</summary>
+    /// <summary>
+    /// First non-option command-line argument = explicit config path, mirroring the service
+    /// (option pairs like --open-server &lt;name&gt; are skipped).
+    /// </summary>
     private static string? ExplicitConfigPathFromArgs()
     {
         var args = Environment.GetCommandLineArgs();
-        return args.Length > 1 ? args[1] : null;
+        for (var i = 1; i < args.Length; i++)
+        {
+            if (string.Equals(args[i], "--open-server", StringComparison.OrdinalIgnoreCase))
+            {
+                i++; /* Skip the option's value too. */
+                continue;
+            }
+
+            return args[i];
+        }
+
+        return null;
+    }
+
+    /// <summary>The value following --open-server, or null when absent/dangling.</summary>
+    private static string? OpenServerNameFromArgs()
+    {
+        var args = Environment.GetCommandLineArgs();
+        for (var i = 1; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], "--open-server", StringComparison.OrdinalIgnoreCase))
+            {
+                return args[i + 1];
+            }
+        }
+
+        return null;
     }
 
     private async void OnRefreshTimerTick(object? sender, EventArgs e)
@@ -278,7 +321,7 @@ public partial class MainWindow : Window
         if (tab.Content is ViewerServerTab serverTab)
         {
             serverTab.StatusChanged -= OnServerTabStatusChanged;
-            /* Tears down the CPU/tempdb chart hover helpers' chart event handlers. */
+            /* One dispose path: tears down every chart hover helper the tab's partials own. */
             serverTab.Dispose();
         }
 
