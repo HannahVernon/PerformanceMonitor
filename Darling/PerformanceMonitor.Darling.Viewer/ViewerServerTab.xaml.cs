@@ -33,9 +33,10 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       CPU, File I/O, tempdb, Blocking, Configuration, Collection Health) — ported tabs slot into
-       Lite's positions as they arrive (File I/O sits BEFORE tempdb, matching Lite's own order),
-       so the constants renumber when a wave lands between existing tabs. */
+       CPU, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Collection Health) —
+       ported tabs slot into Lite's positions as they arrive (File I/O sits BEFORE tempdb, and
+       Perfmon/Running Jobs sit between Blocking and Configuration, matching Lite's own order), so
+       the constants renumber when a wave lands between existing tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
     private const int QueriesInnerTabIndex = 2;
@@ -43,8 +44,10 @@ public partial class ViewerServerTab : UserControl
     private const int FileIoInnerTabIndex = 4;
     private const int TempDbInnerTabIndex = 5;
     private const int BlockingInnerTabIndex = 6;
-    private const int ConfigurationInnerTabIndex = 7;
-    private const int HealthInnerTabIndex = 8;
+    private const int PerfmonInnerTabIndex = 7;
+    private const int RunningJobsInnerTabIndex = 8;
+    private const int ConfigurationInnerTabIndex = 9;
+    private const int HealthInnerTabIndex = 10;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -156,6 +159,12 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case BlockingInnerTabIndex:
                     await LoadBlockingAsync();
+                    break;
+                case PerfmonInnerTabIndex:
+                    await LoadPerfmonAsync();
+                    break;
+                case RunningJobsInnerTabIndex:
+                    await LoadRunningJobsAsync();
                     break;
                 case ConfigurationInnerTabIndex:
                     await LoadConfigurationAsync();

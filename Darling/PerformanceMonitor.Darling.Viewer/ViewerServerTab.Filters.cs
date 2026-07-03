@@ -8,9 +8,10 @@
 
 // Column-filter wiring copied from Lite/Controls/ServerTab.Filters.cs for the copy-parity program
 // (copy-don't-promote: the Darling viewer owns its own copy; Lite/Dashboard are untouched). Byte-
-// identical popup plumbing; the manager set is scoped to the four Configuration sub-grids — the only
-// filterable viewer grids ported so far — and grows as later waves add their own grids. Also holds
-// LoadConfigurationAsync, the Configuration tab's parallel latest-snapshot load that feeds the managers.
+// identical popup plumbing; the manager set covers the four Configuration sub-grids plus the Running
+// Jobs grid (W1h) — the filterable viewer grids ported so far — and grows as later waves add their
+// own grids. Also holds LoadConfigurationAsync, the Configuration tab's parallel latest-snapshot load
+// that feeds the config managers (the Running Jobs load lives in ViewerServerTab.RunningJobs.cs).
 
 using System;
 using System.Collections.Generic;
@@ -32,6 +33,7 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<DatabaseConfigRow>? _databaseConfigFilterMgr;
     private DataGridFilterManager<DatabaseScopedConfigRow>? _dbScopedConfigFilterMgr;
     private DataGridFilterManager<TraceFlagRow>? _traceFlagsFilterMgr;
+    private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
 
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
@@ -45,11 +47,13 @@ public partial class ViewerServerTab : UserControl
         _databaseConfigFilterMgr = new DataGridFilterManager<DatabaseConfigRow>(DatabaseConfigGrid);
         _dbScopedConfigFilterMgr = new DataGridFilterManager<DatabaseScopedConfigRow>(DatabaseScopedConfigGrid);
         _traceFlagsFilterMgr = new DataGridFilterManager<TraceFlagRow>(TraceFlagsGrid);
+        _runningJobsFilterMgr = new DataGridFilterManager<RunningJobRow>(RunningJobsGrid);
 
         _filterManagers[ServerConfigGrid] = _serverConfigFilterMgr;
         _filterManagers[DatabaseConfigGrid] = _databaseConfigFilterMgr;
         _filterManagers[DatabaseScopedConfigGrid] = _dbScopedConfigFilterMgr;
         _filterManagers[TraceFlagsGrid] = _traceFlagsFilterMgr;
+        _filterManagers[RunningJobsGrid] = _runningJobsFilterMgr;
     }
 
     /// <summary>

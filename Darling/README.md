@@ -326,7 +326,7 @@ The service logs through standard .NET hosting: console output when run interact
 
 The layout mirrors the Lite desktop app: a left sidebar lists the servers from the `servers` registry the service maintains, and the top tab strip holds two fixed **aggregate tabs** — Recommendations and Alerts, which follow the sidebar's single-click selection — alongside a closable **per-server tab** for each server you open. **Double-click a server** in the sidebar to open (or focus) its tab, and close it with the × on the tab header; an empty-state panel is shown until the store has at least one server.
 
-Each per-server tab has nine inner tabs:
+Each per-server tab has eleven inner tabs:
 
 | Inner tab | Contents |
 |---|---|
@@ -337,6 +337,8 @@ Each per-server tab has nine inner tabs:
 | **File I/O** | Two sub-tabs over the last 24 hours — **Latency** (per-file read and write latency, with a dashed queued-I/O overlay) and **Throughput** (per-file read and write MB/s) — the top 10 files by activity |
 | **tempdb** | Three stacked charts over the last 24 hours — space usage (user / internal objects / version store), total allocated size, and per-file I/O latency |
 | **Blocking** | Three sub-tabs over the last 24 hours — **Trends** (lock-wait rate, blocking incidents, deadlocks), **Current Waits** (waiting-task duration by wait type, blocked sessions by database), and **Blocked Process Reports** (XE reports preferred, the always-on DMV blocking snapshot merged in as fallback, each row badged with its source) |
+| **Perfmon** | A searchable counter picker with the shared counter packs (General Throughput, Memory Pressure, CPU / Compilation, I/O Pressure, TempDB Pressure, Lock / Blocking) beside a per-counter delta trend for the checked counters (up to 12) over the last 24 hours |
+| **Running Jobs** | Latest snapshot of currently-running SQL Agent jobs — start time, current vs average vs p95 duration, % of average, and a highlighted row when a job is running past its p95 (a store-derived banner appears when the service's login lacks msdb access) |
 | **Configuration** | Four column-filterable snapshot grids of the server's latest capture — server configuration (`sys.configurations`), database configuration (28 columns of `sys.databases`), database-scoped configuration, and trace flags |
 | **Collection Health** | Latest run per collector, status-colored, with row counts and durations |
 
