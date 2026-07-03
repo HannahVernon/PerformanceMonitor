@@ -224,9 +224,10 @@
             </Grid>
         </TabItem>
 
-        <!-- tempdb Tab — copied from Lite's ServerTab.xaml tempdb tab: three stacked charts —
-             space usage (user/internal/version-store), total allocated size, and per-file I/O
-             with the tempdb tab's per-file I/O chart. -->
+        <!-- File I/O Tab — copied from Lite's ServerTab.xaml File I/O tab: a nested sub-TabControl
+             with "File I/O Latency" (stacked read + write latency charts, queued-I/O dashed overlay)
+             and "File I/O Throughput" (stacked read + write MB/s charts). Placed BEFORE tempdb,
+             matching Lite's own tab order. -->
         <TabItem Header="File I/O">
             <Grid Margin="8">
                 <TabControl x:Name="FileIoSubTabs"
@@ -266,6 +267,9 @@
             </Grid>
         </TabItem>
              latency. -->
+        <!-- tempdb Tab — copied from Lite's ServerTab.xaml tempdb tab: three stacked charts —
+             space usage (user/internal/version-store), total allocated size, and per-file I/O
+             latency. -->
         <TabItem Header="tempdb">
             <Grid Margin="8">
                 <Grid.RowDefinitions>
@@ -287,10 +291,6 @@
                 </Border>
             </Grid>
         </TabItem>
-
-        <!-- File I/O Tab — copied from Lite's ServerTab.xaml File I/O tab: a nested sub-TabControl with
-             "File I/O Latency" (stacked read + write latency charts, with the queued-I/O dashed overlay)
-             and "File I/O Throughput" (stacked read + write MB/s charts). Placed after tempdb so it sits
 
         <!-- Blocking Tab — upgraded to Lite's sub-tab structure (ServerTab.xaml:1435-1469): "Trends"
              (lock-wait rate, blocking incidents, deadlocks) and "Current Waits" (waiting-task duration
