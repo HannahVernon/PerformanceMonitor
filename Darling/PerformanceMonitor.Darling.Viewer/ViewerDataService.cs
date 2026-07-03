@@ -41,9 +41,11 @@ public sealed record CollectorHealthRow(
 
 /// <summary>
 /// The viewer's reads of the Darling Postgres store — servers and per-collector collection health,
-/// plus the surfaces in the partials (the Overview's CPU + wait-category trend charts in
-/// <c>ViewerDataService.Trends.cs</c>, and the wave-2/3 reads in <c>.QueryStats.cs</c>,
-/// <c>.Blocking.cs</c>, <c>.Findings.cs</c>, <c>.AlertHistory.cs</c>, and <c>.MuteRules.cs</c>).
+/// plus the surfaces in the partials (the Overview lanes' total-wait + memory trends and per-lane
+/// baselines in <c>ViewerDataService.OverviewLanes.cs</c>, the per-tab reads in <c>.Cpu.cs</c>,
+/// <c>.Waits.cs</c>, <c>.BlockingTrends.cs</c>, <c>.FileIo.cs</c>, <c>.TempDb.cs</c>, and
+/// <c>.Config.cs</c>, and the wave-2/3 reads in <c>.QueryStats.cs</c>, <c>.Blocking.cs</c>,
+/// <c>.Findings.cs</c>, <c>.AlertHistory.cs</c>, and <c>.MuteRules.cs</c>).
 /// Connections come from a pooled <see cref="NpgsqlDataSource"/>, so the window can run its
 /// per-tab queries concurrently. The SQL lives in public constants so tests can pin the
 /// load-bearing clauses without a live Postgres.

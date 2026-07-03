@@ -318,7 +318,7 @@ On plain PostgreSQL the purge is DELETE-based. With TimescaleDB it switches to `
 
 ### Logs
 
-The service logs through standard .NET hosting: console output when run interactively; when installed as a Windows service, lifecycle and log events go to the **Windows Application event log** (standard `AddWindowsService` behavior). Collection outcomes are also queryable in the store itself — `collection_log` records every collector run per server with status and timings, and the viewer's Overview tab renders exactly that.
+The service logs through standard .NET hosting: console output when run interactively; when installed as a Windows service, lifecycle and log events go to the **Windows Application event log** (standard `AddWindowsService` behavior). Collection outcomes are also queryable in the store itself — `collection_log` records every collector run per server with status and timings, and the viewer's Collection Health tab renders exactly that.
 
 ### The Viewer
 
@@ -330,10 +330,10 @@ Each per-server tab has nine inner tabs:
 
 | Inner tab | Contents |
 |---|---|
-| **Overview** | A CPU-utilization trend (SQL Server vs other-process CPU %) beside a wait trend grouped **by wait category** — the top categories by delta wait time, each in its fixed wait-category color from the shared taxonomy the plan-viewer wait list uses (a semantic roll-up that replaced the earlier per-individual-wait-type view) — over the last 24 hours |
-| **Wait Stats** | A searchable wait-type picker (poison + usual-suspect + `PAGELATCH_` defaults, checked-to-top, a 30-type selection guide) beside a per-**type** trend chart for the checked types over the last 24 hours, with a Wait Time (ms/sec) ↔ Avg Wait Time (ms/wait) metric toggle — the individual-wait-type companion to the Overview's by-category roll-up |
+| **Overview** | Five correlated, X-axis-synced timeline lanes over the last 24 hours — CPU % (SQL Server vs SQL+other Total), total wait ms/sec, blocking + deadlocking, buffer pool MB, and file-I/O latency — each with a ±2σ baseline band and anomaly markers, all sharing one crosshair so a spike in one lane lines up against the others |
+| **Wait Stats** | A searchable wait-type picker (poison + usual-suspect + `PAGELATCH_` defaults, checked-to-top, a 30-type selection guide) beside a per-**type** trend chart for the checked types over the last 24 hours, with a Wait Time (ms/sec) ↔ Avg Wait Time (ms/wait) metric toggle — the per-type companion to the Overview's single total-wait lane |
 | **Queries** | Top 50 queries by total duration over the last 24 hours — database, query text, executions, CPU, duration, reads, last execution |
-| **CPU** | Raw per-sample CPU utilization (SQL Server vs other processes) over the last 24 hours — every ring-buffer sample, not the Overview's per-collection average |
+| **CPU** | Raw per-sample CPU utilization (SQL Server vs other processes) over the last 24 hours — every ring-buffer sample, full-bleed as two series; the Overview's CPU lane plots the same raw samples compactly (SQL vs SQL+other Total) with a baseline |
 | **File I/O** | Two sub-tabs over the last 24 hours — **Latency** (per-file read and write latency, with a dashed queued-I/O overlay) and **Throughput** (per-file read and write MB/s) — the top 10 files by activity |
 | **tempdb** | Three stacked charts over the last 24 hours — space usage (user / internal objects / version store), total allocated size, and per-file I/O latency |
 | **Blocking** | Three sub-tabs over the last 24 hours — **Trends** (lock-wait rate, blocking incidents, deadlocks), **Current Waits** (waiting-task duration by wait type, blocked sessions by database), and **Blocked Process Reports** (XE reports preferred, the always-on DMV blocking snapshot merged in as fallback, each row badged with its source) |

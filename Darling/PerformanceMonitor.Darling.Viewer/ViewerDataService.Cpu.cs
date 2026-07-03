@@ -15,25 +15,25 @@ using Npgsql;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// One RAW CPU ring-buffer sample for the CPU tab's scatter chart: a sample time plus the SQL Server
-/// and other-process CPU percentages. Distinct from the Overview's <see cref="CpuTrendPoint"/>, which
-/// averages per collection — the CPU tab plots every sample (up to ~60 per collection), mirroring
-/// Lite's CPU tab (<c>ServerTab.Charts.cs</c> <c>UpdateCpuChart</c> over
-/// <c>LocalDataService.GetCpuUtilizationAsync</c>). Both CPU columns are <c>integer</c> in the store,
-/// read as int and cast to double at plot time, byte-for-byte with Lite's chart body.
+/// One RAW CPU ring-buffer sample: a sample time plus the SQL Server and other-process CPU percentages.
+/// This raw-per-sample read (up to ~60 samples per collection) feeds BOTH the CPU tab's scatter chart
+/// (SQL Server vs other processes) and — since W1d — the Overview's CPU lane (SQL vs SQL+other Total),
+/// mirroring Lite's CPU tab (<c>ServerTab.Charts.cs</c> <c>UpdateCpuChart</c>) and Lite's Overview lanes,
+/// both over <c>LocalDataService.GetCpuUtilizationAsync</c>. Both CPU columns are <c>integer</c> in the
+/// store, read as int and cast to double at plot time, byte-for-byte with Lite's chart body.
 /// </summary>
 public sealed record CpuUtilizationSample(DateTime SampleTime, int SqlServerCpu, int OtherProcessCpu);
 
 public sealed partial class ViewerDataService
 {
     /// <summary>
-    /// The CPU tab's raw per-sample read: every ring-buffer sample since <paramref name="sinceUtc"/>,
-    /// NOT the Overview's average-per-collection roll-up (<see cref="CpuTrendSql"/>). Deliberate choices
-    /// carried from the Overview read: the window filters on <c>collection_time</c> (the naive-UTC
-    /// collection prefix — the reliable clock every Darling read windows on), while <c>sample_time</c>
-    /// (server-LOCAL wall clock from SYSDATETIME on the monitored server) is selected only for the axis;
-    /// a NULL <c>other_process_cpu_utilization</c> (SQL on Linux, #1048) reads as 0. Reads the base
-    /// <c>cpu_utilization_stats</c> table like the Overview CPU read.
+    /// The raw per-sample CPU read: every ring-buffer sample since <paramref name="sinceUtc"/> (not an
+    /// average-per-collection roll-up), feeding both the CPU tab's scatter chart and — since W1d — the
+    /// Overview's CPU lane. Deliberate choices: the window filters on <c>collection_time</c> (the
+    /// naive-UTC collection prefix — the reliable clock every Darling read windows on), while
+    /// <c>sample_time</c> (server-LOCAL wall clock from SYSDATETIME on the monitored server) is selected
+    /// only for the axis; a NULL <c>other_process_cpu_utilization</c> (SQL on Linux, #1048) reads as 0.
+    /// Reads the base <c>cpu_utilization_stats</c> table.
     /// $1 server_id, $2 window start (naive UTC).
     /// </summary>
     public const string CpuUtilizationSql = """

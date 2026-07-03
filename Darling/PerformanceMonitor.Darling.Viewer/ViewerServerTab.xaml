@@ -99,35 +99,10 @@
                 SelectionChanged="InnerTabs_SelectionChanged">
 
         <TabItem Header="Overview">
-            <!-- The two Overview trend charts, side by side. Left = CPU utilization, right = wait
-                 time by category (the shared wait taxonomy the plan-viewer wait list uses). -->
-            <Grid Margin="0,8,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="12"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <DockPanel Grid.Column="0">
-                    <TextBlock DockPanel.Dock="Top" Text="CPU Utilization — SQL Server vs other processes (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                    <Grid>
-                        <scottplot:WpfPlot x:Name="CpuTrendChart"/>
-                        <TextBlock x:Name="CpuChartHintText"
-                                   Style="{StaticResource EmptyHint}"
-                                   Text="no CPU samples in the window yet"/>
-                    </Grid>
-                </DockPanel>
-
-                <DockPanel Grid.Column="2">
-                    <TextBlock DockPanel.Dock="Top" Text="Wait Time by Category — top 8 categories by delta wait time (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                    <Grid>
-                        <scottplot:WpfPlot x:Name="WaitCategoryChart"/>
-                        <TextBlock x:Name="WaitChartHintText"
-                                   Style="{StaticResource EmptyHint}"
-                                   Text="no wait samples in the window yet"/>
-                    </Grid>
-                </DockPanel>
-            </Grid>
+            <!-- Correlated timeline lanes (copied from Lite's Overview): five stacked, X-axis-synced
+                 lanes — CPU %, total wait ms/sec, blocking + deadlocking, buffer pool MB, and file-I/O
+                 latency — with baseline bands + anomaly markers and a shared correlated crosshair. -->
+            <local:CorrelatedTimelineLanesControl x:Name="OverviewLanes" Margin="0,8,0,0"/>
         </TabItem>
 
         <!-- Wait Stats Tab — copied from Lite's ServerTab.xaml (the 220px wait-type picker + metric
