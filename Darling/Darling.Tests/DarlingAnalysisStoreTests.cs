@@ -28,7 +28,7 @@ namespace Darling.Tests;
 /// PgFindingStore SQL is PG-dialect ($N positional parameters, no bare now(), no N''
 /// literals); and PgPlanFetcher implements the shared seam with the Dashboard's query,
 /// degrading to null on a resolver miss without touching a server. Gated on DARLING_TEST_PG:
-/// migrate → 4 schema versions, then the full store round-trip — filter (absolution dropped)
+/// migrate → 5 schema versions, then the full store round-trip — filter (absolution dropped)
 /// → insert with a BUILT RemediationAction → read back with every field intact including the
 /// deserialized action → mute excludes → unmute restores → cleanup purges aged rows —
 /// plus a v_wait_stats SELECT as the passthrough proof.
@@ -241,7 +241,7 @@ public sealed class DarlingAnalysisStoreTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(4L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(5L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

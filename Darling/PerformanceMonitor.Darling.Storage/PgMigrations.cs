@@ -47,6 +47,7 @@ public static class PgMigrations
         new Migration(2, "server-registry-and-collection-log", V2Sql),
         new Migration(3, "alerting-stores", V3Sql),
         new Migration(4, "analysis-tables", V4Sql),
+        new Migration(5, "viewer-passthrough-views", V5Sql),
     };
 
     /// <summary>
@@ -217,6 +218,17 @@ CREATE OR REPLACE VIEW v_database_size_stats AS SELECT * FROM database_size_stat
 CREATE OR REPLACE VIEW v_tempdb_stats AS SELECT * FROM tempdb_stats;
 CREATE OR REPLACE VIEW v_query_snapshots AS SELECT * FROM query_snapshots;
 CREATE OR REPLACE VIEW v_database_config AS SELECT * FROM database_config;";
+
+    /* V5 — the five passthrough views V4 left out, completing the v_* twin of Lite's DuckDB
+       view layer so every ported viewer query stays byte-identical to Lite's (the copy-parity
+       program's tail tabs read these: Running Jobs, Configuration ×3, Daily Summary /
+       Collection Health). Tables all exist since V1/V2; views only. */
+    private const string V5Sql = @"
+CREATE OR REPLACE VIEW v_running_jobs AS SELECT * FROM running_jobs;
+CREATE OR REPLACE VIEW v_server_config AS SELECT * FROM server_config;
+CREATE OR REPLACE VIEW v_database_scoped_config AS SELECT * FROM database_scoped_config;
+CREATE OR REPLACE VIEW v_trace_flags AS SELECT * FROM trace_flags;
+CREATE OR REPLACE VIEW v_collection_log AS SELECT * FROM collection_log;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (
