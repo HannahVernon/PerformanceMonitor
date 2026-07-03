@@ -45,9 +45,36 @@ public sealed class ViewerCpuTempDbSqlTests
     public void CpuUtilizationSql_IsRawNotAveraged_NoAvgOrGroupBy()
     {
         /* The CPU tab (and the Overview's CPU lane) plots every ring-buffer sample; it must NOT
-           average per collection. */
+           average per collection. The de-skew uses a window MAX (one value per row, no roll-up) and a
+           PARTITION BY, never AVG or GROUP BY. */
         Assert.DoesNotContain("AVG(", ViewerDataService.CpuUtilizationSql, StringComparison.Ordinal);
         Assert.DoesNotContain("GROUP BY", ViewerDataService.CpuUtilizationSql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CpuUtilizationSql_DeSkewsSampleTime_PerBatchOffsetRoundedTo15Minutes()
+    {
+        /* #1262: sample_time is the monitored server's LOCAL wall clock, not naive UTC. The read
+           de-skews it to naive UTC by subtracting the per-batch UTC offset
+           = round(MAX(sample_time) over the batch - collection_time) to the nearest 15 minutes, so the
+           naive-UTC-assuming ToLocalTime aligns the CPU series with every collection_time-based lane. */
+        var sql = ViewerDataService.CpuUtilizationSql;
+
+        /* Window MAX over the collection batch — collection_time is the batch key (in the Darling PG
+           store collection_id is a plain non-unique bigint, NOT a batch id), so the partition is
+           (server_id, collection_time). One value per row: no roll-up of the raw samples. */
+        Assert.Contains("MAX(sample_time) OVER (PARTITION BY server_id, collection_time)", sql, StringComparison.Ordinal);
+
+        /* Offset = anchor - collection_time in epoch seconds, rounded to the nearest 900s (15 min),
+           then subtracted as an interval. */
+        Assert.Contains("EXTRACT(EPOCH FROM (", sql, StringComparison.Ordinal);
+        Assert.Contains("- collection_time", sql, StringComparison.Ordinal);
+        Assert.Contains("/ 900.0", sql, StringComparison.Ordinal);
+        Assert.Contains("ROUND(", sql, StringComparison.Ordinal);
+        Assert.Contains("INTERVAL '15 minutes'", sql, StringComparison.Ordinal);
+
+        /* The de-skewed value is still projected as sample_time (both consumers read column 0). */
+        Assert.Contains("AS sample_time", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -155,9 +182,11 @@ public sealed class ViewerCpuTempDbSqlTests
 }
 
 /// <summary>
-/// Gated (DARLING_TEST_PG) live round-trips for the three new W1a reads: raw CPU samples (order +
-/// NULL-other-as-0), the tempdb usage read (MB-as-double and — the load-bearing check — the bigint
-/// total_sessions_using_tempdb read via GetInt64, which GetInt32 would throw on), and the tempdb
+/// Gated (DARLING_TEST_PG) live round-trips for the W1a reads plus the #1262 CPU de-skew: raw CPU
+/// samples (order + NULL-other-as-0); the CPU sample_time de-skew (a server-local batch shifted back to
+/// naive UTC by the per-batch offset, and a UTC batch left untouched, both landing on collection_time);
+/// the tempdb usage read (MB-as-double and — the load-bearing check — the bigint
+/// total_sessions_using_tempdb read via GetInt64, which GetInt32 would throw on); and the tempdb
 /// file-I/O read (tempdb-only filtering + per-file average-latency computation). Shares the serialized
 /// "live-postgres" collection so the row churn can't race another class; uses negative sentinel
 /// server_ids and cleans up in finally.
@@ -167,6 +196,9 @@ public sealed class ViewerCpuTempDbLivePostgresTests
 {
     private const int CpuServerId = -949494;
     private const string CpuServerName = "viewer-cpu-tab-e2e";
+
+    private const int SkewServerId = -979797;
+    private const string SkewServerName = "viewer-cpu-skew-e2e";
 
     private const int TempDbServerId = -959595;
     private const string TempDbServerName = "viewer-tempdb-tab-e2e";
@@ -196,10 +228,12 @@ public sealed class ViewerCpuTempDbLivePostgresTests
             var s3 = collUtc.AddMinutes(2);
 
             /* Three raw samples in one collection; the middle one has NULL other-process CPU (SQL on
-               Linux). Inserted out of sample_time order to prove the read's ORDER BY sample_time. */
-            await InsertCpuAsync(connection, collUtc, s3, sqlCpu: 30, otherCpu: 15);
-            await InsertCpuAsync(connection, collUtc, s1, sqlCpu: 10, otherCpu: 5);
-            await InsertCpuAsync(connection, collUtc, s2, sqlCpu: 20, otherCpu: null);
+               Linux). Inserted out of sample_time order to prove the read's ORDER BY sample_time. This
+               batch is a UTC server (sample_time == UTC), so the #1262 de-skew is a no-op here (the
+               newest sample is +2min from collection_time, which rounds to a 0 offset). */
+            await InsertCpuAsync(connection, CpuServerId, CpuServerName, collUtc, s3, sqlCpu: 30, otherCpu: 15);
+            await InsertCpuAsync(connection, CpuServerId, CpuServerName, collUtc, s1, sqlCpu: 10, otherCpu: 5);
+            await InsertCpuAsync(connection, CpuServerId, CpuServerName, collUtc, s2, sqlCpu: 20, otherCpu: null);
 
             var samples = await viewer.GetCpuUtilizationAsync(CpuServerId, collUtc.AddMinutes(-1));
 
@@ -213,6 +247,81 @@ public sealed class ViewerCpuTempDbLivePostgresTests
         finally
         {
             await DeleteRowsAsync(connection, "cpu_utilization_stats", CpuServerId);
+        }
+    }
+
+    [Fact]
+    public async Task Cpu_DeSkewsServerLocalSampleTimeToUtc_AlignsWithCollectionTime_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live CPU de-skew test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "cpu_utilization_stats", SkewServerId);
+
+        await using var viewer = new ViewerDataService(connectionString!);
+
+        try
+        {
+            /* #1262 round-trip. cpu_utilization_stats stores sample_time as the monitored server's LOCAL
+               wall clock while collection_time is naive UTC. GetCpuUtilizationAsync must de-skew each
+               sample back to true naive UTC by the per-batch offset (round(MAX(sample_time) over the
+               batch - collection_time) to 15 min), so the two batches below — one on a server 4h behind
+               UTC, one on a UTC server — both land back on their collection_time axis.
+
+               Batch A: server at UTC-4 (US Eastern DST). The stored local sample_time runs 4h behind the
+               true UTC sample time; the newest sample is 30s before the collection instant (the anchor
+               the de-skew keys on). MAX(local) - collA = -4h -30s, which rounds to a -4h offset. */
+            var collA = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Unspecified);
+            var offsetA = TimeSpan.FromHours(-4);
+            var trueA_old = collA.AddMinutes(-5);   // intended true naive-UTC sample time
+            var trueA_new = collA.AddSeconds(-30);  // intended true naive-UTC sample time (newest = anchor)
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collA, trueA_old + offsetA, sqlCpu: 11, otherCpu: 3);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collA, trueA_new + offsetA, sqlCpu: 12, otherCpu: 4);
+
+            /* Batch B: a UTC server (offset 0). The stored local sample_time already equals true UTC, so
+               the de-skew must be a no-op — MAX(local) - collB = -30s rounds to a 0 offset. */
+            var collB = new DateTime(2026, 6, 1, 13, 0, 0, DateTimeKind.Unspecified);
+            var trueB_old = collB.AddMinutes(-5);
+            var trueB_new = collB.AddSeconds(-30);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collB, trueB_old, sqlCpu: 21, otherCpu: 5);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collB, trueB_new, sqlCpu: 22, otherCpu: 6);
+
+            var samples = await viewer.GetCpuUtilizationAsync(SkewServerId, collA.AddMinutes(-10));
+
+            Assert.Equal(4, samples.Count);
+
+            /* Every sample_time comes back as the intended true naive UTC — the -4h batch shifted +4h,
+               the UTC batch untouched — ordered by that de-skewed time. Paired with its (unique) CPU
+               value so the assertion pins which row de-skewed to which instant. */
+            Assert.Equal(
+                new[]
+                {
+                    (trueA_old.Ticks, 11),
+                    (trueA_new.Ticks, 12),
+                    (trueB_old.Ticks, 21),
+                    (trueB_new.Ticks, 22),
+                },
+                samples.Select(s => (s.SampleTime.Ticks, s.SqlServerCpu)));
+
+            /* The load-bearing outcome: each batch's newest de-skewed sample now sits within the 15-min
+               rounding tolerance of its own collection_time, on both timezones — i.e. the CPU series is
+               back on the collection_time axis every other lane plots on. */
+            Assert.True((samples[1].SampleTime - collA).Duration() <= TimeSpan.FromMinutes(15),
+                "The UTC-4 batch's newest sample should align with its collection_time after de-skew.");
+            Assert.True((samples[3].SampleTime - collB).Duration() <= TimeSpan.FromMinutes(15),
+                "The UTC batch's newest sample should align with its collection_time (unchanged).");
+
+            /* The -4h batch was genuinely shifted (stored local != returned UTC); the UTC batch was not. */
+            Assert.NotEqual((trueA_new + offsetA).Ticks, samples[1].SampleTime.Ticks);
+            Assert.Equal(trueB_new.Ticks, samples[3].SampleTime.Ticks);
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "cpu_utilization_stats", SkewServerId);
         }
     }
 
@@ -319,18 +428,22 @@ public sealed class ViewerCpuTempDbLivePostgresTests
     }
 
     private static async Task InsertCpuAsync(
-        NpgsqlConnection connection, DateTime collectionTimeUtc, DateTime sampleTimeUtc, int sqlCpu, int? otherCpu)
+        NpgsqlConnection connection, int serverId, string serverName,
+        DateTime collectionTimeUtc, DateTime sampleTimeLocal, int sqlCpu, int? otherCpu)
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO cpu_utilization_stats
     (collection_id, collection_time, server_id, server_name, sample_time,
      sqlserver_cpu_utilization, other_process_cpu_utilization)
 VALUES ($1, $2, $3, $4, $5, $6, $7)", connection);
+        /* collection_id is a plain non-unique bigint in the Darling PG store (PgSchemaGenerator drops
+           DuckDB's PK), so every row of a batch can share it — collection_time is the real batch key. */
         command.Parameters.AddWithValue(1L);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
-        command.Parameters.AddWithValue(CpuServerId);
-        command.Parameters.AddWithValue(CpuServerName);
-        command.Parameters.AddWithValue(DateTime.SpecifyKind(sampleTimeUtc, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue(serverName);
+        /* sample_time is the monitored server's LOCAL wall clock as the collector stores it. */
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(sampleTimeLocal, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(sqlCpu);
         command.Parameters.Add(new NpgsqlParameter { Value = (object?)otherCpu ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Integer });
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);

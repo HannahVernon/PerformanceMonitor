@@ -21,6 +21,9 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// mirroring Lite's CPU tab (<c>ServerTab.Charts.cs</c> <c>UpdateCpuChart</c>) and Lite's Overview lanes,
 /// both over <c>LocalDataService.GetCpuUtilizationAsync</c>. Both CPU columns are <c>integer</c> in the
 /// store, read as int and cast to double at plot time, byte-for-byte with Lite's chart body.
+/// <c>SampleTime</c> is the store's server-LOCAL <c>sample_time</c> de-skewed to naive UTC by the read
+/// (see <see cref="CpuUtilizationSql"/>, #1262), so both consumers plot it through
+/// <see cref="ToLocalTime"/> like every other Darling series.
 /// </summary>
 public sealed record CpuUtilizationSample(DateTime SampleTime, int SqlServerCpu, int OtherProcessCpu);
 
@@ -29,15 +32,43 @@ public sealed partial class ViewerDataService
     /// <summary>
     /// The raw per-sample CPU read: every ring-buffer sample since <paramref name="sinceUtc"/> (not an
     /// average-per-collection roll-up), feeding both the CPU tab's scatter chart and — since W1d — the
-    /// Overview's CPU lane. Deliberate choices: the window filters on <c>collection_time</c> (the
-    /// naive-UTC collection prefix — the reliable clock every Darling read windows on), while
-    /// <c>sample_time</c> (server-LOCAL wall clock from SYSDATETIME on the monitored server) is selected
-    /// only for the axis; a NULL <c>other_process_cpu_utilization</c> (SQL on Linux, #1048) reads as 0.
-    /// Reads the base <c>cpu_utilization_stats</c> table.
-    /// $1 server_id, $2 window start (naive UTC).
+    /// Overview's CPU lane. The window filters on <c>collection_time</c> (the naive-UTC collection
+    /// prefix — the reliable clock every Darling read windows on); a NULL
+    /// <c>other_process_cpu_utilization</c> (SQL on Linux, #1048) reads as 0.
+    ///
+    /// <para><b>sample_time de-skew (#1262).</b> Unlike every other stored column, <c>sample_time</c> is
+    /// the MONITORED SERVER'S LOCAL wall clock (<c>SYSDATETIME()</c> on the server, minus each
+    /// ring-buffer sample's age), NOT naive UTC — so feeding it straight to <see cref="ToLocalTime"/>
+    /// (which assumes naive-UTC input) shifts the whole CPU series by the server's UTC offset relative
+    /// to every <c>collection_time</c>-based lane (a visible misalignment in the correlated Overview).
+    /// The viewer has no per-server timezone config the way Lite does
+    /// (<c>ServerTimeHelper.UtcOffsetMinutes</c>), so we recover the offset from the batch itself: all
+    /// rows of one collection share a single <c>collection_time</c> (the batch key — <c>collection_id</c>
+    /// is assigned per row, a distinct value per sample, NOT a batch id), and the NEWEST sample in a
+    /// batch is at most ~1 minute
+    /// older than that collection instant. So <c>MAX(sample_time) OVER (batch) - collection_time</c> is
+    /// the server's UTC offset plus that sub-minute anchor age; rounding to 15 minutes recovers the exact
+    /// whole/half/quarter-hour offset and absorbs the anchor age (and any few-second clock skew).
+    /// Subtracting that per-batch offset turns each local <c>sample_time</c> into true naive UTC, so
+    /// <see cref="ToLocalTime"/> then aligns the CPU series with every other lane. A UTC server yields
+    /// offset 0 — byte-identical to the pre-fix read. The per-batch derivation also handles a DST
+    /// transition inside the window (each batch recovers its own offset). Reads the base
+    /// <c>cpu_utilization_stats</c> table. $1 server_id, $2 window start (naive UTC).</para>
     /// </summary>
     public const string CpuUtilizationSql = """
-        SELECT sample_time, sqlserver_cpu_utilization, other_process_cpu_utilization
+        SELECT
+            /* De-skew sample_time (the monitored server's LOCAL wall clock) to naive UTC by subtracting
+               the per-batch UTC offset = round(MAX(sample_time) over the batch - collection_time) to the
+               nearest 15 minutes. collection_time (shared by every row of a collection) is the batch key;
+               collection_id is assigned per row (a distinct value per sample). A UTC server yields offset
+               0. See the C# summary above for the full derivation (#1262). */
+            sample_time
+                - INTERVAL '15 minutes'
+                  * ROUND(EXTRACT(EPOCH FROM (
+                        MAX(sample_time) OVER (PARTITION BY server_id, collection_time) - collection_time
+                    )) / 900.0)::double precision AS sample_time,
+            sqlserver_cpu_utilization,
+            other_process_cpu_utilization
         FROM cpu_utilization_stats
         WHERE server_id = $1
         AND   collection_time >= $2
@@ -46,7 +77,9 @@ public sealed partial class ViewerDataService
 
     /// <summary>
     /// Raw CPU samples for one server since <paramref name="sinceUtc"/>, time-ordered — one point per
-    /// ring-buffer sample, for the CPU tab's scatter chart.
+    /// ring-buffer sample, feeding both the CPU tab's scatter chart and the Overview's CPU lane. Each
+    /// sample's <c>SampleTime</c> is de-skewed to naive UTC in the read (see <see cref="CpuUtilizationSql"/>,
+    /// #1262), so both consumers can plot it through <see cref="ToLocalTime"/> unchanged.
     /// </summary>
     public async Task<List<CpuUtilizationSample>> GetCpuUtilizationAsync(int serverId, DateTime sinceUtc, CancellationToken cancellationToken = default)
     {
