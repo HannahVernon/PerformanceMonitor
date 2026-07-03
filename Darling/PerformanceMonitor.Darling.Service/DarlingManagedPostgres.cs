@@ -70,6 +70,14 @@ public sealed class DarlingManagedPostgres
     /// <summary>Marker line guarding the idempotent postgresql.conf append.</summary>
     public const string ConfMarker = "# Managed by PerformanceMonitor Darling -- do not remove this block";
 
+    /// <summary>
+    /// Marker for the v2 worker-sizing conf block. A separate versioned block rather than an edit
+    /// of the v1 block, so clusters initialized before the sizing existed self-heal on their next
+    /// start — <see cref="EnsureConfAppended"/> checks each marker independently, and a
+    /// marker-present-but-different-block conf is never rewritten in place.
+    /// </summary>
+    public const string ConfMarkerV2 = "# Managed by PerformanceMonitor Darling (v2 worker sizing) -- do not remove this block";
+
     private const string PasswordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private const int PasswordLength = 32;
 
@@ -147,6 +155,29 @@ public sealed class DarlingManagedPostgres
         builder.Append("shared_preload_libraries = 'timescaledb'\n");
         builder.Append("port = ").Append(port).Append('\n');
         builder.Append("listen_addresses = '127.0.0.1'\n");
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The v2 worker-sizing block. PostgreSQL's default <c>max_worker_processes = 8</c> cannot
+    /// launch TimescaleDB's 26 per-hypertable compression policy jobs — the postmaster logs
+    /// "failed to launch job ... failed to start a background worker" storms and most policy runs
+    /// fail (caught live: 21 failures vs 7 successes in timescaledb_information.job_stats on a
+    /// fresh managed instance). Sizing follows the TimescaleDB guidance
+    /// (max_worker_processes = 3 + timescaledb.max_background_workers + max_parallel_workers,
+    /// background workers sized to total jobs + 2): 26 policy jobs + scheduler + slack = 28, and
+    /// 3 + 28 + 8 (default max_parallel_workers) = 39, rounded to 40. Idle background workers
+    /// cost a few MB each and no CPU. Both settings need a PostgreSQL restart, so an existing
+    /// cluster picks this up on its next service-owned start — an adopted (not-started-by-us)
+    /// server heals the conf now and applies it whenever its operator next restarts it.
+    /// </summary>
+    public static string BuildWorkerSizingConfAppend()
+    {
+        var builder = new StringBuilder();
+        builder.Append('\n');
+        builder.Append(ConfMarkerV2).Append('\n');
+        builder.Append("timescaledb.max_background_workers = 28\n");
+        builder.Append("max_worker_processes = 40\n");
         return builder.ToString();
     }
 
@@ -365,10 +396,19 @@ public sealed class DarlingManagedPostgres
                 "or restore it from backup.");
         }
 
-        if (!File.ReadAllText(confPath).Contains(ConfMarker, StringComparison.Ordinal))
+        var conf = File.ReadAllText(confPath);
+        if (!conf.Contains(ConfMarker, StringComparison.Ordinal))
         {
             File.AppendAllText(confPath, BuildConfAppend(_config.Port));
             _logger.LogInformation("Appended managed settings to postgresql.conf (timescaledb preload, port {Port}, loopback only)", _config.Port);
+        }
+
+        /* Checked independently of the v1 marker: clusters initialized before the worker sizing
+           existed have v1 but not v2, and heal here on their next start. */
+        if (!conf.Contains(ConfMarkerV2, StringComparison.Ordinal))
+        {
+            File.AppendAllText(confPath, BuildWorkerSizingConfAppend());
+            _logger.LogInformation("Appended v2 worker sizing to postgresql.conf (timescaledb.max_background_workers 28, max_worker_processes 40; effective from the next PostgreSQL restart)");
         }
     }
 

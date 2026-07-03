@@ -54,6 +54,30 @@ public sealed class DarlingManagedPostgresTests
         Assert.Contains("shared_preload_libraries = 'timescaledb'", block, StringComparison.Ordinal);
         Assert.Contains("port = 5641", block, StringComparison.Ordinal);
         Assert.Contains("listen_addresses = '127.0.0.1'", block, StringComparison.Ordinal);
+
+        /* Worker sizing lives in the v2 block, never in v1 — pre-v2 clusters heal by gaining the
+           SECOND block, so v1's content must stay stable. */
+        Assert.DoesNotContain("max_worker_processes", block, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// PostgreSQL's default max_worker_processes = 8 cannot launch the 26 per-hypertable
+    /// compression policy jobs (live smoke: "failed to start a background worker" storms,
+    /// 21 failed vs 7 successful policy runs). Pins the TimescaleDB-guidance sizing:
+    /// background workers = jobs + 2 = 28; max_worker_processes = 3 + 28 + 8 parallel = 39 -> 40.
+    /// </summary>
+    [Fact]
+    public void WorkerSizingConfAppend_PinsV2MarkerAndSizing()
+    {
+        var block = DarlingManagedPostgres.BuildWorkerSizingConfAppend();
+
+        Assert.Contains(DarlingManagedPostgres.ConfMarkerV2, block, StringComparison.Ordinal);
+        Assert.Contains("timescaledb.max_background_workers = 28", block, StringComparison.Ordinal);
+        Assert.Contains("max_worker_processes = 40", block, StringComparison.Ordinal);
+
+        /* v2 must not restate v1 settings — the blocks compose, they don't compete. */
+        Assert.DoesNotContain("shared_preload_libraries", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("listen_addresses", block, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -153,28 +177,36 @@ public sealed class DarlingManagedPostgresTests
             var conf = File.ReadAllText(Path.Combine(dataDirectory, "postgresql.conf"));
             Assert.Contains("shared_preload_libraries = 'timescaledb'", conf, StringComparison.Ordinal);
             Assert.Contains("listen_addresses = '127.0.0.1'", conf, StringComparison.Ordinal);
+            Assert.Contains("max_worker_processes = 40", conf, StringComparison.Ordinal);
 
             /* The derived credential really authenticates (scram, not trust) into the darling
                database — and the server started with our appended conf, so the timescaledb
-               preload line was accepted. */
+               preload line was accepted; the v2 worker sizing was accepted too (the setting is
+               live, not just written). */
             await using (var connection = new NpgsqlConnection(connectionString))
             {
                 await connection.OpenAsync(timeout.Token);
-                using var current = new NpgsqlCommand("SELECT current_database(), current_user", connection);
+                using var current = new NpgsqlCommand("SELECT current_database(), current_user, current_setting('max_worker_processes')", connection);
                 using var reader = await current.ExecuteReaderAsync(timeout.Token);
                 Assert.True(await reader.ReadAsync(timeout.Token));
                 Assert.Equal("darling", reader.GetString(0));
                 Assert.Equal("darling", reader.GetString(1));
+                Assert.Equal("40", reader.GetString(2));
             }
 
             /* Second EnsureRunning against the live server: idempotent — no re-init (credential
                bytes untouched), no ownership grab (this instance did not start the server),
-               the same derived connection string. */
+               the same derived connection string, and no duplicate conf blocks (one v1 marker,
+               one v2 marker). */
             var second = new DarlingManagedPostgres(config, NullLogger.Instance, runtimeRoot);
             var secondConnectionString = await second.EnsureRunningAsync(timeout.Token);
             Assert.False(second.StartedByThisProcess);
             Assert.Equal(credentialBytes, File.ReadAllBytes(credentialPath));
             Assert.Equal(connectionString, secondConnectionString);
+
+            var confAfterSecond = File.ReadAllText(Path.Combine(dataDirectory, "postgresql.conf"));
+            Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarker));
+            Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV2));
 
             /* Both up/down probes below must bypass Npgsql's pool: OpenAsync on a pooled string
                can hand back an idle socket with no I/O at all, which "succeeds" against a stopped
@@ -204,6 +236,19 @@ public sealed class DarlingManagedPostgresTests
             await owner.StopIfStartedByThisProcessAsync();
             TryDeleteRecursive(root.FullName);
         }
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 
     private static int FindFreeTcpPort()
