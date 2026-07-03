@@ -19,8 +19,8 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins the viewer's SQL against the Darling store contract (no live Postgres needed) and
-/// unit-tests the pure display helpers: the wait-series pivot, the version label, and the
-/// naive-UTC-to-local conversion.
+/// unit-tests the pure display helpers: the version label and the naive-UTC-to-local conversion.
+/// (The Overview trend reads + wait-category roll-up are pinned in <c>ViewerTrendsTests</c>.)
 /// </summary>
 public sealed class ViewerDataServiceTests
 {
@@ -40,47 +40,6 @@ public sealed class ViewerDataServiceTests
         Assert.Contains("WHERE server_id = $1", ViewerDataService.CollectionHealthSql, StringComparison.Ordinal);
         /* DISTINCT ON keeps the FIRST row per collector, so the time sort must be descending. */
         Assert.Contains("ORDER BY collector_name, collection_time DESC", ViewerDataService.CollectionHealthSql, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void WaitTrendSql_LimitsToTheTop8WaitTypesBySummedDelta()
-    {
-        Assert.Contains("FROM wait_stats", ViewerDataService.WaitTrendSql, StringComparison.Ordinal);
-        Assert.Contains("collection_time >= $2", ViewerDataService.WaitTrendSql, StringComparison.Ordinal);
-        Assert.Contains("ORDER BY SUM(delta_wait_time_ms) DESC", ViewerDataService.WaitTrendSql, StringComparison.Ordinal);
-        Assert.Contains("LIMIT 8", ViewerDataService.WaitTrendSql, StringComparison.Ordinal);
-        /* The pivot relies on rows arriving grouped by wait type in time order. */
-        Assert.Contains("ORDER BY wait_type, collection_time", ViewerDataService.WaitTrendSql, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void PivotWaitSeries_GroupsByWaitType_PreservingFirstSeenOrder()
-    {
-        var t0 = new DateTime(2026, 7, 1, 10, 0, 0);
-        var t1 = t0.AddMinutes(1);
-
-        var points = new[]
-        {
-            new WaitTrendPoint(t0, "CXPACKET", 100),
-            new WaitTrendPoint(t1, "CXPACKET", 150),
-            new WaitTrendPoint(t0, "PAGEIOLATCH_SH", 40),
-            new WaitTrendPoint(t1, "PAGEIOLATCH_SH", 60),
-        };
-
-        var series = ViewerDataService.PivotWaitSeries(points);
-
-        Assert.Equal(2, series.Count);
-        Assert.Equal("CXPACKET", series[0].WaitType);
-        Assert.Equal("PAGEIOLATCH_SH", series[1].WaitType);
-        Assert.Equal(new[] { t0, t1 }, series[0].Times);
-        Assert.Equal(new[] { 100.0, 150.0 }, series[0].Values);
-        Assert.Equal(new[] { 40.0, 60.0 }, series[1].Values);
-    }
-
-    [Fact]
-    public void PivotWaitSeries_EmptyInput_YieldsNoSeries()
-    {
-        Assert.Empty(ViewerDataService.PivotWaitSeries(Array.Empty<WaitTrendPoint>()));
     }
 
     [Theory]
