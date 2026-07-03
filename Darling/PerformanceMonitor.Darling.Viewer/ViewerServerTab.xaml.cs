@@ -33,16 +33,18 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       CPU, tempdb, Blocking, Configuration, Collection Health) — ported tabs slot into Lite's
-       positions as they arrive, so the constants renumber when a wave lands between existing tabs. */
+       CPU, File I/O, tempdb, Blocking, Configuration, Collection Health) — ported tabs slot into
+       Lite's positions as they arrive (File I/O sits BEFORE tempdb, matching Lite's own order),
+       so the constants renumber when a wave lands between existing tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
     private const int QueriesInnerTabIndex = 2;
     private const int CpuInnerTabIndex = 3;
-    private const int TempDbInnerTabIndex = 4;
-    private const int BlockingInnerTabIndex = 5;
-    private const int ConfigurationInnerTabIndex = 6;
-    private const int HealthInnerTabIndex = 7;
+    private const int FileIoInnerTabIndex = 4;
+    private const int TempDbInnerTabIndex = 5;
+    private const int BlockingInnerTabIndex = 6;
+    private const int ConfigurationInnerTabIndex = 7;
+    private const int HealthInnerTabIndex = 8;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -72,6 +74,10 @@ public partial class ViewerServerTab : UserControl
 
         /* CPU + tempdb inner-tab charts (copied from Lite): theme up front + wire hover. */
         InitializeCpuTempDbCharts();
+
+        /* File I/O + Blocking-trend inner-tab charts (copied from Lite): same up-front theme + hover. */
+        InitializeFileIoCharts();
+        InitializeBlockingCharts();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -163,6 +169,9 @@ public partial class ViewerServerTab : UserControl
                 case TempDbInnerTabIndex:
                     await LoadTempDbAsync();
                     break;
+                case FileIoInnerTabIndex:
+                    await LoadFileIoAsync();
+                    break;
                 case OverviewInnerTabIndex:
                 default:
                     await LoadOverviewChartsAsync();
@@ -206,15 +215,9 @@ public partial class ViewerServerTab : UserControl
         QueriesHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private async Task LoadBlockingAsync()
-    {
-        var endUtc = DateTime.UtcNow;
-        var rows = await _dataService.GetRecentBlockedProcessReportsAsync(
-            _server.ServerId, endUtc - s_dataWindow, endUtc);
-
-        BlockingGrid.ItemsSource = rows;
-        BlockingHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
+    /* LoadBlockingAsync now lives in ViewerServerTab.Blocking.cs — it dispatches to the Blocking tab's
+       active sub-tab (Trends / Current Waits / Blocked Process Reports) instead of loading the grid
+       directly. */
 
     private void RenderCpuTrend(List<CpuTrendPoint> points)
     {

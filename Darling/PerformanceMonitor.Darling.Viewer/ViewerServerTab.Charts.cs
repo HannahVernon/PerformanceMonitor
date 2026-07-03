@@ -70,8 +70,11 @@ public partial class ViewerServerTab : IDisposable
         _tempDbHover?.Dispose();
         _tempDbSizeHover?.Dispose();
         _tempDbFileIoHover?.Dispose();
-        /* The Wait Stats partial's hover teardown — one dispose path for the whole tab. */
+        /* Each partial owns its own hover fields; the single Dispose() forwards to their teardowns
+           so the whole tab tears down through one path. */
         DisposeChartHelpers();
+        DisposeFileIoHelpers();
+        DisposeBlockingHelpers();
     }
 
     /// <summary>Loads the CPU tab: raw per-sample CPU utilization over the window.</summary>

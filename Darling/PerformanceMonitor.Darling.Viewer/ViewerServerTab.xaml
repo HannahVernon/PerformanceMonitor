@@ -224,6 +224,48 @@
             </Grid>
         </TabItem>
 
+        <!-- File I/O Tab — copied from Lite's ServerTab.xaml File I/O tab: a nested sub-TabControl
+             with "File I/O Latency" (stacked read + write latency charts, queued-I/O dashed overlay)
+             and "File I/O Throughput" (stacked read + write MB/s charts). Placed BEFORE tempdb,
+             matching Lite's own tab order. -->
+        <TabItem Header="File I/O">
+            <Grid Margin="8">
+                <TabControl x:Name="FileIoSubTabs"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            ItemContainerStyle="{DynamicResource SubTabItemStyle}"
+                            SelectionChanged="FileIoSubTabs_SelectionChanged">
+                    <TabItem Header="File I/O Latency">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Margin="0,0,0,4">
+                                <scottplot:WpfPlot x:Name="FileIoReadChart"/>
+                            </Border>
+                            <Border Grid.Row="1" Margin="0,4,0,0">
+                                <scottplot:WpfPlot x:Name="FileIoWriteChart"/>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="File I/O Throughput">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Margin="0,0,0,4">
+                                <scottplot:WpfPlot x:Name="FileIoReadThroughputChart"/>
+                            </Border>
+                            <Border Grid.Row="1" Margin="0,4,0,0">
+                                <scottplot:WpfPlot x:Name="FileIoWriteThroughputChart"/>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </TabItem>
         <!-- tempdb Tab — copied from Lite's ServerTab.xaml tempdb tab: three stacked charts —
              space usage (user/internal/version-store), total allocated size, and per-file I/O
              latency. -->
@@ -249,49 +291,96 @@
             </Grid>
         </TabItem>
 
+        <!-- Blocking Tab — upgraded to Lite's sub-tab structure (ServerTab.xaml:1435-1469): "Trends"
+             (lock-wait rate, blocking incidents, deadlocks) and "Current Waits" (waiting-task duration
+             by wait type, blocked sessions by database) precede the existing blocked-process grid,
+             re-hosted unchanged as the third "Blocked Process Reports" sub-tab. Lite's Deadlocks
+             sub-tab arrives in a later wave. -->
         <TabItem Header="Blocking">
-            <DockPanel Margin="0,8,0,0">
-                <TextBlock DockPanel.Dock="Top" Text="Blocked Processes — XE reports with DMV-snapshot fallback (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                <Grid>
-                    <DataGrid x:Name="BlockingGrid" Style="{StaticResource DarkGrid}">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Event Time (local)" Binding="{Binding EventTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="150"/>
-                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="140">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="#8B93A1"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
-                            <DataGridTextColumn Header="Blocked SPID" Binding="{Binding BlockedSpid}" Width="95"/>
-                            <DataGridTextColumn Header="Blocking SPID" Binding="{Binding BlockingSpid}" Width="95"/>
-                            <DataGridTextColumn Header="Wait Time" Binding="{Binding WaitTimeFormatted}" Width="90" SortMemberPath="WaitTimeMs"/>
-                            <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="90"/>
-                            <DataGridTextColumn Header="Contentious Object" Binding="{Binding ContentiousObject}" Width="1.5*"/>
-                            <DataGridTextColumn Header="Blocked SQL" Binding="{Binding BlockedSqlPreview}" Width="2*" SortMemberPath="BlockedSqlText">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                        <Setter Property="ToolTip" Value="{Binding BlockedSqlTooltip}"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="Blocking SQL" Binding="{Binding BlockingSqlPreview}" Width="2*" SortMemberPath="BlockingSqlText">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                        <Setter Property="ToolTip" Value="{Binding BlockingSqlTooltip}"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <TextBlock x:Name="BlockingHintText"
-                               Style="{StaticResource EmptyHint}"
-                               Text="no blocked-process events in the window — the XE session and the DMV snapshot are both clean"/>
-                </Grid>
-            </DockPanel>
+            <Grid Margin="8">
+                <TabControl x:Name="BlockingSubTabs"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            ItemContainerStyle="{DynamicResource SubTabItemStyle}"
+                            SelectionChanged="BlockingSubTabs_SelectionChanged">
+                    <TabItem Header="Trends">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Margin="0,0,0,4">
+                                <scottplot:WpfPlot x:Name="LockWaitTrendChart"/>
+                            </Border>
+                            <Border Grid.Row="1" Margin="0,4,0,4">
+                                <scottplot:WpfPlot x:Name="BlockingTrendChart"/>
+                            </Border>
+                            <Border Grid.Row="2" Margin="0,4,0,0">
+                                <scottplot:WpfPlot x:Name="DeadlockTrendChart"/>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="Current Waits">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Margin="0,0,0,4">
+                                <scottplot:WpfPlot x:Name="CurrentWaitsDurationChart"/>
+                            </Border>
+                            <Border Grid.Row="1" Margin="0,4,0,0">
+                                <scottplot:WpfPlot x:Name="CurrentWaitsBlockedChart"/>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="Blocked Process Reports">
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock DockPanel.Dock="Top" Text="Blocked Processes — XE reports with DMV-snapshot fallback (last 24 hours)" Style="{StaticResource SectionHeader}"/>
+                            <Grid>
+                                <DataGrid x:Name="BlockingGrid" Style="{StaticResource DarkGrid}">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Event Time (local)" Binding="{Binding EventTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="150"/>
+                                        <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="140">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#8B93A1"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                        <DataGridTextColumn Header="Blocked SPID" Binding="{Binding BlockedSpid}" Width="95"/>
+                                        <DataGridTextColumn Header="Blocking SPID" Binding="{Binding BlockingSpid}" Width="95"/>
+                                        <DataGridTextColumn Header="Wait Time" Binding="{Binding WaitTimeFormatted}" Width="90" SortMemberPath="WaitTimeMs"/>
+                                        <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="90"/>
+                                        <DataGridTextColumn Header="Contentious Object" Binding="{Binding ContentiousObject}" Width="1.5*"/>
+                                        <DataGridTextColumn Header="Blocked SQL" Binding="{Binding BlockedSqlPreview}" Width="2*" SortMemberPath="BlockedSqlText">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                    <Setter Property="ToolTip" Value="{Binding BlockedSqlTooltip}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="Blocking SQL" Binding="{Binding BlockingSqlPreview}" Width="2*" SortMemberPath="BlockingSqlText">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                                    <Setter Property="ToolTip" Value="{Binding BlockingSqlTooltip}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock x:Name="BlockingHintText"
+                                           Style="{StaticResource EmptyHint}"
+                                           Text="no blocked-process events in the window — the XE session and the DMV snapshot are both clean"/>
+                            </Grid>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </Grid>
         </TabItem>
 
         <!-- Configuration Tab — copied from Lite's ServerTab.xaml Configuration tab: a nested tab strip
