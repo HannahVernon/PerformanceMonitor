@@ -38,6 +38,18 @@ public sealed class DarlingConfig
     public List<MonitoredServer> Servers { get; set; } = new();
 
     /// <summary>
+    /// Capture execution-plan text into query_stats.query_plan_xml and
+    /// query_store_stats.query_plan_text. Default TRUE for Darling: PostgreSQL TOAST compresses the
+    /// plan text transparently (pglz), and TimescaleDB chunk compression squeezes it further, so
+    /// plans are cheap to keep — unlike Lite, which stores to DuckDB/parquet and deliberately never
+    /// captures them. Set false to skip plan capture (e.g. to shave storage across a very large
+    /// fleet). Feeds <see cref="CollectorContext.CapturePlanXml"/> in the shared query_stats /
+    /// query_store collectors.
+    /// </summary>
+    [JsonPropertyName("capturePlans")]
+    public bool CapturePlans { get; set; } = true;
+
+    /// <summary>
     /// The shared alert engine's enabled flags and thresholds (Phase-5 slice D). Every default
     /// mirrors Lite's <c>App.*</c> alert defaults exactly, so an empty section alerts like a
     /// fresh Lite install. Optional — omit it entirely for the defaults.

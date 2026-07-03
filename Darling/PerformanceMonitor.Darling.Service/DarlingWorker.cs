@@ -239,7 +239,7 @@ public sealed class DarlingWorker : BackgroundService
         var deltas = new DarlingDeltaCalculator();
         await deltas.SeedFromStoreAsync(postgres, _logger, stoppingToken);
 
-        var runner = new DarlingCollectorRunner(postgres, deltas, _logger);
+        var runner = new DarlingCollectorRunner(postgres, deltas, _logger, config.CapturePlans);
         var servers = new List<ServerLoopState>();
         foreach (var server in config.Servers)
         {

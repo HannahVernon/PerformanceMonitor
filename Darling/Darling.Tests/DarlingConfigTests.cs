@@ -62,6 +62,9 @@ public sealed class DarlingConfigTests
         Assert.Equal("", config.Postgres.ConnectionString);
         Assert.Empty(config.Validate());
 
+        /* Plan capture is on by default and the sample documents it explicitly (PG TOAST). */
+        Assert.True(config.CapturePlans);
+
         /* Phase-5 slice D: the alert/delivery sections parse; the sample documents shape without
            enabling delivery (empty SMTP host/from, empty webhook URLs). */
         Assert.True(config.Alerts.Enabled);
@@ -72,6 +75,21 @@ public sealed class DarlingConfigTests
         Assert.Equal("dba-team@example.com", config.Smtp.To);
         Assert.Equal("", config.Webhooks.TeamsUrl);
         Assert.Equal("", config.Webhooks.SlackUrl);
+    }
+
+    [Fact]
+    public void CapturePlans_DefaultsTrue_AndParsesOverride()
+    {
+        /* Default true: Darling captures execution plans (PG TOAST compresses them transparently),
+           unlike Lite. A config with no "capturePlans" key keeps the default; explicit false turns
+           capture off (e.g. to shave storage across a very large fleet). */
+        Assert.True(new DarlingConfig().CapturePlans);
+
+        var omitted = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ] }");
+        Assert.True(omitted.CapturePlans);
+
+        var disabled = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ], ""capturePlans"": false }");
+        Assert.False(disabled.CapturePlans);
     }
 
     [Fact]

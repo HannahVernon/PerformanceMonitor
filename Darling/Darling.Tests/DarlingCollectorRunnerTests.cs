@@ -7,7 +7,9 @@
  */
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using Npgsql;
 using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Service;
@@ -107,5 +109,137 @@ public sealed class DarlingCollectorRunnerTests
             cleanup.Parameters.AddWithValue(runtime.ServerId);
             await cleanup.ExecuteNonQueryAsync(ct);
         }
+    }
+
+    [Fact]
+    public async Task EndToEnd_QueryStats_PlanCaptureFlag_TogglesStoredPlanXml()
+    {
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        var sqlHost = Environment.GetEnvironmentVariable("DARLING_TEST_SQL");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg) || string.IsNullOrEmpty(sqlHost),
+            "Set DARLING_TEST_PG and DARLING_TEST_SQL to run the live plan-capture E2E.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var config = MakeLiveConfig("darling-plan-qs-e2e", sqlHost!);
+
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runtime = await DarlingServerConnector.ConnectAsync(config, null, ct);
+        await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
+
+        try
+        {
+            /* Flag OFF (Lite parity): rows land, every query_plan_xml is NULL. */
+            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: false);
+            var off = await offRunner.RunAsync(QueryStatsCollector.Instance, runtime, ct);
+            Assert.SkipWhen(off.Rows == 0, "No recent query_stats activity on the target to capture; skipping.");
+            Assert.Equal(0L, await CountNonEmptyAsync(dataSource, "query_stats", "query_plan_xml", runtime.ServerId, ct));
+
+            /* Reset so the flag-on cycle re-collects the same plans (query_stats has no watermark,
+               but row-hash dedup on the store side would otherwise skip unchanged rows). */
+            await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
+
+            /* Flag ON (Darling): at least one captured row carries a query_plan_xml that parses. */
+            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: true);
+            var on = await onRunner.RunAsync(QueryStatsCollector.Instance, runtime, ct);
+            Assert.True(on.Rows > 0, "flag-on cycle should still land rows");
+
+            var planXml = await FirstNonEmptyAsync(dataSource, "query_stats", "query_plan_xml", runtime.ServerId, ct);
+            Assert.False(string.IsNullOrEmpty(planXml), "flag-on capture should store at least one non-empty plan");
+            Assert.Equal("ShowPlanXML", XDocument.Parse(planXml!).Root!.Name.LocalName);
+        }
+        finally
+        {
+            await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
+        }
+    }
+
+    [Fact]
+    public async Task EndToEnd_QueryStore_PlanCaptureFlag_CapturesPlanText_WhenQueryStoreEnabled()
+    {
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        var sqlHost = Environment.GetEnvironmentVariable("DARLING_TEST_SQL");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg) || string.IsNullOrEmpty(sqlHost),
+            "Set DARLING_TEST_PG and DARLING_TEST_SQL to run the live plan-capture E2E.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var config = MakeLiveConfig("darling-plan-qds-e2e", sqlHost!);
+
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runtime = await DarlingServerConnector.ConnectAsync(config, null, ct);
+        await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
+
+        try
+        {
+            /* Flag ON: probe by collecting. Zero rows => no Query Store-enabled database with recent
+               activity on the target — skip with reason rather than fail. */
+            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: true);
+            var on = await onRunner.RunAsync(QueryStoreCollector.Instance, runtime, ct);
+            Assert.SkipWhen(on.Rows == 0, "No Query Store-enabled database with recent activity on the target; skipping.");
+
+            var planText = await FirstNonEmptyAsync(dataSource, "query_store_stats", "query_plan_text", runtime.ServerId, ct);
+            Assert.False(string.IsNullOrEmpty(planText), "flag-on capture should store at least one non-empty Query Store plan");
+            Assert.Equal("ShowPlanXML", XDocument.Parse(planText!).Root!.Name.LocalName);
+
+            /* Flag OFF (Lite parity): reset, re-collect the same window, every plan is NULL. */
+            await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
+            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: false);
+            var off = await offRunner.RunAsync(QueryStoreCollector.Instance, runtime, ct);
+            Assert.True(off.Rows > 0, "the same window should re-collect after the reset");
+            Assert.Equal(0L, await CountNonEmptyAsync(dataSource, "query_store_stats", "query_plan_text", runtime.ServerId, ct));
+        }
+        finally
+        {
+            await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
+        }
+    }
+
+    private static MonitoredServer MakeLiveConfig(string name, string sqlHost)
+    {
+        var sqlUser = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_USER");
+        return new MonitoredServer
+        {
+            Name = name,
+            Host = sqlHost,
+            Auth = string.IsNullOrEmpty(sqlUser) ? "integrated" : "sql",
+            Username = sqlUser,
+            Password = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_PASSWORD"),
+            TrustServerCertificate = true,
+        };
+    }
+
+    private static async Task CleanServerRowsAsync(NpgsqlDataSource dataSource, string table, int serverId, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand($"DELETE FROM {table} WHERE server_id = $1", connection);
+        command.Parameters.AddWithValue(serverId);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<long> CountNonEmptyAsync(NpgsqlDataSource dataSource, string table, string column, int serverId, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand(
+            $"SELECT COUNT(*) FROM {table} WHERE server_id = $1 AND {column} IS NOT NULL AND {column} <> ''", connection);
+        command.Parameters.AddWithValue(serverId);
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    private static async Task<string?> FirstNonEmptyAsync(NpgsqlDataSource dataSource, string table, string column, int serverId, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand(
+            $"SELECT {column} FROM {table} WHERE server_id = $1 AND {column} IS NOT NULL AND {column} <> '' LIMIT 1", connection);
+        command.Parameters.AddWithValue(serverId);
+        return await command.ExecuteScalarAsync(ct) as string;
     }
 }

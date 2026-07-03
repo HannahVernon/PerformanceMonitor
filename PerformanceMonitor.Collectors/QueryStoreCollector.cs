@@ -292,6 +292,15 @@ ORDER BY
             ? "plan_type = qsp.plan_type_desc,"
             : "plan_type = NULL,";
 
+        /* Execution-plan capture — mirrors the full Dashboard's @collect_plan path in
+           install/09_collect_query_store.sql: CONVERT(nvarchar(max), qsp.query_plan) from
+           sys.query_store_plan, no size guard. On only when the host sets CapturePlanXml (Darling);
+           off = the nvarchar(1) NULL placeholder (Lite), byte-identical to the no-plan form. No
+           single quotes, so it splices straight into the sp_executesql body. */
+        string planTextCol = context.CapturePlanXml
+            ? "query_plan_text = CONVERT(nvarchar(max), qsp.query_plan),"
+            : "query_plan_text = CONVERT(nvarchar(1), NULL),";
+
         /* Incremental: only fetch runtime_stats intervals newer than what we already have. */
         var cutoffTime = context.Watermark ?? context.CollectionTime.AddMinutes(-60);
 
@@ -352,7 +361,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
          force_failure_count = qsp.force_failure_count,
          last_force_failure_reason = qsp.last_force_failure_reason_desc,
          compatibility_level = qsp.compatibility_level,
-         query_plan_text = CONVERT(nvarchar(1), NULL),
+         {planTextCol}
          query_plan_hash = CONVERT(varchar(64), qsp.query_plan_hash, 1)
      FROM sys.query_store_runtime_stats AS qsrs
      JOIN sys.query_store_plan AS qsp
