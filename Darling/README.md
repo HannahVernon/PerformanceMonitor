@@ -324,17 +324,25 @@ The service logs through standard .NET hosting: console output when run interact
 
 `PerformanceMonitor.Darling.Viewer.exe` is a WPF app that talks **only to the PostgreSQL store** — it never connects to your monitored SQL Servers. It reads the same `darling.json` the service uses, but only the `postgres` section, resolved in the same order (explicit path, then `DARLING_CONFIG`, then `darling.json` next to the binary) plus one viewer-only fallback: the parent directory, so the release zip's layout — viewer in a `viewer\` subfolder, `darling.json` beside the service exe — works with no setup. A viewer seat on another machine needs only a minimal `darling.json` containing the `postgres.connectionString`. If the file is missing it shows a hint instead of crashing.
 
-Five tabs, with a server list on the left (from the `servers` registry the service maintains):
+The layout mirrors the Lite desktop app: a left sidebar lists the servers from the `servers` registry the service maintains, and the top tab strip holds two fixed **aggregate tabs** — Recommendations and Alerts, which follow the sidebar's single-click selection — alongside a closable **per-server tab** for each server you open. **Double-click a server** in the sidebar to open (or focus) its tab, and close it with the × on the tab header; an empty-state panel is shown until the store has at least one server.
+
+Each per-server tab has four inner tabs:
+
+| Inner tab | Contents |
+|---|---|
+| **Overview** | A CPU-utilization trend (SQL Server vs other-process CPU %) beside a wait trend grouped **by wait category** — the top categories by delta wait time, each in its fixed wait-category color from the shared taxonomy the plan-viewer wait list uses (a semantic roll-up that replaced the earlier per-individual-wait-type view) — over the last 24 hours |
+| **Queries** | Top 50 queries by total duration over the last 24 hours — database, query text, executions, CPU, duration, reads, last execution |
+| **Blocking** | Blocked processes over the last 24 hours — XE blocked-process reports preferred, the always-on DMV blocking snapshot merged in as fallback, each row badged with its source |
+| **Collection Health** | Latest run per collector, status-colored, with row counts and durations |
+
+The two aggregate tabs (server-scoped via the sidebar selection for now):
 
 | Tab | Contents |
 |---|---|
-| **Overview** | Collection health (latest run per collector, status-colored), a CPU-utilization trend (SQL Server vs other-process CPU %), and a wait trend grouped **by wait category** — the top categories by delta wait time, each in its fixed wait-category color from the shared taxonomy the plan-viewer wait list uses (a semantic roll-up that replaces the earlier per-individual-wait-type view) — over the last 24 hours |
-| **Queries** | Top 50 queries by total duration over the last 24 hours — database, query text, executions, CPU, duration, reads, last execution |
-| **Blocking** | Blocked processes over the last 24 hours — XE blocked-process reports preferred, the always-on DMV blocking snapshot merged in as fallback, each row badged with its source |
 | **Recommendations** | The latest analysis run's findings, severity-banded, with a detail pane showing the finding's story, advice, and stored remediation script (read-only — the viewer never applies anything). Right-click a finding to **mute** or **unmute** its pattern; muted findings are flagged and drop out on the engine's next analysis run |
 | **Alerts** | Recent alerts from `config_alert_log` for the selected server (newest first, selectable time range), with a detail pane showing each alert's stored detail and dedup fingerprint. A **Manage Mute Rules** button opens the mute-rule editor, and right-clicking an alert can seed a mute rule from it |
 
-Only the active tab loads, and it refreshes every 60 seconds for the selected server.
+Only the visible tab loads, and it refreshes every 60 seconds — an aggregate tab for the sidebar-selected server, or the visible server tab's active inner tab (Lite's visible-only rule).
 
 The viewer is read-only over collected data, but it does perform a small set of **user-initiated writes** — and those go straight to the PostgreSQL store, which is the coordination point (the service honors them on its next read; there is no viewer-to-service channel). Muting/unmuting a finding writes the `analysis_muted` registry; adding, editing, toggling, deleting, or purging a mute rule writes `config_mute_rules` (a rule scopes to a server by name, exactly as Lite's mute rules do). These two coordination tables are the **only** tables the viewer ever writes — it never writes collector data. Alert history is read-only (dismiss is deliberately not offered).
 

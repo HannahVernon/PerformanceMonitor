@@ -33,5 +33,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Darling.Tests" />
+    <!-- The viewer's blocking read path reuses PgBlockingPairRowQuery (the shared source-agnostic
+         chain reconstructor's Postgres row shaper) directly, mirroring how Lite/Dashboard consume
+         the shared blocking internals. -->
+    <InternalsVisibleTo Include="PerformanceMonitor.Darling.Viewer" />
   </ItemGroup>
 </Project>

@@ -2,7 +2,6 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:PerformanceMonitor.Darling.Viewer"
-        xmlns:scottplot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
         Title="Performance Monitor Darling"
         Width="1280"
         Height="800"
@@ -10,10 +9,18 @@
         Background="#22252b"
         Foreground="#E4E6EB">
     <!--
-        Deliberately dark-only for the M3 shell: a simple hardcoded palette consistent with the
-        product's Dark theme (#22252b chrome, #111217 wells, #2a2d35 borders, #E4E6EB text) —
-        the shared ThemeManager wiring comes later. ChartStyle's default theme is Dark, so the
-        chart chrome matches without any theme plumbing.
+        Dark-only shell (headless plan). The window keeps its hardcoded Dark palette (#22252b chrome,
+        #111217 wells, #2a2d35 borders, #E4E6EB text); the shared theme dictionary is now merged
+        app-wide (App.xaml) so copied Lite XAML — the per-server ViewerServerTab and the later tab
+        ports — resolve their {DynamicResource} keys. This window's own controls keep their explicit
+        StaticResource styles + inline hex, so they render exactly as before.
+
+        Navigation mirrors Lite's shape (headless-plan W0 IA inversion): a left sidebar server list,
+        and ONE top tab strip holding the fixed aggregate tabs (Recommendations, Alerts — server-scoped
+        via the sidebar selection) plus dynamically-added closable per-server tabs. Single-click a
+        server drives the aggregate tabs; double-click opens (or focuses) that server's ViewerServerTab.
+        The 60-second timer refreshes only the visible tab (an aggregate tab for the selected server,
+        or the visible server tab's active inner tab).
     -->
     <Window.Resources>
         <local:StatusToBrushConverter x:Key="StatusToBrush"/>
@@ -36,7 +43,7 @@
             <Setter Property="Visibility" Value="Collapsed"/>
         </Style>
 
-        <!-- One dark grid chrome shared by all four data grids (hoisted from the wave-1
+        <!-- One dark grid chrome shared by the aggregate-tab data grids (hoisted from the wave-1
              HealthGrid inline styles — same setters, zero visual change). -->
         <Style x:Key="DarkGridHeader" TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#262932"/>
@@ -261,9 +268,13 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left: the server list -->
+            <!-- Left: the server list. Single-click drives the aggregate tabs; double-click opens
+                 (or focuses) that server's per-server tab. -->
             <DockPanel Grid.Column="0" Margin="0,0,10,0">
-                <TextBlock DockPanel.Dock="Top" Text="Servers" Style="{StaticResource SectionHeader}"/>
+                <StackPanel DockPanel.Dock="Top">
+                    <TextBlock Text="Servers" Style="{StaticResource SectionHeader}" Margin="0,0,0,2"/>
+                    <TextBlock Text="Double-click to open a server tab" Foreground="#8B93A1" FontSize="11" Margin="0,0,0,6"/>
+                </StackPanel>
                 <TextBlock x:Name="ServersHintText"
                            DockPanel.Dock="Bottom"
                            Text="no servers registered — is the Darling service running?"
@@ -276,7 +287,8 @@
                          BorderBrush="#2a2d35"
                          BorderThickness="1"
                          Foreground="#E4E6EB"
-                         SelectionChanged="ServerList_SelectionChanged">
+                         SelectionChanged="ServerList_SelectionChanged"
+                         MouseDoubleClick="ServerList_MouseDoubleClick">
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">
                             <Setter Property="Background" Value="Transparent"/>
@@ -316,8 +328,9 @@
                 </ListBox>
             </DockPanel>
 
-            <!-- Right: the surface tabs. Only the ACTIVE tab loads (Lite's visible-only rule);
-                 the 60-second refresh re-reads the active tab for the selected server. -->
+            <!-- Right: the top tab strip. Fixed aggregate tabs (Recommendations, Alerts) plus the
+                 dynamically-added closable per-server tabs (appended in code). Only the visible tab
+                 loads (Lite's visible-only rule); the 60-second timer re-reads it. -->
             <TabControl x:Name="MainTabs"
                         Grid.Column="1"
                         Background="Transparent"
@@ -326,141 +339,7 @@
                         ItemContainerStyle="{StaticResource DarkTabItem}"
                         SelectionChanged="MainTabs_SelectionChanged">
 
-                <TabItem Header="Overview">
-                    <Grid Margin="0,8,0,0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="*"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-
-                        <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                            <TextBlock DockPanel.Dock="Top" Text="Collection Health" Style="{StaticResource SectionHeader}"/>
-                            <DataGrid x:Name="HealthGrid" Style="{StaticResource DarkGrid}">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Collector" Binding="{Binding CollectorName}" Width="2*"/>
-                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="Foreground" Value="{Binding Status, Converter={StaticResource StatusToBrush}}"/>
-                                                <Setter Property="ToolTip" Value="{Binding ErrorMessage}"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Last Run (local)" Binding="{Binding CollectionTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="1.6*"/>
-                                    <DataGridTextColumn Header="Rows" Binding="{Binding RowsCollected}" Width="*"/>
-                                    <DataGridTextColumn Header="Duration (ms)" Binding="{Binding DurationMs}" Width="*"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                        </DockPanel>
-
-                        <!-- Bottom half: the two Overview trend charts, side by side, so Collection
-                             Health keeps the top half. Left = CPU utilization, right = wait time by
-                             category (the shared wait taxonomy the plan-viewer wait list uses). -->
-                        <Grid Grid.Row="1">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="12"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-
-                            <DockPanel Grid.Column="0">
-                                <TextBlock DockPanel.Dock="Top" Text="CPU Utilization — SQL Server vs other processes (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                                <Grid>
-                                    <scottplot:WpfPlot x:Name="CpuTrendChart"/>
-                                    <TextBlock x:Name="CpuChartHintText"
-                                               Style="{StaticResource EmptyHint}"
-                                               Text="no CPU samples in the window yet"/>
-                                </Grid>
-                            </DockPanel>
-
-                            <DockPanel Grid.Column="2">
-                                <TextBlock DockPanel.Dock="Top" Text="Wait Time by Category — top 8 categories by delta wait time (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                                <Grid>
-                                    <scottplot:WpfPlot x:Name="WaitCategoryChart"/>
-                                    <TextBlock x:Name="WaitChartHintText"
-                                               Style="{StaticResource EmptyHint}"
-                                               Text="no wait samples in the window yet"/>
-                                </Grid>
-                            </DockPanel>
-                        </Grid>
-                    </Grid>
-                </TabItem>
-
-                <TabItem Header="Queries">
-                    <DockPanel Margin="0,8,0,0">
-                        <TextBlock DockPanel.Dock="Top" Text="Top 50 Queries by Total Duration (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                        <Grid>
-                            <DataGrid x:Name="QueriesGrid" Style="{StaticResource DarkGrid}">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="140"/>
-                                    <DataGridTextColumn Header="Query Text" Binding="{Binding QueryTextPreview}" Width="3*" SortMemberPath="QueryText">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                                <Setter Property="ToolTip" Value="{Binding QueryTextTooltip}"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Executions" Binding="{Binding Executions, StringFormat=N0}" Width="100"/>
-                                    <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" Width="120"/>
-                                    <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalElapsedMs, StringFormat=N1}" Width="140" SortDirection="Descending"/>
-                                    <DataGridTextColumn Header="Total Reads" Binding="{Binding TotalLogicalReads, StringFormat=N0}" Width="110"/>
-                                    <DataGridTextColumn Header="Last Execution (server)" Binding="{Binding LastExecutionTime, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="160"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                            <TextBlock x:Name="QueriesHintText"
-                                       Style="{StaticResource EmptyHint}"
-                                       Text="no query stats in the window yet"/>
-                        </Grid>
-                    </DockPanel>
-                </TabItem>
-
-                <TabItem Header="Blocking">
-                    <DockPanel Margin="0,8,0,0">
-                        <TextBlock DockPanel.Dock="Top" Text="Blocked Processes — XE reports with DMV-snapshot fallback (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                        <Grid>
-                            <DataGrid x:Name="BlockingGrid" Style="{StaticResource DarkGrid}">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Event Time (local)" Binding="{Binding EventTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="150"/>
-                                    <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="140">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="Foreground" Value="#8B93A1"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
-                                    <DataGridTextColumn Header="Blocked SPID" Binding="{Binding BlockedSpid}" Width="95"/>
-                                    <DataGridTextColumn Header="Blocking SPID" Binding="{Binding BlockingSpid}" Width="95"/>
-                                    <DataGridTextColumn Header="Wait Time" Binding="{Binding WaitTimeFormatted}" Width="90" SortMemberPath="WaitTimeMs"/>
-                                    <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="90"/>
-                                    <DataGridTextColumn Header="Contentious Object" Binding="{Binding ContentiousObject}" Width="1.5*"/>
-                                    <DataGridTextColumn Header="Blocked SQL" Binding="{Binding BlockedSqlPreview}" Width="2*" SortMemberPath="BlockedSqlText">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                                <Setter Property="ToolTip" Value="{Binding BlockedSqlTooltip}"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTextColumn Header="Blocking SQL" Binding="{Binding BlockingSqlPreview}" Width="2*" SortMemberPath="BlockingSqlText">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock">
-                                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                                <Setter Property="ToolTip" Value="{Binding BlockingSqlTooltip}"/>
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                            <TextBlock x:Name="BlockingHintText"
-                                       Style="{StaticResource EmptyHint}"
-                                       Text="no blocked-process events in the window — the XE session and the DMV snapshot are both clean"/>
-                        </Grid>
-                    </DockPanel>
-                </TabItem>
-
-                <TabItem Header="Recommendations">
+                <TabItem x:Name="RecommendationsTab" Header="Recommendations">
                     <Grid Margin="0,8,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="3*"/>
@@ -530,7 +409,7 @@
                     </Grid>
                 </TabItem>
 
-                <TabItem Header="Alerts">
+                <TabItem x:Name="AlertsTab" Header="Alerts">
                     <Grid Margin="0,8,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -599,6 +478,23 @@
                     </Grid>
                 </TabItem>
             </TabControl>
+
+            <!-- Empty state: no servers registered. Shown in the content column with MainTabs hidden
+                 until the store has at least one server (mirrors Lite's no-servers empty state). -->
+            <Border x:Name="EmptyStatePanel"
+                    Grid.Column="1"
+                    Background="Transparent"
+                    Visibility="Collapsed">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock Text="No Servers Registered"
+                               FontSize="24" FontWeight="Light"
+                               Foreground="#8B93A1" HorizontalAlignment="Center"/>
+                    <TextBlock Text="Start the Darling service to populate the store, then double-click a server to open its dashboard."
+                               FontSize="14" Foreground="#8B93A1"
+                               Margin="0,8,0,0" HorizontalAlignment="Center"
+                               TextAlignment="Center" MaxWidth="480" TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
         </Grid>
 
         <!-- Full-window message state: missing config / unreachable store -->
