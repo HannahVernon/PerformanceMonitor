@@ -143,3 +143,114 @@ jobs:
             --notes $body `
             --prerelease `
             releases/*.zip releases/SHA256SUMS.txt
+
+  # Darling.Tests has live-PostgreSQL tests gated on env vars that the per-PR/push build never
+  # sets, so regular CI runs only the ungated subset. This job stands up a throwaway PostgreSQL
+  # from the bundled pg-runtime and runs the full Darling suite against it nightly, so the
+  # Postgres + managed-bootstrap paths get real coverage. The one live-SQL-Server E2E stays
+  # skipped (no SQL Server on the runner) — expected. Gated like the build job so it only runs
+  # when dev actually changed (or on manual dispatch).
+  darling-pg:
+    name: Darling PostgreSQL tests
+    needs: check
+    if: needs.check.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+
+      - name: Setup .NET 10.0
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # Darling bundles a PostgreSQL 17 + TimescaleDB runtime (pg-runtime.zip). The fetch script
+      # pulls ~340MB of pinned EDB/TimescaleDB archives, so cache the assembled zip on the SAME
+      # key build.yml's release job uses (the fetch script's own content hash) — nightly and
+      # release share one cache entry, so a warm cache means no download here.
+      - name: Cache Darling pg-runtime.zip
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip (cache miss only)
+        if: steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
+
+      # One uniform path for hit and miss: we always have the zip (restored or freshly built),
+      # so always extract it — simpler than branching on the script's -KeepWork assembled tree.
+      # ExtractToDirectory mirrors the fetch script's own API and reads any zip it writes.
+      - name: Extract pg-runtime
+        shell: pwsh
+        run: |
+          $zip  = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime.zip"
+          $dest = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          if (-not (Test-Path "$dest\pgsql\bin\pg_ctl.exe")) { throw "pg-runtime missing pgsql\bin\pg_ctl.exe" }
+
+      - name: Restore Darling.Tests
+        run: dotnet restore Darling/Darling.Tests/Darling.Tests.csproj --locked-mode
+
+      - name: Build Darling.Tests
+        run: dotnet build Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-restore
+
+      # Stand up a throwaway cluster from the bundled runtime. initdb TRUST auth is acceptable
+      # ONLY here: an ephemeral CI runner, loopback-only, throwaway data. The PRODUCT default is
+      # the opposite (scram-sha-256 + a generated credential; see DarlingManagedPostgres). The
+      # appended settings mirror DarlingManagedPostgres.BuildConfAppend (timescaledb preload —
+      # the Timescale-gated tests detect and use it — plus the port and loopback bind). Port 5541
+      # is fixed and distinct; the managed-bootstrap E2E starts its OWN postgres on a random free
+      # port, so there is no collision.
+      - name: Initialize and start throwaway PostgreSQL
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          $logFile = "$env:RUNNER_TEMP\darling-pg.log"
+          & "$bin\initdb.exe" -D $dataDir -U postgres -A trust --encoding=UTF8
+          if ($LASTEXITCODE -ne 0) { throw "initdb failed ($LASTEXITCODE)" }
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "shared_preload_libraries = 'timescaledb'"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "port = 5541"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "listen_addresses = '127.0.0.1'"
+          & "$bin\pg_ctl.exe" -D $dataDir -l $logFile -w start
+          if ($LASTEXITCODE -ne 0) { if (Test-Path $logFile) { Get-Content $logFile -Tail 50 }; throw "pg_ctl start failed ($LASTEXITCODE)" }
+          & "$bin\createdb.exe" -h 127.0.0.1 -p 5541 -U postgres darling
+          if ($LASTEXITCODE -ne 0) { throw "createdb failed ($LASTEXITCODE)" }
+
+      # DARLING_TEST_PG lights up the [Collection("live-postgres")] classes; DARLING_TEST_PGRUNTIME
+      # lights up the managed-bootstrap E2E. DARLING_TEST_SQL is intentionally unset — the one
+      # live-SQL-Server E2E stays skipped (no SQL Server on the runner).
+      - name: Run Darling PG tests
+        shell: pwsh
+        env:
+          DARLING_TEST_PG: "Host=127.0.0.1;Port=5541;Username=postgres;Database=darling"
+          DARLING_TEST_PGRUNTIME: ${{ github.workspace }}\Darling\artifacts\pg-runtime
+        run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal --logger "trx;LogFileName=darling-nightly.trx" --results-directory TestResults
+
+      - name: Stop PostgreSQL
+        if: always()
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          if (Test-Path "$bin\pg_ctl.exe") { & "$bin\pg_ctl.exe" -D $dataDir -m fast -w stop }
+          exit 0
+
+      - name: Upload PG log and test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: darling-pg-failure
+          path: |
+            ${{ runner.temp }}/darling-pg.log
+            TestResults/
+          if-no-files-found: ignore
