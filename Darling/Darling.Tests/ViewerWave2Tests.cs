@@ -69,8 +69,8 @@ public sealed class ViewerWave2SqlTests
     }
 
     [Theory]
-    [InlineData(ViewerDataService.BlockedProcessReportsSql, "FROM blocked_process_reports")]
-    [InlineData(ViewerDataService.DmvBlockingSnapshotsSql, "FROM dmv_blocking_snapshots")]
+    [InlineData(ViewerDataService.BlockedProcessReportsSql, "FROM v_blocked_process_reports")]
+    [InlineData(ViewerDataService.DmvBlockingSnapshotsSql, "FROM v_dmv_blocking_snapshots")]
     public void BlockingSql_WindowsOnCollectionTime_NewestEventsFirst_Cap200(string sql, string fromClause)
     {
         /* The alert path's read semantics (DarlingAlertReadAdapter), verbatim. */
@@ -98,12 +98,9 @@ public sealed class ViewerWave2SqlTests
         }
     }
 
-    [Fact]
-    public void BlockingSql_DeliberatelySkipsTheReportXmlColumn()
-    {
-        /* Nothing in this slice renders the XML and it can run to hundreds of KB per row. */
-        Assert.DoesNotContain("blocked_process_report_xml", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
-    }
+    /* The W1c "deliberately skips the report XML" pin was removed in W1e: the widened Blocked Process
+       Reports grid needs blocked_process_report_xml (HasReportXml gates the per-row XML Save, and the
+       block-chain viewer reads it). ViewerBlockingDepthSqlTests now pins that the XML IS selected. */
 }
 
 /// <summary>
@@ -189,14 +186,15 @@ public sealed class ViewerWave2DisplayTests
     }
 
     [Fact]
-    public void BlockedRow_EventTimeLocal_TreatsTheStoredValueAsUtc()
+    public void BlockedRow_EventTimeLocal_FormatsTheStoredUtcInLocalTime()
     {
+        /* W1e: EventTimeLocal is now the Lite-grid display STRING (the widened grid binds it directly),
+           the stored naive-UTC rendered in the viewer's machine-local time; empty when there is no event. */
         var storedUtc = new DateTime(2026, 7, 1, 3, 30, 0, DateTimeKind.Unspecified);
         var row = new ViewerBlockedProcessRow { EventTime = storedUtc };
 
-        Assert.NotNull(row.EventTimeLocal);
-        Assert.Equal(storedUtc.Ticks, row.EventTimeLocal!.Value.ToUniversalTime().Ticks);
-        Assert.Null(new ViewerBlockedProcessRow().EventTimeLocal);
+        Assert.Equal(ViewerDataService.ToLocalTime(storedUtc).ToString("yyyy-MM-dd HH:mm:ss"), row.EventTimeLocal);
+        Assert.Equal("", new ViewerBlockedProcessRow().EventTimeLocal);
     }
 
     [Fact]

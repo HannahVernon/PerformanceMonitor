@@ -87,6 +87,66 @@
             <Setter Property="RowStyle" Value="{StaticResource DarkGridRow}"/>
             <Setter Property="CellStyle" Value="{StaticResource DarkGridCell}"/>
         </Style>
+
+        <!-- Blocking-tab context menus (W1e), copied from Lite's ServerTab.xaml with the two View-Plan
+             items dropped: the viewer has no plan host yet (deferred — later wave). Copy/Export delegate
+             to the shared PerformanceMonitor.Ui DataGridExport; the graph actions open the shared .Ui
+             BlockingChainControl / DeadlockGraphControl in a GraphViewerWindow. -->
+        <ContextMenu x:Key="BlockedProcessContextMenu">
+            <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="View Block Chain" Click="ViewBlockChain_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F517;"/></MenuItem.Icon>
+            </MenuItem>
+        </ContextMenu>
+
+        <ContextMenu x:Key="DeadlockContextMenu">
+            <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="View Deadlock Graph" Click="ViewDeadlockGraph_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F578;"/></MenuItem.Icon>
+            </MenuItem>
+        </ContextMenu>
+
+        <!-- Row style for the blocked-process grid: Lite's BlockedProcessContextMenu + long-block tint,
+             layered on the viewer's DarkGridRow hover chrome. -->
+        <Style x:Key="BlockingRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Setter Property="ContextMenu" Value="{StaticResource BlockedProcessContextMenu}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsLongBlock}" Value="True">
+                    <Setter Property="Background" Value="#33FF6B6B"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Row style for the deadlock grid: Lite's DeadlockContextMenu on the DarkGridRow hover chrome. -->
+        <Style x:Key="DeadlockRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Setter Property="ContextMenu" Value="{StaticResource DeadlockContextMenu}"/>
+        </Style>
     </UserControl.Resources>
 
     <!-- Inner tab strip. Only the ACTIVE inner tab loads (Lite's visible-only rule); MainWindow's
@@ -266,11 +326,12 @@
             </Grid>
         </TabItem>
 
-        <!-- Blocking Tab — upgraded to Lite's sub-tab structure (ServerTab.xaml:1435-1469): "Trends"
-             (lock-wait rate, blocking incidents, deadlocks) and "Current Waits" (waiting-task duration
-             by wait type, blocked sessions by database) precede the existing blocked-process grid,
-             re-hosted unchanged as the third "Blocked Process Reports" sub-tab. Lite's Deadlocks
-             sub-tab arrives in a later wave. -->
+        <!-- Blocking Tab — Lite's full sub-tab structure (ServerTab.xaml:1435-1672): "Trends" (lock-wait
+             rate, blocking incidents, deadlocks), "Current Waits" (waiting-task duration by wait type,
+             blocked sessions by database), "Blocked Process Reports" (W1e widened ~25-column filterable
+             grid + UTC slicer + block-chain viewer), and "Deadlocks" (W1e per-process grid + UTC slicer +
+             deadlock-graph viewer). Reads rewired to Postgres; the two View-Plan context-menu items are
+             deferred (no plan host yet). -->
         <TabItem Header="Blocking">
             <Grid Margin="8">
                 <TabControl x:Name="BlockingSubTabs"
@@ -310,49 +371,212 @@
                             </Border>
                         </Grid>
                     </TabItem>
+                    <!-- Blocked Process Reports — widened to Lite's full grid (W1e): UTC slicer + ~25 filterable
+                         columns (Source badge, per-column filter headers, per-row XML Save gated on HasReportXml,
+                         BlockingRowStyle long-block tinting, right-click / double-click View Block Chain). -->
                     <TabItem Header="Blocked Process Reports">
-                        <DockPanel Margin="0,8,0,0">
-                            <TextBlock DockPanel.Dock="Top" Text="Blocked Processes — XE reports with DMV-snapshot fallback (last 24 hours)" Style="{StaticResource SectionHeader}"/>
-                            <Grid>
-                                <DataGrid x:Name="BlockingGrid" Style="{StaticResource DarkGrid}">
-                                    <DataGrid.Columns>
-                                        <DataGridTextColumn Header="Event Time (local)" Binding="{Binding EventTimeLocal, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="150"/>
-                                        <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="140">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Foreground" Value="#8B93A1"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
-                                        <DataGridTextColumn Header="Blocked SPID" Binding="{Binding BlockedSpid}" Width="95"/>
-                                        <DataGridTextColumn Header="Blocking SPID" Binding="{Binding BlockingSpid}" Width="95"/>
-                                        <DataGridTextColumn Header="Wait Time" Binding="{Binding WaitTimeFormatted}" Width="90" SortMemberPath="WaitTimeMs"/>
-                                        <DataGridTextColumn Header="Lock Mode" Binding="{Binding LockMode}" Width="90"/>
-                                        <DataGridTextColumn Header="Contentious Object" Binding="{Binding ContentiousObject}" Width="1.5*"/>
-                                        <DataGridTextColumn Header="Blocked SQL" Binding="{Binding BlockedSqlPreview}" Width="2*" SortMemberPath="BlockedSqlText">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                                    <Setter Property="ToolTip" Value="{Binding BlockedSqlTooltip}"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="Blocking SQL" Binding="{Binding BlockingSqlPreview}" Width="2*" SortMemberPath="BlockingSqlText">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-                                                    <Setter Property="ToolTip" Value="{Binding BlockingSqlTooltip}"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                    </DataGrid.Columns>
-                                </DataGrid>
-                                <TextBlock x:Name="BlockingHintText"
-                                           Style="{StaticResource EmptyHint}"
-                                           Text="no blocked-process events in the window — the XE session and the DMV snapshot are both clean"/>
-                            </Grid>
-                        </DockPanel>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <local:TimeRangeSlicerControl x:Name="BlockingSlicer" Grid.Row="0"/>
+                            <DataGrid x:Name="BlockedProcessReportGrid" Grid.Row="1"
+                                      Style="{StaticResource DarkGrid}"
+                                      RowStyle="{StaticResource BlockingRowStyle}"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      MouseDoubleClick="BlockedProcessReportGrid_MouseDoubleClick"
+                                      Sorting="BlockedProcessReportGrid_Sorting">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Binding="{Binding EventTimeLocal}" Width="130">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="EventTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Event Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Source}" Width="130">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Source" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Source" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding DatabaseName}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedSpid}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedSpid" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked SPID" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockingSpid}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingSpid" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking SPID" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding WaitTimeFormatted}" Width="80" SortMemberPath="WaitTimeMs">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitTimeFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Wait Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding WaitResource}" Width="200">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitResource" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Wait Resource" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding LockMode}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LockMode" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Lock Mode" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedStatus}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedStatus" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Status" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockingStatus}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingStatus" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking Status" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedIsolationLevel}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedIsolationLevel" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Isolation" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockingIsolationLevel}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingIsolationLevel" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking Isolation" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedTransactionName}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedTransactionName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Tran" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedPriority}" ElementStyle="{StaticResource NumericCell}" Width="55">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedPriority" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Priority" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedTransactionCount}" ElementStyle="{StaticResource NumericCell}" Width="55">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedTransactionCount" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Tran Count" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedLogUsed}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedLogUsed" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Log Used" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedLoginName}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedLoginName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Login" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedHostName}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedHostName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked Host" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockedClientApp}" Width="140">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedClientApp" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked App" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Width="300">
+                                        <DataGridTemplateColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockedSqlText" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocked SQL" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTemplateColumn.Header>
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding BlockedSqlText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding BlockedSqlText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockingLoginName}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingLoginName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking Login" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockingHostName}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingHostName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking Host" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding BlockingClientApp}" Width="140">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingClientApp" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking App" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Width="300">
+                                        <DataGridTemplateColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="BlockingSqlText" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking SQL" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTemplateColumn.Header>
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding BlockingSqlText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding BlockingSqlText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="XML" Width="60">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Save" Padding="6,2" Click="DownloadBlockedProcessXml_Click"
+                                                        IsEnabled="{Binding HasReportXml}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </TabItem>
+                    <!-- Deadlocks — Lite's deadlock sub-tab (W1e): UTC slicer + ~20 filterable columns
+                         (parsed per-process from each deadlock graph), per-row XML Save gated on
+                         HasDeadlockXml, right-click / double-click View Deadlock Graph. -->
+                    <TabItem Header="Deadlocks">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <local:TimeRangeSlicerControl x:Name="DeadlockSlicer" Grid.Row="0"/>
+                            <DataGrid x:Name="DeadlockGrid" Grid.Row="1"
+                                      Style="{StaticResource DarkGrid}"
+                                      RowStyle="{StaticResource DeadlockRowStyle}"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      MouseDoubleClick="DeadlockGrid_MouseDoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Binding="{Binding DeadlockTimeLocal}" Width="130">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DeadlockTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding DeadlockType}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DeadlockType" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Type" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding VictimDisplay}" Width="55">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="VictimDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Victim" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Spid}" ElementStyle="{StaticResource NumericCell}" Width="55">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Spid" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="SPID" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding DatabaseName}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding ObjectNames}" Width="150">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ObjectNames" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Object(s)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding ProcName}" Width="150">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ProcName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Procedure" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding LockMode}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LockMode" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Lock Mode" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding OwnerMode}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="OwnerMode" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Owner Mode" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding WaiterMode}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaiterMode" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Waiter Mode" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding WaitResource}" Width="200">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitResource" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Wait Resource" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding WaitTimeFormatted}" Width="80" SortMemberPath="WaitTime">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitTimeFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Wait (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding IsolationLevel}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IsolationLevel" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Isolation" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding TransactionName}" Width="120">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TransactionName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Tran Name" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding TransactionCount}" ElementStyle="{StaticResource NumericCell}" Width="55">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TransactionCount" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Tran Count" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Priority}" ElementStyle="{StaticResource NumericCell}" Width="55">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Priority" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Priority" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding LoginName}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LoginName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Login" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding HostName}" Width="100">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="HostName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Host" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding ClientApp}" Width="140">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ClientApp" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="App" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Width="300">
+                                        <DataGridTemplateColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SqlText" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="SQL Text" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTemplateColumn.Header>
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding SqlText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding SqlText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="XML" Width="60">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Save" Padding="6,2" Click="DownloadDeadlockXml_Click"
+                                                        IsEnabled="{Binding HasDeadlockXml}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
                     </TabItem>
                 </TabControl>
             </Grid>

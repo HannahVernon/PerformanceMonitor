@@ -34,6 +34,8 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<DatabaseScopedConfigRow>? _dbScopedConfigFilterMgr;
     private DataGridFilterManager<TraceFlagRow>? _traceFlagsFilterMgr;
     private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
+    private DataGridFilterManager<ViewerBlockedProcessRow>? _blockedProcessFilterMgr;
+    private DataGridFilterManager<DeadlockProcessDetail>? _deadlockFilterMgr;
 
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
@@ -48,12 +50,16 @@ public partial class ViewerServerTab : UserControl
         _dbScopedConfigFilterMgr = new DataGridFilterManager<DatabaseScopedConfigRow>(DatabaseScopedConfigGrid);
         _traceFlagsFilterMgr = new DataGridFilterManager<TraceFlagRow>(TraceFlagsGrid);
         _runningJobsFilterMgr = new DataGridFilterManager<RunningJobRow>(RunningJobsGrid);
+        _blockedProcessFilterMgr = new DataGridFilterManager<ViewerBlockedProcessRow>(BlockedProcessReportGrid);
+        _deadlockFilterMgr = new DataGridFilterManager<DeadlockProcessDetail>(DeadlockGrid);
 
         _filterManagers[ServerConfigGrid] = _serverConfigFilterMgr;
         _filterManagers[DatabaseConfigGrid] = _databaseConfigFilterMgr;
         _filterManagers[DatabaseScopedConfigGrid] = _dbScopedConfigFilterMgr;
         _filterManagers[TraceFlagsGrid] = _traceFlagsFilterMgr;
         _filterManagers[RunningJobsGrid] = _runningJobsFilterMgr;
+        _filterManagers[BlockedProcessReportGrid] = _blockedProcessFilterMgr;
+        _filterManagers[DeadlockGrid] = _deadlockFilterMgr;
     }
 
     /// <summary>

@@ -12,57 +12,113 @@ using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Alerting;
+using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Darling.Analysis;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The Blocking-tab grid row. All alert-consumed members (event time, database, SPID pair,
-/// wait/lock, the query pair, contentious object, Source) live on the shared
-/// <see cref="BlockedProcessAlertRow"/> base — the same shape Lite's grid row derives from —
-/// so the viewer's store reads flow through the shared XE→DMV fallback merge
-/// (<see cref="BlockedProcessReportMerge"/>) without a mapping copy. Only display extras live
-/// here. event_time is stored naive-UTC (the XE @timestamp is UTC; the DMV snapshot stamps the
-/// collector's UTC collection time), so it converts to viewer-local like every collection_time.
+/// The Blocking-tab grid row — widened to Lite parity (W1e). All alert-consumed members (event time,
+/// database, SPID pair, wait/lock, the query pair, report XML, contentious object, Source) live on the
+/// shared <see cref="BlockedProcessAlertRow"/> base — the same shape Lite's grid row derives from — so
+/// the viewer's store reads flow through the shared XE→DMV fallback merge
+/// (<see cref="BlockedProcessReportMerge"/>) without a mapping copy. The grid-display extras below mirror
+/// Lite's <c>BlockedProcessReportRow</c> exactly. event_time is stored naive-UTC (the XE @timestamp is
+/// UTC; the DMV snapshot stamps the collector's UTC collection time), so <see cref="EventTimeLocal"/>
+/// converts to viewer-local like every other collection_time — Lite's per-server
+/// <c>ServerTimeHelper.FormatServerTime</c> becomes <see cref="ViewerDataService.ToLocalTime"/> (the
+/// viewer's one machine-local convention; the same swap the trend charts already document).
 /// </summary>
 public sealed class ViewerBlockedProcessRow : BlockedProcessAlertRow
 {
-    /// <summary>The stored naive-UTC event time in the viewer machine's local time.</summary>
-    public DateTime? EventTimeLocal
-        => EventTime is { } eventTime ? ViewerDataService.ToLocalTime(eventTime) : null;
+    public DateTime CollectionTime { get; set; }
+    public int BlockedEcid { get; set; }
+    public int BlockingEcid { get; set; }
+    public int? MonitorLoop { get; set; }
+
+    public string WaitResource { get; set; } = "";
+    public string BlockedStatus { get; set; } = "";
+    public string BlockedIsolationLevel { get; set; } = "";
+    public long BlockedLogUsed { get; set; }
+    public int BlockedTransactionCount { get; set; }
+    public string BlockedClientApp { get; set; } = "";
+    public string BlockedHostName { get; set; } = "";
+    public string BlockedLoginName { get; set; } = "";
+    public string BlockingStatus { get; set; } = "";
+    public string BlockingIsolationLevel { get; set; } = "";
+    public string BlockingClientApp { get; set; } = "";
+    public string BlockingHostName { get; set; } = "";
+    public string BlockingLoginName { get; set; } = "";
+    public string BlockedTransactionName { get; set; } = "";
+    public string BlockingTransactionName { get; set; } = "";
+    public DateTime? BlockedLastTranStarted { get; set; }
+    public DateTime? BlockingLastTranStarted { get; set; }
+    public DateTime? BlockedLastBatchStarted { get; set; }
+    public DateTime? BlockingLastBatchStarted { get; set; }
+    public DateTime? BlockedLastBatchCompleted { get; set; }
+    public DateTime? BlockingLastBatchCompleted { get; set; }
+    public int BlockedPriority { get; set; }
+    public int BlockingPriority { get; set; }
+
+    /// <summary>The stored naive-UTC event time in the viewer machine's local time (Lite's grid format).</summary>
+    public string EventTimeLocal
+        => EventTime is { } eventTime ? ViewerDataService.ToLocalTime(eventTime).ToString("yyyy-MM-dd HH:mm:ss") : "";
 
     /// <summary>Lite's wait-time rendering: sub-second in ms, else one-decimal seconds.</summary>
     public string WaitTimeFormatted => ViewerDataService.FormatWaitTime(WaitTimeMs);
 
-    public string BlockedSqlPreview => ViewerDataService.TruncateForCell(BlockedSqlText);
-
-    public string BlockedSqlTooltip => ViewerDataService.TruncateForTooltip(BlockedSqlText);
-
-    public string BlockingSqlPreview => ViewerDataService.TruncateForCell(BlockingSqlText);
-
-    public string BlockingSqlTooltip => ViewerDataService.TruncateForTooltip(BlockingSqlText);
+    /// <summary>Lite's long-block tint threshold: over 30 seconds waiting.</summary>
+    public bool IsLongBlock => WaitTimeMs > 30000;
 }
 
 public sealed partial class ViewerDataService
 {
     /// <summary>
-    /// The XE blocked-process-report read — the alert path's
-    /// (<c>DarlingAlertReadAdapter.BlockedProcessReportsSql</c>) query with one deliberate trim:
-    /// <c>blocked_process_report_xml</c> is not selected, because nothing in this slice renders
-    /// the XML and it can run to hundreds of KB per row. Same WHERE / ORDER BY event_time DESC /
-    /// LIMIT 200 semantics. $1 server_id, $2 window start, $3 window end (naive UTC).
+    /// The XE blocked-process-report read — Lite's <c>GetRecentBlockedProcessReportsAsync</c> full
+    /// 37-column SELECT ported to Postgres, including <c>blocked_process_report_xml</c> (the block-chain /
+    /// XML-save surface needs it). Same WHERE / ORDER BY event_time DESC / LIMIT 200 semantics.
+    /// $1 server_id, $2 window start, $3 window end (naive UTC).
     /// </summary>
     public const string BlockedProcessReportsSql = """
         SELECT
+            collection_time,
             event_time,
             database_name,
             blocked_spid,
+            blocked_ecid,
             blocking_spid,
+            blocking_ecid,
             wait_time_ms,
+            wait_resource,
             lock_mode,
+            blocked_status,
+            blocked_isolation_level,
+            blocked_log_used,
+            blocked_transaction_count,
+            blocked_client_app,
+            blocked_host_name,
+            blocked_login_name,
             blocked_sql_text,
+            blocking_status,
+            blocking_isolation_level,
+            blocking_client_app,
+            blocking_host_name,
+            blocking_login_name,
             blocking_sql_text,
-            contentious_object
-        FROM blocked_process_reports
+            blocked_process_report_xml,
+            blocked_transaction_name,
+            blocking_transaction_name,
+            blocked_last_tran_started,
+            blocking_last_tran_started,
+            blocked_last_batch_started,
+            blocking_last_batch_started,
+            blocked_last_batch_completed,
+            blocking_last_batch_completed,
+            blocked_priority,
+            blocking_priority,
+            contentious_object,
+            monitor_loop
+        FROM v_blocked_process_reports
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
@@ -71,28 +127,59 @@ public sealed partial class ViewerDataService
         """;
 
     /// <summary>
-    /// The always-on DMV blocking-snapshot fallback read — the alert path's
-    /// (<c>DarlingAlertReadAdapter.DmvBlockingSnapshotsSql</c>) query verbatim
-    /// (dmv_blocking_snapshots has no report XML column to trim). Same parameters as
+    /// The always-on DMV blocking-snapshot fallback read for the grid — Lite's
+    /// <c>AppendDmvBlockedProcessGridRowsAsync</c> 19-column SELECT ported to Postgres
+    /// (dmv_blocking_snapshots carries no report XML). Same parameters as
     /// <see cref="BlockedProcessReportsSql"/>.
     /// </summary>
     public const string DmvBlockingSnapshotsSql = """
         SELECT
+            collection_time,
             event_time,
             database_name,
             blocked_spid,
+            blocked_ecid,
             blocking_spid,
+            blocking_ecid,
             wait_time_ms,
             lock_mode,
+            blocking_status,
+            contentious_object,
             blocked_sql_text,
             blocking_sql_text,
-            contentious_object
-        FROM dmv_blocking_snapshots
+            blocked_login_name,
+            blocked_host_name,
+            blocked_client_app,
+            blocked_last_tran_started,
+            blocking_last_tran_started,
+            monitor_loop
+        FROM v_dmv_blocking_snapshots
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
         ORDER BY event_time DESC
         LIMIT 200
+        """;
+
+    /// <summary>
+    /// The pair-row read for the block-chain viewer — Lite's <c>GetBlockingPairRowsAsync</c> ported to
+    /// Postgres, built from the shared <see cref="PgBlockingPairRowQuery"/> column fragments (the same
+    /// source of truth the Darling drill-down + fact collectors use, so the apex and column order can't
+    /// drift). Selects the full SQL text (the chain viewer renders it). <see cref="PgBlockingPairRowQuery.SpidFilter"/>
+    /// drops the missing-blocker sentinel so no consumer invents a SPID-0 apex.
+    /// </summary>
+    public const string BlockingPairRowsSql = $"""
+        SELECT
+            {PgBlockingPairRowQuery.LeadingColumns},
+            blocked_sql_text, blocking_sql_text,
+            {PgBlockingPairRowQuery.IdentityColumns},
+            contentious_object,
+            {PgBlockingPairRowQuery.TrailingIdentityColumns}
+        FROM v_blocked_process_reports
+        WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+        {PgBlockingPairRowQuery.SpidFilter}
+        ORDER BY event_time DESC
+        LIMIT 5000
         """;
 
     /// <summary>
@@ -105,23 +192,145 @@ public sealed partial class ViewerDataService
     public async Task<List<ViewerBlockedProcessRow>> GetRecentBlockedProcessReportsAsync(
         int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
     {
-        var items = await ReadBlockedProcessRowsAsync(
-            BlockedProcessReportsSql, serverId, startUtc, endUtc, BlockedProcessAlertRow.XeReportSource, cancellationToken);
-        var dmvItems = await ReadBlockedProcessRowsAsync(
-            DmvBlockingSnapshotsSql, serverId, startUtc, endUtc, BlockedProcessAlertRow.DmvSnapshotSource, cancellationToken);
+        var items = await ReadBlockedProcessRowsAsync(serverId, startUtc, endUtc, cancellationToken);
+        var dmvItems = await ReadDmvBlockedProcessRowsAsync(serverId, startUtc, endUtc, cancellationToken);
 
         BlockedProcessReportMerge.AppendDmvFallbackRows(items, dmvItems);
 
         return items;
     }
 
-    /// <summary>Both blocking reads share one column list, so one reader maps them.</summary>
+    /// <summary>Maps the full 37-column blocked-process-report read into the widened grid row.</summary>
     private async Task<List<ViewerBlockedProcessRow>> ReadBlockedProcessRowsAsync(
-        string sql, int serverId, DateTime startUtc, DateTime endUtc, string source, CancellationToken cancellationToken)
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
     {
         var rows = new List<ViewerBlockedProcessRow>();
 
-        await using var command = _dataSource.CreateCommand(sql);
+        await using var command = _dataSource.CreateCommand(BlockedProcessReportsSql);
+        AddBlockingParameters(command, serverId, startUtc, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new ViewerBlockedProcessRow
+            {
+                CollectionTime = reader.GetDateTime(0),
+                EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
+                DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+                WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                WaitResource = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                LockMode = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                BlockedStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                BlockedIsolationLevel = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                BlockedLogUsed = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                BlockedTransactionCount = reader.IsDBNull(13) ? 0 : reader.GetInt32(13),
+                BlockedClientApp = reader.IsDBNull(14) ? "" : reader.GetString(14),
+                BlockedHostName = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                BlockedLoginName = reader.IsDBNull(16) ? "" : reader.GetString(16),
+                BlockedSqlText = reader.IsDBNull(17) ? "" : reader.GetString(17),
+                BlockingStatus = reader.IsDBNull(18) ? "" : reader.GetString(18),
+                BlockingIsolationLevel = reader.IsDBNull(19) ? "" : reader.GetString(19),
+                BlockingClientApp = reader.IsDBNull(20) ? "" : reader.GetString(20),
+                BlockingHostName = reader.IsDBNull(21) ? "" : reader.GetString(21),
+                BlockingLoginName = reader.IsDBNull(22) ? "" : reader.GetString(22),
+                BlockingSqlText = reader.IsDBNull(23) ? "" : reader.GetString(23),
+                BlockedProcessReportXml = reader.IsDBNull(24) ? "" : reader.GetString(24),
+                BlockedTransactionName = reader.IsDBNull(25) ? "" : reader.GetString(25),
+                BlockingTransactionName = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                BlockedLastTranStarted = reader.IsDBNull(27) ? null : reader.GetDateTime(27),
+                BlockingLastTranStarted = reader.IsDBNull(28) ? null : reader.GetDateTime(28),
+                BlockedLastBatchStarted = reader.IsDBNull(29) ? null : reader.GetDateTime(29),
+                BlockingLastBatchStarted = reader.IsDBNull(30) ? null : reader.GetDateTime(30),
+                BlockedLastBatchCompleted = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
+                BlockingLastBatchCompleted = reader.IsDBNull(32) ? null : reader.GetDateTime(32),
+                BlockedPriority = reader.IsDBNull(33) ? 0 : reader.GetInt32(33),
+                BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
+                ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35),
+                MonitorLoop = reader.IsDBNull(36) ? null : reader.GetInt32(36),
+                Source = BlockedProcessAlertRow.XeReportSource,
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>Maps the 19-column DMV blocking-snapshot fallback read into the widened grid row.</summary>
+    private async Task<List<ViewerBlockedProcessRow>> ReadDmvBlockedProcessRowsAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+    {
+        var rows = new List<ViewerBlockedProcessRow>();
+
+        await using var command = _dataSource.CreateCommand(DmvBlockingSnapshotsSql);
+        AddBlockingParameters(command, serverId, startUtc, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new ViewerBlockedProcessRow
+            {
+                CollectionTime = reader.GetDateTime(0),
+                EventTime = reader.IsDBNull(1) ? null : reader.GetDateTime(1),
+                DatabaseName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                BlockedSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
+                BlockedEcid = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                BlockingSpid = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+                BlockingEcid = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+                WaitTimeMs = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                LockMode = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                BlockingStatus = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                ContentiousObject = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                BlockedSqlText = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                BlockingSqlText = reader.IsDBNull(12) ? "" : reader.GetString(12),
+                BlockedLoginName = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                BlockedHostName = reader.IsDBNull(14) ? "" : reader.GetString(14),
+                BlockedClientApp = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                BlockedLastTranStarted = reader.IsDBNull(16) ? null : reader.GetDateTime(16),
+                BlockingLastTranStarted = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
+                MonitorLoop = reader.IsDBNull(18) ? null : reader.GetInt32(18),
+                Source = BlockedProcessAlertRow.DmvSnapshotSource,
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Fetches the blocked/blocker pair rows for a window, for the block-chain viewer to feed
+    /// <see cref="BlockingChainReconstructor"/>. Internal (not public): <see cref="BlockingPairRow"/> is
+    /// internal to the analysis assembly — a public method returning it would be CS0050 (mirror of Lite's
+    /// <c>GetBlockingPairRowsAsync</c>). Opens one pooled connection so the BPR fetch and the DMV-snapshot
+    /// append share it (the append takes a command factory, the Lite shape). Uses
+    /// <see cref="PgBlockingPairRowQuery"/> so the viewer agrees with the drill-down + fact collectors on
+    /// the apex.
+    /// </summary>
+    internal async Task<List<BlockingPairRow>> GetBlockingPairRowsAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<BlockingPairRow>();
+
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = BlockingPairRowsSql;
+            AddBlockingParameters(command, serverId, startUtc, endUtc);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                rows.Add(PgBlockingPairRowQuery.Read(reader));
+        }
+
+        // Always-on DMV blocking snapshot: merge in the fallback rows so the viewer works even when the
+        // blocked-process-report XE captured nothing (threshold unset / AWS RDS). Same connection.
+        await PgBlockingPairRowQuery.AppendDmvSnapshotRowsAsync(
+            connection.CreateCommand, rows, serverId, startUtc, endUtc);
+
+        return rows;
+    }
+
+    /// <summary>The three blocking-window parameters ($1 server_id, $2/$3 naive-UTC window bounds).</summary>
+    private static void AddBlockingParameters(NpgsqlCommand command, int serverId, DateTime startUtc, DateTime endUtc)
+    {
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
         command.Parameters.Add(new NpgsqlParameter<DateTime>
         {
@@ -131,25 +340,6 @@ public sealed partial class ViewerDataService
         {
             TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified),
         });
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            rows.Add(new ViewerBlockedProcessRow
-            {
-                EventTime = reader.IsDBNull(0) ? null : reader.GetDateTime(0),
-                DatabaseName = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                BlockedSpid = reader.IsDBNull(2) ? 0 : reader.GetInt32(2),
-                BlockingSpid = reader.IsDBNull(3) ? 0 : reader.GetInt32(3),
-                WaitTimeMs = reader.IsDBNull(4) ? 0 : reader.GetInt64(4),
-                LockMode = reader.IsDBNull(5) ? "" : reader.GetString(5),
-                BlockedSqlText = reader.IsDBNull(6) ? "" : reader.GetString(6),
-                BlockingSqlText = reader.IsDBNull(7) ? "" : reader.GetString(7),
-                ContentiousObject = reader.IsDBNull(8) ? "" : reader.GetString(8),
-                Source = source,
-            });
-        }
-
-        return rows;
     }
 
     /// <summary>Lite's wait-time rendering: &lt; 1000 ms as "N ms", else "N.N sec".</summary>

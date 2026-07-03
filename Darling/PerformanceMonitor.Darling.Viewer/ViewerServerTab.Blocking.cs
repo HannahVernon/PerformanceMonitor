@@ -28,8 +28,9 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// (2) the viewer's fixed 24-hour window supplies the X-axis range (Lite's hoursBack / custom-range
 /// parameters are dropped). The spike-plot / zero-line-when-empty shapes, the fixed
 /// <see cref="ChartPalette.SeriesColor"/> identities for the single-series charts, and the cycling
-/// <see cref="ChartPalette"/> colors for the multi-series charts are preserved. Lite's Deadlocks
-/// grid sub-tab, the blocking slicer, and chart drill-downs are NOT ported (later waves / deferred).
+/// <see cref="ChartPalette"/> colors for the multi-series charts are preserved. W1e adds Lite's full
+/// Blocked Process Reports grid (widened + slicer + block-chain viewer) and the Deadlocks sub-tab
+/// (deadlock-graph viewer); chart drill-downs remain deferred (no Active Queries surface yet).
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -62,6 +63,11 @@ public partial class ViewerServerTab
         _deadlockTrendHover = new ChartHoverHelper(DeadlockTrendChart, "deadlocks");
         _currentWaitsDurationHover = new ChartHoverHelper(CurrentWaitsDurationChart, "ms");
         _currentWaitsBlockedHover = new ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
+
+        /* The Blocked Process Reports + Deadlocks sub-tabs each carry a UTC slicer; dragging it re-reads
+           its grid over the selection (Lite's OnBlockingSlicerChanged / OnDeadlockSlicerChanged). */
+        BlockingSlicer.RangeChanged += OnBlockingSlicerChanged;
+        DeadlockSlicer.RangeChanged += OnDeadlockSlicerChanged;
     }
 
     /// <summary>
@@ -114,24 +120,137 @@ public partial class ViewerServerTab
                 RenderCurrentWaitsBlockedChart(blocked);
                 break;
             case 2: // Blocked Process Reports
-            default:
                 await LoadBlockedProcessReportsAsync(startUtc, endUtc);
+                break;
+            case 3: // Deadlocks
+            default:
+                await LoadDeadlocksAsync(startUtc, endUtc);
                 break;
         }
     }
 
     /// <summary>
-    /// The XE blocked-process-report grid (re-hosted verbatim from the old flat Blocking tab): XE-preferred
-    /// reads with the always-on DMV snapshot as fallback, merged through the shared
-    /// <see cref="ViewerDataService.GetRecentBlockedProcessReportsAsync"/>.
+    /// Loads the Blocked Process Reports sub-tab (W1e Lite parity): the widened XE-preferred / DMV-fallback
+    /// grid bound through the filter manager (so active column filters survive the refresh) plus the UTC
+    /// slicer over the same window. The grid reads the full 24-hour window; dragging the slicer re-reads it
+    /// over the selection (<see cref="OnBlockingSlicerChanged"/>). The Npgsql reads are genuinely async, so
+    /// unlike Lite's DuckDB path there is no Task.Run wrap.
     /// </summary>
     private async Task LoadBlockedProcessReportsAsync(DateTime startUtc, DateTime endUtc)
     {
         var rows = await _dataService.GetRecentBlockedProcessReportsAsync(_server.ServerId, startUtc, endUtc);
-
-        BlockingGrid.ItemsSource = rows;
-        BlockingHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _blockedProcessFilterMgr!.UpdateData(rows);
+        await LoadBlockingSlicerAsync(startUtc, endUtc);
     }
+
+    /// <summary>
+    /// Loads the Deadlocks sub-tab (W1e Lite parity): reads the recent deadlock events, parses each graph
+    /// into per-process detail rows OFF the UI thread (Lite's #1193 fix — the graph walk is CPU-bound XML
+    /// work), binds them through the filter manager, and loads the UTC slicer.
+    /// </summary>
+    private async Task LoadDeadlocksAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetRecentDeadlocksAsync(_server.ServerId, startUtc, endUtc);
+        var details = await ParseDeadlocksOffUiThreadAsync(rows);
+        _deadlockFilterMgr!.UpdateData(details);
+        await LoadDeadlockSlicerAsync(startUtc, endUtc);
+    }
+
+    // ── Blocking / Deadlock slicers (W1e) ──
+
+    private string _blockingSlicerMetric = "Events";
+    private List<TimeSliceBucket>? _blockingSlicerData;
+    private List<TimeSliceBucket>? _deadlockSlicerData;
+
+    private async Task LoadBlockingSlicerAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var data = await _dataService.GetBlockingSlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        _blockingSlicerData = data;
+        _blockingSlicerMetric = "Events";
+        if (data.Count > 0)
+            BlockingSlicer.LoadData(data, "Blocking Events", startUtc, endUtc);
+    }
+
+    private async Task LoadDeadlockSlicerAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var data = await _dataService.GetDeadlockSlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        _deadlockSlicerData = data;
+        if (data.Count > 0)
+            DeadlockSlicer.LoadData(data, "Deadlocks", startUtc, endUtc);
+    }
+
+    /// <summary>The slicer sends UTC bounds; the viewer's reads take naive UTC directly (no clock shift).</summary>
+    private async void OnBlockingSlicerChanged(object? sender, SlicerRangeEventArgs e)
+    {
+        try
+        {
+            var rows = await _dataService.GetRecentBlockedProcessReportsAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            _blockedProcessFilterMgr!.UpdateData(rows);
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"blocking slicer failed: {ex.Message}");
+        }
+    }
+
+    private async void OnDeadlockSlicerChanged(object? sender, SlicerRangeEventArgs e)
+    {
+        try
+        {
+            var rows = await _dataService.GetRecentDeadlocksAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            _deadlockFilterMgr!.UpdateData(await ParseDeadlocksOffUiThreadAsync(rows));
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"deadlock slicer failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Re-metrics the blocking slicer overlay to the sorted column (Lite's BlockedProcessReportGrid_Sorting):
+    /// sorting the grid by wait / blocker / blocked / database swaps the slicer's aggregate curve to match.
+    /// </summary>
+    private void BlockedProcessReportGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        if (_blockingSlicerData == null || _blockingSlicerData.Count == 0) return;
+
+        var col = e.Column.SortMemberPath ?? "";
+        if (string.IsNullOrEmpty(col))
+        {
+            if (e.Column is DataGridBoundColumn bc && bc.Binding is System.Windows.Data.Binding b)
+                col = b.Path.Path;
+        }
+        var (metric, label) = col switch
+        {
+            "WaitTimeMs" => ("TotalCpu", "Total Wait (sec)"),
+            "BlockingSpid" => ("TotalElapsed", "Distinct Blockers"),
+            "BlockedSpid" => ("TotalReads", "Distinct Blocked"),
+            "DatabaseName" => ("TotalLogicalReads", "Distinct Databases"),
+            _ => ("Events", "Blocking Events"),
+        };
+
+        if (metric == _blockingSlicerMetric) return;
+        _blockingSlicerMetric = metric;
+
+        foreach (var bucket in _blockingSlicerData)
+        {
+            bucket.Value = metric switch
+            {
+                "TotalCpu" => bucket.TotalCpu,
+                "TotalElapsed" => bucket.TotalElapsed,
+                "TotalReads" => bucket.TotalReads,
+                "TotalLogicalReads" => bucket.TotalLogicalReads,
+                _ => bucket.SessionCount,
+            };
+        }
+
+        BlockingSlicer.UpdateMetric(label);
+    }
+
+    /* Parse each deadlock graph into its per-process rows on the thread pool — CPU-bound XML work that
+       would hitch the dispatcher on the Blocking tab (Lite's #1193 fix). Only the grid bind stays on the UI. */
+    private static Task<List<DeadlockProcessDetail>> ParseDeadlocksOffUiThreadAsync(List<ViewerDeadlockRow> rows)
+        => Task.Run(() => DeadlockProcessDetail.ParseFromRows(rows));
 
     private void RenderLockWaitTrendChart(List<LockWaitTrendPoint> data)
     {
