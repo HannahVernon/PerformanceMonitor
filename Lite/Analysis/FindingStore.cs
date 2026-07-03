@@ -212,7 +212,9 @@ INSERT INTO analysis_muted (mute_id, server_id, story_path_hash, story_path, mut
 VALUES ($1, $2, $3, $4, $5, $6)";
 
         cmd.Parameters.Add(new DuckDBParameter { Value = _nextId++ });
-        cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
+        // serverId 0 is the MCP "mute across all servers" sentinel; persist it as NULL, the
+        // canonical global marker every reader filters on (legacy 0 rows are still honored).
+        cmd.Parameters.Add(new DuckDBParameter { Value = serverId == 0 ? (object)DBNull.Value : serverId });
         cmd.Parameters.Add(new DuckDBParameter { Value = storyPathHash });
         cmd.Parameters.Add(new DuckDBParameter { Value = storyPath });
         cmd.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow });
@@ -246,9 +248,11 @@ VALUES ($1, $2, $3, $4, $5, $6)";
         var hashes = new HashSet<string>();
 
         using var cmd = connection.CreateCommand();
+        // server_id = 0 rows are legacy all-servers mutes written by the pre-fix MCP tool path
+        // (no real server has id 0); honor them as global, alongside the canonical NULL.
         cmd.CommandText = @"
 SELECT story_path_hash FROM analysis_muted
-WHERE server_id = $1 OR server_id IS NULL";
+WHERE server_id = $1 OR server_id IS NULL OR server_id = 0";
 
         cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
 

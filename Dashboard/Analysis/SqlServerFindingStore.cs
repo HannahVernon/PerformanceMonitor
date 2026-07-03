@@ -393,6 +393,18 @@ VALUES (@muteId, @serverId, @storyPathHash, @storyPath, @mutedDate, @reason);";
     }
 
     /// <summary>
+    /// Muted-hash reader SQL. server_id = 0 rows are legacy all-servers mutes written by the pre-fix
+    /// MCP tool path (no real server has id 0); the reader honors them as global, alongside the
+    /// canonical NULL. Exposed as a const so Dashboard.Tests can pin the compat without a live SQL
+    /// Server, mirroring the Darling twin's <c>PgFindingStore.GetMutedHashesSql</c>.
+    /// </summary>
+    public const string GetMutedHashesSql = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT story_path_hash FROM config.analysis_muted
+WHERE server_id = @serverId OR server_id IS NULL OR server_id = 0;";
+
+    /// <summary>
     /// Reads muted story hashes for a server on an already-open connection. The caller
     /// owns the connection and is responsible for EnsureTablesExistAsync. Used by
     /// FilterMutedFindingsAsync so the mute-filter read reuses its connection.
@@ -404,11 +416,7 @@ VALUES (@muteId, @serverId, @storyPathHash, @storyPath, @mutedDate, @reason);";
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-SELECT story_path_hash FROM config.analysis_muted
-WHERE server_id = @serverId OR server_id IS NULL;";
+            cmd.CommandText = GetMutedHashesSql;
 
             cmd.Parameters.Add(new SqlParameter("@serverId", serverId));
 

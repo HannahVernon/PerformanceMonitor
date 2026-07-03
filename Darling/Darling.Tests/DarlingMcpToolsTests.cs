@@ -243,6 +243,7 @@ public sealed class DarlingMcpToolsTests
     private const string TestServerDisplay = "MCP E2E";
     private const string EmptyServerName = "darling-mcp-empty";
     private const string TestStoryHash = "an4-mcp-e2e-hash";
+    private const string AllServersStoryHash = "an4-mcp-e2e-all-servers-hash";
 
     private static readonly int TestServerId = ServerIdHelper.GetDeterministicHashCode(TestServerName);
     private static readonly int EmptyServerId = ServerIdHelper.GetDeterministicHashCode(EmptyServerName);
@@ -392,6 +393,25 @@ public sealed class DarlingMcpToolsTests
                 Assert.Equal(1L, await muteCount.ExecuteScalarAsync(ct));
             }
 
+            /* ---- mute across ALL servers (server_name omitted): the tool reports "(all servers)" and
+                    persists server_id = NULL (the canonical global marker), not the legacy 0 sentinel
+                    that used to make the all-servers mute match no real server. */
+            var allServersJson = await DarlingMcpTools.MuteAnalysisFinding(
+                analysisService, postgres, AllServersStoryHash, server_name: null, "an4 all-servers mute");
+
+            using (var doc = JsonDocument.Parse(allServersJson))
+            {
+                Assert.Equal("muted", doc.RootElement.GetProperty("status").GetString());
+                Assert.Equal("(all servers)", doc.RootElement.GetProperty("server").GetString());
+            }
+
+            using (var nullCount = new NpgsqlCommand(
+                "SELECT COUNT(*) FROM analysis_muted WHERE server_id IS NULL AND story_path_hash = $1", connection))
+            {
+                nullCount.Parameters.AddWithValue(AllServersStoryHash);
+                Assert.Equal(1L, await nullCount.ExecuteScalarAsync(ct));
+            }
+
             /* ---- re-query filtered: the mute registry drops the same story from the next
                     analysis run's save phase — the exact mechanism analyze_server runs through
                     (AN3's e2e proves the full pipeline; this pins the tool-written rule biting). */
@@ -462,7 +482,7 @@ ON CONFLICT (server_id) DO UPDATE SET
         using var cleanup = new NpgsqlCommand(
             $"DELETE FROM servers WHERE server_id IN ({TestServerId}, {EmptyServerId}); " +
             $"DELETE FROM analysis_findings WHERE server_id IN ({TestServerId}, {EmptyServerId}); " +
-            $"DELETE FROM analysis_muted WHERE server_id IN ({TestServerId}, {EmptyServerId});", connection);
+            $"DELETE FROM analysis_muted WHERE server_id IN ({TestServerId}, {EmptyServerId}) OR story_path_hash = '{AllServersStoryHash}';", connection);
         await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 }

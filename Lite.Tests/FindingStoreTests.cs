@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Database;
@@ -267,6 +268,103 @@ public class FindingStoreTests : IDisposable
         // Only the second real story survives (first muted, absolution skipped).
         Assert.Single(saved);
         Assert.Equal(stories[1].StoryPathHash, saved[0].StoryPathHash);
+    }
+
+    [Fact]
+    public async Task MuteStory_AllServersSentinel_PersistsNull_AndFiltersEveryServer()
+    {
+        // serverId 0 is the MCP "mute across all servers" sentinel. The store must persist it as
+        // NULL (the canonical global marker), and the mute must then apply to any real server.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var stories = CreateTestStories();
+
+        await store.MuteStoryAsync(0, stories[0].StoryPathHash, stories[0].StoryPath, "All-servers mute");
+
+        // Persisted as NULL, not 0.
+        Assert.Null(await ReadMutedServerIdAsync(stories[0].StoryPathHash));
+
+        // A save under an arbitrary real server drops the globally-muted story.
+        var context = TestDataSeeder.CreateTestContext();
+        var saved = await store.SaveFindingsAsync(stories, context);
+
+        Assert.Single(saved);
+        Assert.Equal(stories[1].StoryPathHash, saved[0].StoryPathHash);
+    }
+
+    [Fact]
+    public async Task SaveFindings_HonorsLegacyZeroServerIdMute_AsGlobal()
+    {
+        // Rows written by the pre-fix all-servers tool path carry a literal server_id = 0. The reader
+        // must still honor them as global so those legacy mutes keep muting everywhere.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var stories = CreateTestStories();
+
+        await InsertLegacyMutedRowAsync(serverId: 0, stories[0].StoryPathHash, stories[0].StoryPath);
+
+        var context = TestDataSeeder.CreateTestContext();
+        var saved = await store.SaveFindingsAsync(stories, context);
+
+        Assert.Single(saved);
+        Assert.Equal(stories[1].StoryPathHash, saved[0].StoryPathHash);
+    }
+
+    [Fact]
+    public async Task SaveFindings_PerServerMuteForAnotherServer_DoesNotLeak()
+    {
+        // A mute scoped to one real server must never filter another server's findings.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var stories = CreateTestStories();
+
+        // Mute story[0] for a DIFFERENT server (context.ServerId is TestDataSeeder.TestServerId = -999).
+        await store.MuteStoryAsync(12345, stories[0].StoryPathHash, stories[0].StoryPath, "Other-server mute");
+
+        var context = TestDataSeeder.CreateTestContext();
+        var saved = await store.SaveFindingsAsync(stories, context);
+
+        // Both stories survive here — the other server's mute must not reach this server.
+        Assert.Equal(2, saved.Count);
+    }
+
+    /// <summary>Reads the stored server_id for a muted story hash (null when persisted as NULL).</summary>
+    private async Task<int?> ReadMutedServerIdAsync(string storyPathHash)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT server_id FROM analysis_muted WHERE story_path_hash = $1";
+        cmd.Parameters.Add(new DuckDBParameter { Value = storyPathHash });
+
+        var result = await cmd.ExecuteScalarAsync();
+        return result is null or DBNull ? null : Convert.ToInt32(result);
+    }
+
+    /// <summary>Inserts a muted row with a caller-chosen literal server_id, bypassing the store's
+    /// 0-&gt;NULL collapse so a pre-fix legacy row (server_id = 0) can be simulated.</summary>
+    private async Task InsertLegacyMutedRowAsync(int serverId, string storyPathHash, string storyPath)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+INSERT INTO analysis_muted (mute_id, server_id, story_path_hash, story_path, muted_date, reason)
+VALUES ($1, $2, $3, $4, $5, $6)";
+        cmd.Parameters.Add(new DuckDBParameter { Value = 987654321L });
+        cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
+        cmd.Parameters.Add(new DuckDBParameter { Value = storyPathHash });
+        cmd.Parameters.Add(new DuckDBParameter { Value = storyPath });
+        cmd.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow });
+        cmd.Parameters.Add(new DuckDBParameter { Value = DBNull.Value });
+        await cmd.ExecuteNonQueryAsync();
     }
 
     private static System.Collections.Generic.List<AnalysisStory> CreateTestStories()

@@ -116,16 +116,19 @@ AND   analysis_time = (
 )
 ORDER BY severity DESC";
 
+    /* server_id = 0 rows are legacy all-servers mutes written by the pre-fix MCP tool path
+       (no real server has id 0); honor them as global, alongside the canonical NULL. */
     public const string GetMutedHashesSql = @"
 SELECT story_path_hash FROM analysis_muted
-WHERE server_id = $1 OR server_id IS NULL";
+WHERE server_id = $1 OR server_id IS NULL OR server_id = 0";
 
-    /* Same per-server + global (NULL) span as GetMutedHashesSql, but carries mute_id/story_path so
-       the viewer can mark a finding muted and delete the exact registry row on unmute. */
+    /* Same per-server + global span as GetMutedHashesSql (NULL, plus legacy server_id = 0 all-servers
+       rows), but carries mute_id/story_path so the viewer can mark a finding muted and delete the exact
+       registry row on unmute. */
     public const string GetMutedStoriesSql = @"
 SELECT mute_id, server_id, story_path_hash, story_path, muted_date, reason
 FROM analysis_muted
-WHERE server_id = $1 OR server_id IS NULL";
+WHERE server_id = $1 OR server_id IS NULL OR server_id = 0";
 
     public const string MuteStorySql = @"
 INSERT INTO analysis_muted (mute_id, server_id, story_path_hash, story_path, muted_date, reason)
@@ -338,7 +341,9 @@ VALUES ($1, $2, $3, $4, $5, $6)";
             await using var connection = await _postgres.OpenConnectionAsync();
             using var command = new NpgsqlCommand(MuteStorySql, connection);
             command.Parameters.AddWithValue(CollectionIdGenerator.Next());
-            command.Parameters.AddWithValue(serverId);
+            // serverId 0 is the MCP "mute across all servers" sentinel; persist it as NULL, the
+            // canonical global marker every reader filters on (legacy 0 rows are still honored).
+            command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Integer, Value = serverId == 0 ? (object)DBNull.Value : serverId });
             command.Parameters.AddWithValue(storyPathHash);
             command.Parameters.AddWithValue(storyPath);
             command.Parameters.AddWithValue(NaiveUtcNow());
@@ -375,9 +380,11 @@ VALUES ($1, $2, $3, $4, $5, $6)";
     /// <c>server_id IS NULL</c> rows — the same span <see cref="GetMutedHashesSql"/> filters),
     /// carrying each row's <c>mute_id</c> so the viewer can offer an unmute. Reads log and
     /// degrade to an empty list like the store's other reads.
-    /// NOTE: the MCP "mute across all servers" path writes <c>server_id = 0</c> (not NULL — see
-    /// the mute_analysis_finding tool), so a 0-scoped mute is only visible to server 0; that is
-    /// the shared cross-app quirk this read mirrors rather than fixes.
+    /// The MCP "mute across all servers" path now persists <c>server_id = NULL</c> (the canonical
+    /// global marker); legacy <c>server_id = 0</c> rows written before that fix are honored as global
+    /// too (<see cref="GetMutedStoriesSql"/> filters both), so an all-servers mute is visible to every
+    /// server. A NULL/0 (global) row here is flagged muted but left un-unmutable from the per-server
+    /// viewer, since deleting it would unmute the pattern everywhere.
     /// </summary>
     public async Task<List<MutedStory>> GetMutedStoriesAsync(int serverId)
     {

@@ -80,11 +80,13 @@ public sealed partial class ViewerDataService
            the unmute. Muting doesn't retract this persisted batch — the engine filters the pattern
            on the NEXT analysis run — so a just-muted finding stays visible here, flagged "Muted".
 
-           GetMutedStoriesAsync spans this server's mutes AND global (server_id IS NULL) ones. Only a
-           PER-SERVER mute carries a MuteId here — the viewer offers unmute for those — while a global
-           mute flags the finding muted but is left un-unmutable, because deleting it would unmute the
-           pattern for EVERY server (a scope the per-server viewer must not silently change). Among
-           duplicate per-server rows for one hash the smallest mute_id wins, so the choice is stable. */
+           GetMutedStoriesAsync spans this server's mutes AND global ones (server_id IS NULL, plus legacy
+           server_id = 0 all-servers rows). Only a PER-SERVER mute carries a MuteId here — the viewer
+           offers unmute for those — while a global mute flags the finding muted but is left un-unmutable,
+           because deleting it would unmute the pattern for EVERY server (a scope the per-server viewer
+           must not silently change). A real server_id is never 0, so the m.ServerId == serverId check
+           below routes both NULL and legacy-0 rows to the global branch. Among duplicate per-server rows
+           for one hash the smallest mute_id wins, so the choice is stable. */
         var muted = await _findingStore.GetMutedStoriesAsync(serverId);
         if (muted.Count > 0)
         {
@@ -127,8 +129,9 @@ public sealed partial class ViewerDataService
     /// Mutes a finding's story pattern for the selected server so the engine drops it on the next
     /// analysis run — the viewer's user-initiated write, straight to Postgres through the SAME
     /// <see cref="PgFindingStore.MuteStoryAsync"/> the MCP <c>mute_analysis_finding</c> tool uses.
-    /// The viewer always mutes per-selected-server (a real non-zero server_id), so it never takes
-    /// the MCP "all servers" server_id=0 path (see <see cref="PgFindingStore.GetMutedStoriesAsync"/>).
+    /// The viewer always mutes per-selected-server (a real non-zero server_id), so it never takes the
+    /// MCP "all servers" path (which now persists a NULL server_id — see
+    /// <see cref="PgFindingStore.GetMutedStoriesAsync"/>).
     /// </summary>
     public async Task MuteFindingAsync(int serverId, AnalysisFinding finding)
     {
