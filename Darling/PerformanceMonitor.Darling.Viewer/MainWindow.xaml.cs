@@ -321,7 +321,8 @@ public partial class MainWindow : Window
         if (tab.Content is ViewerServerTab serverTab)
         {
             serverTab.StatusChanged -= OnServerTabStatusChanged;
-            serverTab.DisposeChartHelpers();
+            /* One dispose path: tears down every chart hover helper the tab's partials own. */
+            serverTab.Dispose();
         }
 
         MainTabs.Items.Remove(tab);
