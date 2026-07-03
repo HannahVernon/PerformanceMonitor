@@ -45,6 +45,18 @@ public sealed class CollectorContext
     public IReadOnlyList<string> ExcludedDatabases { get; init; } = System.Array.Empty<string>();
 
     /// <summary>
+    /// When true, the query_stats and query_store collectors capture the execution plan text into
+    /// their plan column (query_stats.query_plan_xml / query_store_stats.query_plan_text); when
+    /// false they leave it NULL and the generated SQL is byte-identical to the no-plan form.
+    /// Default false: Lite deliberately never captures plans (they blew out DuckDB/parquet) and
+    /// never sets this flag. Darling sets it true — PostgreSQL TOAST compresses the plan text
+    /// transparently. This is the shared-collector equivalent of the full Dashboard's per-collector
+    /// <c>config.collection_schedule.collect_plan</c> flag (install/08_collect_query_stats.sql,
+    /// install/09_collect_query_store.sql).
+    /// </summary>
+    public bool CapturePlanXml { get; init; }
+
+    /// <summary>
     /// Host-configured perfmon counter override (Lite: perfmon_counters.json). Null means the
     /// definition's curated default list applies.
     /// </summary>

@@ -31,7 +31,8 @@ public sealed class QueryStoreCollectorDefinitionTests
         bool isAzureSqlDb = false,
         object? probeResult = null,
         DateTime? watermark = null,
-        DateTime? collectionTime = null)
+        DateTime? collectionTime = null,
+        bool capturePlanXml = false)
         => new()
         {
             ServerId = 42,
@@ -41,6 +42,7 @@ public sealed class QueryStoreCollectorDefinitionTests
             Target = new CollectorTargetInfo { IsAzureSqlDb = isAzureSqlDb },
             Watermark = watermark,
             EnumerationProbeResult = probeResult,
+            CapturePlanXml = capturePlanXml,
         };
 
     [Fact]
@@ -157,6 +159,21 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.Equal("@cutoff_time", parameter.Name);
         Assert.Equal(watermark, parameter.Value);
         Assert.Equal(CollectorParameterType.DateTime2, parameter.Type);
+    }
+
+    [Fact]
+    public void BuildPerItemQuery_PlanCapture_OffEmitsNullPlaceholder_OnMirrorsDashboard()
+    {
+        /* Lite parity (default off): query_plan_text is the nvarchar(1) NULL placeholder,
+           byte-identical to the no-plan form. Darling (on): CONVERT(nvarchar(max), qsp.query_plan)
+           from sys.query_store_plan — install/09_collect_query_store.sql's @collect_plan path. */
+        var off = QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext());
+        Assert.Contains("query_plan_text = CONVERT(nvarchar(1), NULL),", off.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("qsp.query_plan,", off.Text, StringComparison.Ordinal);
+
+        var on = QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext(capturePlanXml: true));
+        Assert.Contains("query_plan_text = CONVERT(nvarchar(max), qsp.query_plan),", on.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("CONVERT(nvarchar(1), NULL)", on.Text, StringComparison.Ordinal);
     }
 
     [Fact]

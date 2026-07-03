@@ -40,17 +40,23 @@ public sealed class DarlingCollectorRunner
     private readonly CollectorDeltaCalculator _deltas;
     private readonly ILogger? _logger;
 
+    /* Feeds CollectorContext.CapturePlanXml on every cycle — the query_stats / query_store
+       collectors capture the execution plan when true (darling.json "capturePlans", default true).
+       Lite never sets the context flag; this is what makes Darling the plan-capturing SKU. */
+    private readonly bool _capturePlans;
+
     /* Azure SQL DB logins without master access fall back to single-database mode, cached per
        server so master isn't retried every cycle (#857 — mirrors Lite). */
     private readonly ConcurrentDictionary<int, bool> _azureMasterInaccessible = new();
 
     public const int CommandTimeoutSeconds = 60;
 
-    public DarlingCollectorRunner(NpgsqlDataSource postgres, CollectorDeltaCalculator deltas, ILogger? logger = null)
+    public DarlingCollectorRunner(NpgsqlDataSource postgres, CollectorDeltaCalculator deltas, ILogger? logger = null, bool capturePlans = true)
     {
         _postgres = postgres ?? throw new ArgumentNullException(nameof(postgres));
         _deltas = deltas ?? throw new ArgumentNullException(nameof(deltas));
         _logger = logger;
+        _capturePlans = capturePlans;
     }
 
     public async Task<CollectorRunResult> RunAsync<TRow>(
@@ -84,6 +90,7 @@ public sealed class DarlingCollectorRunner
             IgnoredWaitTypes = IgnoredWaitDefaults.All,
             ExcludedDatabases = server.Config.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
             PerfmonCounterOverride = null,
+            CapturePlanXml = _capturePlans,
         };
 
         var sqlSw = Stopwatch.StartNew();

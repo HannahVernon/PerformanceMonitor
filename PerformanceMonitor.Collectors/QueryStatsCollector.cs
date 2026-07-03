@@ -75,6 +75,7 @@ public sealed class QueryStatsCollector : CollectorDefinitionBase<QueryStatsColl
         public string? SqlHandle { get; set; }
         public string? PlanHandle { get; set; }
         public string? QueryText { get; set; }
+        public string? QueryPlanXml { get; set; }
         public long PlanGenerationNum { get; set; }
         public int StatementStartOffset { get; set; }
         public int StatementEndOffset { get; set; }
@@ -145,9 +146,9 @@ public sealed class QueryStatsCollector : CollectorDefinitionBase<QueryStatsColl
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT /* PerformanceMonitorLite */ TOP (200)
-    database_name = d.name," + SelectColumnsText + @"
+    database_name = d.name," + SelectColumnsText + @"/*PLAN_SELECT*/
 FROM sys.dm_exec_query_stats AS qs
-OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st/*PLAN_APPLY*/
 CROSS APPLY
 (
     SELECT
@@ -169,14 +170,32 @@ OPTION(RECOMPILE);";
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT /* PerformanceMonitorLite */ TOP (200)
-    database_name = DB_NAME()," + SelectColumnsText + @"
+    database_name = DB_NAME()," + SelectColumnsText + @"/*PLAN_SELECT*/
 FROM sys.dm_exec_query_stats AS qs
-OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st/*PLAN_APPLY*/
 WHERE st.text NOT LIKE N'%PerformanceMonitorLite%'
 AND   qs.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
 ORDER BY
     qs.total_elapsed_time DESC
 OPTION(RECOMPILE);";
+
+    /* Execution-plan capture — spliced into both variants only when the host sets CapturePlanXml
+       (Darling); when off the placeholders erase to nothing, so Lite's SQL is byte-identical to the
+       no-plan form. Mirrors the full Dashboard's @collect_plan path in
+       install/08_collect_query_stats.sql: the STATEMENT-level plan from sys.dm_exec_text_query_plan
+       keyed on the same plan_handle + statement offsets (the text DMV, not dm_exec_query_plan, so
+       large/deep plans that overflow the xml type still return), with no size guard. */
+    private const string PlanSelectFragment = @",
+    query_plan_xml = tqp.query_plan";
+
+    private const string PlanApplyFragment = @"
+OUTER APPLY
+    sys.dm_exec_text_query_plan
+    (
+        qs.plan_handle,
+        qs.statement_start_offset,
+        qs.statement_end_offset
+    ) AS tqp";
 
     public override string Name => "query_stats";
 
@@ -187,14 +206,23 @@ OPTION(RECOMPILE);";
 
     public override CollectorQuery BuildQuery(CollectorContext context)
     {
+        var planSelect = context.CapturePlanXml ? PlanSelectFragment : "";
+        var planApply = context.CapturePlanXml ? PlanApplyFragment : "";
+
         if (context.Target.IsAzureSqlDb)
         {
-            return new CollectorQuery(AzureSqlDbQueryText);
+            return new CollectorQuery(
+                AzureSqlDbQueryText
+                    .Replace("/*PLAN_SELECT*/", planSelect, StringComparison.Ordinal)
+                    .Replace("/*PLAN_APPLY*/", planApply, StringComparison.Ordinal));
         }
 
         var (exclusionClause, exclusionParameters) = DatabaseExclusionFilter.Build(context.ExcludedDatabases, "d.name");
         return new CollectorQuery(
-            StandardQueryText.Replace("/*EXCLUSION_FILTER*/", exclusionClause, StringComparison.Ordinal),
+            StandardQueryText
+                .Replace("/*EXCLUSION_FILTER*/", exclusionClause, StringComparison.Ordinal)
+                .Replace("/*PLAN_SELECT*/", planSelect, StringComparison.Ordinal)
+                .Replace("/*PLAN_APPLY*/", planApply, StringComparison.Ordinal),
             exclusionParameters);
     }
 
@@ -302,6 +330,9 @@ OPTION(RECOMPILE);";
                 PlanGenerationNum = reader.IsDBNull(39) ? 0L : reader.GetInt64(39),
                 StatementStartOffset = reader.IsDBNull(40) ? 0 : reader.GetInt32(40),
                 StatementEndOffset = reader.IsDBNull(41) ? 0 : reader.GetInt32(41),
+                /* query_plan_xml is the trailing column present only when CapturePlanXml spliced it
+                   into the SELECT (ordinal 42); the short-circuit skips it entirely when off. */
+                QueryPlanXml = context.CapturePlanXml && !reader.IsDBNull(42) ? reader.GetString(42) : null,
             });
         }
 
@@ -362,7 +393,7 @@ OPTION(RECOMPILE);";
             .Value(row.MinSpills)
             .Value(row.MaxSpills)
             .Value(row.QueryText)
-            .Value((string?)null)              /* query_plan_xml — retrieved on-demand */
+            .Value(row.QueryPlanXml)           /* null unless CapturePlanXml captured it (Darling) */
             .Value(row.SqlHandle)
             .Value(row.PlanHandle)
             .Value(deltaExecCount)

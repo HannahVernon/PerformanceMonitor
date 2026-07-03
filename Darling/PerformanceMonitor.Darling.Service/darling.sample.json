@@ -50,6 +50,13 @@
     }
   ],
 
+  // Capture execution plans into query_stats.query_plan_xml and query_store_stats.query_plan_text
+  // (default true). PostgreSQL TOAST compresses the plan text transparently (pglz) and TimescaleDB
+  // chunk compression squeezes it further, so plans are cheap to keep here — unlike Performance
+  // Monitor Lite, which stores to DuckDB/parquet and deliberately never captures them. Set false to
+  // skip plan capture (e.g. to shave storage across a very large fleet).
+  "capturePlans": true,
+
   // The alert engine (optional section). Every default mirrors Performance Monitor Lite's:
   // cpu 80% (total mode), blocking 1, deadlock 1, poison wait 500 ms, long-running query
   // 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,

@@ -20,6 +20,7 @@ A collector, alert, or analysis change lands once in the shared libraries and bo
 |---|---|---|
 | Collection runs | While the desktop app is open (or in the tray) | 24/7 as a Windows service |
 | Data lives | Locally per seat (DuckDB + Parquet) | Centrally (PostgreSQL / TimescaleDB) |
+| Execution plans | Not stored (fetched live when you view a query) | Captured and stored, TOAST-compressed (`capturePlans`, default on) |
 | Viewers | The app is the viewer | Any number of viewer seats read the central store |
 | Setup | Download and run | Provision PostgreSQL, edit `darling.json`, install the service |
 | Best for | Quick triage, consultants, a handful of servers | Always-on team monitoring, larger estates, one shared store |
@@ -190,6 +191,12 @@ Two mutually exclusive modes — setting both `managed: true` and `connectionStr
 | `encryptMode` | `"Mandatory"` | `Mandatory` / `Strict` / `Optional`; unknown values fail closed to `Mandatory` |
 | `multiSubnetFailover` | `false` | |
 | `excludedDatabases` | `[]` | Databases excluded from collection |
+
+### capturePlans (boolean, optional)
+
+| Key | Default | Notes |
+|---|---|---|
+| `capturePlans` | `true` | Capture execution plans into `query_stats.query_plan_xml` and `query_store_stats.query_plan_text`. PostgreSQL TOAST compresses the plan text transparently (pglz) and TimescaleDB chunk compression squeezes it further, so plans are cheap to keep — unlike Lite, which stores to DuckDB/Parquet and deliberately never captures them. Set `false` to skip plan capture (e.g. to shave storage across a very large fleet). |
 
 ### alerts
 
