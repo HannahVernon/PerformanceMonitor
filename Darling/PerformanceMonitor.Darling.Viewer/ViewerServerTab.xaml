@@ -358,6 +358,112 @@
             </Grid>
         </TabItem>
 
+        <!-- Perfmon Tab — copied from Lite's ServerTab.xaml Perfmon tab: a 220px counter picker (pack
+             ComboBox sourced from the SHARED PerformanceMonitor.Ui PerfmonPacks + Select All / Clear All
+             + search + checkbox ListBox) and a full-bleed chart plotting each selected counter's delta
+             value (max 12 series). Reads rewired to Postgres; fixed 24-hour window (no custom-range
+             picker). Placed BEFORE Running Jobs, matching Lite's own tab order. -->
+        <TabItem Header="Perfmon">
+            <Grid Margin="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="8" Margin="0,0,4,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Select Counters" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <ComboBox Grid.Row="1" x:Name="PerfmonPackCombo"
+                                  SelectionChanged="PerfmonPack_SelectionChanged"
+                                  Margin="0,0,0,4" FontSize="11"/>
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,4">
+                            <Button Content="Select All" Click="PerfmonSelectAll_Click" Padding="6,2" Margin="0,0,4,0" FontSize="11"/>
+                            <Button Content="Clear All" Click="PerfmonClearAll_Click" Padding="6,2" FontSize="11"/>
+                        </StackPanel>
+                        <TextBox Grid.Row="3" x:Name="PerfmonSearchBox" TextChanged="PerfmonSearch_TextChanged"
+                                 Margin="0,0,0,4" Padding="4,2"/>
+                        <ListBox Grid.Row="4" x:Name="PerfmonCountersList" Background="Transparent" BorderThickness="0">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                              Checked="PerfmonCounter_CheckChanged" Unchecked="PerfmonCounter_CheckChanged"
+                                              Foreground="{DynamicResource ForegroundBrush}" FontSize="11">
+                                        <TextBlock Text="{Binding DisplayName}"/>
+                                    </CheckBox>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+
+                <scottplot:WpfPlot Grid.Column="1" x:Name="PerfmonChart"/>
+            </Grid>
+        </TabItem>
+
+        <!-- Running Jobs Tab — copied from Lite's ServerTab.xaml Running Jobs tab: the latest-snapshot
+             grid of currently-running SQL Agent jobs (8 columns, IsRunningLong row highlight) with the
+             W1g column-filter headers. Reads rewired to Postgres; the msdb-access banner is derived
+             from the store (the running_jobs collector's latest PERMISSIONS/ERROR collection_log status)
+             since the viewer has no live msdb probe. -->
+        <TabItem Header="Running Jobs">
+            <Grid Margin="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="Currently Running SQL Agent Jobs" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Grid.Row="1" x:Name="RunningJobsMsdbWarning"
+                           Text="Running Jobs requires msdb access. Grant the login access to msdb to enable this feature."
+                           Foreground="#FFD700" FontSize="12" Margin="0,0,0,8" Visibility="Collapsed"
+                           TextWrapping="Wrap"/>
+                <DataGrid Grid.Row="2" x:Name="RunningJobsGrid" Style="{StaticResource DarkGrid}">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsRunningLong}" Value="True">
+                                    <Setter Property="Background" Value="#33FF6B6B"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Binding="{Binding JobName}" Width="250">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="JobName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Job Name" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding StartTimeLocal}" Width="150">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="StartTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Start Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding CurrentDurationFormatted}" Width="120" SortMemberPath="CurrentDurationSeconds">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CurrentDurationFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Current Duration" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding AvgDurationFormatted}" Width="110" SortMemberPath="AvgDurationSeconds">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgDurationFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Duration" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding P95DurationFormatted}" Width="110" SortMemberPath="P95DurationSeconds">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="P95DurationFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="P95 Duration" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding PercentOfAverageFormatted}" Width="100" SortMemberPath="PercentOfAverage">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PercentOfAverageFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="% of Average" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding RunningLongDisplay}" Width="90">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RunningLongDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Running Long" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding SuccessfulRunCount}" ElementStyle="{StaticResource NumericCell}" Width="140">
+                            <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SuccessfulRunCount" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Successful Runs (30d)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </TabItem>
+
         <!-- Configuration Tab — copied from Lite's ServerTab.xaml Configuration tab: a nested tab strip
              of four read-only, column-filterable snapshot grids (Server / Database / Scoped configuration
              + Trace Flags), each showing the latest capture (capture_time = MAX). Reads rewired to
