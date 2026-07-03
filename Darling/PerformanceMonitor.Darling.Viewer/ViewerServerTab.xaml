@@ -266,7 +266,6 @@
                 </TabControl>
             </Grid>
         </TabItem>
-             latency. -->
         <!-- tempdb Tab — copied from Lite's ServerTab.xaml tempdb tab: three stacked charts —
              space usage (user/internal/version-store), total allocated size, and per-file I/O
              latency. -->
