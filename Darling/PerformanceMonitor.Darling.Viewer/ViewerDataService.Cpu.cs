@@ -40,13 +40,14 @@ public sealed partial class ViewerDataService
     /// the MONITORED SERVER'S LOCAL wall clock (<c>SYSDATETIME()</c> on the server, minus each
     /// ring-buffer sample's age), NOT naive UTC — so feeding it straight to <see cref="ToLocalTime"/>
     /// (which assumes naive-UTC input) shifts the whole CPU series by the server's UTC offset relative
-    /// to every <c>collection_time</c>-based lane (a visible misalignment in the correlated Overview).
+    /// to every <c>collection_time</c>-based lane — a visible misalignment in the correlated Overview
+    /// (e.g. a Pacific-time server, offset -7/-8h, sits 7-8h off).
     /// The viewer has no per-server timezone config the way Lite does
     /// (<c>ServerTimeHelper.UtcOffsetMinutes</c>), so we recover the offset from the batch itself: all
     /// rows of one collection share a single <c>collection_time</c> (the batch key — <c>collection_id</c>
     /// is assigned per row, a distinct value per sample, NOT a batch id), and the NEWEST sample in a
-    /// batch is at most ~1 minute
-    /// older than that collection instant. So <c>MAX(sample_time) OVER (batch) - collection_time</c> is
+    /// batch is at most ~1 minute older than that collection instant. So
+    /// <c>MAX(sample_time) OVER (batch) - collection_time</c> is
     /// the server's UTC offset plus that sub-minute anchor age; rounding to 15 minutes recovers the exact
     /// whole/half/quarter-hour offset and absorbs the anchor age (and any few-second clock skew).
     /// Subtracting that per-batch offset turns each local <c>sample_time</c> into true naive UTC, so
