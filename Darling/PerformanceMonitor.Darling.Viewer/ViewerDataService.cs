@@ -26,25 +26,13 @@ public sealed record DarlingServer(
     public string VersionLabel => ViewerDataService.SqlVersionLabel(SqlMajorVersion);
 }
 
-/// <summary>The latest collection_log run for one collector (one Collection Health grid row).</summary>
-public sealed record CollectorHealthRow(
-    string CollectorName,
-    DateTime CollectionTime,
-    string Status,
-    int? RowsCollected,
-    int? DurationMs,
-    string? ErrorMessage)
-{
-    /// <summary>Stored naive-UTC; shown in the viewer machine's local time.</summary>
-    public DateTime CollectionTimeLocal => ViewerDataService.ToLocalTime(CollectionTime);
-}
-
 /// <summary>
-/// The viewer's reads of the Darling Postgres store — servers and per-collector collection health,
-/// plus the surfaces in the partials (the Overview lanes' total-wait + memory trends and per-lane
-/// baselines in <c>ViewerDataService.OverviewLanes.cs</c>, the per-tab reads in <c>.Cpu.cs</c>,
-/// <c>.Waits.cs</c>, <c>.BlockingTrends.cs</c>, <c>.FileIo.cs</c>, <c>.TempDb.cs</c>, and
-/// <c>.Config.cs</c>, and the wave-2/3 reads in <c>.QueryStats.cs</c>, <c>.Blocking.cs</c>,
+/// The viewer's reads of the Darling Postgres store — the server list, plus the surfaces in the
+/// partials (the Overview lanes' total-wait + memory trends and per-lane baselines in
+/// <c>ViewerDataService.OverviewLanes.cs</c>, the per-tab reads in <c>.Cpu.cs</c>, <c>.Waits.cs</c>,
+/// <c>.BlockingTrends.cs</c>, <c>.FileIo.cs</c>, <c>.TempDb.cs</c>, <c>.Config.cs</c>, and
+/// <c>.RunningJobs.cs</c>, the Daily Summary + Collection Health reads in <c>.DailySummary.cs</c> /
+/// <c>.CollectionHealth.cs</c>, and the wave-2/3 reads in <c>.QueryStats.cs</c>, <c>.Blocking.cs</c>,
 /// <c>.Findings.cs</c>, <c>.AlertHistory.cs</c>, and <c>.MuteRules.cs</c>).
 /// Connections come from a pooled <see cref="NpgsqlDataSource"/>, so the window can run its
 /// per-tab queries concurrently. The SQL lives in public constants so tests can pin the
@@ -57,14 +45,6 @@ public sealed partial class ViewerDataService : IAsyncDisposable
 {
     public const string ServersSql =
         "SELECT server_id, server_name, display_name, is_enabled, sql_major_version FROM servers ORDER BY display_name";
-
-    public const string CollectionHealthSql = """
-        SELECT DISTINCT ON (collector_name)
-            collector_name, collection_time, status, rows_collected, duration_ms, error_message
-        FROM collection_log
-        WHERE server_id = $1
-        ORDER BY collector_name, collection_time DESC
-        """;
 
     private readonly NpgsqlDataSource _dataSource;
 
@@ -92,28 +72,6 @@ public sealed partial class ViewerDataService : IAsyncDisposable
         }
 
         return servers;
-    }
-
-    /// <summary>The latest collection_log run per collector for one server.</summary>
-    public async Task<List<CollectorHealthRow>> GetCollectionHealthAsync(int serverId, CancellationToken cancellationToken = default)
-    {
-        var rows = new List<CollectorHealthRow>();
-
-        await using var command = _dataSource.CreateCommand(CollectionHealthSql);
-        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            rows.Add(new CollectorHealthRow(
-                reader.GetString(0),
-                reader.GetDateTime(1),
-                reader.IsDBNull(2) ? "" : reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                reader.IsDBNull(4) ? null : reader.GetInt32(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
-        }
-
-        return rows;
     }
 
     /// <summary>

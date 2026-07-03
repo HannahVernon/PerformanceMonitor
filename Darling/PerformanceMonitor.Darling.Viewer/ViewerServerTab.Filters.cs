@@ -8,9 +8,10 @@
 
 // Column-filter wiring copied from Lite/Controls/ServerTab.Filters.cs for the copy-parity program
 // (copy-don't-promote: the Darling viewer owns its own copy; Lite/Dashboard are untouched). Byte-
-// identical popup plumbing; the manager set covers the four Configuration sub-grids plus the Running
-// Jobs grid (W1h) — the filterable viewer grids ported so far — and grows as later waves add their
-// own grids. Also holds LoadConfigurationAsync, the Configuration tab's parallel latest-snapshot load
+// identical popup plumbing; the manager set covers the four Configuration sub-grids, the Running Jobs
+// grid (W1h), and the Collection Health + Collection Log grids (W1i) — the filterable viewer grids
+// ported so far — and grows as later waves add their own grids. Also holds LoadConfigurationAsync,
+// the Configuration tab's parallel latest-snapshot load
 // that feeds the config managers (the Running Jobs load lives in ViewerServerTab.RunningJobs.cs).
 
 using System;
@@ -36,6 +37,8 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
     private DataGridFilterManager<ViewerBlockedProcessRow>? _blockedProcessFilterMgr;
     private DataGridFilterManager<DeadlockProcessDetail>? _deadlockFilterMgr;
+    private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
+    private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
 
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
@@ -52,6 +55,8 @@ public partial class ViewerServerTab : UserControl
         _runningJobsFilterMgr = new DataGridFilterManager<RunningJobRow>(RunningJobsGrid);
         _blockedProcessFilterMgr = new DataGridFilterManager<ViewerBlockedProcessRow>(BlockedProcessReportGrid);
         _deadlockFilterMgr = new DataGridFilterManager<DeadlockProcessDetail>(DeadlockGrid);
+        _collectionHealthFilterMgr = new DataGridFilterManager<CollectorHealthRow>(CollectionHealthGrid);
+        _collectionLogFilterMgr = new DataGridFilterManager<CollectionLogRow>(CollectionLogGrid);
 
         _filterManagers[ServerConfigGrid] = _serverConfigFilterMgr;
         _filterManagers[DatabaseConfigGrid] = _databaseConfigFilterMgr;
@@ -60,6 +65,8 @@ public partial class ViewerServerTab : UserControl
         _filterManagers[RunningJobsGrid] = _runningJobsFilterMgr;
         _filterManagers[BlockedProcessReportGrid] = _blockedProcessFilterMgr;
         _filterManagers[DeadlockGrid] = _deadlockFilterMgr;
+        _filterManagers[CollectionHealthGrid] = _collectionHealthFilterMgr;
+        _filterManagers[CollectionLogGrid] = _collectionLogFilterMgr;
     }
 
     /// <summary>

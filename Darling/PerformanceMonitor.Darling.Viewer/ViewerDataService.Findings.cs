@@ -196,8 +196,8 @@ public sealed partial class ViewerDataService
     /// <summary>
     /// The engine's double severity (0–~2.0) mapped onto the canonical three bands with the
     /// SAME cutoffs both apps' recommendation readers use: &gt;= 1.5 CRITICAL,
-    /// &gt;= 0.75 WARNING, else INFO. Uppercase to match the Collection Health status
-    /// strings, so one <see cref="StatusToBrushConverter"/> colors both grids.
+    /// &gt;= 0.75 WARNING, else INFO. Uppercase so <see cref="StatusToBrushConverter"/> bands the
+    /// Recommendations grid (its case-insensitive CRITICAL/WARNING/INFO mapping).
     /// </summary>
     public static string SeverityBand(double severity)
     {
