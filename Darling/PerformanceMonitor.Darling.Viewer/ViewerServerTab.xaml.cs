@@ -33,9 +33,10 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     private const int OverviewInnerTabIndex = 0;
-    private const int QueriesInnerTabIndex = 1;
-    private const int BlockingInnerTabIndex = 2;
-    private const int HealthInnerTabIndex = 3;
+    private const int WaitStatsInnerTabIndex = 1;
+    private const int QueriesInnerTabIndex = 2;
+    private const int BlockingInnerTabIndex = 3;
+    private const int HealthInnerTabIndex = 4;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -128,6 +129,9 @@ public partial class ViewerServerTab : UserControl
         {
             switch (tabIndex)
             {
+                case WaitStatsInnerTabIndex:
+                    await LoadWaitStatsAsync();
+                    break;
                 case QueriesInnerTabIndex:
                     await LoadQueriesAsync();
                     break;

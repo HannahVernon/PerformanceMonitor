@@ -130,6 +130,62 @@
             </Grid>
         </TabItem>
 
+        <!-- Wait Stats Tab — copied from Lite's ServerTab.xaml (the 220px wait-type picker + metric
+             combo + chart); reads rewired to Postgres, fixed 24-hour window (no custom-range picker). -->
+        <TabItem Header="Wait Stats">
+            <Grid Margin="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="8" Margin="0,0,4,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Select Wait Types" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4">
+                            <Button Content="Top Waits" Click="WaitTypeSelectAll_Click" Padding="6,2" Margin="0,0,4,0" FontSize="11"/>
+                            <Button Content="Clear All" Click="WaitTypeClearAll_Click" Padding="6,2" FontSize="11"/>
+                            <TextBlock x:Name="WaitTypeCountText" Text="0 / 30 selected" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <TextBox Grid.Row="2" x:Name="WaitTypeSearchBox" TextChanged="WaitTypeSearch_TextChanged"
+                                 Margin="0,0,0,4" Padding="4,2"/>
+                        <ListBox Grid.Row="3" x:Name="WaitTypesList" Background="Transparent" BorderThickness="0">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                              Checked="WaitType_CheckChanged" Unchecked="WaitType_CheckChanged"
+                                              Foreground="{DynamicResource ForegroundBrush}" FontSize="11">
+                                        <TextBlock Text="{Binding DisplayName}"/>
+                                    </CheckBox>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Column="1">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="8,4,0,0">
+                        <TextBlock Text="Metric:" VerticalAlignment="Center" Margin="0,0,6,0" FontSize="11"/>
+                        <ComboBox x:Name="WaitStatsMetricCombo" SelectedIndex="0" SelectionChanged="WaitStatsMetric_SelectionChanged" FontSize="11" Padding="4,2">
+                            <ComboBoxItem Content="Wait Time (ms/sec)"/>
+                            <ComboBoxItem Content="Avg Wait Time (ms/wait)"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <scottplot:WpfPlot Grid.Row="1" x:Name="WaitStatsChart"/>
+                </Grid>
+            </Grid>
+        </TabItem>
+
         <TabItem Header="Queries">
             <DockPanel Margin="0,8,0,0">
                 <TextBlock DockPanel.Dock="Top" Text="Top 50 Queries by Total Duration (last 24 hours)" Style="{StaticResource SectionHeader}"/>
