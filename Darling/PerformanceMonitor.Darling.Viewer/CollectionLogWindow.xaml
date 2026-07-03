@@ -1,0 +1,112 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.CollectionLogWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Collection History" Height="600" Width="1100"
+        WindowStartupLocation="CenterOwner"
+        Background="#22252b"
+        Foreground="#E4E6EB">
+    <!-- Copied from Lite's Windows/CollectionLogWindow.xaml for the W1i copy-parity port: the
+         per-collector collection-history drill the Collection Health "Health Summary" grid opens on
+         double-click. Purely data-driven; the one behavioral change is the data call is repointed to
+         ViewerDataService.GetCollectionLogByCollectorAsync (Postgres). Dark-styled via the shared
+         ViewerDarkTheme resource dictionary (DarkGrid + implicit control styles), with a local
+         right-align NumericCell (Lite's shipped style lives in a dictionary the viewer windows don't
+         merge). Copy/Export delegate to the shared PerformanceMonitor.Ui DataGridExport. -->
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ViewerDarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <Style x:Key="NumericCell" TargetType="TextBlock">
+                <Setter Property="TextAlignment" Value="Right"/>
+            </Style>
+
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+                </MenuItem>
+            </ContextMenu>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Background="#111217" Padding="10" Margin="10,10,10,0" CornerRadius="4">
+            <StackPanel>
+                <TextBlock x:Name="CollectorNameText" FontSize="16" FontWeight="Bold"/>
+                <TextBlock x:Name="SummaryText" Margin="0,5,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Data Grid -->
+        <DataGrid Grid.Row="1" x:Name="LogDataGrid"
+                  Style="{StaticResource DarkGrid}"
+                  CanUserSortColumns="True"
+                  Margin="10"
+                  ContextMenu="{StaticResource DataGridContextMenu}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Binding="{Binding CollectionTimeFormatted}" Width="140">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Collection Time" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding Status}" Width="100">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Status" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding RowsCollected}" ElementStyle="{StaticResource NumericCell}" Width="100">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Rows" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding DurationFormatted}" ElementStyle="{StaticResource NumericCell}" Width="100" SortMemberPath="DurationMs">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Duration" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding SqlDurationFormatted}" ElementStyle="{StaticResource NumericCell}" Width="100" SortMemberPath="SqlDurationMs">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="SQL Duration" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <!-- Store phase: stored under the legacy duckdb_duration_ms column; in the Darling store
+                     it is the Postgres write time. -->
+                <DataGridTextColumn Binding="{Binding DuckDbDurationFormatted}" ElementStyle="{StaticResource NumericCell}" Width="120" SortMemberPath="DuckDbDurationMs">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Store Duration" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding ErrorMessage}" Width="*">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Error Message" FontWeight="Bold"/>
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Footer -->
+        <Border Grid.Row="2" Background="#111217" Padding="10" Margin="10,0,10,10" CornerRadius="4">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Close" Width="100" Height="30" Click="Close_Click"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

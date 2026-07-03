@@ -269,55 +269,82 @@ public sealed class ViewerCpuTempDbLivePostgresTests
             /* #1262 round-trip. cpu_utilization_stats stores sample_time as the monitored server's LOCAL
                wall clock while collection_time is naive UTC. GetCpuUtilizationAsync must de-skew each
                sample back to true naive UTC by the per-batch offset (round(MAX(sample_time) over the
-               batch - collection_time) to 15 min), so the two batches below — one on a server 4h behind
-               UTC, one on a UTC server — both land back on their collection_time axis.
+               batch - collection_time) to 15 min), so every batch below lands back on its collection_time
+               axis regardless of the server's timezone. In each batch the newest sample is 30s before the
+               collection instant (the anchor the de-skew keys on) and an older sample sits 5 min back;
+               each batch has its own collection_time (an hour apart) so the (server_id, collection_time)
+               partitions stay separate. Four zones exercise the derivation:
+                 - Pacific PDT (UTC-7): Erik's fleet in summer.
+                 - Pacific PST (UTC-8): the same fleet across its DST boundary.
+                 - India IST (UTC+5:30): a POSITIVE, HALF-hour offset — proves the 15-minute rounding
+                   generalizes past whole hours (14:00 - 30s -> round(+5:30 -30s) = +5:30 exactly).
+                 - UTC (offset 0): the de-skew must be a no-op (stored local already equals true UTC). */
+            var pacificSummer = TimeSpan.FromHours(-7);
+            var pacificWinter = TimeSpan.FromHours(-8);
+            var indiaStandard = new TimeSpan(5, 30, 0);
+            var utc = TimeSpan.Zero;
 
-               Batch A: server at UTC-4 (US Eastern DST). The stored local sample_time runs 4h behind the
-               true UTC sample time; the newest sample is 30s before the collection instant (the anchor
-               the de-skew keys on). MAX(local) - collA = -4h -30s, which rounds to a -4h offset. */
-            var collA = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Unspecified);
-            var offsetA = TimeSpan.FromHours(-4);
-            var trueA_old = collA.AddMinutes(-5);   // intended true naive-UTC sample time
-            var trueA_new = collA.AddSeconds(-30);  // intended true naive-UTC sample time (newest = anchor)
-            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collA, trueA_old + offsetA, sqlCpu: 11, otherCpu: 3);
-            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collA, trueA_new + offsetA, sqlCpu: 12, otherCpu: 4);
+            var collPdt = new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Unspecified);
+            var collPst = new DateTime(2026, 6, 1, 13, 0, 0, DateTimeKind.Unspecified);
+            var collInd = new DateTime(2026, 6, 1, 14, 0, 0, DateTimeKind.Unspecified);
+            var collUtc = new DateTime(2026, 6, 1, 15, 0, 0, DateTimeKind.Unspecified);
 
-            /* Batch B: a UTC server (offset 0). The stored local sample_time already equals true UTC, so
-               the de-skew must be a no-op — MAX(local) - collB = -30s rounds to a 0 offset. */
-            var collB = new DateTime(2026, 6, 1, 13, 0, 0, DateTimeKind.Unspecified);
-            var trueB_old = collB.AddMinutes(-5);
-            var trueB_new = collB.AddSeconds(-30);
-            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collB, trueB_old, sqlCpu: 21, otherCpu: 5);
-            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collB, trueB_new, sqlCpu: 22, otherCpu: 6);
+            /* trueX = the intended true naive-UTC sample time; the row stores trueX + zone offset (the
+               server-local wall clock the collector would record). */
+            var truePdtOld = collPdt.AddMinutes(-5); var truePdtNew = collPdt.AddSeconds(-30);
+            var truePstOld = collPst.AddMinutes(-5); var truePstNew = collPst.AddSeconds(-30);
+            var trueIndOld = collInd.AddMinutes(-5); var trueIndNew = collInd.AddSeconds(-30);
+            var trueUtcOld = collUtc.AddMinutes(-5); var trueUtcNew = collUtc.AddSeconds(-30);
 
-            var samples = await viewer.GetCpuUtilizationAsync(SkewServerId, collA.AddMinutes(-10));
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collPdt, truePdtOld + pacificSummer, sqlCpu: 11, otherCpu: 3);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collPdt, truePdtNew + pacificSummer, sqlCpu: 12, otherCpu: 4);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collPst, truePstOld + pacificWinter, sqlCpu: 21, otherCpu: 5);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collPst, truePstNew + pacificWinter, sqlCpu: 22, otherCpu: 6);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collInd, trueIndOld + indiaStandard, sqlCpu: 31, otherCpu: 7);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collInd, trueIndNew + indiaStandard, sqlCpu: 32, otherCpu: 8);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collUtc, trueUtcOld + utc, sqlCpu: 41, otherCpu: 9);
+            await InsertCpuAsync(connection, SkewServerId, SkewServerName, collUtc, trueUtcNew + utc, sqlCpu: 42, otherCpu: 10);
 
-            Assert.Equal(4, samples.Count);
+            var samples = await viewer.GetCpuUtilizationAsync(SkewServerId, collPdt.AddMinutes(-10));
 
-            /* Every sample_time comes back as the intended true naive UTC — the -4h batch shifted +4h,
-               the UTC batch untouched — ordered by that de-skewed time. Paired with its (unique) CPU
-               value so the assertion pins which row de-skewed to which instant. */
+            Assert.Equal(8, samples.Count);
+
+            /* Every sample_time comes back as its intended true naive UTC — each skewed batch shifted by
+               the negative of its zone offset, the UTC batch untouched — ordered by that de-skewed time.
+               Paired with its (unique) CPU value so the assertion pins which row de-skewed to which
+               instant. */
             Assert.Equal(
                 new[]
                 {
-                    (trueA_old.Ticks, 11),
-                    (trueA_new.Ticks, 12),
-                    (trueB_old.Ticks, 21),
-                    (trueB_new.Ticks, 22),
+                    (truePdtOld.Ticks, 11),
+                    (truePdtNew.Ticks, 12),
+                    (truePstOld.Ticks, 21),
+                    (truePstNew.Ticks, 22),
+                    (trueIndOld.Ticks, 31),
+                    (trueIndNew.Ticks, 32),
+                    (trueUtcOld.Ticks, 41),
+                    (trueUtcNew.Ticks, 42),
                 },
                 samples.Select(s => (s.SampleTime.Ticks, s.SqlServerCpu)));
 
             /* The load-bearing outcome: each batch's newest de-skewed sample now sits within the 15-min
-               rounding tolerance of its own collection_time, on both timezones — i.e. the CPU series is
-               back on the collection_time axis every other lane plots on. */
-            Assert.True((samples[1].SampleTime - collA).Duration() <= TimeSpan.FromMinutes(15),
-                "The UTC-4 batch's newest sample should align with its collection_time after de-skew.");
-            Assert.True((samples[3].SampleTime - collB).Duration() <= TimeSpan.FromMinutes(15),
+               rounding tolerance of its own collection_time, on every zone — i.e. the CPU series is back
+               on the collection_time axis every other lane plots on. */
+            Assert.True((samples[1].SampleTime - collPdt).Duration() <= TimeSpan.FromMinutes(15),
+                "The Pacific PDT (UTC-7) batch's newest sample should align with its collection_time after de-skew.");
+            Assert.True((samples[3].SampleTime - collPst).Duration() <= TimeSpan.FromMinutes(15),
+                "The Pacific PST (UTC-8) batch's newest sample should align with its collection_time after de-skew.");
+            Assert.True((samples[5].SampleTime - collInd).Duration() <= TimeSpan.FromMinutes(15),
+                "The India IST (UTC+5:30) batch's newest sample should align with its collection_time after de-skew.");
+            Assert.True((samples[7].SampleTime - collUtc).Duration() <= TimeSpan.FromMinutes(15),
                 "The UTC batch's newest sample should align with its collection_time (unchanged).");
 
-            /* The -4h batch was genuinely shifted (stored local != returned UTC); the UTC batch was not. */
-            Assert.NotEqual((trueA_new + offsetA).Ticks, samples[1].SampleTime.Ticks);
-            Assert.Equal(trueB_new.Ticks, samples[3].SampleTime.Ticks);
+            /* Each skewed batch was genuinely shifted (stored local != returned UTC); the UTC batch was
+               left untouched (stored local == returned UTC). */
+            Assert.NotEqual((truePdtNew + pacificSummer).Ticks, samples[1].SampleTime.Ticks);
+            Assert.NotEqual((truePstNew + pacificWinter).Ticks, samples[3].SampleTime.Ticks);
+            Assert.NotEqual((trueIndNew + indiaStandard).Ticks, samples[5].SampleTime.Ticks);
+            Assert.Equal(trueUtcNew.Ticks, samples[7].SampleTime.Ticks);
         }
         finally
         {

@@ -33,10 +33,11 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       CPU, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Collection Health) —
-       ported tabs slot into Lite's positions as they arrive (File I/O sits BEFORE tempdb, and
-       Perfmon/Running Jobs sit between Blocking and Configuration, matching Lite's own order), so
-       the constants renumber when a wave lands between existing tabs. */
+       CPU, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily Summary,
+       Collection Health) — ported tabs slot into Lite's positions as they arrive (File I/O sits
+       BEFORE tempdb, Perfmon/Running Jobs sit between Blocking and Configuration, and Daily Summary
+       sits between Configuration and Collection Health, matching Lite's own order), so the constants
+       renumber when a wave lands between existing tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
     private const int QueriesInnerTabIndex = 2;
@@ -47,7 +48,8 @@ public partial class ViewerServerTab : UserControl
     private const int PerfmonInnerTabIndex = 7;
     private const int RunningJobsInnerTabIndex = 8;
     private const int ConfigurationInnerTabIndex = 9;
-    private const int HealthInnerTabIndex = 10;
+    private const int DailySummaryInnerTabIndex = 10;
+    private const int HealthInnerTabIndex = 11;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -85,6 +87,9 @@ public partial class ViewerServerTab : UserControl
         /* Queries tab (W1f-1): the three grids' bar-cell maxima hook + slicer RangeChanged wiring
            (copied from Lite's ServerTab). After InitializeComponent so the named grids/slicers exist. */
         InitializeQueriesTab();
+
+        /* Collection Health's Duration Trends chart (copied from Lite): up-front theme + hover. */
+        InitializeCollectionHealthChart();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -173,6 +178,9 @@ public partial class ViewerServerTab : UserControl
                 case ConfigurationInnerTabIndex:
                     await LoadConfigurationAsync();
                     break;
+                case DailySummaryInnerTabIndex:
+                    await LoadDailySummaryAsync();
+                    break;
                 case HealthInnerTabIndex:
                     await LoadHealthAsync();
                     break;
@@ -207,15 +215,10 @@ public partial class ViewerServerTab : UserControl
         await OverviewLanes.RefreshAsync((int)s_dataWindow.TotalHours, null, null);
     }
 
-    private async Task LoadHealthAsync()
-    {
-        var health = await _dataService.GetCollectionHealthAsync(_server.ServerId);
-        HealthGrid.ItemsSource = health;
-    }
-
-    /* LoadQueriesAsync now lives in ViewerServerTab.Queries.cs — it dispatches to the Queries tab's
-       active sub-tab (Top Queries / Top Procedures / Query Store), loading that grid + its slicer +
-       (when Compare is active) its comparison grid over the fixed 24-hour window. */
+    /* LoadHealthAsync now lives in ViewerServerTab.CollectionHealth.cs (W1i moved it there with the
+       Collection Health sub-tabs), and LoadQueriesAsync now lives in ViewerServerTab.Queries.cs — it
+       dispatches to the Queries tab's active sub-tab (Top Queries / Top Procedures / Query Store),
+       loading that grid + its slicer + (when Compare is active) its comparison grid. */
 
     /* LoadBlockingAsync now lives in ViewerServerTab.Blocking.cs — it dispatches to the Blocking tab's
        active sub-tab (Trends / Current Waits / Blocked Process Reports) instead of loading the grid
