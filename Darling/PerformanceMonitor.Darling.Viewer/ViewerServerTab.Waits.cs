@@ -33,7 +33,7 @@ public partial class ViewerServerTab
 {
     /* ========== Wait Stats Picker ========== */
 
-    private static readonly string[] SeriesColors = ChartPalette.CyclingPalette.ToArray();
+    /* SeriesColors (the shared cycling palette) is declared once in ViewerServerTab.Charts.cs. */
 
     private static readonly string[] PoisonWaits = { "THREADPOOL", "RESOURCE_SEMAPHORE", "RESOURCE_SEMAPHORE_QUERY_COMPILE" };
     private static readonly string[] UsualSuspectWaits = { "SOS_SCHEDULER_YIELD", "CXPACKET", "CXCONSUMER", "PAGEIOLATCH_SH", "PAGEIOLATCH_EX", "WRITELOG" };
