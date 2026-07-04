@@ -54,6 +54,11 @@ public partial class ViewerServerTab : UserControl
     private const int DailySummaryInnerTabIndex = 12;
     private const int HealthInnerTabIndex = 13;
 
+    /* FinOps is appended AFTER Collection Health (it has no Lite ServerTab position — Lite's FinOps is a
+       separate cross-server top-level tab), so it takes the last index and the existing constants don't
+       renumber. Copy-parity program: the 9 store-backed FinOps sub-tabs ported as a per-server inner tab. */
+    private const int FinOpsInnerTabIndex = 14;
+
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
 
@@ -97,6 +102,9 @@ public partial class ViewerServerTab : UserControl
 
         /* Collection Health's Duration Trends chart (copied from Lite): up-front theme + hover. */
         InitializeCollectionHealthChart();
+
+        /* FinOps inner tab (copy-parity program): register the FinOps grids' column-filter managers. */
+        InitializeFinOpsTab();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -207,6 +215,9 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case FileIoInnerTabIndex:
                     await LoadFileIoAsync();
+                    break;
+                case FinOpsInnerTabIndex:
+                    await LoadFinOpsAsync();
                     break;
                 case OverviewInnerTabIndex:
                 default:
