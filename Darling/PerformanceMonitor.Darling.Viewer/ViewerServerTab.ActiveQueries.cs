@@ -37,15 +37,7 @@ public partial class ViewerServerTab
        sub-tab SelectionChanged auto-refresh doesn't clobber the drill-down's own filtered snapshot via
        an async race — Lite's _suppressActiveQueriesAutoRefresh. */
     private bool _suppressActiveQueriesAutoRefresh;
-
-    /// <summary>
-    /// The plan-host seam (W1f-2 ↔ the parallel plan-host wave): the Active Queries Estimated / Actual
-    /// buttons call this to open a stored plan in the Plan Viewer tab. Declared here as a partial-method
-    /// hook so this branch compiles standalone — an unimplemented <c>partial void</c> call is removed by
-    /// the compiler (a no-op), so the buttons are inert until the plan-host wave supplies the implementing
-    /// <c>partial void OpenPlanTab(string planXml, string label, string queryText) { … }</c> body.
-    /// </summary>
-    partial void OpenPlanTab(string planXml, string label, string queryText);
+    /* OpenPlanTab is implemented by the plan-host partial (ViewerServerTab.Plans.cs). */
 
     /// <summary>Wires the Active Queries slicer's RangeChanged (drag re-reads the grid). Called from
     /// <see cref="InitializeQueriesTab"/> after InitializeComponent so the named slicer exists.</summary>

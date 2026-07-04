@@ -54,15 +54,18 @@ public sealed class ViewerQueriesSqlTests
     }
 
     [Fact]
-    public void TopQueriesSql_FetchesTheLatestNonNullQueryText_ViaLateralJoin_NoPlan()
+    public void TopQueriesSql_FetchesTheLatestNonNullQueryText_ViaLateralJoin_WithPlanPresenceFlag()
     {
         var sql = ViewerDataService.TopQueriesSql;
         Assert.Contains("LEFT JOIN LATERAL", sql, StringComparison.Ordinal);
         Assert.Contains("query_text IS NOT NULL", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY collection_time DESC", sql, StringComparison.Ordinal);
         Assert.Contains("LIMIT 1", sql, StringComparison.Ordinal);
-        /* View-Plan deferred: the LATERAL fetches only query_text, not the collected query_plan_xml. */
-        Assert.DoesNotContain("query_plan_xml", sql, StringComparison.Ordinal);
+        /* The LATERAL still fetches only query_text (never the multi-KB plan). The plan is surfaced by a
+           cheap group-level presence flag — bool_or(query_plan_xml IS NOT NULL) — that gates the grid's
+           Query Plan column; the plan XML itself is read on demand (GetQueryStatsPlanXmlAsync). */
+        Assert.Contains("bool_or(query_plan_xml IS NOT NULL) AS has_query_plan", sql, StringComparison.Ordinal);
+        Assert.Contains("r.has_query_plan", sql, StringComparison.Ordinal); /* the flag rides from the ranked CTE, not the LATERAL */
     }
 
     [Fact]
