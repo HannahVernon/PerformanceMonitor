@@ -425,6 +425,16 @@ public sealed class MonitoredServer
     [JsonPropertyName("excludedDatabases")]
     public List<string> ExcludedDatabases { get; set; } = new();
 
+    /// <summary>
+    /// The server's monthly cost/budget in USD — the twin of Lite's <c>ServerConnection.MonthlyCostUsd</c>.
+    /// Pure user-input config (not collected data): every FinOps cost figure is proportional math on this
+    /// single number (e.g. a database's share = its size fraction × this budget). 0 (the default) hides the
+    /// cost columns/cards in the viewer's FinOps tab, exactly like Lite. Upserted into the servers registry
+    /// so the headless viewer can read it.
+    /// </summary>
+    [JsonPropertyName("monthlyCostUsd")]
+    public decimal MonthlyCostUsd { get; set; }
+
     [JsonIgnore]
     public bool UsesSqlAuth => string.Equals(Auth, "sql", StringComparison.OrdinalIgnoreCase);
 

@@ -20,7 +20,8 @@ public sealed record DarlingServer(
     string ServerName,
     string DisplayName,
     bool IsEnabled,
-    int? SqlMajorVersion)
+    int? SqlMajorVersion,
+    decimal MonthlyCostUsd = 0)
 {
     /// <summary>"SQL Server 2022"-style label for the server list; empty when the version is unknown.</summary>
     public string VersionLabel => ViewerDataService.SqlVersionLabel(SqlMajorVersion);
@@ -44,7 +45,7 @@ public sealed record DarlingServer(
 public sealed partial class ViewerDataService : IAsyncDisposable
 {
     public const string ServersSql =
-        "SELECT server_id, server_name, display_name, is_enabled, sql_major_version FROM servers ORDER BY display_name";
+        "SELECT server_id, server_name, display_name, is_enabled, sql_major_version, COALESCE(monthly_cost_usd, 0) FROM servers ORDER BY display_name";
 
     /// <summary>
     /// The authoritative read-only probe (V8 security hardening): does the connected role hold INSERT
@@ -109,7 +110,8 @@ public sealed partial class ViewerDataService : IAsyncDisposable
                 serverName,
                 reader.IsDBNull(2) ? serverName : reader.GetString(2),
                 !reader.IsDBNull(3) && reader.GetBoolean(3),
-                reader.IsDBNull(4) ? null : reader.GetInt32(4)));
+                reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                reader.IsDBNull(5) ? 0m : Convert.ToDecimal(reader.GetValue(5))));
         }
 
         return servers;

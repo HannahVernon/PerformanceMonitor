@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 35;
+    internal const int CurrentSchemaVersion = 36;
 
     private readonly string _archivePath;
 
@@ -888,6 +888,26 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v35 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 36)
+        {
+            /* v36: server_properties gains sqlserver_start_time / host_os_version / ag_replica_role — the
+               three fields the shared ServerPropertiesCollector now SELECTs (previously read only from a
+               live query in the FinOps Server Inventory). All appended at the end to keep the positional
+               appender aligned; the collector writes them unconditionally, so an un-migrated DB would
+               mis-align on the next append — these ALTERs are required. */
+            _logger?.LogInformation("Running migration to v36: server_properties start-time / host-OS / AG-role columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS sqlserver_start_time TIMESTAMP");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS host_os_version VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS ag_replica_role VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v36 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

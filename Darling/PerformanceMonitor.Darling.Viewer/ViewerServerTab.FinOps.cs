@@ -1,0 +1,548 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using PerformanceMonitor.Ui;
+
+namespace PerformanceMonitor.Darling.Viewer;
+
+/// <summary>
+/// The FinOps inner tab — a COPY of Lite's FinOps tab (<c>Controls/FinOpsTab.xaml.cs</c>) for the
+/// copy-parity program, reads rewired to <see cref="ViewerDataService"/> Postgres. Nine store-backed
+/// sub-tabs are ported (Utilization, Database Resources, Storage Growth, Locking &amp; Contention,
+/// Database Sizes, Optimization, High Impact, Application Connections, Server Inventory); Lite's two
+/// live-target sub-tabs (Index Analysis / Recommendations) are deliberately EXCLUDED. Unlike Lite's
+/// cross-server FinOps tab, this is a per-server inner tab, so it drops Lite's server selector and scopes
+/// the per-server sub-tabs to <c>_server.ServerId</c>; only Server Inventory stays cross-server (it lists
+/// every registered server). The per-server FinOps COST attribution is dropped (the headless store has no
+/// budget); the health score is kept. This partial holds the sub-tab dispatch, the filter-manager wiring,
+/// and the simple grid loaders; Locking lives in <c>.FinOps.Locking.cs</c> and the Storage Growth drill in
+/// <c>.FinOps.ObjectHeatmap.cs</c>.
+/// </summary>
+public partial class ViewerServerTab
+{
+    /* FinOps sub-tab order (matches the task's port list; Lite's Recommendations + Index Analysis omitted). */
+    private const int FinOpsUtilizationSubTabIndex = 0;
+    private const int FinOpsDatabaseResourcesSubTabIndex = 1;
+    private const int FinOpsStorageGrowthSubTabIndex = 2;
+    private const int FinOpsLockingSubTabIndex = 3;
+    private const int FinOpsDatabaseSizesSubTabIndex = 4;
+    private const int FinOpsOptimizationSubTabIndex = 5;
+    private const int FinOpsHighImpactSubTabIndex = 6;
+    private const int FinOpsApplicationConnectionsSubTabIndex = 7;
+    private const int FinOpsServerInventorySubTabIndex = 8;
+
+    private DataGridFilterManager<DatabaseResourceUsageRow>? _finopsDbResourcesFilterMgr;
+    private DataGridFilterManager<StorageGrowthRow>? _finopsStorageGrowthFilterMgr;
+    private DataGridFilterManager<DatabaseSizeRow>? _finopsDbSizesFilterMgr;
+    private DataGridFilterManager<ApplicationConnectionRow>? _finopsAppConnectionsFilterMgr;
+    private DataGridFilterManager<ServerPropertyRow>? _finopsServerInventoryFilterMgr;
+    private DataGridFilterManager<HighImpactQueryRow>? _finopsHighImpactFilterMgr;
+    private DataGridFilterManager<IdleDatabaseRow>? _finopsIdleDbsFilterMgr;
+    private DataGridFilterManager<TempdbSummaryRow>? _finopsTempdbFilterMgr;
+    private DataGridFilterManager<WaitCategorySummaryRow>? _finopsWaitCategoryFilterMgr;
+    private DataGridFilterManager<ExpensiveQueryRow>? _finopsExpensiveQueriesFilterMgr;
+    private DataGridFilterManager<MemoryGrantEfficiencyRow>? _finopsMemoryGrantFilterMgr;
+    private DataGridFilterManager<IndexLockingRow>? _finopsIndexLockingFilterMgr;
+
+    /// <summary>
+    /// Registers the FinOps grids' column-filter managers into the shared <c>_filterManagers</c> map
+    /// (defined in <c>ViewerServerTab.Filters.cs</c>). Called from the constructor after InitializeComponent,
+    /// alongside the other Initialize* hooks, so the named grids exist.
+    /// </summary>
+    private void InitializeFinOpsTab()
+    {
+        _finopsDbResourcesFilterMgr = new DataGridFilterManager<DatabaseResourceUsageRow>(FinOpsDatabaseResourcesDataGrid);
+        _finopsStorageGrowthFilterMgr = new DataGridFilterManager<StorageGrowthRow>(FinOpsStorageGrowthDataGrid);
+        _finopsDbSizesFilterMgr = new DataGridFilterManager<DatabaseSizeRow>(FinOpsDatabaseSizesDataGrid);
+        _finopsAppConnectionsFilterMgr = new DataGridFilterManager<ApplicationConnectionRow>(FinOpsApplicationConnectionsDataGrid);
+        _finopsServerInventoryFilterMgr = new DataGridFilterManager<ServerPropertyRow>(FinOpsServerInventoryDataGrid);
+        _finopsHighImpactFilterMgr = new DataGridFilterManager<HighImpactQueryRow>(FinOpsHighImpactDataGrid);
+        _finopsIdleDbsFilterMgr = new DataGridFilterManager<IdleDatabaseRow>(FinOpsIdleDatabasesDataGrid);
+        _finopsTempdbFilterMgr = new DataGridFilterManager<TempdbSummaryRow>(FinOpsTempdbPressureDataGrid);
+        _finopsWaitCategoryFilterMgr = new DataGridFilterManager<WaitCategorySummaryRow>(FinOpsWaitCategorySummaryDataGrid);
+        _finopsExpensiveQueriesFilterMgr = new DataGridFilterManager<ExpensiveQueryRow>(FinOpsExpensiveQueriesDataGrid);
+        _finopsMemoryGrantFilterMgr = new DataGridFilterManager<MemoryGrantEfficiencyRow>(FinOpsMemoryGrantEfficiencyDataGrid);
+        _finopsIndexLockingFilterMgr = new DataGridFilterManager<IndexLockingRow>(FinOpsIndexLockingDataGrid);
+
+        _filterManagers[FinOpsDatabaseResourcesDataGrid] = _finopsDbResourcesFilterMgr;
+        _filterManagers[FinOpsStorageGrowthDataGrid] = _finopsStorageGrowthFilterMgr;
+        _filterManagers[FinOpsDatabaseSizesDataGrid] = _finopsDbSizesFilterMgr;
+        _filterManagers[FinOpsApplicationConnectionsDataGrid] = _finopsAppConnectionsFilterMgr;
+        _filterManagers[FinOpsServerInventoryDataGrid] = _finopsServerInventoryFilterMgr;
+        _filterManagers[FinOpsHighImpactDataGrid] = _finopsHighImpactFilterMgr;
+        _filterManagers[FinOpsIdleDatabasesDataGrid] = _finopsIdleDbsFilterMgr;
+        _filterManagers[FinOpsTempdbPressureDataGrid] = _finopsTempdbFilterMgr;
+        _filterManagers[FinOpsWaitCategorySummaryDataGrid] = _finopsWaitCategoryFilterMgr;
+        _filterManagers[FinOpsExpensiveQueriesDataGrid] = _finopsExpensiveQueriesFilterMgr;
+        _filterManagers[FinOpsMemoryGrantEfficiencyDataGrid] = _finopsMemoryGrantFilterMgr;
+        _filterManagers[FinOpsIndexLockingDataGrid] = _finopsIndexLockingFilterMgr;
+    }
+
+    /// <summary>
+    /// A FinOps sub-tab switch reloads through the shell's overlap-guarded
+    /// <see cref="RefreshActiveInnerTabAsync"/> (mirrors the Queries/File I/O sub-tab handlers). Gated on
+    /// <see cref="FrameworkElement.IsLoaded"/> and the sub-TabControl's own selection so build-time and
+    /// bubbled child selections are ignored.
+    /// </summary>
+    private async void FinOpsSubTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, FinOpsSubTabControl) || !IsLoaded)
+        {
+            return;
+        }
+
+        await RefreshActiveInnerTabAsync();
+    }
+
+    /// <summary>
+    /// Loads the FinOps tab's ACTIVE sub-tab only (Lite's visible-only rule). The shell's
+    /// <see cref="LoadInnerTabAsync"/> owns the try/catch that surfaces failures on the status bar.
+    /// </summary>
+    private async Task LoadFinOpsAsync()
+    {
+        switch (FinOpsSubTabControl.SelectedIndex)
+        {
+            case FinOpsDatabaseResourcesSubTabIndex:
+                await LoadFinOpsDatabaseResourcesAsync();
+                break;
+            case FinOpsStorageGrowthSubTabIndex:
+                await LoadFinOpsStorageGrowthActiveAsync();
+                break;
+            case FinOpsLockingSubTabIndex:
+                await LoadFinOpsIndexLockingAsync();
+                break;
+            case FinOpsDatabaseSizesSubTabIndex:
+                await LoadFinOpsDatabaseSizesAsync();
+                break;
+            case FinOpsOptimizationSubTabIndex:
+                await LoadFinOpsOptimizationAsync();
+                break;
+            case FinOpsHighImpactSubTabIndex:
+                await LoadFinOpsHighImpactAsync();
+                break;
+            case FinOpsApplicationConnectionsSubTabIndex:
+                await LoadFinOpsApplicationConnectionsAsync();
+                break;
+            case FinOpsServerInventorySubTabIndex:
+                await LoadFinOpsServerInventoryAsync();
+                break;
+            case FinOpsUtilizationSubTabIndex:
+            default:
+                await LoadFinOpsUtilizationAsync();
+                break;
+        }
+    }
+
+    // ── Utilization ──
+
+    private async Task LoadFinOpsUtilizationAsync()
+    {
+        var data = await _dataService.GetUtilizationEfficiencyAsync(_server.ServerId);
+
+        if (data != null)
+        {
+            /* Per-server FinOps budget (0 = hide the cost cards, like Lite). */
+            data.MonthlyCost = _server.MonthlyCostUsd;
+
+            /* Free space % for the storage health score, from the latest database sizes. */
+            var dbSizes = await _dataService.GetDatabaseSizeLatestAsync(_server.ServerId);
+            var totalStorageMb = dbSizes.Sum(d => d.TotalSizeMb);
+            var totalFreeMb = dbSizes.Sum(d => d.FreeSpaceMb ?? 0m);
+            data.FreeSpacePct = totalStorageMb > 0 ? totalFreeMb / totalStorageMb * 100m : 100m;
+        }
+
+        UpdateUtilizationSummary(data);
+        FinOpsNoUtilizationMessage.Visibility = data == null ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsSummaryContent.Visibility = data == null ? Visibility.Collapsed : Visibility.Visible;
+
+        if (data != null)
+        {
+            FinOpsTopTotalGrid.ItemsSource = await _dataService.GetTopResourceConsumersByTotalAsync(_server.ServerId);
+            FinOpsTopAvgGrid.ItemsSource = await _dataService.GetTopResourceConsumersByAvgAsync(_server.ServerId);
+            FinOpsDbSizeChart.ItemsSource = await _dataService.GetDatabaseSizeSummaryAsync(_server.ServerId);
+            FinOpsProvisioningTrendGrid.ItemsSource = await _dataService.GetProvisioningTrendAsync(_server.ServerId);
+        }
+        else
+        {
+            FinOpsTopTotalGrid.ItemsSource = null;
+            FinOpsTopAvgGrid.ItemsSource = null;
+            FinOpsDbSizeChart.ItemsSource = null;
+            FinOpsProvisioningTrendGrid.ItemsSource = null;
+        }
+    }
+
+    private void UpdateUtilizationSummary(UtilizationEfficiencyRow? data)
+    {
+        if (data == null)
+        {
+            FinOpsProvisioningStatusText.Text = "No Data";
+            FinOpsProvisioningStatusBorder.Background = new SolidColorBrush(Colors.Gray);
+            FinOpsAvgCpuText.Text = FinOpsP95CpuText.Text = FinOpsMaxCpuText.Text = FinOpsCpuSamplesText.Text = "-";
+            FinOpsCpuCountText.Text = "-";
+            FinOpsWorkerThreadsText.Text = "-";
+            FinOpsAvgCpuBar.Width = FinOpsP95CpuBar.Width = FinOpsMaxCpuBar.Width = 0;
+            FinOpsMemoryUtilBar.Width = FinOpsMemoryRatioBar.Width = 0;
+            FinOpsMemoryUtilText.Text = FinOpsMemoryRatioText.Text = "-";
+            FinOpsPhysicalMemoryText.Text = FinOpsTargetMemoryText.Text = FinOpsTotalMemoryText.Text = FinOpsBufferPoolText.Text = "-";
+            FinOpsClassificationExplanation.Text = "";
+            FinOpsUtilizationContent.Visibility = Visibility.Collapsed;
+            FinOpsHealthScoreBorder.Visibility = Visibility.Collapsed;
+            FinOpsComputeCostCard.Visibility = Visibility.Collapsed;
+            FinOpsTotalCostCard.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        FinOpsUtilizationContent.Visibility = Visibility.Visible;
+
+        FinOpsProvisioningStatusText.Text = data.ProvisioningStatus.Replace("_", " ");
+        switch (data.ProvisioningStatus)
+        {
+            case "RIGHT_SIZED":
+                FinOpsProvisioningStatusBorder.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#27AE60"));
+                FinOpsProvisioningStatusText.Foreground = Brushes.White;
+                break;
+            case "OVER_PROVISIONED":
+                FinOpsProvisioningStatusBorder.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F39C12"));
+                FinOpsProvisioningStatusText.Foreground = Brushes.Black;
+                break;
+            case "UNDER_PROVISIONED":
+                FinOpsProvisioningStatusBorder.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E74C3C"));
+                FinOpsProvisioningStatusText.Foreground = Brushes.White;
+                break;
+            default:
+                FinOpsProvisioningStatusBorder.Background = new SolidColorBrush(Colors.Gray);
+                FinOpsProvisioningStatusText.Foreground = Brushes.White;
+                break;
+        }
+
+        /* CPU text + bars */
+        FinOpsAvgCpuText.Text = $"{data.AvgCpuPct:N2}%";
+        FinOpsP95CpuText.Text = $"{data.P95CpuPct:N2}%";
+        FinOpsMaxCpuText.Text = $"{data.MaxCpuPct}%";
+        FinOpsCpuSamplesText.Text = data.CpuSamples.ToString("N0");
+        FinOpsCpuCountText.Text = data.CpuCount.ToString("N0");
+        FinOpsWorkerThreadsText.Text = $"{data.CurrentWorkersCount:N0} / {data.MaxWorkersCount:N0}";
+
+        SetBar(FinOpsAvgCpuBar, FinOpsAvgCpuFilled, FinOpsAvgCpuEmpty, (double)data.AvgCpuPct);
+        SetBar(FinOpsP95CpuBar, FinOpsP95CpuFilled, FinOpsP95CpuEmpty, (double)data.P95CpuPct);
+        SetBar(FinOpsMaxCpuBar, FinOpsMaxCpuFilled, FinOpsMaxCpuEmpty, data.MaxCpuPct);
+
+        /* Stolen Memory % = (Total Server Memory - Buffer Pool) / Total Server Memory */
+        var stolenPct = data.TotalMemoryMb > 0
+            ? (double)(data.TotalMemoryMb - data.BufferPoolMb) / data.TotalMemoryMb * 100.0
+            : 0;
+        FinOpsMemoryUtilText.Text = $"{stolenPct:N0}%";
+        SetBar(FinOpsMemoryUtilBar, FinOpsMemUtilFilled, FinOpsMemUtilEmpty, stolenPct);
+
+        /* Buffer Pool % = Buffer Pool / Physical Memory */
+        var bpPct = data.PhysicalMemoryMb > 0
+            ? (double)data.BufferPoolMb / data.PhysicalMemoryMb * 100.0
+            : 0;
+        FinOpsMemoryRatioText.Text = $"{bpPct:N0}%";
+        SetBar(FinOpsMemoryRatioBar, FinOpsMemRatioFilled, FinOpsMemRatioEmpty, bpPct);
+
+        FinOpsPhysicalMemoryText.Text = $"{data.PhysicalMemoryMb:N0} MB";
+        FinOpsTargetMemoryText.Text = $"{data.TargetMemoryMb:N0} MB";
+        FinOpsTotalMemoryText.Text = $"{data.TotalMemoryMb:N0} MB";
+        FinOpsBufferPoolText.Text = $"{data.BufferPoolMb:N0} MB";
+
+        FinOpsClassificationExplanation.Text = data.ProvisioningStatus switch
+        {
+            "RIGHT_SIZED" => $"CPU is moderately loaded (avg {data.AvgCpuPct:N1}%, p95 {data.P95CpuPct:N1}%) and memory is well-utilized (buffer pool uses {bpPct:N0}% of physical RAM). No action needed.",
+            "OVER_PROVISIONED" => $"CPU is lightly loaded (avg {data.AvgCpuPct:N1}%, max {data.MaxCpuPct}%) and buffer pool uses only {bpPct:N0}% of physical RAM. This server may have more resources than it needs.",
+            "UNDER_PROVISIONED" => data.P95CpuPct > 85
+                ? $"CPU p95 is {data.P95CpuPct:N1}% (threshold: 85%). This server may need more CPU capacity."
+                : $"Buffer pool uses {bpPct:N0}% of physical RAM and memory ratio is {data.MemoryRatio:N2} (threshold: 0.95). Memory pressure is high.",
+            _ => ""
+        };
+
+        /* Cost summary cards — shown only when a monthly budget is configured (0 = hidden, like Lite). */
+        if (data.MonthlyCost > 0)
+        {
+            FinOpsAnnualComputeCostText.Text = $"${data.MonthlyCost:N0}/mo";
+            FinOpsAnnualTotalCostText.Text = $"${data.AnnualCost:N0}/yr";
+            FinOpsComputeCostCard.Visibility = Visibility.Visible;
+            FinOpsTotalCostCard.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            FinOpsComputeCostCard.Visibility = Visibility.Collapsed;
+            FinOpsTotalCostCard.Visibility = Visibility.Collapsed;
+        }
+
+        /* Health score */
+        var bpRatio = data.PhysicalMemoryMb > 0 ? (decimal)data.BufferPoolMb / data.PhysicalMemoryMb : 0m;
+        var cpuScore = FinOpsHealthCalculator.CpuScore(data.P95CpuPct);
+        var memScore = FinOpsHealthCalculator.MemoryScore(bpRatio);
+        var storScore = FinOpsHealthCalculator.StorageScore(data.FreeSpacePct);
+        data.HealthScore = FinOpsHealthCalculator.Overall(cpuScore, memScore, storScore);
+        FinOpsHealthScoreText.Text = $"Health: {data.HealthScore}";
+        FinOpsHealthScoreBorder.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(data.HealthScoreColor));
+        FinOpsHealthScoreBorder.Visibility = Visibility.Visible;
+    }
+
+    private static void SetBar(Border bar, ColumnDefinition filled, ColumnDefinition empty, double pct)
+    {
+        var clamped = Math.Max(0, Math.Min(100, pct));
+
+        var color = clamped switch
+        {
+            > 85 => "#E74C3C",
+            > 60 => "#F39C12",
+            _ => "#27AE60"
+        };
+        bar.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color));
+
+        filled.Width = new GridLength(Math.Max(clamped, 0.1), GridUnitType.Star);
+        empty.Width = new GridLength(Math.Max(100 - clamped, 0.1), GridUnitType.Star);
+    }
+
+    private static int HoursBackFromIndex(ComboBox combo) => combo.SelectedIndex switch { 0 => 1, 1 => 4, 2 => 12, 3 => 24, 4 => 168, _ => 24 };
+
+    // ── Database Resources ──
+
+    private async Task LoadFinOpsDatabaseResourcesAsync()
+    {
+        var hoursBack = HoursBackFromIndex(FinOpsResourceUsageTimeRangeCombo);
+        var data = await _dataService.GetDatabaseResourceUsageAsync(_server.ServerId, hoursBack);
+        _finopsDbResourcesFilterMgr!.UpdateData(data);
+        FinOpsNoDatabaseResourcesMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsDbResourcesCountIndicator.Text = data.Count > 0 ? $"{data.Count} database(s)" : "";
+    }
+
+    // ── Database Sizes ──
+
+    private async Task LoadFinOpsDatabaseSizesAsync()
+    {
+        var data = await _dataService.GetDatabaseSizeLatestAsync(_server.ServerId);
+
+        /* Proportional cost share by size (mirrors Lite's LoadDatabaseSizesAsync). */
+        if (_server.MonthlyCostUsd > 0 && data.Count > 0)
+        {
+            var totalMb = data.Sum(d => d.TotalSizeMb);
+            if (totalMb > 0)
+            {
+                foreach (var d in data)
+                    d.MonthlyCostShare = (d.TotalSizeMb / totalMb) * _server.MonthlyCostUsd;
+            }
+        }
+
+        _finopsDbSizesFilterMgr!.UpdateData(data);
+        FinOpsNoDbSizesMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsDbSizeCountIndicator.Text = data.Count > 0 ? $"{data.Count} file(s)" : "";
+    }
+
+    // ── Application Connections ──
+
+    private async Task LoadFinOpsApplicationConnectionsAsync()
+    {
+        var data = await _dataService.GetApplicationConnectionsAsync(_server.ServerId);
+        _finopsAppConnectionsFilterMgr!.UpdateData(data);
+        FinOpsNoAppConnectionsMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsAppConnectionsCountIndicator.Text = data.Count > 0 ? $"{data.Count} application(s)" : "";
+    }
+
+    // ── High Impact ──
+
+    private async Task LoadFinOpsHighImpactAsync()
+    {
+        var hoursBack = HoursBackFromIndex(FinOpsHighImpactTimeRangeCombo);
+        var data = await _dataService.GetHighImpactQueriesAsync(_server.ServerId, hoursBack);
+        _finopsHighImpactFilterMgr!.UpdateData(data);
+        FinOpsHighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsHighImpactCountIndicator.Text = data.Count > 0 ? $"{data.Count} high-impact query(s)" : "";
+    }
+
+    // ── Optimization (idle DBs + tempdb + wait categories + expensive queries + memory grants) ──
+
+    private async Task LoadFinOpsOptimizationAsync()
+    {
+        await Task.WhenAll(
+            LoadFinOpsIdleDatabasesAsync(),
+            LoadFinOpsTempdbSummaryAsync(),
+            LoadFinOpsWaitCategorySummaryAsync(),
+            LoadFinOpsExpensiveQueriesAsync(),
+            LoadFinOpsMemoryGrantEfficiencyAsync());
+    }
+
+    private async Task LoadFinOpsIdleDatabasesAsync()
+    {
+        var data = await _dataService.GetIdleDatabasesAsync(_server.ServerId);
+        _finopsIdleDbsFilterMgr!.UpdateData(data);
+        FinOpsIdleDatabasesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsIdleDatabasesCountIndicator.Text = data.Count > 0 ? $"{data.Count} idle database(s)" : "";
+    }
+
+    private async Task LoadFinOpsTempdbSummaryAsync()
+    {
+        var data = await _dataService.GetTempdbSummaryAsync(_server.ServerId);
+        _finopsTempdbFilterMgr!.UpdateData(data);
+        FinOpsTempdbPressureNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async Task LoadFinOpsWaitCategorySummaryAsync()
+    {
+        var hoursBack = HoursBackFromIndex(FinOpsWaitStatsTimeRangeCombo);
+        var data = await _dataService.GetWaitCategorySummaryAsync(_server.ServerId, hoursBack);
+
+        /* Proportional cost share scaled to the window (mirrors Lite: budget * hoursBack/730). */
+        if (_server.MonthlyCostUsd > 0 && data.Count > 0)
+        {
+            var windowBudget = _server.MonthlyCostUsd * (hoursBack / 730.0m);
+            var totalWait = data.Sum(w => w.TotalWaitTimeMs);
+            if (totalWait > 0)
+            {
+                foreach (var w in data)
+                    w.MonthlyCostShare = (w.TotalWaitTimeMs / (decimal)totalWait) * windowBudget;
+            }
+        }
+
+        _finopsWaitCategoryFilterMgr!.UpdateData(data);
+        FinOpsWaitCategorySummaryNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async Task LoadFinOpsExpensiveQueriesAsync()
+    {
+        var hoursBack = HoursBackFromIndex(FinOpsExpensiveQueriesTimeRangeCombo);
+        var data = await _dataService.GetExpensiveQueriesAsync(_server.ServerId, hoursBack);
+
+        /* Proportional cost share scaled to the window (mirrors Lite: budget * hoursBack/730). */
+        if (_server.MonthlyCostUsd > 0 && data.Count > 0)
+        {
+            var windowBudget = _server.MonthlyCostUsd * (hoursBack / 730.0m);
+            var totalCpu = data.Sum(q => q.TotalCpuMs);
+            if (totalCpu > 0)
+            {
+                foreach (var q in data)
+                    q.MonthlyCostShare = (q.TotalCpuMs / (decimal)totalCpu) * windowBudget;
+            }
+        }
+
+        _finopsExpensiveQueriesFilterMgr!.UpdateData(data);
+        FinOpsExpensiveQueriesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsExpensiveQueriesCountIndicator.Text = data.Count > 0 ? $"{data.Count} query(s)" : "";
+    }
+
+    private async Task LoadFinOpsMemoryGrantEfficiencyAsync()
+    {
+        var data = await _dataService.GetMemoryGrantEfficiencyAsync(_server.ServerId);
+        _finopsMemoryGrantFilterMgr!.UpdateData(data);
+        FinOpsMemoryGrantEfficiencyNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── Server Inventory (cross-server) ──
+
+    private async Task LoadFinOpsServerInventoryAsync()
+    {
+        var servers = await _dataService.GetServerInventoryAsync();
+
+        /* Overlay each server's collected metrics + compute the health score (mirrors Lite's
+           LoadServerInventoryAsync minus the live query). memScore/storScore use Lite's inventory-path
+           defaults (buffer-pool ratio / file-level free space aren't in the inventory read). */
+        await Task.WhenAll(servers.Select(async item =>
+        {
+            var (avgCpu, storageGb, idleDbs, status) = await _dataService.GetServerMetricsAsync(item.ServerId);
+            if (avgCpu.HasValue) item.AvgCpuPct = avgCpu;
+            if (storageGb.HasValue) item.StorageTotalGb = storageGb;
+            if (idleDbs.HasValue) item.IdleDbCount = idleDbs;
+            if (status != null) item.ProvisioningStatus = status;
+
+            var cpuScore = FinOpsHealthCalculator.CpuScore(item.AvgCpuPct ?? 0m);
+            var memScore = 80;
+            var storScore = FinOpsHealthCalculator.StorageScore(50);
+            item.HealthScore = FinOpsHealthCalculator.Overall(cpuScore, memScore, storScore);
+        }));
+
+        _finopsServerInventoryFilterMgr!.UpdateData(servers);
+        FinOpsNoServerInventoryMessage.Visibility = servers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        FinOpsServerInventoryCountIndicator.Text = servers.Count > 0 ? $"{servers.Count} server(s)" : "";
+    }
+
+    // ── Refresh buttons + time-range combos (all route through the shell's overlap-guarded loop where they
+    //    reload the active sub-tab, or call the specific loader directly for a non-active grid) ──
+
+    private async void FinOpsRefreshUtilization_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsUtilizationAsync);
+    private async void FinOpsRefreshDatabaseResources_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsDatabaseResourcesAsync);
+    private async void FinOpsRefreshDatabaseSizes_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsDatabaseSizesAsync);
+    private async void FinOpsRefreshApplicationConnections_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsApplicationConnectionsAsync);
+    private async void FinOpsRefreshHighImpact_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsHighImpactAsync);
+    private async void FinOpsRefreshServerInventory_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsServerInventoryAsync);
+    private async void FinOpsOptimizationRefresh_Click(object sender, RoutedEventArgs e) => await RunFinOpsLoad(LoadFinOpsOptimizationAsync);
+
+    private async void FinOpsResourceUsageTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        await RunFinOpsLoad(LoadFinOpsDatabaseResourcesAsync);
+    }
+
+    private async void FinOpsWaitStatsTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        await RunFinOpsLoad(LoadFinOpsWaitCategorySummaryAsync);
+    }
+
+    private async void FinOpsExpensiveQueriesTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        await RunFinOpsLoad(LoadFinOpsExpensiveQueriesAsync);
+    }
+
+    private async void FinOpsHighImpactTimeRange_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        await RunFinOpsLoad(LoadFinOpsHighImpactAsync);
+    }
+
+    /// <summary>
+    /// "View Plan" for the FinOps High Impact + Expensive Queries grids: opens the stored
+    /// <c>query_stats.query_plan_xml</c> the row already carries (Darling captures statement-level plans —
+    /// CapturePlans defaults on) through the shared Plan Viewer host (<see cref="OpenPlanTab"/>) — the SAME
+    /// stored-plan surface the Top Queries grid uses, NO live SQL. Lite's "Get Actual Plan" (live execution)
+    /// has no viewer equivalent and stays omitted everywhere, consistent with every other viewer grid.
+    /// </summary>
+    private void FinOpsViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        switch (FinOpsRowFromMenu(sender))
+        {
+            case HighImpactQueryRow hi when hi.HasQueryPlan:
+                OpenPlanTab(hi.QueryPlanXml!, $"Plan - {hi.QueryHash}", hi.FullQueryText);
+                break;
+            case ExpensiveQueryRow ex when ex.HasQueryPlan:
+                OpenPlanTab(ex.QueryPlanXml!, "Plan - Expensive Query", ex.FullQueryText);
+                break;
+            case HighImpactQueryRow:
+            case ExpensiveQueryRow:
+                MessageBox.Show(
+                    "No execution plan was captured for this query. The plan may not have been collected yet, " +
+                    "or it aged out of the store's retention window.",
+                    "No Plan Available", MessageBoxButton.OK, MessageBoxImage.Information);
+                break;
+        }
+    }
+
+    /// <summary>Runs a FinOps loader with the same status-bar error surfacing the shell's <see cref="LoadInnerTabAsync"/> uses.</summary>
+    private async Task RunFinOpsLoad(Func<Task> loader)
+    {
+        try
+        {
+            await loader();
+            StatusChanged?.Invoke($"{_server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}");
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"refresh failed: {ex.Message}");
+        }
+    }
+}

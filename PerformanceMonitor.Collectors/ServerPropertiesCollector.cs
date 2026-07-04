@@ -48,10 +48,48 @@ public sealed class ServerPropertiesCollector : CollectorDefinitionBase<ServerPr
         int? VcoreCount,
         bool? LockPagesInMemory,
         bool? InstantFileInitializationEnabled,
-        int? MemoryDumpCount);
+        int? MemoryDumpCount,
+        DateTime? SqlServerStartTime,
+        string? HostOsVersion,
+        string? AgReplicaRole);
 
     private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+/* Host OS + AG replica role are resolved into locals first, each behind an OBJECT_ID guard so the
+   batch still compiles + runs on Azure SQL Database and non-AG instances (the DMVs are absent there)
+   — the deferred-object-ref pattern, NOT a version guard (#980). Both leave a benign default when
+   unavailable: host OS falls back to the @@VERSION 'on ...' suffix; AG role stays 'Standalone'. */
+DECLARE
+    @host_os nvarchar(256),
+    @ag_role nvarchar(20) = N'Standalone';
+
+IF OBJECT_ID(N'sys.dm_os_host_info', N'V') IS NOT NULL
+    EXEC sys.sp_executesql N'SELECT @os = host_distribution FROM sys.dm_os_host_info',
+        N'@os nvarchar(256) OUTPUT', @os = @host_os OUTPUT;
+
+IF @host_os IS NULL
+BEGIN
+    DECLARE @ver nvarchar(4000) = @@VERSION;
+    DECLARE @on_pos int = CHARINDEX(N' on ', @ver);
+    IF @on_pos > 0
+        SET @host_os = LTRIM(SUBSTRING(@ver, @on_pos + 4, LEN(@ver)));
+END;
+
+IF CONVERT(int, ISNULL(SERVERPROPERTY(N'IsHadrEnabled'), 0)) = 1
+   AND OBJECT_ID(N'sys.dm_hadr_availability_replica_states') IS NOT NULL
+BEGIN
+    DECLARE @ag_detected nvarchar(20);
+    EXEC sys.sp_executesql N'
+        SELECT @r = CASE
+            WHEN MAX(CASE WHEN ars.role = 1 THEN 1 ELSE 0 END) = 1 THEN N''Primary''
+            WHEN MAX(CASE WHEN ars.role = 2 THEN 1 ELSE 0 END) = 1 THEN N''Secondary''
+            ELSE N''Standalone'' END
+        FROM sys.dm_hadr_availability_replica_states AS ars
+        WHERE ars.is_local = 1;',
+        N'@r nvarchar(20) OUTPUT', @r = @ag_detected OUTPUT;
+    SET @ag_role = ISNULL(@ag_detected, N'Standalone');
+END;
 
 SELECT
     server_name =
@@ -97,7 +135,13 @@ SELECT
             WHEN CONVERT(int, SERVERPROPERTY(N'EngineEdition')) = 5
             THEN CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), N'ServiceObjective'))
             ELSE NULL
-        END
+        END,
+    sqlserver_start_time =
+        osi.sqlserver_start_time,
+    host_os_version =
+        @host_os,
+    ag_replica_role =
+        @ag_role
 FROM sys.dm_os_sys_info AS osi
 OPTION(RECOMPILE);";
 
@@ -206,6 +250,13 @@ SELECT
         new CollectorColumn("lock_pages_in_memory", CollectorColumnType.Boolean),
         new CollectorColumn("instant_file_initialization_enabled", CollectorColumnType.Boolean),
         new CollectorColumn("memory_dump_count", CollectorColumnType.Integer),
+        /* Appended (never inserted) so a fresh generated V1 store + an ALTER-migrated store keep an
+           identical physical column order for the positional writers (Lite DuckDB appender / Darling
+           binary COPY). Restores the three fields Lite's FinOps Server Inventory previously read from a
+           LIVE query — now collected so the headless viewer surfaces them too. */
+        new CollectorColumn("sqlserver_start_time", CollectorColumnType.Timestamp),
+        new CollectorColumn("host_os_version", CollectorColumnType.Varchar),
+        new CollectorColumn("ag_replica_role", CollectorColumnType.Varchar),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
@@ -218,6 +269,12 @@ SELECT
         }
 
         var serviceObjective = reader.IsDBNull(13) ? null : reader.GetString(13);
+        /* sqlserver_start_time (14) is the server's LOCAL wall clock (sys.dm_os_sys_info) — stored
+           verbatim like every other DMV clock. host_os_version (15) / ag_replica_role (16) are the
+           OBJECT_ID-guarded locals (host OS + AG role), NULL/'Standalone' when the DMVs are absent. */
+        var sqlServerStartTime = reader.IsDBNull(14) ? (DateTime?)null : reader.GetDateTime(14);
+        var hostOsVersion = reader.IsDBNull(15) ? null : reader.GetString(15);
+        var agReplicaRole = reader.IsDBNull(16) ? null : reader.GetString(16);
 
         /* For Azure SQL DB, sys.dm_os_sys_info.cpu_count returns the compute node's total cores,
            not the per-database vCore allocation. Parse the actual vCore count from the service
@@ -245,7 +302,10 @@ SELECT
             VcoreCount: vcoreCount,
             LockPagesInMemory: null,
             InstantFileInitializationEnabled: null,
-            MemoryDumpCount: null));
+            MemoryDumpCount: null,
+            SqlServerStartTime: sqlServerStartTime,
+            HostOsVersion: hostOsVersion,
+            AgReplicaRole: agReplicaRole));
 
         return rows;
     }
@@ -285,7 +345,10 @@ SELECT
             .Value(row.VcoreCount)
             .Value(row.LockPagesInMemory)
             .Value(row.InstantFileInitializationEnabled)
-            .Value(row.MemoryDumpCount);
+            .Value(row.MemoryDumpCount)
+            .Value(row.SqlServerStartTime)
+            .Value(row.HostOsVersion)
+            .Value(row.AgReplicaRole);
     }
 
     /// <summary>

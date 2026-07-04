@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_EightVersions_V6MemoryViews_V7PlanColumns_V8SchemaSplit()
+    public void MigrationScripts_NineVersions_V7PlanColumns_V8SchemaSplit_V9InventoryCost()
     {
-        Assert.Equal(8, PgMigrations.Scripts.Count);
+        Assert.Equal(9, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -43,7 +43,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(6, PgMigrations.Scripts[5].Version);
         Assert.Equal(7, PgMigrations.Scripts[6].Version);
         Assert.Equal(8, PgMigrations.Scripts[7].Version);
-        Assert.Equal(8, StorageVersion.SchemaVersion);
+        Assert.Equal(9, PgMigrations.Scripts[8].Version);
+        Assert.Equal(9, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -93,6 +94,17 @@ public sealed class DarlingObservabilityTests
         /* The database-default search_path is set by MigrateAsync (best-effort), not baked into V8. */
         Assert.DoesNotContain("ALTER DATABASE", v8, StringComparison.Ordinal);
 
+        /* V9 restores the FinOps copy-parity fields additively: server_properties gains the three
+           inventory columns the shared collector now SELECTs (start time / host OS / AG role), and
+           servers gains the per-server cost budget — one ADD COLUMN IF NOT EXISTS each, appended to keep
+           the positional binary COPY aligned. Bare names resolve through V8's search_path to collect.*. */
+        var v9 = PgMigrations.Scripts[8].Sql;
+        Assert.Equal("server-inventory-cost-fields", PgMigrations.Scripts[8].Name);
+        Assert.Contains("ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS sqlserver_start_time timestamp;", v9, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS host_os_version text;", v9, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS ag_replica_role text;", v9, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE servers ADD COLUMN IF NOT EXISTS monthly_cost_usd numeric;", v9, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -115,7 +127,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(8L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(9L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

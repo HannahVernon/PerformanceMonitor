@@ -27,15 +27,16 @@ namespace PerformanceMonitor.Darling.Service;
 public static class DarlingObservability
 {
     private const string UpsertServerSql = @"
-INSERT INTO servers (server_id, server_name, display_name, is_enabled, sql_engine_edition, sql_major_version, created_date, modified_date)
-VALUES ($1, $2, $3, TRUE, $4, $5, $6, $6)
+INSERT INTO servers (server_id, server_name, display_name, is_enabled, sql_engine_edition, sql_major_version, created_date, modified_date, monthly_cost_usd)
+VALUES ($1, $2, $3, TRUE, $4, $5, $6, $6, $7)
 ON CONFLICT (server_id) DO UPDATE SET
     server_name = EXCLUDED.server_name,
     display_name = EXCLUDED.display_name,
     is_enabled = TRUE,
     sql_engine_edition = EXCLUDED.sql_engine_edition,
     sql_major_version = EXCLUDED.sql_major_version,
-    modified_date = EXCLUDED.modified_date;";
+    modified_date = EXCLUDED.modified_date,
+    monthly_cost_usd = EXCLUDED.monthly_cost_usd;";
 
     private const string InsertCollectionLogSql = @"
 INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, duration_ms, status, error_message, rows_collected, sql_duration_ms, duckdb_duration_ms)
@@ -61,6 +62,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
             command.Parameters.AddWithValue(server.Target.SqlMajorVersion);
             /* Naive-UTC storage: Npgsql 6+ rejects Kind=Utc against `timestamp` — see PgCollectorRowWriter. */
             command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified));
+            /* Per-server FinOps budget from darling.json (0 = hide cost in the viewer, like Lite). */
+            command.Parameters.AddWithValue(server.Config.MonthlyCostUsd);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex)
