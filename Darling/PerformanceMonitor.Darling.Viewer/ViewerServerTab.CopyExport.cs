@@ -21,8 +21,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <c>ServerTab.CopyExport.cs</c> / <c>ServerTab.Plans.cs</c>. Copy/Export delegate to the shared
 /// PerformanceMonitor.Ui <see cref="DataGridExport"/>; the XML-save buttons write the row's stored graph /
 /// report XML to a file. These are the handlers the blocked-process and deadlock context menus + XML Save
-/// columns bind to. (Lite's "Copy Repro Script" and the plan actions are not ported — the viewer has no
-/// plan host yet; deferred.)
+/// columns bind to. (Lite's "Copy Repro Script" and "Get Actual Plan" stay deferred — both need a live SQL
+/// connection the viewer doesn't have; the stored-plan "View Plan" host lives in ViewerServerTab.Plans.cs.)
 /// </summary>
 public partial class ViewerServerTab
 {

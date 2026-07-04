@@ -33,23 +33,25 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       CPU, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily Summary,
-       Collection Health) — ported tabs slot into Lite's positions as they arrive (File I/O sits
-       BEFORE tempdb, Perfmon/Running Jobs sit between Blocking and Configuration, and Daily Summary
-       sits between Configuration and Collection Health, matching Lite's own order), so the constants
-       renumber when a wave lands between existing tabs. */
+       Plan Viewer, CPU, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily
+       Summary, Collection Health) — ported tabs slot into Lite's positions as they arrive (Plan
+       Viewer sits BETWEEN Queries and CPU, File I/O sits BEFORE tempdb, Perfmon/Running Jobs sit
+       between Blocking and Configuration, and Daily Summary sits between Configuration and Collection
+       Health, matching Lite's own order), so the constants renumber when a wave lands between existing
+       tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
     private const int QueriesInnerTabIndex = 2;
-    private const int CpuInnerTabIndex = 3;
-    private const int FileIoInnerTabIndex = 4;
-    private const int TempDbInnerTabIndex = 5;
-    private const int BlockingInnerTabIndex = 6;
-    private const int PerfmonInnerTabIndex = 7;
-    private const int RunningJobsInnerTabIndex = 8;
-    private const int ConfigurationInnerTabIndex = 9;
-    private const int DailySummaryInnerTabIndex = 10;
-    private const int HealthInnerTabIndex = 11;
+    private const int PlanViewerInnerTabIndex = 3;
+    private const int CpuInnerTabIndex = 4;
+    private const int FileIoInnerTabIndex = 5;
+    private const int TempDbInnerTabIndex = 6;
+    private const int BlockingInnerTabIndex = 7;
+    private const int PerfmonInnerTabIndex = 8;
+    private const int RunningJobsInnerTabIndex = 9;
+    private const int ConfigurationInnerTabIndex = 10;
+    private const int DailySummaryInnerTabIndex = 11;
+    private const int HealthInnerTabIndex = 12;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -165,6 +167,11 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case QueriesInnerTabIndex:
                     await LoadQueriesAsync();
+                    break;
+                case PlanViewerInnerTabIndex:
+                    /* No data feed: plans are pushed into the host by OpenPlanTab (a "View Plan" click),
+                       not loaded on tab-switch. Explicit no-op so selecting it doesn't fall through to the
+                       default Overview reload, and so the 60-second timer leaves any open plan tabs alone. */
                     break;
                 case BlockingInnerTabIndex:
                     await LoadBlockingAsync();

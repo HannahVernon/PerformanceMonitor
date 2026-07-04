@@ -77,6 +77,7 @@ public partial class ViewerServerTab : IDisposable
         DisposeBlockingHelpers();
         DisposePerfmonHelpers();
         DisposeCollectionHealthHelpers();
+        DisposePlanHelpers();
     }
 
     /// <summary>Loads the CPU tab: raw per-sample CPU utilization over the window.</summary>

@@ -88,9 +88,12 @@
         </Style>
 
         <!-- Blocking-tab context menus (W1e), copied from Lite's ServerTab.xaml with the two View-Plan
-             items dropped: the viewer has no plan host yet (deferred — later wave). Copy/Export delegate
-             to the shared PerformanceMonitor.Ui DataGridExport; the graph actions open the shared .Ui
-             BlockingChainControl / DeadlockGraphControl in a GraphViewerWindow. -->
+             items dropped. These stay deferred even now that the Plan Viewer host exists — for a structural
+             reason, not a missing host: blocked-process reports and deadlock graphs carry statement text +
+             a sql_handle, not plan XML. Lite recovers the plan by re-querying the live server's plan cache
+             from that handle, which the viewer (Postgres-only, no live SQL connection) can't do. Copy/Export
+             delegate to the shared PerformanceMonitor.Ui DataGridExport; the graph actions open the shared
+             .Ui BlockingChainControl / DeadlockGraphControl in a GraphViewerWindow. -->
         <ContextMenu x:Key="BlockedProcessContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
@@ -147,9 +150,12 @@
             <Setter Property="ContextMenu" Value="{StaticResource DeadlockContextMenu}"/>
         </Style>
 
-        <!-- Queries-tab grid context menu (W1f-1), copied from Lite's ServerTab.xaml DataGridContextMenu
-             with the plan items dropped: the viewer has no plan host yet, so Lite's "View Plan" / "Get
-             Actual Plan" (and "Copy Repro Script", which needs a live connection string) are deferred.
+        <!-- Queries-tab grid context menu (W1f-1), copied from Lite's ServerTab.xaml DataGridContextMenu.
+             This is the PLAN-LESS variant used by Top Procedures + the comparison grids: procedure plans
+             are never stored (procedure_stats has only plan_handle, no query_plan column — Lite fetches
+             them live from the plan cache, which the viewer can't do), so "View Plan" is honestly omitted
+             here rather than shown-and-failed. Lite's "Get Actual Plan" (needs a live execution) and "Copy
+             Repro Script" (needs a live connection string) stay deferred everywhere.
              Copy/Export delegate to the shared PerformanceMonitor.Ui DataGridExport (ViewerServerTab.CopyExport.cs). -->
         <ContextMenu x:Key="QueryGridContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
@@ -167,9 +173,37 @@
             </MenuItem>
         </ContextMenu>
 
-        <!-- Row style for the three Queries grids: Lite's copy/export context menu on the DarkGridRow hover chrome. -->
+        <!-- PLAN-enabled variant for Top Queries + Query Store, whose plans the collector stores
+             (query_stats.query_plan_xml / query_store_stats.query_plan_text, PR #1349). "View Plan" opens
+             the stored plan in the Plan Viewer tab via ViewPlan_Click (ViewerServerTab.Plans.cs). -->
+        <ContextMenu x:Key="QueryPlanGridContextMenu">
+            <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="View Plan" Click="ViewPlan_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
+        </ContextMenu>
+
+        <!-- Row style for Top Procedures + the comparison grids: the plan-less copy/export menu on the DarkGridRow hover chrome. -->
         <Style x:Key="QueryGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
             <Setter Property="ContextMenu" Value="{StaticResource QueryGridContextMenu}"/>
+        </Style>
+
+        <!-- Row style for Top Queries + Query Store: adds "View Plan" (their plans are stored). -->
+        <Style x:Key="QueryPlanGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Setter Property="ContextMenu" Value="{StaticResource QueryPlanGridContextMenu}"/>
         </Style>
     </UserControl.Resources>
 
@@ -251,9 +285,12 @@
              above the sub-tabs drives the collapsed comparison grids (shared .Ui ComparisonItemBase
              derivatives). Reads rewired to Postgres over the fixed 24-hour window, which supplies the
              slicer range. Performance Trends / Active Queries / Query Heatmap sub-tabs are deferred to
-             W1f-2, so their slots are ABSENT. Deferred within these grids (no plan host / no live
-             server): Lite's "Query Plan" download columns, the View-Plan / Get-Actual-Plan context
-             items, the per-row double-click history windows, and the slicer overlay-on-select — only the
+             W1f-2, so their slots are ABSENT. Now wired (headless-plan wave): Top Queries' "Query Plan"
+             download column + a "View Plan" context item on Top Queries and Query Store, which open the
+             stored query_stats.query_plan_xml / query_store_stats.query_plan_text in the Plan Viewer tab.
+             Still deferred: Top Procedures' plan actions (procedure plans aren't stored — resolving the
+             plan_handle needs a live server), Lite's "Get Actual Plan" (needs a live execution), the
+             per-row double-click history windows, and the slicer overlay-on-select — only the
              slicer's drag-to-narrow re-read and its sort-driven metric re-labeling are wired here. -->
         <TabItem Header="Queries">
             <Grid Margin="0,8,0,0">
@@ -299,7 +336,7 @@
                                 </Expander>
                             </StackPanel>
                             <DataGrid Grid.Row="2" x:Name="QueryStatsGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource QueryGridRowStyle}"
+                                      RowStyle="{StaticResource QueryPlanGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                       Sorting="QueryStatsGrid_Sorting">
                                 <DataGrid.Columns>
@@ -438,6 +475,20 @@
                                             <DataTemplate>
                                                 <TextBlock Text="{Binding QueryText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
                                                            ToolTip="{Binding QueryText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <!-- Query Plan download column (mirrors Lite's Top Queries "Download" button), gated on
+                                         HasQueryPlan so it's only actionable when the collector stored a plan for this row.
+                                         The button saves the stored query_plan_xml to a .sqlplan file; "View Plan" (context
+                                         menu) opens it in the Plan Viewer tab instead. -->
+                                    <DataGridTemplateColumn Header="Query Plan" Width="Auto" MinWidth="90">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Download" Click="DownloadQueryStatsPlan_Click"
+                                                        IsEnabled="{Binding HasQueryPlan}"
+                                                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                        Padding="8,4"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
@@ -740,7 +791,7 @@
                                        Foreground="{DynamicResource ForegroundBrush}"
                                        Background="#2244AAFF"/>
                             <DataGrid Grid.Row="2" x:Name="QueryStoreGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource QueryGridRowStyle}"
+                                      RowStyle="{StaticResource QueryPlanGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                       Sorting="QueryStoreGrid_Sorting">
                                 <DataGrid.Columns>
@@ -994,6 +1045,49 @@
             </Grid>
         </TabItem>
 
+        <!-- Plan Viewer Tab — copied from Lite's ServerTab.xaml Plan Viewer tab (its inner tab index 3,
+             between Queries and CPU). Hosts the shared PerformanceMonitor.Ui PlanViewerControl as closable
+             sub-tabs; a "View Plan" on a Top Queries / Query Store row (or the sibling's Active Queries
+             snapshot grid) opens a plan here via OpenPlanTab (ViewerServerTab.Plans.cs). Unlike Lite there
+             is no "Get Actual Plan" loading path — the viewer never runs a live query — so the loading
+             overlay only ever shows while a stored plan parses; it is kept for structural parity with Lite. -->
+        <TabItem Header="Plan Viewer" x:Name="PlanViewerTabItem">
+            <Grid Background="Transparent">
+                <Grid x:Name="PlanEmptyState">
+                    <!-- Dashed drop-zone border fills the whole tab -->
+                    <Rectangle Margin="24"
+                               Stroke="{DynamicResource ForegroundMutedBrush}"
+                               StrokeThickness="1.5"
+                               StrokeDashArray="6,4"
+                               RadiusX="10" RadiusY="10"
+                               Opacity="0.25"/>
+                    <!-- Centered content -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="52"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource ForegroundMutedBrush}"
+                                   Margin="0,0,0,12"/>
+                        <TextBlock Text="No Plan Loaded" FontSize="20" FontWeight="Light"
+                                   Foreground="{DynamicResource ForegroundMutedBrush}" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Right-click a Top Queries or Query Store row and choose 'View Plan'"
+                                   FontSize="13" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                   HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Grid>
+                <StackPanel x:Name="PlanLoadingState" HorizontalAlignment="Center"
+                            VerticalAlignment="Center" Visibility="Collapsed">
+                    <ProgressBar IsIndeterminate="True" Width="200" Height="4" Margin="0,0,0,12"/>
+                    <TextBlock x:Name="PlanLoadingLabel" Text="Loading plan..."
+                               FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}"
+                               HorizontalAlignment="Center"/>
+                    <Button x:Name="CancelPlanButton" Content="Cancel" Click="CancelPlanButton_Click"
+                            HorizontalAlignment="Center" Margin="0,12,0,0" Padding="16,4"/>
+                </StackPanel>
+                <TabControl x:Name="PlanTabControl" Visibility="Collapsed"
+                            Background="Transparent"/>
+            </Grid>
+        </TabItem>
+
         <!-- CPU Tab — copied from Lite's ServerTab.xaml CPU tab: one full-bleed chart of raw
              per-sample CPU (SQL Server vs other processes), distinct from the Overview's
              averaged-per-collection CPU trend. -->
@@ -1074,8 +1168,9 @@
              rate, blocking incidents, deadlocks), "Current Waits" (waiting-task duration by wait type,
              blocked sessions by database), "Blocked Process Reports" (W1e widened ~25-column filterable
              grid + UTC slicer + block-chain viewer), and "Deadlocks" (W1e per-process grid + UTC slicer +
-             deadlock-graph viewer). Reads rewired to Postgres; the two View-Plan context-menu items are
-             deferred (no plan host yet). -->
+             deadlock-graph viewer). Reads rewired to Postgres; the two View-Plan context-menu items stay
+             deferred even with the Plan Viewer host live — the reports carry statement text + a sql_handle
+             (not plan XML), which only a live server could resolve to a plan. -->
         <TabItem Header="Blocking">
             <Grid Margin="8">
                 <TabControl x:Name="BlockingSubTabs"
