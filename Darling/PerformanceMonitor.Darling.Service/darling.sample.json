@@ -15,17 +15,32 @@
   //    %ProgramData%\PerformanceMonitorDarling\pg. The service stops the server on shutdown
   //    only when it started it. Windows-only.
   //
-  // 2) Bring-your-own PostgreSQL: remove "managed"/"port"/"dataDirectory" and set
+  //    Least-privilege roles: the service owns the store as the "darling" superuser, but it
+  //    provisions two login roles the Viewer connects as instead — "admin" (reads everything +
+  //    writes the mute-rule / alert-dismiss / analysis-mute config tables) and "viewer"
+  //    (read-only). Their credentials are generated + DPAPI-protected (pg-admin-credential.dpapi /
+  //    pg-viewer-credential.dpapi) beside the data directory, same as the owner's. "connectAs"
+  //    (below) picks which one the Viewer uses; the data schemas live in "collect" (read-only) and
+  //    "config" (admin-writable), resolved by search_path so bare table names still work.
+  //
+  // 2) Bring-your-own PostgreSQL: remove "managed"/"port"/"dataDirectory"/"connectAs" and set
   //    "connectionString" instead, e.g.
   //      "postgres": {
   //        "connectionString": "Host=localhost;Port=5432;Username=darling;Database=darling"
   //      },
   //    The service never touches that server's lifecycle; TimescaleDB is detected and used
-  //    automatically when present, plain PostgreSQL works too.
+  //    automatically when present, plain PostgreSQL works too. The collect/config schema split
+  //    still applies (it is a migration); provision the least-privilege roles yourself with
+  //    Darling/tools/provision-roles.sql and point a read-only Viewer's connectionString at the
+  //    "viewer" role.
   "postgres": {
     "managed": true,
     "port": 5641,
-    "dataDirectory": null
+    "dataDirectory": null,
+    // Which least-privilege role the Viewer connects as (managed mode): "admin" (default —
+    // can dismiss alerts and manage mute rules) or "viewer" (read-only; those actions are
+    // hidden/disabled). Ignored in bring-your-own mode (the connectionString picks the role).
+    "connectAs": "admin"
   },
   "servers": [
     {

@@ -64,6 +64,30 @@ public sealed class DarlingManagedPostgres
     /// <summary>DPAPI-LocalMachine blob holding the generated password, beside (not inside) the data directory.</summary>
     public const string CredentialFileName = "pg-credential.dpapi";
 
+    /// <summary>
+    /// DPAPI-LocalMachine blobs holding the generated passwords for the least-privilege login roles
+    /// the V8 security hardening provisions (<see cref="DarlingManagedRoles"/>): <c>admin</c> reads
+    /// both schemas + writes <c>config</c> (the Viewer's default identity), <c>viewer</c> reads only.
+    /// Same location/posture as <see cref="CredentialFileName"/> — beside the data directory, machine
+    /// bound. Generated idempotently and self-healing (a deleted file regenerates and the superuser
+    /// re-asserts the role's password, unlike the owner's unrecoverable password).
+    /// </summary>
+    public const string AdminCredentialFileName = "pg-admin-credential.dpapi";
+    public const string ViewerCredentialFileName = "pg-viewer-credential.dpapi";
+
+    /// <summary>The least-privilege login role names provisioned into the managed cluster (V8 hardening).</summary>
+    public const string AdminRoleName = "admin";
+    public const string ViewerRoleName = "viewer";
+
+    /// <summary>
+    /// The search path (schemas in resolution order) the managed connection strings carry, so pooled
+    /// connections resolve the bare table names to collect/config even if the database default was
+    /// not (or could not be) set. Same schemas, same order as the SQL-side
+    /// <c>PgSchemaGenerator.SearchPath</c> the V8 split writes as the database default — the
+    /// connection-string form omits spaces; a test pins the order against the SQL form.
+    /// </summary>
+    public const string SearchPath = "collect,config,public";
+
     /// <summary>The server log pg_ctl appends to, beside (not inside) the data directory.</summary>
     public const string ServerLogFileName = "pg.log";
 
@@ -132,6 +156,14 @@ public sealed class DarlingManagedPostgres
     public static string CredentialPathFor(string dataDirectory)
         => Path.Combine(ParentOf(dataDirectory), CredentialFileName);
 
+    /// <summary>Path to the <c>admin</c> role's DPAPI credential, beside the data directory.</summary>
+    public static string AdminCredentialPathFor(string dataDirectory)
+        => Path.Combine(ParentOf(dataDirectory), AdminCredentialFileName);
+
+    /// <summary>Path to the <c>viewer</c> role's DPAPI credential, beside the data directory.</summary>
+    public static string ViewerCredentialPathFor(string dataDirectory)
+        => Path.Combine(ParentOf(dataDirectory), ViewerCredentialFileName);
+
     /// <summary>
     /// 32 characters from [A-Za-z0-9] via the crypto RNG (~190 bits) — deliberately alphanumeric
     /// only, so the password survives initdb's --pwfile line, the connection string, and any
@@ -181,7 +213,11 @@ public sealed class DarlingManagedPostgres
         return builder.ToString();
     }
 
-    /// <summary>The derived managed-mode connection string: localhost + port + darling/darling + the generated password.</summary>
+    /// <summary>
+    /// The derived managed-mode connection string: localhost + port + darling/darling + the generated
+    /// password, carrying the collect/config <see cref="SearchPath"/> so every pooled connection
+    /// resolves the bare table names to the V8 schemas regardless of the database default.
+    /// </summary>
     public static string BuildConnectionString(int port, string password)
     {
         var builder = new NpgsqlConnectionStringBuilder
@@ -191,6 +227,7 @@ public sealed class DarlingManagedPostgres
             Username = UserName,
             Password = password,
             Database = DatabaseName,
+            SearchPath = SearchPath,
         };
         return builder.ConnectionString;
     }
@@ -222,11 +259,14 @@ public sealed class DarlingManagedPostgres
     {
         var binDirectory = await EnsureRuntimeAsync(cancellationToken);
 
-        /* Directory.CreateDirectory inherits the parent's ACLs — for the default
-           %ProgramData%\PerformanceMonitorDarling that is the standard machine-wide profile
-           (users read, administrators/SYSTEM write), which is exactly the service-account
-           convention the plan calls for. No explicit ACLs are set. */
+        /* Create the directory that holds the data dir + the DPAPI credential files, then LOCK it
+           down (V8 hardening): strip the inherited world-readable ACLs %ProgramData% would otherwise
+           give it, leaving SYSTEM + Administrators + the service account, plus INTERACTIVE traverse so
+           the operator's Viewer can reach the admin/viewer credential files beside the data directory.
+           Re-applied every start (self-healing, like the conf append) so an existing loose install is
+           tightened too. Done BEFORE initdb so the data-dir subtree inherits the locked-down ACL. */
         Directory.CreateDirectory(ParentOf(_dataDirectory));
+        TryHardenDirectory(ParentOf(_dataDirectory));
 
         if (!File.Exists(Path.Combine(_dataDirectory, "PG_VERSION")))
         {
@@ -344,13 +384,18 @@ public sealed class DarlingManagedPostgres
 
         var password = GeneratePassword();
         File.WriteAllText(_credentialPath, DarlingSecrets.Protect(password));
+        /* The SUPERUSER credential — locked to SYSTEM + Administrators + the service account, NEVER an
+           interactive user (post-split the Viewer connects as admin/viewer, never darling). */
+        TryHardenCredentialFile(_credentialPath, allowInteractiveRead: false);
 
         /* --pwfile is the non-interactive way to hand initdb the superuser password; the file
            lives next to the (equally sensitive, DPAPI-protected) credential for its few seconds
            of life and is deleted in finally. Alphanumeric-only password, UTF8 no BOM — a BOM
-           would corrupt the first (and only) line initdb reads. */
+           would corrupt the first (and only) line initdb reads. Same restrictive ACL: it briefly
+           holds the superuser password in the clear. */
         var passwordFile = Path.Combine(ParentOf(_dataDirectory), "pg-pwfile.tmp");
         File.WriteAllText(passwordFile, password + "\n");
+        TryHardenCredentialFile(passwordFile, allowInteractiveRead: false);
         try
         {
             var (exitCode, output) = await RunToolAsync(
@@ -516,7 +561,53 @@ public sealed class DarlingManagedPostgres
                 "or switch to unmanaged mode (postgres.connectionString) against a server you manage.");
         }
 
+        /* Pre-plant guard: never trust a superuser credential file owned by an arbitrary local user
+           (SYSTEM / Administrators / the service account only). A file someone else owns may have been
+           planted to feed the service a password they know — refuse rather than authenticate with it. */
+        if (!DarlingFileSecurity.IsTrustedOwner(_credentialPath))
+        {
+            throw new InvalidOperationException(
+                $"The managed Postgres credential file {_credentialPath} is not owned by SYSTEM, Administrators, or the " +
+                "service account — it may have been tampered with or pre-planted. Refusing to trust it. Investigate, then " +
+                "restore it from backup or re-initialize the data directory (destroys collected history).");
+        }
+
         return DarlingSecrets.Unprotect(File.ReadAllText(_credentialPath).Trim());
+    }
+
+    /// <summary>
+    /// Best-effort restrictive ACL on the credential directory (V8 hardening). A failure is logged
+    /// loud but never bricks the service — the fresh-install path (the service account owns the
+    /// just-created directory) succeeds, and the trusted-owner read guard is the complementary defense.
+    /// </summary>
+    private void TryHardenDirectory(string path)
+    {
+        try
+        {
+            DarlingFileSecurity.HardenDirectory(path, allowInteractiveTraverse: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                "Could not restrict the ACL on {Path} ({Message}). The DPAPI credential files it holds may be readable by " +
+                "other local users — fix the directory permissions by hand (SYSTEM/Administrators/the service account only).",
+                path, ex.Message);
+        }
+    }
+
+    /// <summary>Best-effort restrictive ACL on one credential file — same posture as <see cref="TryHardenDirectory"/>.</summary>
+    private void TryHardenCredentialFile(string path, bool allowInteractiveRead)
+    {
+        try
+        {
+            DarlingFileSecurity.HardenFile(path, allowInteractiveRead);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                "Could not restrict the ACL on {Path} ({Message}). This DPAPI credential may be readable by other local " +
+                "users — fix the file permissions by hand.", path, ex.Message);
+        }
     }
 
     private static string ParentOf(string dataDirectory)

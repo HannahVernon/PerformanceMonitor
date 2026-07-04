@@ -40,6 +40,7 @@
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <CheckBox IsChecked="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}"
+                                          IsEnabled="{Binding RulesAreEditable, RelativeSource={RelativeSource AncestorType=Window}}"
                                           HorizontalAlignment="Center" VerticalAlignment="Center"
                                           Click="EnabledCheckBox_Click"/>
                             </DataTemplate>
@@ -59,13 +60,16 @@
                        Visibility="Collapsed"/>
         </Grid>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,12,0,0">
+        <StackPanel x:Name="ActionButtonsPanel" Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,12,0,0">
             <Button Content="Add Rule..." Width="100" Height="28" Margin="0,0,8,0" Click="AddRule_Click"/>
             <Button Content="Edit" Width="80" Height="28" Margin="0,0,8,0" Click="EditRule_Click"/>
             <Button Content="Toggle" Width="80" Height="28" Margin="0,0,8,0" Click="ToggleRule_Click"/>
             <Button Content="Delete" Width="80" Height="28" Margin="0,0,8,0" Click="DeleteRule_Click"/>
             <Button Content="Purge Expired" Width="110" Height="28" Click="PurgeExpired_Click"/>
         </StackPanel>
+        <TextBlock x:Name="ReadOnlyBanner" Grid.Row="3" HorizontalAlignment="Left" VerticalAlignment="Center"
+                   Margin="0,12,0,0" Foreground="#E0A030" TextWrapping="Wrap" MaxWidth="560" Visibility="Collapsed"
+                   Text="Read-only connection (postgres.connectAs = &quot;viewer&quot;): mute rules can be viewed but not changed here. Set connectAs to &quot;admin&quot; and restart the viewer to edit them."/>
         <Button Grid.Row="3" Content="Close" Width="80" Height="28" Margin="0,12,0,0"
                 HorizontalAlignment="Right" Click="Close_Click" IsCancel="True"/>
     </Grid>

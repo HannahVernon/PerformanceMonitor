@@ -85,6 +85,12 @@ public partial class MainWindow : Window
 
         _dataService = new ViewerDataService(settings.ConnectionString);
 
+        /* V8 security hardening: probe whether this connection can write the operator-config tables
+           (admin/owner) or is the read-only viewer role, before showing any write affordance. The
+           probe fails safe to read-only; the write surfaces gate on ViewerDataService.IsReadOnly and
+           the write paths translate a live 42501 into a friendly message as a backstop. */
+        await _dataService.DetectReadOnlyAsync();
+
         /* The Alerts tab is a self-loading control (all-servers by default); give it the store and let
            it surface load/dismiss/mute outcomes on the shared status bar. */
         AlertsHistoryContent.Initialize(_dataService);

@@ -84,18 +84,19 @@ public sealed class ViewerDataServiceTests
 public sealed class ViewerSettingsTests
 {
     [Fact]
-    public void Parse_ManagedMode_DerivesFromTheServiceCredential()
+    public void Parse_ManagedMode_DefaultsToAdminRole_DerivesFromTheAdminCredential()
     {
         Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
 
         var root = Directory.CreateTempSubdirectory("darling-viewer-managed-");
         try
         {
-            /* The SERVICE writes the credential (DarlingSecrets + the DarlingManagedPostgres
-               path convention); the VIEWER must derive the identical connection string. */
+            /* The SERVICE provisions the least-privilege roles and writes their credentials; the
+               VIEWER (default connectAs = admin) must derive the connection string for the admin
+               role from the admin credential (V8 security split — no longer the darling superuser). */
             var dataDirectory = Path.Combine(root.FullName, "pg");
-            var credentialPath = PerformanceMonitor.Darling.Service.DarlingManagedPostgres.CredentialPathFor(dataDirectory);
-            File.WriteAllText(credentialPath, PerformanceMonitor.Darling.Service.DarlingSecrets.Protect("pw-from-service"));
+            var adminCredential = PerformanceMonitor.Darling.Service.DarlingManagedPostgres.AdminCredentialPathFor(dataDirectory);
+            File.WriteAllText(adminCredential, PerformanceMonitor.Darling.Service.DarlingSecrets.Protect("admin-pw"));
 
             var json = $$"""
                 {
@@ -111,9 +112,80 @@ public sealed class ViewerSettingsTests
             var parsed = new NpgsqlConnectionStringBuilder(settings.ConnectionString);
             Assert.Equal("localhost", parsed.Host);
             Assert.Equal(5991, parsed.Port);
-            Assert.Equal("darling", parsed.Username);
-            Assert.Equal("pw-from-service", parsed.Password);
+            Assert.Equal("admin", parsed.Username);
+            Assert.Equal("admin-pw", parsed.Password);
             Assert.Equal("darling", parsed.Database);
+            /* The bare table names resolve to the V8 collect/config schemas on every connection. */
+            Assert.Equal("collect,config,public", parsed.SearchPath);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Parse_ManagedMode_ConnectAsViewer_DerivesFromTheViewerCredential()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
+
+        var root = Directory.CreateTempSubdirectory("darling-viewer-ro-");
+        try
+        {
+            /* A locked-down deployment (connectAs = "viewer") reads the read-only viewer role's
+               credential and connects as that role — the write surfaces then degrade gracefully. */
+            var dataDirectory = Path.Combine(root.FullName, "pg");
+            var viewerCredential = PerformanceMonitor.Darling.Service.DarlingManagedPostgres.ViewerCredentialPathFor(dataDirectory);
+            File.WriteAllText(viewerCredential, PerformanceMonitor.Darling.Service.DarlingSecrets.Protect("viewer-pw"));
+
+            var json = $$"""
+                {
+                  "postgres": {
+                    "managed": true,
+                    "port": 5991,
+                    "connectAs": "viewer",
+                    "dataDirectory": {{JsonSerializer.Serialize(dataDirectory)}}
+                  }
+                }
+                """;
+
+            var settings = ViewerSettings.Parse(json);
+            var parsed = new NpgsqlConnectionStringBuilder(settings.ConnectionString);
+            Assert.Equal("viewer", parsed.Username);
+            Assert.Equal("viewer-pw", parsed.Password);
+            Assert.Equal("collect,config,public", parsed.SearchPath);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Parse_ManagedMode_UnknownConnectAs_FallsBackToAdmin()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
+
+        var root = Directory.CreateTempSubdirectory("darling-viewer-unknown-");
+        try
+        {
+            /* A typo'd connectAs degrades to the admin role (the DarlingConfig default), not a crash. */
+            var dataDirectory = Path.Combine(root.FullName, "pg");
+            var adminCredential = PerformanceMonitor.Darling.Service.DarlingManagedPostgres.AdminCredentialPathFor(dataDirectory);
+            File.WriteAllText(adminCredential, PerformanceMonitor.Darling.Service.DarlingSecrets.Protect("admin-pw"));
+
+            var json = $$"""
+                {
+                  "postgres": {
+                    "managed": true,
+                    "connectAs": "superadmin",
+                    "dataDirectory": {{JsonSerializer.Serialize(dataDirectory)}}
+                  }
+                }
+                """;
+
+            var parsed = new NpgsqlConnectionStringBuilder(ViewerSettings.Parse(json).ConnectionString);
+            Assert.Equal("admin", parsed.Username);
         }
         finally
         {
@@ -229,5 +301,41 @@ public sealed class StatusToBrushConverterTests
         Assert.Equal(success, ColorFor("success"));
         Assert.Equal(error, ColorFor("Error"));
         Assert.Equal(other, ColorFor(null));
+    }
+}
+
+/// <summary>
+/// The viewer's read-only degradation (V8 security hardening): the authoritative capability probe
+/// (has_table_privilege on a config table, resolved through search_path) and the friendly
+/// read-only exception the write paths translate a Postgres 42501 into. The live admin-writes /
+/// viewer-denied round-trip is in the gated <c>DarlingSecuritySplitLiveTests</c>.
+/// </summary>
+public sealed class ViewerReadOnlyTests
+{
+    [Fact]
+    public void ReadOnlyProbeSql_TestsConfigInsertPrivilege()
+    {
+        /* has_table_privilege on config_mute_rules INSERT: true => writable (admin/owner), false =>
+           read-only viewer. The bare name resolves to config.config_mute_rules via search_path. */
+        Assert.Equal("SELECT has_table_privilege('config_mute_rules', 'INSERT')", ViewerDataService.ReadOnlyProbeSql);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task IsReadOnly_DefaultsFalse_BeforeProbing()
+    {
+        /* Defaults writable until DetectReadOnlyAsync runs (which fails safe to read-only). The
+           constructor only creates the pooled data source; no connection is opened here. */
+        await using var service = new ViewerDataService("Host=localhost;Port=1;Database=darling;Timeout=1");
+        Assert.False(service.IsReadOnly);
+    }
+
+    [Fact]
+    public void ViewerReadOnlyException_ExplainsHowToEnableWrites()
+    {
+        var ex = new ViewerReadOnlyException(new InvalidOperationException("42501"));
+
+        Assert.Contains("read-only", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("connectAs", ex.Message, StringComparison.Ordinal);
+        Assert.Equal("42501", ex.InnerException?.Message);
     }
 }

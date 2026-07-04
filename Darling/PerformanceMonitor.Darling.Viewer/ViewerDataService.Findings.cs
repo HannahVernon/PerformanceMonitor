@@ -132,6 +132,12 @@ public sealed partial class ViewerDataService
     /// The viewer always mutes per-selected-server (a real non-zero server_id), so it never takes the
     /// MCP "all servers" path (which now persists a NULL server_id — see
     /// <see cref="PgFindingStore.GetMutedStoriesAsync"/>).
+    ///
+    /// <para>Under a read-only (<c>viewer</c>-role) connection this write degrades gracefully already:
+    /// <see cref="PgFindingStore.MuteStoryAsync"/> logs and swallows the permission error (its shared
+    /// read-and-write no-op discipline, also relied on by the service/MCP), so there is no crash. The
+    /// viewer has no finding-mute affordance today; a future one should gate on
+    /// <see cref="IsReadOnly"/> like the mute-rule and alert-dismiss surfaces.</para>
     /// </summary>
     public async Task MuteFindingAsync(int serverId, AnalysisFinding finding)
     {

@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_SevenVersions_V6MemoryViews_V7PlanColumns()
+    public void MigrationScripts_EightVersions_V6MemoryViews_V7PlanColumns_V8SchemaSplit()
     {
-        Assert.Equal(7, PgMigrations.Scripts.Count);
+        Assert.Equal(8, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -42,7 +42,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(5, PgMigrations.Scripts[4].Version);
         Assert.Equal(6, PgMigrations.Scripts[5].Version);
         Assert.Equal(7, PgMigrations.Scripts[6].Version);
-        Assert.Equal(7, StorageVersion.SchemaVersion);
+        Assert.Equal(8, PgMigrations.Scripts[7].Version);
+        Assert.Equal(8, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -70,6 +71,28 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml text;", v7, StringComparison.Ordinal);
         Assert.Contains("ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml text;", v7, StringComparison.Ordinal);
 
+        /* V8 is the collect/config security split (#1262): creates the two schemas and moves every
+           existing object out of public with ALTER ... SET SCHEMA (generated from the catalog so new
+           collectors move automatically). The DDL is generated, so pin the SHAPE, not exact text —
+           the ALTER DATABASE search_path default is deliberately NOT here (best-effort in MigrateAsync). */
+        var v8 = PgMigrations.Scripts[7].Sql;
+        Assert.Equal("schema-split-collect-config", PgMigrations.Scripts[7].Name);
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS collect AUTHORIZATION darling;", v8, StringComparison.Ordinal);
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS config AUTHORIZATION darling;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.wait_stats SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.servers SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.collection_log SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.analysis_findings SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.darling_schema_version SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER VIEW IF EXISTS public.v_wait_stats SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER VIEW IF EXISTS public.v_collection_log SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.config_mute_rules SET SCHEMA config;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.config_alert_log SET SCHEMA config;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.config_edge_trigger_watermarks SET SCHEMA config;", v8, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE IF EXISTS public.analysis_muted SET SCHEMA config;", v8, StringComparison.Ordinal);
+        /* The database-default search_path is set by MigrateAsync (best-effort), not baked into V8. */
+        Assert.DoesNotContain("ALTER DATABASE", v8, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -92,7 +115,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(7L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(8L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
