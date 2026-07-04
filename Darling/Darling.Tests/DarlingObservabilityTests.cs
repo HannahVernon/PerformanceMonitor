@@ -32,15 +32,16 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_FiveVersions_V2CreatesObservabilityTables()
+    public void MigrationScripts_SixVersions_V2CreatesObservabilityTables()
     {
-        Assert.Equal(5, PgMigrations.Scripts.Count);
+        Assert.Equal(6, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
         Assert.Equal(4, PgMigrations.Scripts[3].Version);
         Assert.Equal(5, PgMigrations.Scripts[4].Version);
-        Assert.Equal(5, StorageVersion.SchemaVersion);
+        Assert.Equal(6, PgMigrations.Scripts[5].Version);
+        Assert.Equal(6, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -51,6 +52,13 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE OR REPLACE VIEW v_database_scoped_config AS SELECT * FROM database_scoped_config;", v5, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_trace_flags AS SELECT * FROM trace_flags;", v5, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_collection_log AS SELECT * FROM collection_log;", v5, StringComparison.Ordinal);
+
+        /* V6 adds the two memory passthrough views the Memory tab port (W1j) reads -- the Memory
+           Clerks + Pressure Events sub-tabs run FROM v_memory_clerks / v_memory_pressure_events,
+           byte-identical to Lite. */
+        var v6 = PgMigrations.Scripts[5].Sql;
+        Assert.Contains("CREATE OR REPLACE VIEW v_memory_clerks AS SELECT * FROM memory_clerks;", v6, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_memory_pressure_events AS SELECT * FROM memory_pressure_events;", v6, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
