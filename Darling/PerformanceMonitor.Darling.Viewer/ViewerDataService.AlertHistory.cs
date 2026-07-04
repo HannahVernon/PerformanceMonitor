@@ -19,15 +19,22 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// One Alerts-tab row over <c>config_alert_log</c>, mirroring Lite's <c>AlertHistoryRow</c>
 /// (Lite/Services/LocalDataService.AlertHistory.cs): the same metric-keyed value formatting
 /// (#1134), the same email-vs-tray <see cref="StatusDisplay"/>, and the shared
-/// <see cref="AlertMetricClassifier"/> for critical/warning/resolved row emphasis. Read-only —
-/// the viewer's alert history is a read surface (the write-back surfaces are finding mute and the
-/// mute-rule CRUD); there is no dismiss here (Lite's dismiss only sets a durable hide flag, so no
-/// equivalent is invented for Darling per the wave brief).
+/// <see cref="AlertMetricClassifier"/> for critical/warning/resolved row emphasis. Carries
+/// <see cref="ServerId"/> + <see cref="ServerName"/> so the all-servers Alert History surface (W2a)
+/// can show a Server column and key the dismiss write on (alert_time, server_id, metric_name).
+/// Darling has no parquet archive tier, so there is no <c>Source</c>/<c>IsArchived</c> split — every
+/// row is live and dismissable.
 /// </summary>
 public sealed class ViewerAlertRow
 {
     /// <summary>Stored naive-UTC alert time.</summary>
     public required DateTime AlertTime { get; init; }
+
+    /// <summary>The server the alert fired for (dismiss keys on it; the Server column shows the name).</summary>
+    public int ServerId { get; init; }
+
+    /// <summary>The alert's server display name (the Server column + mute-from-alert context).</summary>
+    public string ServerName { get; init; } = "";
 
     public required string MetricName { get; init; }
 
@@ -90,16 +97,16 @@ public sealed class ViewerAlertRow
 
 public sealed partial class ViewerDataService
 {
-    /// <summary>
-    /// The alert-history read — Lite's <c>GetAlertHistoryAsync</c> query adapted to Darling's
-    /// <c>config_alert_log</c> (no <c>source</c> column and no archive tier, so no
-    /// <c>v_config_alert_log</c> union; Darling rows are always "live"). Same
-    /// <c>dismissed = FALSE</c> filter, newest first, windowed on <c>alert_time</c>, per-server.
-    /// $1 window start, $2 server_id, $3 limit (naive UTC / int / int).
-    /// </summary>
-    public const string AlertHistorySql = @"
-SELECT
+    /* The alert-history reads — Lite's GetAlertHistoryAsync query adapted to Darling's config_alert_log
+       (no source column and no archive tier, so no v_config_alert_log union; Darling rows are always
+       "live"). Same dismissed = FALSE filter, newest first, windowed on alert_time. Two shapes mirror
+       Lite: one scoped to a server, one across ALL servers (the Alert History default). Both SELECT
+       server_id + server_name so the grid's Server column and the dismiss key have them. */
+
+    private const string AlertHistorySelectColumns = @"
     alert_time,
+    server_id,
+    server_name,
     metric_name,
     current_value,
     threshold_value,
@@ -108,7 +115,11 @@ SELECT
     send_error,
     muted,
     detail_text,
-    context_json
+    context_json";
+
+    /// <summary>Per-server read. $1 window start, $2 server_id, $3 limit (naive UTC / int / int).</summary>
+    public const string AlertHistorySql = @"
+SELECT" + AlertHistorySelectColumns + @"
 FROM config_alert_log
 WHERE alert_time >= $1
 AND   server_id = $2
@@ -116,20 +127,34 @@ AND   dismissed = FALSE
 ORDER BY alert_time DESC
 LIMIT $3";
 
+    /// <summary>All-servers read (the Alert History default). $1 window start, $2 limit (naive UTC / int).</summary>
+    public const string AlertHistoryAllServersSql = @"
+SELECT" + AlertHistorySelectColumns + @"
+FROM config_alert_log
+WHERE alert_time >= $1
+AND   dismissed = FALSE
+ORDER BY alert_time DESC
+LIMIT $2";
+
     /// <summary>
-    /// Recent alerts for one server, newest first, excluding dismissed rows — the Alerts tab's read.
+    /// Recent alerts newest first, excluding dismissed rows — the Alert History tab's read. With no
+    /// <paramref name="serverId"/> it aggregates ALL servers (the tab's default); with one it scopes to
+    /// that server (the Server filter combo). Mirrors Lite's optional-serverId GetAlertHistoryAsync.
     /// </summary>
     public async Task<List<ViewerAlertRow>> GetAlertHistoryAsync(
-        int serverId, DateTime sinceUtc, int limit = 500, CancellationToken cancellationToken = default)
+        DateTime sinceUtc, int? serverId = null, int limit = 500, CancellationToken cancellationToken = default)
     {
         var rows = new List<ViewerAlertRow>();
 
-        await using var command = _dataSource.CreateCommand(AlertHistorySql);
+        await using var command = _dataSource.CreateCommand(serverId.HasValue ? AlertHistorySql : AlertHistoryAllServersSql);
         command.Parameters.Add(new NpgsqlParameter<DateTime>
         {
             TypedValue = DateTime.SpecifyKind(sinceUtc, DateTimeKind.Unspecified),
         });
-        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        if (serverId.HasValue)
+        {
+            command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId.Value });
+        }
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = limit });
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -138,75 +163,113 @@ LIMIT $3";
             rows.Add(new ViewerAlertRow
             {
                 AlertTime = reader.GetDateTime(0),
-                MetricName = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                CurrentValue = reader.IsDBNull(2) ? 0 : reader.GetDouble(2),
-                ThresholdValue = reader.IsDBNull(3) ? 0 : reader.GetDouble(3),
-                AlertSent = !reader.IsDBNull(4) && reader.GetBoolean(4),
-                NotificationType = reader.IsDBNull(5) ? "" : reader.GetString(5),
-                SendError = reader.IsDBNull(6) ? null : reader.GetString(6),
-                Muted = !reader.IsDBNull(7) && reader.GetBoolean(7),
-                DetailText = reader.IsDBNull(8) ? null : reader.GetString(8),
-                ContextJson = reader.IsDBNull(9) ? null : reader.GetString(9),
+                ServerId = reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
+                ServerName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                MetricName = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                CurrentValue = reader.IsDBNull(4) ? 0 : reader.GetDouble(4),
+                ThresholdValue = reader.IsDBNull(5) ? 0 : reader.GetDouble(5),
+                AlertSent = !reader.IsDBNull(6) && reader.GetBoolean(6),
+                NotificationType = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                SendError = reader.IsDBNull(8) ? null : reader.GetString(8),
+                Muted = !reader.IsDBNull(9) && reader.GetBoolean(9),
+                DetailText = reader.IsDBNull(10) ? null : reader.GetString(10),
+                ContextJson = reader.IsDBNull(11) ? null : reader.GetString(11),
             });
         }
 
         return rows;
     }
 
+    /* ── Dismiss write path (W2a) ──────────────────────────────────────────────────────────────────
+       Ports Lite's DismissAlertsAsync / DismissAllVisibleAlertsAsync UPDATE semantics (mark
+       dismissed = TRUE so the row drops out of the default read). Lite wrapped the update in a
+       transaction because it also wrote a dismissed_archive_alerts sidecar for rows that had aged into
+       parquet; Darling is a single Postgres store with NO archive tier, so the sidecar is dropped and
+       the two-phase live+sidecar dismiss collapses to one atomic UPDATE — no explicit transaction
+       needed. Every match is keyed the same way Lite keyed it: (alert_time, server_id, metric_name). */
+
     /// <summary>
-    /// The Alerts detail pane's text for one alert: a header (type, local time, value/threshold,
-    /// channel/status, muted, any send error), the stored <c>detail_text</c>, then the raw
-    /// <c>context_json</c> pretty-printed when it parses (it carries the #1140 dedup fingerprint /
-    /// #1154 cooldown key humans care about). Pure over the row — unit-testable without a store.
+    /// Dismiss the given rows by (alert_time, server_id, metric_name). One set-based UPDATE keyed off
+    /// unnested arrays (so the whole batch dismisses in a single round-trip). Already-dismissed rows are
+    /// left alone by the <c>dismissed = FALSE</c> guard.
     /// </summary>
-    public static string ComposeAlertDetailText(ViewerAlertRow row)
+    public const string DismissAlertsSql = @"
+UPDATE config_alert_log
+SET    dismissed = TRUE
+WHERE  dismissed = FALSE
+AND    (alert_time, server_id, metric_name) IN (
+    SELECT t.alert_time, t.server_id, t.metric_name
+    FROM   unnest($1::timestamp[], $2::integer[], $3::text[]) AS t(alert_time, server_id, metric_name)
+)";
+
+    /// <summary>Dismiss all visible rows in the window across every server. $1 window start.</summary>
+    public const string DismissAllAlertsSql = @"
+UPDATE config_alert_log
+SET    dismissed = TRUE
+WHERE  alert_time >= $1
+AND    dismissed = FALSE";
+
+    /// <summary>Dismiss all visible rows in the window for one server. $1 window start, $2 server_id.</summary>
+    public const string DismissAllAlertsForServerSql = @"
+UPDATE config_alert_log
+SET    dismissed = TRUE
+WHERE  alert_time >= $1
+AND    server_id = $2
+AND    dismissed = FALSE";
+
+    /// <summary>
+    /// Marks the given alerts dismissed. Returns how many live rows the UPDATE actually changed
+    /// (already-dismissed or unknown rows count 0). See <see cref="DismissAlertsSql"/>.
+    /// </summary>
+    public async Task<int> DismissAlertsAsync(IReadOnlyList<ViewerAlertRow> alerts, CancellationToken cancellationToken = default)
     {
-        if (row is null)
+        if (alerts is null)
         {
-            throw new ArgumentNullException(nameof(row));
+            throw new ArgumentNullException(nameof(alerts));
         }
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine(row.MetricName);
-        sb.AppendLine($"Time (local): {row.TimeLocal}");
-        sb.AppendLine($"Value: {row.CurrentValueDisplay}    Threshold: {row.ThresholdValueDisplay}");
-        sb.AppendLine($"Channel: {row.NotificationType}    Status: {row.StatusDisplay}");
-        if (row.Muted)
+        if (alerts.Count == 0)
         {
-            sb.AppendLine("Muted: yes");
-        }
-        if (!string.IsNullOrEmpty(row.SendError))
-        {
-            sb.AppendLine($"Send error: {row.SendError}");
+            return 0;
         }
 
-        if (!string.IsNullOrWhiteSpace(row.DetailText))
+        var times = new DateTime[alerts.Count];
+        var ids = new int[alerts.Count];
+        var metrics = new string[alerts.Count];
+        for (var i = 0; i < alerts.Count; i++)
         {
-            sb.AppendLine();
-            sb.AppendLine(row.DetailText.TrimEnd());
+            times[i] = DateTime.SpecifyKind(alerts[i].AlertTime, DateTimeKind.Unspecified);
+            ids[i] = alerts[i].ServerId;
+            metrics[i] = alerts[i].MetricName;
         }
 
-        if (!string.IsNullOrWhiteSpace(row.ContextJson))
-        {
-            sb.AppendLine();
-            sb.AppendLine("Context (dedup fingerprint / cooldown key):");
-            sb.AppendLine(PrettyPrintJsonOrRaw(row.ContextJson));
-        }
+        await using var command = _dataSource.CreateCommand(DismissAlertsSql);
+        command.Parameters.Add(new NpgsqlParameter { Value = times });
+        command.Parameters.Add(new NpgsqlParameter { Value = ids });
+        command.Parameters.Add(new NpgsqlParameter { Value = metrics });
 
-        return sb.ToString().TrimEnd();
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    /// <summary>Indents JSON for reading; returns the input unchanged when it doesn't parse.</summary>
-    private static string PrettyPrintJsonOrRaw(string json)
+    /// <summary>
+    /// Marks every visible (non-dismissed) alert in the window dismissed — scoped to one server when
+    /// <paramref name="serverId"/> is set, otherwise across all servers (matching the current filter).
+    /// Returns the number of rows changed.
+    /// </summary>
+    public async Task<int> DismissAllVisibleAlertsAsync(
+        DateTime sinceUtc, int? serverId = null, CancellationToken cancellationToken = default)
     {
-        try
+        await using var command = _dataSource.CreateCommand(
+            serverId.HasValue ? DismissAllAlertsForServerSql : DismissAllAlertsSql);
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
         {
-            using var document = System.Text.Json.JsonDocument.Parse(json);
-            return System.Text.Json.JsonSerializer.Serialize(document.RootElement, s_indentedJson);
-        }
-        catch (System.Text.Json.JsonException)
+            TypedValue = DateTime.SpecifyKind(sinceUtc, DateTimeKind.Unspecified),
+        });
+        if (serverId.HasValue)
         {
-            return json;
+            command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId.Value });
         }
+
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
