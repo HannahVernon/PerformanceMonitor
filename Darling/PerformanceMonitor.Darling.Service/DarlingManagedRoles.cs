@@ -82,22 +82,70 @@ public static class DarlingManagedRoles
     }
 
     /// <summary>
-    /// Reads an existing role credential, or generates + DPAPI-persists a fresh one when the file is
-    /// missing (self-heal). Same 32-char alnum <see cref="DarlingManagedPostgres.GeneratePassword"/>
-    /// and DPAPI-LocalMachine posture as the owner credential.
+    /// Reads a TRUSTED existing role credential, or generates + DPAPI-persists a fresh one (self-heal),
+    /// then restricts its ACL. Same 32-char alnum <see cref="DarlingManagedPostgres.GeneratePassword"/>
+    /// and DPAPI-LocalMachine posture as the owner credential; unlike the owner's, a role password can
+    /// always be re-asserted (<c>ALTER ROLE … PASSWORD</c>), so an untrusted-owned (possibly pre-planted)
+    /// file is discarded and regenerated rather than trusted.
     /// </summary>
     private static string EnsureRoleCredential(string credentialPath, string roleName, ILogger logger)
     {
-        if (File.Exists(credentialPath))
+        string password;
+        if (File.Exists(credentialPath) && DarlingFileSecurity.IsTrustedOwner(credentialPath))
         {
-            return DarlingSecrets.Unprotect(File.ReadAllText(credentialPath).Trim());
+            password = DarlingSecrets.Unprotect(File.ReadAllText(credentialPath).Trim());
+        }
+        else
+        {
+            if (File.Exists(credentialPath))
+            {
+                /* Pre-plant defense: a role credential owned by an arbitrary local user would feed the
+                   caller's ALTER ROLE … PASSWORD re-assert a password the attacker chose. Discard it. */
+                logger.LogWarning(
+                    "The managed '{Role}' credential {File} is not owned by a trusted principal — discarding and regenerating it (possible pre-plant).",
+                    roleName, Path.GetFileName(credentialPath));
+                TryDelete(credentialPath, logger);
+            }
+
+            password = DarlingManagedPostgres.GeneratePassword();
+            File.WriteAllText(credentialPath, DarlingSecrets.Protect(password));
+            logger.LogInformation(
+                "Generated the managed '{Role}' role credential ({File})", roleName, Path.GetFileName(credentialPath));
         }
 
-        var password = DarlingManagedPostgres.GeneratePassword();
-        File.WriteAllText(credentialPath, DarlingSecrets.Protect(password));
-        logger.LogInformation(
-            "Generated the managed '{Role}' role credential ({File})", roleName, Path.GetFileName(credentialPath));
+        /* Re-harden every start (self-healing): the admin/viewer credentials are readable by SYSTEM +
+           Administrators + the service account + the interactive operator (whose Viewer reads them). */
+        TryHardenRoleCredential(credentialPath, logger);
         return password;
+    }
+
+    /// <summary>Best-effort restrictive ACL on a role credential; a failure is logged loud, not fatal.</summary>
+    private static void TryHardenRoleCredential(string path, ILogger logger)
+    {
+        try
+        {
+            DarlingFileSecurity.HardenFile(path, allowInteractiveRead: true);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                "Could not restrict the ACL on {Path} ({Message}) — the role credential may be readable by other local users; fix the file permissions by hand.",
+                path, ex.Message);
+        }
+    }
+
+    private static void TryDelete(string path, ILogger logger)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogError(
+                "Could not delete the untrusted credential file {Path} ({Message}) — remove it by hand so a fresh one can be generated.",
+                path, ex.Message);
+        }
     }
 
     /// <summary>
@@ -153,6 +201,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE {owner} IN SCHEMA {config}
    GRANT SELECT ON TABLES TO {admin}, {viewer};
 ALTER DEFAULT PRIVILEGES FOR ROLE {owner} IN SCHEMA {config}
    GRANT INSERT, UPDATE, DELETE ON TABLES TO {admin};
+-- Fail-closed: today no config table has a sequence (ids are app-generated / text), but a future
+-- serial/identity column would give admin INSERT with no sequence USAGE -> the write breaks. Grant it now.
+ALTER DEFAULT PRIVILEGES FOR ROLE {owner} IN SCHEMA {config}
+   GRANT USAGE, SELECT ON SEQUENCES TO {admin};
 
 -- 5. Public hardening: no world-writable public schema, no anonymous connect. The REVOKE ALL drops
 --    PUBLIC's implicit CONNECT, so admin/viewer are re-granted CONNECT explicitly (darling is

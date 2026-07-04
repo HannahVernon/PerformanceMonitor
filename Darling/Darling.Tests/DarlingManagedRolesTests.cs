@@ -63,6 +63,9 @@ public sealed class DarlingManagedRolesTests
         Assert.Contains("GRANT SELECT ON TABLES TO admin, viewer;", sql, StringComparison.Ordinal);
         Assert.Contains("ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config", sql, StringComparison.Ordinal);
         Assert.Contains("GRANT INSERT, UPDATE, DELETE ON TABLES TO admin;", sql, StringComparison.Ordinal);
+
+        /* Fail-closed: a future serial/identity config column needs sequence USAGE for admin's INSERT. */
+        Assert.Contains("GRANT USAGE, SELECT ON SEQUENCES TO admin;", sql, StringComparison.Ordinal);
     }
 
     [Fact]

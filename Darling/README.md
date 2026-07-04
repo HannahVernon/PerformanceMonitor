@@ -459,6 +459,15 @@ Table names are unchanged — only their schema moved — and the shared SQL kee
 
 **Managed mode** provisions all of this automatically on every start (idempotent and self-healing), generating a per-role DPAPI-LocalMachine credential — `pg-admin-credential.dpapi` and `pg-viewer-credential.dpapi` beside the data directory, same posture as the owner's `pg-credential.dpapi`. Nothing to configure beyond `connectAs`.
 
+**Credential file protection.** DPAPI LocalMachine scope is deliberate (the service writes the credential, a *different* interactive user's Viewer reads it), which means the machine-bound blob is decryptable by anything that can *read* the file. So the credential files are locked down with an NTFS ACL that strips the inherited world-read `%ProgramData%` would give them:
+
+| File(s) | Readable by |
+|---|---|
+| `pg-credential.dpapi` (superuser) + the transient init pwfile | SYSTEM, Administrators, the service account — **not** interactive users |
+| `pg-admin-credential.dpapi`, `pg-viewer-credential.dpapi` | the above **+ `NT AUTHORITY\INTERACTIVE`** (the operator's Viewer) |
+
+The principal model assumes the **single-operator VM** this edition targets: `INTERACTIVE` == the operator, so the admin/viewer credentials are readable by the Viewer with zero configuration, while non-interactive local code (other services, sandboxed/SSRF socket primitives, scheduled tasks) and the superuser credential are excluded outright. On a shared machine where untrusted users log on interactively, tighten those two files to the specific operator account by hand. The service also refuses to trust a credential file that isn't owned by SYSTEM/Administrators/itself (closing a pre-plant attack), and regenerates an untrusted role credential.
+
 **A read-only (`viewer`) Viewer degrades gracefully.** It probes its own privileges on connect (`has_table_privilege`), so the mute-rule Add/Edit/Toggle/Delete/Purge buttons and the alert Dismiss / Dismiss All buttons are hidden or disabled, and any write that still slips through returns a clear "read-only connection" message instead of an error.
 
 **Bring-your-own PostgreSQL.** The schema split runs everywhere (it's a migration — the service applies it on startup and best-effort sets the database `search_path`; if your collection login can't `ALTER DATABASE`, run that one statement yourself as the owner). Role provisioning is managed-only, so for BYO you create the two roles yourself, once, with the shipped script:

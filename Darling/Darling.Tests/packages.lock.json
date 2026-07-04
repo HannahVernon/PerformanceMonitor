@@ -742,6 +742,11 @@
           "Microsoft.IdentityModel.Tokens": "8.16.0"
         }
       },
+      "System.IO.FileSystem.AccessControl": {
+        "type": "Transitive",
+        "resolved": "5.0.0",
+        "contentHash": "SxHB3nuNrpptVk+vZ/F+7OHEpoHUIKKMl02bUmYHQr1r+glbZQxs7pRtsf4ENO29TVm2TH3AEeep2fJcy92oYw=="
+      },
       "System.ServiceProcess.ServiceController": {
         "type": "Transitive",
         "resolved": "10.0.9",
@@ -857,7 +862,8 @@
           "PerformanceMonitor.Collectors": "[1.0.0, )",
           "PerformanceMonitor.Common": "[1.0.0, )",
           "PerformanceMonitor.Darling.Analysis": "[1.0.0, )",
-          "PerformanceMonitor.Darling.Storage": "[1.0.0, )"
+          "PerformanceMonitor.Darling.Storage": "[1.0.0, )",
+          "System.IO.FileSystem.AccessControl": "[5.0.0, )"
         }
       },
       "performancemonitor.darling.storage": {

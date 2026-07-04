@@ -21,6 +21,11 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.9" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <!-- Restrictive ACLs on the DPAPI credential files (the data dir parent, the *.dpapi files, the
+         transient init pwfile). Windows-only, like every credential surface here; the extension
+         methods (GetAccessControl/SetAccessControl/SetOwner) live in this package on a net10.0
+         (non-windows) TFM, which the service keeps so bring-your-own mode still runs cross-platform. -->
+    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
     <!-- AN4: the analysis MCP tools over Streamable HTTP — Lite's exact MCP stack/version.
          The AspNetCore package brings the Microsoft.AspNetCore.App framework reference
          (Kestrel/WebApplication) transitively, same as it does for Lite. -->

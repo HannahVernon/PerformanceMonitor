@@ -59,6 +59,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config
    GRANT SELECT ON TABLES TO admin, viewer;
 ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config
    GRANT INSERT, UPDATE, DELETE ON TABLES TO admin;
+-- Fail-closed for a future serial/identity config column: INSERT needs sequence USAGE too.
+ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config
+   GRANT USAGE, SELECT ON SEQUENCES TO admin;
 
 -- 5. Public hardening: no world-writable public schema, no anonymous connect. REVOKE ALL drops
 --    PUBLIC's implicit CONNECT, so admin/viewer are re-granted CONNECT explicitly.
