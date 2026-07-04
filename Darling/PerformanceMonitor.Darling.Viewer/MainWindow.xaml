@@ -439,8 +439,13 @@
                             <TextBlock Text="Server:" VerticalAlignment="Center" Foreground="#8B93A1" Margin="0,0,6,0"/>
                             <ComboBox x:Name="RecommendationsServerSelector" Width="260" VerticalAlignment="Center"
                                       Style="{StaticResource DarkCombo}"
-                                      DisplayMemberPath="DisplayName"
-                                      SelectionChanged="RecommendationsServerSelector_SelectionChanged"/>
+                                      SelectionChanged="RecommendationsServerSelector_SelectionChanged">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DisplayName}"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
                             <Button Content="Refresh" Margin="10,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}"
                                     Click="RecommendationsRefresh_Click"
                                     ToolTip="Re-read recommendations for the selected server"/>
