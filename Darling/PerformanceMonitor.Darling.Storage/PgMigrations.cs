@@ -48,7 +48,8 @@ public static class PgMigrations
         new Migration(3, "alerting-stores", V3Sql),
         new Migration(4, "analysis-tables", V4Sql),
         new Migration(5, "viewer-passthrough-views", V5Sql),
-        new Migration(6, "viewer-plan-capture-columns", V6Sql),
+        new Migration(6, "memory-tab-passthrough-views", V6Sql),
+        new Migration(7, "viewer-plan-capture-columns", V7Sql),
     };
 
     /// <summary>
@@ -231,16 +232,23 @@ CREATE OR REPLACE VIEW v_database_scoped_config AS SELECT * FROM database_scoped
 CREATE OR REPLACE VIEW v_trace_flags AS SELECT * FROM trace_flags;
 CREATE OR REPLACE VIEW v_collection_log AS SELECT * FROM collection_log;";
 
-    /* V6 — the deferred-plan-capture columns the viewer's blocked-process/deadlock/procedure "View
+    /* V6 — the two memory passthrough views V4/V5 left out, needed by the Memory tab port (W1j): the
+       Memory Clerks + Memory Pressure Events sub-tabs read v_memory_clerks / v_memory_pressure_events,
+       mirroring Lite, so their ported SQL stays byte-identical. Tables exist since V1; views only. */
+    private const string V6Sql = @"
+CREATE OR REPLACE VIEW v_memory_clerks AS SELECT * FROM memory_clerks;
+CREATE OR REPLACE VIEW v_memory_pressure_events AS SELECT * FROM memory_pressure_events;";
+
+    /* V7 — the deferred-plan-capture columns the viewer's blocked-process/deadlock/procedure "View
        Plan" surfaces read (PR #1262, extending the #1349 pattern to three more collectors). All are
        nullable text appended to existing collector tables, so a store already at V1's pre-plan shape
        comes up to shape with one ADD COLUMN each; a fresh install already has them (V1 is generated
        from the current collector definitions, which now include these columns), and ADD COLUMN IF NOT
        EXISTS makes that a harmless no-op. Darling captures the plans because DarlingConfig.CapturePlans
        defaults true (CollectorContext.CapturePlanXml) — no config change; Lite never sets the flag and
-       always writes NULL here. Appended (not inserted) so a fresh V1 store and an upgraded V6 store keep
+       always writes NULL here. Appended (not inserted) so a fresh V1 store and an upgraded V7 store keep
        an identical physical column order. */
-    private const string V6Sql = @"
+    private const string V7Sql = @"
 ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS query_plan_xml text;
 ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocked_query_plan_xml text;
 ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml text;

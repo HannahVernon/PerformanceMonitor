@@ -73,6 +73,7 @@ public partial class ViewerServerTab : IDisposable
         /* Each partial owns its own hover fields; the single Dispose() forwards to their teardowns
            so the whole tab tears down through one path. */
         DisposeChartHelpers();
+        DisposeMemoryHelpers();
         DisposeFileIoHelpers();
         DisposeBlockingHelpers();
         DisposePerfmonHelpers();
