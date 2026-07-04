@@ -8,6 +8,7 @@
 
 using System;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Lite.Tests.Helpers;
@@ -21,11 +22,14 @@ namespace Lite.Tests;
 /// Pins the parity contract of the extracted procedure_stats definition: the dynamic-SQL
 /// standard variant with double-escaped literal exclusions, the Azure single-database variant
 /// (token intentionally left unreplaced, as the original did), the plan_handle delta key with
-/// its db.schema.object fallback, and the 34-column payload.
+/// its db.schema.object fallback, the 35-column payload, and the #1262 gated whole-module plan
+/// capture (off = byte-identical to the no-plan form; on = the text DMV keyed on 0, -1).
 /// </summary>
 public sealed class ProcedureStatsCollectorDefinitionTests
 {
     private static readonly RecordingCollectorDeltaCalculator s_deltas = new();
+
+    private static string Collapse(string sql) => Regex.Replace(sql, @"\s+", "");
 
     [Fact]
     public void BuildQuery_Standard_InterpolatesDoubleEscapedLiterals()
@@ -73,13 +77,81 @@ public sealed class ProcedureStatsCollectorDefinitionTests
     }
 
     [Fact]
-    public void PayloadColumns_MatchSchema_34Columns()
+    public void PayloadColumns_MatchSchema_35Columns()
     {
         var names = ProcedureStatsCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray();
-        Assert.Equal(34, names.Length);
+        Assert.Equal(35, names.Length);
         Assert.Equal("database_name", names[0]);
         Assert.Equal("plan_handle", names[26]);
         Assert.Equal("delta_spills", names[33]);
+        Assert.Equal("query_plan_xml", names[34]);   /* trailing plan column (#1262) */
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOffByDefault_NoPlanClauses_LiteParity()
+    {
+        /* Lite never sets CapturePlanXml: the flag defaults false, so no branch gains the plan SELECT
+           column or the dm_exec_text_query_plan APPLY, and the placeholders erase without a trace —
+           byte-identical to the no-plan form Lite has always shipped (standard AND Azure). */
+        var standard = ProcedureStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(s_deltas));
+        var azure = ProcedureStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(s_deltas, isAzureSqlDb: true));
+
+        foreach (var text in new[] { standard.Text, azure.Text })
+        {
+            Assert.DoesNotContain("query_plan_xml", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("dm_exec_text_query_plan", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("/*PLAN_SELECT*/", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("/*PLAN_APPLY*/", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOn_Standard_SplicesWholeModuleTextPlanIntoEveryBranch()
+    {
+        /* The three module-level DMVs expose no statement offsets, so the whole-module plan is keyed
+           on literal 0, -1 (still the text DMV, so oversized plans return). One splice per UNION
+           branch — procedure, trigger, function — plus the trailing SELECT column. */
+        var plan = ProcedureStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(s_deltas, capturePlanXml: true));
+        var collapsed = Collapse(plan.Text);
+
+        Assert.Equal(3, Regex.Matches(collapsed, Regex.Escape("query_plan_xml=tqp.query_plan")).Count);
+        Assert.Equal(3, Regex.Matches(collapsed, Regex.Escape("sys.dm_exec_text_query_plan(s.plan_handle,0,-1)AStqp")).Count);
+        /* Existing shape untouched: still three DMV branches and the dynamic-SQL body. */
+        Assert.Contains("sys.dm_exec_trigger_stats", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("sys.dm_exec_function_stats", plan.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOn_Azure_SplicesWholeModuleTextPlan()
+    {
+        var plan = ProcedureStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(s_deltas, isAzureSqlDb: true, capturePlanXml: true));
+        var collapsed = Collapse(plan.Text);
+
+        Assert.Contains("query_plan_xml=tqp.query_plan", collapsed, StringComparison.Ordinal);
+        Assert.Contains("sys.dm_exec_text_query_plan(s.plan_handle,0,-1)AStqp", collapsed, StringComparison.Ordinal);
+        Assert.Contains("WHERE s.database_id = DB_ID()", plan.Text, StringComparison.Ordinal);
+        /* Azure keeps its single-proc shape — no trigger/function branches. */
+        Assert.DoesNotContain("dm_exec_trigger_stats", plan.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadAsync_WritePayload_PlanCaptureOn_CapturesTrailingPlanColumn()
+    {
+        var deltas = new RecordingCollectorDeltaCalculator();
+        var context = CollectorTestContext.Make(deltas, capturePlanXml: true);
+
+        /* Flag on = the SELECT carries the trailing query_plan_xml column at ordinal 27. */
+        var row = MakeSqlRow(planHandle: "0x0600");
+        var row28 = row.Append((object)"<ShowPlanXML>proc</ShowPlanXML>").ToArray();
+
+        using var reader = new FakeCollectorDataReader(row28);
+        var rows = await ProcedureStatsCollector.Instance.ReadAsync(reader, context, CancellationToken.None);
+
+        var writer = new RecordingCollectorRowWriter();
+        ProcedureStatsCollector.Instance.WritePayload(Assert.Single(rows), writer, context);
+
+        Assert.Equal(35, writer.Values.Count);
+        Assert.Equal("<ShowPlanXML>proc</ShowPlanXML>", writer.Values[34]);   /* query_plan_xml payload slot */
     }
 
     [Fact]
@@ -95,7 +167,8 @@ public sealed class ProcedureStatsCollectorDefinitionTests
 
         var writer = new RecordingCollectorRowWriter();
         ProcedureStatsCollector.Instance.WritePayload(rows[0], writer, context);
-        Assert.Equal(34, writer.Values.Count);
+        Assert.Equal(35, writer.Values.Count);
+        Assert.Null(writer.Values[34]);   /* query_plan_xml null when the flag is off */
         Assert.All(deltas.Calls, c => Assert.Equal("0x0600", c.Key));
         Assert.Equal(
             new[] { "proc_stats_exec", "proc_stats_worker", "proc_stats_elapsed", "proc_stats_reads", "proc_stats_writes", "proc_stats_phys_reads", "proc_stats_spills" },

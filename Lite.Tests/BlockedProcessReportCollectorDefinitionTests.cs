@@ -8,6 +8,7 @@
 
 using System;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Lite.Tests.Helpers;
@@ -20,18 +21,23 @@ namespace Lite.Tests;
 /// Pins the parity contract of the extracted blocked_process_report definition: the server- vs
 /// database-scoped ring-buffer reads, the sp_HumanEventsBlockViewer-mirroring wait_resource →
 /// contentious-object resolution batch, the event_time watermark with its 10-minute fallback,
-/// the 38-column payload, and the report-XML parse (blocked + blocking process attributes,
-/// monitorLoop root attribute, null on garbage/missing blocked-process). Third Name≠TargetTable
-/// case (blocked_process_report → blocked_process_reports).
+/// the 40-column payload, the report-XML parse (blocked + blocking process attributes,
+/// monitorLoop root attribute, null on garbage/missing blocked-process), and the #1262 gated
+/// best-effort plan resolution (off = byte-identical; on = frame → dm_exec_query_stats →
+/// dm_exec_text_query_plan for both contending sides). Third Name≠TargetTable case
+/// (blocked_process_report → blocked_process_reports).
 /// </summary>
 public sealed class BlockedProcessReportCollectorDefinitionTests
 {
     private static readonly RecordingCollectorDeltaCalculator s_deltas = new();
 
+    private static string Collapse(string sql) => Regex.Replace(sql, @"\s+", "");
+
     private static CollectorContext MakeContext(
         bool isAzureSqlDb = false,
         DateTime? watermark = null,
-        DateTime? collectionTime = null)
+        DateTime? collectionTime = null,
+        bool capturePlanXml = false)
         => new()
         {
             ServerId = 42,
@@ -40,6 +46,7 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
             Deltas = s_deltas,
             Target = new CollectorTargetInfo { IsAzureSqlDb = isAzureSqlDb },
             Watermark = watermark,
+            CapturePlanXml = capturePlanXml,
         };
 
     [Fact]
@@ -96,11 +103,11 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
     }
 
     [Fact]
-    public void PayloadColumns_MatchSchemaOrder_38Columns()
+    public void PayloadColumns_MatchSchemaOrder_40Columns()
     {
         var names = BlockedProcessReportCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray();
 
-        Assert.Equal(38, names.Length);
+        Assert.Equal(40, names.Length);
         Assert.Equal("event_time", names[0]);
         Assert.Equal("blocked_spid", names[2]);
         Assert.Equal("wait_time_ms", names[6]);
@@ -111,6 +118,59 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
         Assert.Equal("database_id", names[35]);
         Assert.Equal("contentious_object", names[36]);
         Assert.Equal("monitor_loop", names[37]);
+        Assert.Equal("blocked_query_plan_xml", names[38]);    /* trailing best-effort plans (#1262) */
+        Assert.Equal("blocking_query_plan_xml", names[39]);
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOffByDefault_NoResolution_LiteParity()
+    {
+        /* Lite never sets CapturePlanXml: no plan columns, no frame shred, no resolution join —
+           byte-identical to the no-plan form (server-scoped AND Azure). */
+        var serverScoped = BlockedProcessReportCollector.Instance.BuildQuery(MakeContext());
+        var azure = BlockedProcessReportCollector.Instance.BuildQuery(MakeContext(isAzureSqlDb: true));
+
+        foreach (var text in new[] { serverScoped.Text, azure.Text })
+        {
+            Assert.DoesNotContain("query_plan", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("dm_exec_text_query_plan", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("executionStack/frame", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOn_ResolvesBothSidesFromFrameHandles()
+    {
+        var plan = BlockedProcessReportCollector.Instance.BuildQuery(MakeContext(capturePlanXml: true));
+        var collapsed = Collapse(plan.Text);
+
+        /* Two projected plan columns and two frame-shredding APPLYs (blocked + blocking). */
+        Assert.Contains("blocked_query_plan_xml = bqp.query_plan", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("blocking_query_plan_xml = kqp.query_plan", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("/blocked-process-report/blocked-process/process/executionStack/frame", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("/blocked-process-report/blocking-process/process/executionStack/frame", plan.Text, StringComparison.Ordinal);
+        /* The resolution reuses the proven #880 sql_handle + offsets → text-plan lookup. */
+        Assert.Equal(2, Regex.Matches(collapsed, Regex.Escape("JOINsys.dm_exec_query_statsASqsONqs.sql_handle=frames.frame_handle")).Count);
+        Assert.Contains("sys.dm_exec_text_query_plan", plan.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadAsync_PlanCaptureOn_CapturesBothTrailingPlanColumns()
+    {
+        var context = MakeContext(capturePlanXml: true);
+        var eventTime = new DateTime(2026, 7, 2, 11, 59, 30, DateTimeKind.Utc);
+
+        /* Flag on = the projection carries the two plan columns at ordinals 5/6. */
+        using var reader = new FakeCollectorDataReader(
+            new object[] { eventTime, SampleReportXml, 1234, 7, "dbo.t", "<ShowPlanXML>blocked</ShowPlanXML>", "<ShowPlanXML>blocking</ShowPlanXML>" });
+        var rows = await BlockedProcessReportCollector.Instance.ReadAsync(reader, context, CancellationToken.None);
+
+        var writer = new RecordingCollectorRowWriter();
+        BlockedProcessReportCollector.Instance.WritePayload(Assert.Single(rows), writer, context);
+
+        Assert.Equal(40, writer.Values.Count);
+        Assert.Equal("<ShowPlanXML>blocked</ShowPlanXML>", writer.Values[38]);
+        Assert.Equal("<ShowPlanXML>blocking</ShowPlanXML>", writer.Values[39]);
     }
 
     private const string SampleReportXml = @"<blocked-process-report monitorLoop=""332"">
@@ -163,7 +223,7 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
     }
 
     [Fact]
-    public async Task ReadAsync_SkipsEmptyAndUnparseable_WritePayloadPins38ColumnOrder()
+    public async Task ReadAsync_SkipsEmptyAndUnparseable_WritePayloadPins40ColumnOrder()
     {
         var context = MakeContext();
         var eventTime = new DateTime(2026, 7, 2, 11, 59, 30, DateTimeKind.Utc);
@@ -178,7 +238,7 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
         var writer = new RecordingCollectorRowWriter();
         BlockedProcessReportCollector.Instance.WritePayload(row, writer, context);
 
-        Assert.Equal(38, writer.Values.Count);
+        Assert.Equal(40, writer.Values.Count);
         Assert.Equal(eventTime, writer.Values[0]);
         Assert.Equal("SO", writer.Values[1]);
         Assert.Equal(55, writer.Values[2]);
@@ -191,6 +251,8 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
         Assert.Equal(7, writer.Values[35]);
         Assert.Equal("dbo.t", writer.Values[36]);               /* server-side resolved object */
         Assert.Equal(332, writer.Values[37]);                   /* monitorLoop from the root attribute */
+        Assert.Null(writer.Values[38]);                         /* plan columns null when flag off */
+        Assert.Null(writer.Values[39]);
         Assert.Empty(s_deltas.Calls);
     }
 }

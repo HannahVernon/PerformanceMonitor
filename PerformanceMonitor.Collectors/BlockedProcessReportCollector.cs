@@ -77,6 +77,11 @@ public sealed class BlockedProcessReportCollector : CollectorDefinitionBase<Bloc
         public int? ObjectId { get; set; }
         public int? DatabaseId { get; set; }
         public string? ContentiousObject { get; set; }
+        /* Best-effort execution plans for the two contending statements, resolved from the plan cache
+           at collection time (CapturePlanXml only). Null on Lite (flag off) and whenever the plan
+           can't be recovered — see the resolution comment in BuildQuery. */
+        public string? BlockedQueryPlanXml { get; set; }
+        public string? BlockingQueryPlanXml { get; set; }
     }
 
     public override string Name => "blocked_process_report";
@@ -110,7 +115,27 @@ JOIN sys.dm_xe_sessions AS xes
            is unreliable for lock waits, kept only as a COALESCE fallback. Cross-db lookups are per-database
            dynamic SQL guarded by DB-online + TRY/CATCH; the 2019+ DMV is version-gated (or @azure, which
            reports ProductVersion 12 on Azure SQL DB). #bpr is a #temp (not a table var) so the dynamic SQL
-           can see it. The final SELECT keeps the original 5 columns, so the reader/appender is unchanged. */
+           can see it. The final SELECT keeps the original 5 columns (plus, gated on CapturePlanXml, the
+           two best-effort plan columns) so the reader/appender is unchanged when the flag is off. */
+
+        /* Best-effort plan capture (CapturePlanXml only — Darling). Resolve each contending statement's
+           plan from the live plan cache by the executionStack frame's sql_handle + statement offsets,
+           reusing the proven on-demand shape from Lite/Dashboard's #880 right-click View Plan
+           (dm_exec_query_stats -> dm_exec_text_query_plan). This is honestly best-effort: the
+           blocked_process_report XE fires asynchronously, so by collection the plan may have aged out of
+           cache; dynamic-SQL / adhoc frames carry an all-zero sql_handle that matches no query_stats row;
+           either way the column lands NULL rather than fabricated. Frames are walked top-of-stack first,
+           first resolvable wins — the same order ExtractBlockedProcessFrames uses. Flag off: both
+           fragments are empty strings, so the emitted SQL is byte-identical to the no-plan form. */
+        var planSelect = context.CapturePlanXml
+            ? @",
+    blocked_query_plan_xml = bqp.query_plan,
+    blocking_query_plan_xml = kqp.query_plan"
+            : "";
+        var planApply = context.CapturePlanXml
+            ? BuildPlanResolutionApply("blocked-process", "bqp") + BuildPlanResolutionApply("blocking-process", "kqp")
+            : "";
+
         string query = $@"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -400,8 +425,8 @@ SELECT
     b.blocked_process_report_xml,
     b.object_id,
     b.database_id,
-    b.contentious_object
-FROM #bpr AS b
+    b.contentious_object{planSelect}
+FROM #bpr AS b{planApply}
 OPTION(RECOMPILE);";
 
         /* Use the most recent timestamp from the host store as the cutoff, or fall back to a
@@ -413,6 +438,48 @@ OPTION(RECOMPILE);";
             new("@cutoff_time", cutoffTime, CollectorParameterType.DateTime2),
         });
     }
+
+    /// <summary>
+    /// A best-effort execution-plan lookup for one side of a blocked-process report, spliced into the
+    /// final projection only when CapturePlanXml is set. Shreds that side's executionStack frames from
+    /// the stored report XML and, walking top-of-stack first, returns the first frame whose
+    /// (sql_handle, statement offsets) still resolves to a cached statement plan via
+    /// sys.dm_exec_query_stats → sys.dm_exec_text_query_plan — the exact pair the #880 live "View Plan"
+    /// uses. OUTER APPLY returning one nullable value, so it never multiplies or drops #bpr rows.
+    /// <paramref name="processNode"/> is "blocked-process" or "blocking-process"; <paramref name="alias"/>
+    /// is the APPLY alias the SELECT reads (bqp / kqp).
+    /// </summary>
+    private static string BuildPlanResolutionApply(string processNode, string alias) => $@"
+OUTER APPLY
+(
+    SELECT TOP (1)
+        query_plan = tqp.query_plan
+    FROM
+    (
+        SELECT
+            frame_handle = TRY_CONVERT(varbinary(64), fr.n.value('@sqlhandle', 'varchar(130)'), 1),
+            frame_start = fr.n.value('(@stmtstart)[1]', 'integer'),
+            frame_end = fr.n.value('(@stmtend)[1]', 'integer'),
+            frame_ordinal = fr.n.value('let $c := . return count(../frame[. << $c])', 'integer')
+        FROM (SELECT report = TRY_CAST(b.blocked_process_report_xml AS xml)) AS x
+        CROSS APPLY x.report.nodes('/blocked-process-report/{processNode}/process/executionStack/frame') AS fr(n)
+    ) AS frames
+    JOIN sys.dm_exec_query_stats AS qs
+      ON  qs.sql_handle = frames.frame_handle
+      AND qs.statement_start_offset = ISNULL(frames.frame_start, 0)
+      AND qs.statement_end_offset = ISNULL(frames.frame_end, -1)
+    OUTER APPLY
+        sys.dm_exec_text_query_plan
+        (
+            qs.plan_handle,
+            qs.statement_start_offset,
+            qs.statement_end_offset
+        ) AS tqp
+    WHERE frames.frame_handle IS NOT NULL
+    AND   tqp.query_plan IS NOT NULL
+    ORDER BY
+        frames.frame_ordinal
+) AS {alias}";
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
     {
@@ -454,6 +521,10 @@ OPTION(RECOMPILE);";
         new CollectorColumn("database_id", CollectorColumnType.Integer),
         new CollectorColumn("contentious_object", CollectorColumnType.Varchar),
         new CollectorColumn("monitor_loop", CollectorColumnType.Integer),
+        /* Trailing best-effort plan columns (appended so one ADD COLUMN each brings a pre-plan store
+           up to shape; NULL on Lite and whenever the statement's plan aged out of cache). */
+        new CollectorColumn("blocked_query_plan_xml", CollectorColumnType.Varchar),
+        new CollectorColumn("blocking_query_plan_xml", CollectorColumnType.Varchar),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
@@ -469,6 +540,10 @@ OPTION(RECOMPILE);";
             var objectId = reader.IsDBNull(2) ? (int?)null : reader.GetInt32(2);
             var databaseId = reader.IsDBNull(3) ? (int?)null : reader.GetInt32(3);
             var contentiousObject = reader.IsDBNull(4) ? null : reader.GetString(4);
+            /* The two best-effort plan columns ride at ordinals 5/6 only when CapturePlanXml spliced
+               them into the projection; the short-circuit skips them entirely when off. */
+            var blockedQueryPlanXml = context.CapturePlanXml && !reader.IsDBNull(5) ? reader.GetString(5) : null;
+            var blockingQueryPlanXml = context.CapturePlanXml && !reader.IsDBNull(6) ? reader.GetString(6) : null;
 
             if (string.IsNullOrEmpty(reportXml))
             {
@@ -486,6 +561,8 @@ OPTION(RECOMPILE);";
             parsed.ObjectId = objectId;
             parsed.DatabaseId = databaseId;
             parsed.ContentiousObject = contentiousObject;
+            parsed.BlockedQueryPlanXml = blockedQueryPlanXml;
+            parsed.BlockingQueryPlanXml = blockingQueryPlanXml;
             rows.Add(parsed);
         }
 
@@ -532,7 +609,9 @@ OPTION(RECOMPILE);";
             .Value(row.ObjectId)
             .Value(row.DatabaseId)
             .Value(row.ContentiousObject)
-            .Value(row.MonitorLoop);
+            .Value(row.MonitorLoop)
+            .Value(row.BlockedQueryPlanXml)    /* null unless CapturePlanXml resolved it (Darling) */
+            .Value(row.BlockingQueryPlanXml);
     }
 
     /// <summary>
