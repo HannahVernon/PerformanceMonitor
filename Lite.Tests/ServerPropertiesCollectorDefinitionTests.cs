@@ -19,7 +19,7 @@ namespace Lite.Tests;
 /// <summary>
 /// Pins the parity contract of the extracted server_properties definition: the vCore parse rules,
 /// the Azure-only vCore application, the supplemental WS5 health probe (skipped on Azure,
-/// merge-by-replacement, failure leaves NULLs), and the 18-column payload incl. the
+/// merge-by-replacement, failure leaves NULLs), and the 21-column payload incl. the
 /// enterprise_features placeholder Lite never collects.
 /// </summary>
 public sealed class ServerPropertiesCollectorDefinitionTests
@@ -64,6 +64,7 @@ public sealed class ServerPropertiesCollectorDefinitionTests
                 "socket_count", "cores_per_socket", "is_hadr_enabled", "is_clustered",
                 "enterprise_features", "service_objective", "vcore_count",
                 "lock_pages_in_memory", "instant_file_initialization_enabled", "memory_dump_count",
+                "sqlserver_start_time", "host_os_version", "ag_replica_role",
             },
             ServerPropertiesCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray());
     }
@@ -115,7 +116,7 @@ public sealed class ServerPropertiesCollectorDefinitionTests
     }
 
     [Fact]
-    public async Task WritePayload_Emits18Columns_WithNullEnterpriseFeatures()
+    public async Task WritePayload_Emits21Columns_WithNullEnterpriseFeatures()
     {
         using var reader = new FakeCollectorDataReader(AzureRow("HS_Gen5_14"));
         var rows = await ServerPropertiesCollector.Instance.ReadAsync(
@@ -124,18 +125,24 @@ public sealed class ServerPropertiesCollectorDefinitionTests
         var writer = new RecordingCollectorRowWriter();
         ServerPropertiesCollector.Instance.WritePayload(rows[0], writer, CollectorTestContext.Make(s_deltas));
 
-        Assert.Equal(18, writer.Values.Count);
+        Assert.Equal(21, writer.Values.Count);
         Assert.Equal("Azure SQL Database (General Purpose)", writer.Values[0]);
         Assert.Null(writer.Values[12]);           /* enterprise_features — never collected in Lite */
         Assert.Equal("HS_Gen5_14", writer.Values[13]);
         Assert.Equal(14, writer.Values[14]);
+        /* The three inventory columns appended in v36 (#1372). */
+        Assert.Equal(new DateTime(2026, 6, 1), writer.Values[18]);
+        Assert.Equal("Windows Server 2022", writer.Values[19]);
+        Assert.Null(writer.Values[20]);           /* ag_replica_role — standalone in the fixture */
     }
 
-    /// <summary>14-column main-query row; index 0 (server_name) is read past by the definition.</summary>
+    /// <summary>17-column main-query row; index 0 (server_name) is read past by the definition.</summary>
     private static object[] AzureRow(string? serviceObjective) => new object[]
     {
         "myserver", "Azure SQL Database (General Purpose)", "12.0.2000.8", "RTM", DBNull.Value,
         5, 80, 8, 415800L, DBNull.Value, DBNull.Value, false, false,
         serviceObjective is null ? DBNull.Value : serviceObjective,
+        /* v36 inventory columns (#1372): sqlserver_start_time(14), host_os_version(15), ag_replica_role(16). */
+        new DateTime(2026, 6, 1), "Windows Server 2022", DBNull.Value,
     };
 }
