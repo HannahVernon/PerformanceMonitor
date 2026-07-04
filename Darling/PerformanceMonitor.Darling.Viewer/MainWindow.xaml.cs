@@ -40,14 +40,14 @@ public partial class MainWindow : Window
     /// <summary>The Overview tab's own faster cadence (Lite's Overview refresh interval).</summary>
     private static readonly TimeSpan s_overviewRefreshInterval = TimeSpan.FromSeconds(30);
 
-    /// <summary>The detail pane's no-selection state (also its initial text in the XAML).</summary>
-    private const string FindingDetailPlaceholder = "select a finding to see its story, advice, and stored remediation";
-
     private ViewerDataService? _dataService;
     private DispatcherTimer? _refreshTimer;
     private DispatcherTimer? _overviewTimer;
     private bool _refreshInFlight;
     private bool _refreshRequested;
+
+    /// <summary>Suppresses the Recommendations server combo's SelectionChanged during initial population.</summary>
+    private bool _populatingRecoServers;
 
     /// <summary>
     /// Open per-server tabs keyed by server id, so a double-click on an already-open server focuses its
@@ -155,8 +155,13 @@ public partial class MainWindow : Window
 
     private async void OnRefreshTimerTick(object? sender, EventArgs e)
     {
-        /* The Overview tab has its own faster timer; don't also refresh it here. */
-        if (ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
+        /* Two tabs opt out of the 60s auto-refresh: Recommendations refreshes on tab-activation only
+           (matching Lite — analysis findings change on the service's 30-minute cadence, so a 60-second
+           auto-refresh is pointless churn and would reset the incident expanders' state under the
+           reader), and the Overview has its own faster 30s timer, so the 60s timer skips it too (they'd
+           otherwise double-refresh the same grid). Every other visible tab still auto-refreshes. */
+        if (ReferenceEquals(MainTabs.SelectedItem, RecommendationsTab)
+            || ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
         {
             return;
         }
@@ -200,18 +205,6 @@ public partial class MainWindow : Window
         await RefreshVisibleAsync();
     }
 
-    private void FindingsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!ReferenceEquals(e.OriginalSource, FindingsGrid))
-        {
-            return;
-        }
-
-        FindingDetailText.Text = FindingsGrid.SelectedItem is ViewerFindingRow row
-            ? ViewerDataService.ComposeFindingDetailText(row.Finding)
-            : FindingDetailPlaceholder;
-    }
-
     private async Task LoadServersAsync()
     {
         if (_dataService is null)
@@ -223,6 +216,18 @@ public partial class MainWindow : Window
         {
             var servers = await _dataService.GetServersAsync();
             ServerList.ItemsSource = servers;
+
+            /* The Recommendations tab has its OWN server selector (independent of the sidebar, matching
+               Lite). Populate it from the same list; the guard suppresses its SelectionChanged during
+               this initial population so the first load comes from the sidebar-driven RefreshVisibleAsync
+               below (which reads the now-populated combo). */
+            _populatingRecoServers = true;
+            RecommendationsServerSelector.ItemsSource = servers;
+            if (servers.Count > 0)
+            {
+                RecommendationsServerSelector.SelectedIndex = 0;
+            }
+            _populatingRecoServers = false;
 
             var hasServers = servers.Count > 0;
             ServersHintText.Visibility = hasServers ? Visibility.Collapsed : Visibility.Visible;
@@ -294,7 +299,7 @@ public partial class MainWindow : Window
                     await LoadOverviewAsync();
                     break;
                 case TabItem tab when ReferenceEquals(tab, RecommendationsTab):
-                    await LoadRecommendationsAsync(ServerList.SelectedItem as DarlingServer);
+                    await LoadRecommendationsAsync();
                     break;
                 case TabItem tab when ReferenceEquals(tab, AlertsTab):
                     await AlertsHistoryContent.RefreshAlertsAsync();
@@ -461,135 +466,119 @@ public partial class MainWindow : Window
         }
     }
 
-    // ── Recommendations tab (aggregate, server-scoped via the sidebar for now) ───────
+    // ── Recommendations tab (advise-only cards; own server selector, tab-activation refresh) ─────
 
-    private async Task LoadRecommendationsAsync(DarlingServer? server)
+    /// <summary>
+    /// Reads the latest analysis findings for the Recommendations tab's OWN selected server and renders
+    /// them as Lite's advise-only, incident-grouped cards. Advise-only: no Apply, and no mute (mute
+    /// lives on the Alert History surface per the re-skin). There is no "Generate now": the Darling
+    /// service runs analysis on its own 30-minute cadence (once 24h of history exists), so the viewer
+    /// cannot trigger it — the tab's status line surfaces the last analysis time instead.
+    /// </summary>
+    private async Task LoadRecommendationsAsync()
     {
         if (_dataService is null)
         {
             return;
         }
 
-        if (server is null)
+        if (RecommendationsServerSelector.SelectedItem is not DarlingServer server)
         {
-            FindingsGrid.ItemsSource = null;
-            FindingsHintText.Visibility = Visibility.Collapsed;
-            FindingsHeaderText.Text = "Latest Analysis Findings";
-            FindingDetailText.Text = FindingDetailPlaceholder;
+            ApplyRecommendationsViewModel(
+                RecommendationsViewModel.FromFindings(Array.Empty<ViewerFindingRow>(), string.Empty));
+            RecommendationsStatusText.Text = string.Empty;
             return;
         }
 
-        /* Remember the selected finding so the 60-second refresh doesn't yank the detail
-           pane out from under the reader — reselect the same story if it's still there. */
-        var selectedHash = (FindingsGrid.SelectedItem as ViewerFindingRow)?.Finding.StoryPathHash;
+        ApplyRecommendationsViewModel(RecommendationsViewModel.Loading());
 
         var rows = await _dataService.GetLatestFindingsAsync(server.ServerId);
 
-        FindingsGrid.ItemsSource = rows;
-        FindingsHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        FindingsHeaderText.Text = rows.Count == 0
-            ? "Latest Analysis Findings"
-            : $"Latest Analysis Findings — {rows[0].AnalysisTimeLocal:yyyy-MM-dd HH:mm:ss} (local)";
+        ApplyRecommendationsViewModel(
+            RecommendationsViewModel.FromFindings(rows, server.DisplayName, LocalUtcOffsetMinutes()));
 
-        var reselect = selectedHash is null
-            ? null
-            : rows.FirstOrDefault(r => r.Finding.StoryPathHash == selectedHash);
-        if (reselect is not null)
-        {
-            FindingsGrid.SelectedItem = reselect;
-        }
-        else if (FindingsGrid.SelectedItem is null)
-        {
-            FindingDetailText.Text = FindingDetailPlaceholder;
-        }
-
+        RecommendationsStatusText.Text = rows.Count > 0
+            ? $"Last analyzed {rows[0].AnalysisTimeLocal:yyyy-MM-dd HH:mm:ss} (local)"
+            : string.Empty;
         StatusText.Text = $"{server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}";
     }
 
-    // ── Recommendations: finding mute / unmute (wave-3 write-back) ──────────────────
-
-    /// <summary>Selects the row under a right-click so the context menu acts on it (both grids).</summary>
-    private void Grid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    /// <summary>Swaps the visible content region to match the view-model's state (mirrors Lite's ApplyViewModel).</summary>
+    private void ApplyRecommendationsViewModel(RecommendationsViewModel vm)
     {
-        var source = e.OriginalSource as DependencyObject;
-        while (source is not null and not DataGridRow and not DataGridColumnHeader)
+        switch (vm.State)
         {
-            /* VisualTreeHelper.GetParent only walks Visuals; a ContentElement (e.g. an inline Run)
-               would throw. Both grids host only TextBlocks today, but bail defensively. */
-            if (source is not Visual)
-            {
-                return;
-            }
+            case RecommendationsState.Loading:
+                RecommendationsLoadingText.Visibility = Visibility.Visible;
+                RecommendationsScroll.Visibility = Visibility.Collapsed;
+                RecommendationsEmptyText.Visibility = Visibility.Collapsed;
+                break;
 
-            source = VisualTreeHelper.GetParent(source);
-        }
+            case RecommendationsState.Empty:
+                RecommendationsLoadingText.Visibility = Visibility.Collapsed;
+                RecommendationsSectionsList.ItemsSource = null;
+                RecommendationsScroll.Visibility = Visibility.Collapsed;
+                RecommendationsEmptyText.Visibility = Visibility.Visible;
+                break;
 
-        if (source is DataGridRow row)
-        {
-            row.IsSelected = true;
+            case RecommendationsState.Loaded:
+            default:
+                RecommendationsLoadingText.Visibility = Visibility.Collapsed;
+                RecommendationsEmptyText.Visibility = Visibility.Collapsed;
+                RecommendationsSectionsList.ItemsSource = vm.Sections;
+                RecommendationsScroll.Visibility = Visibility.Visible;
+                break;
         }
     }
+
+    /// <summary>The viewer machine's current UTC offset in minutes, for the Ask-AI prompt's local-time window.</summary>
+    private static int LocalUtcOffsetMinutes()
+        => (int)Math.Round(TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes);
+
+    /// <summary>The tab's own server selector drives it (independent of the sidebar); reload on change.</summary>
+    private async void RecommendationsServerSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_populatingRecoServers)
+        {
+            return;
+        }
+
+        await RefreshVisibleAsync();
+    }
+
+    private async void RecommendationsRefresh_Click(object sender, RoutedEventArgs e)
+        => await RefreshVisibleAsync();
 
     /// <summary>
-    /// Enables Mute vs Unmute by the selected finding's state; suppresses the menu with no row.
-    /// Unmute is offered only when the finding carries a per-server mute id — a globally-muted
-    /// finding (MuteId null) shows as muted but is not unmutable here (that would affect all servers).
+    /// Copies a card's suggested T-SQL to the clipboard (advise-only). SetDataObject with copy=false
+    /// avoids WPF's problematic Clipboard.Flush() (matches the Lite convention).
     /// </summary>
-    private void FindingsGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    private void CopyFix_Click(object sender, RoutedEventArgs e)
     {
-        if (FindingsGrid.SelectedItem is not ViewerFindingRow row)
+        if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
         {
-            e.Handled = true;
             return;
         }
 
-        MuteFindingMenuItem.IsEnabled = !row.IsMuted;
-        UnmuteFindingMenuItem.IsEnabled = row.MuteId is not null;
+        if (string.IsNullOrEmpty(card.CopyPasteSql))
+        {
+            return;
+        }
+
+        Clipboard.SetDataObject(card.CopyPasteSql, false);
+        RecommendationsStatusText.Text = "Fix copied to clipboard.";
     }
 
-    private async void MuteFinding_Click(object sender, RoutedEventArgs e)
+    /// <summary>Copies a card's MCP investigation prompt to the clipboard (mirrors Lite's Ask AI).</summary>
+    private void AskAi_Click(object sender, RoutedEventArgs e)
     {
-        if (_dataService is null
-            || ServerList.SelectedItem is not DarlingServer server
-            || FindingsGrid.SelectedItem is not ViewerFindingRow row
-            || row.IsMuted)
+        if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
         {
             return;
         }
 
-        try
-        {
-            StatusText.Text = "Muting finding…";
-            await _dataService.MuteFindingAsync(server.ServerId, row.Finding);
-            await RefreshVisibleAsync();
-            StatusText.Text = $"finding muted — {DateTime.Now:HH:mm:ss}";
-        }
-        catch (Exception ex)
-        {
-            StatusText.Text = $"mute failed: {ex.Message}";
-        }
-    }
-
-    private async void UnmuteFinding_Click(object sender, RoutedEventArgs e)
-    {
-        if (_dataService is null
-            || FindingsGrid.SelectedItem is not ViewerFindingRow row
-            || row.MuteId is not { } muteId)
-        {
-            return;
-        }
-
-        try
-        {
-            StatusText.Text = "Unmuting finding…";
-            await _dataService.UnmuteFindingAsync(muteId);
-            await RefreshVisibleAsync();
-            StatusText.Text = $"finding unmuted — {DateTime.Now:HH:mm:ss}";
-        }
-        catch (Exception ex)
-        {
-            StatusText.Text = $"unmute failed: {ex.Message}";
-        }
+        Clipboard.SetDataObject(card.AskAiPrompt, false);
+        RecommendationsStatusText.Text = "AI prompt copied to clipboard.";
     }
 
     private void ShowMessage(string message)
