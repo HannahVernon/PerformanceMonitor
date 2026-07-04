@@ -23,9 +23,10 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// store's units (microseconds for CPU/duration, KB for grants); the display properties convert,
 /// mirroring Lite's grid. <see cref="LastExecutionTime"/>/<see cref="CreationTime"/> are the SQL
 /// SERVER's local wall clock (dm_exec_query_stats), NOT UTC — shown raw (no naive-UTC-to-local
-/// conversion, matching the absorbed top-50 grid this replaces). The View-Plan surface is deferred
-/// (no plan host yet), so unlike Lite there is no QueryPlan/HasQueryPlan and the LATERAL fetches
-/// only query_text (not the now-collected query_plan_xml).
+/// conversion, matching the absorbed top-50 grid this replaces). <see cref="HasQueryPlan"/> is a cheap
+/// presence flag from the read (bool_or over the group) that gates the grid's Query Plan column; the full
+/// query_plan_xml is fetched on demand by <see cref="ViewerDataService.GetQueryStatsPlanXmlAsync"/>, so a
+/// multi-KB plan never rides in every grid row (Lite's HasQueryPlan gating pattern, sourced from the store).
 /// </summary>
 public sealed class ViewerQueryStatsRow
 {
@@ -72,6 +73,9 @@ public sealed class ViewerQueryStatsRow
     public string SqlHandle { get; set; } = "";
     public string PlanHandle { get; set; } = "";
     public string QueryText { get; set; } = "";
+    /// <summary>True when the collector captured a query_plan_xml for this (database, query_hash) —
+    /// gates the grid's Query Plan column (the full plan is fetched on demand, not carried here).</summary>
+    public bool HasQueryPlan { get; set; }
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public double AvgCpuMs => TotalExecutions > 0 ? TotalCpuMs / TotalExecutions : 0;
@@ -98,8 +102,10 @@ public sealed partial class ViewerDataService
     /// is CAST back to bigint for the typed GetInt64 readers (MIN/MAX of bigint stay bigint, no cast);
     /// (2) Lite's server-local <c>last_execution_time</c> staleness filter and its utcOffsetMinutes
     /// parameter are dropped (the viewer has no per-server UTC offset; the delta HAVING already excludes
-    /// plans that never ran in the window); (3) the LATERAL fetches only query_text — the View-Plan
-    /// surface is deferred, so the now-collected query_plan_xml is not read this wave.
+    /// plans that never ran in the window); (3) the LATERAL fetches only query_text; the collected
+    /// query_plan_xml is not carried per row (it can be multi-KB) — instead bool_or(query_plan_xml IS NOT
+    /// NULL) rides back as has_query_plan to gate the grid's Query Plan column, and the plan itself is
+    /// fetched on demand by <see cref="GetQueryStatsPlanXmlAsync"/>.
     /// $1 server_id, $2 window start, $3 window end (naive UTC), $4 top.
     /// </summary>
     public const string TopQueriesSql = """
@@ -144,7 +150,8 @@ public sealed partial class ViewerDataService
                 MAX(max_used_threads) AS max_used_threads,
                 MAX(total_clr_time) AS total_clr_time,
                 MAX(plan_generation_num) AS plan_generation_num,
-                MAX(CAST(delta_worker_time AS double precision) / NULLIF(sample_interval_seconds, 0) / 1000.0) AS worker_time_per_second
+                MAX(CAST(delta_worker_time AS double precision) / NULLIF(sample_interval_seconds, 0) / 1000.0) AS worker_time_per_second,
+                bool_or(query_plan_xml IS NOT NULL) AS has_query_plan
             FROM query_stats
             WHERE server_id = $1
             AND   collection_time >= $2
@@ -195,7 +202,8 @@ public sealed partial class ViewerDataService
             r.total_clr_time,
             r.plan_generation_num,
             r.worker_time_per_second,
-            t.query_text
+            t.query_text,
+            r.has_query_plan
         FROM ranked AS r
         LEFT JOIN LATERAL (
             SELECT query_text
@@ -279,6 +287,7 @@ public sealed partial class ViewerDataService
                 PlanGenerationNum = reader.IsDBNull(38) ? 0 : reader.GetInt64(38),
                 WorkerTimePerSecond = reader.IsDBNull(39) ? 0 : reader.GetDouble(39),
                 QueryText = reader.IsDBNull(40) ? "" : reader.GetString(40),
+                HasQueryPlan = !reader.IsDBNull(41) && reader.GetBoolean(41),
             });
         }
 
