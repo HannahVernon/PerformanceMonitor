@@ -9,6 +9,7 @@
 using System;
 using System.Threading.Tasks;
 using Npgsql;
+using PerformanceMonitor.Darling.Service;
 using PerformanceMonitor.Darling.Storage;
 using Xunit;
 
@@ -178,6 +179,53 @@ public sealed class DarlingSecuritySplitLiveTests
         }
     }
 
+    [Fact]
+    public async Task RoleMarkerGuard_StampsFreshRole_IdempotentWhenMarked_RaisesOnUnmarkedCollision()
+    {
+        var connectionString = RequireLivePostgres();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var owner = new NpgsqlConnection(connectionString);
+        await owner.OpenAsync(ct);
+
+        /* A throwaway role name (NOT admin/viewer) so this exercises the guard MECHANISM with zero
+           side effects on the shared store — the DarlingManagedRoles.BuildProvisioningSql string that
+           applies this same pattern to admin/viewer is pinned separately by the ungated shape test. */
+        const string role = "darling_marker_probe";
+        string Guard() => $@"
+DO $$
+BEGIN
+   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+      CREATE ROLE {role} LOGIN NOSUPERUSER PASSWORD 'MarkerProbePw01';
+      COMMENT ON ROLE {role} IS '{DarlingManagedRoles.RoleMarker}';
+   ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = '{role}'), 'pg_authid') IS DISTINCT FROM '{DarlingManagedRoles.RoleMarker}' THEN
+      RAISE EXCEPTION 'Role ""{role}"" already exists and was not created by Darling (missing the marker).';
+   END IF;
+END $$;";
+
+        await ExecAsync(owner, $"DROP ROLE IF EXISTS {role}", ct);
+        try
+        {
+            /* Fresh: creates + stamps the marker (round-trips through shobj_description). */
+            await ExecAsync(owner, Guard(), ct);
+            Assert.Equal(DarlingManagedRoles.RoleMarker,
+                await ScalarAsync(owner, $"SELECT shobj_description((SELECT oid FROM pg_roles WHERE rolname = '{role}'), 'pg_authid')", ct) as string);
+
+            /* A marked role re-runs idempotently — no throw (password rotation stays possible). */
+            await ExecAsync(owner, Guard(), ct);
+
+            /* Simulate a foreign same-named role: strip the marker, re-run -> fail loud, not repurpose. */
+            await ExecAsync(owner, $"COMMENT ON ROLE {role} IS NULL", ct);
+            var ex = await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(owner, Guard(), ct));
+            Assert.Equal("P0001", ex.SqlState); // raise_exception
+            Assert.Contains("was not created by Darling", ex.MessageText, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await ExecAsync(owner, $"DROP ROLE IF EXISTS {role}", ct);
+        }
+    }
+
     private static async Task CreateTestRolesAndGrantsAsync(NpgsqlConnection owner, System.Threading.CancellationToken ct)
     {
         /* Mirrors the DarlingManagedRoles grant model with distinct, disposable role names and no
@@ -245,5 +293,11 @@ DROP ROLE IF EXISTS {ViewerRole};", ct);
     {
         using var command = new NpgsqlCommand(sql, connection);
         await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<object?> ScalarAsync(NpgsqlConnection connection, string sql, System.Threading.CancellationToken ct)
+    {
+        using var command = new NpgsqlCommand(sql, connection);
+        return await command.ExecuteScalarAsync(ct);
     }
 }

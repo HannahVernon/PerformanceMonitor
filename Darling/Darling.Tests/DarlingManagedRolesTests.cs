@@ -37,6 +37,25 @@ public sealed class DarlingManagedRolesTests
     }
 
     [Fact]
+    public void BuildProvisioningSql_StampsMarker_AndFailsLoudOnUnmarkedCollision()
+    {
+        var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02");
+
+        Assert.Equal("darling-managed", DarlingManagedRoles.RoleMarker);
+
+        /* Fresh roles are STAMPED with the marker comment. */
+        Assert.Contains("COMMENT ON ROLE admin IS 'darling-managed';", sql, StringComparison.Ordinal);
+        Assert.Contains("COMMENT ON ROLE viewer IS 'darling-managed';", sql, StringComparison.Ordinal);
+
+        /* An existing same-named role is trusted only if it carries the marker (read via
+           shobj_description); otherwise provisioning RAISEs rather than repurposing it. */
+        Assert.Contains("shobj_description((SELECT oid FROM pg_roles WHERE rolname = 'admin'), 'pg_authid') IS DISTINCT FROM 'darling-managed'", sql, StringComparison.Ordinal);
+        Assert.Contains("shobj_description((SELECT oid FROM pg_roles WHERE rolname = 'viewer'), 'pg_authid') IS DISTINCT FROM 'darling-managed'", sql, StringComparison.Ordinal);
+        Assert.Contains("RAISE EXCEPTION 'Role \"admin\" already exists and was not created by Darling", sql, StringComparison.Ordinal);
+        Assert.Contains("RAISE EXCEPTION 'Role \"viewer\" already exists and was not created by Darling", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildProvisioningSql_GrantsReadBothSchemas_WritesConfigForAdminOnly()
     {
         var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02");

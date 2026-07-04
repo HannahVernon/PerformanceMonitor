@@ -26,17 +26,30 @@
 --      lines (it must be the role that CREATEs the tables — your collection connection's role).
 --
 --   psql -h <host> -U <owner> -d darling -f provision-roles.sql
+--
+-- NAME-COLLISION SAFETY: the roles are the bare, un-prefixed names "admin" and "viewer". If your
+-- cluster ALREADY has a role by either name that this script did not create, it will NOT be silently
+-- repurposed: fresh roles are stamped with a marker comment ('darling-managed'), and an existing
+-- same-named role without that marker makes this script FAIL LOUD (rename or drop the other role
+-- first, or use a dedicated cluster/database for the Darling store).
 -- ============================================================================================
 
 -- 1. Roles (CREATE ROLE has no IF NOT EXISTS -> guard with a DO block). Idempotent: re-running
---    this script re-asserts the password below, so it doubles as a password rotation.
+--    this script re-asserts the password below, so it doubles as a password rotation. A fresh role
+--    is stamped 'darling-managed'; an unmarked same-named role fails loud (never repurposed).
 DO $$
 BEGIN
    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admin') THEN
       CREATE ROLE admin LOGIN NOSUPERUSER PASSWORD 'CHANGE_ME_ADMIN_PASSWORD';
+      COMMENT ON ROLE admin IS 'darling-managed';
+   ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = 'admin'), 'pg_authid') IS DISTINCT FROM 'darling-managed' THEN
+      RAISE EXCEPTION 'Role "admin" already exists and was not created by Darling (missing the ''darling-managed'' marker comment). Rename or drop it before provisioning so Darling does not repurpose an unrelated login.';
    END IF;
    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'viewer') THEN
       CREATE ROLE viewer LOGIN NOSUPERUSER PASSWORD 'CHANGE_ME_VIEWER_PASSWORD';
+      COMMENT ON ROLE viewer IS 'darling-managed';
+   ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = 'viewer'), 'pg_authid') IS DISTINCT FROM 'darling-managed' THEN
+      RAISE EXCEPTION 'Role "viewer" already exists and was not created by Darling (missing the ''darling-managed'' marker comment). Rename or drop it before provisioning so Darling does not repurpose an unrelated login.';
    END IF;
 END $$;
 

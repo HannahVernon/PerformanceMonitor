@@ -49,6 +49,15 @@ namespace PerformanceMonitor.Darling.Service;
 public static class DarlingManagedRoles
 {
     /// <summary>
+    /// The comment stamped on every Darling-created login role (<c>COMMENT ON ROLE … IS</c>, read back
+    /// via <c>shobj_description(oid, 'pg_authid')</c>). Because the role names are the bare, un-prefixed
+    /// <c>admin</c>/<c>viewer</c> (Erik's decision — no <c>darling_</c> namespace), provisioning must not
+    /// silently repurpose a same-named role someone else created: an existing role WITHOUT this marker
+    /// makes provisioning fail loud rather than reset its password/privileges.
+    /// </summary>
+    public const string RoleMarker = "darling-managed";
+
+    /// <summary>
     /// Ensures the <c>admin</c>/<c>viewer</c> roles, their DPAPI credentials, and the collect/config
     /// grants exist and match — idempotent and self-healing. Opens one connection from the
     /// owner-<c>darling</c> data source (ALTER DEFAULT PRIVILEGES FOR ROLE darling only governs objects
@@ -166,23 +175,34 @@ public static class DarlingManagedRoles
         const string viewer = DarlingManagedPostgres.ViewerRoleName;
         const string collect = PgSchemaGenerator.CollectSchema;
         const string config = PgSchemaGenerator.ConfigSchema;
+        const string marker = RoleMarker;
 
         return $@"
 /* Least-privilege roles for the Darling security split (#1262). Idempotent + self-healing:
    re-run every managed start, converging role state to the DPAPI credential files. */
 
--- 1. Roles (CREATE ROLE has no IF NOT EXISTS -> guard with a DO block).
+-- 1. Roles (CREATE ROLE has no IF NOT EXISTS -> guard with a DO block). The names are bare
+--    admin/viewer, so a fresh role is STAMPED with a marker comment and an existing SAME-NAMED role
+--    is trusted only if it carries that marker; an unmarked collision fails loud (never repurposed).
 DO $do$
 BEGIN
    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{admin}') THEN
       CREATE ROLE {admin} LOGIN NOSUPERUSER PASSWORD '{adminPassword}';
+      COMMENT ON ROLE {admin} IS '{marker}';
+   ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = '{admin}'), 'pg_authid') IS DISTINCT FROM '{marker}' THEN
+      RAISE EXCEPTION 'Role ""{admin}"" already exists and was not created by Darling (missing the ''{marker}'' marker comment). Rename or drop it before provisioning so Darling does not repurpose an unrelated login.';
    END IF;
+
    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{viewer}') THEN
       CREATE ROLE {viewer} LOGIN NOSUPERUSER PASSWORD '{viewerPassword}';
+      COMMENT ON ROLE {viewer} IS '{marker}';
+   ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = '{viewer}'), 'pg_authid') IS DISTINCT FROM '{marker}' THEN
+      RAISE EXCEPTION 'Role ""{viewer}"" already exists and was not created by Darling (missing the ''{marker}'' marker comment). Rename or drop it before provisioning so Darling does not repurpose an unrelated login.';
    END IF;
 END $do$;
 
 -- 1b. Re-assert password + attributes every start (the credential file is the source of truth).
+--     Only reached when the guard above passed (fresh + marked, or already Darling-marked).
 ALTER ROLE {admin}  LOGIN NOSUPERUSER PASSWORD '{adminPassword}';
 ALTER ROLE {viewer} LOGIN NOSUPERUSER PASSWORD '{viewerPassword}';
 
