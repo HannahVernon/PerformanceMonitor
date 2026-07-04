@@ -224,35 +224,6 @@ public sealed class ViewerWave3DisplayTests
     }
 
     [Fact]
-    public void ComposeAlertDetailText_RendersHeader_Detail_AndPrettyContextFingerprint()
-    {
-        var row = AlertRow(
-            detailText: "  Database: StackOverflow",
-            contextJson: "{\"DedupKey\":\"abc123\",\"Server\":\"SQL2022\"}");
-
-        var text = ViewerDataService.ComposeAlertDetailText(row);
-
-        Assert.StartsWith("High CPU", text, StringComparison.Ordinal);
-        Assert.Contains("Value: 95.5%", text, StringComparison.Ordinal);
-        Assert.Contains("Threshold: 90.0%", text, StringComparison.Ordinal);
-        Assert.Contains("Database: StackOverflow", text, StringComparison.Ordinal);
-        Assert.Contains("Context (dedup fingerprint / cooldown key):", text, StringComparison.Ordinal);
-        Assert.Contains("\"DedupKey\": \"abc123\"", text, StringComparison.Ordinal); /* pretty-printed */
-    }
-
-    [Fact]
-    public void ComposeAlertDetailText_NonJsonContext_RendersRaw_AndToleratesNulls()
-    {
-        var raw = ViewerDataService.ComposeAlertDetailText(AlertRow(contextJson: "not-json"));
-        Assert.Contains("not-json", raw, StringComparison.Ordinal);
-
-        /* No detail/context still yields the header, and a null row throws. */
-        var bare = ViewerDataService.ComposeAlertDetailText(AlertRow());
-        Assert.StartsWith("High CPU", bare, StringComparison.Ordinal);
-        Assert.Throws<ArgumentNullException>(() => ViewerDataService.ComposeAlertDetailText(null!));
-    }
-
-    [Fact]
     public void MutedLabel_ReflectsTheMutedFlag()
     {
         var finding = new AnalysisFinding
@@ -468,7 +439,7 @@ public sealed class ViewerWave3LivePostgresTests
             await InsertAlertRowAsync(connection, now.AddMinutes(-5), "Deadlocks Detected", 3, 1, alertSent: true,
                 notificationType: "email", dismissed: true, detailText: null, contextJson: null);
 
-            var rows = await viewer.GetAlertHistoryAsync(AlertServerId, now.AddHours(-1));
+            var rows = await viewer.GetAlertHistoryAsync(now.AddHours(-1), AlertServerId);
 
             /* Dismissed row excluded — only the live one comes back. */
             var row = Assert.Single(rows);
@@ -476,7 +447,9 @@ public sealed class ViewerWave3LivePostgresTests
             Assert.Equal("95.5%", row.CurrentValueDisplay);
             Assert.Equal("tray", row.NotificationType);
             Assert.Equal("Shown", row.StatusDisplay);
-            Assert.Contains("DedupKey", ViewerDataService.ComposeAlertDetailText(row), StringComparison.Ordinal);
+            /* The read carries the raw context_json (the #1140 dedup fingerprint) through unchanged. */
+            Assert.NotNull(row.ContextJson);
+            Assert.Contains("DedupKey", row.ContextJson, StringComparison.Ordinal);
         }
         finally
         {

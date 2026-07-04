@@ -17,7 +17,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using PerformanceMonitor.Common;
-using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -38,11 +37,12 @@ public partial class MainWindow : Window
 {
     private static readonly TimeSpan s_refreshInterval = TimeSpan.FromSeconds(60);
 
-    /// <summary>The Alerts detail pane's no-selection state (also its initial text in the XAML).</summary>
-    private const string AlertDetailPlaceholder = "select an alert to see its detail and dedup fingerprint";
+    /// <summary>The Overview tab's own faster cadence (Lite's Overview refresh interval).</summary>
+    private static readonly TimeSpan s_overviewRefreshInterval = TimeSpan.FromSeconds(30);
 
     private ViewerDataService? _dataService;
     private DispatcherTimer? _refreshTimer;
+    private DispatcherTimer? _overviewTimer;
     private bool _refreshInFlight;
     private bool _refreshRequested;
 
@@ -85,6 +85,11 @@ public partial class MainWindow : Window
 
         _dataService = new ViewerDataService(settings.ConnectionString);
 
+        /* The Alerts tab is a self-loading control (all-servers by default); give it the store and let
+           it surface load/dismiss/mute outcomes on the shared status bar. */
+        AlertsHistoryContent.Initialize(_dataService);
+        AlertsHistoryContent.StatusChanged += OnServerTabStatusChanged;
+
         await LoadServersAsync();
 
         /* --open-server <name>: deep-link straight into a server's per-server tab on startup —
@@ -104,6 +109,12 @@ public partial class MainWindow : Window
         _refreshTimer = new DispatcherTimer { Interval = s_refreshInterval };
         _refreshTimer.Tick += OnRefreshTimerTick;
         _refreshTimer.Start();
+
+        /* The Overview tab refreshes on its own faster (30s) cadence, mirroring Lite; the 60s timer
+           skips it so the two don't double-refresh the same grid. */
+        _overviewTimer = new DispatcherTimer { Interval = s_overviewRefreshInterval };
+        _overviewTimer.Tick += OnOverviewTimerTick;
+        _overviewTimer.Start();
     }
 
     /// <summary>
@@ -144,15 +155,26 @@ public partial class MainWindow : Window
 
     private async void OnRefreshTimerTick(object? sender, EventArgs e)
     {
-        /* Recommendations refreshes on tab-activation only (matching Lite): analysis findings change
-           on the service's 30-minute cadence, so a 60-second auto-refresh is pointless churn and would
-           reset the incident expanders' state under the reader. Every other visible tab still auto-refreshes. */
-        if (ReferenceEquals(MainTabs.SelectedItem, RecommendationsTab))
+        /* Two tabs opt out of the 60s auto-refresh: Recommendations refreshes on tab-activation only
+           (matching Lite — analysis findings change on the service's 30-minute cadence, so a 60-second
+           auto-refresh is pointless churn and would reset the incident expanders' state under the
+           reader), and the Overview has its own faster 30s timer, so the 60s timer skips it too (they'd
+           otherwise double-refresh the same grid). Every other visible tab still auto-refreshes. */
+        if (ReferenceEquals(MainTabs.SelectedItem, RecommendationsTab)
+            || ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
         {
             return;
         }
 
         await RefreshVisibleAsync();
+    }
+
+    private async void OnOverviewTimerTick(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
+        {
+            await RefreshVisibleAsync();
+        }
     }
 
     /// <summary>Single-click drives the aggregate tabs (Recommendations/Alerts) for the selected server.</summary>
@@ -273,11 +295,14 @@ public partial class MainWindow : Window
                 case TabItem { Content: ViewerServerTab serverTab }:
                     await serverTab.RefreshActiveInnerTabAsync();
                     break;
+                case TabItem tab when ReferenceEquals(tab, OverviewTab):
+                    await LoadOverviewAsync();
+                    break;
                 case TabItem tab when ReferenceEquals(tab, RecommendationsTab):
                     await LoadRecommendationsAsync();
                     break;
                 case TabItem tab when ReferenceEquals(tab, AlertsTab):
-                    await LoadAlertsAsync(ServerList.SelectedItem as DarlingServer);
+                    await AlertsHistoryContent.RefreshAlertsAsync();
                     break;
             }
         }
@@ -375,6 +400,71 @@ public partial class MainWindow : Window
     }
 
     private void OnServerTabStatusChanged(string message) => StatusText.Text = message;
+
+    // ── Overview tab (all-servers server cards; refreshes on its own 30s timer) ──────
+
+    /// <summary>
+    /// Loads a summary card for every registered server (Lite's RefreshOverviewAsync), reading each
+    /// server's latest metrics concurrently over the pooled data source. Status is derived from
+    /// collection freshness — the viewer has no live ping — via <see cref="ServerSummaryItem.ApplyFreshness"/>.
+    /// This aggregate ignores the sidebar selection; it always shows all servers.
+    /// </summary>
+    private async Task LoadOverviewAsync()
+    {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        if (ServerList.ItemsSource is not IEnumerable<DarlingServer> servers)
+        {
+            OverviewItemsControl.ItemsSource = null;
+            return;
+        }
+
+        var list = servers.ToList();
+        if (list.Count == 0)
+        {
+            OverviewItemsControl.ItemsSource = null;
+            return;
+        }
+
+        var service = _dataService;
+        var nowUtc = DateTime.UtcNow;
+        var summaries = await Task.WhenAll(list.Select(async server =>
+        {
+            try
+            {
+                var summary = await service.GetServerSummaryAsync(server.ServerId, server.DisplayName);
+                summary.ServerName = server.ServerName;
+                summary.ApplyFreshness(nowUtc);
+                return summary;
+            }
+            catch
+            {
+                /* A per-server read failure shouldn't blank the whole grid (Lite logs + continues). */
+                return null;
+            }
+        }));
+
+        OverviewItemsControl.ItemsSource = summaries.OfType<ServerSummaryItem>().ToList();
+        StatusText.Text = $"overview — refreshed {DateTime.Now:HH:mm:ss}";
+    }
+
+    /// <summary>Double-clicking an Overview card opens (or focuses) that server's tab (Lite's rule).</summary>
+    private void OverviewCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2
+            && sender is FrameworkElement { DataContext: ServerSummaryItem summary }
+            && ServerList.ItemsSource is IEnumerable<DarlingServer> servers)
+        {
+            var server = servers.FirstOrDefault(s => s.ServerId == summary.ServerId);
+            if (server is not null)
+            {
+                OpenServerTab(server);
+            }
+        }
+    }
 
     // ── Recommendations tab (advise-only cards; own server selector, tab-activation refresh) ─────
 
@@ -491,157 +581,6 @@ public partial class MainWindow : Window
         RecommendationsStatusText.Text = "AI prompt copied to clipboard.";
     }
 
-    // ── Alerts tab (aggregate, server-scoped via the sidebar for now) ────────────────
-
-    private async Task LoadAlertsAsync(DarlingServer? server)
-    {
-        if (_dataService is null)
-        {
-            return;
-        }
-
-        if (server is null)
-        {
-            AlertsGrid.ItemsSource = null;
-            AlertsHintText.Visibility = Visibility.Collapsed;
-            AlertsCountText.Text = "";
-            AlertDetailText.Text = AlertDetailPlaceholder;
-            return;
-        }
-
-        /* Preserve the selected alert across the 60-second refresh so the detail pane doesn't jump. */
-        var selectedTime = (AlertsGrid.SelectedItem as ViewerAlertRow)?.AlertTime;
-
-        var sinceUtc = DateTime.UtcNow.AddHours(-GetSelectedAlertHours());
-        var rows = await _dataService.GetAlertHistoryAsync(server.ServerId, sinceUtc);
-
-        AlertsGrid.ItemsSource = rows;
-        AlertsHintText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        AlertsCountText.Text = rows.Count > 0 ? $"{rows.Count} alert(s)" : "";
-
-        var reselect = selectedTime is null
-            ? null
-            : rows.FirstOrDefault(r => r.AlertTime == selectedTime.Value);
-        if (reselect is not null)
-        {
-            AlertsGrid.SelectedItem = reselect;
-        }
-        else if (AlertsGrid.SelectedItem is null)
-        {
-            AlertDetailText.Text = AlertDetailPlaceholder;
-        }
-
-        StatusText.Text = $"{server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}";
-    }
-
-    /// <summary>The Alerts time-range combo's hours-back tag (defaults to 24).</summary>
-    private int GetSelectedAlertHours()
-        => AlertsTimeRangeCombo.SelectedItem is ComboBoxItem item
-            && item.Tag is string tag
-            && int.TryParse(tag, out var hours)
-            ? hours
-            : 24;
-
-    // ── Shared grid helper ──────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Selects the row under a right-click so the Alerts context menu acts on it. (The Recommendations
-    /// tab's finding-mute context menu was removed in W2b — mute lives on the Alert History surface —
-    /// so this now serves the Alerts grid only; the ViewerDataService mute read/write API is retained
-    /// for that surface.)
-    /// </summary>
-    private void Grid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        var source = e.OriginalSource as DependencyObject;
-        while (source is not null and not DataGridRow and not DataGridColumnHeader)
-        {
-            /* VisualTreeHelper.GetParent only walks Visuals; a ContentElement (e.g. an inline Run)
-               would throw. The grid hosts only TextBlocks today, but bail defensively. */
-            if (source is not Visual)
-            {
-                return;
-            }
-
-            source = VisualTreeHelper.GetParent(source);
-        }
-
-        if (source is DataGridRow row)
-        {
-            row.IsSelected = true;
-        }
-    }
-
-    // ── Alerts tab (wave-3 read surface + mute-rule launchers) ──────────────────────
-
-    private void AlertsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!ReferenceEquals(e.OriginalSource, AlertsGrid))
-        {
-            return;
-        }
-
-        AlertDetailText.Text = AlertsGrid.SelectedItem is ViewerAlertRow row
-            ? ViewerDataService.ComposeAlertDetailText(row)
-            : AlertDetailPlaceholder;
-    }
-
-    private async void AlertsTimeRange_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (IsLoaded)
-        {
-            await RefreshVisibleAsync();
-        }
-    }
-
-    private async void AlertsRefresh_Click(object sender, RoutedEventArgs e)
-        => await RefreshVisibleAsync();
-
-    private void ManageMuteRules_Click(object sender, RoutedEventArgs e)
-    {
-        if (_dataService is null)
-        {
-            return;
-        }
-
-        var window = new MuteRulesWindow(_dataService) { Owner = this };
-        window.ShowDialog();
-    }
-
-    private async void CreateMuteRuleFromAlert_Click(object sender, RoutedEventArgs e)
-    {
-        if (_dataService is null
-            || ServerList.SelectedItem is not DarlingServer server
-            || AlertsGrid.SelectedItem is not ViewerAlertRow alert)
-        {
-            return;
-        }
-
-        /* Same shape as Lite's AlertsHistoryTab "Mute This Alert": seed a mute rule from the alert's
-           server + metric + parsed detail-text context, let the user refine it, then persist. */
-        var context = new AlertMuteContext
-        {
-            ServerName = server.ServerName,
-            MetricName = alert.MetricName,
-        };
-        context.PopulateFromDetailText(alert.DetailText);
-
-        var dialog = new MuteRuleEditDialog(context) { Owner = this };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-
-        try
-        {
-            await _dataService.InsertMuteRuleAsync(dialog.Rule);
-            StatusText.Text = $"mute rule created — {DateTime.Now:HH:mm:ss}";
-        }
-        catch (Exception ex)
-        {
-            StatusText.Text = $"mute rule save failed: {ex.Message}";
-        }
-    }
-
     private void ShowMessage(string message)
     {
         MessageText.Text = message;
@@ -652,6 +591,7 @@ public partial class MainWindow : Window
     private async void OnClosed(object? sender, EventArgs e)
     {
         _refreshTimer?.Stop();
+        _overviewTimer?.Stop();
 
         if (_dataService is not null)
         {

@@ -16,14 +16,18 @@
         StaticResource styles + inline hex, so they render exactly as before.
 
         Navigation mirrors Lite's shape (headless-plan W0 IA inversion): a left sidebar server list,
-        and ONE top tab strip holding the fixed aggregate tabs (Recommendations, Alerts — server-scoped
-        via the sidebar selection) plus dynamically-added closable per-server tabs. Single-click a
-        server drives the aggregate tabs; double-click opens (or focuses) that server's ViewerServerTab.
-        The 60-second timer refreshes only the visible tab (an aggregate tab for the selected server,
-        or the visible server tab's active inner tab).
+        and ONE top tab strip holding the fixed aggregate tabs (Overview, Recommendations, Alerts) plus
+        dynamically-added closable per-server tabs. Overview and Alerts are top-level aggregates over
+        ALL servers (Overview is the server-cards grid; Alerts is the all-servers history, filterable by
+        server); Recommendations is server-scoped via the sidebar selection. Single-click a server drives
+        the server-scoped aggregate tabs; double-click a server row (or an Overview card) opens (or
+        focuses) that server's ViewerServerTab. The 60-second timer refreshes the visible tab (an
+        aggregate tab or the visible server tab's active inner tab); the Overview has its own faster
+        30-second timer (Lite's Overview cadence).
     -->
     <Window.Resources>
         <local:StatusToBrushConverter x:Key="StatusToBrush"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
 
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14"/>
@@ -122,28 +126,8 @@
             </Setter>
         </Style>
 
-        <!-- Alerts-tab row emphasis, mirroring Lite's AlertRowStyle: critical/warning/resolved
-             tints via the shared AlertMetricClassifier, muted rows dimmed + italic. -->
-        <Style x:Key="AlertRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding IsCritical}" Value="True">
-                    <Setter Property="Background" Value="#33DC2626"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding IsWarning}" Value="True">
-                    <Setter Property="Background" Value="#33D97706"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding IsResolved}" Value="True">
-                    <Setter Property="Background" Value="#3322C55E"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding Muted}" Value="True">
-                    <Setter Property="Opacity" Value="0.5"/>
-                    <Setter Property="FontStyle" Value="Italic"/>
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
-
-        <!-- Dark ComboBox for the Alerts time-range picker (the only combo in this window), so it
-             matches the hardcoded Dark palette instead of the default light WPF chrome. -->
+        <!-- Dark ComboBox / Button used by the Recommendations tab's own server selector + Refresh
+             button (they match the hardcoded Dark palette instead of the default light WPF chrome). -->
         <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
             <Setter Property="Foreground" Value="#E4E6EB"/>
             <Setter Property="Background" Value="Transparent"/>
@@ -167,7 +151,6 @@
             </Setter>
         </Style>
 
-        <!-- Dark button for the Alerts toolbar (Refresh / Manage Mute Rules). -->
         <Style x:Key="DarkButton" TargetType="Button">
             <Setter Property="Foreground" Value="#E4E6EB"/>
             <Setter Property="Background" Value="#2f3542"/>
@@ -318,9 +301,10 @@
                 </ListBox>
             </DockPanel>
 
-            <!-- Right: the top tab strip. Fixed aggregate tabs (Recommendations, Alerts) plus the
-                 dynamically-added closable per-server tabs (appended in code). Only the visible tab
-                 loads (Lite's visible-only rule); the 60-second timer re-reads it. -->
+            <!-- Right: the top tab strip. Fixed aggregate tabs (Overview, Recommendations, Alerts) plus
+                 the dynamically-added closable per-server tabs (appended in code). Only the visible tab
+                 loads (Lite's visible-only rule); the 60-second timer re-reads it (Overview on its own
+                 30-second timer). -->
             <TabControl x:Name="MainTabs"
                         Grid.Column="1"
                         Background="Transparent"
@@ -328,6 +312,79 @@
                         Padding="0"
                         ItemContainerStyle="{StaticResource DarkTabItem}"
                         SelectionChanged="MainTabs_SelectionChanged">
+
+                <!-- Overview: the all-servers server-cards grid (W2a), copied from Lite's Overview tab
+                     (Lite/MainWindow.xaml). One 260px card per server; double-click a card opens that
+                     server's tab. Status is derived from collection freshness (see ServerSummaryItem),
+                     not a live ping — the viewer has no live connection to the monitored servers. -->
+                <TabItem x:Name="OverviewTab" Header="Overview">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                        <ItemsControl x:Name="OverviewItemsControl">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{DynamicResource BackgroundLightBrush}"
+                                            BorderBrush="{Binding CardBorderBrush}"
+                                            BorderThickness="2" CornerRadius="6"
+                                            Margin="6"
+                                            Width="260" MinHeight="160"
+                                            Cursor="Hand"
+                                            MouseLeftButtonDown="OverviewCard_MouseLeftButtonDown">
+                                        <Grid>
+                                            <StackPanel Margin="16">
+                                                <DockPanel Margin="0,0,0,4">
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource ForegroundBrush}"/>
+                                                    <Ellipse Width="10" Height="10" Fill="{Binding StatusBrush}"
+                                                             HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                                </DockPanel>
+                                                <TextBlock Text="{Binding StatusDisplay}" Foreground="{Binding StatusBrush}"
+                                                           FontSize="11" Margin="0,0,0,10"/>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="CPU:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CpuDisplay}" Foreground="{Binding CpuBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Memory:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding MemoryDisplay}" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Blocking:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding BlockingDisplay}" Foreground="{Binding BlockingBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Deadlocks:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding DeadlockDisplay}" Foreground="{Binding DeadlockBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Last Collect:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding LastCollectionDisplay}" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+                                                </Grid>
+                                            </StackPanel>
+                                            <!-- Offline overlay -->
+                                            <Border Background="#80000000" CornerRadius="6"
+                                                    Visibility="{Binding IsOffline, Converter={StaticResource BoolToVisibility}}">
+                                                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                                                    <TextBlock Text="&#x2717;" FontSize="28" Foreground="#E57373"
+                                                               HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="Offline" FontSize="13" Foreground="#E57373"
+                                                               FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </TabItem>
 
                 <!-- Recommendations: re-skinned to Lite's advise-only card design (W2b). Its OWN server
                      selector (independent of the sidebar), a Refresh button, and a status line that
@@ -472,73 +529,13 @@
                     </Grid>
                 </TabItem>
 
+                <!-- Alerts: the full all-servers Alert History surface (W2a), a copy of Lite's
+                     AlertsHistoryTab hosted as a control. All-servers by default with a Server filter,
+                     Dismiss Selected / Dismiss All, column filters, copy/export, and Mute This / Mute
+                     Similar + Manage Mute Rules (mute lives here per Erik's faithful-copy decision). It
+                     owns its own load, so it isn't scoped by the sidebar selection. -->
                 <TabItem x:Name="AlertsTab" Header="Alerts">
-                    <Grid Margin="0,8,0,0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="3*"/>
-                            <RowDefinition Height="10"/>
-                            <RowDefinition Height="2*"/>
-                        </Grid.RowDefinitions>
-
-                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                            <TextBlock Text="Time Range:" VerticalAlignment="Center" Foreground="#8B93A1" Margin="0,0,6,0"/>
-                            <ComboBox x:Name="AlertsTimeRangeCombo" Width="130" VerticalAlignment="Center"
-                                      Style="{StaticResource DarkCombo}"
-                                      SelectionChanged="AlertsTimeRange_SelectionChanged">
-                                <ComboBoxItem Content="Last 1 Hour" Tag="1"/>
-                                <ComboBoxItem Content="Last 4 Hours" Tag="4"/>
-                                <ComboBoxItem Content="Last 24 Hours" Tag="24" IsSelected="True"/>
-                                <ComboBoxItem Content="Last 7 Days" Tag="168"/>
-                                <ComboBoxItem Content="All" Tag="8760"/>
-                            </ComboBox>
-                            <Button Content="Refresh" Margin="10,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}" Click="AlertsRefresh_Click"/>
-                            <Button Content="Manage Mute Rules…" Margin="8,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}" Click="ManageMuteRules_Click"/>
-                            <TextBlock x:Name="AlertsCountText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#8B93A1"/>
-                        </StackPanel>
-
-                        <Grid Grid.Row="1">
-                            <DataGrid x:Name="AlertsGrid"
-                                      Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource AlertRowStyle}"
-                                      SelectionChanged="AlertsGrid_SelectionChanged"
-                                      PreviewMouseRightButtonDown="Grid_PreviewMouseRightButtonDown">
-                                <DataGrid.ContextMenu>
-                                    <ContextMenu>
-                                        <MenuItem Header="Create mute rule from this alert…" Click="CreateMuteRuleFromAlert_Click"/>
-                                    </ContextMenu>
-                                </DataGrid.ContextMenu>
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Time (local)" Binding="{Binding TimeLocal}" Width="150" SortMemberPath="AlertTime" SortDirection="Descending"/>
-                                    <DataGridTextColumn Header="Alert Type" Binding="{Binding MetricName}" Width="1.6*"/>
-                                    <DataGridTextColumn Header="Value" Binding="{Binding CurrentValueDisplay}" Width="120"/>
-                                    <DataGridTextColumn Header="Threshold" Binding="{Binding ThresholdValueDisplay}" Width="110"/>
-                                    <DataGridTextColumn Header="Channel" Binding="{Binding NotificationType}" Width="95"/>
-                                    <DataGridTextColumn Header="Status" Binding="{Binding StatusDisplay}" Width="100"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                            <TextBlock x:Name="AlertsHintText"
-                                       Style="{StaticResource EmptyHint}"
-                                       Text="no alerts recorded in the selected time range"/>
-                        </Grid>
-
-                        <DockPanel Grid.Row="3">
-                            <TextBlock DockPanel.Dock="Top" Text="Alert Detail" Style="{StaticResource SectionHeader}"/>
-                            <Border Background="#111217" BorderBrush="#2a2d35" BorderThickness="1">
-                                <TextBox x:Name="AlertDetailText"
-                                         IsReadOnly="True"
-                                         Background="Transparent"
-                                         Foreground="#E4E6EB"
-                                         BorderThickness="0"
-                                         Padding="8"
-                                         FontFamily="Consolas"
-                                         FontSize="12"
-                                         TextWrapping="Wrap"
-                                         VerticalScrollBarVisibility="Auto"
-                                         Text="select an alert to see its detail and dedup fingerprint"/>
-                            </Border>
-                        </DockPanel>
-                    </Grid>
+                    <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
                 </TabItem>
             </TabControl>
 
