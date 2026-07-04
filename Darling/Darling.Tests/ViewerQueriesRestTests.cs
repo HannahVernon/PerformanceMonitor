@@ -1,0 +1,477 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Linq;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Darling.Storage;
+using PerformanceMonitor.Darling.Viewer;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins the W1f-2 Queries sub-tab SQL against the Darling store contract (no live Postgres): the four
+/// Performance-Trends reads, the Query-Heatmap DuckDB→PG rewrite, and the Active-Queries snapshot + latest
+/// batch + slicer reads. String pins guard the load-bearing clauses — the LAG per-interval rate, the
+/// base-table names, and (the wave's real work) the heatmap's <c>time_bucket → date_bin</c> and
+/// <c>ARG_MAX → ROW_NUMBER</c> rewrites. Ordinal correctness + PG execution are covered by the gated live
+/// round-trips below.
+/// </summary>
+public sealed class ViewerQueryTrendsSqlTests
+{
+    [Theory]
+    [InlineData(nameof(ViewerDataService.QueryDurationTrendSql), "query_stats")]
+    [InlineData(nameof(ViewerDataService.ProcedureDurationTrendSql), "procedure_stats")]
+    [InlineData(nameof(ViewerDataService.QueryStoreDurationTrendSql), "query_store_stats")]
+    [InlineData(nameof(ViewerDataService.ExecutionCountTrendSql), "query_stats")]
+    public void TrendSql_ComputesPerSecondRate_ViaLagInterval_BaseTable(string sqlName, string table)
+    {
+        var sql = SqlByName(sqlName);
+        Assert.Contains($"FROM {table}", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain($"v_{table}", sql, StringComparison.Ordinal); /* viewer reads base tables */
+        /* The seconds-since-previous-snapshot interval (per-second rate denominator). */
+        Assert.Contains("LAG(collection_time) OVER (ORDER BY collection_time)", sql, StringComparison.Ordinal);
+        Assert.Contains("extract(epoch FROM", sql, StringComparison.Ordinal);
+        Assert.Contains("date_trunc('second', collection_time)", sql, StringComparison.Ordinal);
+        /* interval_seconds > 0 guards the first row (LAG NULL -> rate 0). */
+        Assert.Contains("CASE WHEN interval_seconds > 0 THEN", sql, StringComparison.Ordinal);
+        Assert.Contains("GROUP BY collection_time", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY collection_time", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DurationTrendSql_SumsElapsedMs_ExecutionTrendSql_OnlyExecutions()
+    {
+        Assert.Contains("SUM(delta_elapsed_time) / 1000.0", ViewerDataService.QueryDurationTrendSql, StringComparison.Ordinal);
+        Assert.Contains("SUM(delta_elapsed_time) / 1000.0", ViewerDataService.ProcedureDurationTrendSql, StringComparison.Ordinal);
+        /* Query Store has no delta_elapsed_time: duration = execution_count * avg_duration_us. */
+        Assert.Contains("SUM(execution_count * avg_duration_us / 1000.0)", ViewerDataService.QueryStoreDurationTrendSql, StringComparison.Ordinal);
+        /* The execution-count trend projects only the executions/sec column (no elapsed). */
+        Assert.DoesNotContain("elapsed", ViewerDataService.ExecutionCountTrendSql, StringComparison.Ordinal);
+        Assert.Contains("SUM(delta_execution_count)", ViewerDataService.ExecutionCountTrendSql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(nameof(ViewerDataService.QueryDurationTrendSql))]
+    [InlineData(nameof(ViewerDataService.ProcedureDurationTrendSql))]
+    [InlineData(nameof(ViewerDataService.QueryStoreDurationTrendSql))]
+    [InlineData(nameof(ViewerDataService.ExecutionCountTrendSql))]
+    public void TrendSql_IsPostgresDialect_PositionalParams(string sqlName)
+    {
+        var sql = SqlByName(sqlName);
+        Assert.Contains("$1", sql, StringComparison.Ordinal);
+        Assert.Contains("$2", sql, StringComparison.Ordinal);
+        Assert.Contains("$3", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("getdate", sql.ToLowerInvariant());
+    }
+
+    private static string SqlByName(string name) => name switch
+    {
+        nameof(ViewerDataService.QueryDurationTrendSql) => ViewerDataService.QueryDurationTrendSql,
+        nameof(ViewerDataService.ProcedureDurationTrendSql) => ViewerDataService.ProcedureDurationTrendSql,
+        nameof(ViewerDataService.QueryStoreDurationTrendSql) => ViewerDataService.QueryStoreDurationTrendSql,
+        _ => ViewerDataService.ExecutionCountTrendSql,
+    };
+}
+
+/// <summary>
+/// Pins the Query-Heatmap DuckDB→PG rewrite — the wave's load-bearing SQL work. Guards that both
+/// dialect swaps landed for EVERY metric: <c>time_bucket</c> is gone (replaced by <c>date_bin</c> with an
+/// explicit epoch origin) and <c>ARG_MAX</c> is gone (replaced by a <c>ROW_NUMBER … rn = 1</c> top-1
+/// window plus <c>COUNT(*) OVER</c> for the per-cell count).
+/// </summary>
+public sealed class ViewerQueryHeatmapSqlTests
+{
+    private static readonly HeatmapMetric[] AllMetrics =
+    {
+        HeatmapMetric.Duration, HeatmapMetric.Cpu, HeatmapMetric.LogicalReads,
+        HeatmapMetric.LogicalWrites, HeatmapMetric.ExecutionCount,
+    };
+
+    [Fact]
+    public void HeatmapSql_RewritesTimeBucketToDateBin_WithEpochOrigin_ForEveryMetric()
+    {
+        foreach (var metric in AllMetrics)
+        {
+            var sql = ViewerDataService.BuildQueryHeatmapSql(metric);
+            Assert.DoesNotContain("time_bucket", sql, StringComparison.Ordinal); /* DuckDB-only */
+            Assert.Contains("date_bin(INTERVAL '5 minutes', collection_time, TIMESTAMP '1970-01-01 00:00:00')", sql, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void HeatmapSql_RewritesArgMaxToTop1Window_ForEveryMetric()
+    {
+        foreach (var metric in AllMetrics)
+        {
+            var sql = ViewerDataService.BuildQueryHeatmapSql(metric);
+            Assert.DoesNotContain("ARG_MAX", sql, StringComparison.Ordinal); /* DuckDB-only */
+            /* Hottest query per cell = the max-delta_execution_count row, taken by a top-1 window. */
+            Assert.Contains("ROW_NUMBER() OVER (PARTITION BY time_bin, bucket_index ORDER BY delta_execution_count DESC) AS rn", sql, StringComparison.Ordinal);
+            Assert.Contains("COUNT(*) OVER (PARTITION BY time_bin, bucket_index) AS query_count", sql, StringComparison.Ordinal);
+            Assert.Contains("WHERE rn = 1", sql, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void HeatmapSql_KeepsLitesMagnitudeBuckets_Filters_And_Preview()
+    {
+        var sql = ViewerDataService.BuildQueryHeatmapSql(HeatmapMetric.Duration);
+        Assert.Contains("FROM query_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("delta_execution_count > 0", sql, StringComparison.Ordinal);
+        Assert.Contains("LEFT(query_text, 120) AS query_preview", sql, StringComparison.Ordinal);
+        /* The 7-way log-magnitude CASE (only the boundaries are pinned). */
+        Assert.Contains("WHEN metric_value < 1 THEN 0", sql, StringComparison.Ordinal);
+        Assert.Contains("WHEN metric_value < 100000 THEN 5", sql, StringComparison.Ordinal);
+        Assert.Contains("ELSE 6", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY time_bin, bucket_index", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(HeatmapMetric.Duration, "(delta_elapsed_time / 1000.0) / NULLIF(delta_execution_count, 0)")]
+    [InlineData(HeatmapMetric.Cpu, "(delta_worker_time / 1000.0) / NULLIF(delta_execution_count, 0)")]
+    [InlineData(HeatmapMetric.LogicalReads, "CAST(delta_logical_reads AS DOUBLE PRECISION) / NULLIF(delta_execution_count, 0)")]
+    [InlineData(HeatmapMetric.LogicalWrites, "CAST(delta_logical_writes AS DOUBLE PRECISION) / NULLIF(delta_execution_count, 0)")]
+    [InlineData(HeatmapMetric.ExecutionCount, "CAST(delta_execution_count AS DOUBLE PRECISION)")]
+    public void HeatmapSql_UsesLitesPerMetricExpression(HeatmapMetric metric, string expr)
+    {
+        var sql = ViewerDataService.BuildQueryHeatmapSql(metric);
+        Assert.Contains(expr, sql, StringComparison.Ordinal);
+        /* $1/$2/$3 positional params, no T-SQL-isms. */
+        Assert.Contains("$1", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
+    }
+}
+
+/// <summary>Pins the Active-Queries reads (snapshot window, latest batch, slicer) against the store contract.</summary>
+public sealed class ViewerQuerySnapshotsSqlTests
+{
+    [Fact]
+    public void LatestQuerySnapshotsSql_SelectsTheWindow_TrimsWaitfor_OrdersNewestThenCpu_BaseTable()
+    {
+        var sql = ViewerDataService.LatestQuerySnapshotsSql;
+        Assert.Contains("FROM query_snapshots", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("v_query_snapshots", sql, StringComparison.Ordinal); /* viewer reads base tables */
+        Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time >= $2", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $3", sql, StringComparison.Ordinal);
+        Assert.Contains("query_text NOT LIKE 'WAITFOR%'", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY collection_time DESC, cpu_time_ms DESC", sql, StringComparison.Ordinal);
+        /* The plan columns the Estimated / Actual buttons bind are selected. */
+        Assert.Contains("query_plan", sql, StringComparison.Ordinal);
+        Assert.Contains("live_query_plan", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LatestQuerySnapshotBatchSql_TakesOnlyTheNewestCaptureForTheServer()
+    {
+        var sql = ViewerDataService.LatestQuerySnapshotBatchSql;
+        Assert.Contains("FROM query_snapshots", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time = (SELECT MAX(collection_time) FROM query_snapshots WHERE server_id = $1)", sql, StringComparison.Ordinal);
+        Assert.Contains("query_text NOT LIKE 'WAITFOR%'", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY cpu_time_ms DESC", sql, StringComparison.Ordinal);
+        /* Single param: the batch is server-scoped, not window-scoped. */
+        Assert.DoesNotContain("$2", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActiveQuerySlicerSql_BucketsByHour_SevenColumnShape()
+    {
+        var sql = ViewerDataService.ActiveQuerySlicerSql;
+        Assert.Contains("date_trunc('hour', collection_time)", sql, StringComparison.Ordinal);
+        Assert.Contains("FROM query_snapshots", sql, StringComparison.Ordinal);
+        Assert.Contains("COUNT(*) AS session_count", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(SUM(cpu_time_ms), 0)", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY bucket", sql, StringComparison.Ordinal);
+    }
+}
+
+/// <summary>The W1f-2 row models' pure helpers: snapshot plan gating + naive-UTC collection-time display.</summary>
+public sealed class ViewerActiveQueriesDisplayTests
+{
+    [Fact]
+    public void QuerySnapshotRow_HasPlanFlags_GateOnNonEmptyPlanXml()
+    {
+        Assert.False(new ViewerQuerySnapshotRow().HasQueryPlan);
+        Assert.False(new ViewerQuerySnapshotRow().HasLiveQueryPlan);
+        Assert.True(new ViewerQuerySnapshotRow { QueryPlan = "<ShowPlanXML/>" }.HasQueryPlan);
+        Assert.True(new ViewerQuerySnapshotRow { LiveQueryPlan = "<ShowPlanXML/>" }.HasLiveQueryPlan);
+    }
+
+    [Fact]
+    public void QuerySnapshotRow_CollectionTimeLocal_ConvertsNaiveUtc_EmptyForMinValue()
+    {
+        /* collection_time is naive UTC in the store; the display converts to local (unlike the raw
+           server-clock last_execution_time). MinValue (no row) renders empty. */
+        var row = new ViewerQuerySnapshotRow { CollectionTime = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Unspecified) };
+        var expected = ViewerDataService.ToLocalTime(row.CollectionTime).ToString("yyyy-MM-dd HH:mm:ss");
+        Assert.Equal(expected, row.CollectionTimeLocal);
+        Assert.Equal("", new ViewerQuerySnapshotRow().CollectionTimeLocal);
+    }
+
+    [Fact]
+    public void QueryTrendPoint_CarriesRateAndExecutionCount()
+    {
+        var p = new QueryTrendPoint { CollectionTime = new DateTime(2026, 7, 1, 9, 0, 0), Value = 2.5, ExecutionCount = 7 };
+        Assert.Equal(2.5, p.Value);
+        Assert.Equal(7, p.ExecutionCount);
+    }
+}
+
+/// <summary>
+/// Gated (DARLING_TEST_PG) live round-trips for the W1f-2 reads: a duration trend, the heatmap rewrite,
+/// the snapshot window + latest batch, and the slicer. Each plants rows for a negative sentinel server and
+/// asserts the read executes on real Postgres and returns the expected shape end-to-end (the string pins
+/// can't catch a date_bin / window-function dialect error or an ordinal slip). Serialized on the
+/// "live-postgres" collection; cleans up in finally.
+/// </summary>
+[Collection("live-postgres")]
+public sealed class ViewerQueriesRestLivePostgresTests
+{
+    private const int TrendServerId = -970811;
+    private const int HeatmapServerId = -970812;
+    private const int SnapshotServerId = -970813;
+    private const int SlicerServerId = -970814;
+
+    private static string? ConnectionString => Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+
+    [Fact]
+    public async Task QueryDurationTrend_ComputesPerSecondRate_AcrossTwoCollections_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live trend test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "query_stats", TrendServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var end = TruncateToSeconds(DateTime.UtcNow);
+        var start = end.AddHours(-24);
+        var t1 = start.AddHours(1);
+        var t2 = t1.AddSeconds(60); /* one 60-second interval later */
+
+        try
+        {
+            await InsertQueryStatsAsync(connection, TrendServerId, t1, "0xA", deltaExec: 10, deltaWorker: 30_000, deltaElapsed: 60_000, deltaReads: 100, deltaWrites: 0, queryText: "SELECT a");
+            await InsertQueryStatsAsync(connection, TrendServerId, t2, "0xA", deltaExec: 120, deltaWorker: 60_000, deltaElapsed: 120_000, deltaReads: 200, deltaWrites: 0, queryText: "SELECT a");
+
+            var points = await viewer.GetQueryDurationTrendAsync(TrendServerId, start, end);
+
+            Assert.Equal(2, points.Count);
+            Assert.Equal(t1, points[0].CollectionTime);
+            Assert.Equal(0.0, points[0].Value); /* first row: LAG NULL -> rate 0 */
+            Assert.Equal(t2, points[1].CollectionTime);
+            Assert.Equal(2.0, points[1].Value, 3);          /* 120_000 us = 120 ms over 60 s -> 2 ms/sec */
+            Assert.Equal(2, points[1].ExecutionCount);       /* 120 execs over 60 s -> 2/sec (truncated) */
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "query_stats", TrendServerId);
+        }
+    }
+
+    [Fact]
+    public async Task QueryHeatmap_BinsByTime_BucketsByMagnitude_TopQueryByExecutions_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live heatmap test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "query_stats", HeatmapServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var end = TruncateToSeconds(DateTime.UtcNow);
+        var start = end.AddHours(-24);
+        var t1 = start.AddHours(1); /* all rows share one collection_time -> one 5-min bin */
+
+        try
+        {
+            /* Duration metric = (delta_elapsed_time / 1000) / delta_exec (ms/exec).
+               Two rows at ~50ms -> bucket 2; the higher-exec one is the cell's top query. */
+            await InsertQueryStatsAsync(connection, HeatmapServerId, t1, "0xHOT", deltaExec: 5, deltaWorker: 0, deltaElapsed: 250_000, deltaReads: 0, deltaWrites: 0, queryText: "SELECT hot");
+            await InsertQueryStatsAsync(connection, HeatmapServerId, t1, "0xCOLD", deltaExec: 1, deltaWorker: 0, deltaElapsed: 50_000, deltaReads: 0, deltaWrites: 0, queryText: "SELECT cold");
+            /* 0.5ms -> bucket 0. */
+            await InsertQueryStatsAsync(connection, HeatmapServerId, t1, "0xLOW", deltaExec: 2, deltaWorker: 0, deltaElapsed: 1_000, deltaReads: 0, deltaWrites: 0, queryText: "SELECT low");
+            /* delta_exec = 0 -> excluded by the > 0 filter (must not inflate any cell). */
+            await InsertQueryStatsAsync(connection, HeatmapServerId, t1, "0xZERO", deltaExec: 0, deltaWorker: 0, deltaElapsed: 999_000, deltaReads: 0, deltaWrites: 0, queryText: "SELECT zero");
+
+            var result = await viewer.GetQueryHeatmapAsync(HeatmapServerId, HeatmapMetric.Duration, start, end);
+
+            Assert.Single(result.TimeBuckets);                        /* one 5-min bin */
+            Assert.Equal(7, result.Intensities.GetLength(0));         /* seven magnitude buckets */
+            Assert.Equal(2.0, result.Intensities[2, 0]);              /* bucket 2: 0xHOT + 0xCOLD */
+            Assert.Equal(1.0, result.Intensities[0, 0]);              /* bucket 0: 0xLOW */
+            Assert.Equal("0xHOT", result.CellDetails[2, 0].TopQueryHash); /* ARG_MAX replacement: higher delta_exec wins */
+            Assert.Equal("0xLOW", result.CellDetails[0, 0].TopQueryHash);
+            /* 0xZERO (delta_exec = 0) contributed to no cell. */
+            Assert.Equal(0.0, result.Intensities[6, 0]);
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "query_stats", HeatmapServerId);
+        }
+    }
+
+    [Fact]
+    public async Task QuerySnapshots_TrimsWaitfor_OrdersNewestThenCpu_AndLatestBatch_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live snapshots test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "query_snapshots", SnapshotServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var end = TruncateToSeconds(DateTime.UtcNow);
+        var start = end.AddHours(-24);
+        var older = start.AddHours(1);
+        var newer = start.AddHours(2);
+
+        try
+        {
+            await InsertQuerySnapshotAsync(connection, SnapshotServerId, older, spid: 51, cpu: 100, hash: "0xB1", queryText: "SELECT older");
+            await InsertQuerySnapshotAsync(connection, SnapshotServerId, older, spid: 99, cpu: 999, hash: "0xWAIT", queryText: "WAITFOR DELAY '00:00:05'");
+            await InsertQuerySnapshotAsync(connection, SnapshotServerId, newer, spid: 52, cpu: 500, hash: "0xB2", queryText: "SELECT mid");
+            await InsertQuerySnapshotAsync(connection, SnapshotServerId, newer, spid: 53, cpu: 900, hash: "0xB3", queryText: "SELECT hot");
+
+            var rows = await viewer.GetLatestQuerySnapshotsAsync(SnapshotServerId, start, end);
+
+            Assert.Equal(3, rows.Count);                       /* WAITFOR excluded */
+            Assert.DoesNotContain(rows, r => r.QueryHash == "0xWAIT");
+            Assert.Equal(53, rows[0].SessionId);               /* newest batch, highest cpu first */
+            Assert.Equal(52, rows[1].SessionId);
+            Assert.Equal(51, rows[2].SessionId);               /* older batch last */
+
+            var (batchTime, batch) = await viewer.GetLatestQuerySnapshotBatchAsync(SnapshotServerId);
+
+            Assert.Equal(newer, batchTime);                    /* only the newest capture */
+            Assert.Equal(2, batch.Count);
+            Assert.Equal(53, batch[0].SessionId);              /* cpu DESC within the batch */
+            Assert.Equal(52, batch[1].SessionId);
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "query_snapshots", SnapshotServerId);
+        }
+    }
+
+    [Fact]
+    public async Task ActiveQuerySlicer_BucketsByHour_CountsSessions_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live active-queries slicer test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "query_snapshots", SlicerServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var end = TruncateToSeconds(DateTime.UtcNow);
+        var start = end.AddHours(-24);
+        var hour1 = TruncateToHour(start.AddHours(3));
+        var hour2 = TruncateToHour(start.AddHours(5));
+
+        try
+        {
+            await InsertQuerySnapshotAsync(connection, SlicerServerId, hour1.AddMinutes(5), spid: 60, cpu: 100, hash: "0xA", queryText: "a");
+            await InsertQuerySnapshotAsync(connection, SlicerServerId, hour1.AddMinutes(35), spid: 61, cpu: 200, hash: "0xB", queryText: "b");
+            await InsertQuerySnapshotAsync(connection, SlicerServerId, hour2.AddMinutes(5), spid: 62, cpu: 300, hash: "0xC", queryText: "c");
+
+            var buckets = await viewer.GetActiveQuerySlicerDataAsync(SlicerServerId, start, end);
+
+            Assert.Equal(2, buckets.Count); /* two distinct hours */
+            Assert.Equal(hour1, buckets[0].BucketTime);
+            Assert.Equal(2, buckets[0].SessionCount);      /* two snapshots in hour1 */
+            Assert.Equal(300.0, buckets[0].TotalCpu, 3);   /* 100 + 200 */
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "query_snapshots", SlicerServerId);
+        }
+    }
+
+    // ── Insert helpers (only the columns each read touches; the rest default to NULL) ──
+
+    private static async Task InsertQueryStatsAsync(
+        NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc, string queryHash,
+        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, long deltaWrites, string queryText)
+    {
+        using var command = new NpgsqlCommand(@"
+INSERT INTO query_stats
+    (collection_id, collection_time, server_id, server_name,
+     database_name, query_hash, sample_interval_seconds,
+     delta_execution_count, delta_worker_time, delta_elapsed_time, delta_logical_reads, delta_logical_writes,
+     query_text)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)", connection);
+        command.Parameters.AddWithValue(1L);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue("viewer-queries-rest-e2e");
+        command.Parameters.AddWithValue("StackOverflow");
+        command.Parameters.AddWithValue(queryHash);
+        command.Parameters.AddWithValue(60);
+        command.Parameters.AddWithValue(deltaExec);
+        command.Parameters.AddWithValue(deltaWorker);
+        command.Parameters.AddWithValue(deltaElapsed);
+        command.Parameters.AddWithValue(deltaReads);
+        command.Parameters.AddWithValue(deltaWrites);
+        command.Parameters.AddWithValue(queryText);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static async Task InsertQuerySnapshotAsync(
+        NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc, int spid, long cpu, string hash, string queryText)
+    {
+        using var command = new NpgsqlCommand(@"
+INSERT INTO query_snapshots
+    (collection_id, collection_time, server_id, server_name,
+     session_id, database_name, query_text, status,
+     cpu_time_ms, total_elapsed_time_ms, reads, writes, logical_reads,
+     wait_type, query_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)", connection);
+        command.Parameters.AddWithValue(1L);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue("viewer-snapshots-e2e");
+        command.Parameters.AddWithValue(spid);
+        command.Parameters.AddWithValue("StackOverflow");
+        command.Parameters.AddWithValue(queryText);
+        command.Parameters.AddWithValue("running");
+        command.Parameters.AddWithValue(cpu);
+        command.Parameters.AddWithValue(cpu * 2);
+        command.Parameters.AddWithValue(10L);
+        command.Parameters.AddWithValue(0L);
+        command.Parameters.AddWithValue(20L);
+        command.Parameters.AddWithValue("CXPACKET");
+        command.Parameters.AddWithValue(hash);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static DateTime TruncateToSeconds(DateTime value) =>
+        DateTime.SpecifyKind(new DateTime(value.Ticks - (value.Ticks % TimeSpan.TicksPerSecond)), DateTimeKind.Unspecified);
+
+    private static DateTime TruncateToHour(DateTime value) =>
+        DateTime.SpecifyKind(new DateTime(value.Year, value.Month, value.Day, value.Hour, 0, 0), DateTimeKind.Unspecified);
+
+    private static async Task DeleteRowsAsync(NpgsqlConnection connection, string table, int serverId)
+    {
+        using var cleanup = new NpgsqlCommand($"DELETE FROM {table} WHERE server_id = {serverId};", connection);
+        await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+}

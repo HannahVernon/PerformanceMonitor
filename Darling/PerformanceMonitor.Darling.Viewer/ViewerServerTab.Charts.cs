@@ -77,6 +77,7 @@ public partial class ViewerServerTab : IDisposable
         DisposeBlockingHelpers();
         DisposePerfmonHelpers();
         DisposeCollectionHealthHelpers();
+        DisposeQueriesTabHelpers();
         DisposePlanHelpers();
     }
 
