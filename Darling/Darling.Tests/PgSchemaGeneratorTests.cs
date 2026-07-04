@@ -89,7 +89,8 @@ public sealed class PgSchemaGeneratorTests
             "    deadlock_time timestamp,\n" +
             "    victim_process_id text,\n" +
             "    victim_sql_text text,\n" +
-            "    deadlock_graph_xml text\n" +
+            "    deadlock_graph_xml text,\n" +
+            "    victim_query_plan_xml text\n" +
             ");",
             ddl);
     }

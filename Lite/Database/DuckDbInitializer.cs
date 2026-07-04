@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 34;
+    internal const int CurrentSchemaVersion = 35;
 
     private readonly string _archivePath;
 
@@ -865,6 +865,29 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v34 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 35)
+        {
+            /* v35: deferred execution-plan capture (#1262) — procedure_stats.query_plan_xml,
+               blocked_process_reports.blocked_query_plan_xml + blocking_query_plan_xml, and
+               deadlocks.victim_query_plan_xml. All appended at the end to keep the positional appenders
+               aligned; the v_ views (SELECT *) surface them and old parquet reads back NULL (union BY
+               NAME). The collectors now write these columns unconditionally — always NULL on Lite, which
+               never sets CapturePlanXml (Darling-only) — so an un-migrated DB would mis-align on the next
+               append; these ALTERs are required. */
+            _logger?.LogInformation("Running migration to v35: procedure/blocked-process/deadlock plan columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS query_plan_xml VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocked_query_plan_xml VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v35 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

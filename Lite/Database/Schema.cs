@@ -213,7 +213,8 @@ CREATE TABLE IF NOT EXISTS deadlocks (
     deadlock_time TIMESTAMP,
     victim_process_id VARCHAR,
     victim_sql_text VARCHAR,
-    deadlock_graph_xml VARCHAR
+    deadlock_graph_xml VARCHAR,
+    victim_query_plan_xml VARCHAR
 )";
 
     public const string CreateProcedureStatsTable = @"
@@ -255,7 +256,8 @@ CREATE TABLE IF NOT EXISTS procedure_stats (
     delta_logical_reads BIGINT,
     delta_logical_writes BIGINT,
     delta_physical_reads BIGINT,
-    delta_spills BIGINT
+    delta_spills BIGINT,
+    query_plan_xml VARCHAR
 )";
 
     public const string CreateQueryStoreStatsTable = @"
@@ -484,7 +486,9 @@ CREATE TABLE IF NOT EXISTS blocked_process_reports (
     object_id INTEGER,
     database_id INTEGER,
     contentious_object VARCHAR,
-    monitor_loop INTEGER
+    monitor_loop INTEGER,
+    blocked_query_plan_xml VARCHAR,
+    blocking_query_plan_xml VARCHAR
 )";
 
     /* Always-on DMV blocking snapshot (BPR-independent fallback). Rich blocker/blocked pair-row shape so

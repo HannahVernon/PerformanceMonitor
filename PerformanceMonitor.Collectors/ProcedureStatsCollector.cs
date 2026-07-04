@@ -58,7 +58,8 @@ public sealed class ProcedureStatsCollector : CollectorDefinitionBase<ProcedureS
         long MinSpills,
         long MaxSpills,
         string? SqlHandle,
-        string? PlanHandle);
+        string? PlanHandle,
+        string? QueryPlanXml);
 
     private const string StandardQueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -95,8 +96,8 @@ SELECT
     max_logical_writes = s.max_logical_writes,
     ' AS nvarchar(max)) + @spills_cols + N'
     sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
-FROM sys.dm_exec_procedure_stats AS s
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+FROM sys.dm_exec_procedure_stats AS s/*PLAN_APPLY*/
 CROSS APPLY
 (
     SELECT
@@ -150,8 +151,8 @@ SELECT
     max_logical_writes = s.max_logical_writes,
     ' + @spills_cols + CAST(N'
     sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
-FROM sys.dm_exec_trigger_stats AS s
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+FROM sys.dm_exec_trigger_stats AS s/*PLAN_APPLY*/
 CROSS APPLY sys.dm_exec_sql_text(s.sql_handle) AS st
 CROSS APPLY
 (
@@ -194,8 +195,8 @@ SELECT
     max_logical_writes = s.max_logical_writes,
     ' AS nvarchar(max)) + @fn_spills_cols + CAST(N'
     sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
-FROM sys.dm_exec_function_stats AS s
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+FROM sys.dm_exec_function_stats AS s/*PLAN_APPLY*/
 CROSS APPLY
 (
     SELECT
@@ -245,13 +246,29 @@ SELECT /* PerformanceMonitorLite */ TOP (150)
     min_spills = ISNULL(s.min_spills, 0),
     max_spills = ISNULL(s.max_spills, 0),
     sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)
-FROM sys.dm_exec_procedure_stats AS s
+    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+FROM sys.dm_exec_procedure_stats AS s/*PLAN_APPLY*/
 WHERE s.database_id = DB_ID()
 AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
 /*EXCLUSION_FILTER*/
 ORDER BY s.total_elapsed_time DESC
 OPTION(RECOMPILE);";
+
+    /* Execution-plan capture — spliced into every branch (procedure/trigger/function) and the Azure
+       variant only when the host sets CapturePlanXml (Darling); when off the placeholders erase to
+       nothing, so Lite's SQL is byte-identical to the no-plan form. Mirrors the full Dashboard's
+       @collect_plan path in install/10_collect_procedure_stats.sql. Unlike query_stats, the three
+       module-level DMVs (sys.dm_exec_procedure_stats / _trigger_stats / _function_stats) expose NO
+       statement_start_offset/statement_end_offset — they aggregate at the whole-object grain — so we
+       pass literal 0, -1 (documented "beginning-of-batch through end-of-batch") to get the entire
+       module's plan. Still the TEXT DMV (not sys.dm_exec_query_plan) so large/deep plans that overflow
+       the xml type still return. dm_exec_text_query_plan(plan_handle, 0, -1) returns a single row, so
+       the OUTER APPLY never multiplies rows and never drops one (NULL plan for an aged-out handle). */
+    private const string PlanSelectFragment = @",
+    query_plan_xml = tqp.query_plan";
+
+    private const string PlanApplyFragment = @"
+OUTER APPLY sys.dm_exec_text_query_plan(s.plan_handle, 0, -1) AS tqp";
 
     public override string Name => "procedure_stats";
 
@@ -259,20 +276,32 @@ OPTION(RECOMPILE);";
 
     public override CollectorQuery BuildQuery(CollectorContext context)
     {
+        var planSelect = context.CapturePlanXml ? PlanSelectFragment : "";
+        var planApply = context.CapturePlanXml ? PlanApplyFragment : "";
+
         if (context.Target.IsAzureSqlDb)
         {
             /* Azure: single-database scope; the exclusion token is left in place unreplaced in the
-               original (no clause is spliced on Azure) — reproduce exactly. */
-            return new CollectorQuery(AzureSqlDbQueryText);
+               original (no clause is spliced on Azure) — reproduce exactly. Plan placeholders still
+               erase (flag off) or splice (Darling) here just like the standard variant. */
+            return new CollectorQuery(
+                AzureSqlDbQueryText
+                    .Replace("/*PLAN_SELECT*/", planSelect, StringComparison.Ordinal)
+                    .Replace("/*PLAN_APPLY*/", planApply, StringComparison.Ordinal));
         }
 
         /* Standard query is dynamic SQL (built into @sql then passed to sp_executesql), so the
            exclusion filter is interpolated as literal N'...' values rather than parameter bindings —
-           doubled escaping because @sql is itself a single-quoted T-SQL string. */
+           doubled escaping because @sql is itself a single-quoted T-SQL string. The plan fragments
+           carry no single quotes, so they splice straight into the nested dynamic SQL body. */
         var exclusionClause = DatabaseExclusionFilter.BuildLiteralClause(
             context.ExcludedDatabases, "d.name", forNestedDynamicSql: true);
 
-        return new CollectorQuery(StandardQueryText.Replace("/*EXCLUSION_FILTER*/", exclusionClause, StringComparison.Ordinal));
+        return new CollectorQuery(
+            StandardQueryText
+                .Replace("/*EXCLUSION_FILTER*/", exclusionClause, StringComparison.Ordinal)
+                .Replace("/*PLAN_SELECT*/", planSelect, StringComparison.Ordinal)
+                .Replace("/*PLAN_APPLY*/", planApply, StringComparison.Ordinal));
     }
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
@@ -311,6 +340,10 @@ OPTION(RECOMPILE);";
         new CollectorColumn("delta_logical_writes", CollectorColumnType.BigInt),
         new CollectorColumn("delta_physical_reads", CollectorColumnType.BigInt),
         new CollectorColumn("delta_spills", CollectorColumnType.BigInt),
+        /* Trailing plan column (appended, not grouped with the raw handles) so a store already at the
+           pre-plan shape gets it via one ADD COLUMN — fresh (V1) and upgraded (V6) Darling stores keep
+           an identical physical order. NULL on Lite (flag off) and for any procedure whose plan aged out. */
+        new CollectorColumn("query_plan_xml", CollectorColumnType.Varchar),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
@@ -346,7 +379,10 @@ OPTION(RECOMPILE);";
                 reader.GetInt64(23),
                 reader.GetInt64(24),
                 reader.IsDBNull(25) ? null : reader.GetString(25),
-                reader.IsDBNull(26) ? null : reader.GetString(26)));
+                reader.IsDBNull(26) ? null : reader.GetString(26),
+                /* query_plan_xml is the trailing column present only when CapturePlanXml spliced it
+                   into every branch's SELECT (ordinal 27); the short-circuit skips it entirely when off. */
+                context.CapturePlanXml && !reader.IsDBNull(27) ? reader.GetString(27) : null));
         }
 
         return rows;
@@ -399,6 +435,7 @@ OPTION(RECOMPILE);";
             .Value(deltaReads)
             .Value(deltaWrites)
             .Value(deltaPhysReads)
-            .Value(deltaSpills);
+            .Value(deltaSpills)
+            .Value(row.QueryPlanXml);          /* null unless CapturePlanXml captured it (Darling) */
     }
 }

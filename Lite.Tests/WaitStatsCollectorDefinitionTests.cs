@@ -111,7 +111,8 @@ internal static class CollectorTestContext
         ICollectorDeltaCalculator deltas,
         IEnumerable<string>? ignored = null,
         bool isAzureSqlDb = false,
-        DateTime? watermark = null)
+        DateTime? watermark = null,
+        bool capturePlanXml = false)
         => new()
         {
             ServerId = 42,
@@ -121,5 +122,6 @@ internal static class CollectorTestContext
             Target = new CollectorTargetInfo { IsAzureSqlDb = isAzureSqlDb },
             Watermark = watermark,
             IgnoredWaitTypes = new HashSet<string>(ignored ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase),
+            CapturePlanXml = capturePlanXml,
         };
 }

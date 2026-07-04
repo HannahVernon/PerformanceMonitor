@@ -32,15 +32,16 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_FiveVersions_V2CreatesObservabilityTables()
+    public void MigrationScripts_SixVersions_V2CreatesObservabilityTables_V6AddsPlanColumns()
     {
-        Assert.Equal(5, PgMigrations.Scripts.Count);
+        Assert.Equal(6, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
         Assert.Equal(4, PgMigrations.Scripts[3].Version);
         Assert.Equal(5, PgMigrations.Scripts[4].Version);
-        Assert.Equal(5, StorageVersion.SchemaVersion);
+        Assert.Equal(6, PgMigrations.Scripts[5].Version);
+        Assert.Equal(6, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -51,6 +52,15 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE OR REPLACE VIEW v_database_scoped_config AS SELECT * FROM database_scoped_config;", v5, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_trace_flags AS SELECT * FROM trace_flags;", v5, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_collection_log AS SELECT * FROM collection_log;", v5, StringComparison.Ordinal);
+
+        /* V6 adds the deferred-plan-capture columns (#1262) additively — one ADD COLUMN IF NOT
+           EXISTS per column so a pre-plan store comes up to shape and a fresh V1 store no-ops. */
+        var v6 = PgMigrations.Scripts[5].Sql;
+        Assert.Equal("viewer-plan-capture-columns", PgMigrations.Scripts[5].Name);
+        Assert.Contains("ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS query_plan_xml text;", v6, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocked_query_plan_xml text;", v6, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml text;", v6, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml text;", v6, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
@@ -74,7 +84,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(5L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(6L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

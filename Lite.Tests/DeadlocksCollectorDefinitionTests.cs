@@ -8,6 +8,7 @@
 
 using System;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Lite.Tests.Helpers;
@@ -19,17 +20,22 @@ namespace Lite.Tests;
 /// <summary>
 /// Pins the parity contract of the extracted deadlocks definition: the server-scoped vs
 /// database-scoped ring-buffer reads (xml_deadlock_report vs database_xml_deadlock_report), the
-/// deadlock_time watermark with its 10-minute fallback, the 4-column payload, and the
-/// victim-inputbuf extraction (victim match, first-process fallback, null/garbage tolerance).
+/// deadlock_time watermark with its 10-minute fallback, the 5-column payload, the victim-inputbuf
+/// extraction (victim match, first-process fallback, null/garbage tolerance), and the #1262 gated
+/// best-effort victim plan resolution (off = byte-identical; on = the victim's frame →
+/// dm_exec_query_stats → dm_exec_text_query_plan).
 /// </summary>
 public sealed class DeadlocksCollectorDefinitionTests
 {
     private static readonly RecordingCollectorDeltaCalculator s_deltas = new();
 
+    private static string Collapse(string sql) => Regex.Replace(sql, @"\s+", "");
+
     private static CollectorContext MakeContext(
         bool isAzureSqlDb = false,
         DateTime? watermark = null,
-        DateTime? collectionTime = null)
+        DateTime? collectionTime = null,
+        bool capturePlanXml = false)
         => new()
         {
             ServerId = 42,
@@ -38,6 +44,7 @@ public sealed class DeadlocksCollectorDefinitionTests
             Deltas = s_deltas,
             Target = new CollectorTargetInfo { IsAzureSqlDb = isAzureSqlDb },
             Watermark = watermark,
+            CapturePlanXml = capturePlanXml,
         };
 
     [Fact]
@@ -90,11 +97,67 @@ public sealed class DeadlocksCollectorDefinitionTests
     }
 
     [Fact]
-    public void PayloadColumns_FourColumns_MatchSchemaOrder()
+    public void PayloadColumns_FiveColumns_MatchSchemaOrder()
     {
         var names = DeadlocksCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray();
 
-        Assert.Equal(new[] { "deadlock_time", "victim_process_id", "victim_sql_text", "deadlock_graph_xml" }, names);
+        Assert.Equal(
+            new[] { "deadlock_time", "victim_process_id", "victim_sql_text", "deadlock_graph_xml", "victim_query_plan_xml" },
+            names);
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOffByDefault_NoResolution_LiteParity()
+    {
+        /* Lite never sets CapturePlanXml: no plan column, no victim frame shred — byte-identical to
+           the no-plan form (server-scoped AND Azure). */
+        var serverScoped = DeadlocksCollector.Instance.BuildQuery(MakeContext());
+        var azure = DeadlocksCollector.Instance.BuildQuery(MakeContext(isAzureSqlDb: true));
+
+        foreach (var text in new[] { serverScoped.Text, azure.Text })
+        {
+            Assert.DoesNotContain("query_plan", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("dm_exec_text_query_plan", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("/*DL_PLAN_SELECT*/", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("/*DL_PLAN_APPLY*/", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void BuildQuery_PlanCaptureOn_ResolvesVictimFrameFromPlanCache()
+    {
+        /* Both variants share the fragment — the victim shred walks the identical
+           data[@name="xml_report"]/value/deadlock payload and matches the victim by id (forward
+           navigation only), then resolves via the proven #880 sql_handle + offsets → text-plan lookup. */
+        foreach (var context in new[] { MakeContext(capturePlanXml: true), MakeContext(isAzureSqlDb: true, capturePlanXml: true) })
+        {
+            var plan = DeadlocksCollector.Instance.BuildQuery(context);
+
+            Assert.Contains("victim_query_plan_xml = vqp.query_plan", plan.Text, StringComparison.Ordinal);
+            Assert.Contains("victim-list/victimProcess/@id", plan.Text, StringComparison.Ordinal);
+            Assert.Contains(
+                "JOIN sys.dm_exec_query_stats AS qs\n      ON  qs.sql_handle = frames.frame_handle",
+                plan.Text.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+            Assert.Contains("sys.dm_exec_text_query_plan", plan.Text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task ReadAsync_PlanCaptureOn_CapturesTrailingVictimPlanColumn()
+    {
+        var context = MakeContext(capturePlanXml: true);
+        var deadlockTime = new DateTime(2026, 7, 2, 11, 58, 0, DateTimeKind.Utc);
+
+        /* Flag on = the projection carries victim_query_plan_xml at ordinal 3. */
+        using var reader = new FakeCollectorDataReader(
+            new object[] { deadlockTime, "process123", SampleGraphXml, "<ShowPlanXML>victim</ShowPlanXML>" });
+        var rows = await DeadlocksCollector.Instance.ReadAsync(reader, context, CancellationToken.None);
+
+        var writer = new RecordingCollectorRowWriter();
+        DeadlocksCollector.Instance.WritePayload(Assert.Single(rows), writer, context);
+
+        Assert.Equal(5, writer.Values.Count);
+        Assert.Equal("<ShowPlanXML>victim</ShowPlanXML>", writer.Values[4]);
     }
 
     private const string SampleGraphXml = @"<deadlock>
@@ -118,7 +181,7 @@ public sealed class DeadlocksCollectorDefinitionTests
     }
 
     [Fact]
-    public async Task ReadAsync_WritePayload_PinsFourColumnOrder_AndVictimExtraction()
+    public async Task ReadAsync_WritePayload_PinsFiveColumnOrder_AndVictimExtraction()
     {
         var context = MakeContext();
         var deadlockTime = new DateTime(2026, 7, 2, 11, 58, 0, DateTimeKind.Utc);
@@ -133,16 +196,17 @@ public sealed class DeadlocksCollectorDefinitionTests
         var writer = new RecordingCollectorRowWriter();
         DeadlocksCollector.Instance.WritePayload(rows[0], writer, context);
 
-        Assert.Equal(4, writer.Values.Count);
+        Assert.Equal(5, writer.Values.Count);
         Assert.Equal(deadlockTime, writer.Values[0]);
         Assert.Equal("process123", writer.Values[1]);
         Assert.Equal("UPDATE t SET x = 1;", writer.Values[2]);   /* extracted in the read phase */
         Assert.Equal(SampleGraphXml, writer.Values[3]);
+        Assert.Null(writer.Values[4]);                           /* victim_query_plan_xml null when flag off */
 
         /* An all-NULL event row still writes (nothing filters it), exactly as the original. */
         var nullWriter = new RecordingCollectorRowWriter();
         DeadlocksCollector.Instance.WritePayload(rows[1], nullWriter, context);
-        Assert.Equal(4, nullWriter.Values.Count);
+        Assert.Equal(5, nullWriter.Values.Count);
         Assert.All(nullWriter.Values, Assert.Null);
         Assert.Empty(s_deltas.Calls);
     }
