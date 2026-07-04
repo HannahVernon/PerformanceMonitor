@@ -776,7 +776,10 @@ CREATE TABLE IF NOT EXISTS server_properties (
     vcore_count INTEGER,
     lock_pages_in_memory BOOLEAN,
     instant_file_initialization_enabled BOOLEAN,
-    memory_dump_count INTEGER
+    memory_dump_count INTEGER,
+    sqlserver_start_time TIMESTAMP,
+    host_os_version VARCHAR,
+    ag_replica_role VARCHAR
 )";
 
     public const string CreateServerPropertiesIndex = @"

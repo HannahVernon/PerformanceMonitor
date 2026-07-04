@@ -100,6 +100,10 @@ public sealed class UtilizationEfficiencyRow
     public int CpuCount { get; set; }
     public string ProvisioningStatus { get; set; } = "";
 
+    // FinOps cost — proportional to the server's monthly budget (0 = hidden)
+    public decimal MonthlyCost { get; set; }
+    public decimal AnnualCost => MonthlyCost * 12m;
+
     // Health score
     public decimal FreeSpacePct { get; set; }
     public int HealthScore { get; set; }
@@ -152,6 +156,9 @@ public sealed class DatabaseSizeRow
     public int? GrowthPct { get; set; }
     public int? VlfCount { get; set; }
 
+    /// <summary>FinOps cost — proportional share of the server monthly budget by size (set by the loader).</summary>
+    public decimal MonthlyCostShare { get; set; }
+
     public string GrowthDisplay => IsPercentGrowth switch
     {
         null  => "-",
@@ -185,22 +192,40 @@ public sealed class ServerPropertyRow
     public string ServerName { get; set; } = "";
     public string Edition { get; set; } = "";
     public string ProductVersion { get; set; } = "";
+    public string HostOsVersion { get; set; } = "";
     public int EngineEdition { get; set; }
     public int CpuCount { get; set; }
     public long PhysicalMemoryMb { get; set; }
     public int? SocketCount { get; set; }
     public int? CoresPerSocket { get; set; }
+    /// <summary>The server's LOCAL start clock (sys.dm_os_sys_info) — stored verbatim, shown as-is like Lite.</summary>
+    public DateTime? SqlServerStartTime { get; set; }
     public DateTime? LastUpdated { get; set; }
     public bool? IsHadrEnabled { get; set; }
     public bool? IsClustered { get; set; }
+    public string AgReplicaRole { get; set; } = "Standalone";
 
     public decimal? AvgCpuPct { get; set; }
     public decimal? StorageTotalGb { get; set; }
     public int? IdleDbCount { get; set; }
     public string? ProvisioningStatus { get; set; }
 
+    /// <summary>Per-server FinOps budget (servers.monthly_cost_usd from darling.json); 0 hides the cost columns.</summary>
+    public decimal MonthlyCost { get; set; }
+    public decimal AnnualCost => MonthlyCost * 12m;
+
+    public string UptimeDisplay
+    {
+        get
+        {
+            if (SqlServerStartTime == null) return "";
+            var uptime = DateTime.Now - SqlServerStartTime.Value;
+            return $"{(int)uptime.TotalDays}d {uptime.Hours}h";
+        }
+    }
     public string HadrDisplay => IsHadrEnabled.HasValue ? (IsHadrEnabled.Value ? "Yes" : "No") : "";
     public string ClusteredDisplay => IsClustered.HasValue ? (IsClustered.Value ? "Yes" : "No") : "";
+    public string AgReplicaRoleDisplay => string.Equals(AgReplicaRole, "Standalone", StringComparison.OrdinalIgnoreCase) ? "—" : AgReplicaRole;
     public string ProvisioningDisplay => ProvisioningStatus?.Replace("_", " ") ?? "";
 
     /// <summary>License-limit warning for Standard edition (CPU/RAM caps). Same math as Lite.</summary>
@@ -260,6 +285,9 @@ public sealed class WaitCategorySummaryRow
     public decimal PctOfTotal { get; set; }
     public string TopWaitType { get; set; } = "";
     public long TopWaitTimeMs { get; set; }
+
+    /// <summary>FinOps cost — proportional share of the window's budget by wait-time fraction (set by the loader).</summary>
+    public decimal MonthlyCostShare { get; set; }
 }
 
 /// <summary>Top-20 query by total CPU (Optimization sub-tab).</summary>
@@ -273,6 +301,13 @@ public sealed class ExpensiveQueryRow
     public long Executions { get; set; }
     public string QueryPreview { get; set; } = "";
     public string FullQueryText { get; set; } = "";
+
+    /// <summary>FinOps cost — proportional share of the window's budget by CPU fraction (set by the loader).</summary>
+    public decimal MonthlyCostShare { get; set; }
+
+    /// <summary>The stored statement-level plan (query_stats.query_plan_xml, captured by Darling); opens in the Plan Viewer.</summary>
+    public string? QueryPlanXml { get; set; }
+    public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlanXml);
 }
 
 /// <summary>Pure health-score math (Utilization + Server Inventory). Copied verbatim from Lite.</summary>
@@ -330,6 +365,10 @@ public sealed class HighImpactQueryRow
     public int ImpactScore { get; set; }
     public string SampleQueryText { get; set; } = "";
     public string FullQueryText { get; set; } = "";
+
+    /// <summary>The stored statement-level plan (query_stats.query_plan_xml, captured by Darling); opens in the Plan Viewer.</summary>
+    public string? QueryPlanXml { get; set; }
+    public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlanXml);
 
     public string ImpactScoreColor => ImpactScore switch
     {

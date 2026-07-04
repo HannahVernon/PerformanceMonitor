@@ -125,6 +125,9 @@ public sealed class ViewerFinOpsSqlTests
         Assert.Contains("GROUP BY", sql, StringComparison.Ordinal);
         Assert.Contains("sql_handle", sql, StringComparison.Ordinal);
         Assert.Contains("LIMIT $3", sql, StringComparison.Ordinal);
+        /* The stored statement-level plan is aggregated per group so "View Plan" opens it (Darling stores
+           plans) — restores the plan action the port had wrongly dropped as "no live SQL". */
+        Assert.Contains("MAX(query_plan_xml)", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -137,11 +140,13 @@ public sealed class ViewerFinOpsSqlTests
         Assert.Contains("FROM query_stats qs2", sql, StringComparison.Ordinal);
         Assert.Contains("GROUP BY query_hash", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY qs2.delta_execution_count DESC NULLS LAST", sql, StringComparison.Ordinal);
+        /* The stored statement-level plan is fetched by the correlated subquery so "View Plan" opens it. */
+        Assert.Contains("qs2.query_plan_xml", sql, StringComparison.Ordinal);
 
         var ddl = PgSchemaGenerator.CreateTable(QueryStatsCollector.Instance);
         foreach (var col in new[]
         {
-            "query_hash", "query_text", "sql_handle", "database_name", "max_grant_kb",
+            "query_hash", "query_text", "sql_handle", "database_name", "max_grant_kb", "query_plan_xml",
             "delta_execution_count", "delta_worker_time", "delta_elapsed_time",
             "delta_logical_reads", "delta_logical_writes", "delta_physical_reads",
         })
@@ -241,7 +246,7 @@ public sealed class ViewerFinOpsSqlTests
     // ── Server Inventory ──
 
     [Fact]
-    public void ServerInventorySql_JoinsLatestServerPropertiesToRegistry()
+    public void ServerInventorySql_JoinsLatestServerPropertiesToRegistry_WithInventoryFieldsAndCost()
     {
         var sql = ViewerDataService.ServerInventorySql;
         Assert.Contains("DISTINCT ON (server_id)", sql, StringComparison.Ordinal);
@@ -249,7 +254,15 @@ public sealed class ViewerFinOpsSqlTests
         Assert.Contains("JOIN servers s ON s.server_id = sp.server_id", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("v_server_properties", sql, StringComparison.Ordinal);
 
-        /* Every server_properties column the inventory read surfaces exists in the generated table. */
+        /* The restored inventory fields (start time / host OS / AG role) + the per-server budget from the
+           registry are all selected (fix for the earlier drop — they are collected now, not live-only). */
+        Assert.Contains("sqlserver_start_time", sql, StringComparison.Ordinal);
+        Assert.Contains("host_os_version", sql, StringComparison.Ordinal);
+        Assert.Contains("ag_replica_role", sql, StringComparison.Ordinal);
+        Assert.Contains("monthly_cost_usd", sql, StringComparison.Ordinal);
+
+        /* Every server_properties column the inventory read surfaces exists in the generated table — the
+           three restored ones included, so the shared collector + Darling schema actually carry them. */
         var ddl = PgSchemaGenerator.CreateTable(ServerPropertiesCollector.Instance);
         Assert.Equal("server_properties", ServerPropertiesCollector.Instance.TargetTable);
         foreach (var col in new[]
@@ -257,6 +270,7 @@ public sealed class ViewerFinOpsSqlTests
             "edition", "product_version", "product_level", "product_update_level", "engine_edition",
             "cpu_count", "vcore_count", "physical_memory_mb", "socket_count", "cores_per_socket",
             "is_hadr_enabled", "is_clustered",
+            "sqlserver_start_time", "host_os_version", "ag_replica_role",
         })
         {
             Assert.Contains(col, ddl, StringComparison.Ordinal);

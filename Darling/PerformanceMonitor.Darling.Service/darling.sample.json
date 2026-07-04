@@ -48,6 +48,10 @@
       "name": "SQL2022",
       "host": "SQL2022",
       "auth": "integrated",
+      // Optional per-server monthly cost/budget in USD for the Viewer's FinOps tab. Every FinOps cost
+      // figure is proportional math on this one number (a database's share = its size fraction x budget).
+      // Omit or 0 (the default) to hide all cost columns/cards, exactly like Performance Monitor Lite.
+      "monthlyCostUsd": 0,
       "excludedDatabases": []
     },
     {

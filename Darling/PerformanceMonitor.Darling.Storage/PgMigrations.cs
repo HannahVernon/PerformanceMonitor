@@ -52,6 +52,7 @@ public static class PgMigrations
         new Migration(6, "memory-tab-passthrough-views", V6Sql),
         new Migration(7, "viewer-plan-capture-columns", V7Sql),
         new Migration(8, "schema-split-collect-config", PgSchemaGenerator.GenerateV8Move()),
+        new Migration(9, "server-inventory-cost-fields", V9Sql),
     };
 
     /// <summary>
@@ -255,6 +256,26 @@ ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS query_plan_xml text;
 ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocked_query_plan_xml text;
 ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml text;
 ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml text;";
+
+    /// <summary>
+    /// V9 — the FinOps copy-parity fields that were user-input config or previously live-only:
+    /// <c>server_properties</c> gains the three inventory columns the shared ServerPropertiesCollector now
+    /// SELECTs (start time / host OS / AG replica role — Lite's FinOps Server Inventory previously read
+    /// them from a LIVE query the headless viewer can't run), and <c>servers</c> gains
+    /// <c>monthly_cost_usd</c> (the per-server FinOps budget — Lite's <c>ServerConnection.MonthlyCostUsd</c>,
+    /// user config, upserted from darling.json). All are nullable appended columns: a fresh store's V1
+    /// server_properties is generated from the current collector (which already includes the three), and
+    /// V2's servers table gets the cost column here — so <c>ADD COLUMN IF NOT EXISTS</c> is a harmless
+    /// no-op on the generated columns and the real add on an upgraded store. Appended (not inserted) so a
+    /// fresh V1 store and an upgraded store keep an identical physical column order for the binary COPY.
+    /// The bare names resolve through the migrate session's <c>search_path = collect, config, public</c>
+    /// (V8) to <c>collect.server_properties</c> / <c>collect.servers</c>.
+    /// </summary>
+    private const string V9Sql = @"
+ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS sqlserver_start_time timestamp;
+ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS host_os_version text;
+ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS ag_replica_role text;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS monthly_cost_usd numeric;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

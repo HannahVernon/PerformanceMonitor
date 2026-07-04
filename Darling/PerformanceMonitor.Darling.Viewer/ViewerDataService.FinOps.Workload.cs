@@ -397,7 +397,8 @@ SELECT
     CAST(SUM(delta_logical_reads) * 1.0 / NULLIF(SUM(delta_execution_count), 0) AS DECIMAL(19,0)) AS avg_reads,
     SUM(delta_execution_count) AS executions,
     LEFT(query_text, 200) AS query_preview,
-    query_text AS full_query_text
+    query_text AS full_query_text,
+    MAX(query_plan_xml) AS query_plan_xml
 FROM v_query_stats
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -432,7 +433,8 @@ LIMIT $3";
                 AvgReadsPerExec = reader.IsDBNull(4) ? 0m : Convert.ToDecimal(reader.GetValue(4)),
                 Executions = reader.IsDBNull(5) ? 0 : Convert.ToInt64(reader.GetValue(5)),
                 QueryPreview = reader.IsDBNull(6) ? "" : reader.GetString(6),
-                FullQueryText = reader.IsDBNull(7) ? "" : reader.GetString(7)
+                FullQueryText = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                QueryPlanXml = reader.IsDBNull(8) ? null : reader.GetString(8)
             });
         }
         return items;
@@ -466,7 +468,14 @@ SELECT
      AND qs2.collection_time >= $2
      AND qs2.query_text IS NOT NULL AND qs2.query_text != ''
      ORDER BY qs2.delta_execution_count DESC NULLS LAST
-     LIMIT 1) AS full_query_text
+     LIMIT 1) AS full_query_text,
+    (SELECT qs2.query_plan_xml FROM query_stats qs2
+     WHERE qs2.query_hash = qs.query_hash
+     AND qs2.server_id = $1
+     AND qs2.collection_time >= $2
+     AND qs2.query_plan_xml IS NOT NULL AND qs2.query_plan_xml != ''
+     ORDER BY qs2.delta_execution_count DESC NULLS LAST
+     LIMIT 1) AS query_plan_xml
 FROM query_stats AS qs
 WHERE server_id = $1
 AND   collection_time >= $2
@@ -499,7 +508,8 @@ ORDER BY SUM(delta_worker_time) DESC";
                 TotalWrites = reader.IsDBNull(6) ? 0 : Convert.ToInt64(reader.GetValue(6)),
                 TotalMemoryMb = reader.IsDBNull(7) ? 0m : Convert.ToDecimal(reader.GetValue(7)),
                 SampleQueryText = reader.IsDBNull(8) ? "" : reader.GetString(8),
-                FullQueryText = reader.IsDBNull(9) ? "" : reader.GetString(9)
+                FullQueryText = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                QueryPlanXml = reader.IsDBNull(10) ? null : reader.GetString(10)
             });
         }
 

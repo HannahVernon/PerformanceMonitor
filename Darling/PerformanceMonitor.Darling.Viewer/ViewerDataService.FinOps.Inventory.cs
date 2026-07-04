@@ -143,12 +143,17 @@ SELECT
     sp.cores_per_socket,
     sp.is_hadr_enabled,
     sp.is_clustered,
-    sp.collection_time
+    sp.collection_time,
+    sp.sqlserver_start_time,
+    sp.host_os_version,
+    sp.ag_replica_role,
+    COALESCE(s.monthly_cost_usd, 0) AS monthly_cost_usd
 FROM (
     SELECT DISTINCT ON (server_id)
         server_id, edition, product_version, product_level, product_update_level,
         engine_edition, cpu_count, physical_memory_mb, socket_count, cores_per_socket,
-        is_hadr_enabled, is_clustered, collection_time
+        is_hadr_enabled, is_clustered, collection_time,
+        sqlserver_start_time, host_os_version, ag_replica_role
     FROM server_properties
     ORDER BY server_id, collection_time DESC
 ) sp
@@ -183,7 +188,13 @@ ORDER BY server_name";
                 CoresPerSocket = reader.IsDBNull(10) ? null : Convert.ToInt32(reader.GetValue(10)),
                 IsHadrEnabled = reader.IsDBNull(11) ? null : reader.GetBoolean(11),
                 IsClustered = reader.IsDBNull(12) ? null : reader.GetBoolean(12),
-                LastUpdated = reader.IsDBNull(13) ? null : ToLocalTime(reader.GetDateTime(13))
+                LastUpdated = reader.IsDBNull(13) ? null : ToLocalTime(reader.GetDateTime(13)),
+                /* sqlserver_start_time is the server's LOCAL clock — read verbatim, shown as-is like Lite
+                   (UptimeDisplay = Now - start). host OS + AG role are the collected guarded values. */
+                SqlServerStartTime = reader.IsDBNull(14) ? null : reader.GetDateTime(14),
+                HostOsVersion = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                AgReplicaRole = reader.IsDBNull(16) ? "Standalone" : reader.GetString(16),
+                MonthlyCost = reader.IsDBNull(17) ? 0m : Convert.ToDecimal(reader.GetValue(17))
             });
         }
         return items;

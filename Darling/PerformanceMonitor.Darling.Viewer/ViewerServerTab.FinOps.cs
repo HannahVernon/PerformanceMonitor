@@ -153,6 +153,9 @@ public partial class ViewerServerTab
 
         if (data != null)
         {
+            /* Per-server FinOps budget (0 = hide the cost cards, like Lite). */
+            data.MonthlyCost = _server.MonthlyCostUsd;
+
             /* Free space % for the storage health score, from the latest database sizes. */
             var dbSizes = await _dataService.GetDatabaseSizeLatestAsync(_server.ServerId);
             var totalStorageMb = dbSizes.Sum(d => d.TotalSizeMb);
@@ -196,6 +199,8 @@ public partial class ViewerServerTab
             FinOpsClassificationExplanation.Text = "";
             FinOpsUtilizationContent.Visibility = Visibility.Collapsed;
             FinOpsHealthScoreBorder.Visibility = Visibility.Collapsed;
+            FinOpsComputeCostCard.Visibility = Visibility.Collapsed;
+            FinOpsTotalCostCard.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -263,6 +268,20 @@ public partial class ViewerServerTab
             _ => ""
         };
 
+        /* Cost summary cards — shown only when a monthly budget is configured (0 = hidden, like Lite). */
+        if (data.MonthlyCost > 0)
+        {
+            FinOpsAnnualComputeCostText.Text = $"${data.MonthlyCost:N0}/mo";
+            FinOpsAnnualTotalCostText.Text = $"${data.AnnualCost:N0}/yr";
+            FinOpsComputeCostCard.Visibility = Visibility.Visible;
+            FinOpsTotalCostCard.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            FinOpsComputeCostCard.Visibility = Visibility.Collapsed;
+            FinOpsTotalCostCard.Visibility = Visibility.Collapsed;
+        }
+
         /* Health score */
         var bpRatio = data.PhysicalMemoryMb > 0 ? (decimal)data.BufferPoolMb / data.PhysicalMemoryMb : 0m;
         var cpuScore = FinOpsHealthCalculator.CpuScore(data.P95CpuPct);
@@ -308,6 +327,18 @@ public partial class ViewerServerTab
     private async Task LoadFinOpsDatabaseSizesAsync()
     {
         var data = await _dataService.GetDatabaseSizeLatestAsync(_server.ServerId);
+
+        /* Proportional cost share by size (mirrors Lite's LoadDatabaseSizesAsync). */
+        if (_server.MonthlyCostUsd > 0 && data.Count > 0)
+        {
+            var totalMb = data.Sum(d => d.TotalSizeMb);
+            if (totalMb > 0)
+            {
+                foreach (var d in data)
+                    d.MonthlyCostShare = (d.TotalSizeMb / totalMb) * _server.MonthlyCostUsd;
+            }
+        }
+
         _finopsDbSizesFilterMgr!.UpdateData(data);
         FinOpsNoDbSizesMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         FinOpsDbSizeCountIndicator.Text = data.Count > 0 ? $"{data.Count} file(s)" : "";
@@ -365,6 +396,19 @@ public partial class ViewerServerTab
     {
         var hoursBack = HoursBackFromIndex(FinOpsWaitStatsTimeRangeCombo);
         var data = await _dataService.GetWaitCategorySummaryAsync(_server.ServerId, hoursBack);
+
+        /* Proportional cost share scaled to the window (mirrors Lite: budget * hoursBack/730). */
+        if (_server.MonthlyCostUsd > 0 && data.Count > 0)
+        {
+            var windowBudget = _server.MonthlyCostUsd * (hoursBack / 730.0m);
+            var totalWait = data.Sum(w => w.TotalWaitTimeMs);
+            if (totalWait > 0)
+            {
+                foreach (var w in data)
+                    w.MonthlyCostShare = (w.TotalWaitTimeMs / (decimal)totalWait) * windowBudget;
+            }
+        }
+
         _finopsWaitCategoryFilterMgr!.UpdateData(data);
         FinOpsWaitCategorySummaryNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -373,6 +417,19 @@ public partial class ViewerServerTab
     {
         var hoursBack = HoursBackFromIndex(FinOpsExpensiveQueriesTimeRangeCombo);
         var data = await _dataService.GetExpensiveQueriesAsync(_server.ServerId, hoursBack);
+
+        /* Proportional cost share scaled to the window (mirrors Lite: budget * hoursBack/730). */
+        if (_server.MonthlyCostUsd > 0 && data.Count > 0)
+        {
+            var windowBudget = _server.MonthlyCostUsd * (hoursBack / 730.0m);
+            var totalCpu = data.Sum(q => q.TotalCpuMs);
+            if (totalCpu > 0)
+            {
+                foreach (var q in data)
+                    q.MonthlyCostShare = (q.TotalCpuMs / (decimal)totalCpu) * windowBudget;
+            }
+        }
+
         _finopsExpensiveQueriesFilterMgr!.UpdateData(data);
         FinOpsExpensiveQueriesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         FinOpsExpensiveQueriesCountIndicator.Text = data.Count > 0 ? $"{data.Count} query(s)" : "";
@@ -446,6 +503,33 @@ public partial class ViewerServerTab
     {
         if (!IsLoaded) return;
         await RunFinOpsLoad(LoadFinOpsHighImpactAsync);
+    }
+
+    /// <summary>
+    /// "View Plan" for the FinOps High Impact + Expensive Queries grids: opens the stored
+    /// <c>query_stats.query_plan_xml</c> the row already carries (Darling captures statement-level plans —
+    /// CapturePlans defaults on) through the shared Plan Viewer host (<see cref="OpenPlanTab"/>) — the SAME
+    /// stored-plan surface the Top Queries grid uses, NO live SQL. Lite's "Get Actual Plan" (live execution)
+    /// has no viewer equivalent and stays omitted everywhere, consistent with every other viewer grid.
+    /// </summary>
+    private void FinOpsViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        switch (FinOpsRowFromMenu(sender))
+        {
+            case HighImpactQueryRow hi when hi.HasQueryPlan:
+                OpenPlanTab(hi.QueryPlanXml!, $"Plan - {hi.QueryHash}", hi.FullQueryText);
+                break;
+            case ExpensiveQueryRow ex when ex.HasQueryPlan:
+                OpenPlanTab(ex.QueryPlanXml!, "Plan - Expensive Query", ex.FullQueryText);
+                break;
+            case HighImpactQueryRow:
+            case ExpensiveQueryRow:
+                MessageBox.Show(
+                    "No execution plan was captured for this query. The plan may not have been collected yet, " +
+                    "or it aged out of the store's retention window.",
+                    "No Plan Available", MessageBoxButton.OK, MessageBoxImage.Information);
+                break;
+        }
     }
 
     /// <summary>Runs a FinOps loader with the same status-bar error surfacing the shell's <see cref="LoadInnerTabAsync"/> uses.</summary>
