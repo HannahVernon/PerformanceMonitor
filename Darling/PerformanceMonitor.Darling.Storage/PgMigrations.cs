@@ -48,6 +48,7 @@ public static class PgMigrations
         new Migration(3, "alerting-stores", V3Sql),
         new Migration(4, "analysis-tables", V4Sql),
         new Migration(5, "viewer-passthrough-views", V5Sql),
+        new Migration(6, "memory-tab-passthrough-views", V6Sql),
     };
 
     /// <summary>
@@ -229,6 +230,13 @@ CREATE OR REPLACE VIEW v_server_config AS SELECT * FROM server_config;
 CREATE OR REPLACE VIEW v_database_scoped_config AS SELECT * FROM database_scoped_config;
 CREATE OR REPLACE VIEW v_trace_flags AS SELECT * FROM trace_flags;
 CREATE OR REPLACE VIEW v_collection_log AS SELECT * FROM collection_log;";
+
+    /* V6 — the two memory passthrough views V4/V5 left out, needed by the Memory tab port (W1j): the
+       Memory Clerks + Memory Pressure Events sub-tabs read v_memory_clerks / v_memory_pressure_events,
+       mirroring Lite, so their ported SQL stays byte-identical. Tables exist since V1; views only. */
+    private const string V6Sql = @"
+CREATE OR REPLACE VIEW v_memory_clerks AS SELECT * FROM memory_clerks;
+CREATE OR REPLACE VIEW v_memory_pressure_events AS SELECT * FROM memory_pressure_events;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

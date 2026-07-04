@@ -33,25 +33,26 @@ public partial class ViewerServerTab : UserControl
     private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       Plan Viewer, CPU, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily
+       Plan Viewer, CPU, Memory, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily
        Summary, Collection Health) — ported tabs slot into Lite's positions as they arrive (Plan
-       Viewer sits BETWEEN Queries and CPU, File I/O sits BEFORE tempdb, Perfmon/Running Jobs sit
-       between Blocking and Configuration, and Daily Summary sits between Configuration and Collection
-       Health, matching Lite's own order), so the constants renumber when a wave lands between existing
-       tabs. */
+       Viewer sits BETWEEN Queries and CPU, Memory sits BETWEEN CPU and File I/O, File I/O sits BEFORE
+       tempdb, Perfmon/Running Jobs sit between Blocking and Configuration, and Daily Summary sits between
+       Configuration and Collection Health, matching Lite's own order), so the constants renumber when a
+       wave lands between existing tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
     private const int QueriesInnerTabIndex = 2;
     private const int PlanViewerInnerTabIndex = 3;
     private const int CpuInnerTabIndex = 4;
-    private const int FileIoInnerTabIndex = 5;
-    private const int TempDbInnerTabIndex = 6;
-    private const int BlockingInnerTabIndex = 7;
-    private const int PerfmonInnerTabIndex = 8;
-    private const int RunningJobsInnerTabIndex = 9;
-    private const int ConfigurationInnerTabIndex = 10;
-    private const int DailySummaryInnerTabIndex = 11;
-    private const int HealthInnerTabIndex = 12;
+    private const int MemoryInnerTabIndex = 5;
+    private const int FileIoInnerTabIndex = 6;
+    private const int TempDbInnerTabIndex = 7;
+    private const int BlockingInnerTabIndex = 8;
+    private const int PerfmonInnerTabIndex = 9;
+    private const int RunningJobsInnerTabIndex = 10;
+    private const int ConfigurationInnerTabIndex = 11;
+    private const int DailySummaryInnerTabIndex = 12;
+    private const int HealthInnerTabIndex = 13;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -81,6 +82,10 @@ public partial class ViewerServerTab : UserControl
 
         /* CPU + tempdb inner-tab charts (copied from Lite): theme up front + wire hover. */
         InitializeCpuTempDbCharts();
+
+        /* Memory inner-tab charts (copied from Lite): same up-front theme + hover for the five Memory
+           charts (Overview trend, Clerks, Grant sizing/activity, Pressure events). */
+        InitializeMemoryCharts();
 
         /* File I/O + Blocking-trend inner-tab charts (copied from Lite): same up-front theme + hover. */
         InitializeFileIoCharts();
@@ -193,6 +198,9 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case CpuInnerTabIndex:
                     await LoadCpuAsync();
+                    break;
+                case MemoryInnerTabIndex:
+                    await LoadMemoryAsync();
                     break;
                 case TempDbInnerTabIndex:
                     await LoadTempDbAsync();
