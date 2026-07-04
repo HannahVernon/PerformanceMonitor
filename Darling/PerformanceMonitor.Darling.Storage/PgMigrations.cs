@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace PerformanceMonitor.Darling.Storage;
@@ -50,6 +51,7 @@ public static class PgMigrations
         new Migration(5, "viewer-passthrough-views", V5Sql),
         new Migration(6, "memory-tab-passthrough-views", V6Sql),
         new Migration(7, "viewer-plan-capture-columns", V7Sql),
+        new Migration(8, "schema-split-collect-config", PgSchemaGenerator.GenerateV8Move()),
     };
 
     /// <summary>
@@ -275,7 +277,20 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
     /// store is a no-op — and safe under concurrent callers (advisory-locked). The connection
     /// must be open.
     /// </summary>
-    public static async Task<int> MigrateAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
+    public static Task<int> MigrateAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
+        => MigrateAsync(connection, logger: null, cancellationToken);
+
+    /// <summary>
+    /// The logger-aware overload: after applying migrations it best-effort sets the database-default
+    /// <c>search_path = collect, config, public</c> (V8 split) so EVERY future connection resolves the
+    /// bare table names without a per-connection setting — the store-establishing side of migration.
+    /// Best-effort because <c>ALTER DATABASE</c> needs the database-owner privilege a least-privilege
+    /// BYO login may lack; a failure is warned (via <paramref name="logger"/>) but never fails the
+    /// migration, since the moves already committed and the managed connection strings carry Search
+    /// Path anyway (see <see cref="TrySetDatabaseSearchPathAsync"/>).
+    /// </summary>
+    public static async Task<int> MigrateAsync(
+        NpgsqlConnection connection, ILogger? logger, CancellationToken cancellationToken = default)
     {
         if (connection is null)
         {
@@ -288,9 +303,10 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
             await acquireLock.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        int applied;
         try
         {
-            return await MigrateLockedAsync(connection, cancellationToken);
+            applied = await MigrateLockedAsync(connection, cancellationToken);
         }
         finally
         {
@@ -305,10 +321,27 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
                 /* Connection close releases session advisory locks anyway. */
             }
         }
+
+        /* Outside the advisory lock and the per-migration transactions: establish the durable
+           database-default search_path for all future connections. Idempotent, best-effort. */
+        await TrySetDatabaseSearchPathAsync(connection, logger, cancellationToken);
+        return applied;
     }
 
     private static async Task<int> MigrateLockedAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
     {
+        /* Resolve bare names through collect/config for this migrate session. Load-bearing from V8
+           on: V8 moves darling_schema_version into collect, and the version stamp below writes it by
+           its bare name — without this the post-move stamp would resolve against the default path
+           ("$user", public) and fail. Setting a path whose schemas don't exist yet is legal (pre-V8
+           they simply resolve to public, exactly as before), so this is safe on every store version
+           and independent of any connection-string Search Path. Session-scoped (outside the
+           per-migration transactions), so a migration rollback never unsets it. */
+        using (var setPath = new NpgsqlCommand("SET search_path = " + PgSchemaGenerator.SearchPath, connection))
+        {
+            await setPath.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         using (var createVersionTable = new NpgsqlCommand(VersionTableSql, connection))
         {
             await createVersionTable.ExecuteNonQueryAsync(cancellationToken);
@@ -350,5 +383,51 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
         }
 
         return applied;
+    }
+
+    /// <summary>
+    /// Best-effort: make <c>search_path = collect, config, public</c> the database default, so
+    /// EVERY future connection (the service pool's collector writes, the MCP host, the Viewer,
+    /// <c>psql</c>/<c>pg_dump</c>, BYO) resolves the bare table names to the V8 schemas without any
+    /// per-connection setting. Complements — does not replace — the session <c>SET</c> in
+    /// <see cref="MigrateAsync"/> (which covers the migrate connection itself) and the
+    /// <c>Search Path</c> keyword the managed connection strings carry.
+    ///
+    /// <para>Deliberately OUTSIDE the V8 transaction and swallowing failure: <c>ALTER DATABASE</c>
+    /// needs the database-owner privilege, which a least-privilege bring-your-own-Postgres login may
+    /// lack. A failure here must NOT fail the migration (the moves already committed) — it logs a
+    /// warning telling the operator to run the statement themselves as owner. Idempotent, so it
+    /// re-asserts harmlessly on every start. Targets the connection's live database name (managed =
+    /// <c>darling</c>; BYO = whatever the operator connected to), identifier-quoted.</para>
+    /// </summary>
+    public static async Task TrySetDatabaseSearchPathAsync(
+        NpgsqlConnection connection, ILogger? logger = null, CancellationToken cancellationToken = default)
+    {
+        if (connection is null)
+        {
+            throw new ArgumentNullException(nameof(connection));
+        }
+
+        var databaseName = connection.Database;
+        if (string.IsNullOrEmpty(databaseName))
+        {
+            return;
+        }
+
+        var quotedDatabase = "\"" + databaseName.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+        try
+        {
+            using var command = new NpgsqlCommand(
+                $"ALTER DATABASE {quotedDatabase} SET search_path = {PgSchemaGenerator.SearchPath}", connection);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(
+                "Could not set the database default search_path on {Database} ({Message}). The managed " +
+                "connection strings still carry Search Path, but if you point your own tools at this store, " +
+                "run this once as the database owner: ALTER DATABASE {Database} SET search_path = {SearchPath};",
+                databaseName, ex.Message, databaseName, PgSchemaGenerator.SearchPath);
+        }
     }
 }

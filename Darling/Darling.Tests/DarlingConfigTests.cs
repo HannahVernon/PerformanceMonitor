@@ -93,6 +93,20 @@ public sealed class DarlingConfigTests
     }
 
     [Fact]
+    public void ConnectAs_DefaultsToAdmin_AndParsesViewer()
+    {
+        /* V8 security split: the Viewer connects as the admin role by default (reads both schemas +
+           writes config); "viewer" points a locked-down deployment at the read-only role. */
+        Assert.Equal("admin", new PostgresConfig().ConnectAs);
+
+        var omitted = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ] }");
+        Assert.Equal("admin", omitted.Postgres.ConnectAs);
+
+        var readOnly = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true, ""connectAs"": ""viewer"" }, ""servers"": [ { ""host"": ""SQL2022"" } ] }");
+        Assert.Equal("viewer", readOnly.Postgres.ConnectAs);
+    }
+
+    [Fact]
     public void Validate_CatchesRealMisconfigurations()
     {
         Assert.Empty(ValidConfig().Validate());

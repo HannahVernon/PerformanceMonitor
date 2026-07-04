@@ -220,6 +220,18 @@ public sealed class PostgresConfig
     /// </summary>
     [JsonPropertyName("dataDirectory")]
     public string? DataDirectory { get; set; }
+
+    /// <summary>
+    /// Which least-privilege role the interactive Viewer connects as in managed mode (V8 security
+    /// hardening): <c>"admin"</c> (default — reads both schemas + writes the config tables the mute /
+    /// alert-dismiss / analysis-mute surfaces need) or <c>"viewer"</c> (read-only, for a locked-down
+    /// deployment where the Viewer's write actions degrade gracefully). Selects the role + credential
+    /// file the Viewer's managed derivation uses; ignored by the service (which always connects as the
+    /// owner) and in BYO mode (the operator's connectionString picks the role). Unknown values fall
+    /// back to <c>admin</c>.
+    /// </summary>
+    [JsonPropertyName("connectAs")]
+    public string ConnectAs { get; set; } = "admin";
 }
 
 /// <summary>

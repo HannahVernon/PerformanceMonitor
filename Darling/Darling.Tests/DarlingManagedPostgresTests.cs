@@ -43,6 +43,30 @@ public sealed class DarlingManagedPostgresTests
         Assert.Equal("darling", parsed.Username);
         Assert.Equal("pw123", parsed.Password);
         Assert.Equal("darling", parsed.Database);
+
+        /* V8 split: the owner connection string carries the collect/config search path so the
+           service's bare-name COPY writes and reads resolve to the new schemas on every pooled
+           connection, regardless of the database default. Same schemas, same order as the SQL-side
+           PgSchemaGenerator.SearchPath. */
+        Assert.Equal("collect,config,public", parsed.SearchPath);
+        Assert.Equal(
+            PerformanceMonitor.Darling.Storage.PgSchemaGenerator.SearchPath.Replace(" ", "", StringComparison.Ordinal),
+            parsed.SearchPath);
+    }
+
+    [Fact]
+    public void RoleCredentialPaths_BesideTheDataDirectory()
+    {
+        /* The admin/viewer role credentials live beside the data directory, same posture as the
+           owner's pg-credential.dpapi (trailing separator tolerated). */
+        Assert.Equal(@"D:\darling\pg-admin-credential.dpapi", DarlingManagedPostgres.AdminCredentialPathFor(@"D:\darling\pg"));
+        Assert.Equal(@"D:\darling\pg-admin-credential.dpapi", DarlingManagedPostgres.AdminCredentialPathFor(@"D:\darling\pg\"));
+        Assert.Equal(@"D:\darling\pg-viewer-credential.dpapi", DarlingManagedPostgres.ViewerCredentialPathFor(@"D:\darling\pg"));
+
+        /* Three distinct files: owner, admin, viewer. */
+        Assert.Equal("pg-credential.dpapi", DarlingManagedPostgres.CredentialFileName);
+        Assert.Equal("pg-admin-credential.dpapi", DarlingManagedPostgres.AdminCredentialFileName);
+        Assert.Equal("pg-viewer-credential.dpapi", DarlingManagedPostgres.ViewerCredentialFileName);
     }
 
     [Fact]

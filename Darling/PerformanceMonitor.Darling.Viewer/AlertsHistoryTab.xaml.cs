@@ -54,6 +54,19 @@ public partial class AlertsHistoryTab : UserControl
     {
         _dataService = dataService;
         _filterManager = new DataGridFilterManager<ViewerAlertRow>(AlertsDataGrid);
+
+        /* V8 security hardening: a read-only (viewer-role) connection can't dismiss alerts, so disable
+           the Dismiss buttons up front with an explaining tooltip (the Dismiss Selected button is also
+           selection-gated below). Mute-from-alert and context-menu Dismiss stay clickable but surface
+           the read-only message via StatusChanged if used — the reactive backstop. */
+        if (dataService.IsReadOnly)
+        {
+            const string readOnlyTip = "This viewer is connected read-only (postgres.connectAs = \"viewer\"); alert dismissal is disabled.";
+            DismissAllButton.IsEnabled = false;
+            DismissAllButton.ToolTip = readOnlyTip;
+            DismissSelectedButton.ToolTip = readOnlyTip;
+        }
+
         _staleDataTimer.Start();
     }
 
@@ -274,7 +287,9 @@ public partial class AlertsHistoryTab : UserControl
 
     private void AlertsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        DismissSelectedButton.IsEnabled = AlertsDataGrid.SelectedItems.OfType<ViewerAlertRow>().Any();
+        /* Read-only connections never enable Dismiss Selected, regardless of selection (V8 hardening). */
+        DismissSelectedButton.IsEnabled =
+            _dataService?.IsReadOnly != true && AlertsDataGrid.SelectedItems.OfType<ViewerAlertRow>().Any();
     }
 
     private async void DismissSelected_Click(object sender, RoutedEventArgs e)

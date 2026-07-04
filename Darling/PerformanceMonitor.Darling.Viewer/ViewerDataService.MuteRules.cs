@@ -121,7 +121,7 @@ WHERE id = $1";
         AddNullableText(command, rule.QueryTextPattern);
         AddNullableText(command, rule.WaitTypePattern);
         AddNullableText(command, rule.JobNamePattern);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await ExecuteWriteAsync(command, cancellationToken);
     }
 
     /// <summary>Updates an existing mute rule (the Edit dialog's Save).</summary>
@@ -143,7 +143,7 @@ WHERE id = $1";
         AddNullableText(command, rule.QueryTextPattern);
         AddNullableText(command, rule.WaitTypePattern);
         AddNullableText(command, rule.JobNamePattern);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await ExecuteWriteAsync(command, cancellationToken);
     }
 
     /// <summary>Toggles a rule's enabled flag without rewriting its other columns.</summary>
@@ -152,7 +152,7 @@ WHERE id = $1";
         await using var command = _dataSource.CreateCommand(MuteRuleSetEnabledSql);
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = ruleId });
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = enabled });
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await ExecuteWriteAsync(command, cancellationToken);
     }
 
     /// <summary>Deletes a mute rule by id (the Delete action).</summary>
@@ -160,7 +160,7 @@ WHERE id = $1";
     {
         await using var command = _dataSource.CreateCommand(MuteRuleDeleteSql);
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = ruleId });
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await ExecuteWriteAsync(command, cancellationToken);
     }
 
     /// <summary>

@@ -115,6 +115,129 @@ public static class PgSchemaGenerator
     }
 
     /// <summary>
+    /// The two schemas the V8 security split introduces. <c>collect</c> holds the collector
+    /// hypertables plus the service-written / user-read metadata (read-only to the admin/viewer
+    /// roles); <c>config</c> holds exactly the tables a human operator mutates through the
+    /// Viewer/MCP (the admin role's write surface). Table NAMES are unchanged — only the schema
+    /// moves; every SQL site keeps its bare table reference and resolves through
+    /// <c>search_path = collect, config, public</c>. See darling-security-hardening §3.1.
+    /// </summary>
+    public const string CollectSchema = "collect";
+    public const string ConfigSchema = "config";
+
+    /// <summary>The database-default search path V8 establishes (see <see cref="GenerateV8Move"/>).</summary>
+    public const string SearchPath = "collect, config, public";
+
+    /// <summary>
+    /// The service-written / user-read metadata tables that join the collector hypertables in
+    /// <c>collect</c> (they are NOT in <see cref="CollectorCatalog"/>). <c>analysis_findings</c> is
+    /// service-written and viewer-read-only (a keyless hypertable candidate), so it lives with the
+    /// other collected data rather than with the operator-writable mutes (design fork #1 → collect).
+    /// <c>darling_schema_version</c> is migration metadata (owner-only; no user grant needed).
+    /// </summary>
+    public static readonly IReadOnlyList<string> CollectMetadataTables = new[]
+    {
+        "servers",
+        "collection_log",
+        "analysis_findings",
+        "darling_schema_version",
+    };
+
+    /// <summary>
+    /// The operator-writable coordination + analysis-mute tables that move to <c>config</c> — the
+    /// admin role's precise write surface (mute rules, alert dismissals, analysis mutes; the
+    /// edge-trigger watermarks ride along with the alert-coordination family). See §3.1.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ConfigTables = new[]
+    {
+        "config_alert_log",
+        "config_edge_trigger_watermarks",
+        "config_mute_rules",
+        "analysis_muted",
+    };
+
+    /// <summary>
+    /// The 24 <c>v_*</c> passthrough views (V4 ×17, V5 ×5, V6 ×2) — all read-only, all moving to
+    /// <c>collect</c> with the tables they wrap. Listed explicitly because the view set is not
+    /// derivable from the collector catalog (e.g. <c>v_collection_log</c> wraps a registry table,
+    /// and several collector tables have no view). Pinned by test against the migration DDL.
+    /// </summary>
+    public static readonly IReadOnlyList<string> CollectViews = new[]
+    {
+        "v_wait_stats", "v_query_stats", "v_query_store_stats", "v_cpu_utilization_stats",
+        "v_memory_grant_stats", "v_memory_stats", "v_perfmon_stats", "v_session_stats",
+        "v_file_io_stats", "v_blocked_process_reports", "v_deadlocks", "v_dmv_blocking_snapshots",
+        "v_index_object_stats", "v_database_size_stats", "v_tempdb_stats", "v_query_snapshots",
+        "v_database_config", "v_running_jobs", "v_server_config", "v_database_scoped_config",
+        "v_trace_flags", "v_collection_log", "v_memory_clerks", "v_memory_pressure_events",
+    };
+
+    /// <summary>
+    /// The V8 schema-split migration body — creates <c>collect</c>/<c>config</c> and moves every
+    /// existing object out of <c>public</c> with <c>ALTER … SET SCHEMA</c>. Generated (not
+    /// hand-listed) so a collector added to <see cref="CollectorCatalog"/> is moved automatically;
+    /// the registry/config/view names that are not catalog-derived come from the explicit lists
+    /// above. Every move is <c>IF EXISTS</c> (a no-op when a fresh V1–V7 run has not created the
+    /// object, or a partial prior run already moved it — though the whole migration is
+    /// transactional, so partial runs roll back; the guard is defense in depth).
+    ///
+    /// <para>Runs identically on a FRESH store (V1–V7 just created plain tables in <c>public</c>,
+    /// which V8 moves before TimescaleDB converts the now-in-<c>collect</c> tables to hypertables)
+    /// AND on an EXISTING store (Erik's fixture, where the collector tables are already
+    /// hypertables — <c>ALTER TABLE &lt;hypertable&gt; SET SCHEMA</c> moves the hypertable and
+    /// propagates to its chunks; validated live on TimescaleDB 2.28.1). The
+    /// <c>ALTER DATABASE … SET search_path</c> is deliberately NOT here — it needs the live
+    /// database name and is a best-effort step outside this transaction
+    /// (<see cref="PgMigrations"/>), so a least-privilege BYO login that lacks it does not fail the
+    /// whole migration.</para>
+    /// </summary>
+    public static string GenerateV8Move()
+    {
+        var sb = new StringBuilder();
+        sb.Append("/* V8: split public into collect/config (Darling security hardening, #1262).\n");
+        sb.Append("   Table NAMES are unchanged; search_path = collect, config, public resolves the bare\n");
+        sb.Append("   references every SQL site already uses, so no query is re-qualified. */\n\n");
+
+        sb.Append("CREATE SCHEMA IF NOT EXISTS ").Append(CollectSchema).Append(" AUTHORIZATION ")
+            .Append(OwnerRole).Append(";\n");
+        sb.Append("CREATE SCHEMA IF NOT EXISTS ").Append(ConfigSchema).Append(" AUTHORIZATION ")
+            .Append(OwnerRole).Append(";\n\n");
+
+        sb.Append("/* collect: 26 collector tables (from the catalog) + registry/metadata + 24 views */\n");
+        foreach (var schema in CollectorCatalog.All)
+        {
+            AppendSetSchema(sb, "TABLE", schema.TargetTable, CollectSchema);
+        }
+
+        foreach (var table in CollectMetadataTables)
+        {
+            AppendSetSchema(sb, "TABLE", table, CollectSchema);
+        }
+
+        foreach (var view in CollectViews)
+        {
+            AppendSetSchema(sb, "VIEW", view, CollectSchema);
+        }
+
+        sb.Append("\n/* config: the operator-writable coordination + analysis-mute tables */\n");
+        foreach (var table in ConfigTables)
+        {
+            AppendSetSchema(sb, "TABLE", table, ConfigSchema);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>The owner role every managed object is authored by (the bootstrap superuser).</summary>
+    private const string OwnerRole = "darling";
+
+    private static void AppendSetSchema(StringBuilder sb, string objectKind, string objectName, string targetSchema)
+    {
+        sb.Append("ALTER ").Append(objectKind).Append(" IF EXISTS public.").Append(objectName)
+            .Append(" SET SCHEMA ").Append(targetSchema).Append(";\n");
+    }
+
+    /// <summary>
     /// The full collector-table schema script in catalog order — the body of Darling's first
     /// versioned migration. TimescaleDB hypertable conversion is deliberately NOT emitted here;
     /// it is runtime setup (<see cref="TimescaleSupport"/>), applied by the service only when

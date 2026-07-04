@@ -173,6 +173,7 @@ Two mutually exclusive modes — setting both `managed: true` and `connectionStr
 | `managed` | `false` | `true` runs the bundled PostgreSQL + TimescaleDB (Windows only; see [Managed Bundled PostgreSQL](#managed-bundled-postgresql)). The connection string is derived, never configured. |
 | `port` | `5641` | Managed mode only: the loopback port the bundled server listens on. Deliberately uncommon so it coexists with any PostgreSQL (5432) already on the machine. |
 | `dataDirectory` | *(null)* | Managed mode only: the cluster's data directory. `null` means `%ProgramData%\PerformanceMonitorDarling\pg`. |
+| `connectAs` | `"admin"` | Managed mode only: which least-privilege role the Viewer connects as — `"admin"` (reads everything + manages mute rules and dismisses alerts) or `"viewer"` (read-only; those write actions are hidden/disabled). See [Security & Least-Privilege Roles](#security--least-privilege-roles). Ignored in bring-your-own mode (the connection string picks the role). |
 | `connectionString` | *(required unless managed)* | Npgsql connection string for a store you provision yourself, e.g. `Host=localhost;Port=5432;Username=darling;Password=...;Database=darling` |
 
 ### servers (array, at least one entry)
@@ -436,3 +437,34 @@ With `postgres.managed = true` (the sample's default), the service runs its own 
 **The runtime zip.** `pg-runtime.zip` ships beside the service binary in packaged releases. Building from source, produce it once with `Darling\tools\fetch-pg-runtime.ps1` — it downloads the pinned EDB PostgreSQL 17 binaries and TimescaleDB, verifies their SHA256, prunes what the service doesn't need, and writes the zip to `Darling\artifacts\`; copy it next to the built service exe.
 
 **Server log.** The bundled server's own log is `pg.log` beside the data directory — that's where PostgreSQL explains a refused start; bootstrap errors in the service log quote its tail.
+
+## Security & Least-Privilege Roles
+
+The store is split into two schemas so that no consumer connects with more privilege than it needs:
+
+- **`collect`** — the 26 collector hypertables plus the service-written, user-read metadata (`servers`, `collection_log`, `analysis_findings`, the `v_*` views). Read-only to everyone but the service.
+- **`config`** — exactly the tables a human operator changes through the Viewer or MCP: `config_mute_rules`, `config_alert_log` (alert dismissals), `config_edge_trigger_watermarks`, and `analysis_muted`.
+
+Table names are unchanged — only their schema moved — and the shared SQL keeps using the bare, unqualified names, resolved through `search_path = collect, config, public` (set as the database default and carried on the managed connection strings). This is deliberate: Darling's SQL is byte-identical to Lite's DuckDB SQL, and re-qualifying it would fork that twin.
+
+**Three roles.** The service still owns the store as the `darling` superuser (it does the DDL — migrations, hypertable conversion, retention). On top of that it provisions two least-privilege **login** roles the Viewer connects as instead:
+
+| Role | Privileges | Used by |
+|---|---|---|
+| `darling` | superuser / owner | the service (collection, migration, provisioning) |
+| `admin` | SELECT on both schemas + INSERT/UPDATE/DELETE on `config` only | the Viewer, by default (`connectAs: "admin"`) |
+| `viewer` | SELECT on both schemas, no writes | a locked-down Viewer (`connectAs: "viewer"`) |
+
+`admin` cannot `DROP`, alter schema, touch `collect` data, or create objects — it can only do what the Viewer's mute-rule / alert-dismiss surfaces need. `ALTER DEFAULT PRIVILEGES` means new collector tables auto-inherit SELECT, so the model never drifts as collectors are added.
+
+**Managed mode** provisions all of this automatically on every start (idempotent and self-healing), generating a per-role DPAPI-LocalMachine credential — `pg-admin-credential.dpapi` and `pg-viewer-credential.dpapi` beside the data directory, same posture as the owner's `pg-credential.dpapi`. Nothing to configure beyond `connectAs`.
+
+**A read-only (`viewer`) Viewer degrades gracefully.** It probes its own privileges on connect (`has_table_privilege`), so the mute-rule Add/Edit/Toggle/Delete/Purge buttons and the alert Dismiss / Dismiss All buttons are hidden or disabled, and any write that still slips through returns a clear "read-only connection" message instead of an error.
+
+**Bring-your-own PostgreSQL.** The schema split runs everywhere (it's a migration — the service applies it on startup and best-effort sets the database `search_path`; if your collection login can't `ALTER DATABASE`, run that one statement yourself as the owner). Role provisioning is managed-only, so for BYO you create the two roles yourself, once, with the shipped script:
+
+```
+psql -h <host> -U <owner> -d darling -f Darling/tools/provision-roles.sql
+```
+
+Edit the two password placeholders (and the database/owner names if yours differ) first. Then point a read-only Viewer's `connectionString` at the `viewer` role.

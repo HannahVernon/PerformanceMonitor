@@ -29,10 +29,28 @@ public partial class MuteRulesWindow : Window
     private readonly ViewerDataService _dataService;
     private readonly ObservableCollection<MuteRule> _rules = new();
 
+    /// <summary>
+    /// False when the viewer is connected with the read-only <c>viewer</c> role — bound by the
+    /// Enabled-column checkbox's <c>IsEnabled</c> so a read-only user can't toggle a rule. Set once at
+    /// construction (the connection's role does not change while the window is open).
+    /// </summary>
+    public bool RulesAreEditable { get; }
+
     public MuteRulesWindow(ViewerDataService dataService)
     {
         InitializeComponent();
         _dataService = dataService ?? throw new ArgumentNullException(nameof(dataService));
+        RulesAreEditable = !dataService.IsReadOnly;
+
+        /* V8 security hardening: a read-only connection views rules but can't Add/Edit/Toggle/Delete/
+           Purge them — replace the action buttons with an explaining banner. The reactive 42501 catch
+           in the write paths is the backstop if grants change under the open window. */
+        if (dataService.IsReadOnly)
+        {
+            ActionButtonsPanel.Visibility = Visibility.Collapsed;
+            ReadOnlyBanner.Visibility = Visibility.Visible;
+        }
+
         RulesGrid.ItemsSource = _rules;
         Loaded += async (_, _) => await LoadRulesAsync();
     }

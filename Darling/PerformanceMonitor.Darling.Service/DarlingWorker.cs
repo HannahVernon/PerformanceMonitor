@@ -198,7 +198,11 @@ public sealed class DarlingWorker : BackgroundService
         try
         {
             await using var migrateConnection = await postgres.OpenConnectionAsync(stoppingToken);
-            var applied = await PgMigrations.MigrateAsync(migrateConnection, stoppingToken);
+            /* MigrateAsync (logger overload) also best-effort sets the database-default search_path to
+               collect/config for every future connection (V8 security split); a least-privilege BYO
+               login that cannot ALTER DATABASE is warned, not failed — the managed connection strings
+               carry Search Path regardless. */
+            var applied = await PgMigrations.MigrateAsync(migrateConnection, _logger, stoppingToken);
             _logger.LogInformation("Postgres store ready (schema v{Version}, {Applied} migration(s) applied)",
                 StorageVersion.SchemaVersion, applied);
         }
@@ -206,6 +210,27 @@ public sealed class DarlingWorker : BackgroundService
         {
             _logger.LogCritical("Cannot reach or migrate the Postgres store: {Message}", ex.Message);
             return;
+        }
+
+        /* Least-privilege role provisioning (V8 security hardening), managed mode only: create /
+           refresh the admin + viewer login roles and their per-role DPAPI credentials, and grant the
+           collect/config privileges — idempotent and self-healing, the conf-append discipline applied
+           to roles. Windows-only (DPAPI credential files); a failure degrades (the Viewer cannot
+           connect as admin/viewer until a later start succeeds) but never kills collection, which
+           connects as the owner. BYO stores provision roles out-of-band via tools/provision-roles.sql. */
+        if (config.Postgres.Managed && OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var dataDirectory = DarlingManagedPostgres.ResolveDataDirectory(config.Postgres);
+                await DarlingManagedRoles.EnsureProvisionedAsync(postgres, dataDirectory, _logger, stoppingToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(
+                    "Least-privilege role provisioning failed — the Viewer's admin/viewer roles may be stale " +
+                    "until the next successful start: {Message}", ex.Message);
+            }
         }
 
         /* Optional TimescaleDB adoption — runtime setup, deliberately NOT a versioned migration

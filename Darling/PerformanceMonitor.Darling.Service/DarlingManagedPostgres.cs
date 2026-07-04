@@ -64,6 +64,30 @@ public sealed class DarlingManagedPostgres
     /// <summary>DPAPI-LocalMachine blob holding the generated password, beside (not inside) the data directory.</summary>
     public const string CredentialFileName = "pg-credential.dpapi";
 
+    /// <summary>
+    /// DPAPI-LocalMachine blobs holding the generated passwords for the least-privilege login roles
+    /// the V8 security hardening provisions (<see cref="DarlingManagedRoles"/>): <c>admin</c> reads
+    /// both schemas + writes <c>config</c> (the Viewer's default identity), <c>viewer</c> reads only.
+    /// Same location/posture as <see cref="CredentialFileName"/> — beside the data directory, machine
+    /// bound. Generated idempotently and self-healing (a deleted file regenerates and the superuser
+    /// re-asserts the role's password, unlike the owner's unrecoverable password).
+    /// </summary>
+    public const string AdminCredentialFileName = "pg-admin-credential.dpapi";
+    public const string ViewerCredentialFileName = "pg-viewer-credential.dpapi";
+
+    /// <summary>The least-privilege login role names provisioned into the managed cluster (V8 hardening).</summary>
+    public const string AdminRoleName = "admin";
+    public const string ViewerRoleName = "viewer";
+
+    /// <summary>
+    /// The search path (schemas in resolution order) the managed connection strings carry, so pooled
+    /// connections resolve the bare table names to collect/config even if the database default was
+    /// not (or could not be) set. Same schemas, same order as the SQL-side
+    /// <c>PgSchemaGenerator.SearchPath</c> the V8 split writes as the database default — the
+    /// connection-string form omits spaces; a test pins the order against the SQL form.
+    /// </summary>
+    public const string SearchPath = "collect,config,public";
+
     /// <summary>The server log pg_ctl appends to, beside (not inside) the data directory.</summary>
     public const string ServerLogFileName = "pg.log";
 
@@ -132,6 +156,14 @@ public sealed class DarlingManagedPostgres
     public static string CredentialPathFor(string dataDirectory)
         => Path.Combine(ParentOf(dataDirectory), CredentialFileName);
 
+    /// <summary>Path to the <c>admin</c> role's DPAPI credential, beside the data directory.</summary>
+    public static string AdminCredentialPathFor(string dataDirectory)
+        => Path.Combine(ParentOf(dataDirectory), AdminCredentialFileName);
+
+    /// <summary>Path to the <c>viewer</c> role's DPAPI credential, beside the data directory.</summary>
+    public static string ViewerCredentialPathFor(string dataDirectory)
+        => Path.Combine(ParentOf(dataDirectory), ViewerCredentialFileName);
+
     /// <summary>
     /// 32 characters from [A-Za-z0-9] via the crypto RNG (~190 bits) — deliberately alphanumeric
     /// only, so the password survives initdb's --pwfile line, the connection string, and any
@@ -181,7 +213,11 @@ public sealed class DarlingManagedPostgres
         return builder.ToString();
     }
 
-    /// <summary>The derived managed-mode connection string: localhost + port + darling/darling + the generated password.</summary>
+    /// <summary>
+    /// The derived managed-mode connection string: localhost + port + darling/darling + the generated
+    /// password, carrying the collect/config <see cref="SearchPath"/> so every pooled connection
+    /// resolves the bare table names to the V8 schemas regardless of the database default.
+    /// </summary>
     public static string BuildConnectionString(int port, string password)
     {
         var builder = new NpgsqlConnectionStringBuilder
@@ -191,6 +227,7 @@ public sealed class DarlingManagedPostgres
             Username = UserName,
             Password = password,
             Database = DatabaseName,
+            SearchPath = SearchPath,
         };
         return builder.ConnectionString;
     }

@@ -248,7 +248,7 @@ AND    dismissed = FALSE";
         command.Parameters.Add(new NpgsqlParameter { Value = ids });
         command.Parameters.Add(new NpgsqlParameter { Value = metrics });
 
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        return await ExecuteWriteAsync(command, cancellationToken);
     }
 
     /// <summary>
@@ -270,6 +270,6 @@ AND    dismissed = FALSE";
             command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId.Value });
         }
 
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        return await ExecuteWriteAsync(command, cancellationToken);
     }
 }

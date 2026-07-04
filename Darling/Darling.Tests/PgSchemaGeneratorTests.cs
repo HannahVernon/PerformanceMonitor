@@ -162,4 +162,58 @@ public sealed class PgSchemaGeneratorTests
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void GenerateV8Move_CreatesSchemas_AndMovesEveryCatalogTableToCollect()
+    {
+        var v8 = PgSchemaGenerator.GenerateV8Move();
+
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS collect AUTHORIZATION darling;", v8, StringComparison.Ordinal);
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS config AUTHORIZATION darling;", v8, StringComparison.Ordinal);
+
+        /* Every collector table moves to collect — catalog-driven, so a new collector moves for free. */
+        foreach (var schema in CollectorCatalog.All)
+        {
+            Assert.Contains($"ALTER TABLE IF EXISTS public.{schema.TargetTable} SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void GenerateV8Move_MovesMetadataAndViewsToCollect_AndConfigTablesToConfig()
+    {
+        var v8 = PgSchemaGenerator.GenerateV8Move();
+
+        foreach (var table in PgSchemaGenerator.CollectMetadataTables)
+        {
+            Assert.Contains($"ALTER TABLE IF EXISTS public.{table} SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(24, PgSchemaGenerator.CollectViews.Count);
+        foreach (var view in PgSchemaGenerator.CollectViews)
+        {
+            Assert.Contains($"ALTER VIEW IF EXISTS public.{view} SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        }
+
+        /* Exactly the operator-writable coordination tables go to config — the admin write surface. */
+        Assert.Equal(
+            new[] { "config_alert_log", "config_edge_trigger_watermarks", "config_mute_rules", "analysis_muted" },
+            PgSchemaGenerator.ConfigTables);
+        foreach (var table in PgSchemaGenerator.ConfigTables)
+        {
+            Assert.Contains($"ALTER TABLE IF EXISTS public.{table} SET SCHEMA config;", v8, StringComparison.Ordinal);
+        }
+
+        /* analysis_findings is service-written / viewer-read-only -> collect, not config (fork #1). */
+        Assert.Contains("ALTER TABLE IF EXISTS public.analysis_findings SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.DoesNotContain("public.analysis_findings SET SCHEMA config;", v8, StringComparison.Ordinal);
+
+        /* The ALTER DATABASE search_path default is NOT baked into V8 — it is best-effort in MigrateAsync. */
+        Assert.DoesNotContain("ALTER DATABASE", v8, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SearchPath_ListsCollectConfigPublicInOrder()
+    {
+        Assert.Equal("collect, config, public", PgSchemaGenerator.SearchPath);
+    }
 }

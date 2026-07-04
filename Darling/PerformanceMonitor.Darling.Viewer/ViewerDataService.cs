@@ -46,11 +46,52 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     public const string ServersSql =
         "SELECT server_id, server_name, display_name, is_enabled, sql_major_version FROM servers ORDER BY display_name";
 
+    /// <summary>
+    /// The authoritative read-only probe (V8 security hardening): does the connected role hold INSERT
+    /// on a <c>config</c> table? True → the admin role (or an owner) — the mute / alert-dismiss /
+    /// analysis-mute writes are available. False → the read-only viewer role — those surfaces degrade.
+    /// This is the source of truth over <c>connectAs</c> (which only picks a credential and doesn't
+    /// apply in BYO mode), because it reflects the connection's ACTUAL privileges. The bare table name
+    /// resolves through search_path to <c>config.config_mute_rules</c>.
+    /// </summary>
+    public const string ReadOnlyProbeSql = "SELECT has_table_privilege('config_mute_rules', 'INSERT')";
+
     private readonly NpgsqlDataSource _dataSource;
 
     public ViewerDataService(string connectionString)
     {
         _dataSource = NpgsqlDataSource.Create(connectionString);
+    }
+
+    /// <summary>
+    /// True when the connected role cannot write the operator-config tables (the read-only
+    /// <c>viewer</c> role, or any connection lacking config INSERT). Set by
+    /// <see cref="DetectReadOnlyAsync"/>; the write surfaces gate on it. Defaults false (writable) until
+    /// probed, then fails safe to true if the probe cannot run.
+    /// </summary>
+    public bool IsReadOnly { get; private set; }
+
+    /// <summary>
+    /// Runs the <see cref="ReadOnlyProbeSql"/> capability probe and records <see cref="IsReadOnly"/>.
+    /// Called once after the service connects, before the write affordances are shown. A probe that
+    /// throws (table missing on a mis-provisioned store, permission quirk, transient error) fails safe
+    /// to read-only, so the UI hides writes rather than dead-clicking into a permission error; the
+    /// reactive 42501 catch in the write paths is the backstop if the probe and reality ever disagree.
+    /// </summary>
+    public async Task<bool> DetectReadOnlyAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var command = _dataSource.CreateCommand(ReadOnlyProbeSql);
+            var canInsert = await command.ExecuteScalarAsync(cancellationToken);
+            IsReadOnly = canInsert is not true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            IsReadOnly = true;
+        }
+
+        return IsReadOnly;
     }
 
     /// <summary>All registered servers, ordered as the server list displays them.</summary>
@@ -95,5 +136,46 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     public static DateTime ToLocalTime(DateTime naiveUtc)
         => DateTime.SpecifyKind(naiveUtc, DateTimeKind.Utc).ToLocalTime();
 
+    /// <summary>Postgres SQLSTATE 42501 (insufficient_privilege) — a write refused on a read-only connection.</summary>
+    internal const string InsufficientPrivilegeSqlState = "42501";
+
+    /// <summary>
+    /// Executes a write command, translating a permission-denied failure — a write attempted on the
+    /// read-only viewer role, or after grants changed under a running app — into a
+    /// <see cref="ViewerReadOnlyException"/> the UI shows as a clear "read-only connection" message
+    /// instead of a raw Postgres error. The reactive backstop to the proactive hide/disable; any other
+    /// failure propagates unchanged.
+    /// </summary>
+    internal async Task<int> ExecuteWriteAsync(NpgsqlCommand command, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (PostgresException ex) when (ex.SqlState == InsufficientPrivilegeSqlState)
+        {
+            throw new ViewerReadOnlyException(ex);
+        }
+    }
+
     public ValueTask DisposeAsync() => _dataSource.DisposeAsync();
+}
+
+/// <summary>
+/// A write was attempted on a read-only Darling connection (the least-privilege <c>viewer</c> role,
+/// or any connection lacking <c>config</c> INSERT). Thrown by the write paths when Postgres returns
+/// 42501 so the UI shows a clear, actionable message rather than a raw permission error. The proactive
+/// <see cref="ViewerDataService.IsReadOnly"/> gating normally hides the affordances first; this covers
+/// the race where the probe and the live grants disagree.
+/// </summary>
+public sealed class ViewerReadOnlyException : Exception
+{
+    public ViewerReadOnlyException(Exception innerException)
+        : base(
+            "This viewer is connected with a read-only role, so it can't change mute rules, dismiss alerts, " +
+            "or mute findings. Set postgres.connectAs to \"admin\" in darling.json and restart the viewer to " +
+            "enable these actions.",
+            innerException)
+    {
+    }
 }
