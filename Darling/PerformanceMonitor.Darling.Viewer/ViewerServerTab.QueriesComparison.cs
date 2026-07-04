@@ -40,6 +40,32 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
+    /// Comparison overlays only the three grid sub-tabs (Top Queries / Top Procedures / Query Store); the
+    /// Performance Trends / Active Queries / Query Heatmap sub-tabs (W1f-2) have no baseline overlay, so the
+    /// Compare combo is reset to None and disabled there (Lite's <c>UpdateCompareDropdownState</c>, Queries
+    /// slice). Called on every sub-tab change and once at init for the default (Performance Trends) state.
+    /// </summary>
+    private void UpdateCompareDropdownState()
+    {
+        var supported = QueriesSubTabControl.SelectedIndex
+            is TopQueriesSubTabIndex or TopProceduresSubTabIndex or QueryStoreSubTabIndex;
+
+        if (supported)
+        {
+            CompareToCombo.IsEnabled = true;
+            CompareToCombo.Opacity = 1.0;
+            CompareToCombo.ToolTip = "Compare the current 24-hour window against a baseline period";
+        }
+        else
+        {
+            CompareToCombo.SelectedIndex = 0; /* None — no comparison on the non-grid sub-tabs */
+            CompareToCombo.IsEnabled = false;
+            CompareToCombo.Opacity = 0.5;
+            CompareToCombo.ToolTip = "Comparison is not available for this sub-tab";
+        }
+    }
+
+    /// <summary>
     /// The baseline window for the current Compare selection — a straight shift of the current window
     /// (Yesterday = -1 day, Last week / Same day last week = -7 days). Null when Compare is "None".
     /// </summary>

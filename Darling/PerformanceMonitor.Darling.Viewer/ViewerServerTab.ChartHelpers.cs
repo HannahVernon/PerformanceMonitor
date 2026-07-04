@@ -7,6 +7,7 @@
  */
 
 using System.Collections.Generic;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
@@ -49,6 +50,41 @@ public partial class ViewerServerTab
     {
         _legendPanels[chart] = chart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
         chart.Plot.Legend.FontSize = 13;
+    }
+
+    /// <summary>
+    /// Sets up an empty chart with dark theme, Y-axis label, legend, and "No Data" annotation — copied
+    /// verbatim from Lite's <c>ServerTab.Charts.cs</c> RefreshEmptyChart. Used by the Performance Trends
+    /// + Query Heatmap ports (W1f-2), the first viewer charts that adopt Lite's empty-state idiom.
+    /// </summary>
+    private void RefreshEmptyChart(ScottPlot.WPF.WpfPlot chart, string legendText, string yAxisLabel)
+    {
+        ReapplyAxisColors(chart);
+
+        /* Add invisible scatter to create legend entry (matches data chart layout) */
+        var placeholder = chart.Plot.Add.Scatter(new double[] { 0 }, new double[] { 0 });
+        placeholder.LegendText = legendText;
+        placeholder.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
+        placeholder.MarkerSize = 0;
+        placeholder.LineWidth = 0;
+
+        /* Add centered "No Data" text */
+        var text = chart.Plot.Add.Text($"{legendText}\nNo Data", 0, 0);
+        text.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
+        text.LabelFontSize = 14;
+        text.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
+
+        /* Configure axes */
+        chart.Plot.HideGrid();
+        chart.Plot.Axes.SetLimitsX(-1, 1);
+        chart.Plot.Axes.SetLimitsY(-1, 1);
+        chart.Plot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.EmptyTickGenerator();
+        chart.Plot.Axes.Left.TickGenerator = new ScottPlot.TickGenerators.EmptyTickGenerator();
+        chart.Plot.YLabel(yAxisLabel);
+
+        /* Show legend to match data chart layout */
+        ShowChartLegend(chart);
+        chart.Refresh();
     }
 
     /// <summary>

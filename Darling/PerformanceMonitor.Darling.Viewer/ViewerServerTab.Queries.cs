@@ -16,24 +16,31 @@ using PerformanceMonitor.Common;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The Queries inner tab (W1f-1) — the nested Top Queries / Top Procedures / Query Store sub-tab group,
-/// copied from Lite's <c>ServerTab</c> (Refresh / Slicers / Grids partials) with reads rewired to the
-/// <see cref="ViewerDataService"/> Postgres reads. A Queries sub-tab switch reloads through the shell's
+/// The Queries inner tab's sub-tab dispatch — the six-sub-tab group matching Lite's
+/// <c>QueriesSubTabControl</c> exactly: Performance Trends and Active Queries (W1f-2), the Top Queries /
+/// Top Procedures / Query Store grids (W1f-1), then Query Heatmap last (W1f-2). Copied from Lite's
+/// <c>ServerTab</c> (Refresh / Slicers / Grids partials) with reads rewired to the
+/// <see cref="ViewerDataService"/> Postgres reads. A sub-tab switch reloads through the shell's
 /// overlap-guarded <see cref="RefreshActiveInnerTabAsync"/> (the Queries tab is the active inner tab
 /// whenever its sub-tabs are visible), and <see cref="LoadQueriesAsync"/> loads only the newly-visible
-/// sub-tab's grid + slicer + (when Compare is active) its comparison grid over the fixed 24-hour window.
-/// Each grid carries a UTC time-range slicer whose drag re-reads the grid over the selection; sorting a
-/// grid re-labels the slicer's aggregate curve (Lite's *Grid_Sorting). Deferred (no plan host / no live
+/// sub-tab (Lite's subTabOnly gating) over the fixed 24-hour window. The three grids each carry a UTC
+/// time-range slicer whose drag re-reads over the selection; sorting a grid re-labels the slicer's
+/// aggregate curve (Lite's *Grid_Sorting). The Performance Trends charts / Active Queries grid+slicer /
+/// Query Heatmap live in their own partials (<c>ViewerServerTab.QueryTrends.cs</c> /
+/// <c>.ActiveQueries.cs</c> / <c>.QueryHeatmap.cs</c>). Deferred on the grids (no plan host / no live
 /// server, matching W1e's Blocking tab): the per-row double-click history windows and the slicer
 /// overlay-on-select — only drag-to-narrow + sort-driven metric re-labeling are wired.
 /// </summary>
 public partial class ViewerServerTab
 {
-    /* Queries sub-tab order — Lite's QueriesSubTabControl minus the deferred Performance Trends /
-       Active Queries / Query Heatmap sub-tabs (W1f-2), so the three grids sit at 0/1/2. */
-    private const int TopQueriesSubTabIndex = 0;
-    private const int TopProceduresSubTabIndex = 1;
-    private const int QueryStoreSubTabIndex = 2;
+    /* Queries sub-tab order — matches Lite's QueriesSubTabControl exactly (W1f-2 completed the tab):
+       Performance Trends, Active Queries, the three grids, then Query Heatmap last. */
+    private const int PerformanceTrendsSubTabIndex = 0;
+    private const int ActiveQueriesSubTabIndex = 1;
+    private const int TopQueriesSubTabIndex = 2;
+    private const int TopProceduresSubTabIndex = 3;
+    private const int QueryStoreSubTabIndex = 4;
+    private const int QueryHeatmapSubTabIndex = 5;
 
     private string _queryStatsSlicerMetric = "TotalCpu";
     private List<TimeSliceBucket>? _queryStatsSlicerData;
@@ -54,6 +61,22 @@ public partial class ViewerServerTab
         QueryStatsSlicer.RangeChanged += OnQueryStatsSlicerChanged;
         ProcStatsSlicer.RangeChanged += OnProcStatsSlicerChanged;
         QueryStoreSlicer.RangeChanged += OnQueryStoreSlicerChanged;
+
+        /* W1f-2 sub-tabs: theme the trend + heatmap charts up front, build the heatmap hover popup +
+           drill-down menu, and wire the Active Queries slicer (each in its own partial). */
+        InitializeQueryTrendCharts();
+        InitializeActiveQueriesTab();
+        InitializeQueryHeatmap();
+
+        /* Default sub-tab is Performance Trends (no comparison), so start the Compare combo disabled. */
+        UpdateCompareDropdownState();
+    }
+
+    /// <summary>Tears down the W1f-2 sub-tabs' chart hover helpers — forwarded from the tab's single
+    /// <see cref="Dispose"/> so the whole tab tears down through one path.</summary>
+    private void DisposeQueriesTabHelpers()
+    {
+        DisposeQueryTrendHelpers();
     }
 
     /// <summary>
@@ -65,6 +88,17 @@ public partial class ViewerServerTab
     private async void QueriesSubTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, QueriesSubTabControl) || !IsLoaded)
+        {
+            return;
+        }
+
+        /* Comparison applies only to the three grid sub-tabs; disable the Compare combo elsewhere. */
+        UpdateCompareDropdownState();
+
+        /* A heatmap drill-down switches to Active Queries programmatically and loads its own filtered
+           snapshot; skip the auto-refresh so it doesn't clobber that via an async race (Lite's guard,
+           set/cleared around the tab switch in NavigateToActiveQueriesForWindowAsync). */
+        if (_suppressActiveQueriesAutoRefresh)
         {
             return;
         }
@@ -84,11 +118,20 @@ public partial class ViewerServerTab
 
         switch (QueriesSubTabControl.SelectedIndex)
         {
+            case PerformanceTrendsSubTabIndex:
+                await LoadPerformanceTrendsAsync(startUtc, endUtc);
+                break;
+            case ActiveQueriesSubTabIndex:
+                await LoadActiveQueriesAsync(startUtc, endUtc);
+                break;
             case TopProceduresSubTabIndex:
                 await LoadTopProceduresAsync(startUtc, endUtc);
                 break;
             case QueryStoreSubTabIndex:
                 await LoadQueryStoreAsync(startUtc, endUtc);
+                break;
+            case QueryHeatmapSubTabIndex:
+                await LoadQueryHeatmapAsync(startUtc, endUtc);
                 break;
             case TopQueriesSubTabIndex:
             default:
