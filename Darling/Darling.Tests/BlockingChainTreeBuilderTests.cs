@@ -1,10 +1,18 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using PerformanceMonitor.Common;
 using Xunit;
 
-namespace PerformanceMonitorDashboard.Tests;
+namespace Darling.Tests;
 
 /// <summary>
 /// Pure unit tests for the shared <see cref="BlockingChainTreeBuilder"/> — the DAG -> tree logic that
