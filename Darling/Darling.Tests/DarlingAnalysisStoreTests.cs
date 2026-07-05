@@ -241,7 +241,7 @@ public sealed class DarlingAnalysisStoreTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(13L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(14L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

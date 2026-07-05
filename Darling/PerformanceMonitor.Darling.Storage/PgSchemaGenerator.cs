@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using PerformanceMonitor.Collectors;
 
@@ -171,6 +172,35 @@ public static class PgSchemaGenerator
         "v_database_config", "v_running_jobs", "v_server_config", "v_database_scoped_config",
         "v_trace_flags", "v_collection_log", "v_memory_clerks", "v_memory_pressure_events",
     };
+
+    /// <summary>
+    /// The collectors whose <c>v_*</c> passthrough views were added AFTER the V8 schema split
+    /// (V10 latch/spinlock, V11 cpu-scheduler/plan-cache, V12 session-summary, V13 system-health),
+    /// so their views are NOT in <see cref="CollectViews"/> (which lists only the V4–V6 views V8
+    /// moves). Referenced as the SAME collector instances the V10–V13 generators emit, so the set
+    /// tracks the collector definitions rather than a parallel name list.
+    /// </summary>
+    private static readonly IReadOnlyList<ICollectorSchemaInfo> PostV8ViewCollectors = new ICollectorSchemaInfo[]
+    {
+        LatchStatsCollector.Instance,
+        SpinlockStatsCollector.Instance,
+        CpuSchedulerStatsCollector.Instance,
+        PlanCacheStatsCollector.Instance,
+        SessionSummaryStatsCollector.Instance,
+        SystemHealthEventsCollector.Instance,
+    };
+
+    /// <summary>
+    /// Every <c>v_*</c> passthrough view that exists in a fully-migrated store, in creation order:
+    /// the V4–V6 views (<see cref="CollectViews"/>) followed by the post-V8 collector views
+    /// (<see cref="PostV8ViewCollectors"/>). The single authoritative view list —
+    /// <see cref="GenerateV14RefreshViews"/> refreshes exactly this set, and a test cross-checks it
+    /// against every <c>CREATE OR REPLACE VIEW</c> statement across all migrations so the two can
+    /// never diverge. Every entry is <c>v_&lt;table&gt;</c>; the base table is the name minus the
+    /// <c>v_</c> prefix.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AllPassthroughViews =
+        CollectViews.Concat(PostV8ViewCollectors.Select(c => "v_" + c.TargetTable)).ToArray();
 
     /// <summary>
     /// The V8 schema-split migration body — creates <c>collect</c>/<c>config</c> and moves every
@@ -405,6 +435,43 @@ public static class PgSchemaGenerator
 
             sb.Append("CREATE OR REPLACE VIEW v_").Append(schema.TargetTable)
               .Append(" AS SELECT * FROM ").Append(schema.TargetTable).Append(";\n");
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The V14 migration body — <c>CREATE OR REPLACE</c> every <c>v_*</c> passthrough view
+    /// (<see cref="AllPassthroughViews"/>) as <c>SELECT * FROM</c> its base table, refreshing the
+    /// column list a store UPGRADED across a column-adding migration would otherwise have pinned
+    /// stale. Postgres (and DuckDB) freeze a view's <c>SELECT *</c> expansion at CREATE time, so the
+    /// views created in V4–V6/V10–V13 do NOT include columns later <c>ADD</c>ed to their base tables
+    /// — the V7 plan columns on <c>blocked_process_reports</c>/<c>deadlocks</c> and the V9 inventory
+    /// columns. A FRESH store is unaffected (its views were created from the current table shapes);
+    /// only an upgraded store is stale, which PR #1376 discovered and worked around for the plan
+    /// columns by reading base tables — this migration closes the root cause for every view.
+    ///
+    /// <para>Safe because every view is a bare <c>v_&lt;table&gt;</c> passthrough and every post-V4
+    /// change was <c>ADD COLUMN</c> (Postgres always appends), so the refreshed <c>SELECT *</c> only
+    /// ADDs columns at the end — the one alteration <c>CREATE OR REPLACE VIEW</c> permits. Runs after
+    /// V8, so the bare names resolve through <c>search_path = collect, config, public</c> to the
+    /// collect-schema views/tables (the existing view is found and replaced in place). Idempotent:
+    /// on an already-current view it re-installs the identical definition.</para>
+    /// </summary>
+    public static string GenerateV14RefreshViews()
+    {
+        var sb = new StringBuilder();
+        sb.Append("/* V14: refresh every v_* passthrough view's pinned SELECT * column list (#1262).\n");
+        sb.Append("   Postgres freezes SELECT * at CREATE, so an upgraded store's views omit columns\n");
+        sb.Append("   ADDed later (V7 plan columns, V9 inventory); CREATE OR REPLACE re-expands them.\n");
+        sb.Append("   Append-only ADD COLUMNs => the refresh only adds columns at the end (always legal). */\n\n");
+
+        foreach (var view in AllPassthroughViews)
+        {
+            /* Every view is v_<table>; the base table is the name minus the "v_" prefix. */
+            var table = view.Substring("v_".Length);
+            sb.Append("CREATE OR REPLACE VIEW ").Append(view)
+              .Append(" AS SELECT * FROM ").Append(table).Append(";\n");
         }
 
         return sb.ToString();

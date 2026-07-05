@@ -57,6 +57,7 @@ public static class PgMigrations
         new Migration(11, "cpu-scheduler-plan-cache-collectors", PgSchemaGenerator.GenerateV11AddCpuSchedulerPlanCache()),
         new Migration(12, "session-summary-collector", PgSchemaGenerator.GenerateV12AddSessionSummary()),
         new Migration(13, "system-health-events-collector", PgSchemaGenerator.GenerateV13AddSystemHealthEvents()),
+        new Migration(14, "refresh-passthrough-views", PgSchemaGenerator.GenerateV14RefreshViews()),
     };
 
     /// <summary>
