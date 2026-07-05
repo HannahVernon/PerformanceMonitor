@@ -2914,6 +2914,94 @@
                         </Grid>
                     </Grid>
                 </TabItem>
+
+                <!-- Index Analysis Sub-Tab (Stage 3): monitor-side sp_IndexCleanup reproduction over the LATEST
+                     collected v_index_object_stats snapshot via the Common IndexCleanupAnalyzer. Parse-on-read —
+                     NO live proc, NO "install the proc" prompt. A reclaimable-space rollup (overall + per db)
+                     over the recommendations grid (DISABLE / MAKE UNIQUE / MERGE / DROP CONSTRAINT / COMPRESS /
+                     REVIEW; REVIEW rows carry no destructive script) with the analyzer's uptime/dedupe/Notes
+                     banners. -->
+                <TabItem Header="Index Analysis">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                            <TextBlock Text="Index Analysis" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <Button Content="Refresh" Click="FinOpsRefreshIndexAnalysis_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                            <TextBlock x:Name="FinOpsIndexAnalysisCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            <TextBlock Text="Analyzed from the latest collected snapshot (no live proc)." Margin="16,0,0,0" VerticalAlignment="Center" FontStyle="Italic" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="FinOpsIndexAnalysisBannerPanel" Grid.Row="1" Margin="10,0,10,4" Visibility="Collapsed"/>
+
+                        <Grid Grid.Row="2" Margin="10,0,10,10">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Text="Reclaimable Space (overall + per database)" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+
+                            <DataGrid x:Name="FinOpsIndexAnalysisRollupGrid" Grid.Row="1" Style="{StaticResource DarkGrid}" RowStyle="{StaticResource FinOpsRowStyle}" MaxHeight="220" HorizontalScrollBarVisibility="Auto" AutoGenerateColumns="False" IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Binding="{Binding Scope}" Width="180"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Scope" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Header="Tables" Binding="{Binding TablesAnalyzed, StringFormat=N0}" Width="70" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Indexes" Binding="{Binding IndexCount, StringFormat=N0}" Width="75" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Size GB" Binding="{Binding TotalSizeGb, StringFormat=N2}" Width="80" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Rows" Binding="{Binding TotalRows, StringFormat=N0}" Width="110" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="To Disable" Binding="{Binding IndexesToDisable, StringFormat=N0}" Width="80" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="To Merge" Binding="{Binding IndexesToMerge, StringFormat=N0}" Width="80" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Compressable" Binding="{Binding CompressableIndexes, StringFormat=N0}" Width="100" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Unused" Binding="{Binding UnusedIndexes, StringFormat=N0}" Width="70" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Disable GB" Binding="{Binding UnusedSizeGb, StringFormat=N2}" Width="90" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Compress Min GB" Binding="{Binding CompressionMinSavingsGb, StringFormat=N2}" Width="120" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Compress Max GB" Binding="{Binding CompressionMaxSavingsGb, StringFormat=N2}" Width="120" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Total Min GB" Binding="{Binding TotalMinSavingsGb, StringFormat=N2}" Width="100" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Total Max GB" Binding="{Binding TotalMaxSavingsGb, StringFormat=N2}" Width="100" ElementStyle="{StaticResource NumericCell}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock Grid.Row="2" Text="Recommendations" FontWeight="SemiBold" FontSize="12" Margin="0,8,0,4" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+
+                            <DataGrid x:Name="FinOpsIndexAnalysisDetailGrid" Grid.Row="3" Style="{StaticResource DarkGrid}" RowStyle="{StaticResource FinOpsRowStyle}" HorizontalScrollBarVisibility="Auto" AutoGenerateColumns="False" IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Binding="{Binding ActionDisplay}" Width="110"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ActionDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Action" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding ResultKindDisplay}" Width="110"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ResultKindDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Result Kind" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding ConsolidationRule}" Width="170"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ConsolidationRule" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Rule" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding DatabaseName}" Width="140"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding SchemaName}" Width="90"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SchemaName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Schema" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding TableName}" Width="170"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TableName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Table" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding IndexName}" Width="200"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IndexName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Index" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Header="Size GB" Binding="{Binding IndexSizeGb, StringFormat=N3}" Width="80" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Rows" Binding="{Binding IndexRows, StringFormat=N0}" Width="100" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Reads" Binding="{Binding IndexReads, StringFormat=N0}" Width="90" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Writes" Binding="{Binding IndexWrites, StringFormat=N0}" Width="90" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Binding="{Binding TargetIndexName}" Width="180"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TargetIndexName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Target Index" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Header="Superseded / Related" Binding="{Binding SupersededBy}" Width="220">
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding SupersededBy}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Info" Binding="{Binding AdditionalInfo}" Width="220">
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding AdditionalInfo}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Original Definition" Binding="{Binding OriginalIndexDefinition}" Width="320">
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding OriginalIndexDefinition}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Script" Binding="{Binding Script}" Width="320">
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding Script}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock x:Name="FinOpsIndexAnalysisNoDataMessage" Grid.Row="0" Grid.RowSpan="4" Style="{StaticResource EmptyHint}" Text="No analyzable index statistics collected yet for this server."/>
+                        </Grid>
+                    </Grid>
+                </TabItem>
             </TabControl>
         </TabItem>
 

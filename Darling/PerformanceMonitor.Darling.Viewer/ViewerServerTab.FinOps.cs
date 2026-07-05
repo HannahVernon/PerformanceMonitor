@@ -42,6 +42,7 @@ public partial class ViewerServerTab
     private const int FinOpsHighImpactSubTabIndex = 6;
     private const int FinOpsApplicationConnectionsSubTabIndex = 7;
     private const int FinOpsServerInventorySubTabIndex = 8;
+    private const int FinOpsIndexAnalysisSubTabIndex = 9;
 
     private DataGridFilterManager<DatabaseResourceUsageRow>? _finopsDbResourcesFilterMgr;
     private DataGridFilterManager<StorageGrowthRow>? _finopsStorageGrowthFilterMgr;
@@ -55,6 +56,8 @@ public partial class ViewerServerTab
     private DataGridFilterManager<ExpensiveQueryRow>? _finopsExpensiveQueriesFilterMgr;
     private DataGridFilterManager<MemoryGrantEfficiencyRow>? _finopsMemoryGrantFilterMgr;
     private DataGridFilterManager<IndexLockingRow>? _finopsIndexLockingFilterMgr;
+    private DataGridFilterManager<IndexCleanupRollupRow>? _finopsIndexAnalysisRollupFilterMgr;
+    private DataGridFilterManager<IndexCleanupRecommendationRow>? _finopsIndexAnalysisFilterMgr;
 
     /// <summary>
     /// Registers the FinOps grids' column-filter managers into the shared <c>_filterManagers</c> map
@@ -75,6 +78,8 @@ public partial class ViewerServerTab
         _finopsExpensiveQueriesFilterMgr = new DataGridFilterManager<ExpensiveQueryRow>(FinOpsExpensiveQueriesDataGrid);
         _finopsMemoryGrantFilterMgr = new DataGridFilterManager<MemoryGrantEfficiencyRow>(FinOpsMemoryGrantEfficiencyDataGrid);
         _finopsIndexLockingFilterMgr = new DataGridFilterManager<IndexLockingRow>(FinOpsIndexLockingDataGrid);
+        _finopsIndexAnalysisRollupFilterMgr = new DataGridFilterManager<IndexCleanupRollupRow>(FinOpsIndexAnalysisRollupGrid);
+        _finopsIndexAnalysisFilterMgr = new DataGridFilterManager<IndexCleanupRecommendationRow>(FinOpsIndexAnalysisDetailGrid);
 
         _filterManagers[FinOpsDatabaseResourcesDataGrid] = _finopsDbResourcesFilterMgr;
         _filterManagers[FinOpsStorageGrowthDataGrid] = _finopsStorageGrowthFilterMgr;
@@ -88,6 +93,8 @@ public partial class ViewerServerTab
         _filterManagers[FinOpsExpensiveQueriesDataGrid] = _finopsExpensiveQueriesFilterMgr;
         _filterManagers[FinOpsMemoryGrantEfficiencyDataGrid] = _finopsMemoryGrantFilterMgr;
         _filterManagers[FinOpsIndexLockingDataGrid] = _finopsIndexLockingFilterMgr;
+        _filterManagers[FinOpsIndexAnalysisRollupGrid] = _finopsIndexAnalysisRollupFilterMgr;
+        _filterManagers[FinOpsIndexAnalysisDetailGrid] = _finopsIndexAnalysisFilterMgr;
     }
 
     /// <summary>
@@ -137,6 +144,9 @@ public partial class ViewerServerTab
                 break;
             case FinOpsServerInventorySubTabIndex:
                 await LoadFinOpsServerInventoryAsync();
+                break;
+            case FinOpsIndexAnalysisSubTabIndex:
+                await LoadFinOpsIndexAnalysisAsync();
                 break;
             case FinOpsUtilizationSubTabIndex:
             default:
