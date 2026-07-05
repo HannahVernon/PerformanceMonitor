@@ -83,6 +83,7 @@ public class ArchiveService
         ("index_object_stats", "collection_time"),
         ("server_properties", "collection_time"),
         ("session_stats", "collection_time"),
+        ("session_summary_stats", "collection_time"),
         ("server_config", "capture_time"),
         ("database_config", "capture_time"),
         ("database_scoped_config", "capture_time"),

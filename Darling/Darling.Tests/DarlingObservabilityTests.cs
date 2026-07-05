@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_ElevenVersions_V9InventoryCost_V10LatchSpinlock_V11CpuSchedulerPlanCache()
+    public void MigrationScripts_TwelveVersions_V10LatchSpinlock_V11CpuSchedulerPlanCache_V12SessionSummary()
     {
-        Assert.Equal(11, PgMigrations.Scripts.Count);
+        Assert.Equal(12, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -46,7 +46,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(9, PgMigrations.Scripts[8].Version);
         Assert.Equal(10, PgMigrations.Scripts[9].Version);
         Assert.Equal(11, PgMigrations.Scripts[10].Version);
-        Assert.Equal(11, StorageVersion.SchemaVersion);
+        Assert.Equal(12, PgMigrations.Scripts[11].Version);
+        Assert.Equal(12, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -139,6 +140,20 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE OR REPLACE VIEW v_cpu_scheduler_stats AS SELECT * FROM cpu_scheduler_stats;", v11, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_plan_cache_stats AS SELECT * FROM plan_cache_stats;", v11, StringComparison.Ordinal);
 
+        /* V12 adds the session_summary_stats collector table (server-wide session SUMMARY: the
+           connection-leak / idle signal) and its v_* passthrough view (Dashboard->Darling parity,
+           #1262). Generated from the collector definition so the table matches the fresh V1 shape;
+           CREATE TABLE IF NOT EXISTS no-ops on a fresh store and really creates it on a store built
+           before this collector existed. Distinct from the per-application session_stats table. */
+        var v12 = PgMigrations.Scripts[11].Sql;
+        Assert.Equal("session-summary-collector", PgMigrations.Scripts[11].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS session_summary_stats (", v12, StringComparison.Ordinal);
+        Assert.Contains("idle_sessions_over_30min integer", v12, StringComparison.Ordinal);
+        Assert.Contains("sessions_waiting_for_memory integer", v12, StringComparison.Ordinal);
+        Assert.Contains("top_application_name text", v12, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_session_summary_stats_time ON session_summary_stats(server_id, collection_time);", v12, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_session_summary_stats AS SELECT * FROM session_summary_stats;", v12, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -161,7 +176,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(11L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(12L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

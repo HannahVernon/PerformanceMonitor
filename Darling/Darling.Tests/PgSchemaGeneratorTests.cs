@@ -16,18 +16,18 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins Darling's generated Postgres schema against the collector definitions: the catalog covers
-/// all 30 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
+/// all 31 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
 /// the prefix names vary exactly where Lite's schema varies (deadlock_id / blocked_report_id /
 /// config_id+capture_time / running_jobs' no-id), and the index shapes mirror Lite's columns.
 /// </summary>
 public sealed class PgSchemaGeneratorTests
 {
     [Fact]
-    public void Catalog_CoversAll30Collectors_WithUniqueTablesAndNames()
+    public void Catalog_CoversAll31Collectors_WithUniqueTablesAndNames()
     {
-        Assert.Equal(30, CollectorCatalog.All.Count);
-        Assert.Equal(30, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
-        Assert.Equal(30, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+        Assert.Equal(31, CollectorCatalog.All.Count);
+        Assert.Equal(31, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(31, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
     }
 
     [Fact]
@@ -243,6 +243,33 @@ public sealed class PgSchemaGeneratorTests
     }
 
     [Fact]
+    public void CreateTable_SessionSummaryStats_MapsCountsToInteger_AndTopColumns()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(SessionSummaryStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS session_summary_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    total_sessions integer,\n" +
+            "    running_sessions integer,\n" +
+            "    sleeping_sessions integer,\n" +
+            "    background_sessions integer,\n" +
+            "    dormant_sessions integer,\n" +
+            "    idle_sessions_over_30min integer,\n" +
+            "    sessions_waiting_for_memory integer,\n" +
+            "    databases_with_connections integer,\n" +
+            "    top_application_name text,\n" +
+            "    top_application_connections integer,\n" +
+            "    top_host_name text,\n" +
+            "    top_host_connections integer\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
     public void CreateIndex_MirrorsLiteIndexColumns()
     {
         Assert.Equal(
@@ -267,11 +294,11 @@ public sealed class PgSchemaGeneratorTests
         var script = PgSchemaGenerator.GenerateFullSchema();
 
         var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
-        Assert.Equal(30, tableCount);
+        Assert.Equal(31, tableCount);
 
-        /* 30 tables minus the two index-less config tables = 28 indexes. */
+        /* 31 tables minus the two index-less config tables = 29 indexes. */
         var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
-        Assert.Equal(28, indexCount);
+        Assert.Equal(29, indexCount);
 
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);

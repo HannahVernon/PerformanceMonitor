@@ -903,6 +903,29 @@ CREATE TABLE IF NOT EXISTS session_stats (
     public const string CreateSessionStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_session_stats_time ON session_stats(server_id, collection_time)";
 
+    public const string CreateSessionSummaryStatsTable = @"
+CREATE TABLE IF NOT EXISTS session_summary_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    total_sessions INTEGER NOT NULL,
+    running_sessions INTEGER NOT NULL,
+    sleeping_sessions INTEGER NOT NULL,
+    background_sessions INTEGER NOT NULL,
+    dormant_sessions INTEGER NOT NULL,
+    idle_sessions_over_30min INTEGER NOT NULL,
+    sessions_waiting_for_memory INTEGER NOT NULL,
+    databases_with_connections INTEGER NOT NULL,
+    top_application_name VARCHAR,
+    top_application_connections INTEGER,
+    top_host_name VARCHAR,
+    top_host_connections INTEGER
+)";
+
+    public const string CreateSessionSummaryStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_session_summary_stats_time ON session_summary_stats(server_id, collection_time)";
+
     public const string CreateAlertLogTable = @"
 CREATE TABLE IF NOT EXISTS config_alert_log (
     alert_time TIMESTAMP NOT NULL,
@@ -1003,6 +1026,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateIndexObjectStatsTable;
         yield return CreateServerPropertiesTable;
         yield return CreateSessionStatsTable;
+        yield return CreateSessionSummaryStatsTable;
         yield return CreateAlertLogTable;
         yield return CreateEdgeTriggerWatermarksTable;
         yield return CreateMuteRulesTable;
@@ -1043,6 +1067,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateIndexObjectStatsIndex;
         yield return CreateServerPropertiesIndex;
         yield return CreateSessionStatsIndex;
+        yield return CreateSessionSummaryStatsIndex;
         yield return CreateDismissedArchiveAlertsIndex;
     }
 }
