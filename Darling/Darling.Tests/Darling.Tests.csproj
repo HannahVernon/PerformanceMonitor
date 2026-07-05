@@ -23,5 +23,13 @@
     <ProjectReference Include="..\PerformanceMonitor.Darling.Service\PerformanceMonitor.Darling.Service.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Viewer\PerformanceMonitor.Darling.Viewer.csproj" />
+    <!-- SystemHealthParser (the code under test) lives in Common; reference it explicitly rather than
+         leaning on the transitive Viewer/Service edge. -->
+    <ProjectReference Include="..\..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- system_health event samples for SystemHealthParser (one per feeder event; shapes per sp_HealthParser xpath). -->
+    <None Include="Fixtures\SystemHealth\*.xml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
