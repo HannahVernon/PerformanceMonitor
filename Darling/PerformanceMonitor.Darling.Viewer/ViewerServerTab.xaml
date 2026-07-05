@@ -3002,6 +3002,60 @@
                         </Grid>
                     </Grid>
                 </TabItem>
+
+                <!-- Recommendations Sub-Tab (last deferred FinOps sub-tab): the ~10 cost-saving checks reproduced
+                     MONITOR-SIDE over the collected store (edition/license audit, CPU/memory right-sizing,
+                     compression candidates, dormant + dev/test DBs, maintenance window, VM right-sizing, storage
+                     tier, reserved capacity) — NO live target. Lite's sp_IndexCleanup-existence check is dropped
+                     (superseded by the native Index Analysis sub-tab). Sorted by severity; the per-server budget
+                     drives Est. Savings (0 → blank). -->
+                <TabItem Header="Recommendations">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                            <TextBlock Text="Cost-Saving Recommendations" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <Button Content="Refresh" Click="FinOpsRefreshRecommendations_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                            <TextBlock x:Name="FinOpsRecommendationsCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            <TextBlock Text="Analyzed from collected data (no live target)." Margin="16,0,0,0" VerticalAlignment="Center" FontStyle="Italic" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                        </StackPanel>
+
+                        <Grid Grid.Row="1" Margin="10,0,10,10">
+                            <DataGrid x:Name="FinOpsRecommendationsDataGrid" Style="{StaticResource DarkGrid}" RowStyle="{StaticResource FinOpsRowStyle}" HorizontalScrollBarVisibility="Auto" AutoGenerateColumns="False" IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Binding="{Binding Category}" Width="120"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Category" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Category" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Severity}" Width="90" SortMemberPath="SeveritySort">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Severity" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Severity" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Severity}" Value="High"><Setter Property="Foreground" Value="#E74C3C"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Severity}" Value="Medium"><Setter Property="Foreground" Value="#F39C12"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Severity}" Value="Low"><Setter Property="Foreground" Value="#27AE60"/></DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Confidence}" Width="100"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Confidence" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Confidence" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding Finding}" Width="360">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Finding" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Finding" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding Finding}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" Width="560">
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding Detail}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Est. Savings ($/mo)" Binding="{Binding EstMonthlySavingsDisplay}" Width="130" SortMemberPath="EstMonthlySavings" ElementStyle="{StaticResource NumericCell}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock x:Name="FinOpsRecommendationsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No recommendations — this server looks right-sized, or not enough has been collected yet."/>
+                        </Grid>
+                    </Grid>
+                </TabItem>
             </TabControl>
         </TabItem>
 

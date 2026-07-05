@@ -19,16 +19,20 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// The FinOps inner tab — a COPY of Lite's FinOps tab (<c>Controls/FinOpsTab.xaml.cs</c>) for the
-/// copy-parity program, reads rewired to <see cref="ViewerDataService"/> Postgres. Nine store-backed
-/// sub-tabs are ported (Utilization, Database Resources, Storage Growth, Locking &amp; Contention,
-/// Database Sizes, Optimization, High Impact, Application Connections, Server Inventory); Lite's two
-/// live-target sub-tabs (Index Analysis / Recommendations) are deliberately EXCLUDED. Unlike Lite's
-/// cross-server FinOps tab, this is a per-server inner tab, so it drops Lite's server selector and scopes
-/// the per-server sub-tabs to <c>_server.ServerId</c>; only Server Inventory stays cross-server (it lists
-/// every registered server). The per-server FinOps COST attribution is dropped (the headless store has no
-/// budget); the health score is kept. This partial holds the sub-tab dispatch, the filter-manager wiring,
-/// and the simple grid loaders; Locking lives in <c>.FinOps.Locking.cs</c> and the Storage Growth drill in
-/// <c>.FinOps.ObjectHeatmap.cs</c>.
+/// copy-parity program, reads rewired to <see cref="ViewerDataService"/> Postgres. All eleven sub-tabs are
+/// ported (Utilization, Database Resources, Storage Growth, Locking &amp; Contention, Database Sizes,
+/// Optimization, High Impact, Application Connections, Server Inventory, plus Index Analysis and
+/// Recommendations); Lite's two originally live-target sub-tabs (Index Analysis / Recommendations) are
+/// reproduced MONITOR-SIDE over the collected store — Index Analysis (#1387) reruns sp_IndexCleanup via the
+/// Common analyzer, and Recommendations runs its ~10 cost checks over collected views — so neither touches a
+/// live target. Unlike Lite's cross-server FinOps tab, this is a per-server inner tab, so it drops Lite's
+/// server selector and scopes the per-server sub-tabs to <c>_server.ServerId</c>; only Server Inventory stays
+/// cross-server (it lists every registered server). The per-server FinOps COST attribution is sourced from the
+/// registry (<c>servers.monthly_cost_usd</c> → <c>_server.MonthlyCostUsd</c>; 0 hides the cost affordances);
+/// the health score is kept. This partial holds the sub-tab dispatch, the filter-manager wiring, and the
+/// simple grid loaders; Locking lives in <c>.FinOps.Locking.cs</c>, the Storage Growth drill in
+/// <c>.FinOps.ObjectHeatmap.cs</c>, Index Analysis in <c>.FinOps.IndexAnalysis.cs</c>, and Recommendations in
+/// <c>.FinOps.Recommendations.cs</c>.
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -43,6 +47,7 @@ public partial class ViewerServerTab
     private const int FinOpsApplicationConnectionsSubTabIndex = 7;
     private const int FinOpsServerInventorySubTabIndex = 8;
     private const int FinOpsIndexAnalysisSubTabIndex = 9;
+    private const int FinOpsRecommendationsSubTabIndex = 10;
 
     private DataGridFilterManager<DatabaseResourceUsageRow>? _finopsDbResourcesFilterMgr;
     private DataGridFilterManager<StorageGrowthRow>? _finopsStorageGrowthFilterMgr;
@@ -58,6 +63,7 @@ public partial class ViewerServerTab
     private DataGridFilterManager<IndexLockingRow>? _finopsIndexLockingFilterMgr;
     private DataGridFilterManager<IndexCleanupRollupRow>? _finopsIndexAnalysisRollupFilterMgr;
     private DataGridFilterManager<IndexCleanupRecommendationRow>? _finopsIndexAnalysisFilterMgr;
+    private DataGridFilterManager<RecommendationRow>? _finopsRecommendationsFilterMgr;
 
     /// <summary>
     /// Registers the FinOps grids' column-filter managers into the shared <c>_filterManagers</c> map
@@ -80,6 +86,7 @@ public partial class ViewerServerTab
         _finopsIndexLockingFilterMgr = new DataGridFilterManager<IndexLockingRow>(FinOpsIndexLockingDataGrid);
         _finopsIndexAnalysisRollupFilterMgr = new DataGridFilterManager<IndexCleanupRollupRow>(FinOpsIndexAnalysisRollupGrid);
         _finopsIndexAnalysisFilterMgr = new DataGridFilterManager<IndexCleanupRecommendationRow>(FinOpsIndexAnalysisDetailGrid);
+        _finopsRecommendationsFilterMgr = new DataGridFilterManager<RecommendationRow>(FinOpsRecommendationsDataGrid);
 
         _filterManagers[FinOpsDatabaseResourcesDataGrid] = _finopsDbResourcesFilterMgr;
         _filterManagers[FinOpsStorageGrowthDataGrid] = _finopsStorageGrowthFilterMgr;
@@ -95,6 +102,7 @@ public partial class ViewerServerTab
         _filterManagers[FinOpsIndexLockingDataGrid] = _finopsIndexLockingFilterMgr;
         _filterManagers[FinOpsIndexAnalysisRollupGrid] = _finopsIndexAnalysisRollupFilterMgr;
         _filterManagers[FinOpsIndexAnalysisDetailGrid] = _finopsIndexAnalysisFilterMgr;
+        _filterManagers[FinOpsRecommendationsDataGrid] = _finopsRecommendationsFilterMgr;
     }
 
     /// <summary>
@@ -147,6 +155,9 @@ public partial class ViewerServerTab
                 break;
             case FinOpsIndexAnalysisSubTabIndex:
                 await LoadFinOpsIndexAnalysisAsync();
+                break;
+            case FinOpsRecommendationsSubTabIndex:
+                await LoadFinOpsRecommendationsAsync();
                 break;
             case FinOpsUtilizationSubTabIndex:
             default:
