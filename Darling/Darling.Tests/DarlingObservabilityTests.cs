@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_ThirteenVersions_V11CpuSchedulerPlanCache_V12SessionSummary_V13SystemHealth()
+    public void MigrationScripts_FourteenVersions_V13SystemHealth_V14RefreshViews()
     {
-        Assert.Equal(13, PgMigrations.Scripts.Count);
+        Assert.Equal(14, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -48,7 +48,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(11, PgMigrations.Scripts[10].Version);
         Assert.Equal(12, PgMigrations.Scripts[11].Version);
         Assert.Equal(13, PgMigrations.Scripts[12].Version);
-        Assert.Equal(13, StorageVersion.SchemaVersion);
+        Assert.Equal(14, PgMigrations.Scripts[13].Version);
+        Assert.Equal(14, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -169,6 +170,43 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE INDEX IF NOT EXISTS idx_system_health_events_time ON system_health_events(server_id, collection_time);", v13, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_system_health_events AS SELECT * FROM system_health_events;", v13, StringComparison.Ordinal);
 
+        /* V14 refreshes EVERY v_* passthrough view's pinned SELECT * column list (#1262): Postgres
+           freezes SELECT * at CREATE, so a store upgraded across a column-adding migration keeps a
+           stale view. The plan-bearing views (v_blocked_process_reports / v_deadlocks) are the ones
+           V7 left stale — the exact staleness PR #1376 worked around by reading base tables — so pin
+           their refresh explicitly. (procedure_stats gained query_plan_xml in V7 but has NO v_ view,
+           which is why #1376 read the base table for it; there is nothing to refresh here.) */
+        var v14 = PgMigrations.Scripts[13].Sql;
+        Assert.Equal("refresh-passthrough-views", PgMigrations.Scripts[13].Name);
+        Assert.Contains("CREATE OR REPLACE VIEW v_blocked_process_reports AS SELECT * FROM blocked_process_reports;", v14, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_deadlocks AS SELECT * FROM deadlocks;", v14, StringComparison.Ordinal);
+        Assert.DoesNotContain("v_procedure_stats", v14, StringComparison.Ordinal);
+
+        /* V14 must refresh the COMPLETE passthrough-view set (V4-V6 + the post-V8 collector views),
+           and its list must stay the single source of truth: every CREATE OR REPLACE VIEW emitted by
+           ANY migration is covered by AllPassthroughViews and vice-versa, so a future collector view
+           can never be added without its refresh. */
+        foreach (var view in PgSchemaGenerator.AllPassthroughViews)
+        {
+            var table = view.Substring("v_".Length);
+            Assert.Contains(
+                $"CREATE OR REPLACE VIEW {view} AS SELECT * FROM {table};", v14, StringComparison.Ordinal);
+        }
+
+        var viewsCreatedByAnyMigration = new System.Collections.Generic.SortedSet<string>(StringComparer.Ordinal);
+        foreach (var script in PgMigrations.Scripts)
+        {
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                script.Sql, @"CREATE OR REPLACE VIEW (v_\w+) AS SELECT \* FROM"))
+            {
+                viewsCreatedByAnyMigration.Add(m.Groups[1].Value);
+            }
+        }
+
+        Assert.Equal(
+            new System.Collections.Generic.SortedSet<string>(PgSchemaGenerator.AllPassthroughViews, StringComparer.Ordinal),
+            viewsCreatedByAnyMigration);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -191,7 +229,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(13L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(14L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
