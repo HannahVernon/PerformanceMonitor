@@ -203,7 +203,7 @@ public static class PgSchemaGenerator
         sb.Append("CREATE SCHEMA IF NOT EXISTS ").Append(ConfigSchema).Append(" AUTHORIZATION ")
             .Append(OwnerRole).Append(";\n\n");
 
-        sb.Append("/* collect: 26 collector tables (from the catalog) + registry/metadata + 24 views */\n");
+        sb.Append("/* collect: all collector tables (from the catalog) + registry/metadata + the V4-V6 views */\n");
         foreach (var schema in CollectorCatalog.All)
         {
             AppendSetSchema(sb, "TABLE", schema.TargetTable, CollectSchema);
@@ -258,6 +258,42 @@ public static class PgSchemaGenerator
             {
                 sb.Append(index).Append('\n');
             }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The V10 migration body — adds the latch_stats and spinlock_stats collector tables plus their
+    /// <c>v_*</c> passthrough views. Generated from the collector definitions (not hand-listed) so
+    /// the tables are column-for-column identical to the fresh-store V1 shape. <c>CREATE TABLE IF
+    /// NOT EXISTS</c> makes this a harmless no-op on a fresh store (V1 already created these from the
+    /// current catalog and V8 moved them to <c>collect</c>) and the real create on a store built
+    /// before these collectors existed; the views are created directly in <c>collect</c> because V10
+    /// runs after V8, resolving the bare names through <c>search_path = collect, config, public</c>.
+    /// </summary>
+    public static string GenerateV10AddLatchSpinlock()
+    {
+        var sb = new StringBuilder();
+        sb.Append("/* V10: latch_stats + spinlock_stats collectors (Dashboard->Darling parity, #1262).\n");
+        sb.Append("   Generated from the collector definitions so the tables match the fresh V1 shape. */\n");
+
+        foreach (ICollectorSchemaInfo schema in new ICollectorSchemaInfo[]
+        {
+            LatchStatsCollector.Instance,
+            SpinlockStatsCollector.Instance,
+        })
+        {
+            sb.Append('\n').Append(CreateTable(schema)).Append('\n');
+
+            var index = CreateIndex(schema);
+            if (index is not null)
+            {
+                sb.Append(index).Append('\n');
+            }
+
+            sb.Append("CREATE OR REPLACE VIEW v_").Append(schema.TargetTable)
+              .Append(" AS SELECT * FROM ").Append(schema.TargetTable).Append(";\n");
         }
 
         return sb.ToString();

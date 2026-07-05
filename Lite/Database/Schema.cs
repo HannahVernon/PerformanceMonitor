@@ -64,6 +64,39 @@ CREATE TABLE IF NOT EXISTS wait_stats (
     delta_signal_wait_time_ms BIGINT
 )";
 
+    public const string CreateLatchStatsTable = @"
+CREATE TABLE IF NOT EXISTS latch_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    latch_class VARCHAR NOT NULL,
+    waiting_requests_count BIGINT,
+    wait_time_ms BIGINT,
+    max_wait_time_ms BIGINT,
+    delta_waiting_requests_count BIGINT,
+    delta_wait_time_ms BIGINT,
+    delta_max_wait_time_ms BIGINT
+)";
+
+    public const string CreateSpinlockStatsTable = @"
+CREATE TABLE IF NOT EXISTS spinlock_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    spinlock_name VARCHAR NOT NULL,
+    collisions BIGINT,
+    spins BIGINT,
+    spins_per_collision DOUBLE,
+    sleep_time BIGINT,
+    backoffs BIGINT,
+    delta_collisions BIGINT,
+    delta_spins BIGINT,
+    delta_sleep_time BIGINT,
+    delta_backoffs BIGINT
+)";
+
     public const string CreateQueryStatsTable = @"
 CREATE TABLE IF NOT EXISTS query_stats (
     collection_id BIGINT PRIMARY KEY,
@@ -566,6 +599,12 @@ CREATE TABLE IF NOT EXISTS database_config (
     public const string CreateWaitStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_wait_stats_time ON wait_stats(server_id, collection_time)";
 
+    public const string CreateLatchStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_latch_stats_time ON latch_stats(server_id, collection_time)";
+
+    public const string CreateSpinlockStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_spinlock_stats_time ON spinlock_stats(server_id, collection_time)";
+
     public const string CreateQueryStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_query_stats_time ON query_stats(server_id, collection_time)";
 
@@ -876,6 +915,8 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateCollectionScheduleTable;
         yield return CreateCollectionLogTable;
         yield return CreateWaitStatsTable;
+        yield return CreateLatchStatsTable;
+        yield return CreateSpinlockStatsTable;
         yield return CreateQueryStatsTable;
         yield return CreateCpuUtilizationStatsTable;
         yield return CreateFileIoStatsTable;
@@ -913,6 +954,8 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
     public static IEnumerable<string> GetAllIndexStatements()
     {
         yield return CreateWaitStatsIndex;
+        yield return CreateLatchStatsIndex;
+        yield return CreateSpinlockStatsIndex;
         yield return CreateQueryStatsIndex;
         yield return CreateProcedureStatsIndex;
         yield return CreateQueryStoreIndex;

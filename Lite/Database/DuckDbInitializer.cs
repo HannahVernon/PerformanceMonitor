@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 36;
+    internal const int CurrentSchemaVersion = 37;
 
     private readonly string _archivePath;
 
@@ -112,7 +112,7 @@ public class DuckDbInitializer
        IMPORTANT: Must match ArchiveService.ArchivableTables — every archived table needs an archive view. */
     private static readonly string[] ArchivableTables =
     [
-        "wait_stats", "query_stats", "procedure_stats", "query_store_stats",
+        "wait_stats", "latch_stats", "spinlock_stats", "query_stats", "procedure_stats", "query_store_stats",
         "query_snapshots", "cpu_utilization_stats", "file_io_stats", "memory_stats",
         "memory_clerks", "memory_pressure_events", "tempdb_stats", "perfmon_stats",
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
@@ -909,6 +909,15 @@ public class DuckDbInitializer
             {
                 _logger?.LogWarning("Migration to v36 encountered an error (non-fatal): {Error}", ex.Message);
             }
+        }
+
+        if (fromVersion < 37)
+        {
+            /* v37: added latch_stats (sys.dm_os_latch_stats) and spinlock_stats
+                    (sys.dm_os_spinlock_stats) shared collectors for Dashboard->Darling collection
+                    parity. New tables only — created by GetAllTableStatements() below; the v_ views
+                    come from CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v37: adding latch_stats and spinlock_stats tables");
         }
     }
 
