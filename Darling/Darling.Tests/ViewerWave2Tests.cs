@@ -27,7 +27,10 @@ namespace Darling.Tests;
 public sealed class ViewerWave2SqlTests
 {
     [Theory]
-    [InlineData(ViewerDataService.BlockedProcessReportsSql, "FROM v_blocked_process_reports")]
+    /* The BPR read sources the BASE table (not v_blocked_process_reports) so its #1368 / V7 best-effort plan
+       columns are projected on every store — the pinned SELECT * view would omit them on an upgraded store.
+       This also matches DarlingAlertReadAdapter, which already reads the base blocked_process_reports. */
+    [InlineData(ViewerDataService.BlockedProcessReportsSql, "FROM blocked_process_reports")]
     [InlineData(ViewerDataService.DmvBlockingSnapshotsSql, "FROM v_dmv_blocking_snapshots")]
     public void BlockingSql_WindowsOnCollectionTime_NewestEventsFirst_Cap200(string sql, string fromClause)
     {

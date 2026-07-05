@@ -26,6 +26,13 @@ public sealed class ViewerDeadlockRow : DeadlockAlertRow
 {
     public DateTime CollectionTime { get; set; }
     public DateTime? DeadlockTime { get; set; }
+
+    /// <summary>
+    /// The deadlock's BEST-EFFORT victim plan (deadlocks.victim_query_plan_xml, #1368 / V7 — resolved at
+    /// collection time from the victim's sql_handle, only when the host sets CapturePlanXml; often NULL,
+    /// always NULL under Lite). Threaded onto every <see cref="DeadlockProcessDetail"/> parsed from this row.
+    /// </summary>
+    public string? VictimQueryPlanXml { get; set; }
 }
 
 /// <summary>
@@ -58,6 +65,15 @@ public sealed class DeadlockProcessDetail
     public string Status { get; set; } = "";
     public string DeadlockGraphXml { get; set; } = "";
     public bool HasDeadlockXml => !string.IsNullOrEmpty(DeadlockGraphXml);
+
+    /// <summary>
+    /// The BEST-EFFORT victim plan for this deadlock (deadlocks.victim_query_plan_xml, #1368 / V7) — one
+    /// plan per deadlock, copied onto every process row parsed from the same graph. The "View Victim Plan"
+    /// context item is gated per row on <see cref="HasVictimQueryPlan"/> so a plan-less deadlock (NULL, the
+    /// common case, and always so under Lite) shows it disabled rather than shown-and-failed.
+    /// </summary>
+    public string? VictimQueryPlanXml { get; set; }
+    public bool HasVictimQueryPlan => !string.IsNullOrEmpty(VictimQueryPlanXml);
 
     /* New fields from sp_BlitzLock analysis */
     public string DeadlockType { get; set; } = "";
@@ -198,6 +214,7 @@ public sealed class DeadlockProcessDetail
                         LoginName = proc.Attribute("loginname")?.Value ?? "",
                         Status = proc.Attribute("status")?.Value ?? "",
                         DeadlockGraphXml = row.DeadlockGraphXml,
+                        VictimQueryPlanXml = row.VictimQueryPlanXml,
                         DeadlockType = deadlockType,
                         ProcName = procName,
                         TransactionName = proc.Attribute("transactionname")?.Value ?? "",
@@ -219,7 +236,8 @@ public sealed class DeadlockProcessDetail
                     DeadlockTime = row.DeadlockTime,
                     SqlText = row.VictimSqlText,
                     IsVictim = true,
-                    DeadlockGraphXml = row.DeadlockGraphXml
+                    DeadlockGraphXml = row.DeadlockGraphXml,
+                    VictimQueryPlanXml = row.VictimQueryPlanXml
                 });
             }
         }
@@ -233,7 +251,17 @@ public sealed partial class ViewerDataService
     /// Recent deadlock events for one server — Lite's <c>GetRecentDeadlocksAsync</c> ported to Postgres.
     /// Windows on the collection prefix, orders newest deadlock first, caps at 50 (Lite's cap). Carries the
     /// graph XML so <see cref="DeadlockProcessDetail.ParseFromRows"/> and the deadlock-graph viewer work
-    /// without a second fetch. $1 server_id, $2 window start, $3 window end (naive UTC).
+    /// without a second fetch, and the BEST-EFFORT victim plan (#1368 / V7) the grid's "View Victim Plan"
+    /// item opens.
+    ///
+    /// <para>Reads the BASE <c>deadlocks</c> table, not <c>v_deadlocks</c> (deliberate divergence from the
+    /// other deadlock reads' v_-view twinning): the V7 <c>victim_query_plan_xml</c> column is projected
+    /// reliably only by the base table. Postgres pins <c>SELECT *</c> in a view to the columns present at
+    /// view-creation (V4, before V7), and V8 only <c>ALTER VIEW … SET SCHEMA</c>s it (never re-creates it),
+    /// so an upgraded store's view would not expose the plan column and this read would fail. The column is
+    /// Darling-only (Lite's DuckDB view has none), so this read was never twinnable with Lite once it
+    /// carries the plan.</para>
+    /// $1 server_id, $2 window start, $3 window end (naive UTC).
     /// </summary>
     public const string RecentDeadlocksSql = """
         SELECT
@@ -241,8 +269,9 @@ public sealed partial class ViewerDataService
             deadlock_time,
             victim_process_id,
             victim_sql_text,
-            deadlock_graph_xml
-        FROM v_deadlocks
+            deadlock_graph_xml,
+            victim_query_plan_xml
+        FROM deadlocks
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
@@ -268,6 +297,7 @@ public sealed partial class ViewerDataService
                 VictimProcessId = reader.IsDBNull(2) ? "" : reader.GetString(2),
                 VictimSqlText = reader.IsDBNull(3) ? "" : reader.GetString(3),
                 DeadlockGraphXml = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                VictimQueryPlanXml = reader.IsDBNull(5) ? null : reader.GetString(5),
             });
         }
 

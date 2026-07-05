@@ -294,6 +294,7 @@ public sealed class ViewerQueriesLivePostgresTests
     private const int QueryStoreServerId = -970803;
     private const int ComparisonServerId = -970804;
     private const int SlicerServerId = -970805;
+    private const int ProcedureStatsPlanServerId = -970806;
 
     private static string? ConnectionString => Environment.GetEnvironmentVariable("DARLING_TEST_PG");
 
@@ -381,6 +382,43 @@ public sealed class ViewerQueriesLivePostgresTests
         finally
         {
             await DeleteRowsAsync(connection, "procedure_stats", ProcedureStatsServerId);
+        }
+    }
+
+    [Fact]
+    public async Task ProcedureStatsPlan_FetchesNewestStoredXml_KeyedByObject_NullWhenUncaptured_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live procedure-plan test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "procedure_stats", ProcedureStatsPlanServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var t = TruncateToSeconds(DateTime.UtcNow).AddHours(-2);
+
+        try
+        {
+            /* Same (db, schema, object) captured twice — the newer plan wins (ORDER BY collection_time DESC). */
+            await InsertProcedureStatsAsync(connection, ProcedureStatsPlanServerId, t, "StackOverflow", "dbo", "usp_WithPlan", "PROC",
+                deltaExec: 1, deltaWorker: 10_000, deltaElapsed: 20_000, deltaReads: 100, planXml: "<ShowPlanXML>older</ShowPlanXML>");
+            await InsertProcedureStatsAsync(connection, ProcedureStatsPlanServerId, t.AddMinutes(30), "StackOverflow", "dbo", "usp_WithPlan", "PROC",
+                deltaExec: 1, deltaWorker: 10_000, deltaElapsed: 20_000, deltaReads: 100, planXml: "<ShowPlanXML>newer</ShowPlanXML>");
+            /* A procedure with activity but no captured plan (query_plan_xml NULL). */
+            await InsertProcedureStatsAsync(connection, ProcedureStatsPlanServerId, t, "StackOverflow", "dbo", "usp_NoPlan", "PROC",
+                deltaExec: 1, deltaWorker: 10_000, deltaElapsed: 20_000, deltaReads: 100);
+
+            Assert.Equal("<ShowPlanXML>newer</ShowPlanXML>",
+                await viewer.GetProcedureStatsPlanXmlAsync(ProcedureStatsPlanServerId, "StackOverflow", "dbo", "usp_WithPlan"));
+            /* No plan captured, and an absent object, both fetch null. */
+            Assert.Null(await viewer.GetProcedureStatsPlanXmlAsync(ProcedureStatsPlanServerId, "StackOverflow", "dbo", "usp_NoPlan"));
+            Assert.Null(await viewer.GetProcedureStatsPlanXmlAsync(ProcedureStatsPlanServerId, "StackOverflow", "dbo", "usp_Absent"));
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "procedure_stats", ProcedureStatsPlanServerId);
         }
     }
 
@@ -549,7 +587,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
     private static async Task InsertProcedureStatsAsync(
         NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc,
         string databaseName, string schemaName, string objectName, string objectType,
-        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads)
+        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string? planXml = null)
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO procedure_stats
@@ -557,8 +595,8 @@ INSERT INTO procedure_stats
      database_name, schema_name, object_name, object_type,
      cached_time, last_execution_time, sql_handle, plan_handle,
      delta_execution_count, delta_worker_time, delta_elapsed_time, delta_logical_reads,
-     delta_logical_writes, delta_physical_reads, delta_spills)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)", connection);
+     delta_logical_writes, delta_physical_reads, delta_spills, query_plan_xml)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)", connection);
         command.Parameters.AddWithValue(1L);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(serverId);
@@ -578,6 +616,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         command.Parameters.AddWithValue(0L);
         command.Parameters.AddWithValue(0L);
         command.Parameters.AddWithValue(0L);
+        command.Parameters.AddWithValue((object?)planXml ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
