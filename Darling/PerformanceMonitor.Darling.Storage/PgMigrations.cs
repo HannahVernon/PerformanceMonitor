@@ -53,6 +53,7 @@ public static class PgMigrations
         new Migration(7, "viewer-plan-capture-columns", V7Sql),
         new Migration(8, "schema-split-collect-config", PgSchemaGenerator.GenerateV8Move()),
         new Migration(9, "server-inventory-cost-fields", V9Sql),
+        new Migration(10, "latch-spinlock-collectors", PgSchemaGenerator.GenerateV10AddLatchSpinlock()),
     };
 
     /// <summary>

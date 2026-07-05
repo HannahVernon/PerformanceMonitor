@@ -20,6 +20,8 @@ public static class CollectorCatalog
     public static IReadOnlyList<ICollectorSchemaInfo> All { get; } = new ICollectorSchemaInfo[]
     {
         WaitStatsCollector.Instance,
+        LatchStatsCollector.Instance,
+        SpinlockStatsCollector.Instance,
         TempDbStatsCollector.Instance,
         MemoryGrantsCollector.Instance,
         CpuUtilizationCollector.Instance,

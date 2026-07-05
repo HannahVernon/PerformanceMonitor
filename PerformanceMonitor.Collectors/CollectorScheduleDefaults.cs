@@ -26,6 +26,8 @@ public static class CollectorScheduleDefaults
     public static IReadOnlyDictionary<string, Entry> All { get; } = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase)
     {
         ["wait_stats"] = new(1, 30),
+        ["latch_stats"] = new(1, 30),
+        ["spinlock_stats"] = new(1, 30),
         ["query_stats"] = new(1, 30),
         ["procedure_stats"] = new(1, 30),
         ["query_store"] = new(5, 30),

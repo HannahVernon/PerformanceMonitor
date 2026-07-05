@@ -58,6 +58,8 @@ public class ArchiveService
     internal static readonly (string Table, string TimeColumn)[] ArchivableTables =
     [
         ("wait_stats", "collection_time"),
+        ("latch_stats", "collection_time"),
+        ("spinlock_stats", "collection_time"),
         ("query_stats", "collection_time"),
         ("procedure_stats", "collection_time"),
         ("query_store_stats", "collection_time"),

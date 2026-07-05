@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_NineVersions_V7PlanColumns_V8SchemaSplit_V9InventoryCost()
+    public void MigrationScripts_TenVersions_V8SchemaSplit_V9InventoryCost_V10LatchSpinlock()
     {
-        Assert.Equal(9, PgMigrations.Scripts.Count);
+        Assert.Equal(10, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -44,7 +44,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(7, PgMigrations.Scripts[6].Version);
         Assert.Equal(8, PgMigrations.Scripts[7].Version);
         Assert.Equal(9, PgMigrations.Scripts[8].Version);
-        Assert.Equal(9, StorageVersion.SchemaVersion);
+        Assert.Equal(10, PgMigrations.Scripts[9].Version);
+        Assert.Equal(10, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -105,6 +106,20 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS ag_replica_role text;", v9, StringComparison.Ordinal);
         Assert.Contains("ALTER TABLE servers ADD COLUMN IF NOT EXISTS monthly_cost_usd numeric;", v9, StringComparison.Ordinal);
 
+        /* V10 adds the latch_stats + spinlock_stats collector tables and their v_* passthrough views
+           (Dashboard->Darling parity, #1262). Generated from the collector definitions so the tables
+           match the fresh V1 shape; CREATE TABLE IF NOT EXISTS no-ops on a fresh store and really
+           creates them on a store built before these collectors existed. */
+        var v10 = PgMigrations.Scripts[9].Sql;
+        Assert.Equal("latch-spinlock-collectors", PgMigrations.Scripts[9].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS latch_stats (", v10, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS spinlock_stats (", v10, StringComparison.Ordinal);
+        Assert.Contains("spins_per_collision double precision", v10, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_latch_stats_time ON latch_stats(server_id, collection_time);", v10, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_spinlock_stats_time ON spinlock_stats(server_id, collection_time);", v10, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_latch_stats AS SELECT * FROM latch_stats;", v10, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_spinlock_stats AS SELECT * FROM spinlock_stats;", v10, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -127,7 +142,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(9L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(10L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

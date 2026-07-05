@@ -16,18 +16,18 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins Darling's generated Postgres schema against the collector definitions: the catalog covers
-/// all 26 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
+/// all 28 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
 /// the prefix names vary exactly where Lite's schema varies (deadlock_id / blocked_report_id /
 /// config_id+capture_time / running_jobs' no-id), and the index shapes mirror Lite's columns.
 /// </summary>
 public sealed class PgSchemaGeneratorTests
 {
     [Fact]
-    public void Catalog_CoversAll26Collectors_WithUniqueTablesAndNames()
+    public void Catalog_CoversAll28Collectors_WithUniqueTablesAndNames()
     {
-        Assert.Equal(26, CollectorCatalog.All.Count);
-        Assert.Equal(26, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
-        Assert.Equal(26, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+        Assert.Equal(28, CollectorCatalog.All.Count);
+        Assert.Equal(28, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(28, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
     }
 
     [Fact]
@@ -129,6 +129,53 @@ public sealed class PgSchemaGeneratorTests
     }
 
     [Fact]
+    public void CreateTable_LatchStats_MirrorsDeltaColumns()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(LatchStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS latch_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    latch_class text,\n" +
+            "    waiting_requests_count bigint,\n" +
+            "    wait_time_ms bigint,\n" +
+            "    max_wait_time_ms bigint,\n" +
+            "    delta_waiting_requests_count bigint,\n" +
+            "    delta_wait_time_ms bigint,\n" +
+            "    delta_max_wait_time_ms bigint\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_SpinlockStats_MapsSpinsPerCollisionToDoublePrecision()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(SpinlockStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS spinlock_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    spinlock_name text,\n" +
+            "    collisions bigint,\n" +
+            "    spins bigint,\n" +
+            "    spins_per_collision double precision,\n" +
+            "    sleep_time bigint,\n" +
+            "    backoffs bigint,\n" +
+            "    delta_collisions bigint,\n" +
+            "    delta_spins bigint,\n" +
+            "    delta_sleep_time bigint,\n" +
+            "    delta_backoffs bigint\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
     public void CreateIndex_MirrorsLiteIndexColumns()
     {
         Assert.Equal(
@@ -153,11 +200,11 @@ public sealed class PgSchemaGeneratorTests
         var script = PgSchemaGenerator.GenerateFullSchema();
 
         var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
-        Assert.Equal(26, tableCount);
+        Assert.Equal(28, tableCount);
 
-        /* 26 tables minus the two index-less config tables = 24 indexes. */
+        /* 28 tables minus the two index-less config tables = 26 indexes. */
         var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
-        Assert.Equal(24, indexCount);
+        Assert.Equal(26, indexCount);
 
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);

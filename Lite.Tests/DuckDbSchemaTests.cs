@@ -50,6 +50,8 @@ public class DuckDbSchemaTests : IDisposable
             "collection_schedule",
             "collection_log",
             "wait_stats",
+            "latch_stats",
+            "spinlock_stats",
             "query_stats",
             "cpu_utilization_stats",
             "file_io_stats",
@@ -138,10 +140,10 @@ public class DuckDbSchemaTests : IDisposable
         foreach (var _ in Schema.GetAllTableStatements())
             tableCount++;
 
-        /* 33 tables from Schema (schema_version is created separately by DuckDbInitializer).
-           Includes config_edge_trigger_watermarks (#1145) and dmv_blocking_snapshots (always-on
-           blocking fallback). */
-        Assert.Equal(33, tableCount);
+        /* 35 tables from Schema (schema_version is created separately by DuckDbInitializer).
+           Includes config_edge_trigger_watermarks (#1145), dmv_blocking_snapshots (always-on
+           blocking fallback), and latch_stats/spinlock_stats (#1262 shared DMV collectors). */
+        Assert.Equal(35, tableCount);
     }
 
     [Fact]
