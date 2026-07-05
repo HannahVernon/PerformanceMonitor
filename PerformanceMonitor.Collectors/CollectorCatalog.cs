@@ -50,5 +50,6 @@ public static class CollectorCatalog
         QueryStoreCollector.Instance,
         DeadlocksCollector.Instance,
         BlockedProcessReportCollector.Instance,
+        SystemHealthEventsCollector.Instance,
     };
 }

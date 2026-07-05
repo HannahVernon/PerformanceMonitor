@@ -43,7 +43,7 @@ public class ScheduleManager
             ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
             ["dmv_blocking_snapshot"] = 1,
             ["blocked_process_report"] = 1, ["running_jobs"] = 2,
-            ["session_summary_stats"] = 2
+            ["session_summary_stats"] = 2, ["system_health_events"] = 2
         },
         ["Balanced"] = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -57,7 +57,7 @@ public class ScheduleManager
             ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
             ["dmv_blocking_snapshot"] = 1,
             ["blocked_process_report"] = 1, ["running_jobs"] = 5,
-            ["session_summary_stats"] = 5
+            ["session_summary_stats"] = 5, ["system_health_events"] = 5
         },
         ["Low-Impact"] = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -71,7 +71,7 @@ public class ScheduleManager
             ["memory_grant_stats"] = 5, ["waiting_tasks"] = 5,
             ["dmv_blocking_snapshot"] = 5,
             ["blocked_process_report"] = 5, ["running_jobs"] = 30,
-            ["session_summary_stats"] = 15
+            ["session_summary_stats"] = 15, ["system_health_events"] = 15
         }
     };
 
@@ -598,7 +598,8 @@ public class ScheduleManager
             new() { Name = "index_object_stats", Enabled = true, FrequencyMinutes = 1440, RetentionDays = 90, Description = "Per-object table/index size, usage, and locking stats for growth, unused-index, and contention analysis (daily collection)" },
             new() { Name = "server_properties", Enabled = true, FrequencyMinutes = 0, RetentionDays = 365, Description = "Server edition, licensing, CPU/memory hardware metadata (on-load only)" },
             new() { Name = "session_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Per-application session counts from sys.dm_exec_sessions" },
-            new() { Name = "session_summary_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Server-wide session summary (idle/leak signal): total/running/sleeping/idle-over-30min counts, memory waits, top app/host from sys.dm_exec_sessions + sys.dm_exec_requests" }
+            new() { Name = "session_summary_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Server-wide session summary (idle/leak signal): total/running/sleeping/idle-over-30min counts, memory waits, top app/host from sys.dm_exec_sessions + sys.dm_exec_requests" },
+            new() { Name = "system_health_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Raw system_health Extended Events (memory broker/OOM, scheduler monitor, sp_server_diagnostics, severe errors, significant waits) captured as XML for health-parser analysis (not collected on Azure SQL DB)" }
         };
     }
 

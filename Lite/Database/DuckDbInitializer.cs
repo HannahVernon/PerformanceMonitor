@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 39;
+    internal const int CurrentSchemaVersion = 40;
 
     private readonly string _archivePath;
 
@@ -119,7 +119,7 @@ public class DuckDbInitializer
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
         "dmv_blocking_snapshots",
         "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
-        "session_stats", "session_summary_stats", "server_config", "database_config",
+        "session_stats", "session_summary_stats", "system_health_events", "server_config", "database_config",
         "database_scoped_config", "trace_flags", "config_alert_log",
         "collection_log"
     ];
@@ -940,6 +940,15 @@ public class DuckDbInitializer
                     session_stats table. New table only — created by GetAllTableStatements() below; the
                     v_ view comes from CreateArchiveViewsAsync via ArchivableTables. */
             _logger?.LogInformation("Running migration to v39: adding session_summary_stats table");
+        }
+
+        if (fromVersion < 40)
+        {
+            /* v40: added system_health_events (Stage 1 raw system_health Extended Events capture —
+                    one row per event, raw XML only, no shredding) for Dashboard->Darling health-parser
+                    parity. New table only — created by GetAllTableStatements() below; the v_ view comes
+                    from CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v40: adding system_health_events table");
         }
     }
 
