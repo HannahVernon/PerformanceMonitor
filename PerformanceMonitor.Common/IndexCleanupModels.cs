@@ -196,6 +196,14 @@ namespace PerformanceMonitor.Common
 
         /// <summary>An <c>ALTER INDEX … REBUILD … DATA_COMPRESSION = PAGE</c> row.</summary>
         Compress = 2,
+
+        /// <summary>
+        /// An informational "review these related indexes" row that carries NO destructive script — the
+        /// analyzer recognized a Reverse Duplicate or Equal Except For Filter relationship but, exactly like
+        /// sp_IndexCleanup, deliberately does NOT auto-consolidate it (the indexes serve different access
+        /// patterns / row coverage).
+        /// </summary>
+        Review = 3,
     }
 
     /// <summary>The canonical <c>consolidation_rule</c> labels this analyzer emits.</summary>
@@ -207,13 +215,22 @@ namespace PerformanceMonitor.Common
         /// <summary>The &lt;14-day-uptime variant of <see cref="UnusedIndex"/> (usage data may be incomplete).</summary>
         public const string UnusedIndexUptimeWarning = "Unused Index (WARNING: Server uptime < 14 days - usage data may be incomplete)";
 
-        /// <summary>Identical keys (with direction), includes, and filter (Rule 2).</summary>
+        /// <summary>Identical keys (with direction), includes, and filter (Rule 2) → the redundant one is disabled.</summary>
         public const string ExactDuplicate = "Exact Duplicate";
 
-        /// <summary>Same key columns in the same order but with every sort direction inverted (functionally equivalent via backward scan); same includes and filter.</summary>
+        /// <summary>
+        /// Same key column SET but a different arrangement (reversed/reordered order or changed sort
+        /// directions), with the same includes and filter. Recognized and surfaced for REVIEW but never
+        /// auto-disabled — a different leading column serves different query patterns (sp_IndexCleanup's
+        /// adversarial test 9a asserts these are not consolidated).
+        /// </summary>
         public const string ReverseDuplicate = "Reverse Duplicate";
 
-        /// <summary>Identical keys (with direction) and includes but a different filter predicate.</summary>
+        /// <summary>
+        /// Identical keys (with direction) and includes but a DIFFERENT filter predicate. Recognized and
+        /// surfaced for REVIEW but never auto-disabled — the filters index different row sets
+        /// (sp_IndexCleanup's adversarial test 10a asserts these are not consolidated).
+        /// </summary>
         public const string EqualExceptForFilter = "Equal Except For Filter";
 
         /// <summary>Same keys (with direction) and filter but different includes (Rule 5); the keeper absorbs the includes.</summary>

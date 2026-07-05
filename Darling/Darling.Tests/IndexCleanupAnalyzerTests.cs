@@ -189,48 +189,76 @@ public class IndexCleanupAnalyzerTests
         Assert.Equal("IX_AAA", rec.TargetIndexName);
     }
 
-    // ── Reverse Duplicate ──────────────────────────────────────────────────────────────────────────
+    // ── Reverse Duplicate (review only — never auto-disabled; mirrors adversarial test 9a) ──────────
 
     [Fact]
-    public void ReverseDuplicate_InvertedDirections_IsFlagged()
+    public void ReverseDuplicate_ReversedColumnOrder_IsReviewNotDisabled()
     {
-        var asc = Idx("IX_Asc", "[a], [b]", indexId: 2, includes: "[c]", seeks: 10, scans: 5);
-        var desc = Idx("IX_Desc", "[a] DESC, [b] DESC", indexId: 3, includes: "[c]", seeks: 10);
+        // (a, b) vs (b, a): same column set, different leading column → serve different queries.
+        var ab = Idx("IX_ab", "[a], [b]", indexId: 2, seeks: 10);
+        var ba = Idx("IX_ba", "[b], [a]", indexId: 3, seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { ab, ba }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+
+        var review = r.Recommendations.First(x => x.IndexName == "IX_ab");
+        Assert.Equal(IndexCleanupResultKind.Review, review.ResultKind);
+        Assert.Equal(IndexCleanupRules.ReverseDuplicate, review.ConsolidationRule);
+        Assert.Equal(IndexCleanupAction.Keep, review.Action);
+        Assert.Equal("", review.Script);   // informational — no destructive script
+    }
+
+    [Fact]
+    public void ReverseDuplicate_InvertedDirection_IsReviewNotDisabled()
+    {
+        // (a ASC) vs (a DESC): functionally scannable both ways, but sp_IndexCleanup does not auto-drop them.
+        var asc = Idx("IX_asc", "[a]", indexId: 2, seeks: 10);
+        var desc = Idx("IX_desc", "[a] DESC", indexId: 3, seeks: 10);
 
         var r = IndexCleanupAnalyzer.Analyze(new[] { asc, desc }, Opts());
 
-        var rec = Assert.Single(r.Recommendations);
-        Assert.Equal("IX_Desc", rec.IndexName);
-        Assert.Equal(IndexCleanupRules.ReverseDuplicate, rec.ConsolidationRule);
-        Assert.Equal("IX_Asc", rec.TargetIndexName);
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+        Assert.Contains(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.Review && x.ConsolidationRule == IndexCleanupRules.ReverseDuplicate);
     }
 
     [Fact]
-    public void ReverseDuplicate_PartialDirectionDifference_NotFlagged()
+    public void ExactDuplicate_SameDescendingKeys_IsDisabled()
     {
-        // Only ONE of two key columns flipped → not a functional reverse duplicate, and not an exact one.
-        var a = Idx("IX_A", "[a], [b]", indexId: 2, includes: "[c]", seeks: 10);
-        var b = Idx("IX_B", "[a], [b] DESC", indexId: 3, includes: "[c]", seeks: 10);
+        // Two byte-identical DESC indexes ARE exact duplicates (mirrors adversarial test 2a).
+        var d1 = Idx("IX_d1", "[a] DESC", indexId: 2, seeks: 10, scans: 5);
+        var d2 = Idx("IX_d2", "[a] DESC", indexId: 3, seeks: 10);
 
-        var r = IndexCleanupAnalyzer.Analyze(new[] { a, b }, Opts());
+        var r = IndexCleanupAnalyzer.Analyze(new[] { d1, d2 }, Opts());
+        Assert.Contains(r.Recommendations, x => x.Action == IndexCleanupAction.Disable && x.ConsolidationRule == IndexCleanupRules.ExactDuplicate);
+    }
+
+    // ── Equal Except For Filter (review only — never auto-disabled; mirrors adversarial test 10a) ───
+
+    [Fact]
+    public void EqualExceptForFilter_FilteredVsUnfiltered_IsReviewNotDisabled()
+    {
+        var unfiltered = Idx("IX_a", "[a]", indexId: 2, seeks: 10);
+        var filtered = Idx("IX_a_filt", "[a]", indexId: 3, filter: "([status_code]=(1))", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { unfiltered, filtered }, Opts());
 
         Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+        var review = r.Recommendations.First(x => x.IndexName == "IX_a_filt" && x.ResultKind == IndexCleanupResultKind.Review);
+        Assert.Equal(IndexCleanupRules.EqualExceptForFilter, review.ConsolidationRule);
+        Assert.Contains("filter", review.AdditionalInfo, StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── Equal Except For Filter ────────────────────────────────────────────────────────────────────
-
     [Fact]
-    public void EqualExceptForFilter_DifferentFilters_IsFlaggedWithCaveat()
+    public void EqualExceptForFilter_DifferentFilters_AreReviewNotDisabled()
     {
-        var a = Idx("IX_A", "[a]", indexId: 2, includes: "[b]", filter: "([a]>(0))", seeks: 10, scans: 5);
+        var a = Idx("IX_A", "[a]", indexId: 2, includes: "[b]", filter: "([a]>(0))", seeks: 10);
         var b = Idx("IX_B", "[a]", indexId: 3, includes: "[b]", filter: "([a]>(100))", seeks: 10);
 
         var r = IndexCleanupAnalyzer.Analyze(new[] { a, b }, Opts());
 
-        var rec = Assert.Single(r.Recommendations);
-        Assert.Equal("IX_B", rec.IndexName);
-        Assert.Equal(IndexCleanupRules.EqualExceptForFilter, rec.ConsolidationRule);
-        Assert.Contains("filter", rec.AdditionalInfo, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+        Assert.Equal(2, r.Recommendations.Count(x => x.ResultKind == IndexCleanupResultKind.Review));
     }
 
     // ── Rule 5: Key Duplicate ──────────────────────────────────────────────────────────────────────
@@ -336,6 +364,31 @@ public class IndexCleanupAnalyzerTests
         Assert.Equal("IX_C", Rec(r, "IX_B")!.TargetIndexName);
         Assert.Equal(IndexCleanupAction.MergeIncludes, Rec(r, "IX_C")!.Action);
         Assert.Equal(IndexCleanupRules.KeySuperset, Rec(r, "IX_C")!.ConsolidationRule);
+    }
+
+    [Fact]
+    public void KeySubset_SameFilter_IsDisabled()
+    {
+        // Filtered subset with a MATCHING filter → disabled (mirrors adversarial test 3c).
+        var narrow = Idx("IX_n", "[a]", indexId: 2, filter: "([status_code]=(3))", seeks: 10);
+        var wide = Idx("IX_w", "[a], [b]", indexId: 3, filter: "([status_code]=(3))", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { narrow, wide }, Opts());
+
+        Assert.Equal(IndexCleanupAction.Disable, Rec(r, "IX_n")!.Action);
+        Assert.Equal(IndexCleanupRules.KeySubset, Rec(r, "IX_n")!.ConsolidationRule);
+    }
+
+    [Fact]
+    public void KeySubset_DifferentFilter_IsNotSubset()
+    {
+        // Prefix key but a DIFFERENT filter → NOT a subset (mirrors adversarial test 3d).
+        var narrow = Idx("IX_n", "[a]", indexId: 2, filter: "([status_code]=(1))", seeks: 10);
+        var wide = Idx("IX_w", "[a], [b]", indexId: 3, filter: "([status_code]=(2))", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { narrow, wide }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
     }
 
     // ── Protections ────────────────────────────────────────────────────────────────────────────────
@@ -537,6 +590,17 @@ public class IndexCleanupAnalyzerTests
         Assert.Contains(r.DatabaseRollups, x => x.DatabaseName == "DbOne");
         Assert.Contains(r.DatabaseRollups, x => x.DatabaseName == "DbTwo");
         Assert.Equal(2, r.OverallRollup.IndexesToDisable);
+    }
+
+    [Fact]
+    public void CrossTableIsolation_IdenticalIndexesOnDifferentObjects_NotFlagged()
+    {
+        // Identical indexes on DIFFERENT tables (objects) must never dedupe each other (mirrors test 7a).
+        var t1 = Idx("IX_same", "[a]", indexId: 2, objectId: 10, table: "T1", seeks: 10);
+        var t2 = Idx("IX_same", "[a]", indexId: 2, objectId: 20, table: "T2", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { t1, t2 }, Opts());
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
     }
 
     [Fact]

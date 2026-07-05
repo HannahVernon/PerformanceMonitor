@@ -19,15 +19,18 @@ namespace PerformanceMonitor.Common
     /// and a reclaimable-space roll-up — the same analysis a live <c>sp_IndexCleanup</c> would, for servers
     /// where the proc is not (or cannot be) installed.
     ///
-    /// <para>Faithful to <c>sp_IndexCleanup</c> v2.7 (20260701). Because Stage 1 captured
-    /// <c>key_columns</c>/<c>included_columns</c> in the proc's EXACT delimited <c>QUOTENAME</c> form, the
-    /// string-comparison dedupe ports directly. Reproduced rules: <b>Unused Index</b> (Rule 1, with the
-    /// &lt;14-day-uptime caveat and &lt;=7-day auto-dedupe), <b>Exact Duplicate</b> (Rule 2),
-    /// <b>Reverse Duplicate</b> and <b>Equal Except For Filter</b> (the two exact-duplicate sub-classes the
-    /// proc documents at its <c>#index_analysis</c> definition but folds into Rule 2 — implemented here as
-    /// distinct labels, both derivable from the captured direction-bearing key strings), <b>Key Duplicate</b>
-    /// (Rule 5), and <b>Key Subset</b>/<b>Key Superset</b> (Rules 3/4/6, with subset-chain flattening and
-    /// missing-include carry). Priority scoring, <c>is_eligible_for_dedupe</c>, and the
+    /// <para>Faithful to <c>sp_IndexCleanup</c> v2.7 (20260701), cross-checked against its adversarial test
+    /// suite. Because Stage 1 captured <c>key_columns</c>/<c>included_columns</c> in the proc's EXACT
+    /// delimited <c>QUOTENAME</c> form, the string-comparison dedupe ports directly. <b>Auto-consolidated</b>
+    /// (a script is generated): <b>Unused Index</b> (Rule 1, with the &lt;14-day-uptime caveat and
+    /// &lt;=7-day auto-dedupe), <b>Exact Duplicate</b> (Rule 2 → DISABLE), <b>Key Duplicate</b> (Rule 5 →
+    /// keeper MERGE INCLUDES + loser DISABLE), and <b>Key Subset</b>/<b>Key Superset</b> (Rules 3/4/6 →
+    /// subset DISABLE + superset MERGE, with subset-chain flattening and missing-include carry).
+    /// <b>Recognized but deliberately NOT auto-consolidated</b> (surfaced as a review row, matching the
+    /// proc's tested behavior — its adversarial tests 9a/10a assert these are left alone): <b>Reverse
+    /// Duplicate</b> (same key column set, different order/direction — a different leading column serves
+    /// different queries) and <b>Equal Except For Filter</b> (same keys+includes, different filter — the
+    /// filters index different rows). Priority scoring, <c>is_eligible_for_dedupe</c>, and the
     /// PK/unique-constraint/FK-reference disable protections match the proc's guards. PAGE-compression
     /// candidacy and the 0.20–0.60 general savings band reproduce the proc's <c>#compression_eligibility</c>
     /// / reporting math.</para>
@@ -135,9 +138,10 @@ namespace PerformanceMonitor.Common
                 ApplyUnused(scope, uptimeWarning);
             }
 
+            // Auto-consolidating rules (consume-and-mark, in sp_IndexCleanup's order). Reverse Duplicate and
+            // Equal Except For Filter are intentionally NOT here — the proc recognizes but does not
+            // consolidate them; they are detected non-destructively in DetectReviewRelationships.
             ApplyExactDuplicate(scope);
-            ApplyReverseDuplicate(scope);
-            ApplyEqualExceptForFilter(scope);
             ApplyKeySubset(scope);
             ResolveSubsetChains(scope);
             ApplyKeySuperset(scope);
@@ -180,54 +184,6 @@ namespace PerformanceMonitor.Common
                 .Where(g => g.Count() > 1))
             {
                 LabelDuplicateGroup(group.ToList(), IndexCleanupRules.ExactDuplicate);
-            }
-        }
-
-        /// <summary>
-        /// Reverse Duplicate: same key columns in the same order but every sort direction inverted (a
-        /// backward scan of one serves the other), same includes and filter. Pairwise, since only the FULL
-        /// direction inverse — not a partial direction difference — is equivalent.
-        /// </summary>
-        private static void ApplyReverseDuplicate(List<WorkIndex> scope)
-        {
-            var candidates = DedupeCandidates(scope)
-                .OrderBy(w => w.Name, StringComparer.Ordinal)
-                .ToList();
-
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                var a = candidates[i];
-                if (a.Processed)
-                {
-                    continue;
-                }
-
-                for (int j = i + 1; j < candidates.Count; j++)
-                {
-                    var b = candidates[j];
-                    if (b.Processed)
-                    {
-                        continue;
-                    }
-
-                    if (IsReverseDuplicate(a, b))
-                    {
-                        LabelDuplicateGroup(new List<WorkIndex> { a, b }, IndexCleanupRules.ReverseDuplicate);
-                        break; // a is now processed
-                    }
-                }
-            }
-        }
-
-        /// <summary>Equal Except For Filter: identical keys (with direction) and includes, different filter.</summary>
-        private static void ApplyEqualExceptForFilter(List<WorkIndex> scope)
-        {
-            foreach (var group in DedupeCandidates(scope)
-                .GroupBy(w => (w.KeyColumns, w.IncludedColumns), KeyIncludeComparer.Instance)
-                .Where(g => g.Count() > 1))
-            {
-                // After Exact, same keys+includes among the unprocessed necessarily differ only by filter.
-                LabelDuplicateGroup(group.ToList(), IndexCleanupRules.EqualExceptForFilter);
             }
         }
 
@@ -459,25 +415,80 @@ namespace PerformanceMonitor.Common
                 .ThenBy(m => m.Name, StringComparer.Ordinal)
                 .FirstOrDefault();
 
-        private static bool IsReverseDuplicate(WorkIndex a, WorkIndex b)
-        {
-            if (a.Keys.Count == 0 || a.Keys.Count != b.Keys.Count)
-            {
-                return false;
-            }
+        /// <summary>
+        /// Reverse Duplicate: the same key column SET but a different arrangement (reversed/reordered order
+        /// or changed sort directions), with the same includes and filter. NOT an exact duplicate (the key
+        /// strings differ). A review signal only — never a disable.
+        /// </summary>
+        private static bool IsReverseDuplicate(WorkIndex a, WorkIndex b) =>
+            a.Keys.Count > 0
+            && a.Keys.Count == b.Keys.Count
+            && !string.Equals(a.KeyColumns, b.KeyColumns, StringComparison.Ordinal)  // not an exact duplicate
+            && a.KeyNameSet.SetEquals(b.KeyNameSet)                                  // same column membership
+            && string.Equals(a.IncludedColumns, b.IncludedColumns, StringComparison.Ordinal)
+            && string.Equals(a.Filter, b.Filter, StringComparison.Ordinal);
 
-            for (int k = 0; k < a.Keys.Count; k++)
+        /// <summary>
+        /// Equal Except For Filter: byte-identical keys (with direction) and includes, but a different filter
+        /// predicate. A review signal only — never a disable (the filters index different rows).
+        /// </summary>
+        private static bool IsEqualExceptForFilter(WorkIndex a, WorkIndex b) =>
+            string.Equals(a.KeyColumns, b.KeyColumns, StringComparison.Ordinal)
+            && string.Equals(a.IncludedColumns, b.IncludedColumns, StringComparison.Ordinal)
+            && !string.Equals(a.Filter, b.Filter, StringComparison.Ordinal);
+
+        /// <summary>
+        /// Non-destructive detection of Reverse Duplicate and Equal Except For Filter relationships among the
+        /// indexes a scope KEPT (action None/Keep). Mirrors sp_IndexCleanup's stance (adversarial tests
+        /// 9a/10a): recognize the near-duplicate, but do NOT consolidate it — emit a review row so a human can
+        /// decide. One row per participating index per relationship type.
+        /// </summary>
+        private static IEnumerable<IndexCleanupRecommendation> DetectReviewRelationships(List<WorkIndex> scope)
+        {
+            var survivors = scope
+                .Where(w => w.IsEligibleForDedupe
+                    && !w.Src.IsUniqueConstraint
+                    && (w.Action == IndexCleanupAction.None || w.Action == IndexCleanupAction.Keep))
+                .OrderBy(w => w.Name, StringComparer.Ordinal)
+                .ToList();
+
+            for (int i = 0; i < survivors.Count; i++)
             {
-                // Same column, same position, but the sort direction must be inverted on EVERY key column.
-                if (!string.Equals(a.Keys[k].Name, b.Keys[k].Name, StringComparison.Ordinal)
-                    || a.Keys[k].Descending == b.Keys[k].Descending)
+                var a = survivors[i];
+                var reverse = new List<string>();
+                var equalExceptFilter = new List<string>();
+
+                foreach (var b in survivors)
                 {
-                    return false;
+                    if (ReferenceEquals(a, b))
+                    {
+                        continue;
+                    }
+
+                    if (IsReverseDuplicate(a, b))
+                    {
+                        reverse.Add(b.Name);
+                    }
+                    else if (IsEqualExceptForFilter(a, b))
+                    {
+                        equalExceptFilter.Add(b.Name);
+                    }
+                }
+
+                if (reverse.Count > 0)
+                {
+                    yield return BuildReview(a, IndexCleanupRules.ReverseDuplicate, reverse,
+                        "Same key columns in a different order/direction as: " + string.Join(", ", reverse)
+                        + ". A different leading column serves different queries — review whether both are needed (not auto-disabled).");
+                }
+
+                if (equalExceptFilter.Count > 0)
+                {
+                    yield return BuildReview(a, IndexCleanupRules.EqualExceptForFilter, equalExceptFilter,
+                        "Identical keys and includes but a different filter than: " + string.Join(", ", equalExceptFilter)
+                        + ". The filters index different rows — review whether both are needed (not auto-disabled).");
                 }
             }
-
-            return string.Equals(a.IncludedColumns, b.IncludedColumns, StringComparison.Ordinal)
-                && string.Equals(a.Filter, b.Filter, StringComparison.Ordinal);
         }
 
         // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -502,6 +513,16 @@ namespace PerformanceMonitor.Common
                     yield return BuildCompress(w, options);
                 }
             }
+
+            // Non-destructive Reverse Duplicate / Equal Except For Filter review rows, per object scope. An
+            // index may appear here AND in a compression row — the review flag is additive metadata.
+            foreach (var scope in analyzed.GroupBy(w => w.Src.ObjectId))
+            {
+                foreach (var review in DetectReviewRelationships(scope.ToList()))
+                {
+                    yield return review;
+                }
+            }
         }
 
         private static IndexCleanupRecommendation BuildDisable(WorkIndex w)
@@ -510,8 +531,6 @@ namespace PerformanceMonitor.Common
             {
                 IndexCleanupRules.KeySubset => "This index is superseded by a wider index: " + (w.TargetIndexName ?? "(unknown)"),
                 IndexCleanupRules.ExactDuplicate => "This index is an exact duplicate of: " + (w.TargetIndexName ?? "(unknown)"),
-                IndexCleanupRules.ReverseDuplicate => "This index is a reverse-order duplicate of: " + (w.TargetIndexName ?? "(unknown)"),
-                IndexCleanupRules.EqualExceptForFilter => "This index matches except for its filter: " + (w.TargetIndexName ?? "(unknown)") + " (verify the differing WHERE clauses before disabling)",
                 IndexCleanupRules.KeyDuplicate => "This index has the same keys as: " + (w.TargetIndexName ?? "(unknown)"),
                 _ when w.ConsolidationRule != null && w.ConsolidationRule.StartsWith(IndexCleanupRules.UnusedIndex, StringComparison.Ordinal) => w.ConsolidationRule,
                 _ => "This index is redundant and will be disabled",
@@ -561,6 +580,19 @@ namespace PerformanceMonitor.Common
                 AdditionalInfo = "Compression type: PAGE (All Partitions)",
             };
         }
+
+        private static IndexCleanupRecommendation BuildReview(WorkIndex w, string rule, List<string> siblings, string additionalInfo) =>
+            NewRecommendation(w) with
+            {
+                Action = IndexCleanupAction.Keep,
+                ResultKind = IndexCleanupResultKind.Review,
+                ConsolidationRule = rule,
+                TargetIndexName = siblings.Count > 0 ? siblings[0] : null,
+                SupersededBy = "Related to " + string.Join(", ", siblings),
+                ScriptType = "REVIEW",
+                Script = "",   // informational only — no destructive script
+                AdditionalInfo = additionalInfo,
+            };
 
         private static IndexCleanupRecommendation NewRecommendation(WorkIndex w) => new()
         {
@@ -742,8 +774,14 @@ namespace PerformanceMonitor.Common
                     + "capture the partition scheme name).");
             }
 
+            notes.Add("Reverse Duplicate and Equal Except For Filter are recognized and surfaced as REVIEW rows but "
+                + "never auto-disabled — matching sp_IndexCleanup's tested behavior (its adversarial tests 9a/10a assert "
+                + "reversed-order and filter-differing indexes are left alone; a different leading column or filter serves "
+                + "different queries/rows).");
+
             notes.Add("Out of scope per this stage's DISABLE/MERGE INCLUDES/KEEP action set: sp_IndexCleanup's "
-                + "'Unique Constraint Replacement' (MAKE UNIQUE) and 'Same Keys Different Order' (REVIEW) rules. Both are "
+                + "'Unique Constraint Replacement' (MAKE UNIQUE / DROP CONSTRAINT, Rule 7 family). Its 'Same Keys "
+                + "Different Order' REVIEW case is largely covered by the Reverse Duplicate review rows above. Both are "
                 + "reproducible from the captured metadata if later required.");
 
             return notes;
@@ -820,7 +858,8 @@ namespace PerformanceMonitor.Common
             IndexCleanupResultKind.Merge => 0,
             IndexCleanupResultKind.Disable => 1,
             IndexCleanupResultKind.Compress => 2,
-            _ => 3,
+            IndexCleanupResultKind.Review => 3,
+            _ => 4,
         };
 
         // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -839,6 +878,7 @@ namespace PerformanceMonitor.Common
                 Filter = src.FilterDefinition ?? "";
                 Keys = ParseKeyTokens(KeyColumns);
                 KeyNames = Keys.Select(k => k.Name).ToList();
+                KeyNameSet = new HashSet<string>(KeyNames, StringComparer.Ordinal);
                 IncludeTokens = SplitDelimited(IncludedColumns);
 
                 // is_eligible_for_dedupe: nonclustered → yes; clustered → no (mirrors sp_IndexCleanup's CASE,
@@ -856,6 +896,7 @@ namespace PerformanceMonitor.Common
             public string Filter { get; }
             public List<KeyColumn> Keys { get; }
             public List<string> KeyNames { get; }
+            public HashSet<string> KeyNameSet { get; }
             public List<string> IncludeTokens { get; }
             public bool IsEligibleForDedupe { get; }
             public int Priority { get; }
@@ -1009,16 +1050,6 @@ namespace PerformanceMonitor.Common
                 && string.Equals(x.Filter, y.Filter, StringComparison.Ordinal);
             public int GetHashCode((string Key, string Include, string Filter) obj) =>
                 HashCode.Combine(obj.Key, obj.Include, obj.Filter);
-        }
-
-        private sealed class KeyIncludeComparer : IEqualityComparer<(string Key, string Include)>
-        {
-            public static readonly KeyIncludeComparer Instance = new();
-            public bool Equals((string Key, string Include) x, (string Key, string Include) y) =>
-                string.Equals(x.Key, y.Key, StringComparison.Ordinal)
-                && string.Equals(x.Include, y.Include, StringComparison.Ordinal);
-            public int GetHashCode((string Key, string Include) obj) =>
-                HashCode.Combine(obj.Key, obj.Include);
         }
 
         private sealed class KeyFilterComparer : IEqualityComparer<(string Key, string Filter)>
