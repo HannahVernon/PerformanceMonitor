@@ -16,18 +16,18 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins Darling's generated Postgres schema against the collector definitions: the catalog covers
-/// all 28 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
+/// all 30 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
 /// the prefix names vary exactly where Lite's schema varies (deadlock_id / blocked_report_id /
 /// config_id+capture_time / running_jobs' no-id), and the index shapes mirror Lite's columns.
 /// </summary>
 public sealed class PgSchemaGeneratorTests
 {
     [Fact]
-    public void Catalog_CoversAll28Collectors_WithUniqueTablesAndNames()
+    public void Catalog_CoversAll30Collectors_WithUniqueTablesAndNames()
     {
-        Assert.Equal(28, CollectorCatalog.All.Count);
-        Assert.Equal(28, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
-        Assert.Equal(28, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+        Assert.Equal(30, CollectorCatalog.All.Count);
+        Assert.Equal(30, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(30, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
     }
 
     [Fact]
@@ -176,6 +176,73 @@ public sealed class PgSchemaGeneratorTests
     }
 
     [Fact]
+    public void CreateTable_CpuSchedulerStats_MapsWarningsToBoolean_AndAveragesToNumeric()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(CpuSchedulerStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS cpu_scheduler_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    max_workers_count integer,\n" +
+            "    scheduler_count integer,\n" +
+            "    cpu_count integer,\n" +
+            "    total_runnable_tasks_count integer,\n" +
+            "    total_work_queue_count bigint,\n" +
+            "    total_current_workers_count integer,\n" +
+            "    avg_runnable_tasks_count numeric(38,2),\n" +
+            "    total_active_request_count integer,\n" +
+            "    total_queued_request_count integer,\n" +
+            "    total_blocked_task_count integer,\n" +
+            "    total_active_parallel_thread_count bigint,\n" +
+            "    runnable_request_count integer,\n" +
+            "    total_request_count integer,\n" +
+            "    runnable_percent numeric(38,2),\n" +
+            "    worker_thread_exhaustion_warning boolean,\n" +
+            "    runnable_tasks_warning boolean,\n" +
+            "    blocked_tasks_warning boolean,\n" +
+            "    queued_requests_warning boolean,\n" +
+            "    total_physical_memory_kb bigint,\n" +
+            "    available_physical_memory_kb bigint,\n" +
+            "    system_memory_state_desc text,\n" +
+            "    physical_memory_pressure_warning boolean,\n" +
+            "    total_node_count integer,\n" +
+            "    nodes_online_count integer,\n" +
+            "    offline_cpu_count integer,\n" +
+            "    offline_cpu_warning boolean\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_PlanCacheStats_MapsAvgUseCountToNumeric_AndOldestPlanToTimestamp()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(PlanCacheStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS plan_cache_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    cacheobjtype text,\n" +
+            "    objtype text,\n" +
+            "    total_plans integer,\n" +
+            "    total_size_mb integer,\n" +
+            "    single_use_plans integer,\n" +
+            "    single_use_size_mb integer,\n" +
+            "    multi_use_plans integer,\n" +
+            "    multi_use_size_mb integer,\n" +
+            "    avg_use_count numeric(38,2),\n" +
+            "    avg_size_kb integer,\n" +
+            "    oldest_plan_create_time timestamp\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
     public void CreateIndex_MirrorsLiteIndexColumns()
     {
         Assert.Equal(
@@ -200,11 +267,11 @@ public sealed class PgSchemaGeneratorTests
         var script = PgSchemaGenerator.GenerateFullSchema();
 
         var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
-        Assert.Equal(28, tableCount);
+        Assert.Equal(30, tableCount);
 
-        /* 28 tables minus the two index-less config tables = 26 indexes. */
+        /* 30 tables minus the two index-less config tables = 28 indexes. */
         var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
-        Assert.Equal(26, indexCount);
+        Assert.Equal(28, indexCount);
 
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);

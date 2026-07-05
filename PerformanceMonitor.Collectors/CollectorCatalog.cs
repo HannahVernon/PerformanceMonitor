@@ -22,6 +22,8 @@ public static class CollectorCatalog
         WaitStatsCollector.Instance,
         LatchStatsCollector.Instance,
         SpinlockStatsCollector.Instance,
+        CpuSchedulerStatsCollector.Instance,
+        PlanCacheStatsCollector.Instance,
         TempDbStatsCollector.Instance,
         MemoryGrantsCollector.Instance,
         CpuUtilizationCollector.Instance,

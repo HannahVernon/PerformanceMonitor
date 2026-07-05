@@ -28,6 +28,8 @@ public static class CollectorScheduleDefaults
         ["wait_stats"] = new(1, 30),
         ["latch_stats"] = new(1, 30),
         ["spinlock_stats"] = new(1, 30),
+        ["cpu_scheduler_stats"] = new(1, 30),
+        ["plan_cache_stats"] = new(5, 30),
         ["query_stats"] = new(1, 30),
         ["procedure_stats"] = new(1, 30),
         ["query_store"] = new(5, 30),

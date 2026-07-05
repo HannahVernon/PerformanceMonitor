@@ -97,6 +97,59 @@ CREATE TABLE IF NOT EXISTS spinlock_stats (
     delta_backoffs BIGINT
 )";
 
+    public const string CreateCpuSchedulerStatsTable = @"
+CREATE TABLE IF NOT EXISTS cpu_scheduler_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    max_workers_count INTEGER,
+    scheduler_count INTEGER,
+    cpu_count INTEGER,
+    total_runnable_tasks_count INTEGER,
+    total_work_queue_count BIGINT,
+    total_current_workers_count INTEGER,
+    avg_runnable_tasks_count DECIMAL(38,2),
+    total_active_request_count INTEGER,
+    total_queued_request_count INTEGER,
+    total_blocked_task_count INTEGER,
+    total_active_parallel_thread_count BIGINT,
+    runnable_request_count INTEGER,
+    total_request_count INTEGER,
+    runnable_percent DECIMAL(38,2),
+    worker_thread_exhaustion_warning BOOLEAN,
+    runnable_tasks_warning BOOLEAN,
+    blocked_tasks_warning BOOLEAN,
+    queued_requests_warning BOOLEAN,
+    total_physical_memory_kb BIGINT,
+    available_physical_memory_kb BIGINT,
+    system_memory_state_desc VARCHAR,
+    physical_memory_pressure_warning BOOLEAN,
+    total_node_count INTEGER,
+    nodes_online_count INTEGER,
+    offline_cpu_count INTEGER,
+    offline_cpu_warning BOOLEAN
+)";
+
+    public const string CreatePlanCacheStatsTable = @"
+CREATE TABLE IF NOT EXISTS plan_cache_stats (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    cacheobjtype VARCHAR NOT NULL,
+    objtype VARCHAR NOT NULL,
+    total_plans INTEGER,
+    total_size_mb INTEGER,
+    single_use_plans INTEGER,
+    single_use_size_mb INTEGER,
+    multi_use_plans INTEGER,
+    multi_use_size_mb INTEGER,
+    avg_use_count DECIMAL(38,2),
+    avg_size_kb INTEGER,
+    oldest_plan_create_time TIMESTAMP
+)";
+
     public const string CreateQueryStatsTable = @"
 CREATE TABLE IF NOT EXISTS query_stats (
     collection_id BIGINT PRIMARY KEY,
@@ -605,6 +658,12 @@ CREATE INDEX IF NOT EXISTS idx_latch_stats_time ON latch_stats(server_id, collec
     public const string CreateSpinlockStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_spinlock_stats_time ON spinlock_stats(server_id, collection_time)";
 
+    public const string CreateCpuSchedulerStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_cpu_scheduler_stats_time ON cpu_scheduler_stats(server_id, collection_time)";
+
+    public const string CreatePlanCacheStatsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_plan_cache_stats_time ON plan_cache_stats(server_id, collection_time)";
+
     public const string CreateQueryStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_query_stats_time ON query_stats(server_id, collection_time)";
 
@@ -917,6 +976,8 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateWaitStatsTable;
         yield return CreateLatchStatsTable;
         yield return CreateSpinlockStatsTable;
+        yield return CreateCpuSchedulerStatsTable;
+        yield return CreatePlanCacheStatsTable;
         yield return CreateQueryStatsTable;
         yield return CreateCpuUtilizationStatsTable;
         yield return CreateFileIoStatsTable;
@@ -956,6 +1017,8 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateWaitStatsIndex;
         yield return CreateLatchStatsIndex;
         yield return CreateSpinlockStatsIndex;
+        yield return CreateCpuSchedulerStatsIndex;
+        yield return CreatePlanCacheStatsIndex;
         yield return CreateQueryStatsIndex;
         yield return CreateProcedureStatsIndex;
         yield return CreateQueryStoreIndex;
