@@ -29,7 +29,11 @@ public class ScheduleManager
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    private static readonly Dictionary<string, Dictionary<string, int>> s_presets = new(StringComparer.OrdinalIgnoreCase)
+    // Single source of truth for the schedule-editor presets. Exposed (internal) so
+    // CollectorScheduleEditorWindow reads/applies these instead of holding its own copy — the two
+    // preset tables previously drifted (the editor's fell ~8 collectors behind). See
+    // SharedCollectorDefaultsPinTests for the integrity guard.
+    internal static readonly Dictionary<string, Dictionary<string, int>> s_presets = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Aggressive"] = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -514,9 +518,11 @@ public class ScheduleManager
     // ──────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Detects which preset matches a list of collector schedules.
+    /// Detects which preset matches a list of collector schedules, or "Custom". This is the single
+    /// source of preset logic; <see cref="ApplyPreset"/> and the collector-schedule editor window both
+    /// call these static methods rather than keeping a second preset table, so the two cannot drift.
     /// </summary>
-    private static string DetectPreset(List<CollectorSchedule> schedules)
+    internal static string DetectPreset(List<CollectorSchedule> schedules)
     {
         foreach (var (presetName, intervals) in s_presets)
         {
@@ -534,6 +540,29 @@ public class ScheduleManager
             if (matches) return presetName;
         }
         return "Custom";
+    }
+
+    /// <summary>
+    /// Applies a named preset's intervals to a schedule list in place (frequencies only; enabled and
+    /// retention are untouched). An unknown preset name is a no-op. Shared with the editor window so the
+    /// preset table lives exactly once.
+    /// </summary>
+    internal static void ApplyPreset(List<CollectorSchedule> schedules, string presetName)
+    {
+        if (!s_presets.TryGetValue(presetName, out var intervals))
+        {
+            return;
+        }
+
+        foreach (var (collector, freq) in intervals)
+        {
+            var schedule = schedules.FirstOrDefault(s =>
+                s.Name.Equals(collector, StringComparison.OrdinalIgnoreCase));
+            if (schedule != null)
+            {
+                schedule.FrequencyMinutes = freq;
+            }
+        }
     }
 
     /// <summary>

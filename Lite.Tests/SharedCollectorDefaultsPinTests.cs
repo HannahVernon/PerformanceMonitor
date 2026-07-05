@@ -81,6 +81,45 @@ public sealed class SharedCollectorDefaultsPinTests
     }
 
     [Fact]
+    public void SchedulePresets_ReferenceOnlyRealCollectors()
+    {
+        /* Every collector named in a schedule preset must be a real collector in the shared defaults —
+           guards against a preset table naming a renamed, removed, or typo'd collector. */
+        foreach (var (presetName, intervals) in ScheduleManager.s_presets)
+        {
+            foreach (var collector in intervals.Keys)
+            {
+                Assert.True(CollectorScheduleDefaults.All.ContainsKey(collector),
+                    $"preset '{presetName}' references unknown collector '{collector}'");
+            }
+        }
+    }
+
+    [Fact]
+    public void SchedulePresets_CoverTheSamePinnedCollectorSet()
+    {
+        /* ScheduleManager.s_presets is now the ONE preset table — the collector-schedule editor window
+           reads/applies it instead of holding its own copy (which had drifted ~8 collectors behind).
+           Pin the membership: every preset must cover exactly this set, so adding a collector to one
+           preset but not the others — or letting the set silently fall behind again — fails here. */
+        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "wait_stats", "latch_stats", "spinlock_stats", "cpu_scheduler_stats", "plan_cache_stats",
+            "query_stats", "procedure_stats", "query_store", "query_snapshots", "cpu_utilization",
+            "file_io_stats", "memory_stats", "memory_clerks", "memory_pressure_events", "tempdb_stats",
+            "perfmon_stats", "deadlocks", "memory_grant_stats", "waiting_tasks", "dmv_blocking_snapshot",
+            "blocked_process_report", "running_jobs", "session_summary_stats", "system_health_events"
+        };
+
+        Assert.Equal(3, ScheduleManager.s_presets.Count);
+        foreach (var (presetName, intervals) in ScheduleManager.s_presets)
+        {
+            Assert.True(expected.SetEquals(intervals.Keys),
+                $"preset '{presetName}' collector set drifted from the pinned set");
+        }
+    }
+
+    [Fact]
     public void DeltaCalculator_IsTheSharedCoreImplementation()
     {
         Assert.True(typeof(CollectorDeltaCalculator).IsAssignableFrom(typeof(DeltaCalculator)));
