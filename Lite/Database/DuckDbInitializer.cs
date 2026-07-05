@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 40;
+    internal const int CurrentSchemaVersion = 41;
 
     private readonly string _archivePath;
 
@@ -949,6 +949,41 @@ public class DuckDbInitializer
                     parity. New table only — created by GetAllTableStatements() below; the v_ view comes
                     from CreateArchiveViewsAsync via ArchivableTables. */
             _logger?.LogInformation("Running migration to v40: adding system_health_events table");
+        }
+
+        if (fromVersion < 41)
+        {
+            /* v41: index_object_stats gains the per-index DEFINITION metadata monitor-side
+                    UNUSED/DUPLICATE analysis needs (FinOps Index Analysis, Stage 1): the ordered
+                    key_columns / included_columns lists (sp_IndexCleanup's delimited representation),
+                    filter_definition, the uniqueness/constraint/FK discriminators + is_disabled, and
+                    the reconstruct-a-CREATE options (data_compression_desc, optimize_for_sequential_key,
+                    fill_factor, is_padded, allow_page_locks, allow_row_locks). All appended at the end
+                    to keep the positional appender aligned; the collector now writes them, so an
+                    un-migrated DB would mis-align on the next append — these ALTERs are required. The
+                    v_ view (SELECT *) surfaces them and old parquet reads back NULL (union BY NAME). */
+            _logger?.LogInformation("Running migration to v41: adding index_object_stats index-definition columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS key_columns VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS included_columns VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS filter_definition VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_unique_constraint BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key_reference BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS data_compression_desc VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS optimize_for_sequential_key BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS fill_factor SMALLINT");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_padded BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_page_locks BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_row_locks BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_indexed_view BOOLEAN");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v41 encountered an error (non-fatal): {Error}", ex.Message);
+            }
         }
     }
 

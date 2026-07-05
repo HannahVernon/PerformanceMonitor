@@ -58,6 +58,7 @@ public static class PgMigrations
         new Migration(12, "session-summary-collector", PgSchemaGenerator.GenerateV12AddSessionSummary()),
         new Migration(13, "system-health-events-collector", PgSchemaGenerator.GenerateV13AddSystemHealthEvents()),
         new Migration(14, "refresh-passthrough-views", PgSchemaGenerator.GenerateV14RefreshViews()),
+        new Migration(15, "index-metadata-columns", V15Sql),
     };
 
     /// <summary>
@@ -281,6 +282,42 @@ ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS sqlserver_start_time time
 ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS host_os_version text;
 ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS ag_replica_role text;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS monthly_cost_usd numeric;";
+
+    /// <summary>
+    /// V15 — the per-index DEFINITION metadata monitor-side UNUSED/DUPLICATE index analysis needs
+    /// (FinOps Index Analysis, Stage 1), added additively to <c>index_object_stats</c>: the ordered
+    /// <c>key_columns</c> / <c>included_columns</c> lists (sp_IndexCleanup's delimited representation,
+    /// so the Stage-2 analyzer's string-comparison dedupe ports cleanly), <c>filter_definition</c>,
+    /// the uniqueness/constraint/FK discriminators (<c>is_unique_constraint</c>, <c>is_foreign_key</c>,
+    /// <c>is_foreign_key_reference</c>) + <c>is_disabled</c>, and the reconstruct-a-CREATE options
+    /// (<c>data_compression_desc</c>, <c>optimize_for_sequential_key</c>, <c>fill_factor</c>,
+    /// <c>is_padded</c>, <c>allow_page_locks</c>, <c>allow_row_locks</c>). Every column is nullable and
+    /// appended, so a fresh store's V1 <c>index_object_stats</c> (generated from the current collector
+    /// definition, which now includes them) already has them and <c>ADD COLUMN IF NOT EXISTS</c>
+    /// no-ops, while an upgraded store gets the real add — with an identical physical column order for
+    /// the binary COPY either way. The trailing <c>CREATE OR REPLACE VIEW</c> re-expands
+    /// <c>v_index_object_stats</c>' pinned <c>SELECT *</c> (Postgres freezes it at CREATE, so an
+    /// upgraded store's view — last refreshed by V14 before these columns existed — would otherwise
+    /// omit them; append-only ADDs keep the refresh legal). Runs after V8, so the bare names resolve
+    /// through <c>search_path = collect, config, public</c>.
+    /// </summary>
+    private const string V15Sql = @"
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS key_columns text;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS included_columns text;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS filter_definition text;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_unique_constraint boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key_reference boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_disabled boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS data_compression_desc text;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS optimize_for_sequential_key boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS fill_factor smallint;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_padded boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_page_locks boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_row_locks boolean;
+ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_indexed_view boolean;
+
+CREATE OR REPLACE VIEW v_index_object_stats AS SELECT * FROM index_object_stats;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

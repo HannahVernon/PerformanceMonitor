@@ -25,6 +25,19 @@ namespace PerformanceMonitor.Collectors;
 /// then join — the sp_IndexCleanup technique that fixed the #1135 monolithic-join timeouts —
 /// under a dedicated 300 s per-database budget (CommandTimeoutSecondsOverride; the enumeration
 /// keeps the default). sqlserver_start_time flags restart-class counter resets for the read layer.
+///
+/// <para>Also captures the per-index DEFINITION metadata that monitor-side UNUSED/DUPLICATE index
+/// analysis needs (FinOps Index Analysis, Stage 1): the ordered KEY column list (with sort
+/// direction), the INCLUDE column set, the filter predicate, the uniqueness/constraint/PK/FK and
+/// table-vs-indexed-view discriminators, disabled state, and the reconstruct-a-CREATE options
+/// (compression, sequential key, fill factor, padding, lock granularity). key_columns/included_columns
+/// use sp_IndexCleanup's
+/// exact delimited STUFF/FOR XML representation so a Stage-2 analyzer's string-comparison dedupe
+/// (Exact/Reverse Duplicate, Equal-Except-Filter, Key Subset/Superset) ports cleanly, and the FK
+/// flags reproduce its "never drop an FK-supporting or FK-referenced index" protection. These come
+/// from sys.indexes/sys.index_columns/sys.columns/sys.foreign_key_columns/sys.partitions — catalog
+/// views present on every platform incl. Azure SQL DB — so they share the collector's existing
+/// per-database execution unchanged.</para>
 /// </summary>
 public sealed class IndexObjectStatsCollector : CollectorDefinitionBase<IndexObjectStatsCollector.Row>
 {
@@ -80,10 +93,38 @@ public sealed class IndexObjectStatsCollector : CollectorDefinitionBase<IndexObj
         public long? PageLatchWaitInMs { get; set; }
         public long? PageIoLatchWaitCount { get; set; }
         public long? PageIoLatchWaitInMs { get; set; }
+        public string? KeyColumns { get; set; }
+        public string? IncludedColumns { get; set; }
+        public string? FilterDefinition { get; set; }
+        public bool? IsUniqueConstraint { get; set; }
+        public bool? IsForeignKey { get; set; }
+        public bool? IsForeignKeyReference { get; set; }
+        public bool? IsDisabled { get; set; }
+        public string? DataCompressionDesc { get; set; }
+        public bool? OptimizeForSequentialKey { get; set; }
+        public short? FillFactor { get; set; }
+        public bool? IsPadded { get; set; }
+        public bool? AllowPageLocks { get; set; }
+        public bool? AllowRowLocks { get; set; }
+        public bool? IsIndexedView { get; set; }
     }
 
-    /// <summary>The per-database staged body — the ordinals of its final SELECT are the read contract.</summary>
-    internal const string PerDatabaseStatsBody = @"
+    /// <summary>
+    /// The per-database staged body — the ordinals of its final SELECT are the read contract.
+    /// <paramref name="supportsOptimizeForSequentialKey"/> gates the SQL 2019+/Azure-only
+    /// optimize_for_sequential_key column: a typed NULL is emitted on older engines, where the
+    /// column does not exist and referencing it would fail the whole batch (mirrors
+    /// sp_IndexCleanup's @supports_optimize_for_sequential_key gate). Everything else is
+    /// engine-version-invariant.
+    /// </summary>
+    internal static string BuildPerDatabaseStatsBody(bool supportsOptimizeForSequentialKey)
+    {
+        string optimizeForSequentialKey =
+            supportsOptimizeForSequentialKey
+                ? "i.optimize_for_sequential_key"
+                : "CONVERT(bit, NULL)";
+
+        return @"
 SET NOCOUNT ON;
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -194,7 +235,146 @@ SELECT
     page_latch_wait_count = os.page_latch_wait_count,
     page_latch_wait_in_ms = os.page_latch_wait_in_ms,
     page_io_latch_wait_count = os.page_io_latch_wait_count,
-    page_io_latch_wait_in_ms = os.page_io_latch_wait_in_ms
+    page_io_latch_wait_in_ms = os.page_io_latch_wait_in_ms,
+    /* Per-index DEFINITION metadata for monitor-side UNUSED/DUPLICATE analysis (sp_IndexCleanup
+       parity, Stage 1). key_columns/included_columns reproduce sp_IndexCleanup's delimited
+       STUFF/FOR XML representation EXACTLY (QUOTENAME + ' DESC', key order for keys, name order
+       for the include set) so Stage-2 string-comparison dedupe ports cleanly. */
+    key_columns =
+        STUFF
+        (
+          (
+            SELECT
+                N', ' +
+                QUOTENAME(c.name) +
+                CASE
+                    WHEN ic.is_descending_key = 1
+                    THEN N' DESC'
+                    ELSE N''
+                END
+            FROM sys.index_columns AS ic
+            JOIN sys.columns AS c
+              ON  c.object_id = ic.object_id
+              AND c.column_id = ic.column_id
+            WHERE ic.object_id = i.object_id
+            AND   ic.index_id = i.index_id
+            AND   ic.is_included_column = 0
+            ORDER BY
+                ic.key_ordinal
+            FOR
+                XML
+                PATH(''),
+                TYPE
+          ).value('text()[1]', 'nvarchar(max)'),
+          1,
+          2,
+          ''
+        ),
+    included_columns =
+        STUFF
+        (
+          (
+            SELECT
+                N', ' +
+                QUOTENAME(c.name)
+            FROM sys.index_columns AS ic
+            JOIN sys.columns AS c
+              ON  c.object_id = ic.object_id
+              AND c.column_id = ic.column_id
+            WHERE ic.object_id = i.object_id
+            AND   ic.index_id = i.index_id
+            AND   ic.is_included_column = 1
+            ORDER BY
+                c.name
+            FOR
+                XML
+                PATH(''),
+                TYPE
+          ).value('text()[1]', 'nvarchar(max)'),
+          1,
+          2,
+          ''
+        ),
+    filter_definition = i.filter_definition,
+    is_unique_constraint = i.is_unique_constraint,
+    /* FK protections (sp_IndexCleanup guards on is_foreign_key_reference): aggregated to the index
+       grain over KEY columns (is_included_column = 0), matching its per-column derivation from
+       sys.foreign_key_columns. is_foreign_key = a key column backs an outgoing FK (supporting
+       index); is_foreign_key_reference = a key column is referenced by an incoming FK. */
+    is_foreign_key =
+        CONVERT
+        (
+            bit,
+            CASE
+                WHEN EXISTS
+                     (
+                         SELECT
+                             1/0
+                         FROM sys.index_columns AS ic
+                         JOIN sys.foreign_key_columns AS fkc
+                           ON  fkc.parent_object_id = ic.object_id
+                           AND fkc.parent_column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id
+                         AND   ic.index_id = i.index_id
+                         AND   ic.is_included_column = 0
+                     )
+                THEN 1
+                ELSE 0
+            END
+        ),
+    is_foreign_key_reference =
+        CONVERT
+        (
+            bit,
+            CASE
+                WHEN EXISTS
+                     (
+                         SELECT
+                             1/0
+                         FROM sys.index_columns AS ic
+                         JOIN sys.foreign_key_columns AS fkc
+                           ON  fkc.referenced_object_id = ic.object_id
+                           AND fkc.referenced_column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id
+                         AND   ic.index_id = i.index_id
+                         AND   ic.is_included_column = 0
+                     )
+                THEN 1
+                ELSE 0
+            END
+        ),
+    is_disabled = i.is_disabled,
+    /* Compression state aggregated to the index grain: the lowest level across partitions, so an
+       index with ANY uncompressed partition surfaces as NONE (sp_IndexCleanup's compressibility
+       signal). */
+    data_compression_desc =
+    (
+        SELECT TOP (1)
+            p.data_compression_desc
+        FROM sys.partitions AS p
+        WHERE p.object_id = i.object_id
+        AND   p.index_id = i.index_id
+        ORDER BY
+            p.data_compression
+    ),
+    optimize_for_sequential_key = " + optimizeForSequentialKey + @",
+    fill_factor = i.fill_factor,
+    is_padded = i.is_padded,
+    allow_page_locks = i.allow_page_locks,
+    allow_row_locks = i.allow_row_locks,
+    /* Table (U) vs indexed-view (V) index — the one table-vs-view discriminator index_type_desc
+       cannot express (a view's clustered index is also CLUSTERED); mirrors sp_IndexCleanup's
+       is_indexed_view so Stage 2 never dedupes across the two. */
+    is_indexed_view =
+        CONVERT
+        (
+            bit,
+            CASE
+                WHEN o.type = N'V'
+                THEN 1
+                ELSE 0
+            END
+        )
 FROM sys.indexes AS i
 JOIN sys.objects AS o
   ON o.object_id = i.object_id
@@ -212,6 +392,18 @@ LEFT JOIN #ops AS os
 WHERE o.is_ms_shipped = 0
 AND   o.type IN (N'U', N'V')
 OPTION(RECOMPILE);";
+    }
+
+    /// <summary>
+    /// optimize_for_sequential_key exists only on SQL Server 2019+ (major >= 15), Azure SQL DB, and
+    /// Azure SQL Managed Instance (mirrors sp_IndexCleanup's engine-edition/version gate). Unknown
+    /// version (0) fails safe to unsupported — a typed NULL is emitted rather than risk a hard bind
+    /// error against a column that may not exist on the target.
+    /// </summary>
+    private static bool SupportsOptimizeForSequentialKey(CollectorTargetInfo target) =>
+        target.IsAzureSqlDb
+        || target.IsAzureManagedInstance
+        || target.SqlMajorVersion >= 15;
 
     public override string Name => "index_object_stats";
 
@@ -224,7 +416,8 @@ OPTION(RECOMPILE);";
     public override bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
 
     /// <summary>Azure per-database connections run the staged body directly.</summary>
-    public override CollectorQuery BuildQuery(CollectorContext context) => new(PerDatabaseStatsBody);
+    public override CollectorQuery BuildQuery(CollectorContext context) =>
+        new(BuildPerDatabaseStatsBody(SupportsOptimizeForSequentialKey(context.Target)));
 
     /// <summary>On-prem: enumerate accessible online databases (with exclusions), then per-item.</summary>
     public override CollectorQuery? BuildEnumerationQuery(CollectorContext context)
@@ -253,7 +446,8 @@ ORDER BY
     public override CollectorQuery BuildPerItemQuery(string item, CollectorContext context)
     {
         /* Double single quotes so the body survives nesting inside [db].sys.sp_executesql N'...' */
-        var escapedBody = PerDatabaseStatsBody.Replace("'", "''", StringComparison.Ordinal);
+        var escapedBody = BuildPerDatabaseStatsBody(SupportsOptimizeForSequentialKey(context.Target))
+            .Replace("'", "''", StringComparison.Ordinal);
         var escapedDbName = item.Replace("]", "]]", StringComparison.Ordinal);
         return new CollectorQuery($"EXECUTE [{escapedDbName}].sys.sp_executesql N'{escapedBody}';");
     }
@@ -272,9 +466,11 @@ ORDER BY
     {
         long? L(int i) => reader.IsDBNull(i) ? null : Convert.ToInt64(reader.GetValue(i), CultureInfo.InvariantCulture);
         int? I(int i) => reader.IsDBNull(i) ? null : Convert.ToInt32(reader.GetValue(i), CultureInfo.InvariantCulture);
+        short? Sh(int i) => reader.IsDBNull(i) ? null : Convert.ToInt16(reader.GetValue(i), CultureInfo.InvariantCulture);
         decimal? D(int i) => reader.IsDBNull(i) ? null : reader.GetDecimal(i);
         DateTime? T(int i) => reader.IsDBNull(i) ? null : reader.GetDateTime(i);
         bool? B(int i) => reader.IsDBNull(i) ? null : (bool?)(Convert.ToInt32(reader.GetValue(i), CultureInfo.InvariantCulture) == 1);
+        string? S(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
 
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -324,6 +520,20 @@ ORDER BY
                 PageLatchWaitInMs = L(41),
                 PageIoLatchWaitCount = L(42),
                 PageIoLatchWaitInMs = L(43),
+                KeyColumns = S(44),
+                IncludedColumns = S(45),
+                FilterDefinition = S(46),
+                IsUniqueConstraint = B(47),
+                IsForeignKey = B(48),
+                IsForeignKeyReference = B(49),
+                IsDisabled = B(50),
+                DataCompressionDesc = S(51),
+                OptimizeForSequentialKey = B(52),
+                FillFactor = Sh(53),
+                IsPadded = B(54),
+                AllowPageLocks = B(55),
+                AllowRowLocks = B(56),
+                IsIndexedView = B(57),
             });
         }
     }
@@ -374,6 +584,20 @@ ORDER BY
         new CollectorColumn("page_latch_wait_in_ms", CollectorColumnType.BigInt),
         new CollectorColumn("page_io_latch_wait_count", CollectorColumnType.BigInt),
         new CollectorColumn("page_io_latch_wait_in_ms", CollectorColumnType.BigInt),
+        new CollectorColumn("key_columns", CollectorColumnType.Varchar),
+        new CollectorColumn("included_columns", CollectorColumnType.Varchar),
+        new CollectorColumn("filter_definition", CollectorColumnType.Varchar),
+        new CollectorColumn("is_unique_constraint", CollectorColumnType.Boolean),
+        new CollectorColumn("is_foreign_key", CollectorColumnType.Boolean),
+        new CollectorColumn("is_foreign_key_reference", CollectorColumnType.Boolean),
+        new CollectorColumn("is_disabled", CollectorColumnType.Boolean),
+        new CollectorColumn("data_compression_desc", CollectorColumnType.Varchar),
+        new CollectorColumn("optimize_for_sequential_key", CollectorColumnType.Boolean),
+        new CollectorColumn("fill_factor", CollectorColumnType.SmallInt),
+        new CollectorColumn("is_padded", CollectorColumnType.Boolean),
+        new CollectorColumn("allow_page_locks", CollectorColumnType.Boolean),
+        new CollectorColumn("allow_row_locks", CollectorColumnType.Boolean),
+        new CollectorColumn("is_indexed_view", CollectorColumnType.Boolean),
     };
 
     public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
@@ -422,6 +646,20 @@ ORDER BY
             .Value(row.PageLatchWaitCount)
             .Value(row.PageLatchWaitInMs)
             .Value(row.PageIoLatchWaitCount)
-            .Value(row.PageIoLatchWaitInMs);
+            .Value(row.PageIoLatchWaitInMs)
+            .Value(row.KeyColumns)
+            .Value(row.IncludedColumns)
+            .Value(row.FilterDefinition)
+            .Value(row.IsUniqueConstraint)
+            .Value(row.IsForeignKey)
+            .Value(row.IsForeignKeyReference)
+            .Value(row.IsDisabled)
+            .Value(row.DataCompressionDesc)
+            .Value(row.OptimizeForSequentialKey)
+            .Value(row.FillFactor)
+            .Value(row.IsPadded)
+            .Value(row.AllowPageLocks)
+            .Value(row.AllowRowLocks)
+            .Value(row.IsIndexedView);
     }
 }
