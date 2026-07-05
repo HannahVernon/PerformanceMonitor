@@ -252,6 +252,30 @@ public partial class ViewerServerTab
     private static Task<List<DeadlockProcessDetail>> ParseDeadlocksOffUiThreadAsync(List<ViewerDeadlockRow> rows)
         => Task.Run(() => DeadlockProcessDetail.ParseFromRows(rows));
 
+    /// <summary>
+    /// "View Blocked Query Plan" / "View Blocking Query Plan" for a blocked-process report row: opens the
+    /// BEST-EFFORT plan the row already carries (blocked_process_reports.blocked_query_plan_xml /
+    /// blocking_query_plan_xml, #1368 / V7) in the shared Plan Viewer host — NO live SQL, the same
+    /// stored-plan surface Top Queries uses. The context items are gated per row on Has*QueryPlan (a NULL
+    /// plan shows them disabled), so these only fire with a captured plan; the guard here is belt-and-braces
+    /// (and covers the DMV-snapshot fallback rows, which never carry a plan). Lite recovered these plans
+    /// live from the monitored server's cache — the headless viewer can't, so only the stored plan shows,
+    /// and Lite's "Get Actual Plan" has no viewer equivalent (omitted everywhere).
+    /// </summary>
+    private void ViewBlockedQueryPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem) return;
+        if (FindParentDataGrid(menuItem)?.CurrentItem is not ViewerBlockedProcessRow row || !row.HasBlockedQueryPlan) return;
+        OpenPlanTab(row.BlockedQueryPlanXml!, $"Blocked Plan - SPID {row.BlockedSpid}", row.BlockedSqlText);
+    }
+
+    private void ViewBlockingQueryPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem) return;
+        if (FindParentDataGrid(menuItem)?.CurrentItem is not ViewerBlockedProcessRow row || !row.HasBlockingQueryPlan) return;
+        OpenPlanTab(row.BlockingQueryPlanXml!, $"Blocking Plan - SPID {row.BlockingSpid}", row.BlockingSqlText);
+    }
+
     private void RenderLockWaitTrendChart(List<LockWaitTrendPoint> data)
     {
         ClearChart(LockWaitTrendChart);

@@ -22,19 +22,31 @@ namespace Darling.Tests;
 /// <summary>
 /// Pins the W1e Blocking-depth reads (widened Blocked Process Reports grid, the block-chain pair-row fetch,
 /// the Deadlocks grid, and the two slicer bucket reads) against the Darling store contract, no live Postgres.
-/// All mirror Lite's <c>LocalDataService.Blocking.cs</c> queries: the 37-column BPR read (including
-/// <c>blocked_process_report_xml</c>) over <c>v_blocked_process_reports</c> with the 19-column DMV fallback;
+/// All mirror Lite's <c>LocalDataService.Blocking.cs</c> queries: the BPR grid read (including
+/// <c>blocked_process_report_xml</c> + the best-effort plan columns) with the 19-column DMV fallback;
 /// the pair-row read built from the shared <c>PgBlockingPairRowQuery</c> fragments (so the apex + column
-/// order can't drift); the deadlock read over <c>v_deadlocks</c>; and the hourly slicer buckets (blocking
-/// XE-preferred with the DMV fallback exclusion, deadlocks by collection_time).
+/// order can't drift); the deadlock grid read (including the victim plan); and the hourly slicer buckets
+/// (blocking XE-preferred with the DMV fallback exclusion, deadlocks by collection_time). The two
+/// plan-carrying grid reads source the BASE tables, not the v_ views: the #1368 / V7 plan columns are
+/// projected reliably only by the base table (Postgres pins a view's <c>SELECT *</c> at creation — V4,
+/// before V7 — and V8 only <c>ALTER VIEW … SET SCHEMA</c>s it, never re-creating it), so a view read would
+/// fail on an upgraded store. The plan columns are Darling-only, so those reads were never Lite-twinnable
+/// once they carry a plan; every OTHER blocking/deadlock read (pair-row, slicers, trends, summaries) still
+/// twins over the v_ views.
 /// </summary>
 public sealed class ViewerBlockingDepthSqlTests
 {
     [Fact]
-    public void BlockedProcessReportsSql_FullColumnSet_IncludesReportXml_OverBprView()
+    public void BlockedProcessReportsSql_FullColumnSet_IncludesReportXml_AndBestEffortPlans_OverBaseTable()
     {
-        Assert.Contains("FROM v_blocked_process_reports", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
+        /* Base table, not v_blocked_process_reports: the V7 best-effort plan columns are projected reliably
+           only by the base table (pinned SELECT * view; see the class remarks). */
+        Assert.Contains("FROM blocked_process_reports", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM v_blocked_process_reports", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
         Assert.Contains("blocked_process_report_xml", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
+        /* The two best-effort plan columns the grid's "View Plan" items open in-row (#1368 / V7). */
+        Assert.Contains("blocked_query_plan_xml", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
+        Assert.Contains("blocking_query_plan_xml", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY event_time DESC", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
         Assert.Contains("LIMIT 200", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
         Assert.Contains("collection_time >= $2", ViewerDataService.BlockedProcessReportsSql, StringComparison.Ordinal);
@@ -80,11 +92,16 @@ public sealed class ViewerBlockingDepthSqlTests
     }
 
     [Fact]
-    public void RecentDeadlocksSql_CarriesGraphXml_OrdersByDeadlockTime()
+    public void RecentDeadlocksSql_CarriesGraphXml_AndVictimPlan_OverBaseTable_OrdersByDeadlockTime()
     {
-        Assert.Contains("FROM v_deadlocks", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
+        /* Base deadlocks table, not v_deadlocks: the V7 victim_query_plan_xml is projected reliably only by
+           the base table (pinned SELECT * view; see the class remarks). */
+        Assert.Contains("FROM deadlocks", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM v_deadlocks", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
         Assert.Contains("deadlock_graph_xml", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
         Assert.Contains("victim_process_id", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
+        /* The best-effort victim plan the grid's "View Victim Plan" item opens in-row (#1368 / V7). */
+        Assert.Contains("victim_query_plan_xml", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY deadlock_time DESC", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
         Assert.Contains("LIMIT 50", ViewerDataService.RecentDeadlocksSql, StringComparison.Ordinal);
     }
@@ -149,6 +166,8 @@ public sealed class ViewerBlockingDepthSqlTests
             "blocking_client_app", "blocking_host_name", "blocking_login_name", "blocking_sql_text",
             "blocked_process_report_xml", "blocked_transaction_name", "blocking_transaction_name",
             "blocked_priority", "blocking_priority", "contentious_object", "monitor_loop",
+            /* the best-effort plan columns the grid read carries in-row (#1368 / V7) */
+            "blocked_query_plan_xml", "blocking_query_plan_xml",
         })
         {
             Assert.Contains(column, ddl, StringComparison.Ordinal);
@@ -161,7 +180,12 @@ public sealed class ViewerBlockingDepthSqlTests
         Assert.Equal("deadlocks", DeadlocksCollector.Instance.TargetTable);
 
         var ddl = PgSchemaGenerator.CreateTable(DeadlocksCollector.Instance);
-        foreach (var column in new[] { "collection_time", "deadlock_time", "victim_process_id", "victim_sql_text", "deadlock_graph_xml" })
+        foreach (var column in new[]
+        {
+            "collection_time", "deadlock_time", "victim_process_id", "victim_sql_text", "deadlock_graph_xml",
+            /* the best-effort victim plan the grid read carries in-row (#1368 / V7) */
+            "victim_query_plan_xml",
+        })
         {
             Assert.Contains(column, ddl, StringComparison.Ordinal);
         }
@@ -239,6 +263,45 @@ public sealed class DeadlockProcessDetailParseTests
     }
 
     [Fact]
+    public void ParseFromRows_ThreadsVictimPlanOntoEveryProcessRow_GatingFlagFollows()
+    {
+        /* One deadlock, one best-effort victim plan (#1368 / V7) — it must ride on EVERY process row so the
+           per-row-gated "View Victim Plan" reaches the same plan from any process. */
+        var rows = new List<ViewerDeadlockRow>
+        {
+            new()
+            {
+                DeadlockTime = new DateTime(2026, 7, 1, 10, 0, 5, DateTimeKind.Unspecified),
+                VictimProcessId = "process1",
+                DeadlockGraphXml = TwoProcessDeadlockXml,
+                VictimQueryPlanXml = "<ShowPlanXML>victim</ShowPlanXML>",
+            },
+        };
+
+        var details = DeadlockProcessDetail.ParseFromRows(rows);
+
+        Assert.Equal(2, details.Count);
+        Assert.All(details, d => Assert.True(d.HasVictimQueryPlan));
+        Assert.All(details, d => Assert.Equal("<ShowPlanXML>victim</ShowPlanXML>", d.VictimQueryPlanXml));
+    }
+
+    [Fact]
+    public void ParseFromRows_NullVictimPlan_LeavesGatingFlagFalse()
+    {
+        /* The common best-effort case: no victim plan captured → every row's flag is false → the item disables. */
+        var rows = new List<ViewerDeadlockRow>
+        {
+            new() { DeadlockTime = DateTime.UnixEpoch, VictimProcessId = "process1", DeadlockGraphXml = TwoProcessDeadlockXml },
+        };
+
+        var details = DeadlockProcessDetail.ParseFromRows(rows);
+
+        Assert.NotEmpty(details);
+        Assert.All(details, d => Assert.False(d.HasVictimQueryPlan));
+        Assert.All(details, d => Assert.Null(d.VictimQueryPlanXml));
+    }
+
+    [Fact]
     public void ParseFromRows_MalformedXml_YieldsSingleVictimFallbackRow()
     {
         var rows = new List<ViewerDeadlockRow>
@@ -281,6 +344,8 @@ public sealed class ViewerBlockingDepthLivePostgresTests
     private const int DeadlockServerId = -972003;
     private const int BlockingSlicerServerId = -972004;
     private const int DeadlockSlicerServerId = -972005;
+    private const int BprPlanServerId = -972006;
+    private const int DeadlockPlanServerId = -972007;
 
     private const string ServerName = "viewer-w1e-e2e";
 
@@ -424,6 +489,105 @@ public sealed class ViewerBlockingDepthLivePostgresTests
     }
 
     [Fact]
+    public async Task BprRead_CarriesBestEffortPlans_InRow_GatesPerRow_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live BPR-plan test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "blocked_process_reports", BprPlanServerId);
+        await DeleteRowsAsync(connection, "dmv_blocking_snapshots", BprPlanServerId);
+
+        await using var viewer = new ViewerDataService(connectionString!);
+
+        try
+        {
+            var t = TruncateToSeconds(DateTime.UtcNow.AddMinutes(-10));
+            /* Both plans captured (1000 ms), only the blocked plan (2000), neither (3000) — best-effort, so
+               each side is independently NULL-able and the Has* flags gate the two "View Plan" items per row. */
+            await InsertBlockedProcessReportAsync(connection, BprPlanServerId, t, t.AddSeconds(1),
+                waitTimeMs: 1000, reportXml: "", monitorLoop: 1,
+                blockedPlanXml: "<ShowPlanXML>blocked</ShowPlanXML>", blockingPlanXml: "<ShowPlanXML>blocking</ShowPlanXML>");
+            await InsertBlockedProcessReportAsync(connection, BprPlanServerId, t, t.AddSeconds(2),
+                waitTimeMs: 2000, reportXml: "", monitorLoop: 1,
+                blockedPlanXml: "<ShowPlanXML>blocked-only</ShowPlanXML>", blockingPlanXml: null);
+            await InsertBlockedProcessReportAsync(connection, BprPlanServerId, t, t.AddSeconds(3),
+                waitTimeMs: 3000, reportXml: "", monitorLoop: 1);
+
+            var rows = await viewer.GetRecentBlockedProcessReportsAsync(BprPlanServerId, t.AddMinutes(-1), t.AddMinutes(1));
+
+            var both = rows.Single(r => r.WaitTimeMs == 1000);
+            Assert.True(both.HasBlockedQueryPlan);
+            Assert.True(both.HasBlockingQueryPlan);
+            Assert.Equal("<ShowPlanXML>blocked</ShowPlanXML>", both.BlockedQueryPlanXml);
+            Assert.Equal("<ShowPlanXML>blocking</ShowPlanXML>", both.BlockingQueryPlanXml);
+
+            var blockedOnly = rows.Single(r => r.WaitTimeMs == 2000);
+            Assert.True(blockedOnly.HasBlockedQueryPlan);
+            Assert.False(blockedOnly.HasBlockingQueryPlan);   // best-effort: the blocking side stayed NULL
+
+            var neither = rows.Single(r => r.WaitTimeMs == 3000);
+            Assert.False(neither.HasBlockedQueryPlan);
+            Assert.False(neither.HasBlockingQueryPlan);
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "blocked_process_reports", BprPlanServerId);
+            await DeleteRowsAsync(connection, "dmv_blocking_snapshots", BprPlanServerId);
+        }
+    }
+
+    [Fact]
+    public async Task DeadlockRead_CarriesVictimPlan_ThreadedOntoEveryProcessRow_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live victim-plan test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "deadlocks", DeadlockPlanServerId);
+
+        await using var viewer = new ViewerDataService(connectionString!);
+
+        try
+        {
+            var t = TruncateToSeconds(DateTime.UtcNow.AddMinutes(-10));
+            const string graph = """
+                <deadlock>
+                  <victim-list><victimProcess id="p1" /></victim-list>
+                  <process-list>
+                    <process id="p1" spid="55" currentdbname="AppDb" lockMode="X"><inputbuf>UPDATE dbo.t SET c = 1</inputbuf></process>
+                    <process id="p2" spid="60" currentdbname="AppDb" lockMode="X"><inputbuf>UPDATE dbo.t SET c = 2</inputbuf></process>
+                  </process-list>
+                  <resource-list></resource-list>
+                </deadlock>
+                """;
+            await InsertDeadlockAsync(connection, DeadlockPlanServerId, t, t.AddSeconds(1), "p1", graph,
+                victimPlanXml: "<ShowPlanXML>victim</ShowPlanXML>");
+
+            var rows = await viewer.GetRecentDeadlocksAsync(DeadlockPlanServerId, t.AddMinutes(-1), t.AddMinutes(1));
+            var row = Assert.Single(rows);
+            Assert.Equal("<ShowPlanXML>victim</ShowPlanXML>", row.VictimQueryPlanXml);
+
+            /* The single victim plan rides on EVERY parsed process row so "View Victim Plan" is reachable from
+               any of them (gated on presence, not IsVictim). */
+            var details = DeadlockProcessDetail.ParseFromRows(rows);
+            Assert.Equal(2, details.Count);
+            Assert.All(details, d => Assert.True(d.HasVictimQueryPlan));
+            Assert.All(details, d => Assert.Equal("<ShowPlanXML>victim</ShowPlanXML>", d.VictimQueryPlanXml));
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "deadlocks", DeadlockPlanServerId);
+        }
+    }
+
+    [Fact]
     public async Task BlockingSlicer_HourlyBuckets_XePreferredDmvExcluded_AgainstDevPostgres()
     {
         var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
@@ -498,7 +662,8 @@ public sealed class ViewerBlockingDepthLivePostgresTests
 
     private static async Task InsertBlockedProcessReportAsync(
         NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc, DateTime eventTimeUtc,
-        long waitTimeMs, string reportXml, int monitorLoop)
+        long waitTimeMs, string reportXml, int monitorLoop,
+        string? blockedPlanXml = null, string? blockingPlanXml = null)
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO blocked_process_reports
@@ -508,9 +673,10 @@ INSERT INTO blocked_process_reports
      blocked_client_app, blocked_host_name, blocked_login_name, blocked_sql_text,
      blocking_status, blocking_isolation_level, blocking_client_app, blocking_host_name, blocking_login_name,
      blocking_sql_text, blocked_process_report_xml, blocked_transaction_name, blocking_transaction_name,
-     blocked_priority, blocking_priority, contentious_object, monitor_loop)
+     blocked_priority, blocking_priority, contentious_object, monitor_loop,
+     blocked_query_plan_xml, blocking_query_plan_xml)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-        $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)", connection);
+        $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)", connection);
         command.Parameters.AddWithValue(1L);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(serverId);
@@ -545,6 +711,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         command.Parameters.AddWithValue(0);
         command.Parameters.AddWithValue("dbo.t");
         command.Parameters.AddWithValue(monitorLoop);
+        command.Parameters.AddWithValue((object?)blockedPlanXml ?? DBNull.Value);
+        command.Parameters.AddWithValue((object?)blockingPlanXml ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
@@ -577,13 +745,13 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)", connectio
 
     private static async Task InsertDeadlockAsync(
         NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc, DateTime deadlockTimeUtc,
-        string victimProcessId, string graphXml)
+        string victimProcessId, string graphXml, string? victimPlanXml = null)
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO deadlocks
     (deadlock_id, collection_time, server_id, server_name, deadlock_time,
-     victim_process_id, victim_sql_text, deadlock_graph_xml)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", connection);
+     victim_process_id, victim_sql_text, deadlock_graph_xml, victim_query_plan_xml)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", connection);
         command.Parameters.AddWithValue(1L);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(serverId);
@@ -592,6 +760,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", connection);
         command.Parameters.AddWithValue(victimProcessId);
         command.Parameters.AddWithValue("UPDATE dbo.t SET c = 1");
         command.Parameters.AddWithValue(graphXml);
+        command.Parameters.AddWithValue((object?)victimPlanXml ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 

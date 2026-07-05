@@ -69,6 +69,20 @@ public sealed class ViewerBlockedProcessRow : BlockedProcessAlertRow
 
     /// <summary>Lite's long-block tint threshold: over 30 seconds waiting.</summary>
     public bool IsLongBlock => WaitTimeMs > 30000;
+
+    /// <summary>
+    /// The blocked / blocking query plans the Darling collector resolved BEST-EFFORT alongside the report
+    /// (blocked_process_reports.blocked_query_plan_xml / blocking_query_plan_xml, #1368 / V7 — from the
+    /// report's sql_handle via dm_exec_query_stats → dm_exec_text_query_plan, only when the host sets
+    /// CapturePlanXml; often NULL, and always NULL on the DMV-snapshot fallback rows and under Lite). The
+    /// Has* flags gate the two "View Plan" context items per row so a plan-less row shows them disabled
+    /// rather than shown-and-failed. The XML rides in-row (like blocked_process_report_xml already does),
+    /// so "View Plan" opens it with no second fetch.
+    /// </summary>
+    public string? BlockedQueryPlanXml { get; set; }
+    public string? BlockingQueryPlanXml { get; set; }
+    public bool HasBlockedQueryPlan => !string.IsNullOrEmpty(BlockedQueryPlanXml);
+    public bool HasBlockingQueryPlan => !string.IsNullOrEmpty(BlockingQueryPlanXml);
 }
 
 public sealed partial class ViewerDataService
@@ -76,7 +90,17 @@ public sealed partial class ViewerDataService
     /// <summary>
     /// The XE blocked-process-report read — Lite's <c>GetRecentBlockedProcessReportsAsync</c> full
     /// 37-column SELECT ported to Postgres, including <c>blocked_process_report_xml</c> (the block-chain /
-    /// XML-save surface needs it). Same WHERE / ORDER BY event_time DESC / LIMIT 200 semantics.
+    /// XML-save surface needs it) and the two BEST-EFFORT plan columns (#1368 / V7) the grid's "View Plan"
+    /// items open. Same WHERE / ORDER BY event_time DESC / LIMIT 200 semantics.
+    ///
+    /// <para>Reads the BASE <c>blocked_process_reports</c> table, not <c>v_blocked_process_reports</c>
+    /// (deliberate divergence from the other blocking reads' v_-view twinning): the V7 plan columns are
+    /// projected reliably only by the base table. Postgres pins <c>SELECT *</c> in a view to the column
+    /// list at view-creation time (V4, before V7 added the plan columns), and V8 only <c>ALTER VIEW … SET
+    /// SCHEMA</c>s the view (it never re-creates it) — so on a store upgraded across the V7 boundary the
+    /// view would not expose the plan columns and this read would fail. The plan columns are Darling-only
+    /// (Lite's DuckDB view has no such column), so a plan-carrying read was never twinnable with Lite
+    /// anyway. The shared alert read (<c>DarlingAlertReadAdapter</c>) already reads this base table.</para>
     /// $1 server_id, $2 window start, $3 window end (naive UTC).
     /// </summary>
     public const string BlockedProcessReportsSql = """
@@ -117,8 +141,10 @@ public sealed partial class ViewerDataService
             blocked_priority,
             blocking_priority,
             contentious_object,
-            monitor_loop
-        FROM v_blocked_process_reports
+            monitor_loop,
+            blocked_query_plan_xml,
+            blocking_query_plan_xml
+        FROM blocked_process_reports
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
@@ -250,6 +276,8 @@ public sealed partial class ViewerDataService
                 BlockingPriority = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
                 ContentiousObject = reader.IsDBNull(35) ? "" : reader.GetString(35),
                 MonitorLoop = reader.IsDBNull(36) ? null : reader.GetInt32(36),
+                BlockedQueryPlanXml = reader.IsDBNull(37) ? null : reader.GetString(37),
+                BlockingQueryPlanXml = reader.IsDBNull(38) ? null : reader.GetString(38),
                 Source = BlockedProcessAlertRow.XeReportSource,
             });
         }

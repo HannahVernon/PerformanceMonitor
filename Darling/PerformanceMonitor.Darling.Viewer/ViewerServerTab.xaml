@@ -87,13 +87,16 @@
             <Setter Property="CellStyle" Value="{StaticResource DarkGridCell}"/>
         </Style>
 
-        <!-- Blocking-tab context menus (W1e), copied from Lite's ServerTab.xaml with the two View-Plan
-             items dropped. These stay deferred even now that the Plan Viewer host exists — for a structural
-             reason, not a missing host: blocked-process reports and deadlock graphs carry statement text +
-             a sql_handle, not plan XML. Lite recovers the plan by re-querying the live server's plan cache
-             from that handle, which the viewer (Postgres-only, no live SQL connection) can't do. Copy/Export
-             delegate to the shared PerformanceMonitor.Ui DataGridExport; the graph actions open the shared
-             .Ui BlockingChainControl / DeadlockGraphControl in a GraphViewerWindow. -->
+        <!-- Blocking-tab context menus (W1e), copied from Lite's ServerTab.xaml. The stored-plan "View Plan"
+             items ARE wired now (#1368 / V7): the Darling collector captures the blocked / blocking / victim
+             query plans BEST-EFFORT alongside the report and deadlock graph (blocked_process_reports.
+             blocked_query_plan_xml / blocking_query_plan_xml, deadlocks.victim_query_plan_xml), so these open
+             the stored plan in the Plan Viewer host — NO live SQL. The plans are often NULL (best-effort, and
+             always NULL on the DMV-snapshot fallback rows / under Lite), so each item is gated per row on its
+             Has*QueryPlan flag and shows disabled rather than shown-and-failed. Lite's "Get Actual Plan" (a
+             LIVE re-execution the headless viewer can't run) stays omitted everywhere. Copy/Export delegate
+             to the shared PerformanceMonitor.Ui DataGridExport; the graph actions open the shared .Ui
+             BlockingChainControl / DeadlockGraphControl in a GraphViewerWindow. -->
         <ContextMenu x:Key="BlockedProcessContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
@@ -109,6 +112,17 @@
                 <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
+            <!-- Stored blocked / blocking query plans (#1368 / V7), gated per row on the row's Has*QueryPlan
+                 flag via the ContextMenu's PlacementTarget so a plan-less row (best-effort NULL, or a DMV
+                 fallback row) shows the item disabled instead of shown-and-failed. -->
+            <MenuItem Header="View Blocked Query Plan" Click="ViewBlockedQueryPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasBlockedQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="View Blocking Query Plan" Click="ViewBlockingQueryPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasBlockingQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
             <MenuItem Header="View Block Chain" Click="ViewBlockChain_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F517;"/></MenuItem.Icon>
             </MenuItem>
@@ -129,6 +143,13 @@
                 <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
+            <!-- Stored victim query plan (#1368 / V7), gated per row on HasVictimQueryPlan via the
+                 ContextMenu's PlacementTarget so a plan-less deadlock (best-effort NULL, the common case)
+                 shows the item disabled instead of shown-and-failed. -->
+            <MenuItem Header="View Victim Plan" Click="ViewVictimQueryPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasVictimQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
             <MenuItem Header="View Deadlock Graph" Click="ViewDeadlockGraph_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F578;"/></MenuItem.Icon>
             </MenuItem>
@@ -151,11 +172,12 @@
         </Style>
 
         <!-- Queries-tab grid context menu (W1f-1), copied from Lite's ServerTab.xaml DataGridContextMenu.
-             This is the PLAN-LESS variant used by Top Procedures + the comparison grids: procedure plans
-             are never stored (procedure_stats has only plan_handle, no query_plan column — Lite fetches
-             them live from the plan cache, which the viewer can't do), so "View Plan" is honestly omitted
-             here rather than shown-and-failed. Lite's "Get Actual Plan" (needs a live execution) and "Copy
-             Repro Script" (needs a live connection string) stay deferred everywhere.
+             This is the PLAN-LESS variant used by the comparison grids + the Active Queries snapshot grid:
+             a comparison row is a current-vs-baseline aggregate with no single stored plan keyed on it, and
+             the snapshot grid has its own dedicated Estimated / Actual plan buttons — so neither needs a
+             "View Plan" context item. (Top Procedures moved OFF this menu to the plan-enabled variant below:
+             procedure_stats DOES store the plan since #1368 / V7.) Lite's "Get Actual Plan" (needs a live
+             execution) and "Copy Repro Script" (needs a live connection string) stay deferred everywhere.
              Copy/Export delegate to the shared PerformanceMonitor.Ui DataGridExport (ViewerServerTab.CopyExport.cs). -->
         <ContextMenu x:Key="QueryGridContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
@@ -173,9 +195,10 @@
             </MenuItem>
         </ContextMenu>
 
-        <!-- PLAN-enabled variant for Top Queries + Query Store, whose plans the collector stores
-             (query_stats.query_plan_xml / query_store_stats.query_plan_text, PR #1349). "View Plan" opens
-             the stored plan in the Plan Viewer tab via ViewPlan_Click (ViewerServerTab.Plans.cs). -->
+        <!-- PLAN-enabled variant for Top Queries + Query Store + Top Procedures, whose plans the collector
+             stores (query_stats.query_plan_xml / query_store_stats.query_plan_text, PR #1349;
+             procedure_stats.query_plan_xml, #1368 / V7). "View Plan" opens the stored plan in the Plan
+             Viewer tab via ViewPlan_Click (ViewerServerTab.Plans.cs), which fetches by the row's key. -->
         <ContextMenu x:Key="QueryPlanGridContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
@@ -196,21 +219,22 @@
             </MenuItem>
         </ContextMenu>
 
-        <!-- Row style for Top Procedures + the comparison grids: the plan-less copy/export menu on the DarkGridRow hover chrome. -->
+        <!-- Row style for the comparison grids + the Active Queries snapshot grid: the plan-less copy/export menu on the DarkGridRow hover chrome. -->
         <Style x:Key="QueryGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
             <Setter Property="ContextMenu" Value="{StaticResource QueryGridContextMenu}"/>
         </Style>
 
-        <!-- Row style for Top Queries + Query Store: adds "View Plan" (their plans are stored). -->
+        <!-- Row style for Top Queries + Query Store + Top Procedures: adds "View Plan" (their plans are stored). -->
         <Style x:Key="QueryPlanGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
             <Setter Property="ContextMenu" Value="{StaticResource QueryPlanGridContextMenu}"/>
         </Style>
 
         <!-- FinOps tab (copy-parity program). The four *_wait_in_ms cells in the Locking grid are shaded by
              this shared .Ui converter; the copy/export context menus reuse the shell's DataGridExport
-             handlers. Lite's FinOps plan-navigation context items (High Impact / Expensive Queries "View
-             Plan" / "Get Actual Plan") are intentionally NOT ported — the viewer has no live SQL connection
-             to fetch a plan from a query_hash, matching the Blocking/Procedures grids' plan-less menus. -->
+             handlers. Lite's FinOps "View Plan" IS ported for the High Impact / Expensive Queries grids (their
+             rows carry the stored query_stats.query_plan_xml — see FinOpsQueryPlanContextMenu below); only
+             Lite's "Get Actual Plan" (a LIVE re-execution) has no headless-viewer equivalent and stays omitted
+             everywhere, as on every other viewer grid. -->
         <ui:HeatIntensityToBrushConverter x:Key="FinOpsHeatBrush"/>
 
         <ContextMenu x:Key="FinOpsGridContextMenu">
@@ -345,12 +369,12 @@
              derivatives). Reads rewired to Postgres over the fixed 24-hour window, which supplies the
              slicer range. Performance Trends / Active Queries / Query Heatmap sub-tabs are deferred to
              W1f-2, so their slots are ABSENT. Now wired (headless-plan wave): Top Queries' "Query Plan"
-             download column + a "View Plan" context item on Top Queries and Query Store, which open the
-             stored query_stats.query_plan_xml / query_store_stats.query_plan_text in the Plan Viewer tab.
-             Still deferred: Top Procedures' plan actions (procedure plans aren't stored — resolving the
-             plan_handle needs a live server), Lite's "Get Actual Plan" (needs a live execution), the
-             per-row double-click history windows, and the slicer overlay-on-select — only the
-             slicer's drag-to-narrow re-read and its sort-driven metric re-labeling are wired here. -->
+             download column + a "View Plan" context item on Top Queries, Query Store, AND Top Procedures,
+             which open the stored query_stats.query_plan_xml / query_store_stats.query_plan_text /
+             procedure_stats.query_plan_xml (procedure plans ARE stored since #1368 / V7) in the Plan Viewer
+             tab. Still deferred: Lite's "Get Actual Plan" (needs a live execution), the per-row double-click
+             history windows, and the slicer overlay-on-select — only the slicer's drag-to-narrow re-read and
+             its sort-driven metric re-labeling are wired here. -->
         <TabItem Header="Queries">
             <Grid Margin="0,8,0,0">
                 <Grid.RowDefinitions>
@@ -824,7 +848,7 @@
                                        Foreground="{DynamicResource ForegroundBrush}"
                                        Background="#2244AAFF"/>
                             <DataGrid Grid.Row="2" x:Name="ProcedureStatsGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource QueryGridRowStyle}"
+                                      RowStyle="{StaticResource QueryPlanGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                       Sorting="ProcedureStatsGrid_Sorting">
                                 <DataGrid.Columns>
@@ -1548,9 +1572,10 @@
              rate, blocking incidents, deadlocks), "Current Waits" (waiting-task duration by wait type,
              blocked sessions by database), "Blocked Process Reports" (W1e widened ~25-column filterable
              grid + UTC slicer + block-chain viewer), and "Deadlocks" (W1e per-process grid + UTC slicer +
-             deadlock-graph viewer). Reads rewired to Postgres; the two View-Plan context-menu items stay
-             deferred even with the Plan Viewer host live — the reports carry statement text + a sql_handle
-             (not plan XML), which only a live server could resolve to a plan. -->
+             deadlock-graph viewer). Reads rewired to Postgres; the blocked / blocking / victim "View Plan"
+             context items ARE wired now (#1368 / V7 store the plans BEST-EFFORT alongside the report /
+             deadlock graph, gated per row on presence), opening the stored plan in the Plan Viewer host —
+             NO live SQL. Only Lite's "Get Actual Plan" (a live re-execution) stays omitted. -->
         <TabItem Header="Blocking">
             <Grid Margin="8">
                 <TabControl x:Name="BlockingSubTabs"

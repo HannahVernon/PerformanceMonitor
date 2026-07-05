@@ -33,6 +33,26 @@ public partial class ViewerServerTab
         await OpenDeadlockGraphAsync(row);
     }
 
+    /// <summary>
+    /// "View Victim Plan" on a deadlock row: opens the BEST-EFFORT victim plan the deadlock carries
+    /// (deadlocks.victim_query_plan_xml, #1368 / V7 — one plan per deadlock, threaded onto every process
+    /// row) in the shared Plan Viewer host — NO live SQL, the same stored-plan surface Top Queries uses.
+    /// The context item is gated per row on <see cref="DeadlockProcessDetail.HasVictimQueryPlan"/> (a NULL
+    /// plan — the common case, and always so under Lite — shows it disabled), so this only fires with a
+    /// captured plan; the guard here is belt-and-braces. Lite's "Get Actual Plan" (live) has no viewer
+    /// equivalent and is omitted everywhere.
+    /// </summary>
+    private void ViewVictimQueryPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem) return;
+        if (FindParentDataGrid(menuItem)?.CurrentItem is not DeadlockProcessDetail row || !row.HasVictimQueryPlan) return;
+        /* queryText is null, not row.SqlText: the victim plan rides on every process row of the deadlock, so
+           the right-clicked row's own statement text would mis-pair on a non-victim row. The plan XML carries
+           its own statement text; the side panel simply stays empty (unlike the blocking rows, which each own
+           their blocked/blocking SQL+plan pair and so pass it). */
+        OpenPlanTab(row.VictimQueryPlanXml!, "Victim Plan", null);
+    }
+
     /// <summary>Double-clicking a deadlock row opens the same graph viewer.</summary>
     private async void DeadlockGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {

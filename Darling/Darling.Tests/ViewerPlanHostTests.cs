@@ -9,6 +9,7 @@
 using System;
 using System.Threading.Tasks;
 using Npgsql;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
@@ -54,6 +55,31 @@ public sealed class ViewerPlanHostSqlTests
     }
 
     [Fact]
+    public void ProcedureStatsPlanXmlSql_ReadsStoredXml_KeyedByDatabaseSchemaObject_LatestNonNull()
+    {
+        var sql = ViewerDataService.ProcedureStatsPlanXmlSql;
+        Assert.Contains("SELECT query_plan_xml", sql, StringComparison.Ordinal);
+        /* The base procedure_stats table (there is no v_procedure_stats view; the plan column is on the table). */
+        Assert.Contains("FROM procedure_stats", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("v_procedure_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("database_name = $2", sql, StringComparison.Ordinal);
+        Assert.Contains("schema_name = $3", sql, StringComparison.Ordinal);
+        Assert.Contains("object_name = $4", sql, StringComparison.Ordinal); /* (database, schema, object) = the grid's group key */
+        Assert.Contains("query_plan_xml IS NOT NULL", sql, StringComparison.Ordinal); /* skip rows the collector left NULL */
+        Assert.Contains("ORDER BY collection_time DESC", sql, StringComparison.Ordinal); /* most-recent plan for the key */
+        Assert.Contains("LIMIT 1", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProcedureStatsPlanColumn_ExistsInTheGeneratedProcedureStatsTable()
+    {
+        /* The keyed fetch reads procedure_stats.query_plan_xml — pin that the collector-generated table has it. */
+        Assert.Equal("procedure_stats", ProcedureStatsCollector.Instance.TargetTable);
+        Assert.Contains("query_plan_xml", PgSchemaGenerator.CreateTable(ProcedureStatsCollector.Instance), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TopQueriesSql_CarriesCheapHasPlanFlag_NotThePlanItself()
     {
         /* The grid gates its Query Plan column on a group-level presence flag; the multi-KB plan XML is
@@ -66,11 +92,15 @@ public sealed class ViewerPlanHostSqlTests
     [Theory]
     [InlineData(nameof(ViewerDataService.QueryStatsPlanXmlSql))]
     [InlineData(nameof(ViewerDataService.QueryStorePlanTextSql))]
+    [InlineData(nameof(ViewerDataService.ProcedureStatsPlanXmlSql))]
     public void PlanReads_ArePostgresDialect_PositionalParams_NoTsqlIsms(string sqlName)
     {
-        var sql = sqlName == nameof(ViewerDataService.QueryStatsPlanXmlSql)
-            ? ViewerDataService.QueryStatsPlanXmlSql
-            : ViewerDataService.QueryStorePlanTextSql;
+        var sql = sqlName switch
+        {
+            nameof(ViewerDataService.QueryStatsPlanXmlSql) => ViewerDataService.QueryStatsPlanXmlSql,
+            nameof(ViewerDataService.QueryStorePlanTextSql) => ViewerDataService.QueryStorePlanTextSql,
+            _ => ViewerDataService.ProcedureStatsPlanXmlSql,
+        };
         Assert.DoesNotContain("getdate", sql.ToLowerInvariant());
         Assert.DoesNotContain("N'", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
@@ -86,6 +116,34 @@ public sealed class ViewerPlanHostGatingTests
     {
         Assert.False(new ViewerQueryStatsRow().HasQueryPlan);
         Assert.True(new ViewerQueryStatsRow { HasQueryPlan = true }.HasQueryPlan);
+    }
+
+    [Fact]
+    public void BlockedProcessRow_PlanFlags_DefaultFalse_GateBlockedAndBlockingIndependently()
+    {
+        var empty = new ViewerBlockedProcessRow();
+        Assert.False(empty.HasBlockedQueryPlan);
+        Assert.False(empty.HasBlockingQueryPlan);
+
+        var both = new ViewerBlockedProcessRow
+        {
+            BlockedQueryPlanXml = "<ShowPlanXML/>",
+            BlockingQueryPlanXml = "<ShowPlanXML/>",
+        };
+        Assert.True(both.HasBlockedQueryPlan);
+        Assert.True(both.HasBlockingQueryPlan);
+
+        /* Best-effort: one side can be captured while the other is NULL — the two "View Plan" items gate apart. */
+        var blockedOnly = new ViewerBlockedProcessRow { BlockedQueryPlanXml = "<ShowPlanXML/>" };
+        Assert.True(blockedOnly.HasBlockedQueryPlan);
+        Assert.False(blockedOnly.HasBlockingQueryPlan);
+    }
+
+    [Fact]
+    public void DeadlockProcessDetail_VictimPlanFlag_DefaultsFalse_ReflectsPresence()
+    {
+        Assert.False(new DeadlockProcessDetail().HasVictimQueryPlan);
+        Assert.True(new DeadlockProcessDetail { VictimQueryPlanXml = "<ShowPlanXML/>" }.HasVictimQueryPlan);
     }
 }
 

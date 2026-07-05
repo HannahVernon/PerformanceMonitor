@@ -27,10 +27,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// / <see cref="ViewerDataService.GetQueryStorePlanTextAsync"/>). Consequently Lite's "Get Actual Plan"
 /// (live execution) has no viewer equivalent and is omitted everywhere; only stored plans are shown.
 ///
-/// <para><see cref="OpenPlanTab"/> is the shared entry point every "View Plan" surface calls (the Top
-/// Queries / Query Store context menus here, and — across the parallel Queries wave — the Active Queries
-/// snapshot grid, which already carries its plan XML). It parses the plan off the UI thread, adds a
-/// closable sub-tab, and focuses the host.</para>
+/// <para><see cref="OpenPlanTab"/> is the shared entry point every "View Plan" surface calls: the keyed
+/// Top Queries / Query Store / Top Procedures context menus here (fetched on click by
+/// <see cref="ViewPlan_Click"/>), the FinOps High Impact / Expensive Queries menus, the Active Queries
+/// snapshot grid, and the blocked-process / deadlock grids — the last three already carry their plan XML
+/// in-row. It parses the plan off the UI thread, adds a closable sub-tab, and focuses the host.</para>
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -133,10 +134,13 @@ public partial class ViewerServerTab
     private void CancelPlanButton_Click(object sender, RoutedEventArgs e) => _planLoadCts?.Cancel();
 
     /// <summary>
-    /// The "View Plan" context-menu handler for the Top Queries + Query Store grids: fetches the stored
-    /// plan by the row's key columns (behind the loading overlay), then opens it via <see cref="OpenPlanTab"/>.
-    /// Top Procedures rows never reach here — the procedure_stats collector stores no plan (only a
-    /// plan_handle, which needs a live server to resolve), so those grids keep the plan-less context menu.
+    /// The "View Plan" context-menu handler for the Top Queries + Query Store + Top Procedures grids:
+    /// fetches the stored plan by the row's key columns (behind the loading overlay), then opens it via
+    /// <see cref="OpenPlanTab"/>. Top Procedures now reaches here too — the procedure_stats collector DOES
+    /// store the plan (query_plan_xml, cleanly captured from the cached plan since #1368 / migration V7,
+    /// gated on the host's CapturePlanXml — Darling sets it, Lite writes NULL); it is fetched by object
+    /// identity, exactly like the query-stats key. Comparison grids stay plan-less (a current-vs-baseline
+    /// aggregate has no single stored plan keyed on the row).
     /// </summary>
     private async void ViewPlan_Click(object sender, RoutedEventArgs e)
     {
@@ -160,6 +164,12 @@ public partial class ViewerServerTab
                 label = $"Plan - QS {qs.QueryId}";
                 queryText = qs.QueryText;
                 fetch = ct => _dataService.GetQueryStorePlanTextAsync(_server.ServerId, qs.DatabaseName, qs.QueryId, qs.PlanId, ct);
+                break;
+            case ViewerProcedureStatsRow proc:
+                if (string.IsNullOrEmpty(proc.ObjectName)) return;
+                label = $"Plan - {proc.FullName}";
+                queryText = null; /* the procedure grid carries no statement text; the plan XML holds its own */
+                fetch = ct => _dataService.GetProcedureStatsPlanXmlAsync(_server.ServerId, proc.DatabaseName, proc.SchemaName, proc.ObjectName, ct);
                 break;
             default:
                 /* Comparison items / anything else: no stored plan keyed on the row — deferred. */

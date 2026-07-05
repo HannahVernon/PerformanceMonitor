@@ -15,15 +15,18 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// On-demand execution-plan reads for the Plan Viewer host (headless-plan wave): the plan XML the
-/// Darling service captures alongside the query/query-store stats (PR #1349, gated on
-/// <c>CollectorContext.CapturePlanXml</c> — Darling sets it true, TOAST compresses the text). Unlike
-/// Lite — which fetches plans live from the monitored server's plan cache — the viewer never touches
-/// SQL Server, so it reads the stored plan text straight out of Postgres by the grid row's key columns.
-/// The grid reads carry only a cheap <c>has_query_plan</c> presence flag (no multi-KB XML per row); the
-/// full plan is fetched here on click. These lookups are keyed (server + object identity), not windowed,
-/// so there is no timestamp parameter and no naive-UTC concern — <c>ORDER BY collection_time DESC LIMIT 1</c>
-/// returns the most recently captured plan for that key. Plans can be large; they are read as text with no
-/// size games (the task's rule: TOAST handles storage, reading is fine).
+/// Darling service captures alongside the query/query-store/procedure stats (PR #1349 for query &amp;
+/// query-store, #1368 / V7 for procedure_stats, gated on <c>CollectorContext.CapturePlanXml</c> — Darling
+/// sets it true, TOAST compresses the text). Unlike Lite — which fetches plans live from the monitored
+/// server's plan cache — the viewer never touches SQL Server, so it reads the stored plan text straight out
+/// of Postgres by the grid row's key columns. The keyed grids (Top Queries / Query Store / Top Procedures)
+/// carry only a cheap presence flag or fetch on click (no multi-KB XML per row); the blocked-process /
+/// deadlock grids instead carry their best-effort plan XML in-row (see ViewerDataService.Blocking.cs /
+/// .Deadlock.cs), like they already carry the report / graph XML. These keyed lookups are keyed (server +
+/// object identity), not windowed, so there is no timestamp parameter and no naive-UTC concern —
+/// <c>ORDER BY collection_time DESC LIMIT 1</c> returns the most recently captured plan for that key. Plans
+/// can be large; they are read as text with no size games (the task's rule: TOAST handles storage, reading
+/// is fine).
 /// </summary>
 public sealed partial class ViewerDataService
 {
@@ -92,6 +95,50 @@ public sealed partial class ViewerDataService
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = databaseName ?? "" });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = queryId });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = planId });
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string s ? s : null;
+    }
+
+    /// <summary>
+    /// The latest captured procedure_stats plan for a Top-Procedures row, keyed by (server, database,
+    /// schema, object) — the grid groups by (database_name, schema_name, object_name, object_type), so the
+    /// same object identity fetches the plan the row represents (Top Queries' keyed-fetch pattern, not the
+    /// in-row carry the aggregate grid can't do). procedure_stats.query_plan_xml is captured CLEANLY from the
+    /// cached plan (dm_exec_procedure_stats.plan_handle → dm_exec_text_query_plan) whenever the host sets
+    /// CapturePlanXml — Darling does, Lite always writes NULL. Read from the base <c>procedure_stats</c>
+    /// table (there is no v_procedure_stats view; TopProceduresSql already reads the base table), which also
+    /// avoids the V7-column / pinned-view issue the blocked/deadlock reads sidestep. $1 server_id, $2
+    /// database_name, $3 schema_name, $4 object_name.
+    /// </summary>
+    public const string ProcedureStatsPlanXmlSql = """
+        SELECT query_plan_xml
+        FROM procedure_stats
+        WHERE server_id = $1
+        AND   database_name = $2
+        AND   schema_name = $3
+        AND   object_name = $4
+        AND   query_plan_xml IS NOT NULL
+        ORDER BY collection_time DESC
+        LIMIT 1
+        """;
+
+    /// <summary>
+    /// The stored execution plan for a Top-Procedures grid row, or null when no plan was captured for that
+    /// (database, schema, object). Read as text — no length cap (the collector stored the whole plan).
+    /// </summary>
+    public async Task<string?> GetProcedureStatsPlanXmlAsync(
+        int serverId, string databaseName, string schemaName, string objectName, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(objectName))
+        {
+            return null;
+        }
+
+        await using var command = _dataSource.CreateCommand(ProcedureStatsPlanXmlSql);
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = databaseName ?? "" });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = schemaName ?? "" });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = objectName });
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is string s ? s : null;
     }
