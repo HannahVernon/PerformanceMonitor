@@ -794,8 +794,10 @@ CREATE INDEX IF NOT EXISTS idx_database_size_stats_time ON database_size_stats(s
 
     // Per-table/per-index size, usage, and locking stats. Sizes are point-in-time;
     // usage/locking counters are cumulative (reset boundary in sqlserver_start_time).
-    // Column order MUST match the appender in RemoteCollectorService.IndexObjectStats.cs
-    // and the data columns in install/02_create_tables.sql (Dashboard parity).
+    // Column order MUST match the shared IndexObjectStatsCollector.PayloadColumns (the appender
+    // and Darling's binary COPY both write in that order) and the data columns in
+    // install/02_create_tables.sql (Dashboard parity). The trailing index-definition columns
+    // (key_columns .. allow_row_locks) back monitor-side UNUSED/DUPLICATE analysis (Stage 1).
     public const string CreateIndexObjectStatsTable = @"
 CREATE TABLE IF NOT EXISTS index_object_stats (
     collection_id BIGINT PRIMARY KEY,
@@ -845,7 +847,21 @@ CREATE TABLE IF NOT EXISTS index_object_stats (
     page_latch_wait_count BIGINT,
     page_latch_wait_in_ms BIGINT,
     page_io_latch_wait_count BIGINT,
-    page_io_latch_wait_in_ms BIGINT
+    page_io_latch_wait_in_ms BIGINT,
+    key_columns VARCHAR,
+    included_columns VARCHAR,
+    filter_definition VARCHAR,
+    is_unique_constraint BOOLEAN,
+    is_foreign_key BOOLEAN,
+    is_foreign_key_reference BOOLEAN,
+    is_disabled BOOLEAN,
+    data_compression_desc VARCHAR,
+    optimize_for_sequential_key BOOLEAN,
+    fill_factor SMALLINT,
+    is_padded BOOLEAN,
+    allow_page_locks BOOLEAN,
+    allow_row_locks BOOLEAN,
+    is_indexed_view BOOLEAN
 )";
 
     public const string CreateIndexObjectStatsIndex = @"

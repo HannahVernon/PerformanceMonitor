@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_FourteenVersions_V13SystemHealth_V14RefreshViews()
+    public void MigrationScripts_FifteenVersions_V14RefreshViews_V15IndexMetadata()
     {
-        Assert.Equal(14, PgMigrations.Scripts.Count);
+        Assert.Equal(15, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -49,7 +49,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(12, PgMigrations.Scripts[11].Version);
         Assert.Equal(13, PgMigrations.Scripts[12].Version);
         Assert.Equal(14, PgMigrations.Scripts[13].Version);
-        Assert.Equal(14, StorageVersion.SchemaVersion);
+        Assert.Equal(15, PgMigrations.Scripts[14].Version);
+        Assert.Equal(15, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -207,6 +208,29 @@ public sealed class DarlingObservabilityTests
             new System.Collections.Generic.SortedSet<string>(PgSchemaGenerator.AllPassthroughViews, StringComparer.Ordinal),
             viewsCreatedByAnyMigration);
 
+        /* V15 adds the per-index definition metadata for monitor-side UNUSED/DUPLICATE analysis
+           (FinOps Index Analysis, Stage 1) additively — one ADD COLUMN IF NOT EXISTS per column so a
+           pre-metadata store comes up to shape and a fresh V1 store no-ops — then CREATE OR REPLACE
+           re-expands v_index_object_stats' SELECT * so an upgraded store's view (last refreshed by
+           V14, before these columns existed) surfaces them. */
+        var v15 = PgMigrations.Scripts[14].Sql;
+        Assert.Equal("index-metadata-columns", PgMigrations.Scripts[14].Name);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS key_columns text;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS included_columns text;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS filter_definition text;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_unique_constraint boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key_reference boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_disabled boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS data_compression_desc text;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS optimize_for_sequential_key boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS fill_factor smallint;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_padded boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_page_locks boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_row_locks boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_indexed_view boolean;", v15, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_index_object_stats AS SELECT * FROM index_object_stats;", v15, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -229,7 +253,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(14L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(15L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
