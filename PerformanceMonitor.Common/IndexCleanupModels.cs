@@ -178,11 +178,21 @@ namespace PerformanceMonitor.Common
         /// <summary>Retain this index (the keeper of a duplicate set).</summary>
         Keep = 1,
 
-        /// <summary>Disable this index (redundant / unused). Never assigned to a protected index.</summary>
+        /// <summary>Disable this index (redundant / unused). Never assigned to a protected index. When the
+        /// index is a unique constraint (Rule 7.5 / 7.5b), the generated script is a <c>DROP CONSTRAINT</c>
+        /// rather than an <c>ALTER INDEX … DISABLE</c>.</summary>
         Disable = 2,
 
         /// <summary>Retain but rebuild with includes merged from the indexes it supersedes.</summary>
         MergeIncludes = 3,
+
+        /// <summary>
+        /// Rebuild this nonclustered index as UNIQUE so it can replace a redundant unique constraint
+        /// (sp_IndexCleanup's <c>MAKE UNIQUE</c>, Rule 7 / 7.5). The matching constraint is dropped
+        /// (a companion <see cref="Disable"/> row). The generated script is a
+        /// <c>CREATE UNIQUE INDEX … WITH (DROP_EXISTING = ON …)</c> rebuild.
+        /// </summary>
+        MakeUnique = 4,
     }
 
     /// <summary>Which generated-script bucket a recommendation belongs to. Mirrors sp_IndexCleanup's <c>result_type</c>.</summary>
@@ -204,6 +214,15 @@ namespace PerformanceMonitor.Common
         /// patterns / row coverage).
         /// </summary>
         Review = 3,
+
+        /// <summary>
+        /// An <c>ALTER TABLE … DROP CONSTRAINT</c> row: a redundant unique constraint being replaced by a
+        /// nonclustered index made unique in its place, or (Rule 7.5b) a duplicate unique constraint dropped
+        /// in favor of an identical surviving one. Mirrors sp_IndexCleanup's <c>CONSTRAINT</c> result bucket
+        /// (its <c>DISABLE CONSTRAINT SCRIPT</c>) — distinct from <see cref="Disable"/>'s
+        /// <c>ALTER INDEX … DISABLE</c>.
+        /// </summary>
+        DisableConstraint = 4,
     }
 
     /// <summary>The canonical <c>consolidation_rule</c> labels this analyzer emits.</summary>
@@ -241,6 +260,16 @@ namespace PerformanceMonitor.Common
 
         /// <summary>The wider index a Key Subset defers to (Rule 4); rebuilt with the subset's missing includes merged in.</summary>
         public const string KeySuperset = "Key Superset";
+
+        /// <summary>
+        /// A nonclustered index whose key columns match a unique constraint's (Rule 7 / 7.5 / 7.5b). The index
+        /// is made unique (<see cref="IndexCleanupAction.MakeUnique"/>) to take over the constraint's
+        /// uniqueness enforcement and the now-redundant constraint is dropped
+        /// (<see cref="IndexCleanupAction.Disable"/> → <see cref="IndexCleanupResultKind.DisableConstraint"/>);
+        /// a constraint that backs an inbound foreign-key reference is never dropped. Rule 7.5b additionally
+        /// collapses two or more identical unique constraints down to a single survivor.
+        /// </summary>
+        public const string UniqueConstraintReplacement = "Unique Constraint Replacement";
     }
 
     /// <summary>

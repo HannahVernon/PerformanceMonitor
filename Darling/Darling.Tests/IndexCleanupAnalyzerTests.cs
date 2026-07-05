@@ -391,6 +391,256 @@ public class IndexCleanupAnalyzerTests
         Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
     }
 
+    // ── Rules 7 / 7.5 / 7.5b: Unique Constraint Replacement ──────────────────────────────────────────
+    // Behavior below was verified against a live sp_IndexCleanup @debug=1 run (see PR notes).
+
+    [Fact]
+    public void UniqueConstraintReplacement_NcMatchesConstraint_NcMadeUniqueConstraintDropped()
+    {
+        // Rule 7 + 7.5: a nonclustered index whose keys EXACTLY match a unique constraint → the index is made
+        // unique and the redundant constraint is dropped.
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        var ncRec = Rec(r, "nc_ab");
+        Assert.NotNull(ncRec);
+        Assert.Equal(IndexCleanupAction.MakeUnique, ncRec!.Action);
+        Assert.Equal(IndexCleanupRules.UniqueConstraintReplacement, ncRec.ConsolidationRule);
+        Assert.Equal(IndexCleanupResultKind.Merge, ncRec.ResultKind);
+        Assert.Equal("MERGE SCRIPT", ncRec.ScriptType);
+        Assert.Equal("Will replace constraint UC_ab", ncRec.SupersededBy);
+        Assert.Contains("CREATE UNIQUE INDEX [nc_ab]", ncRec.Script);
+        Assert.Contains("DROP_EXISTING = ON", ncRec.Script);
+
+        var ucRec = Rec(r, "UC_ab");
+        Assert.NotNull(ucRec);
+        Assert.Equal(IndexCleanupAction.Disable, ucRec!.Action);
+        Assert.Equal(IndexCleanupRules.UniqueConstraintReplacement, ucRec.ConsolidationRule);
+        Assert.Equal(IndexCleanupResultKind.DisableConstraint, ucRec.ResultKind);
+        Assert.Equal("DISABLE CONSTRAINT SCRIPT", ucRec.ScriptType);
+        Assert.Equal("nc_ab", ucRec.TargetIndexName);
+        Assert.Equal("ALTER TABLE [TestDb].[dbo].[T] DROP CONSTRAINT [UC_ab];", ucRec.Script);
+        Assert.Contains("replaced by: nc_ab", ucRec.AdditionalInfo);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_MakeUniqueScript_HasCanonicalUniqueDropExistingForm()
+    {
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        Assert.Equal(
+            "CREATE UNIQUE INDEX [nc_ab] ON [TestDb].[dbo].[T] ([a], [b]) WITH (DROP_EXISTING = ON, FILLFACTOR = 100, SORT_IN_TEMPDB = ON, ONLINE = OFF);",
+            Rec(r, "nc_ab")!.Script);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_MakeUniqueKeepsOwnIncludes()
+    {
+        // Key match is on key_columns only — the made-unique index keeps its own includes (Rule 7.6 include-merge is out of scope).
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2, includes: "[c]", seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        var ncRec = Rec(r, "nc_ab");
+        Assert.Equal(IndexCleanupAction.MakeUnique, ncRec!.Action);
+        Assert.Contains("CREATE UNIQUE INDEX [nc_ab] ON [TestDb].[dbo].[T] ([a], [b]) INCLUDE ([c])", ncRec.Script);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_ConstraintBacksForeignKeyReference_NotDropped()
+    {
+        // PROTECTION: a constraint backing an inbound FK reference is never dropped (disabling silently breaks
+        // referential integrity). Its would-be replacement index is then reverted to no action (proc-faithful).
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true, foreignKeyReference: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.IndexName == "UC_ab" && x.Action == IndexCleanupAction.Disable);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_NcKeySuperset_NotPromoted()
+    {
+        // Both-direction set-equality guard: an index with an EXTRA key column is NOT equivalent to the
+        // constraint, so it is not promoted (and the constraint is not dropped).
+        var nc = Idx("nc_abc", "[a], [b], [c]", indexId: 2, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_AlreadyUniqueNcExactMatch_IsMadeUniquePerLiteralProc()
+    {
+        // AMBIGUITY (verified live): an already-unique index that EXACTLY matches a constraint is still marked
+        // MAKE UNIQUE, NOT KEEP — the proc's Rule 7.5 step 2 has no is_unique guard, so it overrides Rule 7's
+        // KEEP. The rebuild is a redundant-but-harmless UNIQUE rebuild that still drops the constraint. This
+        // reproduces the proc's LITERAL behavior (the task text's "KEEP" expectation does not survive Rule 7.5).
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2, unique: true, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        Assert.Equal(IndexCleanupAction.MakeUnique, Rec(r, "nc_ab")!.Action);
+        Assert.Equal(IndexCleanupAction.Disable, Rec(r, "UC_ab")!.Action);
+        Assert.Equal(IndexCleanupResultKind.DisableConstraint, Rec(r, "UC_ab")!.ResultKind);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_AlreadyUniqueNcDifferentKeyOrder_IsKeptNotMadeUnique()
+    {
+        // The KEEP case the task describes: an already-unique index whose keys match the constraint only by SET
+        // (reversed order) survives as KEEP — Rule 7's set-match assigns KEEP and Rule 7.5's EXACT-key match
+        // does not fire, so no redundant MAKE UNIQUE and no constraint drop.
+        var nc = Idx("nc_ba", "[b], [a]", indexId: 2, unique: true, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_ExactMatch_OverridesUnusedMarking()
+    {
+        // Rule 7.5 step 2 is unconditional on prior state: a nonclustered index with no reads is first marked
+        // Unused/DISABLE, then FORCED to MAKE UNIQUE by the exact-key constraint match (verified live).
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2);   // no reads → would be "Unused"
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts(uptimeDays: 30));
+
+        var ncRec = Rec(r, "nc_ab");
+        Assert.Equal(IndexCleanupAction.MakeUnique, ncRec!.Action);
+        Assert.Equal(IndexCleanupRules.UniqueConstraintReplacement, ncRec.ConsolidationRule);
+        Assert.Equal(IndexCleanupAction.Disable, Rec(r, "UC_ab")!.Action);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_DuplicateConstraints_LoserDroppedKeeperSurvives()
+    {
+        // Rule 7.5b: two identical unique constraints, no nonclustered index to promote → drop all but one.
+        // The alphabetically-later name loses at equal priority (mirrors the Rule 2 tiebreak).
+        var uc1 = Idx("UC_1", "[a], [b]", indexId: 2, uniqueConstraint: true);
+        var uc2 = Idx("UC_2", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { uc1, uc2 }, Opts());
+
+        var loser = Rec(r, "UC_2");
+        Assert.NotNull(loser);
+        Assert.Equal(IndexCleanupAction.Disable, loser!.Action);
+        Assert.Equal(IndexCleanupResultKind.DisableConstraint, loser.ResultKind);
+        Assert.Equal(IndexCleanupRules.UniqueConstraintReplacement, loser.ConsolidationRule);
+        Assert.Equal("UC_1", loser.TargetIndexName);
+        Assert.Equal("ALTER TABLE [TestDb].[dbo].[T] DROP CONSTRAINT [UC_2];", loser.Script);
+
+        // The keeper survives with no destructive recommendation.
+        Assert.DoesNotContain(r.Recommendations, x => x.IndexName == "UC_1" && x.Action == IndexCleanupAction.Disable);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_ThreeDuplicateConstraints_AllLosersPointAtSingleWinner()
+    {
+        // Determinism guard: with 3+ identical constraints, every loser targets the single overall winner.
+        var uc1 = Idx("UC_a", "[a], [b]", indexId: 2, uniqueConstraint: true);
+        var uc2 = Idx("UC_b", "[a], [b]", indexId: 3, uniqueConstraint: true);
+        var uc3 = Idx("UC_c", "[a], [b]", indexId: 4, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { uc1, uc2, uc3 }, Opts());
+
+        Assert.Equal(2, r.Recommendations.Count(x => x.ResultKind == IndexCleanupResultKind.DisableConstraint));
+        Assert.Equal("UC_a", Rec(r, "UC_b")!.TargetIndexName);
+        Assert.Equal("UC_a", Rec(r, "UC_c")!.TargetIndexName);
+        Assert.DoesNotContain(r.Recommendations, x => x.IndexName == "UC_a" && x.Action == IndexCleanupAction.Disable);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_DuplicateConstraints_FkReferencedLoserProtected()
+    {
+        // Rule 7.5b FK guard: the natural loser (alphabetically later) backs an inbound FK reference → it is
+        // NOT demoted/dropped, so neither constraint is dropped.
+        var keep = Idx("UC_aaa", "[a], [b]", indexId: 2, uniqueConstraint: true);
+        var fkLoser = Idx("UC_zzz", "[a], [b]", indexId: 3, uniqueConstraint: true, foreignKeyReference: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { keep, fkLoser }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_RollupCountsMakeUniqueAsMergeAndDroppedConstraintAsDisable()
+    {
+        var nc = Idx("nc_ab", "[a], [b]", indexId: 2, seeks: 10);
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 3, uniqueConstraint: true);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { nc, uc }, Opts());
+
+        Assert.Equal(1, r.OverallRollup.IndexesToMerge);     // the MAKE UNIQUE index
+        Assert.Equal(1, r.OverallRollup.IndexesToDisable);   // the dropped constraint
+        Assert.Equal(0, r.OverallRollup.UnusedIndexes);      // neither is "unused"
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_KeySupersetMadeUnique_RetainsAbsorbedSubsetIncludes()
+    {
+        // A Key-Superset index that absorbed a disabled subset's includes and THEN exactly matches a
+        // constraint is made unique WITHOUT losing the absorbed include (verified live:
+        // CREATE UNIQUE INDEX [IX_wide] … INCLUDE ([c], [d])).
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 2, uniqueConstraint: true);
+        var wide = Idx("IX_wide", "[a], [b]", indexId: 3, includes: "[c]", seeks: 10);
+        var narrow = Idx("IX_narrow", "[a]", indexId: 4, includes: "[d]", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { uc, wide, narrow }, Opts());
+
+        var wideRec = Rec(r, "IX_wide");
+        Assert.Equal(IndexCleanupAction.MakeUnique, wideRec!.Action);
+        Assert.Contains("INCLUDE ([c], [d])", wideRec.Script);          // absorbed subset include [d] survives step 2
+        Assert.Equal(IndexCleanupRules.KeySubset, Rec(r, "IX_narrow")!.ConsolidationRule);
+        Assert.Equal(IndexCleanupAction.Disable, Rec(r, "IX_narrow")!.Action);
+        Assert.Equal(IndexCleanupResultKind.DisableConstraint, Rec(r, "UC_ab")!.ResultKind);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_Rule76_KeyDuplicateOfMadeUniqueIndex_ReDisabledAndIncludesFolded()
+    {
+        // Rule 7.6: after Rule 7.5 makes nc_a unique, the other same-key index (nc_b) — which step 2 briefly
+        // promoted then the cleanup reverted — is re-disabled as a Key Duplicate and its include folded into
+        // the winner (verified live). Without Rule 7.6 nc_b would be silently left in place (a dropped DISABLE).
+        var uc = Idx("UC_ab", "[a], [b]", indexId: 2, uniqueConstraint: true);
+        var ncA = Idx("nc_a", "[a], [b]", indexId: 3, includes: "[c]", seeks: 10);
+        var ncB = Idx("nc_b", "[a], [b]", indexId: 4, includes: "[d]", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { uc, ncA, ncB }, Opts());
+
+        var winner = Rec(r, "nc_a");
+        Assert.Equal(IndexCleanupAction.MakeUnique, winner!.Action);
+        Assert.Contains("INCLUDE ([c], [d])", winner.Script);           // nc_b's include folded in
+
+        var loser = Rec(r, "nc_b");
+        Assert.NotNull(loser);
+        Assert.Equal(IndexCleanupAction.Disable, loser!.Action);
+        Assert.Equal(IndexCleanupRules.KeyDuplicate, loser.ConsolidationRule);   // NOT Unique Constraint Replacement
+        Assert.Equal(IndexCleanupResultKind.Disable, loser.ResultKind);          // ALTER INDEX DISABLE (nc_b is not a constraint)
+        Assert.Equal("nc_a", loser.TargetIndexName);
+
+        Assert.Equal(IndexCleanupResultKind.DisableConstraint, Rec(r, "UC_ab")!.ResultKind);
+    }
+
     // ── Protections ────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -418,15 +668,26 @@ public class IndexCleanupAnalyzerTests
     }
 
     [Fact]
-    public void Protection_UniqueConstraint_ExcludedFromDedupe()
+    public void Protection_UniqueConstraint_NotNaivelyDeduped_ReplacedViaRule75()
     {
+        // A unique constraint is excluded from the Exact/Key duplicate candidate set, so it is never marked an
+        // "Exact Duplicate"/"Key Duplicate" loser. With an identical-key nonclustered index it is instead
+        // handled by Rule 7.5 (replaced by the made-unique index → a constraint DROP), never by naive dedupe.
         var uc = Idx("UQ_C", "[a]", indexId: 2, uniqueConstraint: true, unique: true, seeks: 10);
         var dup = Idx("IX_Dup", "[a]", indexId: 3, seeks: 10);
 
         var r = IndexCleanupAnalyzer.Analyze(new[] { uc, dup }, Opts());
 
-        // The unique constraint is never disabled (out of the dedupe candidate set entirely).
-        Assert.DoesNotContain(r.Recommendations, x => x.IndexName == "UQ_C" && x.Action == IndexCleanupAction.Disable);
+        var ucRec = Rec(r, "UQ_C");
+        Assert.NotNull(ucRec);
+        // Never swept into the naive Exact/Key duplicate consolidation.
+        Assert.NotEqual(IndexCleanupRules.ExactDuplicate, ucRec!.ConsolidationRule);
+        Assert.NotEqual(IndexCleanupRules.KeyDuplicate, ucRec.ConsolidationRule);
+        // Instead: Rule 7.5 replaces it with the made-unique index and drops the constraint.
+        Assert.Equal(IndexCleanupRules.UniqueConstraintReplacement, ucRec.ConsolidationRule);
+        Assert.Equal(IndexCleanupResultKind.DisableConstraint, ucRec.ResultKind);
+        Assert.Equal("IX_Dup", ucRec.TargetIndexName);
+        Assert.Equal(IndexCleanupAction.MakeUnique, Rec(r, "IX_Dup")!.Action);
     }
 
     [Fact]
@@ -615,6 +876,7 @@ public class IndexCleanupAnalyzerTests
     public void Notes_SurfaceOutOfScopeRules()
     {
         var r = IndexCleanupAnalyzer.Analyze(new[] { Idx("IX_Unused", "[a]") }, Opts());
-        Assert.Contains(r.Notes, n => n.Contains("Unique Constraint Replacement") && n.Contains("Same Keys Different Order"));
+        // Same Keys Different Order remains out of scope (Unique Constraint Replacement, incl. Rules 7.5b/7.6, is implemented).
+        Assert.Contains(r.Notes, n => n.Contains("Same Keys Different Order"));
     }
 }

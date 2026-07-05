@@ -26,6 +26,11 @@ namespace PerformanceMonitor.Common
     /// &lt;=7-day auto-dedupe), <b>Exact Duplicate</b> (Rule 2 → DISABLE), <b>Key Duplicate</b> (Rule 5 →
     /// keeper MERGE INCLUDES + loser DISABLE), and <b>Key Subset</b>/<b>Key Superset</b> (Rules 3/4/6 →
     /// subset DISABLE + superset MERGE, with subset-chain flattening and missing-include carry).
+    /// <b>Key Subset</b>/<b>Key Superset</b> (Rules 3/4/6 → subset DISABLE + superset MERGE, with subset-chain
+    /// flattening and missing-include carry), and <b>Unique Constraint Replacement</b> (Rules 7/7.5/7.5b → a
+    /// nonclustered index MAKE UNIQUE + the redundant constraint DROP CONSTRAINT, with the FK-reference
+    /// protection, the both-direction key-set-equality guard, and duplicate-constraint collapse; Rule 7.6 then
+    /// re-disables any ordinary Key Duplicate of a made-unique index and folds its includes in).
     /// <b>Recognized but deliberately NOT auto-consolidated</b> (surfaced as a review row, matching the
     /// proc's tested behavior — its adversarial tests 9a/10a assert these are left alone): <b>Reverse
     /// Duplicate</b> (same key column set, different order/direction — a different leading column serves
@@ -36,11 +41,10 @@ namespace PerformanceMonitor.Common
     /// / reporting math.</para>
     ///
     /// <para><b>Deliberately out of scope</b> (see <see cref="IndexCleanupAnalysisResult.Notes"/>): the proc's
-    /// <c>Unique Constraint Replacement</c> (MAKE UNIQUE) and <c>Same Keys Different Order</c> (REVIEW) rules,
-    /// whose actions fall outside this stage's DISABLE / MERGE INCLUDES / KEEP set. Both remain reproducible
-    /// from the captured data. Script details that need metadata Stage 1 did not capture (the trailing
-    /// <c>ON &lt;filegroup/partition_scheme&gt;</c> placement; sparse/legacy-LOB compression exclusions) are
-    /// surfaced, never guessed.</para>
+    /// <c>Same Keys Different Order</c> (REVIEW) case, largely covered by the Reverse Duplicate review rows and
+    /// reproducible from the captured data if later required. Script details that need metadata Stage 1 did not
+    /// capture (the trailing <c>ON &lt;filegroup/partition_scheme&gt;</c> placement; sparse/legacy-LOB
+    /// compression exclusions) are surfaced, never guessed.</para>
     /// </summary>
     public static class IndexCleanupAnalyzer
     {
@@ -146,6 +150,12 @@ namespace PerformanceMonitor.Common
             ResolveSubsetChains(scope);
             ApplyKeySuperset(scope);
             ApplyKeyDuplicate(scope);
+
+            // Rule 7 family: unique-constraint replacement (MAKE UNIQUE / DROP CONSTRAINT). Runs LAST so it
+            // sees the final consolidation state (and, exactly like the proc's Rule 7.5, may override an
+            // earlier Unused/Key-Duplicate marking on a nonclustered index whose keys EXACTLY match a
+            // unique constraint).
+            ApplyUniqueConstraintReplacement(scope);
         }
 
         /// <summary>
@@ -361,6 +371,295 @@ namespace PerformanceMonitor.Common
             }
         }
 
+        /// <summary>
+        /// Rule 7 family — Unique Constraint Replacement (sp_IndexCleanup Rules 7, 7.5, 7.5b), reproduced
+        /// faithfully against the live proc (verified with <c>@debug = 1</c>):
+        /// <list type="bullet">
+        /// <item><b>Rule 7</b> (set-match, tentative): an eligible nonclustered index whose KEY-COLUMN SET
+        /// equals a unique constraint's (both-direction set equality — extra key columns disqualify) is
+        /// tentatively marked MAKE UNIQUE (if not already unique) or KEEP (already unique). A unique
+        /// constraint self-matches, so a lone/duplicate constraint is marked KEEP here — the precondition for
+        /// Rule 7.5b.</item>
+        /// <item><b>Rule 7.5 step 1</b>: a unique constraint that has an EXACT-<c>key_columns</c> (order +
+        /// direction) match to a TRUE nonclustered index (not another constraint) is marked DISABLE, pointing
+        /// at that index — UNLESS the constraint backs an inbound foreign-key reference (dropping it would
+        /// break referential integrity).</item>
+        /// <item><b>Rule 7.5 step 2</b>: every true nonclustered index with an EXACT-<c>key_columns</c>
+        /// matching constraint is (re)marked MAKE UNIQUE. Unconditional on prior state, so it OVERRIDES an
+        /// earlier Unused / Key-Duplicate marking on that index (verified against the proc).</item>
+        /// <item><b>Rule 7.5 cleanup</b>: any MAKE UNIQUE index with no disabled constraint pointing back at
+        /// it (the constraint was FK-protected, or Rule 7 set-matched a reversed-order index with no exact
+        /// match) is reverted to no action — matching the proc, this does NOT restore a prior marking.</item>
+        /// <item><b>Rule 7.5b</b>: two or more unique constraints with identical key columns + filter and no
+        /// nonclustered index to promote (all left KEEP by Rule 7) collapse to the single deterministic winner
+        /// (highest priority, then alphabetically-first name); the rest are demoted to DISABLE (DROP
+        /// CONSTRAINT). An FK-referenced constraint is never demoted.</item>
+        /// </list>
+        /// A MAKE UNIQUE index renders as a UNIQUE <c>DROP_EXISTING</c> rebuild (MERGE bucket); a disabled
+        /// constraint renders as <c>DROP CONSTRAINT</c> (<see cref="IndexCleanupResultKind.DisableConstraint"/>).
+        /// </summary>
+        private static void ApplyUniqueConstraintReplacement(List<WorkIndex> scope)
+        {
+            const string Ucr = IndexCleanupRules.UniqueConstraintReplacement;
+
+            // Rule 7: tentative set-match marking (both-direction key-column SET equality — direction- and
+            // order-independent). A unique constraint self-matches (that is how a lone/duplicate constraint
+            // gets KEEP here, the Rule 7.5b precondition). Only still-unprocessed eligible rows are touched.
+            foreach (var w in scope)
+            {
+                if (w.Processed || !w.IsEligibleForDedupe || w.Keys.Count == 0)
+                {
+                    continue;
+                }
+
+                bool hasKeySetMatchingConstraint = scope.Any(u =>
+                    u.Src.IsUniqueConstraint && u.KeyNameSet.SetEquals(w.KeyNameSet));
+
+                if (hasKeySetMatchingConstraint)
+                {
+                    w.ConsolidationRule = Ucr;
+                    w.Action = w.Src.IsUnique ? IndexCleanupAction.Keep : IndexCleanupAction.MakeUnique;
+                    w.Processed = true;
+                }
+            }
+
+            // Rule 7.5 step 1: mark each unique constraint an EXACT-key nonclustered index can replace for
+            // DISABLE (→ DROP CONSTRAINT), pointing at that index. Guards: never drop an FK-referenced
+            // constraint (silently breaks referential integrity); the replacement must be a TRUE nonclustered
+            // index, not another constraint — otherwise two identical constraints would mutually disable and
+            // BOTH get dropped (that case is Rule 7.5b's job).
+            foreach (var uc in scope)
+            {
+                if (!uc.Src.IsUniqueConstraint || uc.Src.IsForeignKeyReference)
+                {
+                    continue;
+                }
+
+                var replacement = scope
+                    .Where(n => !n.Src.IsUniqueConstraint
+                        && !string.Equals(n.Name, uc.Name, StringComparison.Ordinal)
+                        && string.Equals(n.KeyColumns, uc.KeyColumns, StringComparison.Ordinal))
+                    .OrderBy(n => n.Name, StringComparer.Ordinal)   // deterministic pick if several match
+                    .FirstOrDefault();
+
+                if (replacement != null)
+                {
+                    uc.ConsolidationRule = Ucr;
+                    uc.Action = IndexCleanupAction.Disable;
+                    uc.TargetIndexName = replacement.Name;
+                    uc.Processed = true;
+                }
+            }
+
+            // Rule 7.5 step 2: (re)mark every true nonclustered index with an EXACT-key matching constraint as
+            // MAKE UNIQUE. Unconditional on prior state — deliberately overrides an earlier Unused/Key-Duplicate
+            // marking (the proc's UPDATE has no such guard; verified live).
+            foreach (var nc in scope)
+            {
+                if (nc.Src.IsUniqueConstraint)
+                {
+                    continue;
+                }
+
+                bool hasExactMatchingConstraint = scope.Any(u =>
+                    u.Src.IsUniqueConstraint
+                    && string.Equals(u.KeyColumns, nc.KeyColumns, StringComparison.Ordinal));
+
+                if (hasExactMatchingConstraint)
+                {
+                    // Only the rule/action/target change — the proc's Rule 7.5 step 2 touches nothing else.
+                    // Crucially, a Key-Superset index's absorbed includes (MergedIncludes / SupersededBy) must
+                    // SURVIVE into the MAKE UNIQUE rebuild (the proc physically rewrote included_columns in
+                    // Rule 4/6, and step 2 never clears it); the Rule 7.5 superseded_by pass below appends to
+                    // whatever "Supersedes …" text is already there.
+                    nc.ConsolidationRule = Ucr;
+                    nc.Action = IndexCleanupAction.MakeUnique;
+                    nc.TargetIndexName = null;
+                    nc.Processed = true;
+                }
+            }
+
+            // Rule 7.5 cleanup: revert any MAKE UNIQUE index with no disabled constraint pointing back at it
+            // (FK-protected constraint, or Rule 7's set-match promoted a reversed-order index with no exact
+            // match). Mirrors the proc: reverts to NO action, WITHOUT restoring any prior marking.
+            foreach (var nc in scope)
+            {
+                if (nc.Action != IndexCleanupAction.MakeUnique)
+                {
+                    continue;
+                }
+
+                bool backedByDisabledConstraint = scope.Any(u =>
+                    u.Action == IndexCleanupAction.Disable
+                    && string.Equals(u.KeyColumns, nc.KeyColumns, StringComparison.Ordinal)
+                    && string.Equals(u.TargetIndexName, nc.Name, StringComparison.Ordinal));
+
+                if (!backedByDisabledConstraint)
+                {
+                    nc.ConsolidationRule = null;
+                    nc.Action = IndexCleanupAction.None;
+                    nc.TargetIndexName = null;
+                    nc.SupersededBy = null;
+                    nc.Processed = false;
+                }
+            }
+
+            // Rule 7.5 superseded_by: annotate each surviving MAKE UNIQUE index with the constraint(s) it replaces.
+            foreach (var nc in scope)
+            {
+                if (nc.Action != IndexCleanupAction.MakeUnique)
+                {
+                    continue;
+                }
+
+                foreach (var uc in scope
+                    .Where(u => u.Action == IndexCleanupAction.Disable
+                        && string.Equals(u.TargetIndexName, nc.Name, StringComparison.Ordinal))
+                    .OrderBy(u => u.Name, StringComparer.Ordinal))
+                {
+                    nc.SupersededBy = nc.SupersededBy == null
+                        ? "Will replace constraint " + uc.Name
+                        : nc.SupersededBy + ", will replace constraint " + uc.Name;
+                }
+            }
+
+            // Rule 7.5b: collapse duplicate unique constraints with no nonclustered index to promote.
+            ApplyDuplicateUniqueConstraints(scope);
+
+            // Rule 7.6: re-disable ordinary Key Duplicates of a MAKE UNIQUE winner (an index sharing the
+            // winner's exact keys+filter that step 2 briefly promoted then the cleanup reverted, or one no
+            // earlier rule had touched) and fold its includes into the winner.
+            ApplyKeyDuplicatesOfMakeUnique(scope);
+        }
+
+        /// <summary>
+        /// Rule 7.6 (sp_IndexCleanup lines ~4143-4272): after a unique constraint is replaced by a MAKE UNIQUE
+        /// index, any OTHER nonclustered index with the winner's exact key columns + filter (and no action yet)
+        /// is a plain Key Duplicate of it — DISABLE it and fold its includes into the winner. Without this, an
+        /// index that Rule 5 had disabled but Rule 7.5 step 2 promoted-then-reverted would be silently left in
+        /// place (a redundant index un-disabled). Emits the <b>Key Duplicate</b> rule, not Unique Constraint
+        /// Replacement — it is the same consolidation the proc applies. (Rule 7.6's sibling behavior of folding
+        /// includes is reproduced; the winner keeps its own + every folded loser's includes.)
+        /// </summary>
+        private static void ApplyKeyDuplicatesOfMakeUnique(List<WorkIndex> scope)
+        {
+            foreach (var winner in scope)
+            {
+                if (winner.Action != IndexCleanupAction.MakeUnique)
+                {
+                    continue;
+                }
+
+                // Exact key columns + filter match (the proc's key_filter_hash), still-unassigned, non-constraint.
+                var losers = scope
+                    .Where(d => !d.Processed
+                        && d.Action == IndexCleanupAction.None
+                        && d.ConsolidationRule == null
+                        && !d.Src.IsUniqueConstraint
+                        && !ReferenceEquals(d, winner)
+                        && string.Equals(d.KeyColumns, winner.KeyColumns, StringComparison.Ordinal)
+                        && string.Equals(d.Filter, winner.Filter, StringComparison.Ordinal))
+                    .OrderBy(d => d.Name, StringComparer.Ordinal)
+                    .ToList();
+
+                if (losers.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var loser in losers)
+                {
+                    loser.ConsolidationRule = IndexCleanupRules.KeyDuplicate;
+                    loser.Action = IndexCleanupAction.Disable;
+                    loser.TargetIndexName = winner.Name;
+                    loser.Processed = true;
+                }
+
+                // Fold the losers' includes into the winner (dedup; the winner keeps its own/absorbed includes).
+                var merged = new List<string>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var token in (winner.MergedIncludes ?? winner.IncludeTokens).Concat(losers.SelectMany(l => l.IncludeTokens)))
+                {
+                    if (seen.Add(token))
+                    {
+                        merged.Add(token);
+                    }
+                }
+                merged.Sort(StringComparer.Ordinal);   // deterministic, matches the collector's name-ordered includes
+                winner.MergedIncludes = merged;
+
+                var loserNames = string.Join(", ", losers.Select(l => l.Name));
+                winner.SupersededBy = winner.SupersededBy == null
+                    ? "Supersedes " + loserNames
+                    : winner.SupersededBy + ", " + loserNames;
+            }
+        }
+
+        /// <summary>
+        /// Rule 7.5b: two or more unique constraints with identical key columns + filter, all left KEEP by
+        /// Rule 7 (no nonclustered index promoted them). Keep the single deterministic winner (highest
+        /// priority, then alphabetically-first name); demote every other to DISABLE (→ DROP CONSTRAINT)
+        /// pointing at the winner. An FK-referenced constraint is never demoted. Demotions are computed
+        /// against the pre-demotion KEEP set (set-based, like the proc's single UPDATE) so the outcome is
+        /// order-independent and every loser targets the same survivor.
+        /// </summary>
+        private static void ApplyDuplicateUniqueConstraints(List<WorkIndex> scope)
+        {
+            var keepers = scope
+                .Where(w => w.Action == IndexCleanupAction.Keep
+                    && w.ConsolidationRule == IndexCleanupRules.UniqueConstraintReplacement
+                    && w.Src.IsUniqueConstraint)
+                .ToList();
+
+            if (keepers.Count < 2)
+            {
+                return;
+            }
+
+            var demotions = new List<(WorkIndex Loser, WorkIndex Keeper)>();
+            foreach (var loser in keepers)
+            {
+                if (loser.Src.IsForeignKeyReference)
+                {
+                    continue; // never drop an FK-referenced constraint
+                }
+
+                var keeper = keepers.FirstOrDefault(k =>
+                    !ReferenceEquals(k, loser)
+                    && string.Equals(k.KeyColumns, loser.KeyColumns, StringComparison.Ordinal)
+                    && string.Equals(k.Filter, loser.Filter, StringComparison.Ordinal)
+                    && LosesTo(loser, k)
+                    && IsUndisputedWinner(k, keepers));
+
+                if (keeper != null)
+                {
+                    demotions.Add((loser, keeper));
+                }
+            }
+
+            foreach (var (loser, keeper) in demotions)
+            {
+                loser.Action = IndexCleanupAction.Disable;
+                loser.TargetIndexName = keeper.Name;
+            }
+        }
+
+        /// <summary>The keep/drop tiebreak (mirrors Rule 2): lower priority loses; on a tie the alphabetically-later name loses.</summary>
+        private static bool LosesTo(WorkIndex loser, WorkIndex keeper) =>
+            loser.Priority < keeper.Priority
+            || (loser.Priority == keeper.Priority
+                && string.Compare(loser.Name, keeper.Name, StringComparison.Ordinal) > 0);
+
+        /// <summary>True when no sibling duplicate constraint beats <paramref name="keeper"/> — makes the winner (and every loser's target) deterministic when 3+ constraints tie.</summary>
+        private static bool IsUndisputedWinner(WorkIndex keeper, List<WorkIndex> keepers) =>
+            !keepers.Any(other =>
+                !ReferenceEquals(other, keeper)
+                && string.Equals(other.KeyColumns, keeper.KeyColumns, StringComparison.Ordinal)
+                && string.Equals(other.Filter, keeper.Filter, StringComparison.Ordinal)
+                && (other.Priority > keeper.Priority
+                    || (other.Priority == keeper.Priority
+                        && string.Compare(other.Name, keeper.Name, StringComparison.Ordinal) < 0)));
+
         // ────────────────────────────────────────────────────────────────────────────────────────────
         //  Keeper / grouping helpers
         // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -501,7 +800,12 @@ namespace PerformanceMonitor.Common
             {
                 if (w.Action == IndexCleanupAction.Disable)
                 {
-                    yield return BuildDisable(w);
+                    // A disabled unique constraint (Rule 7.5 / 7.5b) is a DROP CONSTRAINT, not ALTER INDEX DISABLE.
+                    yield return w.Src.IsUniqueConstraint ? BuildDisableConstraint(w) : BuildDisable(w);
+                }
+                else if (w.Action == IndexCleanupAction.MakeUnique)
+                {
+                    yield return BuildMakeUnique(w, options);
                 }
                 else if (w.Action == IndexCleanupAction.MergeIncludes)
                 {
@@ -568,6 +872,43 @@ namespace PerformanceMonitor.Common
             };
         }
 
+        /// <summary>
+        /// Rule 7 / 7.5 MAKE UNIQUE: rebuild the nonclustered index as UNIQUE so it can take over a redundant
+        /// unique constraint's enforcement. Rendered like a merge (UNIQUE <c>DROP_EXISTING</c> rebuild); the
+        /// constraint itself is dropped by a companion <see cref="BuildDisableConstraint"/> row.
+        /// </summary>
+        private static IndexCleanupRecommendation BuildMakeUnique(WorkIndex w, IndexCleanupOptions options)
+        {
+            var (script, omitsPlacement) = MergeScript(w, options, forceUnique: true);
+
+            return NewRecommendation(w) with
+            {
+                Action = IndexCleanupAction.MakeUnique,
+                ResultKind = IndexCleanupResultKind.Merge,
+                SupersededBy = w.SupersededBy,
+                ScriptType = "MERGE SCRIPT",
+                Script = script,
+                AdditionalInfo = "This index will replace a unique constraint",
+                ScriptOmitsPartitionPlacement = omitsPlacement,
+            };
+        }
+
+        /// <summary>
+        /// Rule 7.5 / 7.5b DROP CONSTRAINT: a redundant unique constraint replaced by a MAKE UNIQUE index, or a
+        /// duplicate constraint collapsed into an identical survivor. Emits <c>ALTER TABLE … DROP CONSTRAINT</c>
+        /// (sp_IndexCleanup's <c>DISABLE CONSTRAINT SCRIPT</c>) — a constraint cannot be disabled, only dropped.
+        /// </summary>
+        private static IndexCleanupRecommendation BuildDisableConstraint(WorkIndex w) =>
+            NewRecommendation(w) with
+            {
+                Action = IndexCleanupAction.Disable,
+                ResultKind = IndexCleanupResultKind.DisableConstraint,
+                TargetIndexName = w.TargetIndexName,
+                ScriptType = "DISABLE CONSTRAINT SCRIPT",
+                Script = "ALTER TABLE " + FullName(w) + " DROP CONSTRAINT " + QuoteName(w.Name) + ";",
+                AdditionalInfo = "This constraint is being replaced by: " + (w.TargetIndexName ?? "(unknown)"),
+            };
+
         private static IndexCleanupRecommendation BuildCompress(WorkIndex w, IndexCleanupOptions options)
         {
             return NewRecommendation(w) with
@@ -614,11 +955,11 @@ namespace PerformanceMonitor.Common
         private static string DisableScript(WorkIndex w) =>
             "ALTER INDEX " + QuoteName(w.Name) + " ON " + FullName(w) + " DISABLE;";
 
-        private static (string Script, bool OmitsPlacement) MergeScript(WorkIndex w, IndexCleanupOptions options)
+        private static (string Script, bool OmitsPlacement) MergeScript(WorkIndex w, IndexCleanupOptions options, bool forceUnique = false)
         {
             string includes = string.Join(", ", w.MergedIncludes ?? w.IncludeTokens);
 
-            var script = "CREATE " + (w.Src.IsUnique ? "UNIQUE " : "") + "INDEX " + QuoteName(w.Name)
+            var script = "CREATE " + ((forceUnique || w.Src.IsUnique) ? "UNIQUE " : "") + "INDEX " + QuoteName(w.Name)
                 + " ON " + FullName(w) + " (" + w.KeyColumns + ")"
                 + (includes.Length > 0 ? " INCLUDE (" + includes + ")" : "")
                 + (w.Filter.Length > 0 ? " WHERE " + w.Filter : "")
@@ -693,8 +1034,9 @@ namespace PerformanceMonitor.Common
                         unused++;
                     }
                 }
-                else if (w.Action == IndexCleanupAction.MergeIncludes)
+                else if (w.Action == IndexCleanupAction.MergeIncludes || w.Action == IndexCleanupAction.MakeUnique)
                 {
+                    // MAKE UNIQUE is a kept-and-rebuilt index (sp_IndexCleanup's MERGE bucket), not a reclaim.
                     merge++;
                 }
 
@@ -779,10 +1121,20 @@ namespace PerformanceMonitor.Common
                 + "reversed-order and filter-differing indexes are left alone; a different leading column or filter serves "
                 + "different queries/rows).");
 
-            notes.Add("Out of scope per this stage's DISABLE/MERGE INCLUDES/KEEP action set: sp_IndexCleanup's "
-                + "'Unique Constraint Replacement' (MAKE UNIQUE / DROP CONSTRAINT, Rule 7 family). Its 'Same Keys "
-                + "Different Order' REVIEW case is largely covered by the Reverse Duplicate review rows above. Both are "
-                + "reproducible from the captured metadata if later required.");
+            if (recommendations.Any(r => r.ConsolidationRule == IndexCleanupRules.UniqueConstraintReplacement))
+            {
+                notes.Add("Unique Constraint Replacement (sp_IndexCleanup Rule 7/7.5/7.5b) reproduces the proc's LITERAL "
+                    + "behavior, verified against a live @debug=1 run: a nonclustered index whose key_columns EXACTLY match "
+                    + "a unique constraint is made unique (MERGE SCRIPT) and the constraint is dropped (DISABLE CONSTRAINT "
+                    + "SCRIPT). This fires even when the index is ALREADY unique — the proc's Rule 7.5 step 2 has no is_unique "
+                    + "guard, so it overrides Rule 7's KEEP with MAKE UNIQUE (a redundant-but-harmless UNIQUE rebuild that "
+                    + "still drops the constraint). A constraint backing an inbound foreign-key reference is never dropped, "
+                    + "and an index whose key columns are a SUPERSET of the constraint's is not promoted.");
+            }
+
+            notes.Add("Out of scope of the Unique Constraint Replacement port: sp_IndexCleanup's 'Same Keys Different Order' "
+                + "REVIEW case, largely covered by the Reverse Duplicate review rows above and reproducible from the captured "
+                + "metadata if later required.");
 
             return notes;
         }
@@ -855,11 +1207,12 @@ namespace PerformanceMonitor.Common
 
         private static int ResultKindSort(IndexCleanupResultKind kind) => kind switch
         {
-            IndexCleanupResultKind.Merge => 0,
+            IndexCleanupResultKind.Merge => 0,               // includes MAKE UNIQUE (proc's MERGE bucket)
             IndexCleanupResultKind.Disable => 1,
-            IndexCleanupResultKind.Compress => 2,
-            IndexCleanupResultKind.Review => 3,
-            _ => 4,
+            IndexCleanupResultKind.DisableConstraint => 2,   // proc orders CONSTRAINT after DISABLE
+            IndexCleanupResultKind.Compress => 3,
+            IndexCleanupResultKind.Review => 4,
+            _ => 5,
         };
 
         // ────────────────────────────────────────────────────────────────────────────────────────────
