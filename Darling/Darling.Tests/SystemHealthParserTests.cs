@@ -12,7 +12,7 @@ using System.Linq;
 using PerformanceMonitor.Common;
 using Xunit;
 
-namespace PerformanceMonitorDashboard.Tests;
+namespace Darling.Tests;
 
 /// <summary>
 /// Tests for the shared <see cref="SystemHealthParser"/> — the monitor-side C# port of Erik's
