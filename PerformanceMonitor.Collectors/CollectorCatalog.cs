@@ -37,6 +37,7 @@ public static class CollectorCatalog
         TraceFlagsCollector.Instance,
         DatabaseScopedConfigCollector.Instance,
         SessionStatsCollector.Instance,
+        SessionSummaryStatsCollector.Instance,
         WaitingTasksCollector.Instance,
         ProcedureStatsCollector.Instance,
         RunningJobsCollector.Instance,

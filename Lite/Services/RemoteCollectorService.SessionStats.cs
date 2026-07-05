@@ -21,4 +21,12 @@ public partial class RemoteCollectorService
     /// </summary>
     private Task<int> CollectSessionStatsAsync(ServerConnection server, CancellationToken cancellationToken)
         => RunCollectorDefinitionAsync(SessionStatsCollector.Instance, server, cancellationToken);
+
+    /// <summary>
+    /// Collects the server-wide session SUMMARY (connection-leak / idle signal) via the shared
+    /// <see cref="SessionSummaryStatsCollector"/> definition (query text and payload order live there —
+    /// the cross-SKU parity contract). Distinct from the per-application session_stats collector.
+    /// </summary>
+    private Task<int> CollectSessionSummaryStatsAsync(ServerConnection server, CancellationToken cancellationToken)
+        => RunCollectorDefinitionAsync(SessionSummaryStatsCollector.Instance, server, cancellationToken);
 }

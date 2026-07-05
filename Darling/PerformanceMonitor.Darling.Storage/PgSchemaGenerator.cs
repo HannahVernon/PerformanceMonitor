@@ -336,4 +336,41 @@ public static class PgSchemaGenerator
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// The V12 migration body — adds the session_summary_stats collector table (server-wide session
+    /// SUMMARY: the connection-leak / idle signal from sys.dm_exec_sessions + sys.dm_exec_requests)
+    /// plus its <c>v_*</c> passthrough view. Generated from the collector definition (not hand-listed)
+    /// so the table is column-for-column identical to the fresh-store V1 shape. <c>CREATE TABLE IF NOT
+    /// EXISTS</c> makes this a harmless no-op on a fresh store (V1 already created it from the current
+    /// catalog and V8 moved it to <c>collect</c>) and the real create on a store built before this
+    /// collector existed; the view is created directly in <c>collect</c> because V12 runs after V8,
+    /// resolving the bare names through <c>search_path = collect, config, public</c>. Distinct from the
+    /// per-application session_stats table (V1), which this does not touch.
+    /// </summary>
+    public static string GenerateV12AddSessionSummary()
+    {
+        var sb = new StringBuilder();
+        sb.Append("/* V12: session_summary_stats collector (Dashboard->Darling connection-leak / idle parity, #1262).\n");
+        sb.Append("   Generated from the collector definition so the table matches the fresh V1 shape. */\n");
+
+        foreach (ICollectorSchemaInfo schema in new ICollectorSchemaInfo[]
+        {
+            SessionSummaryStatsCollector.Instance,
+        })
+        {
+            sb.Append('\n').Append(CreateTable(schema)).Append('\n');
+
+            var index = CreateIndex(schema);
+            if (index is not null)
+            {
+                sb.Append(index).Append('\n');
+            }
+
+            sb.Append("CREATE OR REPLACE VIEW v_").Append(schema.TargetTable)
+              .Append(" AS SELECT * FROM ").Append(schema.TargetTable).Append(";\n");
+        }
+
+        return sb.ToString();
+    }
 }

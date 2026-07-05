@@ -55,5 +55,6 @@ public static class CollectorScheduleDefaults
         ["index_object_stats"] = new(1440, 90),
         ["server_properties"] = new(0, 365),
         ["session_stats"] = new(5, 30),
+        ["session_summary_stats"] = new(5, 30),
     };
 }

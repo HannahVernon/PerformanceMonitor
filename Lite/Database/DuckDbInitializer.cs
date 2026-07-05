@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 38;
+    internal const int CurrentSchemaVersion = 39;
 
     private readonly string _archivePath;
 
@@ -119,7 +119,7 @@ public class DuckDbInitializer
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
         "dmv_blocking_snapshots",
         "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
-        "session_stats", "server_config", "database_config",
+        "session_stats", "session_summary_stats", "server_config", "database_config",
         "database_scoped_config", "trace_flags", "config_alert_log",
         "collection_log"
     ];
@@ -929,6 +929,17 @@ public class DuckDbInitializer
                     GetAllTableStatements() below; the v_ views come from CreateArchiveViewsAsync via
                     ArchivableTables. */
             _logger?.LogInformation("Running migration to v38: adding cpu_scheduler_stats and plan_cache_stats tables");
+        }
+
+        if (fromVersion < 39)
+        {
+            /* v39: added session_summary_stats (server-wide session SUMMARY from sys.dm_exec_sessions
+                    + sys.dm_exec_requests: total/running/sleeping/background/dormant sessions, idle
+                    sessions over 30 min, memory-wait count, top application/host) — the Dashboard->
+                    Darling connection-leak / idle parity collector. Distinct from the per-application
+                    session_stats table. New table only — created by GetAllTableStatements() below; the
+                    v_ view comes from CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v39: adding session_summary_stats table");
         }
     }
 
