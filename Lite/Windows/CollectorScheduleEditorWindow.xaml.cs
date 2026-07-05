@@ -142,7 +142,7 @@ public partial class CollectorScheduleEditorWindow : Window
         _suppressPresetChange = true;
         try
         {
-            string active = DetectPresetForList(_editingSchedules);
+            string active = ScheduleManager.DetectPreset(_editingSchedules);
             for (int i = 0; i < PresetComboBox.Items.Count; i++)
             {
                 if (PresetComboBox.Items[i] is ComboBoxItem item &&
@@ -180,7 +180,7 @@ public partial class CollectorScheduleEditorWindow : Window
             return;
         }
 
-        ApplyPresetToList(_editingSchedules, presetName);
+        ScheduleManager.ApplyPreset(_editingSchedules, presetName);
         ScheduleGrid.ItemsSource = null;
         ScheduleGrid.ItemsSource = _editingSchedules;
         DetectActivePreset();
@@ -255,72 +255,6 @@ public partial class CollectorScheduleEditorWindow : Window
     // ──────────────────────────────────────────────────────────────────
     //  Helpers
     // ──────────────────────────────────────────────────────────────────
-
-    private static readonly Dictionary<string, Dictionary<string, int>> s_presets = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Aggressive"] = new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["wait_stats"] = 1, ["query_stats"] = 1, ["procedure_stats"] = 1,
-            ["query_store"] = 2, ["query_snapshots"] = 1, ["cpu_utilization"] = 1,
-            ["file_io_stats"] = 1, ["memory_stats"] = 1, ["memory_clerks"] = 2,
-            ["tempdb_stats"] = 1, ["perfmon_stats"] = 1, ["deadlocks"] = 1,
-            ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
-            ["blocked_process_report"] = 1, ["running_jobs"] = 2
-        },
-        ["Balanced"] = new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["wait_stats"] = 1, ["query_stats"] = 1, ["procedure_stats"] = 1,
-            ["query_store"] = 5, ["query_snapshots"] = 1, ["cpu_utilization"] = 1,
-            ["file_io_stats"] = 1, ["memory_stats"] = 1, ["memory_clerks"] = 5,
-            ["tempdb_stats"] = 1, ["perfmon_stats"] = 1, ["deadlocks"] = 1,
-            ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
-            ["blocked_process_report"] = 1, ["running_jobs"] = 5
-        },
-        ["Low-Impact"] = new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["wait_stats"] = 5, ["query_stats"] = 10, ["procedure_stats"] = 10,
-            ["query_store"] = 30, ["query_snapshots"] = 5, ["cpu_utilization"] = 5,
-            ["file_io_stats"] = 10, ["memory_stats"] = 10, ["memory_clerks"] = 30,
-            ["tempdb_stats"] = 5, ["perfmon_stats"] = 5, ["deadlocks"] = 5,
-            ["memory_grant_stats"] = 5, ["waiting_tasks"] = 5,
-            ["blocked_process_report"] = 5, ["running_jobs"] = 30
-        }
-    };
-
-    private static string DetectPresetForList(List<CollectorSchedule> schedules)
-    {
-        foreach (var (presetName, intervals) in s_presets)
-        {
-            bool matches = true;
-            foreach (var (collector, freq) in intervals)
-            {
-                var schedule = schedules.FirstOrDefault(s =>
-                    s.Name.Equals(collector, StringComparison.OrdinalIgnoreCase));
-                if (schedule != null && schedule.FrequencyMinutes != freq)
-                {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) return presetName;
-        }
-        return "Custom";
-    }
-
-    private static void ApplyPresetToList(List<CollectorSchedule> schedules, string presetName)
-    {
-        if (!s_presets.TryGetValue(presetName, out var intervals)) return;
-
-        foreach (var (collector, freq) in intervals)
-        {
-            var schedule = schedules.FirstOrDefault(s =>
-                s.Name.Equals(collector, StringComparison.OrdinalIgnoreCase));
-            if (schedule != null)
-            {
-                schedule.FrequencyMinutes = freq;
-            }
-        }
-    }
 
     private static List<CollectorSchedule> CloneScheduleList(IReadOnlyList<CollectorSchedule> source)
     {

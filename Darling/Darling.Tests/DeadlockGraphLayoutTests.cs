@@ -11,7 +11,7 @@ using System.Linq;
 using PerformanceMonitor.Common;
 using Xunit;
 
-namespace PerformanceMonitorDashboard.Tests;
+namespace Darling.Tests;
 
 /// <summary>
 /// Pure unit tests for the shared <see cref="DeadlockGraphLayout"/> — determinism, no-overlap, and full

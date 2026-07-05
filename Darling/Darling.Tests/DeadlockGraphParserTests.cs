@@ -13,7 +13,7 @@ using System.Linq;
 using PerformanceMonitor.Common;
 using Xunit;
 
-namespace PerformanceMonitorDashboard.Tests;
+namespace Darling.Tests;
 
 /// <summary>
 /// Tests for the shared <see cref="DeadlockGraphParser"/>, driven primarily by REAL deadlock graphs
