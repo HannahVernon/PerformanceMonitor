@@ -59,6 +59,10 @@ public partial class ViewerServerTab : UserControl
        renumber. Copy-parity program: the 9 store-backed FinOps sub-tabs ported as a per-server inner tab. */
     private const int FinOpsInnerTabIndex = 14;
 
+    /* System Events is appended AFTER FinOps (system_health parity, Stage 2b): six parse-on-read sub-tabs,
+       one per unique system_health warning category. Last index, so the existing constants don't renumber. */
+    private const int SystemEventsInnerTabIndex = 15;
+
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
 
@@ -105,6 +109,9 @@ public partial class ViewerServerTab : UserControl
 
         /* FinOps inner tab (copy-parity program): register the FinOps grids' column-filter managers. */
         InitializeFinOpsTab();
+
+        /* System Events inner tab (system_health parity): register the six category grids' filter managers. */
+        InitializeSystemEventsTab();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -218,6 +225,9 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case FinOpsInnerTabIndex:
                     await LoadFinOpsAsync();
+                    break;
+                case SystemEventsInnerTabIndex:
+                    await LoadSystemEventsAsync();
                     break;
                 case OverviewInnerTabIndex:
                 default:

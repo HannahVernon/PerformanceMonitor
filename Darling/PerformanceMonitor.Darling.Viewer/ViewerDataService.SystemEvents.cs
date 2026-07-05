@@ -1,0 +1,406 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Common;
+
+namespace PerformanceMonitor.Darling.Viewer;
+
+/*
+ * System Events tab reads (system_health parity, Stage 2b). Each of the six warning categories is a
+ * parse-on-read shred: the data service fetches the raw event_xml for one XE event type over the tab
+ * window from v_system_health_events, hands each blob to the Common SystemHealthParser (Stage 2a) to
+ * shred into the category record, then keeps only the SIGNIFICANT rows via SystemEventSignificance
+ * (Stage 2b, sp_HealthParser's per-category WHERE predicates). No persisted parsed tables — the raw
+ * table + the parser are the whole pipeline. The XML shred is CPU-bound, so it runs off the UI thread
+ * (Task.Run), mirroring the deadlock-graph parse.
+ *
+ * The row view-models below are flat projections of the Common records (all shredded columns preserved,
+ * so the grids faithfully match sp_HealthParser's per-category table shape) plus an EventTimeLocal
+ * display string — the machine-local render of the event's naive-UTC XE @timestamp, via the same
+ * ViewerDataService.ToLocalTime the deadlock / blocked-process grids use. Only SevereError adds a
+ * resolved DatabaseName (see ResolveDatabaseName).
+ */
+
+/// <summary>Shared machine-local render of a naive-UTC event timestamp for the System Events grids.</summary>
+internal static class SystemEventRowFormat
+{
+    public static string Local(DateTime? utc) =>
+        utc is { } t ? ViewerDataService.ToLocalTime(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
+}
+
+/// <summary>One scheduler-monitor WARNING row (Scheduler Issues sub-tab). Mirrors <c>*_SchedulerIssues</c>.</summary>
+public sealed class SchedulerIssueRow(SchedulerIssueRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public int? SchedulerId => record.SchedulerId;
+    public int? CpuId => record.CpuId;
+    public string? Status => record.Status;
+    public bool? IsOnline => record.IsOnline;
+    public bool? IsRunnable => record.IsRunnable;
+    public bool? IsRunning => record.IsRunning;
+    public long? NonYieldingTimeMs => record.NonYieldingTimeMs;
+    public long? ThreadQuantumMs => record.ThreadQuantumMs;
+}
+
+/// <summary>
+/// One severe-error row (Severe Errors sub-tab). Mirrors <c>*_SevereErrors</c>. <see cref="DatabaseName"/>
+/// is resolved from the store's collected database_id↔database_name mapping (see
+/// <see cref="ViewerDataService.ResolveDatabaseName"/>) — Stage 2a's DB-free shred left it null.
+/// </summary>
+public sealed class SevereErrorRow(SevereErrorRecord record, string databaseName)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public int? ErrorNumber => record.ErrorNumber;
+    public int? Severity => record.Severity;
+    public int? State => record.State;
+    public int? DatabaseId => record.DatabaseId;
+    public string DatabaseName => databaseName;
+    public string? Message => record.Message;
+}
+
+/// <summary>One RESOURCE_MEMPHYSICAL_LOW memory-conditions snapshot (Memory Conditions sub-tab). Mirrors <c>*_MemoryConditions</c>.</summary>
+public sealed class MemoryConditionsRow(MemoryConditionsRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public string? LastNotification => record.LastNotification;
+    public long? OutOfMemoryExceptions => record.OutOfMemoryExceptions;
+    public bool? IsAnyPoolOutOfMemory => record.IsAnyPoolOutOfMemory;
+    public long? ProcessOutOfMemoryPeriod => record.ProcessOutOfMemoryPeriod;
+    public string? Name => record.Name;
+    public long? AvailablePhysicalMemoryGb => record.AvailablePhysicalMemoryGb;
+    public long? AvailableVirtualMemoryGb => record.AvailableVirtualMemoryGb;
+    public long? AvailablePagingFileGb => record.AvailablePagingFileGb;
+    public long? WorkingSetGb => record.WorkingSetGb;
+    public long? PercentOfCommittedMemoryInWs => record.PercentOfCommittedMemoryInWs;
+    public long? PageFaults => record.PageFaults;
+    public long? SystemPhysicalMemoryHigh => record.SystemPhysicalMemoryHigh;
+    public long? SystemPhysicalMemoryLow => record.SystemPhysicalMemoryLow;
+    public long? ProcessPhysicalMemoryLow => record.ProcessPhysicalMemoryLow;
+    public long? ProcessVirtualMemoryLow => record.ProcessVirtualMemoryLow;
+    public long? VmReservedGb => record.VmReservedGb;
+    public long? VmCommittedGb => record.VmCommittedGb;
+    public long? LockedPagesAllocated => record.LockedPagesAllocated;
+    public long? LargePagesAllocated => record.LargePagesAllocated;
+    public long? EmergencyMemoryGb => record.EmergencyMemoryGb;
+    public long? EmergencyMemoryInUseGb => record.EmergencyMemoryInUseGb;
+    public long? TargetCommittedGb => record.TargetCommittedGb;
+    public long? CurrentCommittedGb => record.CurrentCommittedGb;
+    public long? PagesAllocated => record.PagesAllocated;
+    public long? PagesReserved => record.PagesReserved;
+    public long? PagesFree => record.PagesFree;
+    public long? PagesInUse => record.PagesInUse;
+    public long? PageAllocPotential => record.PageAllocPotential;
+    public long? NumaGrowthPhase => record.NumaGrowthPhase;
+    public long? LastOomFactor => record.LastOomFactor;
+    public long? LastOsError => record.LastOsError;
+}
+
+/// <summary>One RESOURCE_MEMPHYSICAL_LOW memory-broker ratio change (Memory Broker sub-tab). Mirrors <c>*_MemoryBroker</c>.</summary>
+public sealed class MemoryBrokerRow(MemoryBrokerRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public long? BrokerId => record.BrokerId;
+    public long? PoolMetadataId => record.PoolMetadataId;
+    public long? DeltaTime => record.DeltaTime;
+    public long? MemoryRatio => record.MemoryRatio;
+    public long? NewTarget => record.NewTarget;
+    public long? Overall => record.Overall;
+    public long? Rate => record.Rate;
+    public long? CurrentlyPredicated => record.CurrentlyPredicated;
+    public long? CurrentlyAllocated => record.CurrentlyAllocated;
+    public long? PreviouslyAllocated => record.PreviouslyAllocated;
+    public string? Broker => record.Broker;
+    public string? Notification => record.Notification;
+}
+
+/// <summary>One memory-node OOM row (Memory Node OOM sub-tab). Mirrors <c>*_MemoryNodeOOM</c> (never gated — every OOM shows).</summary>
+public sealed class MemoryNodeOomRow(MemoryNodeOomRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public long? NodeId => record.NodeId;
+    public long? MemoryNodeId => record.MemoryNodeId;
+    public long? MemoryUtilizationPct => record.MemoryUtilizationPct;
+    public long? TotalPhysicalMemoryKb => record.TotalPhysicalMemoryKb;
+    public long? AvailablePhysicalMemoryKb => record.AvailablePhysicalMemoryKb;
+    public long? TotalPageFileKb => record.TotalPageFileKb;
+    public long? AvailablePageFileKb => record.AvailablePageFileKb;
+    public long? TotalVirtualAddressSpaceKb => record.TotalVirtualAddressSpaceKb;
+    public long? AvailableVirtualAddressSpaceKb => record.AvailableVirtualAddressSpaceKb;
+    public long? TargetKb => record.TargetKb;
+    public long? ReservedKb => record.ReservedKb;
+    public long? CommittedKb => record.CommittedKb;
+    public decimal? SharedCommittedKb => record.SharedCommittedKb;
+    public long? AweKb => record.AweKb;
+    public long? PagesKb => record.PagesKb;
+    public string? FailureType => record.FailureType;
+    public long? FailureValue => record.FailureValue;
+    public long? Resources => record.Resources;
+    public string? FactorText => record.FactorText;
+    public long? FactorValue => record.FactorValue;
+    public long? LastError => record.LastError;
+    public long? PoolMetadataId => record.PoolMetadataId;
+    public string? IsProcessInJob => record.IsProcessInJob;
+    public string? IsSystemPhysicalMemoryHigh => record.IsSystemPhysicalMemoryHigh;
+    public string? IsSystemPhysicalMemoryLow => record.IsSystemPhysicalMemoryLow;
+    public string? IsProcessPhysicalMemoryLow => record.IsProcessPhysicalMemoryLow;
+    public string? IsProcessVirtualMemoryLow => record.IsProcessVirtualMemoryLow;
+}
+
+/// <summary>One significant-wait row (Significant Waits sub-tab). Mirrors <c>*_SignificantWaits</c>.</summary>
+public sealed class SignificantWaitRow(SignificantWaitRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public string? WaitType => record.WaitType;
+    public long? DurationMs => record.DurationMs;
+    public long? SignalDurationMs => record.SignalDurationMs;
+    public string? WaitResource => record.WaitResource;
+    public int? SessionId => record.SessionId;
+    public string? QueryText => record.QueryText;
+}
+
+public sealed partial class ViewerDataService
+{
+    /// <summary>
+    /// Raw event_xml for one XE event type over the tab window, newest first. The System Events reads
+    /// window on <c>event_time</c> (the XE <c>@timestamp</c> — the event's real time, which for the ring-
+    /// buffer categories can lag when it was collected), not <c>collection_time</c>, so "last 24 hours"
+    /// means events that happened in the last 24 hours. Naive-UTC bounds (the store's timestamps are
+    /// <c>timestamp without time zone</c>). $1 server_id, $2/$3 window (naive UTC), $4 event_type.
+    /// </summary>
+    public const string SystemHealthEventsByTypeSql = """
+        SELECT
+            event_xml
+        FROM v_system_health_events
+        WHERE server_id = $1
+        AND   event_time >= $2
+        AND   event_time <= $3
+        AND   event_type = $4
+        AND   event_xml IS NOT NULL
+        ORDER BY event_time DESC
+        """;
+
+    /// <summary>
+    /// The server's latest database_id↔database_name mapping from the collected size-stats
+    /// (<c>DISTINCT ON (database_id)</c> keeps the most-recently-collected name for each id — handles a
+    /// dropped-and-recreated id). Feeds <see cref="ResolveDatabaseName"/> for the Severe Errors tab.
+    /// <c>database_size_stats</c> is the mapping source because it is the only collected table carrying
+    /// BOTH database_id and database_name for every online DB (system + user); <c>database_config</c>
+    /// carries the name but no id. $1 server_id.
+    /// </summary>
+    public const string DatabaseNameMapSql = """
+        SELECT DISTINCT ON (database_id)
+            database_id,
+            database_name
+        FROM v_database_size_stats
+        WHERE server_id = $1
+        ORDER BY database_id, collection_time DESC
+        """;
+
+    /// <summary>
+    /// Resolves a severe-error <c>database_id</c> to a display name using the collected mapping. A null or
+    /// 0 id means "no database context" (error_reported often carries database_id 0; <c>DB_NAME(0)</c> is
+    /// NULL server-side too) → empty. A real id absent from the map (a database dropped before the latest
+    /// size-stats snapshot, or one never captured) is surfaced as its raw id rather than silently blanked.
+    /// </summary>
+    public static string ResolveDatabaseName(int? databaseId, IReadOnlyDictionary<int, string> databaseNameMap)
+    {
+        if (databaseId is not { } id || id == 0)
+            return string.Empty;
+        if (databaseNameMap.TryGetValue(id, out var name))
+            return name;
+        return $"database_id {id}";
+    }
+
+    /// <summary>Loads the server's latest database_id → database_name map for Severe Errors DB resolution.</summary>
+    public async Task<Dictionary<int, string>> GetDatabaseNameMapAsync(int serverId, CancellationToken cancellationToken = default)
+    {
+        var map = new Dictionary<int, string>();
+
+        await using var command = _dataSource.CreateCommand(DatabaseNameMapSql);
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (reader.IsDBNull(0) || reader.IsDBNull(1))
+                continue;
+            map[reader.GetInt32(0)] = reader.GetString(1);
+        }
+
+        return map;
+    }
+
+    /// <summary>The four System Events parameters ($1 server_id, $2/$3 naive-UTC window, $4 XE event_type).</summary>
+    private static void AddSystemEventParameters(NpgsqlCommand command, int serverId, DateTime startUtc, DateTime endUtc, string eventType)
+    {
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(startUtc, DateTimeKind.Unspecified) });
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified) });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = eventType });
+    }
+
+    /// <summary>Reads the raw event_xml blobs for one XE event type over the window.</summary>
+    private async Task<List<string>> ReadSystemHealthEventXmlAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, string eventType, CancellationToken cancellationToken)
+    {
+        var xmls = new List<string>();
+
+        await using var command = _dataSource.CreateCommand(SystemHealthEventsByTypeSql);
+        AddSystemEventParameters(command, serverId, startUtc, endUtc, eventType);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            xmls.Add(reader.GetString(0));
+
+        return xmls;
+    }
+
+    // ── Scheduler Issues ──
+
+    /// <summary>Significant scheduler-monitor warnings (WARNING status) for the window, newest first.</summary>
+    public async Task<List<SchedulerIssueRow>> GetSchedulerIssuesAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.SchedulerMonitorEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<SchedulerIssueRow>();
+            foreach (var xml in xmls)
+            {
+                var record = SystemHealthParser.ParseSchedulerIssue(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new SchedulerIssueRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── Severe Errors ──
+
+    /// <summary>
+    /// Significant severe errors (severity &gt;= 19, excluding the benign connection-reset numbers) for
+    /// the window, newest first, with database_id resolved to a name from the collected mapping.
+    /// </summary>
+    public async Task<List<SevereErrorRow>> GetSevereErrorsAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var mapTask = GetDatabaseNameMapAsync(serverId, cancellationToken);
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.ErrorReportedEvent, cancellationToken);
+        var map = await mapTask;
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<SevereErrorRow>();
+            foreach (var xml in xmls)
+            {
+                var record = SystemHealthParser.ParseSevereError(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new SevereErrorRow(record, ResolveDatabaseName(record.DatabaseId, map)));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── Memory Conditions ──
+
+    /// <summary>Significant memory-conditions snapshots (RESOURCE_MEMPHYSICAL_LOW) for the window, newest first.</summary>
+    public async Task<List<MemoryConditionsRow>> GetMemoryConditionsAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.SpServerDiagnosticsEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<MemoryConditionsRow>();
+            foreach (var xml in xmls)
+            {
+                // Only the RESOURCE component yields a record; other sp_server_diagnostics components parse to null.
+                var record = SystemHealthParser.ParseMemoryConditions(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new MemoryConditionsRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── Memory Broker ──
+
+    /// <summary>Significant memory-broker ratio changes (RESOURCE_MEMPHYSICAL_LOW) for the window, newest first.</summary>
+    public async Task<List<MemoryBrokerRow>> GetMemoryBrokerAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.MemoryBrokerEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<MemoryBrokerRow>();
+            foreach (var xml in xmls)
+            {
+                var record = SystemHealthParser.ParseMemoryBroker(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new MemoryBrokerRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── Memory Node OOM ──
+
+    /// <summary>Every memory-node OOM for the window, newest first (this category is never filtered).</summary>
+    public async Task<List<MemoryNodeOomRow>> GetMemoryNodeOomAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.MemoryNodeOomEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<MemoryNodeOomRow>();
+            foreach (var xml in xmls)
+            {
+                var record = SystemHealthParser.ParseMemoryNodeOom(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new MemoryNodeOomRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── Significant Waits ──
+
+    /// <summary>
+    /// Significant individual waits (real session, non-BACKUP statement, duration &gt;= 500 ms, wait type
+    /// not on the idle-wait ignore list) for the window, newest first.
+    /// </summary>
+    public async Task<List<SignificantWaitRow>> GetSignificantWaitsAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.WaitInfoEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<SignificantWaitRow>();
+            foreach (var xml in xmls)
+            {
+                var record = SystemHealthParser.ParseSignificantWait(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new SignificantWaitRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+}
