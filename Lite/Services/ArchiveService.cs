@@ -60,6 +60,8 @@ public class ArchiveService
         ("wait_stats", "collection_time"),
         ("latch_stats", "collection_time"),
         ("spinlock_stats", "collection_time"),
+        ("cpu_scheduler_stats", "collection_time"),
+        ("plan_cache_stats", "collection_time"),
         ("query_stats", "collection_time"),
         ("procedure_stats", "collection_time"),
         ("query_store_stats", "collection_time"),

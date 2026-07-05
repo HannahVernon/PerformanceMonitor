@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 37;
+    internal const int CurrentSchemaVersion = 38;
 
     private readonly string _archivePath;
 
@@ -112,7 +112,8 @@ public class DuckDbInitializer
        IMPORTANT: Must match ArchiveService.ArchivableTables — every archived table needs an archive view. */
     private static readonly string[] ArchivableTables =
     [
-        "wait_stats", "latch_stats", "spinlock_stats", "query_stats", "procedure_stats", "query_store_stats",
+        "wait_stats", "latch_stats", "spinlock_stats", "cpu_scheduler_stats", "plan_cache_stats",
+        "query_stats", "procedure_stats", "query_store_stats",
         "query_snapshots", "cpu_utilization_stats", "file_io_stats", "memory_stats",
         "memory_clerks", "memory_pressure_events", "tempdb_stats", "perfmon_stats",
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
@@ -918,6 +919,16 @@ public class DuckDbInitializer
                     parity. New tables only — created by GetAllTableStatements() below; the v_ views
                     come from CreateArchiveViewsAsync via ArchivableTables. */
             _logger?.LogInformation("Running migration to v37: adding latch_stats and spinlock_stats tables");
+        }
+
+        if (fromVersion < 38)
+        {
+            /* v38: added cpu_scheduler_stats (sys.dm_os_schedulers + workload groups + NUMA nodes +
+                    OS memory) and plan_cache_stats (sys.dm_exec_cached_plans) shared collectors for
+                    Dashboard->Darling collection parity. New tables only — created by
+                    GetAllTableStatements() below; the v_ views come from CreateArchiveViewsAsync via
+                    ArchivableTables. */
+            _logger?.LogInformation("Running migration to v38: adding cpu_scheduler_stats and plan_cache_stats tables");
         }
     }
 

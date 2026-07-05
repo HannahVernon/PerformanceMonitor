@@ -460,6 +460,8 @@ public partial class RemoteCollectorService
                 "wait_stats" => await CollectWaitStatsAsync(server, cancellationToken),
                 "latch_stats" => await CollectLatchStatsAsync(server, cancellationToken),
                 "spinlock_stats" => await CollectSpinlockStatsAsync(server, cancellationToken),
+                "cpu_scheduler_stats" => await CollectCpuSchedulerStatsAsync(server, cancellationToken),
+                "plan_cache_stats" => await CollectPlanCacheStatsAsync(server, cancellationToken),
                 "cpu_utilization" => await CollectCpuUtilizationAsync(server, cancellationToken),
                 "memory_stats" => await CollectMemoryStatsAsync(server, cancellationToken),
                 "memory_clerks" => await CollectMemoryClerksAsync(server, cancellationToken),

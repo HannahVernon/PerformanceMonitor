@@ -34,6 +34,7 @@ public class ScheduleManager
         ["Aggressive"] = new(StringComparer.OrdinalIgnoreCase)
         {
             ["wait_stats"] = 1, ["latch_stats"] = 1, ["spinlock_stats"] = 1,
+            ["cpu_scheduler_stats"] = 1, ["plan_cache_stats"] = 2,
             ["query_stats"] = 1, ["procedure_stats"] = 1,
             ["query_store"] = 2, ["query_snapshots"] = 1, ["cpu_utilization"] = 1,
             ["file_io_stats"] = 1, ["memory_stats"] = 1, ["memory_clerks"] = 2,
@@ -46,6 +47,7 @@ public class ScheduleManager
         ["Balanced"] = new(StringComparer.OrdinalIgnoreCase)
         {
             ["wait_stats"] = 1, ["latch_stats"] = 1, ["spinlock_stats"] = 1,
+            ["cpu_scheduler_stats"] = 1, ["plan_cache_stats"] = 5,
             ["query_stats"] = 1, ["procedure_stats"] = 1,
             ["query_store"] = 5, ["query_snapshots"] = 1, ["cpu_utilization"] = 1,
             ["file_io_stats"] = 1, ["memory_stats"] = 1, ["memory_clerks"] = 5,
@@ -58,6 +60,7 @@ public class ScheduleManager
         ["Low-Impact"] = new(StringComparer.OrdinalIgnoreCase)
         {
             ["wait_stats"] = 5, ["latch_stats"] = 5, ["spinlock_stats"] = 5,
+            ["cpu_scheduler_stats"] = 5, ["plan_cache_stats"] = 15,
             ["query_stats"] = 10, ["procedure_stats"] = 10,
             ["query_store"] = 30, ["query_snapshots"] = 5, ["cpu_utilization"] = 5,
             ["file_io_stats"] = 10, ["memory_stats"] = 10, ["memory_clerks"] = 30,
@@ -565,6 +568,8 @@ public class ScheduleManager
             new() { Name = "wait_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Wait statistics from sys.dm_os_wait_stats" },
             new() { Name = "latch_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Latch statistics from sys.dm_os_latch_stats" },
             new() { Name = "spinlock_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Spinlock statistics from sys.dm_os_spinlock_stats" },
+            new() { Name = "cpu_scheduler_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "CPU scheduler, workload group, NUMA, and OS memory pressure snapshot (not collected on Azure SQL DB)" },
+            new() { Name = "plan_cache_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Plan cache composition (single-use vs multi-use bloat) from sys.dm_exec_cached_plans" },
             new() { Name = "query_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Query statistics from sys.dm_exec_query_stats" },
             new() { Name = "procedure_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Stored procedure statistics from sys.dm_exec_procedure_stats" },
             new() { Name = "query_store", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Query Store data (top 100 queries per database)" },

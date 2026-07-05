@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TenVersions_V8SchemaSplit_V9InventoryCost_V10LatchSpinlock()
+    public void MigrationScripts_ElevenVersions_V9InventoryCost_V10LatchSpinlock_V11CpuSchedulerPlanCache()
     {
-        Assert.Equal(10, PgMigrations.Scripts.Count);
+        Assert.Equal(11, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -45,7 +45,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(8, PgMigrations.Scripts[7].Version);
         Assert.Equal(9, PgMigrations.Scripts[8].Version);
         Assert.Equal(10, PgMigrations.Scripts[9].Version);
-        Assert.Equal(10, StorageVersion.SchemaVersion);
+        Assert.Equal(11, PgMigrations.Scripts[10].Version);
+        Assert.Equal(11, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -120,6 +121,24 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE OR REPLACE VIEW v_latch_stats AS SELECT * FROM latch_stats;", v10, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_spinlock_stats AS SELECT * FROM spinlock_stats;", v10, StringComparison.Ordinal);
 
+        /* V11 adds the cpu_scheduler_stats + plan_cache_stats collector tables and their v_* passthrough
+           views (Dashboard->Darling parity, #1262). Generated from the collector definitions so the
+           tables match the fresh V1 shape; CREATE TABLE IF NOT EXISTS no-ops on a fresh store and really
+           creates them on a store built before these collectors existed. The two decimal(38,2) averages
+           and the boolean pressure warnings prove the type map carried through the generator. */
+        var v11 = PgMigrations.Scripts[10].Sql;
+        Assert.Equal("cpu-scheduler-plan-cache-collectors", PgMigrations.Scripts[10].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS cpu_scheduler_stats (", v11, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS plan_cache_stats (", v11, StringComparison.Ordinal);
+        Assert.Contains("avg_runnable_tasks_count numeric(38,2)", v11, StringComparison.Ordinal);
+        Assert.Contains("offline_cpu_warning boolean", v11, StringComparison.Ordinal);
+        Assert.Contains("avg_use_count numeric(38,2)", v11, StringComparison.Ordinal);
+        Assert.Contains("oldest_plan_create_time timestamp", v11, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_cpu_scheduler_stats_time ON cpu_scheduler_stats(server_id, collection_time);", v11, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_plan_cache_stats_time ON plan_cache_stats(server_id, collection_time);", v11, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_cpu_scheduler_stats AS SELECT * FROM cpu_scheduler_stats;", v11, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_plan_cache_stats AS SELECT * FROM plan_cache_stats;", v11, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -142,7 +161,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(10L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(11L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

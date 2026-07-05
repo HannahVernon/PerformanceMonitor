@@ -298,4 +298,42 @@ public static class PgSchemaGenerator
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// The V11 migration body — adds the cpu_scheduler_stats and plan_cache_stats collector tables
+    /// plus their <c>v_*</c> passthrough views. Generated from the collector definitions (not
+    /// hand-listed) so the tables are column-for-column identical to the fresh-store V1 shape.
+    /// <c>CREATE TABLE IF NOT EXISTS</c> makes this a harmless no-op on a fresh store (V1 already
+    /// created these from the current catalog and V8 moved them to <c>collect</c>) and the real
+    /// create on a store built before these collectors existed; the views are created directly in
+    /// <c>collect</c> because V11 runs after V8, resolving the bare names through
+    /// <c>search_path = collect, config, public</c>. The Darling service collects cpu_scheduler_stats
+    /// only on non-Azure-SQL-DB targets (its AppliesTo gate); the table still exists everywhere.
+    /// </summary>
+    public static string GenerateV11AddCpuSchedulerPlanCache()
+    {
+        var sb = new StringBuilder();
+        sb.Append("/* V11: cpu_scheduler_stats + plan_cache_stats collectors (Dashboard->Darling parity, #1262).\n");
+        sb.Append("   Generated from the collector definitions so the tables match the fresh V1 shape. */\n");
+
+        foreach (ICollectorSchemaInfo schema in new ICollectorSchemaInfo[]
+        {
+            CpuSchedulerStatsCollector.Instance,
+            PlanCacheStatsCollector.Instance,
+        })
+        {
+            sb.Append('\n').Append(CreateTable(schema)).Append('\n');
+
+            var index = CreateIndex(schema);
+            if (index is not null)
+            {
+                sb.Append(index).Append('\n');
+            }
+
+            sb.Append("CREATE OR REPLACE VIEW v_").Append(schema.TargetTable)
+              .Append(" AS SELECT * FROM ").Append(schema.TargetTable).Append(";\n");
+        }
+
+        return sb.ToString();
+    }
 }

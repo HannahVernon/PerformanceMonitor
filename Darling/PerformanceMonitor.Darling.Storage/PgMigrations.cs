@@ -54,6 +54,7 @@ public static class PgMigrations
         new Migration(8, "schema-split-collect-config", PgSchemaGenerator.GenerateV8Move()),
         new Migration(9, "server-inventory-cost-fields", V9Sql),
         new Migration(10, "latch-spinlock-collectors", PgSchemaGenerator.GenerateV10AddLatchSpinlock()),
+        new Migration(11, "cpu-scheduler-plan-cache-collectors", PgSchemaGenerator.GenerateV11AddCpuSchedulerPlanCache()),
     };
 
     /// <summary>
