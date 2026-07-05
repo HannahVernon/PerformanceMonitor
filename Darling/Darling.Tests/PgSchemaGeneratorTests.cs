@@ -16,18 +16,19 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins Darling's generated Postgres schema against the collector definitions: the catalog covers
-/// all 31 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
+/// all 32 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
 /// the prefix names vary exactly where Lite's schema varies (deadlock_id / blocked_report_id /
-/// config_id+capture_time / running_jobs' no-id), and the index shapes mirror Lite's columns.
+/// system_health_event_id / config_id+capture_time / running_jobs' no-id), and the index shapes
+/// mirror Lite's columns.
 /// </summary>
 public sealed class PgSchemaGeneratorTests
 {
     [Fact]
-    public void Catalog_CoversAll31Collectors_WithUniqueTablesAndNames()
+    public void Catalog_CoversAll32Collectors_WithUniqueTablesAndNames()
     {
-        Assert.Equal(31, CollectorCatalog.All.Count);
-        Assert.Equal(31, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
-        Assert.Equal(31, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+        Assert.Equal(32, CollectorCatalog.All.Count);
+        Assert.Equal(32, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(32, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
     }
 
     [Fact]
@@ -37,6 +38,7 @@ public sealed class PgSchemaGeneratorTests
 
         Assert.Equal("deadlock_id", byTable["deadlocks"].PrefixIdColumnName);
         Assert.Equal("blocked_report_id", byTable["blocked_process_reports"].PrefixIdColumnName);
+        Assert.Equal("system_health_event_id", byTable["system_health_events"].PrefixIdColumnName);
         foreach (var config in new[] { "server_config", "database_config", "database_scoped_config", "trace_flags" })
         {
             Assert.Equal("config_id", byTable[config].PrefixIdColumnName);
@@ -270,6 +272,27 @@ public sealed class PgSchemaGeneratorTests
     }
 
     [Fact]
+    public void CreateTable_SystemHealthEvents_UsesSystemHealthEventIdPrefix_AndTextXml()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(SystemHealthEventsCollector.Instance);
+
+        /* Stage 1 raw-capture shape: the system_health_event_id bigint prefix (mirroring Lite's
+           DuckDB PRIMARY KEY column), then event_time / event_type / event_xml — the XML lands as
+           text (no shredding here; Stage 2 owns the parse). */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS system_health_events (\n" +
+            "    system_health_event_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    event_time timestamp,\n" +
+            "    event_type text,\n" +
+            "    event_xml text\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
     public void CreateIndex_MirrorsLiteIndexColumns()
     {
         Assert.Equal(
@@ -294,11 +317,11 @@ public sealed class PgSchemaGeneratorTests
         var script = PgSchemaGenerator.GenerateFullSchema();
 
         var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
-        Assert.Equal(31, tableCount);
+        Assert.Equal(32, tableCount);
 
-        /* 31 tables minus the two index-less config tables = 29 indexes. */
+        /* 32 tables minus the two index-less config tables = 30 indexes. */
         var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
-        Assert.Equal(29, indexCount);
+        Assert.Equal(30, indexCount);
 
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);

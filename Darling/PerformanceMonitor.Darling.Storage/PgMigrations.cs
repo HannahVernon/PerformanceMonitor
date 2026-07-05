@@ -56,6 +56,7 @@ public static class PgMigrations
         new Migration(10, "latch-spinlock-collectors", PgSchemaGenerator.GenerateV10AddLatchSpinlock()),
         new Migration(11, "cpu-scheduler-plan-cache-collectors", PgSchemaGenerator.GenerateV11AddCpuSchedulerPlanCache()),
         new Migration(12, "session-summary-collector", PgSchemaGenerator.GenerateV12AddSessionSummary()),
+        new Migration(13, "system-health-events-collector", PgSchemaGenerator.GenerateV13AddSystemHealthEvents()),
     };
 
     /// <summary>

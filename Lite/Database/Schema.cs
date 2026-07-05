@@ -926,6 +926,23 @@ CREATE TABLE IF NOT EXISTS session_summary_stats (
     public const string CreateSessionSummaryStatsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_session_summary_stats_time ON session_summary_stats(server_id, collection_time)";
 
+    /* Raw system_health Extended Events (Stage 1 capture): one row per captured event, raw XML only —
+       no shredding here (Stage 2 owns the parse into health-parser categories). event_type carries the
+       XE event name so Stage 2 can dispatch; event_time is the XE @timestamp (the collector watermark). */
+    public const string CreateSystemHealthEventsTable = @"
+CREATE TABLE IF NOT EXISTS system_health_events (
+    system_health_event_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    event_time TIMESTAMP,
+    event_type VARCHAR,
+    event_xml VARCHAR
+)";
+
+    public const string CreateSystemHealthEventsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_system_health_events_time ON system_health_events(server_id, collection_time)";
+
     public const string CreateAlertLogTable = @"
 CREATE TABLE IF NOT EXISTS config_alert_log (
     alert_time TIMESTAMP NOT NULL,
@@ -1027,6 +1044,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateServerPropertiesTable;
         yield return CreateSessionStatsTable;
         yield return CreateSessionSummaryStatsTable;
+        yield return CreateSystemHealthEventsTable;
         yield return CreateAlertLogTable;
         yield return CreateEdgeTriggerWatermarksTable;
         yield return CreateMuteRulesTable;
@@ -1068,6 +1086,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateServerPropertiesIndex;
         yield return CreateSessionStatsIndex;
         yield return CreateSessionSummaryStatsIndex;
+        yield return CreateSystemHealthEventsIndex;
         yield return CreateDismissedArchiveAlertsIndex;
     }
 }

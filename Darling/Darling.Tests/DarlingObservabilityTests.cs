@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwelveVersions_V10LatchSpinlock_V11CpuSchedulerPlanCache_V12SessionSummary()
+    public void MigrationScripts_ThirteenVersions_V11CpuSchedulerPlanCache_V12SessionSummary_V13SystemHealth()
     {
-        Assert.Equal(12, PgMigrations.Scripts.Count);
+        Assert.Equal(13, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -47,7 +47,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(10, PgMigrations.Scripts[9].Version);
         Assert.Equal(11, PgMigrations.Scripts[10].Version);
         Assert.Equal(12, PgMigrations.Scripts[11].Version);
-        Assert.Equal(12, StorageVersion.SchemaVersion);
+        Assert.Equal(13, PgMigrations.Scripts[12].Version);
+        Assert.Equal(13, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -154,6 +155,20 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE INDEX IF NOT EXISTS idx_session_summary_stats_time ON session_summary_stats(server_id, collection_time);", v12, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_session_summary_stats AS SELECT * FROM session_summary_stats;", v12, StringComparison.Ordinal);
 
+        /* V13 adds the system_health_events collector table (Stage 1 raw system_health Extended Events
+           capture: one row per event, raw XML only, no shredding) and its v_* passthrough view
+           (Dashboard->Darling health-parser parity, #1262). Generated from the collector definition so
+           the table matches the fresh V1 shape; CREATE TABLE IF NOT EXISTS no-ops on a fresh store and
+           really creates it on a store built before this collector existed. */
+        var v13 = PgMigrations.Scripts[12].Sql;
+        Assert.Equal("system-health-events-collector", PgMigrations.Scripts[12].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS system_health_events (", v13, StringComparison.Ordinal);
+        Assert.Contains("event_time timestamp", v13, StringComparison.Ordinal);
+        Assert.Contains("event_type text", v13, StringComparison.Ordinal);
+        Assert.Contains("event_xml text", v13, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_system_health_events_time ON system_health_events(server_id, collection_time);", v13, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_system_health_events AS SELECT * FROM system_health_events;", v13, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -176,7 +191,7 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(12L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(13L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
