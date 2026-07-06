@@ -81,6 +81,9 @@ public partial class ViewerServerTab : IDisposable
            so the whole tab tears down through one path. */
         DisposeChartHelpers();
         DisposeMemoryHelpers();
+        DisposePlanCacheHelpers();
+        DisposeCpuSchedulerHelpers();
+        DisposeLatchSpinlockHelpers();
         DisposeFileIoHelpers();
         DisposeBlockingHelpers();
         DisposePerfmonHelpers();
@@ -101,6 +104,10 @@ public partial class ViewerServerTab : IDisposable
             samples = samples.Where(s => s.SampleTime <= endUtc).ToList();
         }
         RenderCpuChart(samples);
+
+        /* The CPU tab is a sub-TabControl (CPU Utilization + CPU Scheduler); load the scheduler sub-tab in
+           the same pass — the CPU tab's full-refresh branch, mirroring the Memory tab's all-sub-tabs load. */
+        await LoadCpuSchedulerAsync();
     }
 
     /// <summary>Loads the tempdb tab: usage/size trend and per-file I/O latency, read concurrently.</summary>

@@ -43,24 +43,29 @@ public partial class ViewerServerTab : UserControl
        wave lands between existing tabs. */
     private const int OverviewInnerTabIndex = 0;
     private const int WaitStatsInnerTabIndex = 1;
-    private const int QueriesInnerTabIndex = 2;
-    private const int PlanViewerInnerTabIndex = 3;
-    private const int CpuInnerTabIndex = 4;
-    private const int MemoryInnerTabIndex = 5;
-    private const int FileIoInnerTabIndex = 6;
-    private const int TempDbInnerTabIndex = 7;
-    private const int BlockingInnerTabIndex = 8;
-    private const int PerfmonInnerTabIndex = 9;
-    private const int RunningJobsInnerTabIndex = 10;
-    private const int ConfigurationInnerTabIndex = 11;
-    private const int DailySummaryInnerTabIndex = 12;
-    private const int HealthInnerTabIndex = 13;
+
+    /* Latches & Spinlocks sits BETWEEN Wait Stats and Queries — the contention-stats grouping mirroring
+       the Dashboard (its Latch/Spinlock sub-tabs live alongside waits in ResourceMetrics). A new top-level
+       tab holding two sub-tabs (Latch Stats + Spinlock Stats); everything after it renumbers by one. */
+    private const int LatchSpinlockInnerTabIndex = 2;
+    private const int QueriesInnerTabIndex = 3;
+    private const int PlanViewerInnerTabIndex = 4;
+    private const int CpuInnerTabIndex = 5;
+    private const int MemoryInnerTabIndex = 6;
+    private const int FileIoInnerTabIndex = 7;
+    private const int TempDbInnerTabIndex = 8;
+    private const int BlockingInnerTabIndex = 9;
+    private const int PerfmonInnerTabIndex = 10;
+    private const int RunningJobsInnerTabIndex = 11;
+    private const int ConfigurationInnerTabIndex = 12;
+    private const int DailySummaryInnerTabIndex = 13;
+    private const int HealthInnerTabIndex = 14;
 
     /* System Events is appended AFTER Collection Health (system_health parity, Stage 2b): six parse-on-read
        sub-tabs, one per unique system_health warning category. FinOps used to sit between them as a per-server
        inner tab, but it was promoted to a top-level cross-server aggregate tab (FinOpsTab, in MainWindow's
        MainTabs), so System Events now takes Collection Health's next slot. */
-    private const int SystemEventsInnerTabIndex = 14;
+    private const int SystemEventsInnerTabIndex = 15;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -91,9 +96,19 @@ public partial class ViewerServerTab : UserControl
         /* CPU + tempdb inner-tab charts (copied from Lite): theme up front + wire hover. */
         InitializeCpuTempDbCharts();
 
+        /* CPU Scheduler sub-tab chart (cpu_scheduler_stats parity): pressure trend + latest-snapshot grid. */
+        InitializeCpuSchedulerChart();
+
         /* Memory inner-tab charts (copied from Lite): same up-front theme + hover for the five Memory
            charts (Overview trend, Clerks, Grant sizing/activity, Pressure events). */
         InitializeMemoryCharts();
+
+        /* Plan Cache sub-tab chart (plan_cache_stats parity, under Memory): single-use vs multi-use trend. */
+        InitializePlanCacheChart();
+
+        /* Latches & Spinlocks inner-tab charts (latch_stats/spinlock_stats parity): the two per-second
+           contention trend charts, themed up front + hover. */
+        InitializeLatchSpinlockCharts();
 
         /* File I/O + Blocking-trend inner-tab charts (copied from Lite): same up-front theme + hover. */
         InitializeFileIoCharts();
@@ -186,6 +201,9 @@ public partial class ViewerServerTab : UserControl
             {
                 case WaitStatsInnerTabIndex:
                     await LoadWaitStatsAsync();
+                    break;
+                case LatchSpinlockInnerTabIndex:
+                    await LoadLatchSpinlockAsync();
                     break;
                 case QueriesInnerTabIndex:
                     await LoadQueriesAsync();

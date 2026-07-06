@@ -108,6 +108,10 @@ public partial class ViewerServerTab
         RenderMemoryPressureEventsChart(pressureTask.Result);
         PopulateMemoryClerkPicker(clerkTypesTask.Result);
         await UpdateMemoryClerksChartFromPickerAsync();
+
+        /* Plan Cache sub-tab (under Memory, matching the Dashboard's Memory > Plan Cache): loaded in the
+           same pass as the other Memory sub-tabs (the Memory tab's full-refresh branch). */
+        await LoadPlanCacheAsync();
     }
 
     /// <summary>The Overview summary strip — Lite's <c>UpdateMemorySummary</c> verbatim.</summary>
