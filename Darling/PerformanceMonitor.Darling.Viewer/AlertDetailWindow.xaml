@@ -4,6 +4,7 @@
         Title="Alert Details"
         Width="480" SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
         ResizeMode="NoResize"
         Background="#22252b"
         Foreground="#E4E6EB">

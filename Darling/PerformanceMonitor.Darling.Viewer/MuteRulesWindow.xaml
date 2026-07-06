@@ -4,6 +4,7 @@
         Title="Manage Mute Rules"
         Height="500" Width="820"
         WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
         ResizeMode="CanResizeWithGrip"
         Background="#22252b"
         Foreground="#E4E6EB">

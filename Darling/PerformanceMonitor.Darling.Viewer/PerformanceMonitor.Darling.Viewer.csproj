@@ -12,6 +12,8 @@
     <FileVersion>3.1.0.0</FileVersion>
     <Company>Darling Data, LLC</Company>
     <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
+    <ApplicationIcon>EDD.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
     <!-- NU1701: SkiaSharp.Views.WPF via ScottPlot.WPF — same suppression as Lite and PerformanceMonitor.Ui.
@@ -43,5 +45,9 @@
   <ItemGroup>
     <!-- The tests pin pure viewer logic (e.g. the per-server tab dedupe registry) that stays internal. -->
     <InternalsVisibleTo Include="Darling.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="EDD.ico" />
   </ItemGroup>
 </Project>

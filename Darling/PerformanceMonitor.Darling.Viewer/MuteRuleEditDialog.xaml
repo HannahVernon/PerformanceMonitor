@@ -4,6 +4,7 @@
         Title="Create Mute Rule"
         SizeToContent="Height" Width="520"
         WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
         ResizeMode="NoResize"
         Background="#22252b"
         Foreground="#E4E6EB">
