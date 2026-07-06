@@ -270,6 +270,17 @@
                                 <TextBlock Text="Open Plan Viewer" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
+                        <Button Click="SettingsButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="Viewer settings — defaults for newly-opened server tabs">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Settings" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                         <Button Click="AboutButton_Click"
                                 Style="{StaticResource DarkButton}"
                                 Padding="8,5"

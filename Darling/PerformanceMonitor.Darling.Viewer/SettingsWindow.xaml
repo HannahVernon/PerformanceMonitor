@@ -1,0 +1,76 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings"
+        Height="300" Width="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Icon="EDD.ico"
+        Background="#22252b"
+        Foreground="#E4E6EB">
+    <!-- The viewer's per-user Settings dialog. Dark-styled via the shared ViewerDarkTheme resource
+         dictionary like the viewer's other dialogs (About, Manage Mute Rules) — ComboBox / CheckBox /
+         Button / TextBlock all pick up ViewerDarkTheme's implicit styles, so only the window chrome
+         needs inline hex. Scope is deliberately tiny: the persisted DEFAULTS that seed a newly-opened
+         server tab's toolbar (ViewerServerTab.TimeRange.cs). It is NOT the service's darling.json
+         (collection/alerts/SMTP live there, not the viewer's business), and the viewer is dark-only,
+         so there is no theme toggle. -->
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ViewerDarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="Settings"
+                   FontSize="18" FontWeight="Bold" Foreground="#E4E6EB" Margin="0,0,0,4"/>
+
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="Defaults applied when a server tab is opened."
+                   Foreground="#8B93A1" TextWrapping="Wrap" Margin="0,0,0,18"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Default time range" Margin="0,0,16,12"/>
+        <ComboBox Grid.Row="2" Grid.Column="1" x:Name="TimeRangeCombo" Width="150"
+                  HorizontalAlignment="Left" Margin="0,0,0,12"
+                  ToolTip="Time window each newly-opened server tab starts on">
+            <ComboBoxItem Content="Last 1 hour"/>
+            <ComboBoxItem Content="Last 4 hours"/>
+            <ComboBoxItem Content="Last 12 hours"/>
+            <ComboBoxItem Content="Last 24 hours"/>
+            <ComboBoxItem Content="Last 7 days"/>
+        </ComboBox>
+
+        <CheckBox Grid.Row="3" Grid.ColumnSpan="2" x:Name="AutoRefreshCheckBox"
+                  Content="Auto-refresh new server tabs" Margin="0,0,0,12"
+                  Checked="AutoRefreshCheckBox_Toggled" Unchecked="AutoRefreshCheckBox_Toggled"/>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Auto-refresh interval" Margin="0,0,16,0"/>
+        <ComboBox Grid.Row="4" Grid.Column="1" x:Name="AutoRefreshIntervalCombo" Width="150"
+                  HorizontalAlignment="Left"
+                  ToolTip="How often an auto-refreshing server tab reloads">
+            <ComboBoxItem Content="30 seconds"/>
+            <ComboBoxItem Content="1 minute"/>
+            <ComboBoxItem Content="5 minutes"/>
+        </ComboBox>
+
+        <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Save" Click="SaveButton_Click" IsDefault="True" MinWidth="80" Padding="16,4"/>
+            <Button Content="Cancel" Click="CancelButton_Click" IsCancel="True" MinWidth="80" Padding="16,4" Margin="8,0,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

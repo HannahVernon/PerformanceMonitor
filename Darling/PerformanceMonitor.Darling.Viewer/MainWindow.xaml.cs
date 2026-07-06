@@ -55,9 +55,18 @@ public partial class MainWindow : Window
     /// </summary>
     private readonly OpenServerTabRegistry<TabItem> _openServerTabs = new();
 
+    /// <summary>
+    /// The viewer's per-user preferences store (a small JSON file in %APPDATA%) and the current in-memory
+    /// copy. These are the persisted DEFAULTS that seed each newly-opened <see cref="ViewerServerTab"/>'s
+    /// toolbar (time window + auto-refresh); the Settings dialog edits them. Loaded once on startup.
+    /// </summary>
+    private readonly ViewerPreferencesStore _preferencesStore = new();
+    private ViewerPreferences _preferences;
+
     public MainWindow()
     {
         InitializeComponent();
+        _preferences = _preferencesStore.Load();
         Loaded += OnLoaded;
         Closed += OnClosed;
     }
@@ -360,7 +369,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var serverTab = new ViewerServerTab(_dataService, server);
+        var serverTab = new ViewerServerTab(_dataService, server, _preferences);
         serverTab.StatusChanged += OnServerTabStatusChanged;
         serverTab.ApplyTimeRangeRequested += OnApplyTimeRangeToAllRequested;
 
@@ -626,6 +635,23 @@ public partial class MainWindow : Window
 
         Clipboard.SetDataObject(card.AskAiPrompt, false);
         RecommendationsStatusText.Text = "AI prompt copied to clipboard.";
+    }
+
+    // ── Settings ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Opens the viewer's Settings dialog (default time range + auto-refresh for newly-opened server tabs).
+    /// On Save, persists the edited settings and updates the in-memory copy so the next opened server tab
+    /// seeds from them; already-open tabs keep their own toolbar state (the simple, predictable rule).
+    /// </summary>
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var settings = new SettingsWindow(_preferences) { Owner = this };
+        if (settings.ShowDialog() == true && settings.Result is not null)
+        {
+            _preferences = settings.Result;
+            _preferencesStore.Save(_preferences);
+        }
     }
 
     // ── About ────────────────────────────────────────────────────────────────────────

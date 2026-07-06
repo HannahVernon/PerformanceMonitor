@@ -76,7 +76,13 @@ public partial class ViewerServerTab : UserControl
     /// <summary>Raised after a load so MainWindow can surface progress/errors in its status bar.</summary>
     public event Action<string>? StatusChanged;
 
-    public ViewerServerTab(ViewerDataService dataService, DarlingServer server)
+    /// <param name="preferences">
+    /// The user's persisted viewer defaults (Settings window) that seed this tab's toolbar — default time
+    /// window and auto-refresh on/off + interval. Null (or omitted) uses a default-constructed
+    /// <see cref="ViewerPreferences"/>, which reproduces the toolbar's historical XAML defaults (24h / on / 1m)
+    /// exactly, so the tab is unchanged when no settings are supplied.
+    /// </param>
+    public ViewerServerTab(ViewerDataService dataService, DarlingServer server, ViewerPreferences? preferences = null)
     {
         _dataService = dataService;
         _server = server;
@@ -124,9 +130,20 @@ public partial class ViewerServerTab : UserControl
         /* System Events inner tab (system_health parity): register the eight category grids' filter managers. */
         InitializeSystemEventsTab();
 
+        /* Seed the toolbar's initial time window + auto-refresh state from the user's persisted defaults
+           (the Settings window), replacing the XAML's hardcoded 24h / on / 1m. Set BEFORE
+           InitializeAutoRefreshTimer, which reads AutoRefreshCheckBox + AutoRefreshIntervalCombo to decide
+           whether and how fast to start the timer. Assigning SelectedIndex/IsChecked here is inert: the
+           range handler no-ops while IsLoaded is false, and the checkbox handler no-ops while
+           _autoRefreshTimer is still null — so seeding drives no premature reload or timer churn. */
+        var toolbarDefaults = preferences ?? new ViewerPreferences();
+        TimeRangeCombo.SelectedIndex = toolbarDefaults.DefaultTimeRangeIndex;
+        AutoRefreshCheckBox.IsChecked = toolbarDefaults.AutoRefreshEnabled;
+        AutoRefreshIntervalCombo.SelectedIndex = toolbarDefaults.AutoRefreshIntervalIndex;
+
         /* Per-server toolbar (this wave): populate the custom-range hour/minute combos and start the
-           auto-refresh timer at the toolbar's interval (default 1m = the old fixed 60s cadence). The
-           settable window these controls drive replaces the removed 24-hour s_dataWindow constant. */
+           auto-refresh timer at the toolbar's interval (seeded above). The settable window these controls
+           drive replaces the removed 24-hour s_dataWindow constant. */
         InitializeTimeComboBoxes();
         InitializeAutoRefreshTimer();
     }
