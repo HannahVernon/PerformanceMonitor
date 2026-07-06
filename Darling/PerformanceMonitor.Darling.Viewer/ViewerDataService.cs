@@ -138,6 +138,25 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     public static DateTime ToLocalTime(DateTime naiveUtc)
         => DateTime.SpecifyKind(naiveUtc, DateTimeKind.Utc).ToLocalTime();
 
+    /// <summary>
+    /// Binds the standard per-server window parameters shared by the settable-window tab reads:
+    /// $1 server_id, $2 window start, $3 window end. Both bounds are sent Kind=Unspecified because the
+    /// store's columns are naive UTC (<c>timestamp without time zone</c>) — a Kind=Utc DateTime would
+    /// map to timestamptz and throw since Npgsql 6.0 (see the class remarks).
+    /// </summary>
+    internal static void AddWindowParameters(NpgsqlCommand command, int serverId, DateTime startUtc, DateTime endUtc)
+    {
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
+        {
+            TypedValue = DateTime.SpecifyKind(startUtc, DateTimeKind.Unspecified),
+        });
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
+        {
+            TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified),
+        });
+    }
+
     /// <summary>Postgres SQLSTATE 42501 (insufficient_privilege) — a write refused on a read-only connection.</summary>
     internal const string InsufficientPrivilegeSqlState = "42501";
 

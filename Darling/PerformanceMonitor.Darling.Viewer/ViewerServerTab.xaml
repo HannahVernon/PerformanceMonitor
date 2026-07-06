@@ -370,6 +370,56 @@
             </Grid>
         </TabItem>
 
+        <!-- Latches & Spinlocks Tab — the Dashboard-parity port of ResourceMetricsContent's Latch Stats /
+             Spinlock Stats sub-tabs. Two sub-tabs, each a per-second trend chart (top 5 by delta) over the
+             settable window + a latest-snapshot grid. Placed BETWEEN Wait Stats and Queries (the
+             contention-stats grouping). Both sub-tabs load on parent-tab activation, so this sub-TabControl
+             needs no SelectionChanged handler (mirrors the Memory tab). -->
+        <TabItem Header="Latches &amp; Spinlocks">
+            <TabControl x:Name="LatchSpinlockSubTabControl" Background="Transparent" BorderThickness="0" ItemContainerStyle="{DynamicResource SubTabItemStyle}">
+                <TabItem Header="Latch Stats">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <scottplot:WpfPlot Grid.Row="0" x:Name="LatchStatsChart"/>
+                        <DataGrid Grid.Row="1" x:Name="LatchStatsGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Latch Class" Binding="{Binding LatchClass}" Width="*"/>
+                                <DataGridTextColumn Header="Δ Wait (ms)" Binding="{Binding DeltaWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                                <DataGridTextColumn Header="Δ Waiting Reqs" Binding="{Binding DeltaWaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                                <DataGridTextColumn Header="Wait Time (ms)" Binding="{Binding WaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                                <DataGridTextColumn Header="Max Wait (ms)" Binding="{Binding MaxWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                                <DataGridTextColumn Header="Waiting Reqs (total)" Binding="{Binding WaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="140"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+                <TabItem Header="Spinlock Stats">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <scottplot:WpfPlot Grid.Row="0" x:Name="SpinlockStatsChart"/>
+                        <DataGrid Grid.Row="1" x:Name="SpinlockStatsGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Spinlock" Binding="{Binding SpinlockName}" Width="*"/>
+                                <DataGridTextColumn Header="Δ Collisions" Binding="{Binding DeltaCollisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                                <DataGridTextColumn Header="Δ Spins" Binding="{Binding DeltaSpins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                                <DataGridTextColumn Header="Spins/Collision" Binding="{Binding SpinsPerCollision, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                                <DataGridTextColumn Header="Collisions (total)" Binding="{Binding Collisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                                <DataGridTextColumn Header="Spins (total)" Binding="{Binding Spins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                                <DataGridTextColumn Header="Sleep Time" Binding="{Binding SleepTime, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                                <DataGridTextColumn Header="Backoffs" Binding="{Binding Backoffs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </TabItem>
+
         <!-- Queries Tab — the full six-sub-tab group matching Lite's ServerTab.xaml QueriesSubTabControl
              exactly: Performance Trends, Active Queries (W1f-2), Top Queries / Top Procedures / Query
              Store by Duration (W1f-1), Query Heatmap (W1f-2). A shared "Compare:" combo above the
@@ -1352,10 +1402,43 @@
         <!-- CPU Tab — copied from Lite's ServerTab.xaml CPU tab: one full-bleed chart of raw
              per-sample CPU (SQL Server vs other processes), distinct from the Overview's
              averaged-per-collection CPU trend. -->
+        <!-- CPU Tab — a sub-TabControl: "CPU Utilization" (the existing raw per-sample CPU chart) and
+             "CPU Scheduler" (the cpu_scheduler_stats parity surface: runnable/blocked/queued pressure
+             trend + a latest-snapshot metric grid whose warning rows highlight). Both sub-tabs load on
+             CPU-tab activation (LoadCpuAsync), so this sub-TabControl needs no SelectionChanged handler. -->
         <TabItem Header="CPU">
-            <Grid Margin="8">
-                <scottplot:WpfPlot x:Name="CpuChart"/>
-            </Grid>
+            <TabControl x:Name="CpuSubTabControl" Background="Transparent" BorderThickness="0" ItemContainerStyle="{DynamicResource SubTabItemStyle}">
+                <TabItem Header="CPU Utilization">
+                    <Grid Margin="8">
+                        <scottplot:WpfPlot x:Name="CpuChart"/>
+                    </Grid>
+                </TabItem>
+                <TabItem Header="CPU Scheduler">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <scottplot:WpfPlot Grid.Row="0" x:Name="CpuSchedulerChart"/>
+                        <DataGrid Grid.Row="1" x:Name="CpuSchedulerGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0"
+                                  HeadersVisibility="Column" AutoGenerateColumns="False">
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                            <Setter Property="Background" Value="#33FF6B6B"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.RowStyle>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Metric" Binding="{Binding Metric}" Width="2*"/>
+                                <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+            </TabControl>
         </TabItem>
 
         <!-- Memory Tab — copied from Lite's ServerTab.xaml Memory tab (control names verbatim): a nested
@@ -1493,6 +1576,43 @@
                         </Grid.RowDefinitions>
                         <scottplot:WpfPlot Grid.Row="0" x:Name="MemoryGrantSizingChart" Margin="5,5,5,2"/>
                         <scottplot:WpfPlot Grid.Row="1" x:Name="MemoryGrantActivityChart" Margin="5,2,5,5"/>
+                    </Grid>
+                </TabItem>
+
+                <!-- Plan Cache Sub-Tab (plan_cache_stats parity, matching the Dashboard's Memory > Plan
+                     Cache): single-use vs multi-use size trend + total-plans / oldest-plan summary + a
+                     per-(cacheobjtype, objtype) composition grid for the latest snapshot in the window. -->
+                <TabItem Header="Plan Cache">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <scottplot:WpfPlot Grid.Row="0" x:Name="PlanCacheChart"/>
+                        <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,8,0,0">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="Total Plans:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                <TextBlock x:Name="PlanCacheTotalPlansText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                <TextBlock Text="Oldest Plan Age:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                <TextBlock x:Name="PlanCacheOldestPlanText" Text="--" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                        <DataGrid Grid.Row="2" x:Name="PlanCacheCompositionGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0"
+                                  HeadersVisibility="Column" AutoGenerateColumns="False">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Cache Object Type" Binding="{Binding Cacheobjtype}" Width="*"/>
+                                <DataGridTextColumn Header="Object Type" Binding="{Binding Objtype}" Width="120"/>
+                                <DataGridTextColumn Header="Total Plans" Binding="{Binding TotalPlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                                <DataGridTextColumn Header="Total Size (MB)" Binding="{Binding TotalSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                                <DataGridTextColumn Header="Single-Use Plans" Binding="{Binding SingleUsePlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                                <DataGridTextColumn Header="Single-Use (MB)" Binding="{Binding SingleUseSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                                <DataGridTextColumn Header="Multi-Use Plans" Binding="{Binding MultiUsePlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                                <DataGridTextColumn Header="Multi-Use (MB)" Binding="{Binding MultiUseSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                                <DataGridTextColumn Header="Avg Use Count" Binding="{Binding AvgUseCount, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                                <DataGridTextColumn Header="Avg Size (KB)" Binding="{Binding AvgSizeKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="105"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
                     </Grid>
                 </TabItem>
 
