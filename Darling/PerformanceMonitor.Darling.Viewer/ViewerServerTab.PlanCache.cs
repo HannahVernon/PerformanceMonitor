@@ -50,13 +50,14 @@ public partial class ViewerServerTab
 
         var trendTask = _dataService.GetPlanCacheTrendAsync(_server.ServerId, startUtc, endUtc);
         var snapshotTask = _dataService.GetPlanCacheSnapshotAsync(_server.ServerId, startUtc, endUtc);
-        await Task.WhenAll(trendTask, snapshotTask);
+        /* The summary strip's totals come from a dedicated uncapped aggregate, NOT the top-30 grid rows,
+           so "Total Plans" is exact even though the composition grid is capped (Dashboard parity). */
+        var summaryTask = _dataService.GetPlanCacheSummaryAsync(_server.ServerId, startUtc, endUtc);
+        await Task.WhenAll(trendTask, snapshotTask, summaryTask);
 
         RenderPlanCacheChart(trendTask.Result);
-
-        var snapshot = snapshotTask.Result;
-        PlanCacheCompositionGrid.ItemsSource = snapshot;
-        RenderPlanCacheSummary(snapshot);
+        PlanCacheCompositionGrid.ItemsSource = snapshotTask.Result;
+        RenderPlanCacheSummary(summaryTask.Result);
     }
 
     private void RenderPlanCacheChart(List<PlanCacheTrendPoint> data)
@@ -100,33 +101,26 @@ public partial class ViewerServerTab
         PlanCacheChart.Refresh();
     }
 
-    /// <summary>The summary strip: total plans at the latest snapshot + the oldest cached plan's age
-    /// (a plan-cache-stability signal — older = more stable), mirroring the Dashboard's Plan Cache summary.</summary>
-    private void RenderPlanCacheSummary(List<PlanCacheSnapshotRow> snapshot)
+    /// <summary>The summary strip: TRUE total plans at the latest snapshot (uncapped, from the dedicated
+    /// aggregate — not the top-30 grid) + the oldest cached plan's age (a plan-cache-stability signal —
+    /// older = more stable), mirroring the Dashboard's Plan Cache summary.</summary>
+    private void RenderPlanCacheSummary(PlanCacheSummary summary)
     {
-        if (snapshot.Count == 0)
+        if (summary.TotalPlans <= 0 && summary.OldestPlanCreateTime is null)
         {
             PlanCacheTotalPlansText.Text = "--";
             PlanCacheOldestPlanText.Text = "--";
             return;
         }
 
-        int totalPlans = snapshot.Sum(r => r.TotalPlans);
-        PlanCacheTotalPlansText.Text = totalPlans.ToString("N0", CultureInfo.CurrentCulture);
+        PlanCacheTotalPlansText.Text = summary.TotalPlans.ToString("N0", CultureInfo.CurrentCulture);
 
-        /* oldest_plan_create_time is the store-wide MIN the collector stamps on every group row, so any
-           non-null row carries it. It comes from a DMV (sys.dm_exec_query_stats.creation_time) in the
-           monitored server's local clock, which the viewer — having no per-server offset — measures against
-           UtcNow: exact for a UTC server, off by the server's offset otherwise (the same approximation the
-           viewer already accepts for server-local sample_time; a reliable de-skew is deferred). Age is a
-           coarse d/h/m stability bucket, so a few hours' offset rarely changes the qualitative read. */
-        var oldest = snapshot
-            .Where(r => r.OldestPlanCreateTime.HasValue)
-            .Select(r => r.OldestPlanCreateTime!.Value)
-            .DefaultIfEmpty()
-            .Min();
-
-        if (oldest == default)
+        /* oldest_plan_create_time comes from a DMV (sys.dm_exec_query_stats.creation_time) in the monitored
+           server's local clock, which the viewer — having no per-server offset — measures against UtcNow:
+           exact for a UTC server, off by the server's offset otherwise (the same approximation the viewer
+           already accepts for server-local sample_time; a reliable de-skew is deferred). Age is a coarse
+           d/h/m stability bucket, so a few hours' offset rarely changes the qualitative read. */
+        if (summary.OldestPlanCreateTime is not { } oldest)
         {
             PlanCacheOldestPlanText.Text = "--";
             return;

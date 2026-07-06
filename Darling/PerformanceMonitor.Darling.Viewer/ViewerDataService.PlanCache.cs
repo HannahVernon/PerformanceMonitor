@@ -35,6 +35,11 @@ public sealed record PlanCacheSnapshotRow(
     int AvgSizeKb,
     DateTime? OldestPlanCreateTime);
 
+/// <summary>The Plan Cache summary strip's two stability figures for the latest snapshot in the window:
+/// the TRUE total plan count (summed across every group, not just the displayed top-N) and the oldest
+/// cached plan's create time — matching the Dashboard, which computes both over the full latest snapshot.</summary>
+public sealed record PlanCacheSummary(long TotalPlans, DateTime? OldestPlanCreateTime);
+
 public sealed partial class ViewerDataService
 {
     /// <summary>
@@ -90,6 +95,31 @@ public sealed partial class ViewerDataService
         LIMIT 30
         """;
 
+    /// <summary>
+    /// The Plan Cache summary read: the TRUE total plan count (SUM over EVERY group, uncapped) and the
+    /// oldest cached plan's create time (MIN) at the most recent collection in the window — the summary
+    /// strip's two figures, computed independently of the top-30 grid read so "Total Plans" is exact even
+    /// when the composition grid is capped (matching the Dashboard, which sums the full latest snapshot).
+    /// An aggregate with no GROUP BY always returns one row, so an empty window yields (0, NULL).
+    /// $1 server_id, $2 start, $3 end (naive UTC).
+    /// </summary>
+    public const string PlanCacheSummarySql = """
+        WITH latest AS
+        (
+            SELECT MAX(collection_time) AS mx
+            FROM v_plan_cache_stats
+            WHERE server_id = $1
+            AND   collection_time >= $2
+            AND   collection_time <= $3
+        )
+        SELECT
+            COALESCE(SUM(total_plans), 0) AS total_plans,
+            MIN(oldest_plan_create_time) AS oldest_plan_create_time
+        FROM v_plan_cache_stats
+        WHERE server_id = $1
+        AND   collection_time = (SELECT mx FROM latest)
+        """;
+
     /// <summary>The single-use vs multi-use plan-cache size trend over the window (empty when none).</summary>
     public async Task<List<PlanCacheTrendPoint>> GetPlanCacheTrendAsync(
         int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
@@ -136,5 +166,23 @@ public sealed partial class ViewerDataService
         }
 
         return result;
+    }
+
+    /// <summary>The exact total-plans + oldest-plan figures for the summary strip (uncapped), or
+    /// (0, null) when the window holds no snapshot.</summary>
+    public async Task<PlanCacheSummary> GetPlanCacheSummaryAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        await using var command = _dataSource.CreateCommand(PlanCacheSummarySql);
+        AddWindowParameters(command, serverId, startUtc, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new PlanCacheSummary(0, null);
+        }
+
+        return new PlanCacheSummary(
+            reader.IsDBNull(0) ? 0 : reader.GetInt64(0),
+            reader.IsDBNull(1) ? null : reader.GetDateTime(1));
     }
 }

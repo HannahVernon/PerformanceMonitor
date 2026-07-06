@@ -63,12 +63,33 @@ public sealed class ViewerPlanCacheSqlTests
         }
     }
 
+    [Fact]
+    public void PlanCacheSummarySql_SumsAllGroups_LatestCollection_Uncapped()
+    {
+        var sql = ViewerDataService.PlanCacheSummarySql;
+
+        Assert.Contains("FROM v_plan_cache_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("SELECT MAX(collection_time) AS mx", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time = (SELECT mx FROM latest)", sql, StringComparison.Ordinal);
+        /* TRUE total across every group + oldest plan; COALESCE so an empty window yields 0 not NULL. */
+        Assert.Contains("COALESCE(SUM(total_plans), 0)", sql, StringComparison.Ordinal);
+        Assert.Contains("MIN(oldest_plan_create_time)", sql, StringComparison.Ordinal);
+        /* Must NOT be capped — the summary is the exact total, independent of the grid's LIMIT 30. */
+        Assert.DoesNotContain("LIMIT", sql, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("trend")]
     [InlineData("snapshot")]
+    [InlineData("summary")]
     public void PlanCacheSql_PgDialect_PositionalParams_NoBareNow_NoNLiterals(string which)
     {
-        var sql = which == "trend" ? ViewerDataService.PlanCacheTrendSql : ViewerDataService.PlanCacheSnapshotSql;
+        var sql = which switch
+        {
+            "trend" => ViewerDataService.PlanCacheTrendSql,
+            "snapshot" => ViewerDataService.PlanCacheSnapshotSql,
+            _ => ViewerDataService.PlanCacheSummarySql,
+        };
 
         Assert.DoesNotContain("now(", sql.ToLowerInvariant());
         Assert.DoesNotContain("N'", sql, StringComparison.Ordinal);
@@ -148,6 +169,11 @@ public sealed class ViewerPlanCacheLivePostgresTests
             Assert.Equal("Adhoc", snapshot[0].Objtype);
             Assert.Equal(210, snapshot[0].TotalSizeMb);
             Assert.Equal(oldest.Ticks, snapshot[0].OldestPlanCreateTime!.Value.Ticks);
+
+            /* Summary sums total_plans across BOTH groups (5 + 30 = 35, uncapped) and takes MIN(oldest). */
+            var summary = await viewer.GetPlanCacheSummaryAsync(ServerId, t1.AddMinutes(-1), t1.AddMinutes(1));
+            Assert.Equal(35L, summary.TotalPlans);
+            Assert.Equal(oldest.Ticks, summary.OldestPlanCreateTime!.Value.Ticks);
         }
         finally
         {
