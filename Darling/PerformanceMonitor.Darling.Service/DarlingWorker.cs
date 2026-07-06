@@ -193,6 +193,15 @@ public sealed class DarlingWorker : BackgroundService
     /// </summary>
     private async Task RunCollectionLoopAsync(DarlingConfig config, string storeConnectionString, CancellationToken stoppingToken)
     {
+        /* Carry the collect/config search path on the store connection string BEFORE the data
+           source (and its pool) is created, so every pooled physical connection resolves the
+           shared SQL's bare table names to the V8 schemas from its very first use — deterministic
+           and independent of the pool's connection-open timing relative to PgMigrations'
+           best-effort ALTER DATABASE ... SET search_path. Without this a FRESH bring-your-own
+           store silently collects nothing until the service is restarted; see
+           EnsureStoreSearchPath for the pool-timing root cause. Managed mode already sets it, so
+           this is a no-op there. */
+        storeConnectionString = EnsureStoreSearchPath(storeConnectionString);
         await using var postgres = NpgsqlDataSource.Create(storeConnectionString);
         _postgres = postgres;
         try
@@ -367,6 +376,45 @@ public sealed class DarlingWorker : BackgroundService
         }
 
         _logger.LogInformation("PerformanceMonitor Darling collection loop stopped");
+    }
+
+    /// <summary>
+    /// Ensures the store connection string carries the collect/config search path (the V8 schema
+    /// split) so every pooled physical connection resolves the shared SQL's bare table names to the
+    /// <c>collect</c>/<c>config</c> schemas from its FIRST use. Managed mode already sets it
+    /// (<see cref="DarlingManagedPostgres.SearchPath"/>) — that string is returned unchanged, no
+    /// double-set. A bring-your-own connection string usually omits it and would otherwise rely on
+    /// the database-default <c>search_path</c> that
+    /// <see cref="PgMigrations.MigrateAsync(NpgsqlConnection, ILogger, CancellationToken)"/>
+    /// best-effort sets via <c>ALTER DATABASE ... SET search_path</c>.
+    ///
+    /// <para>That database default only governs the startup search_path of connections established
+    /// AFTER the ALTER commits, but the Npgsql pool's physical connections opened around it (for the
+    /// migration itself, the hypertable conversion, and the first collection sweep) keep their
+    /// pre-ALTER session search_path for their entire lifetime. On a FRESH BYO store that means the
+    /// whole first run fails — hypertable conversion, delta seeding, and every collector write hit
+    /// <c>42P01: relation "wait_stats" does not exist</c> — and collection only starts working after
+    /// a service restart hands out a fresh pool. Carrying the search path on the connection string
+    /// itself is deterministic and pool-timing-independent; any login may <c>SET</c> its own
+    /// search_path, so this is safe for least-privilege BYO logins too.</para>
+    /// </summary>
+    internal static string EnsureStoreSearchPath(string connectionString)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString);
+        if (string.IsNullOrWhiteSpace(builder.SearchPath))
+        {
+            /* DarlingManagedPostgres is annotated [SupportedOSPlatform("windows")] for its DPAPI /
+               bundled-cluster surface, but SearchPath is a platform-neutral compile-time constant
+               with no runtime dependency, and BYO mode runs on any OS — so the CA1416 cross-platform
+               reachability flag is spurious for this const reference. Suppressed narrowly rather than
+               forking the constant, keeping managed and BYO byte-identical (a test pins them equal). */
+#pragma warning disable CA1416
+            builder.SearchPath = DarlingManagedPostgres.SearchPath;
+#pragma warning restore CA1416
+            return builder.ConnectionString;
+        }
+
+        return connectionString;
     }
 
     /// <summary>
