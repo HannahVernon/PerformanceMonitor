@@ -181,6 +181,16 @@ Entra ID (MFA) Authentication:
 PerformanceMonitorInstaller.exe YourServerName --entra user@domain.com
 ```
 
+Entra managed identity / service principal (non-interactive, for Azure SQL Managed Instance or other AAD-enabled targets):
+
+```
+PerformanceMonitorInstaller.exe YourMI.database.windows.net --managed-identity
+PerformanceMonitorInstaller.exe YourMI.database.windows.net --managed-identity=MI_CLIENT_ID
+PerformanceMonitorInstaller.exe YourMI.database.windows.net --service-principal APP_CLIENT_ID
+```
+
+Bare `--managed-identity` uses the system-assigned identity; pass a client id (`--managed-identity=ID` or `--managed-identity ID`) for a user-assigned one. `--service-principal` reads the client secret from the `PM_AZURE_CLIENT_SECRET` environment variable (never the command line).
+
 Clean reinstall (drops existing database and all collected data):
 
 ```
@@ -212,6 +222,8 @@ The installer automatically tests the connection, checks the SQL Server version 
 | `SERVER` | SQL Server instance name (positional, required) |
 | `USERNAME PASSWORD` | SQL Authentication credentials (positional, optional) |
 | `--entra EMAIL` | Microsoft Entra ID interactive authentication (MFA) |
+| `--managed-identity[=CLIENT_ID]` | Microsoft Entra managed identity (system-assigned, or user-assigned via `CLIENT_ID`) |
+| `--service-principal CLIENT_ID` | Microsoft Entra service principal (client secret via `PM_AZURE_CLIENT_SECRET`) |
 | `--reinstall` | Drop existing database and perform clean install |
 | `--uninstall` | Remove database, Agent jobs, and XE sessions |
 | `--reset-schedule` | Reset collection schedule to recommended defaults |
@@ -224,7 +236,7 @@ The installer automatically tests the connection, checks the SQL Server version 
 
 > **Custom file locations:** `--data-path` / `--log-path` set where SQL Server places the PerformanceMonitor data and log files. They take effect **only when the database is first created** — if the database already exists they are ignored. Either flag may be supplied independently; an omitted one falls back to the instance default (`SERVERPROPERTY('InstanceDefaultDataPath')` / `InstanceDefaultLogPath`). The directory is a path **on the SQL Server host** and must already exist, with the SQL Server service account holding write permission. Both `--data-path D:\SQLData` and `--data-path=D:\SQLData` forms are accepted; quote paths containing spaces. Not applicable to Azure SQL Managed Instance, which always uses its managed file layout.
 
-**Environment variable:** Set `PM_SQL_PASSWORD` to avoid passing the password on the command line.
+**Environment variables:** Set `PM_SQL_PASSWORD` to avoid passing the SQL Auth password on the command line, and `PM_AZURE_CLIENT_SECRET` to supply the `--service-principal` client secret.
 
 ### Exit Codes
 
