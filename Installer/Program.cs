@@ -58,6 +58,8 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  PerformanceMonitorInstaller.exe <server> <username> <password>     SQL Auth");
                 Console.WriteLine("  PerformanceMonitorInstaller.exe <server> <username>                SQL Auth (password via env var)");
                 Console.WriteLine("  PerformanceMonitorInstaller.exe <server> --entra <email>           Entra ID (MFA)");
+                Console.WriteLine("  PerformanceMonitorInstaller.exe <server> --managed-identity        Entra managed identity");
+                Console.WriteLine("  PerformanceMonitorInstaller.exe <server> --service-principal <id>  Entra service principal");
                 Console.WriteLine();
                 Console.WriteLine("Options:");
                 Console.WriteLine("  -h, --help           Show this help message");
@@ -68,11 +70,14 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("  --encrypt=<level>    Connection encryption: mandatory (default), optional, strict");
                 Console.WriteLine("  --trust-cert         Trust server certificate without validation");
                 Console.WriteLine("  --entra <email>      Use Microsoft Entra ID interactive authentication (MFA)");
+                Console.WriteLine("  --managed-identity[=<clientId>]  Entra managed identity: system-assigned, or user-assigned via clientId");
+                Console.WriteLine("  --service-principal <clientId>   Entra service principal (secret via PM_AZURE_CLIENT_SECRET)");
                 Console.WriteLine("  --data-path <dir>    Server-side directory for the data (.mdf) file (first install only)");
                 Console.WriteLine("  --log-path <dir>     Server-side directory for the log (.ldf) file (first install only)");
                 Console.WriteLine();
                 Console.WriteLine("Environment Variables:");
-                Console.WriteLine("  PM_SQL_PASSWORD      SQL Auth password (avoids passing on command line)");
+                Console.WriteLine("  PM_SQL_PASSWORD         SQL Auth password (avoids passing on command line)");
+                Console.WriteLine("  PM_AZURE_CLIENT_SECRET  Service principal client secret (for --service-principal)");
                 Console.WriteLine();
                 Console.WriteLine("Exit Codes:");
                 Console.WriteLine("  0  Success");
@@ -107,6 +112,20 @@ namespace PerformanceMonitorInstaller
                     entraEmail = args[entraIndex + 1];
                 }
             }
+
+            /*#1325: non-interactive Entra auth for Managed Instance / AAD-enabled targets.
+              --managed-identity          -> system-assigned managed identity (no value)
+              --managed-identity=<id> / --managed-identity <id> -> user-assigned MI (client id)
+              --service-principal <id>    -> service principal; client secret via PM_AZURE_CLIENT_SECRET.
+              The service layer (InstallationService.BuildConnectionString) already maps these to
+              SqlAuthenticationMethod.ActiveDirectoryManagedIdentity / ActiveDirectoryServicePrincipal;
+              this only wires the CLI surface to it.*/
+            bool managedIdentityMode = args.Any(a => a.Equals("--managed-identity", StringComparison.OrdinalIgnoreCase)
+                || a.StartsWith("--managed-identity=", StringComparison.OrdinalIgnoreCase));
+            bool servicePrincipalMode = args.Any(a => a.Equals("--service-principal", StringComparison.OrdinalIgnoreCase)
+                || a.StartsWith("--service-principal=", StringComparison.OrdinalIgnoreCase));
+            string? managedIdentityClientId = GetOptionValue(args, "--managed-identity");
+            string? servicePrincipalClientId = GetOptionValue(args, "--service-principal");
 
             /*Parse encryption option (default: Mandatory)
               Supports both --encrypt=optional and --encrypt optional */
@@ -175,8 +194,10 @@ namespace PerformanceMonitorInstaller
 
             /*Filter out all --flags and their trailing values to get positional arguments
               (server, username, password). Flags like --entra <email>, --encrypt <level>,
-              --data-path <dir>, and --log-path <dir> have a following value that must also
-              be removed.*/
+              --data-path <dir>, --log-path <dir>, --service-principal <clientId>, and the
+              space form of --managed-identity <clientId> have a following value that must
+              also be removed. (The --flag=value forms are single tokens handled by the
+              continue below.)*/
             var filteredArgsList = new List<string>();
             for (int i = 0; i < args.Length; i++)
             {
@@ -186,7 +207,9 @@ namespace PerformanceMonitorInstaller
                     if ((args[i].Equals("--entra", StringComparison.OrdinalIgnoreCase)
                         || args[i].Equals("--encrypt", StringComparison.OrdinalIgnoreCase)
                         || args[i].Equals("--data-path", StringComparison.OrdinalIgnoreCase)
-                        || args[i].Equals("--log-path", StringComparison.OrdinalIgnoreCase))
+                        || args[i].Equals("--log-path", StringComparison.OrdinalIgnoreCase)
+                        || args[i].Equals("--service-principal", StringComparison.OrdinalIgnoreCase)
+                        || args[i].Equals("--managed-identity", StringComparison.OrdinalIgnoreCase))
                         && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
                     {
                         i++; /*skip the value too*/
@@ -202,6 +225,10 @@ namespace PerformanceMonitorInstaller
             string? password = null;
             bool useWindowsAuth;
             bool useEntraAuth = false;
+            /*#1325: "ServicePrincipal" / "ManagedIdentity" for the non-interactive Entra modes; null
+              leaves the Windows/SQL/Entra-interactive paths unchanged. Matched as string literals by
+              BuildConnectionString (Installer.Core has no reference to PerformanceMonitor.Common).*/
+            string? authenticationType = null;
 
             if (automatedMode)
             {
@@ -227,6 +254,44 @@ namespace PerformanceMonitorInstaller
                     Console.WriteLine($"Server: {serverName}");
                     Console.WriteLine($"Authentication: Microsoft Entra ID ({username})");
                     Console.WriteLine("A browser window will open for interactive authentication...");
+                }
+                else if (servicePrincipalMode)
+                {
+                    /*Microsoft Entra service principal (client id + secret, non-interactive)*/
+                    useWindowsAuth = false;
+                    authenticationType = "ServicePrincipal";
+                    username = servicePrincipalClientId;   /*application (client) id*/
+                    password = Environment.GetEnvironmentVariable("PM_AZURE_CLIENT_SECRET");
+
+                    if (string.IsNullOrWhiteSpace(username))
+                    {
+                        Console.WriteLine("Error: Client (application) ID is required for service principal authentication.");
+                        Console.WriteLine("Usage: PerformanceMonitorInstaller.exe <server> --service-principal <clientId>");
+                        Console.WriteLine("       (client secret via the PM_AZURE_CLIENT_SECRET environment variable)");
+                        return (int)InstallationResultCode.InvalidArguments;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(password))
+                    {
+                        Console.WriteLine("Error: Client secret is required for service principal authentication.");
+                        Console.WriteLine("Set the PM_AZURE_CLIENT_SECRET environment variable to the application's client secret.");
+                        return (int)InstallationResultCode.InvalidArguments;
+                    }
+
+                    Console.WriteLine($"Server: {serverName}");
+                    Console.WriteLine($"Authentication: Microsoft Entra service principal ({username})");
+                }
+                else if (managedIdentityMode)
+                {
+                    /*Microsoft Entra managed identity (no secret). Blank client id = system-assigned;
+                      a client id (--managed-identity=<id> or --managed-identity <id>) = user-assigned.*/
+                    useWindowsAuth = false;
+                    authenticationType = "ManagedIdentity";
+
+                    Console.WriteLine($"Server: {serverName}");
+                    Console.WriteLine(string.IsNullOrWhiteSpace(managedIdentityClientId)
+                        ? "Authentication: Microsoft Entra managed identity (system-assigned)"
+                        : $"Authentication: Microsoft Entra managed identity (user-assigned: {managedIdentityClientId})");
                 }
                 else if (filteredArgs.Length >= 2)
                 {
@@ -274,6 +339,10 @@ namespace PerformanceMonitorInstaller
                     Console.WriteLine("  SQL Auth:       PerformanceMonitorInstaller.exe <server> <username> <password> [options]");
                     Console.WriteLine("  SQL Auth:       PerformanceMonitorInstaller.exe <server> <username> [options]");
                     Console.WriteLine("                  (with PM_SQL_PASSWORD environment variable set)");
+                    Console.WriteLine("  Entra ID:       PerformanceMonitorInstaller.exe <server> --entra <email>");
+                    Console.WriteLine("  Managed ID:     PerformanceMonitorInstaller.exe <server> --managed-identity[=<clientId>]");
+                    Console.WriteLine("  Service Prin.:  PerformanceMonitorInstaller.exe <server> --service-principal <clientId>");
+                    Console.WriteLine("                  (with PM_AZURE_CLIENT_SECRET environment variable set)");
                     Console.WriteLine();
                     Console.WriteLine("Options:");
                     Console.WriteLine("  --reinstall          Drop existing database and perform clean install");
@@ -379,7 +448,9 @@ namespace PerformanceMonitorInstaller
                 password,
                 encryptionLevel,
                 trustCert,
-                useEntraAuth);
+                useEntraAuth,
+                authenticationType: authenticationType,
+                managedIdentityClientId: managedIdentityClientId);
 
             /*
             Test connection and get SQL Server version
