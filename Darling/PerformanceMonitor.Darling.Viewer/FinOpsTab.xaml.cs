@@ -1,0 +1,254 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using PerformanceMonitor.Ui;
+
+namespace PerformanceMonitor.Darling.Viewer;
+
+/// <summary>
+/// The FinOps top-level aggregate surface for the Darling viewer's shell (a 4th <c>MainTabs</c> tab beside
+/// Overview / Recommendations / Alerts). This restores Lite's original cross-server FinOps shape: a top-level
+/// tab with its OWN server selector (independent of the sidebar, mirroring the Recommendations tab) rather than
+/// the earlier per-server inner tab that duplicated the fleet-wide Server Inventory inside every server's tab.
+/// The per-server sub-tabs scope to the selector's selected <see cref="DarlingServer"/> (which carries
+/// <c>MonthlyCostUsd</c>, so cost attribution is preserved); Server Inventory stays cross-server and now lives
+/// ONCE here. This partial owns the shell — the data service, the server selector, the overlap-guarded
+/// active-sub-tab refresh, the column-filter popup plumbing, and the copy/export handlers — mirroring the
+/// self-contained <see cref="AlertsHistoryTab"/>. The sub-tab loaders live in <c>FinOpsTab.Loaders.cs</c>,
+/// Locking in <c>FinOpsTab.Locking.cs</c>, the Storage Growth drill in <c>FinOpsTab.ObjectHeatmap.cs</c>,
+/// Index Analysis in <c>FinOpsTab.IndexAnalysis.cs</c>, and Recommendations in
+/// <c>FinOpsTab.Recommendations.cs</c>.
+/// </summary>
+public partial class FinOpsTab : UserControl
+{
+    /// <summary>Set once via <see cref="Initialize"/>; every load runs after that, so the loaders read it non-null.</summary>
+    private ViewerDataService _dataService = null!;
+
+    /// <summary>Suppresses the server selector's SelectionChanged during <see cref="SetServers"/> population.</summary>
+    private bool _populatingServers;
+
+    private bool _refreshInFlight;
+    private bool _refreshRequested;
+
+    /// <summary>Raised after a load (or on failure) so the shell can surface progress/errors in its status bar.</summary>
+    public event Action<string>? StatusChanged;
+
+    /// <summary>
+    /// Raised when a FinOps grid's "View Plan" is clicked (planXml, label, queryText). This aggregate tab has
+    /// no per-server plan host, so the shell routes it into the standalone Plan Viewer surface.
+    /// </summary>
+    public event Action<string, string, string?>? PlanRequested;
+
+    public FinOpsTab()
+    {
+        InitializeComponent();
+
+        /* Register the FinOps grids' column-filter managers into _filterManagers (defined below), after
+           InitializeComponent so the named grids exist. Body lives in FinOpsTab.Loaders.cs. */
+        InitializeFinOpsTab();
+    }
+
+    /// <summary>The selector's currently-selected server. Entry points guard on a valid selection before any loader runs, so the loaders read this non-null.</summary>
+    private DarlingServer _server => (DarlingServer)ServerSelector.SelectedItem!;
+
+    /// <summary>Wires the data service. Call once, before the tab is first shown.</summary>
+    public void Initialize(ViewerDataService dataService) => _dataService = dataService;
+
+    /// <summary>
+    /// Populates the server selector from the shell's server list (mirrors the Recommendations tab's own
+    /// selector). Suppresses SelectionChanged during population, preserving the current selection when the list
+    /// is re-supplied. The shell drives the first load once the tab becomes visible.
+    /// </summary>
+    public void SetServers(IReadOnlyList<DarlingServer> servers)
+    {
+        var previousId = (ServerSelector.SelectedItem as DarlingServer)?.ServerId;
+
+        _populatingServers = true;
+        ServerSelector.ItemsSource = servers;
+        if (servers.Count > 0)
+        {
+            var match = previousId is int pid ? servers.FirstOrDefault(s => s.ServerId == pid) : null;
+            ServerSelector.SelectedItem = match ?? servers[0];
+        }
+        _populatingServers = false;
+    }
+
+    /// <summary>The tab's own server selector drives it (independent of the sidebar); a new server resets any open drill, then reloads the active sub-tab.</summary>
+    private async void ServerSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_populatingServers)
+        {
+            return;
+        }
+
+        /* A new server invalidates any open Storage Growth / Locking drill (their breadcrumbs + detail views
+           belong to the previous server), so reset both to their parent view before reloading. */
+        ShowFinOpsStorageView(FinOpsStorageDrillLevel.Parent);
+        ShowFinOpsLockingView(FinOpsLockingLevel.Parent);
+
+        await RefreshActiveSubTabAsync();
+    }
+
+    private async void FinOpsRefresh_Click(object sender, RoutedEventArgs e) => await RefreshActiveSubTabAsync();
+
+    /// <summary>
+    /// Loads the ACTIVE FinOps sub-tab, with the overlap guard mirroring the per-server tab's
+    /// <c>RefreshActiveInnerTabAsync</c>. The shell calls this on tab activation and on its 60-second timer;
+    /// the sub-tab switch handler and the server selector call it too. If the sub-tab (or server) switches
+    /// mid-load, the triggering event bounces off the guard and the running loop reloads once more, leaving no
+    /// sub-tab stranded.
+    /// </summary>
+    public async Task RefreshActiveSubTabAsync()
+    {
+        if (_dataService is null || ServerSelector.SelectedItem is not DarlingServer)
+        {
+            return;
+        }
+
+        if (_refreshInFlight)
+        {
+            _refreshRequested = true;
+            return;
+        }
+
+        _refreshInFlight = true;
+        try
+        {
+            do
+            {
+                _refreshRequested = false;
+
+                int loadedTab;
+                do
+                {
+                    loadedTab = FinOpsSubTabControl.SelectedIndex;
+                    await LoadActiveSubTabGuardedAsync();
+                }
+                while (FinOpsSubTabControl.SelectedIndex != loadedTab);
+            }
+            while (_refreshRequested);
+        }
+        finally
+        {
+            _refreshInFlight = false;
+        }
+    }
+
+    /// <summary>Runs the active sub-tab's loader (FinOpsTab.Loaders.cs) with the status-bar error surfacing the per-server tab's LoadInnerTabAsync uses.</summary>
+    private async Task LoadActiveSubTabGuardedAsync()
+    {
+        try
+        {
+            await LoadFinOpsAsync();
+            StatusChanged?.Invoke($"{_server.DisplayName} — refreshed {DateTime.Now:HH:mm:ss}");
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"refresh failed: {ex.Message}");
+        }
+    }
+
+    // ── Copy / export (copied from ViewerServerTab.CopyExport.cs; the FinOps context menus bind to these) ──
+
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+        DataGridExport.ExportToCsv(sender, _server.DisplayName, ",");
+
+    // ── Column filtering (copied from ViewerServerTab.Filters.cs — the visual-tree-walk variant) ──
+
+    /* Grid -> its filter manager, keyed for the FilterButton_Click visual-tree walk. Populated by
+       InitializeFinOpsTab (FinOpsTab.Loaders.cs). */
+    private readonly Dictionary<DataGrid, IDataGridFilterManager> _filterManagers = new();
+
+    private Popup? _filterPopup;
+    private ColumnFilterPopup? _filterPopupContent;
+    private DataGrid? _currentFilterGrid;
+
+    private void EnsureFilterPopup()
+    {
+        if (_filterPopup == null)
+        {
+            _filterPopupContent = new ColumnFilterPopup();
+            _filterPopup = new Popup
+            {
+                Child = _filterPopupContent,
+                StaysOpen = false,
+                Placement = PlacementMode.Bottom,
+                AllowsTransparency = true
+            };
+        }
+    }
+
+    private void FilterButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string columnName) return;
+
+        /* Walk up the visual tree to find the parent DataGrid. */
+        var dataGrid = FindParentDataGridFromElement(button);
+        if (dataGrid == null || !_filterManagers.TryGetValue(dataGrid, out var manager)) return;
+
+        _currentFilterGrid = dataGrid;
+
+        EnsureFilterPopup();
+
+        /* Rewire events to the current grid. */
+        _filterPopupContent!.FilterApplied -= FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
+        _filterPopupContent.FilterApplied += FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared += FilterPopup_FilterCleared;
+
+        /* Initialize with existing filter state. */
+        manager.Filters.TryGetValue(columnName, out var existingFilter);
+        _filterPopupContent.Initialize(columnName, existingFilter);
+
+        _filterPopup!.PlacementTarget = button;
+        _filterPopup.IsOpen = true;
+    }
+
+    private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+
+        if (_currentFilterGrid != null && _filterManagers.TryGetValue(_currentFilterGrid, out var manager))
+        {
+            manager.SetFilter(e.FilterState);
+        }
+    }
+
+    private void FilterPopup_FilterCleared(object? sender, EventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+    }
+
+    private static DataGrid? FindParentDataGridFromElement(DependencyObject element)
+    {
+        var current = element;
+        while (current != null)
+        {
+            if (current is DataGrid dg)
+                return dg;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+}

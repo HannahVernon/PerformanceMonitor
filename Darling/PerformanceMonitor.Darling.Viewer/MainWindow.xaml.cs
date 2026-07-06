@@ -96,6 +96,13 @@ public partial class MainWindow : Window
         AlertsHistoryContent.Initialize(_dataService);
         AlertsHistoryContent.StatusChanged += OnServerTabStatusChanged;
 
+        /* The FinOps tab is a self-loading cross-server aggregate control with its own server selector; give
+           it the store, surface its load/refresh outcomes on the shared status bar, and route its query grids'
+           "View Plan" requests into the standalone Plan Viewer surface (it has no per-server plan host). */
+        FinOpsContent.Initialize(_dataService);
+        FinOpsContent.StatusChanged += OnServerTabStatusChanged;
+        FinOpsContent.PlanRequested += OpenStoredPlanInPlanViewer;
+
         await LoadServersAsync();
 
         /* --open-server <name>: deep-link straight into a server's per-server tab on startup —
@@ -235,6 +242,11 @@ public partial class MainWindow : Window
             }
             _populatingRecoServers = false;
 
+            /* The FinOps aggregate tab has its OWN server selector too; hand it the same list. It suppresses
+               its selector's SelectionChanged during population (like the Recommendations selector above), so
+               the first FinOps load comes from tab activation, not this call. */
+            FinOpsContent.SetServers(servers);
+
             var hasServers = servers.Count > 0;
             ServersHintText.Visibility = hasServers ? Visibility.Collapsed : Visibility.Visible;
             EmptyStatePanel.Visibility = hasServers ? Visibility.Collapsed : Visibility.Visible;
@@ -309,6 +321,9 @@ public partial class MainWindow : Window
                     break;
                 case TabItem tab when ReferenceEquals(tab, AlertsTab):
                     await AlertsHistoryContent.RefreshAlertsAsync();
+                    break;
+                case TabItem tab when ReferenceEquals(tab, FinOpsTab):
+                    await FinOpsContent.RefreshActiveSubTabAsync();
                     break;
             }
         }

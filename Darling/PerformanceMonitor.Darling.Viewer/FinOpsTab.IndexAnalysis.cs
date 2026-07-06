@@ -27,7 +27,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// the analyzer's <c>UptimeWarning</c> / <c>DedupeOnlyApplied</c> flags + <c>Notes</c> (its stated limitations)
 /// as banners. Load-on-view + a Refresh button, mirroring the other FinOps sub-tabs.
 /// </summary>
-public partial class ViewerServerTab
+public partial class FinOpsTab
 {
     /// <summary>
     /// Runs the analysis over the latest collected snapshot and repaints the rollup + detail grids and the

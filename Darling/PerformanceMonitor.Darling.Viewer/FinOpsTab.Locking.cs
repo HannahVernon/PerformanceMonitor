@@ -26,7 +26,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// values stay visible. Cumulative snapshot, no delta (§3B). Reads rewired to the viewer's Postgres reads;
 /// the heat math (<see cref="FinOpsHeatmapBuilder.ColumnLogIntensities"/>) is the shared Common helper.
 /// </summary>
-public partial class ViewerServerTab
+public partial class FinOpsTab
 {
     private enum FinOpsLockingLevel { Parent, Detail }
 
