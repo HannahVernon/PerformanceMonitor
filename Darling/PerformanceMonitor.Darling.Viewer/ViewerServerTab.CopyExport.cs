@@ -45,7 +45,7 @@ public partial class ViewerServerTab
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
-        DataGridExport.ExportToCsv(sender, _server.DisplayName, ",");
+        DataGridExport.ExportToCsv(sender, _server.DisplayName, ViewerExportSettings.CsvSeparator);
 
     private void DownloadBlockedProcessXml_Click(object sender, RoutedEventArgs e)
     {

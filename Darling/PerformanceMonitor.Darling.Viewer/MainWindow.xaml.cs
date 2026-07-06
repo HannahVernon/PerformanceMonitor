@@ -63,10 +63,21 @@ public partial class MainWindow : Window
     private readonly ViewerPreferencesStore _preferencesStore = new();
     private ViewerPreferences _preferences;
 
+    /// <summary>
+    /// The viewer's per-user application-settings store (the Darling equivalent of Lite's settings.json):
+    /// the MCP toggle, alert thresholds + toggles, notification options, SMTP/webhook config, and the
+    /// automated-analysis knobs the full Settings window edits. Held here so the Settings dialog loads from
+    /// and saves to one shared instance.
+    /// </summary>
+    private readonly ViewerAppSettingsStore _appSettingsStore = new();
+
     public MainWindow()
     {
         InitializeComponent();
         _preferences = _preferencesStore.Load();
+        /* Seed the one persisted app setting the viewer honors at runtime (the CSV export separator) so grid
+           exports use the chosen separator from the first one, before the Settings window is ever opened. */
+        ViewerExportSettings.Apply(_appSettingsStore.Load());
         Loaded += OnLoaded;
         Closed += OnClosed;
     }
@@ -640,18 +651,26 @@ public partial class MainWindow : Window
     // ── Settings ─────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Opens the viewer's Settings dialog (default time range + auto-refresh for newly-opened server tabs).
-    /// On Save, persists the edited settings and updates the in-memory copy so the next opened server tab
-    /// seeds from them; already-open tabs keep their own toolbar state (the simple, predictable rule).
+    /// Opens the viewer's full Settings window (the faithful port of Lite's SettingsWindow). It self-persists
+    /// the application settings (MCP, alerts, notifications, SMTP, webhooks, analysis) to
+    /// <see cref="_appSettingsStore"/> and secrets to Windows Credential Manager; the folded-in viewer
+    /// preferences (default time range + auto-refresh) come back via <see cref="SettingsWindow.Result"/> on a
+    /// successful Save, so we save them and update the in-memory copy that seeds newly-opened server tabs.
+    /// Already-open tabs keep their own toolbar state (the simple, predictable rule). The store connection is
+    /// passed through for "Manage Mute Rules" (null before the store is connected disables that button).
     /// </summary>
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var settings = new SettingsWindow(_preferences) { Owner = this };
+        var settings = new SettingsWindow(_preferences, _appSettingsStore, _dataService) { Owner = this };
         if (settings.ShowDialog() == true && settings.Result is not null)
         {
             _preferences = settings.Result;
             _preferencesStore.Save(_preferences);
         }
+
+        /* Re-seed the runtime export separator from whatever the window persisted (it self-saves the app
+           settings), so a CSV-separator change takes effect on the next export without a restart. */
+        ViewerExportSettings.Apply(_appSettingsStore.Load());
     }
 
     // ── About ────────────────────────────────────────────────────────────────────────

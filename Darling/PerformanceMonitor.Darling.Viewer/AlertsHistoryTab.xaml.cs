@@ -367,7 +367,7 @@ public partial class AlertsHistoryTab : UserControl
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
-        DataGridExport.ExportToCsv(sender, "alert_history", ",");
+        DataGridExport.ExportToCsv(sender, "alert_history", ViewerExportSettings.CsvSeparator);
 
     #endregion
 
