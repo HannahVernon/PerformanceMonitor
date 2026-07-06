@@ -54,14 +54,11 @@ public partial class ViewerServerTab : UserControl
     private const int DailySummaryInnerTabIndex = 12;
     private const int HealthInnerTabIndex = 13;
 
-    /* FinOps is appended AFTER Collection Health (it has no Lite ServerTab position — Lite's FinOps is a
-       separate cross-server top-level tab), so it takes the last index and the existing constants don't
-       renumber. Copy-parity program: the 9 store-backed FinOps sub-tabs ported as a per-server inner tab. */
-    private const int FinOpsInnerTabIndex = 14;
-
-    /* System Events is appended AFTER FinOps (system_health parity, Stage 2b): six parse-on-read sub-tabs,
-       one per unique system_health warning category. Last index, so the existing constants don't renumber. */
-    private const int SystemEventsInnerTabIndex = 15;
+    /* System Events is appended AFTER Collection Health (system_health parity, Stage 2b): six parse-on-read
+       sub-tabs, one per unique system_health warning category. FinOps used to sit between them as a per-server
+       inner tab, but it was promoted to a top-level cross-server aggregate tab (FinOpsTab, in MainWindow's
+       MainTabs), so System Events now takes Collection Health's next slot. */
+    private const int SystemEventsInnerTabIndex = 14;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -106,9 +103,6 @@ public partial class ViewerServerTab : UserControl
 
         /* Collection Health's Duration Trends chart (copied from Lite): up-front theme + hover. */
         InitializeCollectionHealthChart();
-
-        /* FinOps inner tab (copy-parity program): register the FinOps grids' column-filter managers. */
-        InitializeFinOpsTab();
 
         /* System Events inner tab (system_health parity): register the eight category grids' filter managers. */
         InitializeSystemEventsTab();
@@ -222,9 +216,6 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case FileIoInnerTabIndex:
                     await LoadFileIoAsync();
-                    break;
-                case FinOpsInnerTabIndex:
-                    await LoadFinOpsAsync();
                     break;
                 case SystemEventsInnerTabIndex:
                     await LoadSystemEventsAsync();

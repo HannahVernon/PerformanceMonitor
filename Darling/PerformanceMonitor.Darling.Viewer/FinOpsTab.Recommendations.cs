@@ -16,11 +16,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// Recommendations mixed collected reads with LIVE target queries; the headless viewer runs every check over the
 /// already-collected Postgres store (<see cref="ViewerDataService.GetRecommendationsAsync"/>) — NO live SQL. This
 /// partial projects the resulting rows (Category / Severity / Confidence / Finding / Detail / Est. Savings, sorted
-/// by severity in the read) into the grid; the per-server monthly budget (<c>_server.MonthlyCostUsd</c>) drives
-/// the savings estimates (0 → the Est. Savings column stays blank, mirroring Lite). Load-on-view + a Refresh
-/// button, like the other FinOps sub-tabs.
+/// by severity in the read) into the grid; the selected server's monthly budget (<c>_server.MonthlyCostUsd</c>)
+/// drives the savings estimates (0 → the Est. Savings column stays blank, mirroring Lite). Load-on-view + a
+/// Refresh button, like the other FinOps sub-tabs.
 /// </summary>
-public partial class ViewerServerTab
+public partial class FinOpsTab
 {
     /// <summary>Reads the collected recommendations for this server and repaints the grid + count indicator.</summary>
     private async Task LoadFinOpsRecommendationsAsync()

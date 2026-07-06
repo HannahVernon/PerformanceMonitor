@@ -28,7 +28,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// through the SHARED <see cref="FinOpsHeatmapBuilder"/> / <see cref="FinOpsHeatmapRenderer"/> so the viewer
 /// renders identically to Dashboard/Lite; reads are rewired to the viewer's Postgres reads.
 /// </summary>
-public partial class ViewerServerTab
+public partial class FinOpsTab
 {
     private enum FinOpsStorageDrillLevel { Parent, Objects, Indexes }
 

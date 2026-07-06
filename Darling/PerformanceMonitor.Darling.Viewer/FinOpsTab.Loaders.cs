@@ -18,23 +18,27 @@ using PerformanceMonitor.Ui;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The FinOps inner tab — a COPY of Lite's FinOps tab (<c>Controls/FinOpsTab.xaml.cs</c>) for the
-/// copy-parity program, reads rewired to <see cref="ViewerDataService"/> Postgres. All eleven sub-tabs are
-/// ported (Utilization, Database Resources, Storage Growth, Locking &amp; Contention, Database Sizes,
-/// Optimization, High Impact, Application Connections, Server Inventory, plus Index Analysis and
-/// Recommendations); Lite's two originally live-target sub-tabs (Index Analysis / Recommendations) are
-/// reproduced MONITOR-SIDE over the collected store — Index Analysis (#1387) reruns sp_IndexCleanup via the
-/// Common analyzer, and Recommendations runs its ~10 cost checks over collected views — so neither touches a
-/// live target. Unlike Lite's cross-server FinOps tab, this is a per-server inner tab, so it drops Lite's
-/// server selector and scopes the per-server sub-tabs to <c>_server.ServerId</c>; only Server Inventory stays
-/// cross-server (it lists every registered server). The per-server FinOps COST attribution is sourced from the
-/// registry (<c>servers.monthly_cost_usd</c> → <c>_server.MonthlyCostUsd</c>; 0 hides the cost affordances);
-/// the health score is kept. This partial holds the sub-tab dispatch, the filter-manager wiring, and the
-/// simple grid loaders; Locking lives in <c>.FinOps.Locking.cs</c>, the Storage Growth drill in
-/// <c>.FinOps.ObjectHeatmap.cs</c>, Index Analysis in <c>.FinOps.IndexAnalysis.cs</c>, and Recommendations in
-/// <c>.FinOps.Recommendations.cs</c>.
+/// The FinOps top-level aggregate tab — a COPY of Lite's cross-server FinOps tab
+/// (<c>Controls/FinOpsTab.xaml.cs</c>), reads rewired to <see cref="ViewerDataService"/> Postgres. It restores
+/// Lite's original shape: a top-level tab in the viewer shell (beside Overview / Recommendations / Alerts) with
+/// its OWN server selector (independent of the sidebar, mirroring the Recommendations tab), NOT the earlier
+/// per-server inner tab. All eleven sub-tabs are ported (Utilization, Database Resources, Storage Growth,
+/// Locking &amp; Contention, Database Sizes, Optimization, High Impact, Application Connections, Server
+/// Inventory, plus Index Analysis and Recommendations); Lite's two originally live-target sub-tabs (Index
+/// Analysis / Recommendations) are reproduced MONITOR-SIDE over the collected store — Index Analysis (#1387)
+/// reruns sp_IndexCleanup via the Common analyzer, and Recommendations runs its ~10 cost checks over collected
+/// views — so neither touches a live target. The per-server sub-tabs scope to the selector's SELECTED server
+/// (<c>_server.ServerId</c>); Server Inventory stays cross-server (it lists every registered server) and now
+/// lives ONCE at the aggregate level instead of being duplicated inside every server's tab. FinOps COST
+/// attribution is sourced from the registry (<c>servers.monthly_cost_usd</c> → <c>_server.MonthlyCostUsd</c>,
+/// carried on the selected <see cref="DarlingServer"/>; 0 hides the cost affordances); the health score is
+/// kept. This partial holds the sub-tab dispatch, the filter-manager wiring, and the simple grid loaders;
+/// Locking lives in <c>FinOpsTab.Locking.cs</c>, the Storage Growth drill in <c>FinOpsTab.ObjectHeatmap.cs</c>,
+/// Index Analysis in <c>FinOpsTab.IndexAnalysis.cs</c>, and Recommendations in
+/// <c>FinOpsTab.Recommendations.cs</c>; the shell (server selector, filter plumbing, copy/export) lives in
+/// <c>FinOpsTab.xaml.cs</c>.
 /// </summary>
-public partial class ViewerServerTab
+public partial class FinOpsTab
 {
     /* FinOps sub-tab order (matches the task's port list; Lite's Recommendations + Index Analysis omitted). */
     private const int FinOpsUtilizationSubTabIndex = 0;
@@ -106,9 +110,9 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
-    /// A FinOps sub-tab switch reloads through the shell's overlap-guarded
-    /// <see cref="RefreshActiveInnerTabAsync"/> (mirrors the Queries/File I/O sub-tab handlers). Gated on
-    /// <see cref="FrameworkElement.IsLoaded"/> and the sub-TabControl's own selection so build-time and
+    /// A FinOps sub-tab switch reloads through this control's overlap-guarded
+    /// <see cref="RefreshActiveSubTabAsync"/> (mirrors the per-server tab's Queries/File I/O sub-tab handlers).
+    /// Gated on <see cref="FrameworkElement.IsLoaded"/> and the sub-TabControl's own selection so build-time and
     /// bubbled child selections are ignored.
     /// </summary>
     private async void FinOpsSubTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -118,7 +122,7 @@ public partial class ViewerServerTab
             return;
         }
 
-        await RefreshActiveInnerTabAsync();
+        await RefreshActiveSubTabAsync();
     }
 
     /// <summary>
@@ -529,19 +533,20 @@ public partial class ViewerServerTab
     /// <summary>
     /// "View Plan" for the FinOps High Impact + Expensive Queries grids: opens the stored
     /// <c>query_stats.query_plan_xml</c> the row already carries (Darling captures statement-level plans —
-    /// CapturePlans defaults on) through the shared Plan Viewer host (<see cref="OpenPlanTab"/>) — the SAME
-    /// stored-plan surface the Top Queries grid uses, NO live SQL. Lite's "Get Actual Plan" (live execution)
-    /// has no viewer equivalent and stays omitted everywhere, consistent with every other viewer grid.
+    /// CapturePlans defaults on) by raising <see cref="PlanRequested"/>, which the shell routes into the
+    /// standalone Plan Viewer surface (this aggregate tab has no per-server plan host) — NO live SQL. Lite's
+    /// "Get Actual Plan" (live execution) has no viewer equivalent and stays omitted everywhere, consistent
+    /// with every other viewer grid.
     /// </summary>
     private void FinOpsViewPlan_Click(object sender, RoutedEventArgs e)
     {
         switch (FinOpsRowFromMenu(sender))
         {
             case HighImpactQueryRow hi when hi.HasQueryPlan:
-                OpenPlanTab(hi.QueryPlanXml!, $"Plan - {hi.QueryHash}", hi.FullQueryText);
+                PlanRequested?.Invoke(hi.QueryPlanXml!, $"Plan - {hi.QueryHash}", hi.FullQueryText);
                 break;
             case ExpensiveQueryRow ex when ex.HasQueryPlan:
-                OpenPlanTab(ex.QueryPlanXml!, "Plan - Expensive Query", ex.FullQueryText);
+                PlanRequested?.Invoke(ex.QueryPlanXml!, "Plan - Expensive Query", ex.FullQueryText);
                 break;
             case HighImpactQueryRow:
             case ExpensiveQueryRow:

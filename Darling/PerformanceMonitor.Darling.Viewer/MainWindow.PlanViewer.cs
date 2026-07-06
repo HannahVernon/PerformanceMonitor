@@ -48,6 +48,26 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => MainWindowPlanTabControl.Focus()));
     }
 
+    /// <summary>
+    /// Opens a STORED plan in the standalone Plan Viewer surface — the destination for a "View Plan" click on
+    /// the FinOps aggregate tab's High Impact / Expensive Queries grids (raised via <c>FinOpsTab.PlanRequested</c>).
+    /// That aggregate tab has no per-server plan host, so it feeds the plan XML it already holds here: reveal the
+    /// Plan Viewer aggregate tab and render the plan in a fresh sub-tab. Unlike <see cref="OpenPlanViewerButton_Click"/>
+    /// (which opens an empty sub-tab for the user to paste/open into), this loads a plan the caller supplies.
+    /// </summary>
+    private void OpenStoredPlanInPlanViewer(string planXml, string label, string? queryText)
+    {
+        EnsurePlanTabControlInitialized();
+        /* Server-independent surface: show it even when the no-servers empty state otherwise owns the column. */
+        EmptyStatePanel.Visibility = Visibility.Collapsed;
+        MainTabs.Visibility = Visibility.Visible;
+        MainWindowPlanViewerTab.Visibility = Visibility.Visible;
+        MainWindowPlanViewerTab.IsSelected = true;
+
+        var subTab = AddNewEmptyPlanSubTab();
+        LoadPlanIntoSubTab(subTab, planXml, label, queryText);
+    }
+
     private void MainWindowPlanViewerClose_Click(object sender, RoutedEventArgs e)
     {
         // Each plan sub-tab's viewer is rooted by the static ThemeChanged event —

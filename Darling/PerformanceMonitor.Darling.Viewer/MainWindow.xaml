@@ -574,6 +574,18 @@
                     <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
                 </TabItem>
 
+                <!-- FinOps: the top-level cross-server aggregate tab (restored to Lite's shape from the earlier
+                     per-server inner tab, which had duplicated the fleet-wide Server Inventory inside every
+                     server's tab). Its OWN server selector (independent of the sidebar, mirroring the
+                     Recommendations tab) drives the eleven per-server sub-tabs; Server Inventory stays
+                     cross-server and now lives ONCE here. The control owns its own load (server selector +
+                     sub-tab activation + the shell's 60-second timer), so it isn't scoped by the sidebar
+                     selection. "View Plan" on its query grids raises PlanRequested, which the shell routes into
+                     the standalone Plan Viewer surface. -->
+                <TabItem x:Name="FinOpsTab" Header="FinOps">
+                    <local:FinOpsTab x:Name="FinOpsContent" Margin="0,8,0,0"/>
+                </TabItem>
+
                 <!-- Plan Viewer: a standalone, hidden-until-used aggregate tab (mirrors Lite's
                      MainWindowPlanViewerTab) — the one plan surface Lite and the Dashboard both have that
                      the viewer lacked. Server-independent: the user opens or pastes a .sqlplan / plan XML
