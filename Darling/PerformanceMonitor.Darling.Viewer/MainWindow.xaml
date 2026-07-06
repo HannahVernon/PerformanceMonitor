@@ -249,6 +249,27 @@
                     <TextBlock Text="Servers" Style="{StaticResource SectionHeader}" Margin="0,0,0,2"/>
                     <TextBlock Text="Double-click to open a server tab" Foreground="#8B93A1" FontSize="11" Margin="0,0,0,6"/>
                 </StackPanel>
+
+                <!-- Sidebar footer: a small button stack pinned to the bottom of the server list. About
+                     only for now — the viewer writes no application log of its own (its diagnostics go to
+                     Debug output, and the shared store's collection log is a per-server tab), so there are
+                     no View Log / Open Log Folder buttons. Declared as the first Bottom-docked child so it
+                     sits at the very bottom, below the no-servers hint. -->
+                <Border DockPanel.Dock="Bottom"
+                        BorderBrush="#2a2d35" BorderThickness="0,1,0,0"
+                        Margin="0,8,0,0" Padding="0,8,0,0">
+                    <Button Click="AboutButton_Click"
+                            Style="{StaticResource DarkButton}"
+                            Padding="8,5"
+                            ToolTip="About Performance Monitor Darling">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="About" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </Border>
+
                 <TextBlock x:Name="ServersHintText"
                            DockPanel.Dock="Bottom"
                            Text="no servers registered — is the Darling service running?"

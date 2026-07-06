@@ -587,6 +587,15 @@ public partial class MainWindow : Window
         RecommendationsStatusText.Text = "AI prompt copied to clipboard.";
     }
 
+    // ── About ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Opens the viewer's About dialog (app name, version, copyright, links).</summary>
+    private void AboutButton_Click(object sender, RoutedEventArgs e)
+    {
+        var about = new AboutWindow { Owner = this };
+        about.ShowDialog();
+    }
+
     private void ShowMessage(string message)
     {
         MessageText.Text = message;
