@@ -170,7 +170,7 @@ public partial class FinOpsTab : UserControl
     private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
-        DataGridExport.ExportToCsv(sender, _server.DisplayName, ",");
+        DataGridExport.ExportToCsv(sender, _server.DisplayName, ViewerExportSettings.CsvSeparator);
 
     // ── Column filtering (copied from ViewerServerTab.Filters.cs — the visual-tree-walk variant) ──
 

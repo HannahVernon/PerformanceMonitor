@@ -82,7 +82,7 @@ namespace PerformanceMonitor.Darling.Viewer
         private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
         private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
         private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "collection_log", ",");
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "collection_log", ViewerExportSettings.CsvSeparator);
 
         private void Close_Click(object sender, RoutedEventArgs e)
         {
