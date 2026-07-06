@@ -140,8 +140,7 @@ public partial class ViewerServerTab
         if (!IsLoaded) return;
         try
         {
-            var endUtc = DateTime.UtcNow;
-            var startUtc = endUtc - s_dataWindow;
+            var (startUtc, endUtc) = GetWindowUtc();
             var metric = (HeatmapMetric)HeatmapMetricCombo.SelectedIndex;
             var result = await _dataService.GetQueryHeatmapAsync(_server.ServerId, metric, startUtc, endUtc);
             UpdateQueryHeatmapChart(result);

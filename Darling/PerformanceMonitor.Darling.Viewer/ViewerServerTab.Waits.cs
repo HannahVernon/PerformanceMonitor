@@ -20,8 +20,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// The Wait Stats inner tab — a COPY of Lite's wait-stats picker + chart (ServerTab.Pickers.cs
-/// lines 30-221), reads rewired to Postgres and the custom-date-range branch dropped for the
-/// viewer's fixed 24-hour window. The picker behaviors are preserved verbatim: the poison /
+/// lines 30-221), reads rewired to Postgres and windowed on the per-server toolbar's settable range
+/// (preset or custom From/To). The picker behaviors are preserved verbatim: the poison /
 /// usual-suspect / PAGELATCH_ default selection with a 30-type cap, checked-to-top ordering, the
 /// search filter, "Top Waits" / "Clear All" (Clear All clears only the FILTERED visible set), the
 /// reentrancy guard on programmatic checkbox writes, and the generation-guarded batched chart
@@ -67,7 +67,7 @@ public partial class ViewerServerTab
 
     /// <summary>
     /// The Wait Stats tab load (mirrors Lite's <c>RefreshWaitStatsAsync</c>): fetch the distinct wait
-    /// types over the fixed 24-hour window, (re)populate the picker preserving the current selection,
+    /// types over the toolbar's settable window, (re)populate the picker preserving the current selection,
     /// and redraw. The hover helper is created lazily on first load so the picker's chart carries the
     /// same tooltip + click-to-isolate behavior Lite's does.
     /// </summary>
@@ -75,8 +75,7 @@ public partial class ViewerServerTab
     {
         _waitStatsHover ??= new ChartHoverHelper(WaitStatsChart, "ms/sec");
 
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
         var waitTypes = await _dataService.GetDistinctWaitTypesAsync(_server.ServerId, startUtc, endUtc);
         PopulateWaitTypePicker(waitTypes);
         await UpdateWaitStatsChartFromPickerAsync();
@@ -182,10 +181,9 @@ public partial class ViewerServerTab
             bool useAvgPerWait = WaitStatsMetricCombo?.SelectedIndex == 1;
             if (_waitStatsHover != null) _waitStatsHover.Unit = useAvgPerWait ? "ms/wait" : "ms/sec";
 
-            /* Fixed 24-hour window — the viewer has no custom-range picker (Lite's IsCustomRange branch
-               is dropped). The store is naive-UTC; display converts via ViewerDataService.ToLocalTime. */
-            var endUtc = DateTime.UtcNow;
-            var startUtc = endUtc - s_dataWindow;
+            /* The per-server toolbar's settable window (preset or custom From/To). The store is naive-UTC;
+               display converts via ViewerDataService.ToLocalTime. */
+            var (startUtc, endUtc) = GetWindowUtc();
             double globalMax = 0;
 
             // Batched fetch: one query for all selected wait types (mirrors Lite's batched read).

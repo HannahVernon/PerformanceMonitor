@@ -19,7 +19,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// The Queries → Active Queries sub-tab (W1f-2): the <c>ActiveQueriesSlicer</c> + <c>QuerySnapshotsGrid</c>
 /// of captured running-query snapshots, copied from Lite's <c>ServerTab</c> (Slicers / Grids / Refresh
 /// partials) with reads rewired to <see cref="ViewerDataService"/> Postgres. The grid loads every stored
-/// snapshot over the fixed 24-hour window (newest first); dragging the slicer re-reads the grid over the
+/// snapshot over the toolbar's settable window (newest first); dragging the slicer re-reads the grid over the
 /// selection, and sorting the grid re-labels the slicer's aggregate curve (Lite's <c>QuerySnapshotsGrid_Sorting</c>).
 /// Two deliberate deviations from Lite:
 ///   (1) The "Latest Snapshot" button (Lite's "Live Snapshot") no longer queries the monitored server —

@@ -85,14 +85,13 @@ public partial class ViewerServerTab
 
     /// <summary>
     /// Loads the Memory tab (Lite's <c>RefreshMemoryAsync</c> full-refresh branch): the six feeds read
-    /// concurrently over the fixed 24-hour window, then the summary + four charts render and the clerk
+    /// concurrently over the toolbar's settable window, then the summary + four charts render and the clerk
     /// picker is populated + drawn. The reads are genuinely async (no <c>Task.Run</c>), so a single
     /// <see cref="Task.WhenAll"/> pools a connection per read.
     /// </summary>
     private async Task LoadMemoryAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
 
         var latestTask = _dataService.GetLatestMemoryStatsAsync(_server.ServerId);
         var trendTask = _dataService.GetMemoryTrendAsync(_server.ServerId, startUtc, endUtc);
@@ -315,7 +314,7 @@ public partial class ViewerServerTab
     /// The Memory Pressure Events sub-tab — Lite's <c>UpdateMemoryPressureEventsChart</c>: hour-bucketed
     /// stacked bars of pressure events, SQL Server (process) vs OS (system) side-by-side and stacked by
     /// severity (medium = indicator 2, severe = indicator ≥ 3). Bar geometry copied verbatim from Lite;
-    /// the X range is the fixed 24-hour window and every bar/bound runs through
+    /// the X range is the toolbar's settable window and every bar/bound runs through
     /// <see cref="ViewerDataService.ToLocalTime"/> (see the class remarks on pressure sample_time).
     /// </summary>
     private void RenderMemoryPressureEventsChart(List<MemoryPressureEventRow> data)
@@ -324,8 +323,7 @@ public partial class ViewerServerTab
         _memoryPressureEventsHover?.Clear();
         ApplyTheme(MemoryPressureEventsChart);
 
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
         double xMin = ViewerDataService.ToLocalTime(startUtc).ToOADate();
         double xMax = ViewerDataService.ToLocalTime(endUtc).ToOADate();
 
@@ -506,7 +504,7 @@ public partial class ViewerServerTab
     /// <c>UpdateMemoryClerksChartFromPickerAsync</c>): the batched trend for up to 20 selected clerks in
     /// one query, each on a cycling <c>SeriesColors</c> color, plus the non-buffer-pool total + top-clerk
     /// summary. The generation guard discards a stale run when the selection changes mid-query; the
-    /// fixed 24-hour window matches the tab load (Lite's custom-range branch is dropped).
+    /// toolbar's settable window matches the tab load (Lite's custom-range branch is dropped).
     /// </summary>
     private async Task UpdateMemoryClerksChartFromPickerAsync()
     {
@@ -527,8 +525,7 @@ public partial class ViewerServerTab
                 return;
             }
 
-            var endUtc = DateTime.UtcNow;
-            var startUtc = endUtc - s_dataWindow;
+            var (startUtc, endUtc) = GetWindowUtc();
 
             double globalMax = 0;
             double nonBpTotal = 0;

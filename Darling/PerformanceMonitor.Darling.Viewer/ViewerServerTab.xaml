@@ -13,8 +13,8 @@
         (per-collector last-run status). The grids keep MainWindow's hardcoded Dark styling verbatim
         (pure relocation — no visual change); the inner tab chrome uses the shared SubTabItemStyle so
         the sub-tab hierarchy reads the same as Lite's ServerTab. Loads are lazy per inner tab (Lite's
-        visible-only rule): only the active inner tab reads, and MainWindow's 60-second timer refreshes
-        only the active inner tab of the visible server tab.
+        visible-only rule): only the active inner tab reads, and the per-server toolbar's auto-refresh
+        timer refreshes only the active inner tab of the visible server tab.
     -->
     <UserControl.Resources>
         <Style x:Key="SectionHeader" TargetType="TextBlock">
@@ -231,9 +231,76 @@
 
     </UserControl.Resources>
 
-    <!-- Inner tab strip. Only the ACTIVE inner tab loads (Lite's visible-only rule); MainWindow's
-         60-second timer refreshes only the active inner tab of the visible server tab. -->
-    <TabControl x:Name="InnerTabs"
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Per-server toolbar (mirrors Lite's ServerTab.xaml header): the time-range dropdown +
+             custom From/To, Apply-to-all, the shared Compare baseline (moved up from the Queries tab),
+             Refresh, and the auto-refresh toggle + interval. These drive a SETTABLE window (replacing
+             the old fixed 24-hour s_dataWindow) that every inner tab reads via GetWindowUtc. A
+             Server/Local/UTC time-display picker is intentionally NOT here yet — see the class summary /
+             the PR: the viewer has no per-server UTC offset for "Server Time", so that plumbing is a
+             follow-up rather than a half-wired control. -->
+        <Border Grid.Row="0" Background="{DynamicResource BackgroundDarkBrush}" Padding="12,8">
+            <WrapPanel Orientation="Horizontal">
+                <ComboBox x:Name="TimeRangeCombo" SelectedIndex="3" Width="120" Margin="0,0,8,4"
+                          SelectionChanged="TimeRangeCombo_SelectionChanged"
+                          ToolTip="Time window every inner tab reads">
+                    <ComboBoxItem Content="Last 1 hour"/>
+                    <ComboBoxItem Content="Last 4 hours"/>
+                    <ComboBoxItem Content="Last 12 hours"/>
+                    <ComboBoxItem Content="Last 24 hours"/>
+                    <ComboBoxItem Content="Last 7 days"/>
+                    <ComboBoxItem Content="Custom Range"/>
+                </ComboBox>
+                <DatePicker x:Name="FromDatePicker" Width="120" Margin="0,0,2,4" Visibility="Collapsed"
+                            SelectedDateChanged="CustomDateRange_Changed" CalendarOpened="DatePicker_CalendarOpened"/>
+                <ComboBox x:Name="FromHourCombo" Width="70" Margin="0,0,2,4" Visibility="Collapsed"
+                          SelectionChanged="CustomTimeCombo_Changed" ToolTip="Hour"/>
+                <ComboBox x:Name="FromMinuteCombo" Width="60" Margin="0,0,2,4" Visibility="Collapsed"
+                          SelectionChanged="CustomTimeCombo_Changed" ToolTip="Minute"/>
+                <TextBlock x:Name="ToLabel" Text="to" VerticalAlignment="Center" Margin="4,0,4,0" Visibility="Collapsed"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <DatePicker x:Name="ToDatePicker" Width="120" Margin="0,0,2,4" Visibility="Collapsed"
+                            SelectedDateChanged="CustomDateRange_Changed" CalendarOpened="DatePicker_CalendarOpened"/>
+                <ComboBox x:Name="ToHourCombo" Width="70" Margin="0,0,2,4" Visibility="Collapsed"
+                          SelectionChanged="CustomTimeCombo_Changed" ToolTip="Hour"/>
+                <ComboBox x:Name="ToMinuteCombo" Width="60" Margin="0,0,8,4" Visibility="Collapsed"
+                          SelectionChanged="CustomTimeCombo_Changed" ToolTip="Minute"/>
+                <Button Content="Apply to All" Click="ApplyTimeRangeToAll_Click" Padding="8,4" Margin="0,0,8,4"
+                        ToolTip="Apply this time range to all open server tabs"/>
+                <TextBlock Text="Compare:" VerticalAlignment="Center" Margin="0,0,4,0"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <ComboBox x:Name="CompareToCombo" SelectedIndex="0" Width="150" Margin="0,0,8,4"
+                          SelectionChanged="CompareToCombo_SelectionChanged"
+                          ToolTip="Compare the current window against a baseline period">
+                    <ComboBoxItem Content="None"/>
+                    <ComboBoxItem Content="Yesterday"/>
+                    <ComboBoxItem Content="Last week"/>
+                    <ComboBoxItem Content="Same day last week"/>
+                </ComboBox>
+                <Button x:Name="RefreshDataButton" Content="Refresh" Click="RefreshDataButton_Click"
+                        Padding="12,4" Margin="0,0,8,4"/>
+                <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="8,2"/>
+                <CheckBox x:Name="AutoRefreshCheckBox" Content="Auto-refresh" VerticalAlignment="Center"
+                          Margin="0,0,4,4" Foreground="{DynamicResource ForegroundBrush}"
+                          IsChecked="True" Checked="AutoRefreshCheckBox_Changed" Unchecked="AutoRefreshCheckBox_Changed"/>
+                <ComboBox x:Name="AutoRefreshIntervalCombo" SelectedIndex="1" Width="70" Margin="0,0,0,4"
+                          SelectionChanged="AutoRefreshInterval_Changed"
+                          ToolTip="Auto-refresh interval">
+                    <ComboBoxItem Content="30s"/>
+                    <ComboBoxItem Content="1m"/>
+                    <ComboBoxItem Content="5m"/>
+                </ComboBox>
+            </WrapPanel>
+        </Border>
+
+        <!-- Inner tab strip. Only the ACTIVE inner tab loads (Lite's visible-only rule); the toolbar's
+             auto-refresh timer refreshes only the active inner tab of the visible server tab. -->
+        <TabControl x:Name="InnerTabs" Grid.Row="1"
                 Background="Transparent"
                 BorderThickness="0"
                 Padding="0"
@@ -248,7 +315,7 @@
         </TabItem>
 
         <!-- Wait Stats Tab — copied from Lite's ServerTab.xaml (the 220px wait-type picker + metric
-             combo + chart); reads rewired to Postgres, fixed 24-hour window (no custom-range picker). -->
+             combo + chart); reads rewired to Postgres, windowed on the per-server toolbar's settable range. -->
         <TabItem Header="Wait Stats">
             <Grid Margin="8">
                 <Grid.ColumnDefinitions>
@@ -307,8 +374,8 @@
              exactly: Performance Trends, Active Queries (W1f-2), Top Queries / Top Procedures / Query
              Store by Duration (W1f-1), Query Heatmap (W1f-2). A shared "Compare:" combo above the
              sub-tabs drives the three grids' collapsed comparison grids (shared .Ui ComparisonItemBase
-             derivatives; the non-grid sub-tabs ignore it). Reads rewired to Postgres over the fixed
-             24-hour window, which supplies the slicer range. The Active Queries plan buttons open the
+             derivatives; the non-grid sub-tabs ignore it). Reads rewired to Postgres over the toolbar's
+             settable window, which supplies the slicer range. The Active Queries plan buttons open the
              stored plan through the OpenPlanTab hook the plan-host wave implements. Deferred within the
              three grids (no live server): the per-row double-click history windows and the slicer
              overlay-on-select — only the slicer's drag-to-narrow re-read and its sort-driven metric
@@ -317,7 +384,7 @@
              absorbed top-50 grid becomes the first sub-tab, replaced by Lite's full ~44-column Top
              Queries by Duration grid; Top Procedures and Query Store join it. A shared "Compare:" combo
              above the sub-tabs drives the collapsed comparison grids (shared .Ui ComparisonItemBase
-             derivatives). Reads rewired to Postgres over the fixed 24-hour window, which supplies the
+             derivatives). Reads rewired to Postgres over the toolbar's settable window, which supplies the
              slicer range. Performance Trends / Active Queries / Query Heatmap sub-tabs are deferred to
              W1f-2, so their slots are ABSENT. Now wired (headless-plan wave): Top Queries' "Query Plan"
              download column + a "View Plan" context item on Top Queries, Query Store, AND Top Procedures,
@@ -327,23 +394,10 @@
              history windows, and the slicer overlay-on-select — only the slicer's drag-to-narrow re-read and
              its sort-driven metric re-labeling are wired here. -->
         <TabItem Header="Queries">
+            <!-- The shared "Compare:" baseline combo lives in the per-server header now (it drives the
+                 whole tab's window, not just Queries); this tab is just the sub-tab group. -->
             <Grid Margin="0,8,0,0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,0,0,4">
-                    <TextBlock Text="Compare:" VerticalAlignment="Center" Margin="0,0,4,0" Foreground="{DynamicResource ForegroundBrush}"/>
-                    <ComboBox x:Name="CompareToCombo" SelectedIndex="0" Width="150"
-                              SelectionChanged="CompareToCombo_SelectionChanged"
-                              ToolTip="Compare the current 24-hour window against a baseline period">
-                        <ComboBoxItem Content="None"/>
-                        <ComboBoxItem Content="Yesterday"/>
-                        <ComboBoxItem Content="Last week"/>
-                        <ComboBoxItem Content="Same day last week"/>
-                    </ComboBox>
-                </StackPanel>
-                <TabControl x:Name="QueriesSubTabControl" Grid.Row="1"
+                <TabControl x:Name="QueriesSubTabControl"
                             Background="Transparent" BorderThickness="0"
                             ItemContainerStyle="{DynamicResource SubTabItemStyle}"
                             SelectionChanged="QueriesSubTabs_SelectionChanged">
@@ -1780,8 +1834,8 @@
         <!-- Perfmon Tab — copied from Lite's ServerTab.xaml Perfmon tab: a 220px counter picker (pack
              ComboBox sourced from the SHARED PerformanceMonitor.Ui PerfmonPacks + Select All / Clear All
              + search + checkbox ListBox) and a full-bleed chart plotting each selected counter's delta
-             value (max 12 series). Reads rewired to Postgres; fixed 24-hour window (no custom-range
-             picker). Placed BEFORE Running Jobs, matching Lite's own tab order. -->
+             value (max 12 series). Reads rewired to Postgres; windowed on the per-server toolbar's
+             settable range. Placed BEFORE Running Jobs, matching Lite's own tab order. -->
         <TabItem Header="Perfmon">
             <Grid Margin="8">
                 <Grid.ColumnDefinitions>
@@ -2196,7 +2250,7 @@
         </TabItem>
 
         <!-- System Events Tab (system_health parity, Stage 2b): six parse-on-read sub-tabs, one per unique
-             system_health warning category. Each reads the raw event_xml over the fixed 24-hour window,
+             system_health warning category. Each reads the raw event_xml over the toolbar's settable window,
              shreds it with the Common SystemHealthParser, and shows only the sp_HealthParser-significant
              rows (SystemEventSignificance). Event times render machine-local (the XE @timestamp). -->
         <TabItem Header="System Events">
@@ -2227,7 +2281,7 @@
                                     <DataGridTextColumn Binding="{Binding ThreadQuantumMs, StringFormat=N0}" Width="135" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ThreadQuantumMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Thread Quantum ms" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="SchedulerIssuesNoDataMessage" Style="{StaticResource EmptyHint}" Text="No scheduler warnings (non-yielding / offline schedulers) in the last 24 hours."/>
+                            <TextBlock x:Name="SchedulerIssuesNoDataMessage" Style="{StaticResource EmptyHint}" Text="No scheduler warnings (non-yielding / offline schedulers) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2256,7 +2310,7 @@
                                     </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="SevereErrorsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No severe errors (severity 19+) in the last 24 hours."/>
+                            <TextBlock x:Name="SevereErrorsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No severe errors (severity 19+) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2307,7 +2361,7 @@
                                     <DataGridTextColumn Binding="{Binding LastOsError, StringFormat=N0}" Width="105" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LastOsError" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Last OS Error" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="MemoryConditionsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No low-physical-memory conditions (RESOURCE_MEMPHYSICAL_LOW) in the last 24 hours."/>
+                            <TextBlock x:Name="MemoryConditionsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No low-physical-memory conditions (RESOURCE_MEMPHYSICAL_LOW) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2339,7 +2393,7 @@
                                     <DataGridTextColumn Binding="{Binding PreviouslyAllocated, StringFormat=N0}" Width="125" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PreviouslyAllocated" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Prev Allocated" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="MemoryBrokerNoDataMessage" Style="{StaticResource EmptyHint}" Text="No low-physical-memory broker notifications (RESOURCE_MEMPHYSICAL_LOW) in the last 24 hours."/>
+                            <TextBlock x:Name="MemoryBrokerNoDataMessage" Style="{StaticResource EmptyHint}" Text="No low-physical-memory broker notifications (RESOURCE_MEMPHYSICAL_LOW) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2386,7 +2440,7 @@
                                     <DataGridTextColumn Binding="{Binding IsProcessVirtualMemoryLow}" Width="105"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="IsProcessVirtualMemoryLow" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Proc Virt Low" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="MemoryNodeOomNoDataMessage" Style="{StaticResource EmptyHint}" Text="No memory-node out-of-memory events in the last 24 hours."/>
+                            <TextBlock x:Name="MemoryNodeOomNoDataMessage" Style="{StaticResource EmptyHint}" Text="No memory-node out-of-memory events in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2415,7 +2469,7 @@
                                     </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="SignificantWaitsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No significant waits (session queries waiting 500 ms+) in the last 24 hours."/>
+                            <TextBlock x:Name="SignificantWaitsNoDataMessage" Style="{StaticResource EmptyHint}" Text="No significant waits (session queries waiting 500 ms+) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2445,7 +2499,7 @@
                                     <DataGridTextColumn Binding="{Binding DidBlockingOccur}" Width="90"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DidBlockingOccur" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Blocking" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="CpuTasksNoDataMessage" Style="{StaticResource EmptyHint}" Text="No CPU-task warnings (WARNING state with 10+ pending tasks) in the last 24 hours."/>
+                            <TextBlock x:Name="CpuTasksNoDataMessage" Style="{StaticResource EmptyHint}" Text="No CPU-task warnings (WARNING state with 10+ pending tasks) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
@@ -2471,11 +2525,12 @@
                                     <DataGridTextColumn Binding="{Binding LongestPendingRequestsFilePath}" Width="360"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LongestPendingRequestsFilePath" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="File Path" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="IoIssuesNoDataMessage" Style="{StaticResource EmptyHint}" Text="No potential I/O issues (WARNING state with pending I/O) in the last 24 hours."/>
+                            <TextBlock x:Name="IoIssuesNoDataMessage" Style="{StaticResource EmptyHint}" Text="No potential I/O issues (WARNING state with pending I/O) in the selected time window."/>
                         </Grid>
                     </Grid>
                 </TabItem>
             </TabControl>
         </TabItem>
     </TabControl>
+    </Grid>
 </UserControl>

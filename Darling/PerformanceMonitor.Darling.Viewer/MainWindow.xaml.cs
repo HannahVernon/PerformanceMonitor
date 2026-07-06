@@ -172,9 +172,17 @@ public partial class MainWindow : Window
            (matching Lite — analysis findings change on the service's 30-minute cadence, so a 60-second
            auto-refresh is pointless churn and would reset the incident expanders' state under the
            reader), and the Overview has its own faster 30s timer, so the 60s timer skips it too (they'd
-           otherwise double-refresh the same grid). Every other visible tab still auto-refreshes. */
+           otherwise double-refresh the same grid). Every other aggregate tab still auto-refreshes. */
         if (ReferenceEquals(MainTabs.SelectedItem, RecommendationsTab)
             || ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
+        {
+            return;
+        }
+
+        /* Per-server tabs now self-refresh on their own toolbar auto-refresh timer (at the user's chosen
+           interval / on/off), so the global 60s timer skips them — otherwise both would fire and the
+           user's interval choice wouldn't stick. */
+        if (MainTabs.SelectedItem is TabItem { Content: ViewerServerTab })
         {
             return;
         }
@@ -354,6 +362,7 @@ public partial class MainWindow : Window
 
         var serverTab = new ViewerServerTab(_dataService, server);
         serverTab.StatusChanged += OnServerTabStatusChanged;
+        serverTab.ApplyTimeRangeRequested += OnApplyTimeRangeToAllRequested;
 
         var tabItem = new TabItem
         {
@@ -377,6 +386,7 @@ public partial class MainWindow : Window
         if (tab.Content is ViewerServerTab serverTab)
         {
             serverTab.StatusChanged -= OnServerTabStatusChanged;
+            serverTab.ApplyTimeRangeRequested -= OnApplyTimeRangeToAllRequested;
             /* One dispose path: tears down every chart hover helper the tab's partials own. */
             serverTab.Dispose();
         }
@@ -421,6 +431,22 @@ public partial class MainWindow : Window
     }
 
     private void OnServerTabStatusChanged(string message) => StatusText.Text = message;
+
+    /// <summary>
+    /// "Apply to All" from one server tab's toolbar: copy its selected range (and, for a custom range, the
+    /// From/To in machine-local display time) to every OTHER open server tab so they window on the same
+    /// period. The source tab is skipped — it already holds the range.
+    /// </summary>
+    private void OnApplyTimeRangeToAllRequested(ViewerServerTab source, int index, DateTime? customFromLocal, DateTime? customToLocal)
+    {
+        foreach (var tab in _openServerTabs.Values)
+        {
+            if (tab.Content is ViewerServerTab serverTab && !ReferenceEquals(serverTab, source))
+            {
+                serverTab.ApplyExternalTimeRange(index, customFromLocal, customToLocal);
+            }
+        }
+    }
 
     // ── Overview tab (all-servers server cards; refreshes on its own 30s timer) ──────
 

@@ -24,13 +24,15 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// and Collection Health (per-collector last-run status). This is the per-server content relocated
 /// out of MainWindow's old flat tab list; the load/render bodies are unchanged (pure re-hosting).
 /// Loads are lazy per inner tab (Lite's visible-only rule): switching inner tabs loads the newly
-/// visible one, and <see cref="RefreshActiveInnerTabAsync"/> — driven by MainWindow's 60-second timer
-/// only when this server tab is the visible top-level tab — reloads just the active inner tab.
+/// visible one, and <see cref="RefreshActiveInnerTabAsync"/> — driven by the per-server toolbar's
+/// auto-refresh timer (see ViewerServerTab.TimeRange.cs) only when this server tab is the visible
+/// top-level tab, plus MainWindow's tab-activation reload — reloads just the active inner tab.
 /// </summary>
 public partial class ViewerServerTab : UserControl
 {
-    /// <summary>One window for every windowed surface: charts, queries, and blocking all read 24 hours.</summary>
-    private static readonly TimeSpan s_dataWindow = TimeSpan.FromHours(24);
+    /* The per-server data window is no longer a fixed 24-hour constant: it comes from the toolbar's
+       time-range dropdown / custom From-To (see ViewerServerTab.TimeRange.cs). Every inner-tab load
+       reads GetWindowUtc() / GetWindowHoursBack() instead of the removed s_dataWindow. */
 
     /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
        Plan Viewer, CPU, Memory, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily
@@ -106,6 +108,12 @@ public partial class ViewerServerTab : UserControl
 
         /* System Events inner tab (system_health parity): register the eight category grids' filter managers. */
         InitializeSystemEventsTab();
+
+        /* Per-server toolbar (this wave): populate the custom-range hour/minute combos and start the
+           auto-refresh timer at the toolbar's interval (default 1m = the old fixed 60s cadence). The
+           settable window these controls drive replaces the removed 24-hour s_dataWindow constant. */
+        InitializeTimeComboBoxes();
+        InitializeAutoRefreshTimer();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -119,8 +127,8 @@ public partial class ViewerServerTab : UserControl
     /// a bubbling routed event, so selections inside the tab content (a grid) reach here too — only
     /// react to the inner TabControl's own. Gated on <see cref="System.Windows.FrameworkElement.IsLoaded"/>
     /// so the selection raised while the TabControl is first built (before this tab is shown) is ignored:
-    /// MainWindow drives the initial load when it makes this server tab visible, and the 60-second timer
-    /// keeps it fresh — so the control loads exactly once per event, not on construction too.
+    /// MainWindow drives the initial load when it makes this server tab visible, and the toolbar's
+    /// auto-refresh timer keeps it fresh — so the control loads exactly once per event, not on construction too.
     /// </summary>
     private async void InnerTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -136,7 +144,7 @@ public partial class ViewerServerTab : UserControl
     /// Loads the ACTIVE inner tab, with the overlap guard mirroring MainWindow's aggregate-tab loop.
     /// If the inner tab switches while a load is in flight, the triggering event bounces off the guard,
     /// so after each load we loop when the selection moved on and load again — leaving no inner tab
-    /// stranded. A trigger that arrives mid-load (the 60-second tick, an inner-tab switch) sets
+    /// stranded. A trigger that arrives mid-load (the auto-refresh tick, an inner-tab switch) sets
     /// <see cref="_refreshRequested"/> instead of being dropped, so the running loop reloads once more.
     /// </summary>
     public async Task RefreshActiveInnerTabAsync()
@@ -185,7 +193,7 @@ public partial class ViewerServerTab : UserControl
                 case PlanViewerInnerTabIndex:
                     /* No data feed: plans are pushed into the host by OpenPlanTab (a "View Plan" click),
                        not loaded on tab-switch. Explicit no-op so selecting it doesn't fall through to the
-                       default Overview reload, and so the 60-second timer leaves any open plan tabs alone. */
+                       default Overview reload, and so the auto-refresh timer leaves any open plan tabs alone. */
                     break;
                 case BlockingInnerTabIndex:
                     await LoadBlockingAsync();
@@ -236,10 +244,11 @@ public partial class ViewerServerTab : UserControl
 
     private async Task LoadOverviewChartsAsync()
     {
-        /* The lanes control reads its own six feeds + four baselines concurrently over the fixed
-           24-hour window (s_dataWindow); the viewer has no custom-range picker, so fromDate/toDate
-           are null. Replaces wave-4's CPU-trend + wait-category interim charts. */
-        await OverviewLanes.RefreshAsync((int)s_dataWindow.TotalHours, null, null);
+        /* The lanes control reads its own six feeds + four baselines concurrently over the toolbar's
+           window: hours-back for a preset, or the custom From/To when the user picked a custom range
+           (the lanes bound their own X-axis to it). Replaces wave-4's CPU-trend + wait-category charts. */
+        var (fromDate, toDate) = GetOverviewCustomRange();
+        await OverviewLanes.RefreshAsync(GetWindowHoursBack(), fromDate, toDate);
     }
 
     /* LoadHealthAsync now lives in ViewerServerTab.CollectionHealth.cs (W1i moved it there with the

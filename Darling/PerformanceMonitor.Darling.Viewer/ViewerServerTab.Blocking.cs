@@ -25,8 +25,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <c>ServerTab.Charts.cs</c> Update* methods, reads rewired to <see cref="ViewerDataService"/> Postgres.
 /// Two render-body deviations from Lite: (1) the time axis runs through
 /// <see cref="ViewerDataService.ToLocalTime"/> instead of Lite's per-server <c>UtcOffsetMinutes</c> shift;
-/// (2) the viewer's fixed 24-hour window supplies the X-axis range (Lite's hoursBack / custom-range
-/// parameters are dropped). The spike-plot / zero-line-when-empty shapes, the fixed
+/// (2) the per-server toolbar's settable window supplies the X-axis range. The spike-plot /
+/// zero-line-when-empty shapes, the fixed
 /// <see cref="ChartPalette.SeriesColor"/> identities for the single-series charts, and the cycling
 /// <see cref="ChartPalette"/> colors for the multi-series charts are preserved. W1e adds Lite's full
 /// Blocked Process Reports grid (widened + slicer + block-chain viewer) and the Deadlocks sub-tab
@@ -90,13 +90,12 @@ public partial class ViewerServerTab
     /// <summary>
     /// Loads the Blocking tab's ACTIVE sub-tab only (mirrors Lite's subTabOnly gating): Trends reads the
     /// three trend series concurrently, Current Waits reads the two current-waits series concurrently,
-    /// and Blocked Process Reports reads the XE-with-DMV-fallback grid. All window on the fixed 24-hour
-    /// range.
+    /// and Blocked Process Reports reads the XE-with-DMV-fallback grid. All window on the toolbar's
+    /// settable range.
     /// </summary>
     private async Task LoadBlockingAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
 
         switch (BlockingSubTabs.SelectedIndex)
         {
@@ -132,7 +131,7 @@ public partial class ViewerServerTab
     /// <summary>
     /// Loads the Blocked Process Reports sub-tab (W1e Lite parity): the widened XE-preferred / DMV-fallback
     /// grid bound through the filter manager (so active column filters survive the refresh) plus the UTC
-    /// slicer over the same window. The grid reads the full 24-hour window; dragging the slicer re-reads it
+    /// slicer over the same window. The grid reads the full window; dragging the slicer re-reads it
     /// over the selection (<see cref="OnBlockingSlicerChanged"/>). The Npgsql reads are genuinely async, so
     /// unlike Lite's DuckDB path there is no Task.Run wrap.
     /// </summary>
@@ -281,8 +280,9 @@ public partial class ViewerServerTab
         ClearChart(LockWaitTrendChart);
         ApplyTheme(LockWaitTrendChart);
 
-        var rangeStart = ViewerDataService.ToLocalTime(DateTime.UtcNow - s_dataWindow);
-        var rangeEnd = ViewerDataService.ToLocalTime(DateTime.UtcNow);
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
+        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
 
         _lockWaitTrendHover?.Clear();
         if (data.Count == 0)
@@ -335,8 +335,9 @@ public partial class ViewerServerTab
         ClearChart(BlockingTrendChart);
         ApplyTheme(BlockingTrendChart);
 
-        var rangeStart = ViewerDataService.ToLocalTime(DateTime.UtcNow - s_dataWindow);
-        var rangeEnd = ViewerDataService.ToLocalTime(DateTime.UtcNow);
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
+        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
 
         _blockingTrendHover?.Clear();
         if (data.Count == 0)
@@ -404,8 +405,9 @@ public partial class ViewerServerTab
         ClearChart(DeadlockTrendChart);
         ApplyTheme(DeadlockTrendChart);
 
-        var rangeStart = ViewerDataService.ToLocalTime(DateTime.UtcNow - s_dataWindow);
-        var rangeEnd = ViewerDataService.ToLocalTime(DateTime.UtcNow);
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
+        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
 
         _deadlockTrendHover?.Clear();
         if (data.Count == 0)
@@ -473,8 +475,9 @@ public partial class ViewerServerTab
         ClearChart(CurrentWaitsDurationChart);
         ApplyTheme(CurrentWaitsDurationChart);
 
-        var rangeStart = ViewerDataService.ToLocalTime(DateTime.UtcNow - s_dataWindow);
-        var rangeEnd = ViewerDataService.ToLocalTime(DateTime.UtcNow);
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
+        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
 
         _currentWaitsDurationHover?.Clear();
         if (data.Count == 0)
@@ -528,8 +531,9 @@ public partial class ViewerServerTab
         ClearChart(CurrentWaitsBlockedChart);
         ApplyTheme(CurrentWaitsBlockedChart);
 
-        var rangeStart = ViewerDataService.ToLocalTime(DateTime.UtcNow - s_dataWindow);
-        var rangeEnd = ViewerDataService.ToLocalTime(DateTime.UtcNow);
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
+        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
 
         _currentWaitsBlockedHover?.Clear();
         if (data.Count == 0)

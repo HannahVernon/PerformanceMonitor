@@ -66,6 +66,13 @@ public partial class ViewerServerTab : IDisposable
     /// MainWindow when the server tab closes.</summary>
     public void Dispose()
     {
+        /* Stop the toolbar's auto-refresh timer so a closed tab's timer can't fire against a torn-down UI. */
+        if (_autoRefreshTimer != null)
+        {
+            _autoRefreshTimer.Stop();
+            _autoRefreshTimer.Tick -= OnAutoRefreshTick;
+        }
+
         _cpuHover?.Dispose();
         _tempDbHover?.Dispose();
         _tempDbSizeHover?.Dispose();
@@ -85,21 +92,34 @@ public partial class ViewerServerTab : IDisposable
     /// <summary>Loads the CPU tab: raw per-sample CPU utilization over the window.</summary>
     private async Task LoadCpuAsync()
     {
-        var sinceUtc = DateTime.UtcNow - s_dataWindow;
-        var samples = await _dataService.GetCpuUtilizationAsync(_server.ServerId, sinceUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var samples = await _dataService.GetCpuUtilizationAsync(_server.ServerId, startUtc);
+        /* The read is start-only server-side; bound the end for a custom range so a window that ends in
+           the past doesn't trail to the newest sample. sample_time is de-skewed to naive UTC (matching endUtc). */
+        if (IsCustomRange)
+        {
+            samples = samples.Where(s => s.SampleTime <= endUtc).ToList();
+        }
         RenderCpuChart(samples);
     }
 
     /// <summary>Loads the tempdb tab: usage/size trend and per-file I/O latency, read concurrently.</summary>
     private async Task LoadTempDbAsync()
     {
-        var sinceUtc = DateTime.UtcNow - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
 
         /* Both reads run concurrently — NpgsqlDataSource pools a connection for each. */
-        var trendTask = _dataService.GetTempDbTrendAsync(_server.ServerId, sinceUtc);
-        var fileIoTask = _dataService.GetTempDbFileIoTrendAsync(_server.ServerId, sinceUtc);
+        var trendTask = _dataService.GetTempDbTrendAsync(_server.ServerId, startUtc);
+        var fileIoTask = _dataService.GetTempDbFileIoTrendAsync(_server.ServerId, startUtc);
         var trend = await trendTask;
         var fileIo = await fileIoTask;
+
+        /* Start-only reads; bound the end for a custom range (collection_time is naive UTC). */
+        if (IsCustomRange)
+        {
+            trend = trend.Where(t => t.CollectionTime <= endUtc).ToList();
+            fileIo = fileIo.Where(f => f.CollectionTime <= endUtc).ToList();
+        }
 
         RenderTempDbUsageChart(trend);
         RenderTempDbSizeChart(trend);
