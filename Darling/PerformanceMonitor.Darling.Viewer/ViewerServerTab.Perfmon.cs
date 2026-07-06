@@ -18,8 +18,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// The Perfmon inner tab — a COPY of Lite's perfmon picker + chart (ServerTab.Pickers.cs lines
-/// 396-593 plus the <c>_defaultPerfmonCounters</c> seed at line 26), reads rewired to Postgres and the
-/// custom-date-range branch dropped for the viewer's fixed 24-hour window. The picker behaviors are
+/// 396-593 plus the <c>_defaultPerfmonCounters</c> seed at line 26), reads rewired to Postgres and
+/// windowed on the per-server toolbar's settable range (preset or custom From/To). The picker behaviors are
 /// preserved verbatim: the pack ComboBox sourced from the SHARED <see cref="PerfmonPacks"/> (the same
 /// packs Lite/Dashboard use), the General-Throughput default selection, the 12-counter cap on pack
 /// fills / "Select All", the checked-to-top ordering, the search filter, "Clear All" clearing only the
@@ -45,7 +45,7 @@ public partial class ViewerServerTab
 
     /// <summary>
     /// The Perfmon tab load (mirrors Lite's <c>RefreshPerfmonAsync</c>): fetch the distinct counters
-    /// over the fixed 24-hour window, (re)populate the picker preserving the current selection, and
+    /// over the toolbar's settable window, (re)populate the picker preserving the current selection, and
     /// redraw. The hover helper is created lazily on first load so the picker's chart carries the same
     /// tooltip behavior Lite's does.
     /// </summary>
@@ -53,8 +53,7 @@ public partial class ViewerServerTab
     {
         _perfmonHover ??= new ChartHoverHelper(PerfmonChart, "");
 
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
         var counters = await _dataService.GetDistinctPerfmonCountersAsync(_server.ServerId, startUtc, endUtc);
         PopulatePerfmonPicker(counters);
         await UpdatePerfmonChartFromPickerAsync();
@@ -196,10 +195,9 @@ public partial class ViewerServerTab
 
             if (selected.Count == 0) { PerfmonChart.Refresh(); return; }
 
-            /* Fixed 24-hour window — the viewer has no custom-range picker (Lite's IsCustomRange branch
-               is dropped). The store is naive-UTC; display converts via ViewerDataService.ToLocalTime. */
-            var endUtc = DateTime.UtcNow;
-            var startUtc = endUtc - s_dataWindow;
+            /* The per-server toolbar's settable window (preset or custom From/To). The store is naive-UTC;
+               display converts via ViewerDataService.ToLocalTime. */
+            var (startUtc, endUtc) = GetWindowUtc();
             double globalMax = 0;
 
             // Batched fetch: one query for all selected counters (mirrors Lite's batched read).

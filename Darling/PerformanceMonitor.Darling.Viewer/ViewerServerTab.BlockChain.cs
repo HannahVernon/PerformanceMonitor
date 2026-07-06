@@ -83,8 +83,7 @@ public partial class ViewerServerTab
                 }
                 else
                 {
-                    end = DateTime.UtcNow;
-                    start = end - s_dataWindow;
+                    (start, end) = GetWindowUtc();
                 }
             }
 

@@ -76,12 +76,11 @@ public partial class ViewerServerTab
     /// <summary>
     /// Loads the File I/O tab's ACTIVE sub-tab only (mirrors Lite's subTabOnly gating): the Latency
     /// sub-tab reads the per-file latency trend, the Throughput sub-tab reads the per-file MB/s trend.
-    /// Both window on the fixed 24-hour range like every other viewer surface.
+    /// Both window on the toolbar's settable range like every other viewer surface.
     /// </summary>
     private async Task LoadFileIoAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
 
         switch (FileIoSubTabs.SelectedIndex)
         {

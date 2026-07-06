@@ -25,6 +25,9 @@ internal sealed class OpenServerTabRegistry<TTab>
     /// <summary>How many server tabs are currently open.</summary>
     public int Count => _tabs.Count;
 
+    /// <summary>Every open tab payload, so MainWindow can broadcast (e.g. "Apply time range to all").</summary>
+    public IEnumerable<TTab> Values => _tabs.Values;
+
     /// <summary>The existing tab for a server; false when none is open (the caller opens a new one).</summary>
     public bool TryGet(int serverId, [MaybeNullWhen(false)] out TTab tab) => _tabs.TryGetValue(serverId, out tab);
 

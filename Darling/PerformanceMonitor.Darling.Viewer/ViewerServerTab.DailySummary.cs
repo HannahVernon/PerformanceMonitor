@@ -20,8 +20,9 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// handlers and the <c>RefreshDailySummaryAsync</c> load), reads rewired to Postgres. The date picker
 /// drives a single-row daily roll-up over the selected UTC day (default today). Matching Lite exactly,
 /// changing the date only updates the indicator — the load fires on the Today button or Refresh. The
-/// tab-refresh loop (MainWindow's 60-second timer, via <see cref="LoadDailySummaryAsync"/>) reloads
-/// whatever date is selected.
+/// tab-refresh loop (the per-server toolbar's auto-refresh timer, via <see cref="LoadDailySummaryAsync"/>)
+/// reloads whatever date is selected; this tab is date-picker-driven, so the toolbar's time-range window
+/// does not apply to it.
 /// </summary>
 public partial class ViewerServerTab
 {

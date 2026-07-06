@@ -339,8 +339,9 @@
 
             <!-- Right: the top tab strip. Fixed aggregate tabs (Overview, Recommendations, Alerts) plus
                  the dynamically-added closable per-server tabs (appended in code). Only the visible tab
-                 loads (Lite's visible-only rule); the 60-second timer re-reads it (Overview on its own
-                 30-second timer). -->
+                 loads (Lite's visible-only rule); the 60-second timer re-reads the visible aggregate tab
+                 (Overview on its own 30-second timer), while per-server tabs self-refresh on their own
+                 toolbar auto-refresh timer. -->
             <TabControl x:Name="MainTabs"
                         Grid.Column="1"
                         Background="Transparent"

@@ -56,7 +56,7 @@ public partial class ViewerServerTab
     private async Task LoadHealthAsync()
     {
         var healthTask = _dataService.GetCollectionHealthAsync(_server.ServerId);
-        var logTask = _dataService.GetRecentCollectionLogAsync(_server.ServerId, (int)s_dataWindow.TotalHours);
+        var logTask = _dataService.GetRecentCollectionLogAsync(_server.ServerId, GetWindowHoursBack());
         await Task.WhenAll(healthTask, logTask);
 
         _collectionHealthFilterMgr!.UpdateData(healthTask.Result);

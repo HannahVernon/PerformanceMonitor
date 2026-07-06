@@ -23,7 +23,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <see cref="ViewerDataService"/> Postgres reads. A sub-tab switch reloads through the shell's
 /// overlap-guarded <see cref="RefreshActiveInnerTabAsync"/> (the Queries tab is the active inner tab
 /// whenever its sub-tabs are visible), and <see cref="LoadQueriesAsync"/> loads only the newly-visible
-/// sub-tab (Lite's subTabOnly gating) over the fixed 24-hour window. The three grids each carry a UTC
+/// sub-tab (Lite's subTabOnly gating) over the toolbar's settable window. The three grids each carry a UTC
 /// time-range slicer whose drag re-reads over the selection; sorting a grid re-labels the slicer's
 /// aggregate curve (Lite's *Grid_Sorting). The Performance Trends charts / Active Queries grid+slicer /
 /// Query Heatmap live in their own partials (<c>ViewerServerTab.QueryTrends.cs</c> /
@@ -108,13 +108,12 @@ public partial class ViewerServerTab
 
     /// <summary>
     /// Loads the Queries tab's ACTIVE sub-tab only (Lite's subTabOnly gating): Top Queries / Top
-    /// Procedures / Query Store each read their grid + slicer + comparison over the fixed 24-hour window.
+    /// Procedures / Query Store each read their grid + slicer + comparison over the toolbar's settable window.
     /// The shell's <see cref="LoadInnerTabAsync"/> owns the try/catch that surfaces failures.
     /// </summary>
     private async Task LoadQueriesAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var startUtc = endUtc - s_dataWindow;
+        var (startUtc, endUtc) = GetWindowUtc();
 
         switch (QueriesSubTabControl.SelectedIndex)
         {

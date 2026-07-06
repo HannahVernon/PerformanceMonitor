@@ -17,7 +17,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <summary>
 /// The System Events inner tab (system_health parity, Stage 2b) — eight sub-tabs, one per unique
 /// system_health warning category, each a parse-on-read grid: <see cref="ViewerDataService"/> fetches the
-/// raw event_xml for the category over the fixed 24-hour window, the Common <c>SystemHealthParser</c>
+/// raw event_xml for the category over the toolbar's settable window, the Common <c>SystemHealthParser</c>
 /// shreds it, and <c>SystemEventSignificance</c> keeps the sp_HealthParser-significant rows. Mirrors the
 /// FinOps tab's inner sub-tab-strip + DataGrid conventions (visible-only load, shared column filters,
 /// per-sub-tab count indicator + refresh). Timestamps render machine-local like the deadlock / blocked-
@@ -124,8 +124,8 @@ public partial class ViewerServerTab
 
     private async Task LoadSchedulerIssuesAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetSchedulerIssuesAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetSchedulerIssuesAsync(_server.ServerId, startUtc, endUtc);
         _seSchedulerFilterMgr!.UpdateData(data);
         SchedulerIssuesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SchedulerIssuesCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -133,8 +133,8 @@ public partial class ViewerServerTab
 
     private async Task LoadSevereErrorsAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetSevereErrorsAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetSevereErrorsAsync(_server.ServerId, startUtc, endUtc);
         _seSevereErrorFilterMgr!.UpdateData(data);
         SevereErrorsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SevereErrorsCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -142,8 +142,8 @@ public partial class ViewerServerTab
 
     private async Task LoadMemoryConditionsAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetMemoryConditionsAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetMemoryConditionsAsync(_server.ServerId, startUtc, endUtc);
         _seMemoryConditionsFilterMgr!.UpdateData(data);
         MemoryConditionsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         MemoryConditionsCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -151,8 +151,8 @@ public partial class ViewerServerTab
 
     private async Task LoadMemoryBrokerAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetMemoryBrokerAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetMemoryBrokerAsync(_server.ServerId, startUtc, endUtc);
         _seMemoryBrokerFilterMgr!.UpdateData(data);
         MemoryBrokerNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         MemoryBrokerCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -160,8 +160,8 @@ public partial class ViewerServerTab
 
     private async Task LoadMemoryNodeOomAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetMemoryNodeOomAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetMemoryNodeOomAsync(_server.ServerId, startUtc, endUtc);
         _seMemoryNodeOomFilterMgr!.UpdateData(data);
         MemoryNodeOomNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         MemoryNodeOomCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -169,8 +169,8 @@ public partial class ViewerServerTab
 
     private async Task LoadSignificantWaitsAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetSignificantWaitsAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetSignificantWaitsAsync(_server.ServerId, startUtc, endUtc);
         _seSignificantWaitsFilterMgr!.UpdateData(data);
         SignificantWaitsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SignificantWaitsCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -178,8 +178,8 @@ public partial class ViewerServerTab
 
     private async Task LoadCpuTasksAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetCpuTasksAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetCpuTasksAsync(_server.ServerId, startUtc, endUtc);
         _seCpuTasksFilterMgr!.UpdateData(data);
         CpuTasksNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         CpuTasksCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -187,8 +187,8 @@ public partial class ViewerServerTab
 
     private async Task LoadIoIssuesAsync()
     {
-        var endUtc = DateTime.UtcNow;
-        var data = await _dataService.GetIoIssuesAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetIoIssuesAsync(_server.ServerId, startUtc, endUtc);
         _seIoIssuesFilterMgr!.UpdateData(data);
         IoIssuesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         IoIssuesCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";

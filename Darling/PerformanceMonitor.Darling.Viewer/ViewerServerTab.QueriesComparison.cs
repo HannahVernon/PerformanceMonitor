@@ -20,15 +20,15 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// week); when active, each sub-tab hides its normal grid and shows a collapsed comparison grid bound to
 /// the shared <see cref="PerformanceMonitor.Ui.ComparisonItemBase"/> derivatives (delta % + NEW/GONE
 /// badges), sorted NEW-first then by duration-delta descending. Changing the combo reloads the active
-/// sub-tab (which re-applies the comparison over the fixed 24-hour window). The viewer has no custom
-/// time-range picker, so the baseline is a straight shift of the current window (no Lite display-mode
-/// conversion), and the baseline banner renders the window in the viewer machine's local time.
+/// sub-tab (which re-applies the comparison over the toolbar's current window). The baseline is a
+/// straight shift of the current window (no Lite display-mode conversion), and the baseline banner
+/// renders the window in the viewer machine's local time.
 /// </summary>
 public partial class ViewerServerTab
 {
     /// <summary>
     /// Changing the Compare combo reloads the active Queries sub-tab through the shell's overlap guard,
-    /// so <see cref="LoadQueriesAsync"/> re-applies the comparison mode over the 24-hour window. Gated on
+    /// so <see cref="LoadQueriesAsync"/> re-applies the comparison mode over the current window. Gated on
     /// <see cref="System.Windows.FrameworkElement.IsLoaded"/> so the SelectedIndex="0" set at build time
     /// is ignored.
     /// </summary>
@@ -54,7 +54,7 @@ public partial class ViewerServerTab
         {
             CompareToCombo.IsEnabled = true;
             CompareToCombo.Opacity = 1.0;
-            CompareToCombo.ToolTip = "Compare the current 24-hour window against a baseline period";
+            CompareToCombo.ToolTip = "Compare the current window against a baseline period";
         }
         else
         {
