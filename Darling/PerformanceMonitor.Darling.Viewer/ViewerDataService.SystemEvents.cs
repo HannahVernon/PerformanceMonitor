@@ -16,13 +16,14 @@ using PerformanceMonitor.Common;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /*
- * System Events tab reads (system_health parity, Stage 2b). Each of the six warning categories is a
- * parse-on-read shred: the data service fetches the raw event_xml for one XE event type over the tab
- * window from v_system_health_events, hands each blob to the Common SystemHealthParser (Stage 2a) to
- * shred into the category record, then keeps only the SIGNIFICANT rows via SystemEventSignificance
- * (Stage 2b, sp_HealthParser's per-category WHERE predicates). No persisted parsed tables — the raw
- * table + the parser are the whole pipeline. The XML shred is CPU-bound, so it runs off the UI thread
- * (Task.Run), mirroring the deadlock-graph parse.
+ * System Events tab reads (system_health parity, Stage 2b). Each warning category is a parse-on-read
+ * shred: the data service fetches the raw event_xml for one XE event type over the tab window from
+ * v_system_health_events, hands each blob to the Common SystemHealthParser (Stage 2a) to shred into the
+ * category record, then keeps only the SIGNIFICANT rows via SystemEventSignificance (Stage 2b,
+ * sp_HealthParser's per-category WHERE predicates). Three categories (Memory Conditions, CPU Tasks, I/O
+ * Issues) share the single sp_server_diagnostics_component_result feed and split on the event's component.
+ * No persisted parsed tables — the raw table + the parser are the whole pipeline. The XML shred is
+ * CPU-bound, so it runs off the UI thread (Task.Run), mirroring the deadlock-graph parse.
  *
  * The row view-models below are flat projections of the Common records (all shredded columns preserved,
  * so the grids faithfully match sp_HealthParser's per-category table shape) plus an EventTimeLocal
@@ -166,6 +167,34 @@ public sealed class SignificantWaitRow(SignificantWaitRecord record)
     public string? WaitResource => record.WaitResource;
     public int? SessionId => record.SessionId;
     public string? QueryText => record.QueryText;
+}
+
+/// <summary>One CPU-task-details row (CPU Tasks sub-tab). Mirrors <c>*_CPUTasks</c> (QUERY_PROCESSING component).</summary>
+public sealed class CpuTasksRow(CpuTasksRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public string? State => record.State;
+    public long? MaxWorkers => record.MaxWorkers;
+    public long? WorkersCreated => record.WorkersCreated;
+    public long? WorkersIdle => record.WorkersIdle;
+    public long? TasksCompletedWithinInterval => record.TasksCompletedWithinInterval;
+    public long? PendingTasks => record.PendingTasks;
+    public long? OldestPendingTaskWaitingTime => record.OldestPendingTaskWaitingTime;
+    public bool? HasUnresolvableDeadlockOccurred => record.HasUnresolvableDeadlockOccurred;
+    public bool? HasDeadlockedSchedulersOccurred => record.HasDeadlockedSchedulersOccurred;
+    public bool? DidBlockingOccur => record.DidBlockingOccur;
+}
+
+/// <summary>One potential-IO-issue row (I/O Issues sub-tab). Mirrors <c>*_IOIssues</c> (IO_SUBSYSTEM component).</summary>
+public sealed class IoIssuesRow(IoIssuesRecord record)
+{
+    public string EventTimeLocal => SystemEventRowFormat.Local(record.EventTime);
+    public string? State => record.State;
+    public long? IoLatchTimeouts => record.IoLatchTimeouts;
+    public long? IntervalLongIos => record.IntervalLongIos;
+    public long? TotalLongIos => record.TotalLongIos;
+    public long? LongestPendingRequestsDurationMs => record.LongestPendingRequestsDurationMs;
+    public string? LongestPendingRequestsFilePath => record.LongestPendingRequestsFilePath;
 }
 
 public sealed partial class ViewerDataService
@@ -399,6 +428,62 @@ public sealed partial class ViewerDataService
                 var record = SystemHealthParser.ParseSignificantWait(xml);
                 if (record != null && SystemEventSignificance.IsSignificant(record))
                     rows.Add(new SignificantWaitRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── CPU Tasks ──
+
+    /// <summary>
+    /// Significant CPU-task warnings (QUERY_PROCESSING state WARNING with pendingTasks &gt;= 10) for the
+    /// window, newest first. Reads the same sp_server_diagnostics feed as Memory Conditions / I/O Issues;
+    /// only the QUERY_PROCESSING component yields a record.
+    /// </summary>
+    public async Task<List<CpuTasksRow>> GetCpuTasksAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.SpServerDiagnosticsEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<CpuTasksRow>();
+            foreach (var xml in xmls)
+            {
+                // Only the QUERY_PROCESSING component yields a record; other sp_server_diagnostics components parse to null.
+                var record = SystemHealthParser.ParseCpuTasks(xml);
+                if (record != null && SystemEventSignificance.IsSignificant(record))
+                    rows.Add(new CpuTasksRow(record));
+            }
+            return rows;
+        }, cancellationToken);
+    }
+
+    // ── I/O Issues ──
+
+    /// <summary>
+    /// Significant potential-IO issues (IO_SUBSYSTEM state WARNING) for the window, newest first. Each event
+    /// can carry several pending-request files, so the shred fans out to one row per file (durations summed);
+    /// only the IO_SUBSYSTEM component yields records.
+    /// </summary>
+    public async Task<List<IoIssuesRow>> GetIoIssuesAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.SpServerDiagnosticsEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var rows = new List<IoIssuesRow>();
+            foreach (var xml in xmls)
+            {
+                // A non-IO_SUBSYSTEM component (or an event with no pending request) shreds to no records.
+                foreach (var record in SystemHealthParser.ParseIoIssues(xml))
+                {
+                    if (SystemEventSignificance.IsSignificant(record))
+                        rows.Add(new IoIssuesRow(record));
+                }
             }
             return rows;
         }, cancellationToken);

@@ -19,7 +19,7 @@ namespace PerformanceMonitor.Common
 {
     /// <summary>
     /// Shreds the raw <c>system_health</c> Extended Event XML captured by
-    /// <c>SystemHealthEventsCollector</c> (Stage 1) into the six unique warning-category record types — the
+    /// <c>SystemHealthEventsCollector</c> (Stage 1) into the eight unique warning-category record types — the
     /// monitor-side C# port of Erik's <c>sp_HealthParser</c> per-category xpath extraction. Pure and
     /// app-agnostic (Common), the same home and shape as <see cref="DeadlockGraphParser"/>: static, driven by
     /// <see cref="System.Xml.Linq"/>, and robust to malformed input (a bad event yields null / no record
@@ -32,10 +32,14 @@ namespace PerformanceMonitor.Common
     /// those are an analysis/display concern (Stage 2b) and every field needed to re-apply them is
     /// preserved on the records.</para>
     ///
-    /// <para>Dispatch is by XE event name (<c>event_type</c>): each of the six feeder events maps to exactly
-    /// one category. An <c>sp_server_diagnostics_component_result</c> event only yields a memory-conditions
-    /// record for its RESOURCE component (other components carry no <c>&lt;resource&gt;</c> node and yield
-    /// nothing here — sp_HealthParser's IO/CPU/system-health categories are out of Stage 2's six).</para>
+    /// <para>Dispatch is by XE event name (<c>event_type</c>): the ring-buffer / error / wait feeders each map
+    /// to exactly one category, while an <c>sp_server_diagnostics_component_result</c> event routes on its
+    /// component — RESOURCE → memory conditions, QUERY_PROCESSING → CPU tasks, IO_SUBSYSTEM → IO issues. Each
+    /// component parser gates on the presence of its own node (<c>&lt;resource&gt;</c> /
+    /// <c>&lt;queryProcessing&gt;</c> / <c>&lt;ioSubsystem&gt;</c>), so a single event yields a record for its
+    /// component alone and nothing for the others (sp_HealthParser's remaining SYSTEM/EVENTS components are out
+    /// of scope). IO issues is the one many-per-event category: sp_HealthParser fans an IO_SUBSYSTEM event out
+    /// to one row per pending-request file, so its parser returns a list.</para>
     /// </summary>
     public static class SystemHealthParser
     {
@@ -89,7 +93,10 @@ namespace PerformanceMonitor.Common
                     Add(result.SevereErrors, ParseSevereError(eventXml));
                     break;
                 case SpServerDiagnosticsEvent:
+                    // One event carries one component; each parser is a no-op unless its component node is present.
                     Add(result.MemoryConditions, ParseMemoryConditions(eventXml));
+                    Add(result.CpuTasks, ParseCpuTasks(eventXml));
+                    result.IoIssues.AddRange(ParseIoIssues(eventXml));
                     break;
                 case MemoryBrokerEvent:
                     Add(result.MemoryBroker, ParseMemoryBroker(eventXml));
@@ -208,6 +215,82 @@ namespace PerformanceMonitor.Common
                 LastOomFactor = ParseLong(EntryValue(resource, "Last OOM Factor")),
                 LastOsError = ParseLong(EntryValue(resource, "Last OS Error")),
             };
+        }
+
+        /// <summary>
+        /// Shreds the QUERY_PROCESSING component of an <c>sp_server_diagnostics_component_result</c> event into
+        /// a <see cref="CpuTasksRecord"/>. Returns null for null/blank or unparseable XML, or when the event
+        /// carries no <c>&lt;queryProcessing&gt;</c> node (i.e. it is a non-QUERY_PROCESSING component).
+        /// </summary>
+        public static CpuTasksRecord? ParseCpuTasks(string? eventXml)
+        {
+            var ev = EventRoot(eventXml);
+            var qp = ev?.Descendants("queryProcessing").FirstOrDefault();
+            if (ev == null || qp == null)
+                return null;
+
+            return new CpuTasksRecord
+            {
+                EventTime = ParseTimestamp(ev),
+                State = DataText(ev, "state"),
+                MaxWorkers = ParseLong((string?)qp.Attribute("maxWorkers")),
+                WorkersCreated = ParseLong((string?)qp.Attribute("workersCreated")),
+                WorkersIdle = ParseLong((string?)qp.Attribute("workersIdle")),
+                TasksCompletedWithinInterval = ParseLong((string?)qp.Attribute("tasksCompletedWithinInterval")),
+                PendingTasks = ParseLong((string?)qp.Attribute("pendingTasks")),
+                OldestPendingTaskWaitingTime = ParseLong((string?)qp.Attribute("oldestPendingTaskWaitingTime")),
+                HasUnresolvableDeadlockOccurred = ParseBool((string?)qp.Attribute("hasUnresolvableDeadlockOccurred")),
+                HasDeadlockedSchedulersOccurred = ParseBool((string?)qp.Attribute("hasDeadlockedSchedulersOccurred")),
+                // sp_HealthParser: .exist('.../blockingTasks/blocked-process-report') — a definite bit, never null.
+                DidBlockingOccur = qp.Descendants("blocked-process-report").Any(),
+            };
+        }
+
+        /// <summary>
+        /// Shreds the IO_SUBSYSTEM component of an <c>sp_server_diagnostics_component_result</c> event into
+        /// zero or more <see cref="IoIssuesRecord"/> — one per distinct pending-request file, with that file's
+        /// <c>@duration</c> values summed (sp_HealthParser's <c>#io</c> → <c>#i</c> per-event shred). Returns an
+        /// empty list for null/blank or unparseable XML, a non-IO_SUBSYSTEM component (no
+        /// <c>&lt;ioSubsystem&gt;</c> node), or an IO_SUBSYSTEM event with no pending request carrying a
+        /// duration (sp_HealthParser's <c>WHERE longestPendingRequests_duration_ms IS NOT NULL</c>). Never throws.
+        /// </summary>
+        public static List<IoIssuesRecord> ParseIoIssues(string? eventXml)
+        {
+            var records = new List<IoIssuesRecord>();
+
+            var ev = EventRoot(eventXml);
+            var io = ev?.Descendants("ioSubsystem").FirstOrDefault();
+            if (ev == null || io == null)
+                return records;
+
+            var eventTime = ParseTimestamp(ev);
+            var state = DataText(ev, "state");
+            var ioLatchTimeouts = ParseLong((string?)io.Attribute("ioLatchTimeouts"));
+            var intervalLongIos = ParseLong((string?)io.Attribute("intervalLongIos"));
+            var totalLongIos = ParseLong((string?)io.Attribute("totalLongIos"));
+
+            // One row per pendingRequest with a duration, grouped by filePath (ISNULL -> "N/A") with the
+            // durations summed — sp_HealthParser's WHERE duration IS NOT NULL + GROUP BY filePath, within one event.
+            var groups = io.Descendants("pendingRequest")
+                .Select(pr => (Duration: ParseLong((string?)pr.Attribute("duration")), FilePath: (string?)pr.Attribute("filePath")))
+                .Where(pr => pr.Duration.HasValue)
+                .GroupBy(pr => pr.FilePath ?? "N/A", StringComparer.Ordinal);
+
+            foreach (var group in groups)
+            {
+                records.Add(new IoIssuesRecord
+                {
+                    EventTime = eventTime,
+                    State = state,
+                    IoLatchTimeouts = ioLatchTimeouts,
+                    IntervalLongIos = intervalLongIos,
+                    TotalLongIos = totalLongIos,
+                    LongestPendingRequestsDurationMs = group.Sum(pr => pr.Duration!.Value),
+                    LongestPendingRequestsFilePath = group.Key,
+                });
+            }
+
+            return records;
         }
 
         /// <summary>

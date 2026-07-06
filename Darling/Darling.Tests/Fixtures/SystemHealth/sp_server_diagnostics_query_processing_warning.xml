@@ -1,0 +1,28 @@
+<event name="sp_server_diagnostics_component_result" package="sqlserver" timestamp="2026-07-05T12:06:00.000Z">
+  <data name="component"><type name="sql_server_diagnostics_component" package="sqlserver" /><value>1</value><text>QUERY_PROCESSING</text></data>
+  <data name="state"><value>2</value><text>WARNING</text></data>
+  <data name="data">
+    <type name="xml" package="package0" />
+    <value>
+      <queryProcessing maxWorkers="960" workersCreated="500" workersIdle="20" tasksCompletedWithinInterval="1234" pendingTasks="15" oldestPendingTaskWaitingTime="8000" hasUnresolvableDeadlockOccurred="1" hasDeadlockedSchedulersOccurred="1" trackingNonYieldingScheduler="0x0">
+        <topWaits>
+          <nonPreemptive>
+            <byCount>
+              <wait waitType="LCK_M_X" waits="10" averageWaitTime="500" maxWaitTime="1000" />
+            </byCount>
+          </nonPreemptive>
+        </topWaits>
+        <blockingTasks>
+          <blocked-process-report monitorLoop="1">
+            <blocked-process>
+              <process id="process1" waitresource="KEY: 6:123" />
+            </blocked-process>
+            <blocking-process>
+              <process id="process2" />
+            </blocking-process>
+          </blocked-process-report>
+        </blockingTasks>
+      </queryProcessing>
+    </value>
+  </data>
+</event>

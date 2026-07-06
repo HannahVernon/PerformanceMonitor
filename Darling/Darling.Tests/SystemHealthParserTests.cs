@@ -16,11 +16,11 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Tests for the shared <see cref="SystemHealthParser"/> — the monitor-side C# port of Erik's
-/// <c>sp_HealthParser</c> per-category xpath shred. Each of the six warning categories is asserted
+/// <c>sp_HealthParser</c> per-category xpath shred. Each of the eight warning categories is asserted
 /// column-by-column against a representative captured event (Fixtures/SystemHealth/*.xml, shaped to
-/// sp_HealthParser's xpath + the MS event schema), plus dispatch, robustness, the non-RESOURCE
-/// sp_server_diagnostics no-op, and the sql_text control-character cleanup. Tested once in Common (not
-/// duplicated per app). No database.
+/// sp_HealthParser's xpath + the MS event schema), plus dispatch, robustness, the per-component
+/// sp_server_diagnostics routing (RESOURCE / QUERY_PROCESSING / IO_SUBSYSTEM) and no-op on the others, and
+/// the sql_text control-character cleanup. Tested once in Common (not duplicated per app). No database.
 /// </summary>
 public class SystemHealthParserTests
 {
@@ -33,6 +33,9 @@ public class SystemHealthParserTests
     private static readonly DateTime BrokerTime = new(2026, 7, 5, 12, 2, 10, 250, DateTimeKind.Utc);
     private static readonly DateTime OomTime = new(2026, 7, 5, 12, 3, 20, 750, DateTimeKind.Utc);
     private static readonly DateTime WaitTime = new(2026, 7, 5, 12, 4, 30, 900, DateTimeKind.Utc);
+    private static readonly DateTime IoTime = new(2026, 7, 5, 12, 5, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime CpuWarningTime = new(2026, 7, 5, 12, 6, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime CpuCleanTime = new(2026, 7, 5, 12, 1, 0, 0, DateTimeKind.Utc);
 
     // ── SchedulerIssues (scheduler_monitor_system_health_ring_buffer_recorded) ──
 
@@ -244,6 +247,100 @@ public class SystemHealthParserTests
         Assert.Equal("SELECT?1?FROM\tt\r\nGO", r!.QueryText);
     }
 
+    // ── CpuTasks (sp_server_diagnostics_component_result / QUERY_PROCESSING) ──
+
+    [Fact]
+    public void CpuTasks_WarningEvent_ShredsEveryColumn()
+    {
+        var r = SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_query_processing_warning.xml"));
+
+        Assert.NotNull(r);
+        Assert.Equal(CpuWarningTime, r!.EventTime);
+        Assert.Equal("WARNING", r.State);                     // data[@name="state"]/text
+        Assert.Equal(960L, r.MaxWorkers);                     // <queryProcessing> attributes
+        Assert.Equal(500L, r.WorkersCreated);
+        Assert.Equal(20L, r.WorkersIdle);
+        Assert.Equal(1234L, r.TasksCompletedWithinInterval);
+        Assert.Equal(15L, r.PendingTasks);
+        Assert.Equal(8000L, r.OldestPendingTaskWaitingTime);
+        Assert.True(r.HasUnresolvableDeadlockOccurred);
+        Assert.True(r.HasDeadlockedSchedulersOccurred);
+        Assert.True(r.DidBlockingOccur);                      // blockingTasks/blocked-process-report present
+    }
+
+    [Fact]
+    public void CpuTasks_CleanEvent_ShredsColumns_NoBlocking()
+    {
+        // The shared clean QUERY_PROCESSING fixture: CLEAN state, zero pending tasks, no blocking node.
+        var r = SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_query_processing.xml"));
+
+        Assert.NotNull(r);
+        Assert.Equal(CpuCleanTime, r!.EventTime);
+        Assert.Equal("CLEAN", r.State);
+        Assert.Equal(512L, r.MaxWorkers);
+        Assert.Equal(40L, r.WorkersCreated);
+        Assert.Equal(12L, r.WorkersIdle);
+        Assert.Equal(100L, r.TasksCompletedWithinInterval);
+        Assert.Equal(0L, r.PendingTasks);
+        Assert.Equal(0L, r.OldestPendingTaskWaitingTime);
+        Assert.False(r.HasUnresolvableDeadlockOccurred);
+        Assert.False(r.HasDeadlockedSchedulersOccurred);
+        Assert.False(r.DidBlockingOccur);                     // .exist() over absent blocked-process-report -> false
+    }
+
+    [Fact]
+    public void CpuTasks_NonQueryProcessingComponent_YieldsNoRecord()
+    {
+        // A RESOURCE sp_server_diagnostics component carries no <queryProcessing> node.
+        Assert.Null(SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_resource.xml")));
+    }
+
+    // ── IoIssues (sp_server_diagnostics_component_result / IO_SUBSYSTEM) ──
+
+    [Fact]
+    public void IoIssues_ShredsEventAttributes_AndGroupsPendingRequestsByFileSummingDuration()
+    {
+        var rows = SystemHealthParser.ParseIoIssues(LoadFixture("sp_server_diagnostics_io_subsystem.xml"));
+
+        // Three pendingRequests over two files -> two rows (the same-file pair is summed, per #io -> #i).
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r =>
+        {
+            Assert.Equal(IoTime, r.EventTime);
+            Assert.Equal("WARNING", r.State);                 // data[@name="state"]/text
+            Assert.Equal(2L, r.IoLatchTimeouts);              // <ioSubsystem> attributes, repeated per file row
+            Assert.Equal(5L, r.IntervalLongIos);
+            Assert.Equal(42L, r.TotalLongIos);
+        });
+
+        var mdf = rows.Single(r => r.LongestPendingRequestsFilePath == @"D:\data\prod.mdf");
+        Assert.Equal(1500L, mdf.LongestPendingRequestsDurationMs);   // 1000 + 500 summed
+        var ldf = rows.Single(r => r.LongestPendingRequestsFilePath == @"E:\log\prod.ldf");
+        Assert.Equal(750L, ldf.LongestPendingRequestsDurationMs);
+    }
+
+    [Fact]
+    public void IoIssues_NonIoSubsystemComponent_YieldsNoRows()
+    {
+        // RESOURCE / QUERY_PROCESSING components carry no <ioSubsystem> node.
+        Assert.Empty(SystemHealthParser.ParseIoIssues(LoadFixture("sp_server_diagnostics_resource.xml")));
+        Assert.Empty(SystemHealthParser.ParseIoIssues(LoadFixture("sp_server_diagnostics_query_processing.xml")));
+    }
+
+    [Fact]
+    public void IoIssues_IoSubsystemWithNoPendingRequest_YieldsNoRows()
+    {
+        // sp_HealthParser's WHERE duration IS NOT NULL: an IO_SUBSYSTEM event with no pending request is dropped.
+        const string xml =
+            "<event name=\"sp_server_diagnostics_component_result\" timestamp=\"2026-07-05T12:05:00.000Z\">" +
+            "<data name=\"state\"><value>1</value><text>CLEAN</text></data>" +
+            "<data name=\"data\"><value><ioSubsystem ioLatchTimeouts=\"0\" intervalLongIos=\"0\" totalLongIos=\"0\">" +
+            "<longestPendingRequests /></ioSubsystem></value></data>" +
+            "</event>";
+
+        Assert.Empty(SystemHealthParser.ParseIoIssues(xml));
+    }
+
     // ── dispatch (ParseEvents / ParseInto) ──
 
     [Fact]
@@ -255,6 +352,7 @@ public class SystemHealthParserTests
             (SystemHealthParser.ErrorReportedEvent, LoadFixture("error_reported.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_resource.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_query_processing.xml")),
+            (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_io_subsystem.xml")),
             (SystemHealthParser.MemoryBrokerEvent, LoadFixture("memory_broker.xml")),
             (SystemHealthParser.MemoryNodeOomEvent, LoadFixture("memory_node_oom.xml")),
             (SystemHealthParser.WaitInfoEvent, LoadFixture("wait_info.xml")),
@@ -267,8 +365,11 @@ public class SystemHealthParserTests
         Assert.Single(result.MemoryBroker);
         Assert.Single(result.MemoryNodeOom);
         Assert.Single(result.SignificantWaits);
-        // Two sp_server_diagnostics events in, but only the RESOURCE one yields a memory-conditions row.
+        // Three sp_server_diagnostics events route by component: RESOURCE -> memory conditions,
+        // QUERY_PROCESSING -> CPU tasks, IO_SUBSYSTEM -> I/O issues (two files -> two rows).
         Assert.Single(result.MemoryConditions);
+        Assert.Single(result.CpuTasks);
+        Assert.Equal(2, result.IoIssues.Count);
         Assert.Equal(10, result.SchedulerIssues[0].SchedulerId);
         Assert.Equal(823, result.SevereErrors[0].ErrorNumber);
     }
@@ -320,6 +421,8 @@ public class SystemHealthParserTests
         Assert.Null(SystemHealthParser.ParseMemoryBroker(xml));
         Assert.Null(SystemHealthParser.ParseMemoryNodeOom(xml));
         Assert.Null(SystemHealthParser.ParseSignificantWait(xml));
+        Assert.Null(SystemHealthParser.ParseCpuTasks(xml));
+        Assert.Empty(SystemHealthParser.ParseIoIssues(xml));   // list-returning shred: empty, never throws
     }
 
     [Fact]

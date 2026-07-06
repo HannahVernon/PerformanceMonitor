@@ -110,7 +110,7 @@ public partial class ViewerServerTab : UserControl
         /* FinOps inner tab (copy-parity program): register the FinOps grids' column-filter managers. */
         InitializeFinOpsTab();
 
-        /* System Events inner tab (system_health parity): register the six category grids' filter managers. */
+        /* System Events inner tab (system_health parity): register the eight category grids' filter managers. */
         InitializeSystemEventsTab();
     }
 
