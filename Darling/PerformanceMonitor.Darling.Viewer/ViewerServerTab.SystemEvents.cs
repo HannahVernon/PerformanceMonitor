@@ -15,7 +15,7 @@ using PerformanceMonitor.Ui;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The System Events inner tab (system_health parity, Stage 2b) — six sub-tabs, one per unique
+/// The System Events inner tab (system_health parity, Stage 2b) — eight sub-tabs, one per unique
 /// system_health warning category, each a parse-on-read grid: <see cref="ViewerDataService"/> fetches the
 /// raw event_xml for the category over the fixed 24-hour window, the Common <c>SystemHealthParser</c>
 /// shreds it, and <c>SystemEventSignificance</c> keeps the sp_HealthParser-significant rows. Mirrors the
@@ -25,13 +25,15 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public partial class ViewerServerTab
 {
-    /* System Events sub-tab order (matches the task's category list). */
+    /* System Events sub-tab order (matches the XAML TabItem order). */
     private const int SystemEventsSchedulerIssuesSubTabIndex = 0;
     private const int SystemEventsSevereErrorsSubTabIndex = 1;
     private const int SystemEventsMemoryConditionsSubTabIndex = 2;
     private const int SystemEventsMemoryBrokerSubTabIndex = 3;
     private const int SystemEventsMemoryNodeOomSubTabIndex = 4;
     private const int SystemEventsSignificantWaitsSubTabIndex = 5;
+    private const int SystemEventsCpuTasksSubTabIndex = 6;
+    private const int SystemEventsIoIssuesSubTabIndex = 7;
 
     private DataGridFilterManager<SchedulerIssueRow>? _seSchedulerFilterMgr;
     private DataGridFilterManager<SevereErrorRow>? _seSevereErrorFilterMgr;
@@ -39,6 +41,8 @@ public partial class ViewerServerTab
     private DataGridFilterManager<MemoryBrokerRow>? _seMemoryBrokerFilterMgr;
     private DataGridFilterManager<MemoryNodeOomRow>? _seMemoryNodeOomFilterMgr;
     private DataGridFilterManager<SignificantWaitRow>? _seSignificantWaitsFilterMgr;
+    private DataGridFilterManager<CpuTasksRow>? _seCpuTasksFilterMgr;
+    private DataGridFilterManager<IoIssuesRow>? _seIoIssuesFilterMgr;
 
     /// <summary>
     /// Registers the six System Events grids' column-filter managers into the shared
@@ -53,6 +57,8 @@ public partial class ViewerServerTab
         _seMemoryBrokerFilterMgr = new DataGridFilterManager<MemoryBrokerRow>(MemoryBrokerGrid);
         _seMemoryNodeOomFilterMgr = new DataGridFilterManager<MemoryNodeOomRow>(MemoryNodeOomGrid);
         _seSignificantWaitsFilterMgr = new DataGridFilterManager<SignificantWaitRow>(SignificantWaitsGrid);
+        _seCpuTasksFilterMgr = new DataGridFilterManager<CpuTasksRow>(CpuTasksGrid);
+        _seIoIssuesFilterMgr = new DataGridFilterManager<IoIssuesRow>(IoIssuesGrid);
 
         _filterManagers[SchedulerIssuesGrid] = _seSchedulerFilterMgr;
         _filterManagers[SevereErrorsGrid] = _seSevereErrorFilterMgr;
@@ -60,6 +66,8 @@ public partial class ViewerServerTab
         _filterManagers[MemoryBrokerGrid] = _seMemoryBrokerFilterMgr;
         _filterManagers[MemoryNodeOomGrid] = _seMemoryNodeOomFilterMgr;
         _filterManagers[SignificantWaitsGrid] = _seSignificantWaitsFilterMgr;
+        _filterManagers[CpuTasksGrid] = _seCpuTasksFilterMgr;
+        _filterManagers[IoIssuesGrid] = _seIoIssuesFilterMgr;
     }
 
     /// <summary>
@@ -100,6 +108,12 @@ public partial class ViewerServerTab
                 break;
             case SystemEventsSignificantWaitsSubTabIndex:
                 await LoadSignificantWaitsAsync();
+                break;
+            case SystemEventsCpuTasksSubTabIndex:
+                await LoadCpuTasksAsync();
+                break;
+            case SystemEventsIoIssuesSubTabIndex:
+                await LoadIoIssuesAsync();
                 break;
             case SystemEventsSchedulerIssuesSubTabIndex:
             default:
@@ -160,6 +174,24 @@ public partial class ViewerServerTab
         _seSignificantWaitsFilterMgr!.UpdateData(data);
         SignificantWaitsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SignificantWaitsCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
+    }
+
+    private async Task LoadCpuTasksAsync()
+    {
+        var endUtc = DateTime.UtcNow;
+        var data = await _dataService.GetCpuTasksAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        _seCpuTasksFilterMgr!.UpdateData(data);
+        CpuTasksNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        CpuTasksCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
+    }
+
+    private async Task LoadIoIssuesAsync()
+    {
+        var endUtc = DateTime.UtcNow;
+        var data = await _dataService.GetIoIssuesAsync(_server.ServerId, endUtc - s_dataWindow, endUtc);
+        _seIoIssuesFilterMgr!.UpdateData(data);
+        IoIssuesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        IoIssuesCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
     }
 
     /// <summary>

@@ -246,7 +246,55 @@ public sealed class ViewerSystemEventsTests
         Assert.DoesNotContain("CXPACKET", SystemEventSignificance.IgnoredWaitTypes);
     }
 
-    // ── End-to-end: shred the seven fixtures then apply the filters (the data-service path's logic) ──
+    // ── Significance: CPU Tasks (state = WARNING and pendingTasks >= 10) ──
+
+    [Theory]
+    [InlineData("WARNING", 10, true)]     // boundary — 10 is kept
+    [InlineData("WARNING", 15, true)]     // fixture case
+    [InlineData("WARNING", 9, false)]     // below the pending-task threshold
+    [InlineData("WARNING", null, false)]  // no pending tasks -> dropped (exist-predicate fails)
+    [InlineData("CLEAN", 100, false)]     // not a warning, even with many pending tasks
+    [InlineData("HAS_ISSUES", 100, false)]
+    [InlineData(null, 100, false)]
+    public void CpuTasks_SignificantOnlyWhenWarningAndPendingAtThreshold(string? state, int? pendingTasks, bool expected) =>
+        Assert.Equal(expected, SystemEventSignificance.IsSignificant(
+            new CpuTasksRecord { State = state, PendingTasks = pendingTasks }));
+
+    [Fact]
+    public void CpuTasks_WarningFixture_IsSignificant()
+    {
+        var record = SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_query_processing_warning.xml"))!;
+        Assert.True(SystemEventSignificance.IsSignificant(record));
+    }
+
+    [Fact]
+    public void CpuTasks_CleanFixture_IsNotSignificant()
+    {
+        // The shared clean QUERY_PROCESSING fixture is CLEAN with zero pending tasks — the warnings filter drops it.
+        var record = SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_query_processing.xml"))!;
+        Assert.Equal("CLEAN", record.State);
+        Assert.False(SystemEventSignificance.IsSignificant(record));
+    }
+
+    // ── Significance: I/O Issues (state = WARNING) ──
+
+    [Theory]
+    [InlineData("WARNING", true)]
+    [InlineData("CLEAN", false)]
+    [InlineData("HAS_ISSUES", false)]
+    [InlineData(null, false)]
+    public void IoIssues_SignificantOnlyWhenWarning(string? state, bool expected) =>
+        Assert.Equal(expected, SystemEventSignificance.IsSignificant(new IoIssuesRecord { State = state }));
+
+    [Fact]
+    public void IoIssues_WarningFixture_AllRowsSignificant()
+    {
+        var rows = SystemHealthParser.ParseIoIssues(LoadFixture("sp_server_diagnostics_io_subsystem.xml"));
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.True(SystemEventSignificance.IsSignificant(r)));
+    }
+
+    // ── End-to-end: shred the fixtures then apply the filters (the data-service path's logic) ──
 
     [Fact]
     public void ShredThenFilter_KeepsOnlySignificantRows_AcrossAllCategories()
@@ -257,6 +305,8 @@ public sealed class ViewerSystemEventsTests
             (SystemHealthParser.ErrorReportedEvent, LoadFixture("error_reported.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_resource.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_query_processing.xml")),
+            (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_query_processing_warning.xml")),
+            (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_io_subsystem.xml")),
             (SystemHealthParser.MemoryBrokerEvent, LoadFixture("memory_broker.xml")),
             (SystemHealthParser.MemoryNodeOomEvent, LoadFixture("memory_node_oom.xml")),
             (SystemHealthParser.WaitInfoEvent, LoadFixture("wait_info.xml")),
@@ -272,6 +322,9 @@ public sealed class ViewerSystemEventsTests
         // The memory-conditions / broker fixtures are RESOURCE_MEMPHYSICAL_HIGH — the warnings filter drops them.
         Assert.Empty(result.MemoryConditions.Where(SystemEventSignificance.IsSignificant));
         Assert.Empty(result.MemoryBroker.Where(SystemEventSignificance.IsSignificant));
+        // CPU: the WARNING+15-pending event passes; the CLEAN one is dropped. I/O: both WARNING file rows pass.
+        Assert.Single(result.CpuTasks.Where(SystemEventSignificance.IsSignificant));
+        Assert.Equal(2, result.IoIssues.Count(SystemEventSignificance.IsSignificant));
     }
 
     // ── Severe-Errors database_id resolution ──
@@ -325,5 +378,26 @@ public sealed class ViewerSystemEventsTests
         Assert.Equal("AdventureWorks", row.DatabaseName);
         Assert.Equal(5, row.DatabaseId);
         Assert.Equal(823, row.ErrorNumber);
+    }
+
+    [Fact]
+    public void CpuTasksRow_And_IoIssuesRow_ProjectRecordFields()
+    {
+        var utc = new DateTime(2026, 7, 5, 12, 6, 0, DateTimeKind.Utc);
+        var expected = ViewerDataService.ToLocalTime(utc).ToString("yyyy-MM-dd HH:mm:ss");
+
+        var cpu = new CpuTasksRow(new CpuTasksRecord
+            { EventTime = utc, State = "WARNING", PendingTasks = 15, DidBlockingOccur = true });
+        Assert.Equal(expected, cpu.EventTimeLocal);
+        Assert.Equal("WARNING", cpu.State);
+        Assert.Equal(15L, cpu.PendingTasks);
+        Assert.True(cpu.DidBlockingOccur);
+
+        var io = new IoIssuesRow(new IoIssuesRecord
+            { EventTime = utc, State = "WARNING", LongestPendingRequestsDurationMs = 1500, LongestPendingRequestsFilePath = @"D:\data\prod.mdf" });
+        Assert.Equal(expected, io.EventTimeLocal);
+        Assert.Equal("WARNING", io.State);
+        Assert.Equal(1500L, io.LongestPendingRequestsDurationMs);
+        Assert.Equal(@"D:\data\prod.mdf", io.LongestPendingRequestsFilePath);
     }
 }

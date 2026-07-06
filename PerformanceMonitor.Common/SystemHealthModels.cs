@@ -12,7 +12,7 @@ using System.Collections.Generic;
 namespace PerformanceMonitor.Common
 {
     /*
-     * App-agnostic (Common) record types for the six unique system_health warning categories, shredded
+     * App-agnostic (Common) record types for the eight unique system_health warning categories, shredded
      * from the raw system_health event XML captured by SystemHealthEventsCollector (Stage 1). Each record
      * mirrors, column-for-column, the target-table shape Erik's sp_HealthParser logs (the *_SchedulerIssues,
      * *_SevereErrors, *_MemoryConditions, *_MemoryBroker, *_MemoryNodeOOM and *_SignificantWaits tables) so
@@ -377,10 +377,95 @@ namespace PerformanceMonitor.Common
     }
 
     /// <summary>
+    /// One CPU-task-details snapshot, shredded from the QUERY_PROCESSING component of an
+    /// <c>sp_server_diagnostics_component_result</c> event (the <c>&lt;queryProcessing&gt;</c> node's
+    /// attributes). Mirrors sp_HealthParser's <c>*_CPUTasks</c> table. The worker/task counters come
+    /// straight off the queryProcessing attributes; <see cref="DidBlockingOccur"/> is sp_HealthParser's
+    /// <c>.exist()</c> over the event's <c>blockingTasks/blocked-process-report</c> nodes.
+    /// </summary>
+    public sealed record CpuTasksRecord
+    {
+        /// <summary>Event <c>@timestamp</c>, parsed as UTC.</summary>
+        public DateTime? EventTime { get; init; }
+
+        /// <summary>xpath <c>data[@name="state"]/text</c> — the component state text (CLEAN/WARNING/HAS_ISSUES).</summary>
+        public string? State { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@maxWorkers</c> (bigint).</summary>
+        public long? MaxWorkers { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@workersCreated</c> (bigint).</summary>
+        public long? WorkersCreated { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@workersIdle</c> (bigint).</summary>
+        public long? WorkersIdle { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@tasksCompletedWithinInterval</c> (bigint).</summary>
+        public long? TasksCompletedWithinInterval { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@pendingTasks</c> (bigint).</summary>
+        public long? PendingTasks { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@oldestPendingTaskWaitingTime</c> (bigint).</summary>
+        public long? OldestPendingTaskWaitingTime { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@hasUnresolvableDeadlockOccurred</c> (bit).</summary>
+        public bool? HasUnresolvableDeadlockOccurred { get; init; }
+
+        /// <summary><c>&lt;queryProcessing&gt;</c> attribute <c>@hasDeadlockedSchedulersOccurred</c> (bit).</summary>
+        public bool? HasDeadlockedSchedulersOccurred { get; init; }
+
+        /// <summary>
+        /// True when the event carries a <c>queryProcessing/blockingTasks/blocked-process-report</c> node —
+        /// sp_HealthParser's <c>.exist()</c> bit (always a definite true/false, never null).
+        /// </summary>
+        public bool? DidBlockingOccur { get; init; }
+    }
+
+    /// <summary>
+    /// One potential-IO-issue row, shredded from the IO_SUBSYSTEM component of an
+    /// <c>sp_server_diagnostics_component_result</c> event (the <c>&lt;ioSubsystem&gt;</c> node's attributes
+    /// plus its <c>longestPendingRequests</c> children). Mirrors sp_HealthParser's <c>*_IOIssues</c> table.
+    /// sp_HealthParser fans an event out to one row per <c>pendingRequest</c>, then collapses by file path
+    /// with the durations summed (its <c>#io</c> → <c>#i</c> shred); this record is one such per-(event,
+    /// file) row, so a single event with two distinct pending files yields two records.
+    /// </summary>
+    public sealed record IoIssuesRecord
+    {
+        /// <summary>Event <c>@timestamp</c>, parsed as UTC.</summary>
+        public DateTime? EventTime { get; init; }
+
+        /// <summary>xpath <c>data[@name="state"]/text</c> — the component state text (CLEAN/WARNING/HAS_ISSUES).</summary>
+        public string? State { get; init; }
+
+        /// <summary><c>&lt;ioSubsystem&gt;</c> attribute <c>@ioLatchTimeouts</c> (bigint).</summary>
+        public long? IoLatchTimeouts { get; init; }
+
+        /// <summary><c>&lt;ioSubsystem&gt;</c> attribute <c>@intervalLongIos</c> (bigint).</summary>
+        public long? IntervalLongIos { get; init; }
+
+        /// <summary><c>&lt;ioSubsystem&gt;</c> attribute <c>@totalLongIos</c> (bigint).</summary>
+        public long? TotalLongIos { get; init; }
+
+        /// <summary>
+        /// SUM of the <c>pendingRequest/@duration</c> values for this file within the event (sp_HealthParser
+        /// stores the already-bigint value as nvarchar(30) only to strip trailing decimals at render; kept
+        /// long here for full numeric fidelity).
+        /// </summary>
+        public long? LongestPendingRequestsDurationMs { get; init; }
+
+        /// <summary><c>pendingRequest/@filePath</c> (sp_HealthParser's <c>ISNULL(..., 'N/A')</c> grouping key).</summary>
+        public string? LongestPendingRequestsFilePath { get; init; }
+    }
+
+    /// <summary>
     /// The result of shredding a batch of raw system_health events: one list per unique warning category.
-    /// Populated by <see cref="SystemHealthParser.ParseEvents"/>. Each event contributes at most one record
-    /// to exactly one list (an <c>sp_server_diagnostics_component_result</c> event that is not the RESOURCE
-    /// component contributes none).
+    /// Populated by <see cref="SystemHealthParser.ParseEvents"/>. Each event contributes to exactly one
+    /// category — at most one record for every category except <see cref="IoIssues"/> (an IO_SUBSYSTEM
+    /// event contributes one record per distinct pending-request file). An
+    /// <c>sp_server_diagnostics_component_result</c> event routes to the category matching its component
+    /// (RESOURCE → memory conditions, QUERY_PROCESSING → CPU tasks, IO_SUBSYSTEM → IO issues); the other
+    /// components contribute nothing.
     /// </summary>
     public sealed class SystemHealthParseResult
     {
@@ -390,5 +475,7 @@ namespace PerformanceMonitor.Common
         public List<MemoryBrokerRecord> MemoryBroker { get; } = new();
         public List<MemoryNodeOomRecord> MemoryNodeOom { get; } = new();
         public List<SignificantWaitRecord> SignificantWaits { get; } = new();
+        public List<CpuTasksRecord> CpuTasks { get; } = new();
+        public List<IoIssuesRecord> IoIssues { get; } = new();
     }
 }

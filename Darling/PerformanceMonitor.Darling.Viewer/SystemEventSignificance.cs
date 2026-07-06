@@ -46,6 +46,12 @@ public static class SystemEventSignificance
     /// </summary>
     public const long SignificantWaitMinDurationMs = 500;
 
+    /// <summary>
+    /// sp_HealthParser <c>@pending_task_threshold</c> default (10) — the minimum <c>pendingTasks</c> for a
+    /// QUERY_PROCESSING row to count as a significant CPU-task warning (sp_HealthParser.sql lines 54, 2981).
+    /// </summary>
+    public const long CpuTaskMinPendingTasks = 10;
+
     /// <summary>The scheduler <c>status</c> text sp_HealthParser keeps under warnings_only (line 4540).</summary>
     public const string WarningStatus = "WARNING";
 
@@ -144,4 +150,24 @@ public static class SystemEventSignificance
         record.QueryText.IndexOf("BACKUP", StringComparison.OrdinalIgnoreCase) < 0 && // not a BACKUP (line 1959)
         record.DurationMs >= SignificantWaitMinDurationMs &&                        // duration >= @wait_duration_ms (line 1960)
         !IgnoredWaitTypes.Contains(record.WaitType ?? string.Empty);               // wait_type NOT IN #ignore_waits (line 1961-1967)
+
+    /// <summary>
+    /// A CPU-task-details row is significant when the QUERY_PROCESSING component state is WARNING and its
+    /// <c>pendingTasks</c> is at least <see cref="CpuTaskMinPendingTasks"/>, per sp_HealthParser.sql lines
+    /// 2976 and 2981 under <c>@warnings_only = 1</c>. A missing state or a pendingTasks below the threshold
+    /// (including null) drops the row, exactly as the sp's <c>state = "WARNING"</c> +
+    /// <c>@pendingTasks[.>= threshold]</c> exist-predicates do.
+    /// </summary>
+    public static bool IsSignificant(CpuTasksRecord record) =>
+        string.Equals(record.State, WarningStatus, StringComparison.Ordinal) &&
+        record.PendingTasks >= CpuTaskMinPendingTasks;
+
+    /// <summary>
+    /// A potential-IO-issue row is significant when the IO_SUBSYSTEM component state is WARNING, per
+    /// sp_HealthParser.sql line 2757 under <c>@warnings_only = 1</c>. (The "has a pending request with a
+    /// duration" predicate — sp_HealthParser's <c>WHERE duration IS NOT NULL</c> — is applied upstream in
+    /// <see cref="SystemHealthParser.ParseIoIssues"/>, which emits no record for an event without one.)
+    /// </summary>
+    public static bool IsSignificant(IoIssuesRecord record) =>
+        string.Equals(record.State, WarningStatus, StringComparison.Ordinal);
 }
