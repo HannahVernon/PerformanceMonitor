@@ -8,23 +8,130 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
-/// <summary>One row of the servers table, as the viewer's server list shows it.</summary>
-public sealed record DarlingServer(
-    int ServerId,
-    string ServerName,
-    string DisplayName,
-    bool IsEnabled,
-    int? SqlMajorVersion,
-    decimal MonthlyCostUsd = 0)
+/// <summary>
+/// One row of the servers table, as the viewer's server list shows it. Was a positional record; it is now
+/// a class because the ported Lite server-row chrome needs mutable, change-notifying runtime state on each
+/// row — the favorite star (<see cref="IsFavorite"/>, matched from the viewer's registry) and the
+/// collection-freshness status dot (<see cref="IsOnline"/> / <see cref="HasCollectorErrors"/> →
+/// <see cref="DotStatus"/>) update in place on the refresh timers without resetting the list's selection.
+/// The Postgres-sourced fields stay immutable (get-only); only the sidebar overlay state is settable.
+/// Equality is now reference-based, which every consumer already relies on (they key on
+/// <see cref="ServerId"/> or hold the list's own instances).
+/// </summary>
+public sealed class DarlingServer : INotifyPropertyChanged
 {
+    public DarlingServer(
+        int serverId,
+        string serverName,
+        string displayName,
+        bool isEnabled,
+        int? sqlMajorVersion,
+        decimal monthlyCostUsd = 0)
+    {
+        ServerId = serverId;
+        ServerName = serverName;
+        DisplayName = displayName;
+        IsEnabled = isEnabled;
+        SqlMajorVersion = sqlMajorVersion;
+        MonthlyCostUsd = monthlyCostUsd;
+    }
+
+    public int ServerId { get; }
+    public string ServerName { get; }
+    public string DisplayName { get; }
+    public bool IsEnabled { get; }
+    public int? SqlMajorVersion { get; }
+    public decimal MonthlyCostUsd { get; }
+
     /// <summary>"SQL Server 2022"-style label for the server list; empty when the version is unknown.</summary>
     public string VersionLabel => ViewerDataService.SqlVersionLabel(SqlMajorVersion);
+
+    // ── Runtime-only sidebar state (not from Postgres; drives the ported Lite server-row chrome) ──
+
+    private bool _isFavorite;
+
+    /// <summary>Whether the user pinned this server (from the viewer's registry, matched by name). Drives the star.</summary>
+    public bool IsFavorite
+    {
+        get => _isFavorite;
+        set
+        {
+            if (_isFavorite != value)
+            {
+                _isFavorite = value;
+                OnPropertyChanged(nameof(IsFavorite));
+            }
+        }
+    }
+
+    private bool? _isOnline;
+
+    /// <summary>Freshness "reachability": true = fresh/stale (dot green/amber), false = offline (red), null = unknown.</summary>
+    public bool? IsOnline
+    {
+        get => _isOnline;
+        set
+        {
+            if (_isOnline != value)
+            {
+                _isOnline = value;
+                OnPropertyChanged(nameof(IsOnline));
+                OnPropertyChanged(nameof(DotStatus));
+            }
+        }
+    }
+
+    private bool _hasCollectorErrors;
+
+    /// <summary>Warning (amber) state — in the viewer this means the collection has gone stale.</summary>
+    public bool HasCollectorErrors
+    {
+        get => _hasCollectorErrors;
+        set
+        {
+            if (_hasCollectorErrors != value)
+            {
+                _hasCollectorErrors = value;
+                OnPropertyChanged(nameof(HasCollectorErrors));
+                OnPropertyChanged(nameof(DotStatus));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sidebar status-dot vocabulary — "Online"/"Warning"/"Offline"/"Unknown", identical to Lite's
+    /// <c>ServerConnection.DotStatus</c> so the ported server-row DataTriggers colour the Ellipse the same way.
+    /// </summary>
+    public string DotStatus => IsOnline switch
+    {
+        true => HasCollectorErrors ? "Warning" : "Online",
+        false => "Offline",
+        _ => "Unknown"
+    };
+
+    /// <summary>
+    /// Sets the dot from the same collection-freshness classification the Overview cards use
+    /// (<see cref="ServerSummaryItem.ClassifyFreshness"/>): Fresh → Online, Stale → the amber Warning,
+    /// Offline (or never collected) → red. Both instants are UTC (the store is naive UTC; nowUtc is
+    /// <see cref="DateTime.UtcNow"/>).
+    /// </summary>
+    public void ApplyFreshness(DateTime? lastCollectionUtc, DateTime nowUtc)
+    {
+        var freshness = ServerSummaryItem.ClassifyFreshness(lastCollectionUtc, nowUtc);
+        IsOnline = freshness != ServerFreshness.Offline;
+        HasCollectorErrors = freshness == ServerFreshness.Stale;
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 /// <summary>
