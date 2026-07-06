@@ -250,24 +250,38 @@
                     <TextBlock Text="Double-click to open a server tab" Foreground="#8B93A1" FontSize="11" Margin="0,0,0,6"/>
                 </StackPanel>
 
-                <!-- Sidebar footer: a small button stack pinned to the bottom of the server list. About
-                     only for now — the viewer writes no application log of its own (its diagnostics go to
-                     Debug output, and the shared store's collection log is a per-server tab), so there are
-                     no View Log / Open Log Folder buttons. Declared as the first Bottom-docked child so it
-                     sits at the very bottom, below the no-servers hint. -->
+                <!-- Sidebar footer: a small button stack pinned to the bottom of the server list. Open
+                     Plan Viewer (opens/focuses the standalone Plan Viewer aggregate tab — paste or open a
+                     .sqlplan independent of any server) and About. The viewer writes no application log of
+                     its own (its diagnostics go to Debug output, and the shared store's collection log is a
+                     per-server tab), so there are no View Log / Open Log Folder buttons. Declared as the
+                     first Bottom-docked child so it sits at the very bottom, below the no-servers hint. -->
                 <Border DockPanel.Dock="Bottom"
                         BorderBrush="#2a2d35" BorderThickness="0,1,0,0"
                         Margin="0,8,0,0" Padding="0,8,0,0">
-                    <Button Click="AboutButton_Click"
-                            Style="{StaticResource DarkButton}"
-                            Padding="8,5"
-                            ToolTip="About Performance Monitor Darling">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" FontSize="12"
-                                       VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <TextBlock Text="About" VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </Button>
+                    <StackPanel>
+                        <Button Click="OpenPlanViewerButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                ToolTip="Open or paste an execution plan (independent of any server)">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Open Plan Viewer" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="AboutButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="About Performance Monitor Darling">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE897;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="About" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
                 </Border>
 
                 <TextBlock x:Name="ServersHintText"
@@ -558,6 +572,34 @@
                      owns its own load, so it isn't scoped by the sidebar selection. -->
                 <TabItem x:Name="AlertsTab" Header="Alerts">
                     <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
+                </TabItem>
+
+                <!-- Plan Viewer: a standalone, hidden-until-used aggregate tab (mirrors Lite's
+                     MainWindowPlanViewerTab) — the one plan surface Lite and the Dashboard both have that
+                     the viewer lacked. Server-independent: the user opens or pastes a .sqlplan / plan XML
+                     (or drags a file in) and it renders in the SHARED PerformanceMonitor.Ui
+                     PlanViewerControl as closable sub-tabs, exactly like the per-server Plan Viewer — but
+                     with no store read and no server connection. Opened via the sidebar "Open Plan Viewer"
+                     button; the header's close button hides it again. Built in MainWindow.PlanViewer.cs.
+                     Its inner sub-tabs pick up the theme's implicit TabItem style automatically (no
+                     ItemContainerStyle), matching the per-server PlanTabControl. -->
+                <TabItem x:Name="MainWindowPlanViewerTab" Visibility="Collapsed">
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Plan Viewer" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                            <Button Style="{DynamicResource TabCloseButton}"
+                                    Click="MainWindowPlanViewerClose_Click"
+                                    Margin="4,0,0,0"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <Grid AllowDrop="True" PreviewDrop="MainWindowPlanViewer_Drop"
+                          PreviewDragOver="MainWindowPlanViewer_DragOver"
+                          Background="Transparent"
+                          Focusable="True" KeyDown="MainWindowPlanViewer_KeyDown">
+                        <TabControl x:Name="MainWindowPlanTabControl"
+                                    Background="Transparent"
+                                    BorderThickness="0"/>
+                    </Grid>
                 </TabItem>
             </TabControl>
 
