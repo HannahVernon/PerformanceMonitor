@@ -8,6 +8,7 @@
 
 using System;
 using System.Linq;
+using Npgsql;
 using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Service;
 using Xunit;
@@ -37,5 +38,49 @@ public sealed class DarlingWorkerTests
         }
 
         Assert.Equal(CollectorCatalog.All.Count, dispatched.Count);
+    }
+
+    /// <summary>
+    /// A bring-your-own store connection string that omits the search path must get the canonical
+    /// collect/config/public one injected BEFORE the data source is created — otherwise the Npgsql
+    /// pool's first physical connections keep a pre-migration session search_path and a fresh BYO
+    /// store silently collects nothing (42P01) until the service restarts. The injected path pins
+    /// against the managed constant so both modes carry the same schemas in the same order.
+    /// </summary>
+    [Fact]
+    public void EnsureStoreSearchPath_InjectsCanonicalPath_WhenByoStringOmitsIt()
+    {
+        const string byo = "Host=localhost;Port=5432;Username=darling;Database=darling";
+        Assert.Empty(new NpgsqlConnectionStringBuilder(byo).SearchPath ?? string.Empty);
+
+        var result = DarlingWorker.EnsureStoreSearchPath(byo);
+
+        var parsed = new NpgsqlConnectionStringBuilder(result);
+        Assert.Equal("collect,config,public", parsed.SearchPath);
+        Assert.Equal(DarlingManagedPostgres.SearchPath, parsed.SearchPath);
+
+        /* The rest of the connection string is preserved. */
+        Assert.Equal("localhost", parsed.Host);
+        Assert.Equal(5432, parsed.Port);
+        Assert.Equal("darling", parsed.Username);
+        Assert.Equal("darling", parsed.Database);
+    }
+
+    /// <summary>
+    /// A connection string that ALREADY specifies a Search Path (managed mode carries it, and a BYO
+    /// operator may set their own) is returned untouched — no double-set, and a non-default choice
+    /// is respected.
+    /// </summary>
+    [Fact]
+    public void EnsureStoreSearchPath_LeavesExistingSearchPathUnchanged()
+    {
+        /* Managed-mode shape: already carries collect,config,public. */
+        var managed = DarlingManagedPostgres.BuildConnectionString(5641, "pw123");
+        Assert.Equal(managed, DarlingWorker.EnsureStoreSearchPath(managed));
+
+        /* A BYO operator's own non-default choice is respected, not overwritten. */
+        const string custom = "Host=pg.example.com;Database=metrics;Search Path=collect,config,reporting,public";
+        var result = DarlingWorker.EnsureStoreSearchPath(custom);
+        Assert.Equal("collect,config,reporting,public", new NpgsqlConnectionStringBuilder(result).SearchPath);
     }
 }

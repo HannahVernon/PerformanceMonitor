@@ -4,7 +4,7 @@ Darling is the headless, centralized edition of Performance Monitor: a 24/7 Wind
 
 It runs the **same monitoring brain as the Lite edition** — one shared codebase, two storage engines:
 
-- `PerformanceMonitor.Collectors` owns all 26 collector definitions: the exact T-SQL sent to monitored servers, the result-row mappings, the delta rules, the default cadences and retention horizons, and the ignored-wait-types list. Lite writes those rows to DuckDB; Darling writes the same rows to PostgreSQL via binary COPY.
+- `PerformanceMonitor.Collectors` owns all 32 collector definitions: the exact T-SQL sent to monitored servers, the result-row mappings, the delta rules, the default cadences and retention horizons, and the ignored-wait-types list. Lite writes those rows to DuckDB; Darling writes the same rows to PostgreSQL via binary COPY.
 - `PerformanceMonitor.Alerting` owns the shared alert engine — the same thresholds, edge-trigger gates, cooldowns, and dedup fingerprints Lite uses.
 - The analysis/recommendations pipeline (the same inference engine behind both apps' Recommendations tabs and the `analyze_server` MCP tool) runs on a schedule inside the service.
 
@@ -97,7 +97,7 @@ The same executable serves interactive debugging and service installation; the W
 Darling\PerformanceMonitor.Darling.Service\bin\Release\net10.0\PerformanceMonitor.Darling.Service.exe
 ```
 
-Watch the log output: you should see the config load (`Loaded configuration from ...`), the store migrate (`Postgres store ready (schema v4, ...)`), the TimescaleDB detection result, per-server connects, and then per-collector run lines with row counts.
+Watch the log output: you should see the config load (`Loaded configuration from ...`), the store migrate (`Postgres store ready (schema v15, ...)`), the TimescaleDB detection result, per-server connects, and then per-collector run lines with row counts.
 
 ### Install as a Windows Service
 
@@ -284,14 +284,25 @@ There are deliberately **no collection-schedule or retention settings** in `darl
 
 ### The Store
 
-The service migrates the store itself at startup — plain versioned SQL scripts, each applied once inside its own transaction, tracked in `darling_schema_version`, safe under concurrent starters (advisory-locked). Current schema is **v4**:
+The service migrates the store itself at startup — plain versioned SQL scripts, each applied once inside its own transaction, tracked in `darling_schema_version`, safe under concurrent starters (advisory-locked). Current schema is **v15**:
 
 | Version | Contents |
 |---|---|
-| **V1** — collector tables | One table per collector, all 26, generated from the shared collector definitions (column-for-column identical to Lite's DuckDB schema): `wait_stats`, `query_stats`, `procedure_stats`, `query_store_stats`, `query_snapshots`, `cpu_utilization_stats`, `file_io_stats`, `memory_stats`, `memory_clerks`, `memory_pressure_events`, `tempdb_stats`, `perfmon_stats`, `deadlocks`, `blocked_process_reports`, `dmv_blocking_snapshots`, `memory_grant_stats`, `waiting_tasks`, `session_stats`, `running_jobs`, `database_size_stats`, `index_object_stats`, `server_properties`, and the four config snapshots (`server_config`, `database_config`, `database_scoped_config`, `trace_flags`) |
+| **V1** — collector tables | One table per collector, all 32, generated from the shared collector definitions (column-for-column identical to Lite's DuckDB schema): `wait_stats`, `latch_stats`, `spinlock_stats`, `query_stats`, `procedure_stats`, `query_store_stats`, `query_snapshots`, `plan_cache_stats`, `cpu_utilization_stats`, `cpu_scheduler_stats`, `file_io_stats`, `memory_stats`, `memory_clerks`, `memory_pressure_events`, `tempdb_stats`, `perfmon_stats`, `deadlocks`, `blocked_process_reports`, `dmv_blocking_snapshots`, `memory_grant_stats`, `waiting_tasks`, `session_stats`, `session_summary_stats`, `running_jobs`, `database_size_stats`, `index_object_stats`, `server_properties`, `system_health_events`, and the four config snapshots (`server_config`, `database_config`, `database_scoped_config`, `trace_flags`) |
 | **V2** — observability | `servers` (registry, upserted on every successful connect: identity, display name, engine edition, major version) and `collection_log` (one row per collector run: SUCCESS / PERMISSIONS / ERROR, row count, SQL-phase and storage-phase timings) |
 | **V3** — alerting | `config_alert_log` (one history row per fired alert), `config_edge_trigger_watermarks` (restart-surviving edge-trigger and failed-job watermarks), `config_mute_rules` (alert mute rules; starts empty) |
 | **V4** — analysis | `analysis_findings` (persisted findings incl. the stored remediation action), `analysis_muted` (muted finding patterns), and 17 `v_<table>` passthrough views so the shared analysis SQL runs verbatim against this store |
+| **V5** — viewer passthrough views | The five remaining `v_*` passthrough views (`v_running_jobs`, `v_server_config`, `v_database_scoped_config`, `v_trace_flags`, `v_collection_log`) that complete the viewer's read layer |
+| **V6** — memory passthrough views | `v_memory_clerks` and `v_memory_pressure_events`, the two views the Memory tab reads |
+| **V7** — plan-capture columns | Nullable plan-XML columns for the viewer's View Plan surfaces: `procedure_stats.query_plan_xml`, `blocked_process_reports.blocked_query_plan_xml` / `blocking_query_plan_xml`, `deadlocks.victim_query_plan_xml` |
+| **V8** — schema split (collect/config) | Moves the tables into the `collect` and `config` schemas (least-privilege security split); the shared SQL keeps using bare names, resolved via `search_path = collect, config, public` |
+| **V9** — inventory + cost fields | `server_properties` inventory columns (`sqlserver_start_time`, `host_os_version`, `ag_replica_role`) and `servers.monthly_cost_usd` (the FinOps per-server budget) |
+| **V10** — latch + spinlock collectors | `latch_stats` and `spinlock_stats` tables plus their `v_*` views |
+| **V11** — CPU scheduler + plan cache collectors | `cpu_scheduler_stats` and `plan_cache_stats` tables plus their `v_*` views |
+| **V12** — session summary collector | `session_summary_stats` (server-wide connection-leak / idle signal) table plus its `v_*` view |
+| **V13** — system health events collector | `system_health_events` (raw `system_health` Extended Events capture) table plus its `v_*` view |
+| **V14** — refresh passthrough views | `CREATE OR REPLACE` on every `v_*` view so a store upgraded across a column-adding migration picks up the new columns (Postgres freezes a view's `SELECT *` expansion at create time) |
+| **V15** — index metadata columns | Per-index definition columns on `index_object_stats` (ordered key/included column lists, filter, uniqueness/constraint/FK flags, `is_disabled`, and the reconstruct-a-CREATE options — compression, fill factor, page/row locks, etc.) for monitor-side UNUSED/DUPLICATE index analysis, and refreshes `v_index_object_stats` |
 
 All timestamps in the store are **naive-UTC** `timestamp` columns — the product-wide cross-store contract (Lite's DuckDB does the same).
 
@@ -428,7 +439,7 @@ With `postgres.managed = true` (the sample's default), the service runs its own 
 }
 ```
 
-**What first run does.** The service looks for `pg-runtime\pgsql\` beside its binary, extracting it from `pg-runtime.zip` when only the zip is present (deleting the extracted directory is therefore always safe — it self-heals). If the data directory has no cluster, it generates a 32-character random password, protects it with DPAPI LocalMachine into `pg-credential.dpapi` beside the data directory (credential first, so a crash mid-initdb never strands a cluster nobody can log into), then runs `initdb` with `scram-sha-256` auth, data checksums, and UTF8/C locale. A marker-guarded block appended to `postgresql.conf` preloads TimescaleDB, sets the port, and restricts listening to `127.0.0.1`; a second versioned block sizes background workers for the 26 per-hypertable compression jobs (`timescaledb.max_background_workers = 28`, `max_worker_processes = 40` — PostgreSQL's default of 8 workers cannot launch them). Both appends are re-checked on every start, so a crash between initdb and the append heals itself instead of silently degrading — and clusters initialized before the worker sizing existed gain it on their next start (effective at the next PostgreSQL restart). Then `pg_ctl start`, `CREATE DATABASE darling`, and the normal startup path (migrations, TimescaleDB adoption — you should see `26/26 collector table(s) are hypertables`) continues exactly as in bring-your-own mode. The connection string is derived from the stored credential; the Viewer and the MCP host on the same machine derive it the same way, so nothing needs configuring there either.
+**What first run does.** The service looks for `pg-runtime\pgsql\` beside its binary, extracting it from `pg-runtime.zip` when only the zip is present (deleting the extracted directory is therefore always safe — it self-heals). If the data directory has no cluster, it generates a 32-character random password, protects it with DPAPI LocalMachine into `pg-credential.dpapi` beside the data directory (credential first, so a crash mid-initdb never strands a cluster nobody can log into), then runs `initdb` with `scram-sha-256` auth, data checksums, and UTF8/C locale. A marker-guarded block appended to `postgresql.conf` preloads TimescaleDB, sets the port, and restricts listening to `127.0.0.1`; a second versioned block sizes background workers up for the per-hypertable compression jobs (`timescaledb.max_background_workers = 28`, `max_worker_processes = 40` — PostgreSQL's default of 8 workers cannot launch them). Both appends are re-checked on every start, so a crash between initdb and the append heals itself instead of silently degrading — and clusters initialized before the worker sizing existed gain it on their next start (effective at the next PostgreSQL restart). Then `pg_ctl start`, `CREATE DATABASE darling`, and the normal startup path (migrations, TimescaleDB adoption — you should see `32/32 collector table(s) are hypertables`) continues exactly as in bring-your-own mode. The connection string is derived from the stored credential; the Viewer and the MCP host on the same machine derive it the same way, so nothing needs configuring there either.
 
 **Why scram and not trust, even loopback-only.** Trust auth would hand superuser to any local code that can open a loopback socket — every other local user, and network-capable-but-not-filesystem-capable attack primitives like SSRF from a co-hosted app. With scram the credential travels on the wire, failed attempts are auditable, and access is confined to what can read the DPAPI-protected credential file. `listen_addresses = '127.0.0.1'` keeps the server unreachable off the machine on top.
 
@@ -442,7 +453,7 @@ With `postgres.managed = true` (the sample's default), the service runs its own 
 
 The store is split into two schemas so that no consumer connects with more privilege than it needs:
 
-- **`collect`** — the 26 collector hypertables plus the service-written, user-read metadata (`servers`, `collection_log`, `analysis_findings`, the `v_*` views). Read-only to everyone but the service.
+- **`collect`** — the 32 collector hypertables plus the service-written, user-read metadata (`servers`, `collection_log`, `analysis_findings`, the `v_*` views). Read-only to everyone but the service.
 - **`config`** — exactly the tables a human operator changes through the Viewer or MCP: `config_mute_rules`, `config_alert_log` (alert dismissals), `config_edge_trigger_watermarks`, and `analysis_muted`.
 
 Table names are unchanged — only their schema moved — and the shared SQL keeps using the bare, unqualified names, resolved through `search_path = collect, config, public` (set as the database default and carried on the managed connection strings). This is deliberate: Darling's SQL is byte-identical to Lite's DuckDB SQL, and re-qualifying it would fork that twin.
