@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Collection History" Height="600" Width="1100"
         WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
         Background="#22252b"
         Foreground="#E4E6EB">
     <!-- Copied from Lite's Windows/CollectionLogWindow.xaml for the W1i copy-parity port: the

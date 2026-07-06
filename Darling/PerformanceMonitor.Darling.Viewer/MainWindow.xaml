@@ -6,6 +6,7 @@
         Width="1280"
         Height="800"
         WindowStartupLocation="CenterScreen"
+        Icon="EDD.ico"
         Background="#22252b"
         Foreground="#E4E6EB">
     <!--
