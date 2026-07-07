@@ -40,7 +40,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes forty tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fourteen core data-read tools, and fifteen diagnostic-depth data-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes forty-seven tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fourteen core data-read tools, fifteen diagnostic-depth data-read tools, and seven resource-contention + jobs data-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -108,9 +108,23 @@ internal static class DarlingMcpInstructions
         | `get_object_locking` | Per-index lock/latch contention, most contended first | `server_name` |
         | `get_database_sizes` | Per-file database sizes, space usage, and volume free space | `server_name` |
 
+        ### Resource-contention + jobs data-read tools
+
+        Deeper reads for an internal-contention / worker-thread / memory-grant / plan-cache / SQL Agent investigation. Same names + parameters Lite and the Dashboard expose. The Dashboard's per-class latch `severity` / `description` / `recommendation`, spinlock `description`, plan-cache `bloat_level`, and CPU-scheduler `pressure_level` / `recommendation` are the Dashboard / reporting-view CASE derivations (not collected columns) — reproduced here so the full result shape is served. Per-second latch/spinlock rates are derived from the collection interval (Darling's delta collectors store no `sample_interval_seconds`).
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_latch_stats` | Top latch classes by wait time, with per-second rates + severity / description / recommendation | `server_name`, `hours_back` (default 24), `top` (default 10) |
+        | `get_spinlock_stats` | Top spinlocks by collisions, with per-second rates + description | `server_name`, `hours_back` (default 24), `top` (default 10) |
+        | `get_resource_semaphore` | Latest workspace-memory semaphores: target / max-target ceiling vs granted / used, waiter / timeout / forced | `server_name`, `hours_back` (default 24) |
+        | `get_memory_grants` | Latest per-pool grant detail: available / granted / used + waiter / timeout / forced deltas | `server_name`, `hours_back` (default 1) |
+        | `get_plan_cache_bloat` | Plan cache single-use vs multi-use composition + bloat_level classification | `server_name`, `hours_back` (default 24) |
+        | `get_cpu_scheduler_pressure` | Latest scheduler snapshot: runnable queue, worker utilization, pressure_level + warnings | `server_name` |
+        | `get_running_jobs` | Currently running SQL Agent jobs with duration vs historical average / p95 | `server_name` |
+
         The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
 
-        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. Some recommended tools are NOT on this server yet (e.g. get_perfmon_trend, get_memory_grants, get_query_trend, get_running_jobs, get_latch_stats, get_spinlock_stats, get_resource_semaphore, get_cpu_scheduler_pressure, get_plan_cache_bloat) — if you are also connected to a Performance Monitor Lite / Dashboard MCP server, follow those there; otherwise treat them as investigation hints.
+        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. The resource-contention + jobs tools (`get_latch_stats`, `get_spinlock_stats`, `get_resource_semaphore`, `get_memory_grants`, `get_plan_cache_bloat`, `get_cpu_scheduler_pressure`, `get_running_jobs`) are hosted here too. Some recommended tools are NOT on this server yet (e.g. the trend siblings get_memory_trend, get_perfmon_trend, get_query_trend, get_query_duration_trend, get_file_io_trend, and the get_health_parser_* system-health family) — if you are also connected to a Performance Monitor Lite / Dashboard MCP server, follow those there; otherwise treat them as investigation hints.
 
         ## Recommended Workflow
 

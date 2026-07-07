@@ -181,7 +181,20 @@ public sealed class DarlingMcpHostService : BackgroundService
                 .WithGeminiCompatibleTools<DarlingMcpBlockingTools>()
                 .WithGeminiCompatibleTools<DarlingMcpSessionTools>()
                 .WithGeminiCompatibleTools<DarlingMcpConfigHistoryTools>()
-                .WithGeminiCompatibleTools<DarlingMcpObjectStatsTools>();
+                .WithGeminiCompatibleTools<DarlingMcpObjectStatsTools>()
+                /* The resource-contention + jobs data-read tools — get_latch_stats / get_spinlock_stats,
+                   get_resource_semaphore / get_memory_grants, get_plan_cache_bloat / get_cpu_scheduler_pressure,
+                   get_running_jobs — the same names Lite and the Dashboard expose, over Darling's Postgres store
+                   (STORED reads of the collected latch/spinlock/memory-grant/plan-cache/cpu-scheduler/running-job
+                   snapshots, no live hit). The Dashboard-only CASE enrichment (latch severity/description/
+                   recommendation, spinlock description) and the #1410 client-side classifications (plan-cache
+                   bloat_level, cpu-scheduler pressure_level) are reproduced service-side so the full result shape
+                   is served; Darling's delta collectors store no sample_interval_seconds, so per-second rates are
+                   derived from the LAG interval. */
+                .WithGeminiCompatibleTools<DarlingMcpLatchSpinlockTools>()
+                .WithGeminiCompatibleTools<DarlingMcpMemoryGrantTools>()
+                .WithGeminiCompatibleTools<DarlingMcpPlanCacheSchedulerTools>()
+                .WithGeminiCompatibleTools<DarlingMcpJobTools>();
 
             _app = builder.Build();
             _app.MapMcp();
