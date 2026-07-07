@@ -71,6 +71,15 @@ public partial class ViewerServerTab
                 label = $"Live Plan - {proc.FullName}";
                 queryText = null; /* the procedure grid carries no statement text; the plan XML holds its own */
                 break;
+            case ViewerExpensiveQueryRow expensive when !string.IsNullOrEmpty(expensive.PlanHandle):
+                /* Unified Expensive Queries: the query_stats + procedure_stats arms carry a plan_handle; the
+                   Query Store arm has none (its rows stay disabled). Statement text only for the statement
+                   sources; the procedure sources carry the object name, whose plan XML holds its own text. */
+                planHandle = expensive.PlanHandle;
+                databaseName = expensive.DatabaseName;
+                label = $"Live Plan - {expensive.Source}: {expensive.ObjectName}";
+                queryText = expensive.IsStatementSource ? expensive.QueryText : null;
+                break;
             default:
                 return;
         }
