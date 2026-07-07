@@ -1,0 +1,1007 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+using NpgsqlTypes;
+
+namespace PerformanceMonitor.Darling.Service.Mcp;
+
+/// <summary>
+/// Service-side reads for the core data-read MCP tools (<see cref="DarlingMcpDataTools"/>) — the
+/// SAME collected data the viewer's <c>ViewerDataService.*</c> partials read, adapted here so the
+/// MCP host never references the WPF viewer project. Each read is a STORED read (no live
+/// monitored-server hit), keyed by <c>server_id</c> and windowed on the naive-UTC
+/// <c>collection_time</c> prefix — the reliable clock every Darling read windows on, sent
+/// <c>Kind=Unspecified</c> because the store's columns are <c>timestamp without time zone</c>
+/// (a <c>Kind=Utc</c> DateTime maps to timestamptz and throws since Npgsql 6.0).
+///
+/// <para>
+/// The result shapes mirror Lite's <c>Mcp*Tools</c> field-for-field (the same tool names the
+/// Dashboard and Lite expose), because Darling's store is Lite's DuckDB schema column-for-column
+/// (<see cref="Storage.PgSchemaGenerator"/>) — the same reason the existing
+/// <see cref="DarlingMcpTools"/> mirror Lite's analysis tools. Every SQL string is a public const so
+/// Darling.Tests can pin the dialect + columns without a live Postgres. Where a view exists the read
+/// uses the <c>v_*</c> passthrough (the Darling-analysis convention); <c>server_properties</c> and the
+/// three query-perf tables have NO <c>v_*</c> view (they are not in
+/// <see cref="Storage.PgSchemaGenerator.AllPassthroughViews"/>) so those reads hit the base table, exactly
+/// like the viewer's twins and the merged <see cref="DarlingStoredPlanReader"/>.
+/// </para>
+/// </summary>
+internal static class DarlingDataReader
+{
+    /* ─────────────────────────── result records ─────────────────────────── */
+
+    /// <summary>One raw CPU ring-buffer sample: sample_time (de-skewed to naive UTC) + the SQL and
+    /// other-process CPU percentages. The tool buckets these to 1-minute averages.</summary>
+    public sealed record CpuSample(DateTime SampleTime, int SqlServerCpu, int OtherProcessCpu);
+
+    /// <summary>One aggregated wait type over the window — summed deltas; resource / signal-pct are
+    /// computed by the tool (mirroring Lite's <c>WaitStatsRow</c>).</summary>
+    public sealed record WaitStatRow(string WaitType, long TotalWaitingTasks, long TotalWaitTimeMs, long TotalSignalWaitTimeMs);
+
+    /// <summary>One point of a single wait type's per-second trend.</summary>
+    public sealed record WaitTrendPoint(DateTime CollectionTime, double WaitTimeMsPerSecond, double SignalWaitTimeMsPerSecond);
+
+    /// <summary>The latest memory_stats snapshot (Lite's <c>MemoryStatsRow</c>); utilization is
+    /// computed by the tool.</summary>
+    public sealed record MemoryStatsRow(
+        DateTime CollectionTime, double TotalPhysicalMemoryMb, double AvailablePhysicalMemoryMb,
+        double TotalPageFileMb, double AvailablePageFileMb, string SystemMemoryState, string SqlMemoryModel,
+        double TargetServerMemoryMb, double TotalServerMemoryMb, double BufferPoolMb, double PlanCacheMb);
+
+    /// <summary>One memory clerk's footprint at the latest snapshot.</summary>
+    public sealed record MemoryClerkRow(string ClerkType, double MemoryMb);
+
+    /// <summary>One database file's latest I/O snapshot; avg latency is computed by the tool.</summary>
+    public sealed record FileIoRow(
+        string DatabaseName, string FileName, string FileType, string PhysicalName, double SizeMb,
+        long DeltaReads, long DeltaWrites, long DeltaReadBytes, long DeltaWriteBytes,
+        long DeltaStallReadMs, long DeltaStallWriteMs);
+
+    /// <summary>One tempdb space-usage sample over the window.</summary>
+    public sealed record TempDbSample(
+        DateTime CollectionTime, double UserObjectReservedMb, double InternalObjectReservedMb,
+        double VersionStoreReservedMb, double TotalReservedMb, double UnallocatedMb,
+        long TotalSessionsUsingTempDb, int TopSessionId, double TopSessionTempDbMb);
+
+    /// <summary>One perfmon counter at the latest snapshot.</summary>
+    public sealed record PerfmonRow(string CounterName, string InstanceName, long Value, long DeltaValue);
+
+    /// <summary>One (database, query_hash) group's summed query-stats deltas over the window. Time
+    /// metrics are in microseconds (converted to ms by the tool, matching Lite).</summary>
+    public sealed record TopQueryRow(
+        string DatabaseName, string QueryHash, string QueryPlanHash, string SqlHandle, string PlanHandle,
+        long TotalExecutions, long TotalCpuUs, long TotalElapsedUs, long TotalLogicalReads, long TotalLogicalWrites,
+        long TotalPhysicalReads, long TotalRows, long TotalSpills, int MinDop, int MaxDop,
+        long MinCpuUs, long MaxCpuUs, long MinElapsedUs, long MaxElapsedUs, string QueryText);
+
+    /// <summary>One (database, schema, object) group's summed procedure-stats deltas over the window.</summary>
+    public sealed record TopProcedureRow(
+        string DatabaseName, string SchemaName, string ObjectName, string ObjectType, string SqlHandle, string PlanHandle,
+        long TotalExecutions, long TotalCpuUs, long TotalElapsedUs, long TotalLogicalReads, long TotalLogicalWrites,
+        long TotalPhysicalReads, long TotalSpills, long MinCpuUs, long MaxCpuUs, long MinElapsedUs, long MaxElapsedUs);
+
+    /// <summary>One Query Store (database, query_id, plan_id, query_hash) group's interval averages.</summary>
+    public sealed record QueryStoreRow(
+        string DatabaseName, long QueryId, long PlanId, string QueryHash, string QueryPlanHash,
+        long TotalExecutions, double AvgDurationMs, double AvgCpuTimeMs, double AvgLogicalReads,
+        double AvgLogicalWrites, double AvgPhysicalReads, double AvgRowcount, DateTime? LastExecutionTime, string QueryText);
+
+    /// <summary>One server-list entry — the registry row plus its newest collection instant (drives the
+    /// freshness-derived status the tool assigns; the viewer has no live ping either).</summary>
+    public sealed record ServerListRow(int ServerId, string ServerName, string? DisplayName, int? SqlMajorVersion, DateTime? LastCollection);
+
+    /// <summary>The latest server_properties snapshot (Lite's <c>ServerPropertiesRow</c>).</summary>
+    public sealed record ServerPropertiesReadRow(
+        DateTime CollectionTime, string Edition, string ProductVersion, string ProductLevel, string? ProductUpdateLevel,
+        int EngineEdition, int CpuCount, int HyperthreadRatio, long PhysicalMemoryMb, int SocketCount, int CoresPerSocket,
+        bool IsHadrEnabled, bool IsClustered, string? EnterpriseFeatures, string? ServiceObjective);
+
+    /* ─────────────────────────── CPU ─────────────────────────── */
+
+    /// <summary>
+    /// Raw per-sample CPU (the viewer's <c>CpuUtilizationSql</c>): every ring-buffer sample since the
+    /// window start, with <c>sample_time</c> de-skewed from the monitored server's LOCAL wall clock to
+    /// naive UTC by subtracting the per-batch UTC offset (#1262). Windows on <c>collection_time</c> (the
+    /// reliable naive-UTC clock, not the server-local sample_time). Reads the base
+    /// <c>cpu_utilization_stats</c> table (the de-skew window function needs collection_time alongside
+    /// sample_time). $1 server_id, $2 window start (naive UTC).
+    /// </summary>
+    public const string CpuUtilizationSql = """
+        SELECT
+            sample_time
+                - INTERVAL '15 minutes'
+                  * ROUND(EXTRACT(EPOCH FROM (
+                        MAX(sample_time) OVER (PARTITION BY server_id, collection_time) - collection_time
+                    )) / 900.0)::double precision AS sample_time,
+            sqlserver_cpu_utilization,
+            other_process_cpu_utilization
+        FROM cpu_utilization_stats
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        ORDER BY sample_time
+        """;
+
+    public static async Task<List<CpuSample>> GetCpuUtilizationAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, CancellationToken cancellationToken = default)
+    {
+        var samples = new List<CpuSample>();
+        await using var command = postgres.CreateCommand(CpuUtilizationSql);
+        AddInt(command, serverId);
+        AddTimestamp(command, startUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            samples.Add(new CpuSample(
+                reader.GetDateTime(0),
+                reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
+                reader.IsDBNull(2) ? 0 : reader.GetInt32(2)));
+        }
+
+        return samples;
+    }
+
+    /* ─────────────────────────── wait stats ─────────────────────────── */
+
+    /// <summary>
+    /// Aggregated wait stats over the window — Lite's <c>GetWaitStatsAsync</c>: summed deltas per
+    /// wait_type, heaviest first. The SUMs CAST to bigint for the typed GetInt64 reader (Postgres
+    /// <c>SUM(bigint)</c> is numeric). Lite's per-user IgnoredWaitTypes exclusion is dropped (headless
+    /// has no per-user ignore config — the viewer's wait reads drop it the same way). $1 server_id, $2/$3
+    /// window (naive UTC).
+    /// </summary>
+    public const string WaitStatsSql = """
+        SELECT
+            wait_type,
+            CAST(SUM(delta_waiting_tasks) AS bigint) AS total_waiting_tasks,
+            CAST(SUM(delta_wait_time_ms) AS bigint) AS total_wait_time_ms,
+            CAST(SUM(delta_signal_wait_time_ms) AS bigint) AS total_signal_wait_time_ms
+        FROM v_wait_stats
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        AND   collection_time <= $3
+        GROUP BY wait_type
+        ORDER BY SUM(delta_wait_time_ms) DESC
+        LIMIT 50
+        """;
+
+    public static async Task<List<WaitStatRow>> GetWaitStatsAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<WaitStatRow>();
+        await using var command = postgres.CreateCommand(WaitStatsSql);
+        AddWindow(command, serverId, startUtc, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new WaitStatRow(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                reader.IsDBNull(3) ? 0 : reader.GetInt64(3)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// The distinct wait types collected over the window, heaviest first — feeds the get_wait_trend
+    /// "not_collected" hint (Lite's <c>GetDistinctWaitTypesAsync</c>). $1 server_id, $2/$3 window.
+    /// </summary>
+    public const string DistinctWaitTypesSql = """
+        SELECT wait_type
+        FROM v_wait_stats
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        AND   collection_time <= $3
+        GROUP BY wait_type
+        ORDER BY SUM(delta_wait_time_ms) DESC
+        """;
+
+    public static async Task<List<string>> GetDistinctWaitTypesAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var items = new List<string>();
+        await using var command = postgres.CreateCommand(DistinctWaitTypesSql);
+        AddWindow(command, serverId, startUtc, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(reader.GetString(0));
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// A single wait type's per-second trend — Lite's <c>GetWaitStatsTrendAsync</c>: the interval rate is
+    /// this collection's delta divided by the seconds since the previous collection (a <c>LAG</c> over the
+    /// truncate-then-diff epoch idiom proven value-identical DuckDB↔Postgres). $1 server_id, $2 wait_type,
+    /// $3/$4 window (naive UTC).
+    /// </summary>
+    public const string WaitTrendSql = """
+        WITH raw AS
+        (
+            SELECT
+                collection_time,
+                delta_wait_time_ms,
+                delta_signal_wait_time_ms,
+                extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
+            FROM v_wait_stats
+            WHERE server_id = $1
+            AND   wait_type = $2
+            AND   collection_time >= $3
+            AND   collection_time <= $4
+        )
+        SELECT
+            collection_time,
+            CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+            CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second
+        FROM raw
+        ORDER BY collection_time
+        """;
+
+    public static async Task<List<WaitTrendPoint>> GetWaitTrendAsync(
+        NpgsqlDataSource postgres, int serverId, string waitType, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var items = new List<WaitTrendPoint>();
+        await using var command = postgres.CreateCommand(WaitTrendSql);
+        AddInt(command, serverId);
+        AddText(command, waitType);
+        AddTimestamp(command, startUtc);
+        AddTimestamp(command, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(new WaitTrendPoint(
+                reader.GetDateTime(0),
+                reader.IsDBNull(1) ? 0 : reader.GetDouble(1),
+                reader.IsDBNull(2) ? 0 : reader.GetDouble(2)));
+        }
+
+        return items;
+    }
+
+    /* ─────────────────────────── memory ─────────────────────────── */
+
+    /// <summary>
+    /// The latest memory_stats snapshot — the viewer's <c>LatestMemoryStatsSql</c>. The eight MB metrics
+    /// are <c>numeric(18,2)</c> and CAST to double precision for the typed reader. $1 server_id.
+    /// </summary>
+    public const string LatestMemoryStatsSql = """
+        SELECT
+            collection_time,
+            CAST(total_physical_memory_mb AS double precision),
+            CAST(available_physical_memory_mb AS double precision),
+            CAST(total_page_file_mb AS double precision),
+            CAST(available_page_file_mb AS double precision),
+            system_memory_state,
+            sql_memory_model,
+            CAST(target_server_memory_mb AS double precision),
+            CAST(total_server_memory_mb AS double precision),
+            CAST(buffer_pool_mb AS double precision),
+            CAST(plan_cache_mb AS double precision)
+        FROM v_memory_stats
+        WHERE server_id = $1
+        ORDER BY collection_time DESC
+        LIMIT 1
+        """;
+
+    public static async Task<MemoryStatsRow?> GetLatestMemoryStatsAsync(
+        NpgsqlDataSource postgres, int serverId, CancellationToken cancellationToken = default)
+    {
+        await using var command = postgres.CreateCommand(LatestMemoryStatsSql);
+        AddInt(command, serverId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new MemoryStatsRow(
+            reader.GetDateTime(0),
+            reader.IsDBNull(1) ? 0 : reader.GetDouble(1),
+            reader.IsDBNull(2) ? 0 : reader.GetDouble(2),
+            reader.IsDBNull(3) ? 0 : reader.GetDouble(3),
+            reader.IsDBNull(4) ? 0 : reader.GetDouble(4),
+            reader.IsDBNull(5) ? "" : reader.GetString(5),
+            reader.IsDBNull(6) ? "" : reader.GetString(6),
+            reader.IsDBNull(7) ? 0 : reader.GetDouble(7),
+            reader.IsDBNull(8) ? 0 : reader.GetDouble(8),
+            reader.IsDBNull(9) ? 0 : reader.GetDouble(9),
+            reader.IsDBNull(10) ? 0 : reader.GetDouble(10));
+    }
+
+    /// <summary>
+    /// The latest memory-clerk breakdown — Lite's <c>GetLatestMemoryClerksAsync</c>: every clerk at the
+    /// newest collection, heaviest first. memory_mb is <c>numeric(18,2)</c> → double precision. $1 server_id.
+    /// </summary>
+    public const string LatestMemoryClerksSql = """
+        SELECT clerk_type, CAST(memory_mb AS double precision)
+        FROM v_memory_clerks
+        WHERE server_id = $1
+        AND   collection_time = (SELECT MAX(collection_time) FROM v_memory_clerks WHERE server_id = $1)
+        ORDER BY memory_mb DESC
+        """;
+
+    public static async Task<List<MemoryClerkRow>> GetLatestMemoryClerksAsync(
+        NpgsqlDataSource postgres, int serverId, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<MemoryClerkRow>();
+        await using var command = postgres.CreateCommand(LatestMemoryClerksSql);
+        AddInt(command, serverId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new MemoryClerkRow(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? 0 : reader.GetDouble(1)));
+        }
+
+        return rows;
+    }
+
+    /* ─────────────────────────── file I/O ─────────────────────────── */
+
+    /// <summary>
+    /// The latest file-I/O snapshot per database file — Lite's <c>GetLatestFileIoStatsAsync</c>, ordered
+    /// by total stall descending; avg latency (stall/op) is computed by the tool. size_mb is
+    /// <c>numeric</c> → double precision; the delta columns are bigint. $1 server_id.
+    /// </summary>
+    public const string LatestFileIoStatsSql = """
+        SELECT
+            database_name,
+            file_name,
+            file_type,
+            physical_name,
+            CAST(size_mb AS double precision),
+            delta_reads,
+            delta_writes,
+            delta_read_bytes,
+            delta_write_bytes,
+            delta_stall_read_ms,
+            delta_stall_write_ms
+        FROM v_file_io_stats
+        WHERE server_id = $1
+        AND   collection_time = (SELECT MAX(collection_time) FROM v_file_io_stats WHERE server_id = $1)
+        ORDER BY (delta_stall_read_ms + delta_stall_write_ms) DESC
+        """;
+
+    public static async Task<List<FileIoRow>> GetLatestFileIoStatsAsync(
+        NpgsqlDataSource postgres, int serverId, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<FileIoRow>();
+        await using var command = postgres.CreateCommand(LatestFileIoStatsSql);
+        AddInt(command, serverId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new FileIoRow(
+                reader.IsDBNull(0) ? "" : reader.GetString(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? "" : reader.GetString(2),
+                reader.IsDBNull(3) ? "" : reader.GetString(3),
+                reader.IsDBNull(4) ? 0 : reader.GetDouble(4),
+                reader.IsDBNull(5) ? 0 : reader.GetInt64(5),
+                reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
+                reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                reader.IsDBNull(9) ? 0 : reader.GetInt64(9),
+                reader.IsDBNull(10) ? 0 : reader.GetInt64(10)));
+        }
+
+        return rows;
+    }
+
+    /* ─────────────────────────── tempdb ─────────────────────────── */
+
+    /// <summary>
+    /// tempdb space-usage samples over the window — the viewer's <c>TempDbTrendSql</c>. MB columns are
+    /// <c>numeric(18,2)</c> → double precision; total_sessions_using_tempdb is bigint, top_session_id is
+    /// integer. $1 server_id, $2 window start (naive UTC).
+    /// </summary>
+    public const string TempDbTrendSql = """
+        SELECT
+            collection_time,
+            CAST(user_object_reserved_mb AS double precision),
+            CAST(internal_object_reserved_mb AS double precision),
+            CAST(version_store_reserved_mb AS double precision),
+            CAST(total_reserved_mb AS double precision),
+            CAST(unallocated_mb AS double precision),
+            total_sessions_using_tempdb,
+            top_session_id,
+            CAST(top_session_tempdb_mb AS double precision)
+        FROM v_tempdb_stats
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        ORDER BY collection_time
+        """;
+
+    public static async Task<List<TempDbSample>> GetTempDbTrendAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, CancellationToken cancellationToken = default)
+    {
+        var samples = new List<TempDbSample>();
+        await using var command = postgres.CreateCommand(TempDbTrendSql);
+        AddInt(command, serverId);
+        AddTimestamp(command, startUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            samples.Add(new TempDbSample(
+                reader.GetDateTime(0),
+                reader.IsDBNull(1) ? 0 : reader.GetDouble(1),
+                reader.IsDBNull(2) ? 0 : reader.GetDouble(2),
+                reader.IsDBNull(3) ? 0 : reader.GetDouble(3),
+                reader.IsDBNull(4) ? 0 : reader.GetDouble(4),
+                reader.IsDBNull(5) ? 0 : reader.GetDouble(5),
+                reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
+                reader.IsDBNull(7) ? 0 : reader.GetInt32(7),
+                reader.IsDBNull(8) ? 0 : reader.GetDouble(8)));
+        }
+
+        return samples;
+    }
+
+    /* ─────────────────────────── perfmon ─────────────────────────── */
+
+    /// <summary>
+    /// The latest perfmon counters — Lite's <c>GetLatestPerfmonStatsAsync</c>: counter_name /
+    /// instance_name / cntr_value / delta_cntr_value at the newest collection. $1 server_id.
+    /// </summary>
+    public const string LatestPerfmonStatsSql = """
+        SELECT
+            counter_name,
+            instance_name,
+            cntr_value,
+            delta_cntr_value
+        FROM v_perfmon_stats
+        WHERE server_id = $1
+        AND   collection_time = (SELECT MAX(collection_time) FROM v_perfmon_stats WHERE server_id = $1)
+        ORDER BY counter_name
+        """;
+
+    public static async Task<List<PerfmonRow>> GetLatestPerfmonStatsAsync(
+        NpgsqlDataSource postgres, int serverId, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<PerfmonRow>();
+        await using var command = postgres.CreateCommand(LatestPerfmonStatsSql);
+        AddInt(command, serverId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new PerfmonRow(
+                reader.IsDBNull(0) ? "" : reader.GetString(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                reader.IsDBNull(3) ? 0 : reader.GetInt64(3)));
+        }
+
+        return rows;
+    }
+
+    /* ─────────────────────────── top queries ─────────────────────────── */
+
+    /// <summary>
+    /// Top query-stats groups over the window — a focused projection of the viewer's <c>TopQueriesSql</c>
+    /// (the columns Lite's get_top_queries_by_cpu returns): group by (database, query_hash), sum the
+    /// deltas + carry min/max spreads, rank by summed <c>delta_elapsed_time</c> descending, over-fetch by
+    /// 5 to drop WAITFOR shells via the latest-text LATERAL, cap at top. Summed bigints CAST back to bigint
+    /// for the typed reader. Reads the base <c>query_stats</c> table (no v_ view — the plan tools read it
+    /// the same way). $1 server_id, $2/$3 window (naive UTC), $4 top.
+    /// </summary>
+    public const string TopQueriesSql = """
+        WITH ranked AS (
+            SELECT
+                database_name,
+                query_hash,
+                CAST(SUM(delta_execution_count) AS bigint) AS total_executions,
+                CAST(SUM(delta_worker_time) AS bigint) AS total_cpu_us,
+                CAST(SUM(delta_elapsed_time) AS bigint) AS total_elapsed_us,
+                CAST(SUM(delta_logical_reads) AS bigint) AS total_reads,
+                CAST(SUM(delta_logical_writes) AS bigint) AS total_writes,
+                CAST(SUM(delta_physical_reads) AS bigint) AS total_physical_reads,
+                CAST(SUM(delta_rows) AS bigint) AS total_rows,
+                CAST(SUM(delta_spills) AS bigint) AS total_spills,
+                MIN(min_dop) AS min_dop,
+                MAX(max_dop) AS max_dop,
+                MIN(min_worker_time) AS min_worker_time,
+                MAX(max_worker_time) AS max_worker_time,
+                MIN(min_elapsed_time) AS min_elapsed_time,
+                MAX(max_elapsed_time) AS max_elapsed_time,
+                MAX(query_plan_hash) AS query_plan_hash,
+                MAX(sql_handle) AS sql_handle,
+                MAX(plan_handle) AS plan_handle
+            FROM query_stats
+            WHERE server_id = $1
+            AND   collection_time >= $2
+            AND   collection_time <= $3
+            AND   ($5::text IS NULL OR database_name = $5)
+            GROUP BY database_name, query_hash
+            HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
+            ORDER BY SUM(delta_elapsed_time) DESC
+            LIMIT $4 + 5
+        )
+        SELECT
+            r.database_name,
+            r.query_hash,
+            r.query_plan_hash,
+            r.sql_handle,
+            r.plan_handle,
+            r.total_executions,
+            r.total_cpu_us,
+            r.total_elapsed_us,
+            r.total_reads,
+            r.total_writes,
+            r.total_physical_reads,
+            r.total_rows,
+            r.total_spills,
+            r.min_dop,
+            r.max_dop,
+            r.min_worker_time,
+            r.max_worker_time,
+            r.min_elapsed_time,
+            r.max_elapsed_time,
+            t.query_text
+        FROM ranked AS r
+        LEFT JOIN LATERAL (
+            SELECT query_text
+            FROM query_stats
+            WHERE server_id = $1
+            AND   query_hash = r.query_hash
+            AND   database_name = r.database_name
+            AND   query_text IS NOT NULL
+            ORDER BY collection_time DESC
+            LIMIT 1
+        ) AS t ON TRUE
+        WHERE t.query_text IS NULL OR t.query_text NOT LIKE 'WAITFOR%'
+        ORDER BY r.total_elapsed_us DESC
+        LIMIT $4
+        """;
+
+    public static async Task<List<TopQueryRow>> GetTopQueriesByCpuAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, DateTime endUtc, int top, string? databaseName, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<TopQueryRow>();
+        await using var command = postgres.CreateCommand(TopQueriesSql);
+        AddWindow(command, serverId, startUtc, endUtc);
+        AddInt(command, top);
+        AddNullableText(command, databaseName);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new TopQueryRow(
+                reader.IsDBNull(0) ? "" : reader.GetString(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? "" : reader.GetString(2),
+                reader.IsDBNull(3) ? "" : reader.GetString(3),
+                reader.IsDBNull(4) ? "" : reader.GetString(4),
+                reader.IsDBNull(5) ? 0 : reader.GetInt64(5),
+                reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
+                reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                reader.IsDBNull(9) ? 0 : reader.GetInt64(9),
+                reader.IsDBNull(10) ? 0 : reader.GetInt64(10),
+                reader.IsDBNull(11) ? 0 : reader.GetInt64(11),
+                reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                reader.IsDBNull(13) ? 0 : Convert.ToInt32(reader.GetValue(13)),
+                reader.IsDBNull(14) ? 0 : Convert.ToInt32(reader.GetValue(14)),
+                reader.IsDBNull(15) ? 0 : reader.GetInt64(15),
+                reader.IsDBNull(16) ? 0 : reader.GetInt64(16),
+                reader.IsDBNull(17) ? 0 : reader.GetInt64(17),
+                reader.IsDBNull(18) ? 0 : reader.GetInt64(18),
+                reader.IsDBNull(19) ? "" : reader.GetString(19)));
+        }
+
+        return rows;
+    }
+
+    /* ─────────────────────────── top procedures ─────────────────────────── */
+
+    /// <summary>
+    /// Top procedure-stats groups over the window — a focused projection of the viewer's
+    /// <c>TopProceduresSql</c> (the columns Lite's get_top_procedures_by_cpu returns): group by
+    /// (database, schema, object, type), sum the deltas + carry min/max spreads, rank by summed
+    /// <c>delta_elapsed_time</c> descending, cap at top. Reads the base <c>procedure_stats</c> table
+    /// (no v_ view). $1 server_id, $2/$3 window (naive UTC), $4 top.
+    /// </summary>
+    public const string TopProceduresSql = """
+        SELECT
+            database_name,
+            schema_name,
+            object_name,
+            object_type,
+            MAX(sql_handle) AS sql_handle,
+            MAX(plan_handle) AS plan_handle,
+            CAST(SUM(delta_execution_count) AS bigint) AS total_executions,
+            CAST(SUM(delta_worker_time) AS bigint) AS total_cpu_us,
+            CAST(SUM(delta_elapsed_time) AS bigint) AS total_elapsed_us,
+            CAST(SUM(delta_logical_reads) AS bigint) AS total_reads,
+            CAST(SUM(delta_logical_writes) AS bigint) AS total_writes,
+            CAST(SUM(delta_physical_reads) AS bigint) AS total_physical_reads,
+            CAST(SUM(delta_spills) AS bigint) AS total_spills,
+            MIN(min_worker_time) AS min_worker_time,
+            MAX(max_worker_time) AS max_worker_time,
+            MIN(min_elapsed_time) AS min_elapsed_time,
+            MAX(max_elapsed_time) AS max_elapsed_time
+        FROM procedure_stats
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        AND   collection_time <= $3
+        AND   ($5::text IS NULL OR database_name = $5)
+        GROUP BY database_name, schema_name, object_name, object_type
+        HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
+        ORDER BY SUM(delta_elapsed_time) DESC
+        LIMIT $4
+        """;
+
+    public static async Task<List<TopProcedureRow>> GetTopProceduresByCpuAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, DateTime endUtc, int top, string? databaseName, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<TopProcedureRow>();
+        await using var command = postgres.CreateCommand(TopProceduresSql);
+        AddWindow(command, serverId, startUtc, endUtc);
+        AddInt(command, top);
+        AddNullableText(command, databaseName);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new TopProcedureRow(
+                reader.IsDBNull(0) ? "" : reader.GetString(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? "" : reader.GetString(2),
+                reader.IsDBNull(3) ? "" : reader.GetString(3),
+                reader.IsDBNull(4) ? "" : reader.GetString(4),
+                reader.IsDBNull(5) ? "" : reader.GetString(5),
+                reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
+                reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                reader.IsDBNull(9) ? 0 : reader.GetInt64(9),
+                reader.IsDBNull(10) ? 0 : reader.GetInt64(10),
+                reader.IsDBNull(11) ? 0 : reader.GetInt64(11),
+                reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                reader.IsDBNull(13) ? 0 : reader.GetInt64(13),
+                reader.IsDBNull(14) ? 0 : reader.GetInt64(14),
+                reader.IsDBNull(15) ? 0 : reader.GetInt64(15),
+                reader.IsDBNull(16) ? 0 : reader.GetInt64(16)));
+        }
+
+        return rows;
+    }
+
+    /* ─────────────────────────── query store ─────────────────────────── */
+
+    /// <summary>
+    /// Top Query Store groups over the window — a focused projection of the viewer's
+    /// <c>QueryStoreTopSql</c> (the columns Lite's get_query_store_top returns): group by
+    /// (database, query_id, plan_id, query_hash), average the per-interval metrics, rank by total duration
+    /// (<c>SUM(execution_count) * AVG(avg_duration_us)</c>) descending, over-fetch by 5 for the WAITFOR
+    /// trim, cap at top. The avg columns are bigint (per-interval averages) → double precision before the
+    /// AVG/scale. Reads the base <c>query_store_stats</c> table (no v_ view). $1 server_id, $2/$3 window
+    /// (naive UTC), $4 top.
+    /// </summary>
+    public const string QueryStoreTopSql = """
+        WITH ranked AS (
+            SELECT
+                database_name,
+                query_id,
+                plan_id,
+                query_hash,
+                CAST(SUM(execution_count) AS bigint) AS total_executions,
+                AVG(CAST(avg_duration_us AS double precision)) / 1000.0 AS avg_duration_ms,
+                AVG(CAST(avg_cpu_time_us AS double precision)) / 1000.0 AS avg_cpu_time_ms,
+                AVG(CAST(avg_logical_io_reads AS double precision)) AS avg_logical_reads,
+                AVG(CAST(avg_logical_io_writes AS double precision)) AS avg_logical_writes,
+                AVG(CAST(avg_physical_io_reads AS double precision)) AS avg_physical_reads,
+                AVG(CAST(avg_rowcount AS double precision)) AS avg_rowcount,
+                MAX(last_execution_time) AS last_execution_time,
+                MAX(query_plan_hash) AS query_plan_hash
+            FROM query_store_stats
+            WHERE server_id = $1
+            AND   collection_time >= $2
+            AND   collection_time <= $3
+            AND   ($5::text IS NULL OR database_name = $5)
+            GROUP BY database_name, query_id, plan_id, query_hash
+            ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS double precision)) DESC
+            LIMIT $4 + 5
+        )
+        SELECT
+            r.database_name,
+            r.query_id,
+            r.plan_id,
+            r.query_hash,
+            r.query_plan_hash,
+            r.total_executions,
+            r.avg_duration_ms,
+            r.avg_cpu_time_ms,
+            r.avg_logical_reads,
+            r.avg_logical_writes,
+            r.avg_physical_reads,
+            r.avg_rowcount,
+            r.last_execution_time,
+            t.query_text
+        FROM ranked AS r
+        LEFT JOIN LATERAL (
+            SELECT query_text
+            FROM query_store_stats
+            WHERE server_id = $1
+            AND   query_id = r.query_id
+            AND   database_name = r.database_name
+            AND   query_text IS NOT NULL
+            ORDER BY collection_time DESC
+            LIMIT 1
+        ) AS t ON TRUE
+        WHERE t.query_text IS NULL OR t.query_text NOT LIKE 'WAITFOR%'
+        ORDER BY r.total_executions * r.avg_duration_ms DESC
+        LIMIT $4
+        """;
+
+    public static async Task<List<QueryStoreRow>> GetQueryStoreTopAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, DateTime endUtc, int top, string? databaseName, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<QueryStoreRow>();
+        await using var command = postgres.CreateCommand(QueryStoreTopSql);
+        AddWindow(command, serverId, startUtc, endUtc);
+        AddInt(command, top);
+        AddNullableText(command, databaseName);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new QueryStoreRow(
+                reader.IsDBNull(0) ? "" : reader.GetString(0),
+                reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                reader.IsDBNull(3) ? "" : reader.GetString(3),
+                reader.IsDBNull(4) ? "" : reader.GetString(4),
+                reader.IsDBNull(5) ? 0 : reader.GetInt64(5),
+                reader.IsDBNull(6) ? 0 : reader.GetDouble(6),
+                reader.IsDBNull(7) ? 0 : reader.GetDouble(7),
+                reader.IsDBNull(8) ? 0 : reader.GetDouble(8),
+                reader.IsDBNull(9) ? 0 : reader.GetDouble(9),
+                reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
+                reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
+                reader.IsDBNull(12) ? null : reader.GetDateTime(12),
+                reader.IsDBNull(13) ? "" : reader.GetString(13)));
+        }
+
+        return rows;
+    }
+
+    /* ─────────────────────────── discovery / health ─────────────────────────── */
+
+    /// <summary>
+    /// Every enabled server plus its newest collection instant — the list_servers read. The
+    /// correlated <c>MAX(collection_time)</c> per server drives the freshness-derived status the tool
+    /// assigns (the headless viewer has no live ping either — see <c>ServerSummaryItem.ClassifyFreshness</c>).
+    /// $-free (no parameters, no bare now()) so a test can pin the dialect ungated.
+    /// </summary>
+    public const string ServerListSql = """
+        SELECT
+            s.server_id,
+            s.server_name,
+            s.display_name,
+            s.sql_major_version,
+            (SELECT MAX(cl.collection_time) FROM v_collection_log cl WHERE cl.server_id = s.server_id) AS last_collection
+        FROM servers s
+        WHERE s.is_enabled
+        ORDER BY s.server_name
+        """;
+
+    public static async Task<List<ServerListRow>> GetServerListAsync(
+        NpgsqlDataSource postgres, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<ServerListRow>();
+        await using var command = postgres.CreateCommand(ServerListSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new ServerListRow(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetInt32(3),
+                reader.IsDBNull(4) ? null : reader.GetDateTime(4)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Per-collector 7-day health aggregate — the viewer's <c>CollectionHealthSql</c> (Lite's
+    /// <c>GetCollectionHealthAsync</c>): one row per collector with run/success/error counts, average
+    /// duration, last success/run/error timestamps, and the permission-denied count for the banding.
+    /// SKIPPED counts as a healthy run. $1 server_id, $2 window start (naive UTC — the trailing 7 days).
+    /// </summary>
+    public const string CollectionHealthSql = """
+        SELECT
+            collector_name,
+            COUNT(*) AS total_runs,
+            SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN status = 'ERROR' THEN 1 ELSE 0 END) AS error_count,
+            AVG(duration_ms) AS avg_duration_ms,
+            MAX(CASE WHEN status IN ('SUCCESS', 'SKIPPED') THEN collection_time END) AS last_success_time,
+            MAX(collection_time) AS last_run_time,
+            MAX(CASE WHEN status IN ('ERROR', 'PERMISSIONS') THEN error_message END) AS last_error,
+            MAX(CASE WHEN status IN ('ERROR', 'PERMISSIONS') THEN collection_time END) AS last_error_time,
+            SUM(CASE WHEN status = 'PERMISSIONS' THEN 1 ELSE 0 END) AS permission_denied_count
+        FROM v_collection_log
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        GROUP BY collector_name
+        ORDER BY collector_name
+        """;
+
+    public static async Task<List<CollectorHealth>> GetCollectionHealthAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime windowStartUtc, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<CollectorHealth>();
+        await using var command = postgres.CreateCommand(CollectionHealthSql);
+        AddInt(command, serverId);
+        AddTimestamp(command, windowStartUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new CollectorHealth
+            {
+                CollectorName = reader.GetString(0),
+                TotalRuns = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
+                SuccessCount = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+                ErrorCount = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
+                AvgDurationMs = reader.IsDBNull(4) ? 0 : Convert.ToDouble(reader.GetValue(4)),
+                LastSuccessTime = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                LastRunTime = reader.IsDBNull(6) ? null : reader.GetDateTime(6),
+                LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                LastErrorTime = reader.IsDBNull(8) ? null : reader.GetDateTime(8),
+                PermissionDeniedCount = reader.IsDBNull(9) ? 0 : Convert.ToInt64(reader.GetValue(9)),
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// The latest server_properties snapshot — Lite's <c>GetLatestServerPropertiesAsync</c>. Reads the
+    /// base <c>server_properties</c> table (the store has NO <c>v_server_properties</c> view — the viewer
+    /// reads the base table for its UTC-offset read too). $1 server_id.
+    /// </summary>
+    public const string LatestServerPropertiesSql = """
+        SELECT
+            collection_time,
+            edition,
+            product_version,
+            product_level,
+            product_update_level,
+            engine_edition,
+            cpu_count,
+            hyperthread_ratio,
+            physical_memory_mb,
+            socket_count,
+            cores_per_socket,
+            is_hadr_enabled,
+            is_clustered,
+            enterprise_features,
+            service_objective
+        FROM server_properties
+        WHERE server_id = $1
+        ORDER BY collection_time DESC
+        LIMIT 1
+        """;
+
+    public static async Task<ServerPropertiesReadRow?> GetLatestServerPropertiesAsync(
+        NpgsqlDataSource postgres, int serverId, CancellationToken cancellationToken = default)
+    {
+        await using var command = postgres.CreateCommand(LatestServerPropertiesSql);
+        AddInt(command, serverId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new ServerPropertiesReadRow(
+            reader.GetDateTime(0),
+            reader.IsDBNull(1) ? "" : reader.GetString(1),
+            reader.IsDBNull(2) ? "" : reader.GetString(2),
+            reader.IsDBNull(3) ? "" : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
+            reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
+            reader.IsDBNull(7) ? 0 : reader.GetInt32(7),
+            reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+            reader.IsDBNull(9) ? 0 : reader.GetInt32(9),
+            reader.IsDBNull(10) ? 0 : reader.GetInt32(10),
+            !reader.IsDBNull(11) && reader.GetBoolean(11),
+            !reader.IsDBNull(12) && reader.GetBoolean(12),
+            reader.IsDBNull(13) ? null : reader.GetString(13),
+            reader.IsDBNull(14) ? null : reader.GetString(14));
+    }
+
+    /* ─────────────────────────── parameter helpers ─────────────────────────── */
+
+    private static void AddWindow(NpgsqlCommand command, int serverId, DateTime startUtc, DateTime endUtc)
+    {
+        AddInt(command, serverId);
+        AddTimestamp(command, startUtc);
+        AddTimestamp(command, endUtc);
+    }
+
+    private static void AddInt(NpgsqlCommand command, int value) =>
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = value });
+
+    private static void AddText(NpgsqlCommand command, string value) =>
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = value ?? "" });
+
+    /// <summary>Binds a nullable text filter (a null value binds SQL NULL, activating the read's
+    /// <c>$N::text IS NULL OR ...</c> "no filter" branch).</summary>
+    private static void AddNullableText(NpgsqlCommand command, string? value) =>
+        command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)value ?? DBNull.Value });
+
+    /// <summary>Binds a naive-UTC timestamp: Kind=Unspecified maps to the store's <c>timestamp without
+    /// time zone</c> columns (a Kind=Utc DateTime maps to timestamptz and throws since Npgsql 6.0).</summary>
+    private static void AddTimestamp(NpgsqlCommand command, DateTime value) =>
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(value, DateTimeKind.Unspecified) });
+}
+
+/// <summary>
+/// One collector's 7-day health roll-up with its health band — a faithful service-side port of the
+/// viewer's <c>CollectorHealthRow</c> (itself Lite's), carrying just the fields the MCP
+/// get_collection_health tool surfaces plus the computed <see cref="HealthStatus"/> / failure rate. The
+/// on-load-collector staleness exemption and the NEVER_RUN / NO_PERMISSIONS / FAILING / STALE / WARNING /
+/// HEALTHY banding match Lite exactly. <see cref="DateTime.UtcNow"/> arithmetic is correct against the
+/// store's naive-UTC timestamps because both are UTC instants (tick subtraction ignores Kind).
+/// </summary>
+internal sealed class CollectorHealth
+{
+    /// <summary>On-load collectors run once per tab open / on connect, not on the scheduled loop, so the
+    /// staleness thresholds do not apply to them (mirrors Lite / the viewer).</summary>
+    private static readonly HashSet<string> OnLoadCollectors = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "server_config",
+        "database_config",
+        "database_scoped_config",
+        "trace_flags",
+        "server_properties",
+    };
+
+    public string CollectorName { get; set; } = "";
+    public long TotalRuns { get; set; }
+    public long SuccessCount { get; set; }
+    public long ErrorCount { get; set; }
+    public double AvgDurationMs { get; set; }
+    public DateTime? LastSuccessTime { get; set; }
+    public DateTime? LastRunTime { get; set; }
+    public string? LastError { get; set; }
+    public DateTime? LastErrorTime { get; set; }
+    public long PermissionDeniedCount { get; set; }
+
+    public double FailureRatePercent => TotalRuns > 0 ? (double)ErrorCount / TotalRuns * 100 : 0;
+
+    public double HoursSinceLastSuccess => LastSuccessTime.HasValue
+        ? (DateTime.UtcNow - LastSuccessTime.Value).TotalHours
+        : 999;
+
+    public string HealthStatus
+    {
+        get
+        {
+            if (TotalRuns == 0) return "NEVER_RUN";
+            if (PermissionDeniedCount > 0 && ErrorCount == 0 && SuccessCount == 0) return "NO_PERMISSIONS";
+            if (OnLoadCollectors.Contains(CollectorName))
+            {
+                return FailureRatePercent > 20 ? "WARNING" : "HEALTHY";
+            }
+            if (HoursSinceLastSuccess > 24) return "FAILING";
+            if (HoursSinceLastSuccess > 4) return "STALE";
+            if (FailureRatePercent > 20) return "WARNING";
+            return "HEALTHY";
+        }
+    }
+}
