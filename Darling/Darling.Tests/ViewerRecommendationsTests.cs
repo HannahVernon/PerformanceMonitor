@@ -452,6 +452,64 @@ public sealed class ViewerRecommendationGroupingTests
         Assert.Equal(0, vm.TotalCount);
     }
 
+    // ── Insufficient-data vs all-clear state selection (V19 marker) ─────────────────────────────
+
+    [Fact]
+    public void FromFindings_ZeroFindings_NoInsufficientMarker_IsTheGenuineAllClear()
+    {
+        // data + zero findings -> Empty (the genuine all-clear); the message is empty.
+        var vm = RecommendationsViewModel.FromFindings(
+            Array.Empty<ViewerFindingRow>(), "SQL2022", utcOffsetMinutes: 0,
+            insufficientData: false, insufficientDataMessage: null);
+
+        Assert.Equal(RecommendationsState.Empty, vm.State);
+        Assert.Empty(vm.Sections);
+        Assert.Equal(string.Empty, vm.InsufficientDataMessage);
+    }
+
+    [Fact]
+    public void FromFindings_ZeroFindings_InsufficientMarker_ShowsStillCollecting_NotAllClear()
+    {
+        // insufficient + zero findings -> InsufficientData ("still collecting"), NOT a false all-clear.
+        var vm = RecommendationsViewModel.FromFindings(
+            Array.Empty<ViewerFindingRow>(), "SQL2022", utcOffsetMinutes: 0,
+            insufficientData: true,
+            insufficientDataMessage: "Not enough data for reliable analysis. Need 1.0 days, have 3.0 hours.");
+
+        Assert.Equal(RecommendationsState.InsufficientData, vm.State);
+        Assert.Empty(vm.Sections);
+        Assert.Equal("Not enough data for reliable analysis. Need 1.0 days, have 3.0 hours.", vm.InsufficientDataMessage);
+    }
+
+    [Fact]
+    public void FromFindings_InsufficientMarker_ButFindingsPresent_FindingsWin_Loaded()
+    {
+        // A server with findings shows them regardless of the marker (the marker only decides zero-finding).
+        var rows = new List<ViewerFindingRow> { Row(1.6, "CPU is on fire", incidentId: "a") };
+
+        var vm = RecommendationsViewModel.FromFindings(
+            rows, "SQL2022", utcOffsetMinutes: 0, insufficientData: true, insufficientDataMessage: "collecting");
+
+        Assert.Equal(RecommendationsState.Loaded, vm.State);
+        Assert.Single(vm.Sections);
+        Assert.Equal(string.Empty, vm.InsufficientDataMessage);
+    }
+
+    [Fact]
+    public void InsufficientData_UsesEngineMessageWhenPresent_ElseTheDefault()
+    {
+        Assert.Equal(
+            RecommendationsViewModel.DefaultInsufficientDataMessage,
+            RecommendationsViewModel.InsufficientData(null).InsufficientDataMessage);
+        Assert.Equal(
+            RecommendationsViewModel.DefaultInsufficientDataMessage,
+            RecommendationsViewModel.InsufficientData("   ").InsufficientDataMessage);
+        Assert.Equal(
+            "engine says 3.0 hours",
+            RecommendationsViewModel.InsufficientData("engine says 3.0 hours").InsufficientDataMessage);
+        Assert.Equal(RecommendationsState.InsufficientData, RecommendationsViewModel.InsufficientData(null).State);
+    }
+
     [Fact]
     public void FromFindings_GroupsByIncident_HeaderNamesPrimaryPlusCount()
     {

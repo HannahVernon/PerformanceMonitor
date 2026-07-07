@@ -1059,11 +1059,21 @@ LIMIT 1", connection);
                 await notificationService.NotifyAsync(findings);
             }
 
+            /* Persist the pass's insufficient-data determination (V19 marker) so the Viewer's
+               Recommendations tab shows "still collecting" instead of a false all-clear on a young
+               deployment: true + the engine's message when the pass hit the 24h data-span gate, cleared
+               (false) when a real pass completed on enough data. Failure-isolated like the other
+               observability writes. Only the two REAL terminal states write it — a Skipped/TimedOut/Error
+               pass (handled above / in the catch) leaves the last known marker untouched. */
             if (analysisService.InsufficientDataMessage is string insufficient)
             {
+                await DarlingObservability.WriteAnalysisStateAsync(
+                    _postgres!, serverId, insufficientData: true, insufficient, _logger, stoppingToken);
                 return new AnalysisPassResult(AnalysisPassStatus.InsufficientData, 0, insufficient);
             }
 
+            await DarlingObservability.WriteAnalysisStateAsync(
+                _postgres!, serverId, insufficientData: false, null, _logger, stoppingToken);
             return new AnalysisPassResult(AnalysisPassStatus.Ran, findings.Count, null);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

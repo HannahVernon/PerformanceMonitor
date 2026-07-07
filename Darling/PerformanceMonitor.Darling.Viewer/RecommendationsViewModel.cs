@@ -32,17 +32,25 @@ public enum RecommendationSeverity
 
 /// <summary>
 /// Which top-level state the Recommendations surface is in. The tab swaps a single visible region
-/// per state. Mirrors Lite's <c>LiteRecommendationsState</c> minus <c>InsufficientData</c>: that
-/// state is reachable in Lite ONLY through its in-app "Generate now" (which calls the engine and
-/// reads back its insufficient-data determination). The Darling service runs analysis on its own
-/// 30-minute cadence, so the viewer has no engine call and cannot distinguish "collecting" from
-/// "all clear" — a read with zero findings is simply <see cref="Empty"/>. See the header comment on
-/// the Recommendations tab in MainWindow for the Generate-now -> cadence-note deviation.
+/// per state. Mirrors Lite's <c>LiteRecommendationsState</c>, including <see cref="InsufficientData"/>:
+/// Lite reaches that state through its in-app engine call (which reads back the insufficient-data
+/// determination), whereas the Darling service runs analysis on its own cadence and PERSISTS the
+/// determination to the V19 <c>analysis_state</c> marker (<c>DarlingObservability.WriteAnalysisStateAsync</c>).
+/// The viewer reads that marker alongside the findings, so a zero-finding read on a young deployment
+/// (the engine skipped for want of its 24h history) renders <see cref="InsufficientData"/> — "still
+/// collecting" — instead of a false <see cref="Empty"/> all-clear.
 /// </summary>
 public enum RecommendationsState
 {
     /// <summary>A read is in flight.</summary>
     Loading,
+
+    /// <summary>
+    /// The read produced zero recommendations AND the persisted analysis-state marker says the engine
+    /// has not yet cleared its minimum-history window (the 24h data-span gate) — recommendations are not
+    /// meaningful yet, so "still collecting" is shown rather than a false all-clear.
+    /// </summary>
+    InsufficientData,
 
     /// <summary>The read completed and produced zero recommendations — the all-clear.</summary>
     Empty,
@@ -363,32 +371,68 @@ public sealed class RecommendationsViewModel
     /// <summary>The selected top-level state.</summary>
     public RecommendationsState State { get; }
 
+    /// <summary>
+    /// The message shown in the <see cref="RecommendationsState.InsufficientData"/> state — the engine's
+    /// own persisted message, or <see cref="DefaultInsufficientDataMessage"/> when it supplied none. Empty
+    /// in every other state.
+    /// </summary>
+    public string InsufficientDataMessage { get; }
+
     /// <summary>Total card count across all sections.</summary>
     public int TotalCount => Sections.Sum(s => s.Count);
 
-    private RecommendationsViewModel(IReadOnlyList<RecommendationSectionViewModel> sections, RecommendationsState state)
+    private RecommendationsViewModel(
+        IReadOnlyList<RecommendationSectionViewModel> sections, RecommendationsState state, string insufficientDataMessage)
     {
         Sections = sections;
         State = state;
+        InsufficientDataMessage = insufficientDataMessage;
     }
+
+    /// <summary>The default insufficient-data prose when the engine supplied no message (mirrors Lite's).</summary>
+    public const string DefaultInsufficientDataMessage =
+        "Still collecting — the engine needs about 24 hours of history before recommendations are " +
+        "meaningful. Keep the collector running and check back later.";
 
     /// <summary>Builds the loading-state view-model (no data yet, read in flight).</summary>
     public static RecommendationsViewModel Loading() =>
-        new(Array.Empty<RecommendationSectionViewModel>(), RecommendationsState.Loading);
+        new(Array.Empty<RecommendationSectionViewModel>(), RecommendationsState.Loading, string.Empty);
 
     /// <summary>
-    /// Builds a loaded/empty view-model from the persisted finding rows. Maps each row to an
-    /// advise-only item, appends the co-fired cross-reference, and groups by incident. The state is
-    /// <see cref="RecommendationsState.Empty"/> when there are no rows, else
-    /// <see cref="RecommendationsState.Loaded"/>. <paramref name="utcOffsetMinutes"/> is carried onto
-    /// each card for the Ask-AI prompt's window. The rows arrive pre-sorted (severity band desc, raw
-    /// desc, database, title) from the read, and grouping preserves that order.
+    /// Builds the insufficient-data-state view-model from the persisted analysis-state marker's message
+    /// (or the default when it is null/blank) — the viewer's mirror of Lite's
+    /// <c>LiteRecommendationsViewModel.InsufficientData</c>, sourced from the V19 marker the Darling
+    /// service writes rather than a live engine call.
+    /// </summary>
+    public static RecommendationsViewModel InsufficientData(string? message) =>
+        new(
+            Array.Empty<RecommendationSectionViewModel>(),
+            RecommendationsState.InsufficientData,
+            string.IsNullOrWhiteSpace(message) ? DefaultInsufficientDataMessage : message!);
+
+    /// <summary>
+    /// Builds a loaded/empty/insufficient-data view-model from the persisted finding rows and the
+    /// per-server analysis-state marker. Maps each row to an advise-only item, appends the co-fired
+    /// cross-reference, and groups by incident. State selection:
+    /// <list type="bullet">
+    /// <item>one or more findings -> <see cref="RecommendationsState.Loaded"/> (findings always win);</item>
+    /// <item>zero findings AND <paramref name="insufficientData"/> (the persisted marker says the engine
+    /// has not cleared its 24h data-span gate) -> <see cref="RecommendationsState.InsufficientData"/>
+    /// ("still collecting");</item>
+    /// <item>zero findings and no insufficient-data marker -> <see cref="RecommendationsState.Empty"/>
+    /// (the genuine all-clear — enough data, nothing to report).</item>
+    /// </list>
+    /// <paramref name="utcOffsetMinutes"/> is carried onto each card for the Ask-AI prompt's window. The
+    /// rows arrive pre-sorted (severity band desc, raw desc, database, title) from the read, and grouping
+    /// preserves that order. <paramref name="insufficientData"/> defaults false so the callers that carry
+    /// no marker keep the prior loaded/empty behavior.
     /// </summary>
     public static RecommendationsViewModel FromFindings(
-        IReadOnlyList<ViewerFindingRow> rows, string serverName, int utcOffsetMinutes = 0)
+        IReadOnlyList<ViewerFindingRow> rows, string serverName, int utcOffsetMinutes = 0,
+        bool insufficientData = false, string? insufficientDataMessage = null)
     {
         if (rows is null || rows.Count == 0)
-            return new(Array.Empty<RecommendationSectionViewModel>(), RecommendationsState.Empty);
+            return ZeroFindingState(insufficientData, insufficientDataMessage);
 
         var items = new List<RecommendationItem>(rows.Count);
         foreach (var row in rows)
@@ -399,11 +443,22 @@ public sealed class RecommendationsViewModel
         }
 
         if (items.Count == 0)
-            return new(Array.Empty<RecommendationSectionViewModel>(), RecommendationsState.Empty);
+            return ZeroFindingState(insufficientData, insufficientDataMessage);
 
         AppendCoFired(items);
-        return new(GroupByIncident(items, utcOffsetMinutes), RecommendationsState.Loaded);
+        return new(GroupByIncident(items, utcOffsetMinutes), RecommendationsState.Loaded, string.Empty);
     }
+
+    /// <summary>
+    /// Picks the state for a zero-finding read: <see cref="RecommendationsState.InsufficientData"/> when
+    /// the persisted marker says the analysis pass has not cleared the 24h data-span gate (so the tab
+    /// shows "still collecting" rather than a false all-clear), else <see cref="RecommendationsState.Empty"/>
+    /// (a genuine all-clear).
+    /// </summary>
+    private static RecommendationsViewModel ZeroFindingState(bool insufficientData, string? message) =>
+        insufficientData
+            ? InsufficientData(message)
+            : new(Array.Empty<RecommendationSectionViewModel>(), RecommendationsState.Empty, string.Empty);
 
     /// <summary>
     /// Maps one persisted finding row to an advise-only <see cref="RecommendationItem"/>. Reuses the
