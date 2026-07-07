@@ -410,7 +410,8 @@ FROM
     AND   cl.collector_name IN ('deadlocks', 'blocked_process_report')
 ) AS x
 WHERE x.n = 1
-AND   x.status = 'SESSION_MISSING'", connection);
+AND   x.status = 'SESSION_MISSING'
+ORDER BY x.collector_name", connection);
         command.Parameters.AddWithValue(serverId);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
