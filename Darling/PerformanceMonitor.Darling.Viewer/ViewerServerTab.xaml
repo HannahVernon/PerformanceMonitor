@@ -1748,13 +1748,13 @@
 
                 <!-- Memory Grants Sub-Tab -->
                 <TabItem Header="Memory Grants">
-                    <Grid>
+                    <Grid Margin="8">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <scottplot:WpfPlot Grid.Row="0" x:Name="MemoryGrantSizingChart" Margin="5,5,5,2"/>
-                        <scottplot:WpfPlot Grid.Row="1" x:Name="MemoryGrantActivityChart" Margin="5,2,5,5"/>
+                        <scottplot:WpfPlot Grid.Row="0" x:Name="MemoryGrantSizingChart" Margin="0,0,0,4"/>
+                        <scottplot:WpfPlot Grid.Row="1" x:Name="MemoryGrantActivityChart" Margin="0,4,0,0"/>
                     </Grid>
                 </TabItem>
 
@@ -1802,8 +1802,8 @@
 
                 <!-- Memory Pressure Events Sub-Tab -->
                 <TabItem Header="Memory Pressure Events">
-                    <Grid>
-                        <scottplot:WpfPlot x:Name="MemoryPressureEventsChart" Margin="5"/>
+                    <Grid Margin="8">
+                        <scottplot:WpfPlot x:Name="MemoryPressureEventsChart"/>
                     </Grid>
                 </TabItem>
 
