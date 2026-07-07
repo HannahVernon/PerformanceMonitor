@@ -38,7 +38,7 @@
         </Style>
 
         <Style x:Key="EmptyHint" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#8B93A1"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundMutedBrush}"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
@@ -559,11 +559,11 @@
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
-                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#FFB74D"
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#FFD54F"
                                             BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
                                         <StackPanel>
                                             <TextBlock Text="{Binding WarningCount}" FontSize="22" FontWeight="Bold"
-                                                       Foreground="#FFB74D" HorizontalAlignment="Center"/>
+                                                       Foreground="#FFD54F" HorizontalAlignment="Center"/>
                                             <TextBlock Text="Warning" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
@@ -581,7 +581,7 @@
                                             BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
                                         <StackPanel>
                                             <TextBlock Text="{Binding OfflineCount}" FontSize="22" FontWeight="Bold"
-                                                       Foreground="#AAAAAA" HorizontalAlignment="Center"/>
+                                                       Foreground="#888888" HorizontalAlignment="Center"/>
                                             <TextBlock Text="Offline" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
@@ -610,9 +610,19 @@
                                 <ItemsControl x:Name="FleetWorstServersList" ItemsSource="{Binding WorstServers}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Background="Transparent" Cursor="Hand" Padding="2,3" Margin="0,1"
+                                            <Border Cursor="Hand" Padding="2,3" Margin="0,1"
                                                     ToolTip="Open this server's tab"
                                                     MouseLeftButtonUp="FleetWorstServer_Click">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="Transparent"/>
+                                                        <Style.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Background" Value="#1f232b"/>
+                                                            </Trigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
                                                 <DockPanel LastChildFill="True">
                                                     <Ellipse Width="9" Height="9" Fill="{Binding BandBrush}"
                                                              VerticalAlignment="Center" Margin="0,0,8,0" DockPanel.Dock="Left"/>

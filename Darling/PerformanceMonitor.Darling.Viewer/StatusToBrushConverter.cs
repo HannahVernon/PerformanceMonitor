@@ -25,7 +25,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 public sealed class StatusToBrushConverter : IValueConverter
 {
     private static readonly SolidColorBrush s_success = Frozen("#81C784");
-    private static readonly SolidColorBrush s_permissions = Frozen("#FFB74D");
+    private static readonly SolidColorBrush s_permissions = Frozen("#FFD54F");
     private static readonly SolidColorBrush s_error = Frozen("#E57373");
     private static readonly SolidColorBrush s_info = Frozen("#4FC3F7");
     private static readonly SolidColorBrush s_default = Frozen("#E4E6EB");

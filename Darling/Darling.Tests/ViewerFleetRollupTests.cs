@@ -372,7 +372,7 @@ public sealed class ViewerFleetRollupBuilderTests
         Assert.Equal("Critical", critical.BandLabel);
         Assert.Equal("#FFE57373", critical.BandBrush.Color.ToString());  // red
         Assert.Equal("Warning", warning.BandLabel);
-        Assert.Equal("#FFFFB74D", warning.BandBrush.Color.ToString());   // amber
+        Assert.Equal("#FFFFD54F", warning.BandBrush.Color.ToString());   // amber
     }
 
     // ── Header / total display helpers (singular / plural) ──────────────────────────────────────────

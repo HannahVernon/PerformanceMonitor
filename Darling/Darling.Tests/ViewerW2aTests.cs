@@ -503,14 +503,14 @@ public sealed class ViewerServerSummaryDisplayTests
 
         var collectorsWarning = new ServerSummaryItem { FailedCollectorCount = 1, LastCollectionTime = Now };
         collectorsWarning.ApplyFreshness(Now);
-        Assert.Equal("#FFFFB74D", collectorsWarning.CardBorderBrush.Color.ToString());
+        Assert.Equal("#FFFFD54F", collectorsWarning.CardBorderBrush.Color.ToString());
     }
 
     [Fact]
     public void SeverityBrushes_MapBandsToDarkPalette()
     {
         Assert.Equal("#FF81C784", new ServerSummaryItem { CpuPercent = 10 }.CpuSeverityBrush.Color.ToString());  // Healthy green
-        Assert.Equal("#FFFFB74D", new ServerSummaryItem { CpuPercent = 85 }.CpuSeverityBrush.Color.ToString());  // Warning amber
+        Assert.Equal("#FFFFD54F", new ServerSummaryItem { CpuPercent = 85 }.CpuSeverityBrush.Color.ToString());  // Warning amber
         Assert.Equal("#FFE57373", new ServerSummaryItem { CpuPercent = 96 }.CpuSeverityBrush.Color.ToString());  // Critical red
         Assert.Equal("#FF888888", new ServerSummaryItem().ThreadsSeverityBrush.Color.ToString());                // Unknown gray
     }

@@ -25,7 +25,7 @@
         </Style>
 
         <Style x:Key="EmptyHint" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#8B93A1"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundMutedBrush}"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
@@ -1925,27 +1925,33 @@
                          max / avg block duration, the deadlock COUNT, and the deadlock victim count + total
                          deadlock wait (the Dashboard's victim_count / total_deadlock_wait_time_ms). -->
                     <TabItem Header="Blocking Stats">
+                        <!-- 2x2 grid (matching the Performance Trends layout): the charts are natural pairs —
+                             row 0 = blocking Max/Avg | blocking Total, row 1 = deadlock Max/Avg | deadlock Total —
+                             so a 2x2 reads better AND keeps each plot area tall enough that the X-axis time labels
+                             don't collide on a short (768px) laptop. The summary strip spans both columns below. -->
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="*"/>
                                 <RowDefinition Height="*"/>
-                                <RowDefinition Height="*"/>
-                                <RowDefinition Height="*"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <Border Grid.Row="0" Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Row="0" Grid.Column="0" Margin="0,0,4,4">
                                 <scottplot:WpfPlot x:Name="BlockingDurationChart"/>
                             </Border>
-                            <Border Grid.Row="1" Margin="0,4,0,4">
+                            <Border Grid.Row="0" Grid.Column="1" Margin="4,0,0,4">
                                 <scottplot:WpfPlot x:Name="BlockingTotalDurationChart"/>
                             </Border>
-                            <Border Grid.Row="2" Margin="0,4,0,4">
+                            <Border Grid.Row="1" Grid.Column="0" Margin="0,4,4,0">
                                 <scottplot:WpfPlot x:Name="DeadlockWaitChart"/>
                             </Border>
-                            <Border Grid.Row="3" Margin="0,4,0,4">
+                            <Border Grid.Row="1" Grid.Column="1" Margin="4,4,0,0">
                                 <scottplot:WpfPlot x:Name="DeadlockTotalWaitChart"/>
                             </Border>
-                            <Border Grid.Row="4" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,4,0,0">
+                            <Border Grid.Row="2" Grid.ColumnSpan="2" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,4,0,0">
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                     <TextBlock Text="Blocking Events:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
                                     <TextBlock x:Name="BlockingStatsEventCountText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
@@ -2255,8 +2261,7 @@
                 </Grid.RowDefinitions>
                 <TextBlock Grid.Row="0" Text="Session Counts Over Time" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,4"/>
                 <scottplot:WpfPlot Grid.Row="1" x:Name="SessionStatsChart"/>
-                <Border Grid.Row="2" Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                        BorderThickness="0,1,0,0" Padding="10,8" Margin="0,8,0,0" CornerRadius="0,0,4,4">
+                <Border Grid.Row="2" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,4,0,0">
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                         <TextBlock Text="Top Application:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
                         <TextBlock x:Name="SessionStatsTopAppText" Text="N/A" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,20,0"/>
@@ -2499,7 +2504,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0" Margin="2,0,2,8" TextWrapping="Wrap" Foreground="#8B93A1" FontSize="12"
+                <TextBlock Grid.Row="0" Margin="2,0,2,8" TextWrapping="Wrap" Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="12"
                            Text="Configuration is captured on connect/restart (the config collectors run on connect, not on a timer), so these histories reflect that cadence — a setting appears here only when at least two captures bracket the change within the selected time window."/>
                 <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0" ItemContainerStyle="{DynamicResource SubTabItemStyle}">
                     <TabItem Header="Server Config Changes">
