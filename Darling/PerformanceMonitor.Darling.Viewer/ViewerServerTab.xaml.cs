@@ -127,8 +127,12 @@ public partial class ViewerServerTab : UserControl
         /* Collection Health's Duration Trends chart (copied from Lite): up-front theme + hover. */
         InitializeCollectionHealthChart();
 
-        /* System Events inner tab (system_health parity): register the eight category grids' filter managers. */
+        /* System Events inner tab (system_health parity): register the category grids' filter managers. */
         InitializeSystemEventsTab();
+
+        /* System Events' Corruption + Contention counter charts (SYSTEM-component parity): theme the eight
+           charts up front + wire hover, mirroring the Dashboard's SystemEventsContent. */
+        InitializeSystemHealthCharts();
 
         /* Seed the toolbar's initial time window + auto-refresh state from the user's persisted defaults
            (the Settings window), replacing the XAML's hardcoded 24h / on / 1m. Set BEFORE

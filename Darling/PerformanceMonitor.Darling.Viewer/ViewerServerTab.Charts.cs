@@ -90,6 +90,7 @@ public partial class ViewerServerTab : IDisposable
         DisposeCollectionHealthHelpers();
         DisposeQueriesTabHelpers();
         DisposePlanHelpers();
+        DisposeSystemHealthChartHelpers();
     }
 
     /// <summary>Loads the CPU tab: raw per-sample CPU utilization over the window.</summary>

@@ -15,25 +15,36 @@ using PerformanceMonitor.Ui;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The System Events inner tab (system_health parity, Stage 2b) — eight sub-tabs, one per unique
-/// system_health warning category, each a parse-on-read grid: <see cref="ViewerDataService"/> fetches the
-/// raw event_xml for the category over the toolbar's settable window, the Common <c>SystemHealthParser</c>
-/// shreds it, and <c>SystemEventSignificance</c> keeps the sp_HealthParser-significant rows. Mirrors the
-/// FinOps tab's inner sub-tab-strip + DataGrid conventions (visible-only load, shared column filters,
-/// per-sub-tab count indicator + refresh). Timestamps render machine-local like the deadlock / blocked-
-/// process grids (the event's naive-UTC XE @timestamp via <see cref="ViewerDataService.ToLocalTime"/>).
+/// The System Events inner tab (system_health parity, Stage 2b) — a faithful reproduction of the full
+/// Dashboard's System Events, covering all nine Dashboard categories. Two lead sub-tabs (Corruption Events
+/// + Contention Events) are the SYSTEM-component counter CHARTS — the Dashboard's presentation for those
+/// two — rendered from a single sp_server_diagnostics SYSTEM feed with no significance filter (every
+/// snapshot plotted over time), wired in <see cref="ViewerServerTab.SystemHealthCharts"/>. The remaining
+/// sub-tabs are parse-on-read GRIDS, one per unique warning category (plus Darling's extra Significant
+/// Waits): <see cref="ViewerDataService"/> fetches the raw event_xml for the category over the toolbar's
+/// settable window, the Common <c>SystemHealthParser</c> shreds it, and <c>SystemEventSignificance</c>
+/// keeps the sp_HealthParser-significant rows. Mirrors the FinOps tab's inner sub-tab-strip + DataGrid
+/// conventions (visible-only load, shared column filters, per-sub-tab count indicator + refresh).
+/// Timestamps render machine-local like the deadlock / blocked-process grids (the event's naive-UTC XE
+/// @timestamp via <see cref="ViewerDataService.ToLocalTime"/>).
 /// </summary>
 public partial class ViewerServerTab
 {
-    /* System Events sub-tab order (matches the XAML TabItem order). */
-    private const int SystemEventsSchedulerIssuesSubTabIndex = 0;
-    private const int SystemEventsSevereErrorsSubTabIndex = 1;
-    private const int SystemEventsMemoryConditionsSubTabIndex = 2;
-    private const int SystemEventsMemoryBrokerSubTabIndex = 3;
-    private const int SystemEventsMemoryNodeOomSubTabIndex = 4;
-    private const int SystemEventsSignificantWaitsSubTabIndex = 5;
-    private const int SystemEventsCpuTasksSubTabIndex = 6;
-    private const int SystemEventsIoIssuesSubTabIndex = 7;
+    /* System Events sub-tab order (matches the XAML TabItem order). Corruption + Contention lead — the
+       two SYSTEM-component counter-chart tabs, mirroring the Dashboard's System Events order (its
+       Corruption Events tab is the default). Both read the one SYSTEM-component feed and select their own
+       columns, so they share a single load (LoadSystemHealthChartsAsync). The rest keep Darling's existing
+       relative order. */
+    private const int SystemEventsCorruptionSubTabIndex = 0;
+    private const int SystemEventsContentionSubTabIndex = 1;
+    private const int SystemEventsSchedulerIssuesSubTabIndex = 2;
+    private const int SystemEventsSevereErrorsSubTabIndex = 3;
+    private const int SystemEventsMemoryConditionsSubTabIndex = 4;
+    private const int SystemEventsMemoryBrokerSubTabIndex = 5;
+    private const int SystemEventsMemoryNodeOomSubTabIndex = 6;
+    private const int SystemEventsSignificantWaitsSubTabIndex = 7;
+    private const int SystemEventsCpuTasksSubTabIndex = 8;
+    private const int SystemEventsIoIssuesSubTabIndex = 9;
 
     private DataGridFilterManager<SchedulerIssueRow>? _seSchedulerFilterMgr;
     private DataGridFilterManager<SevereErrorRow>? _seSevereErrorFilterMgr;
@@ -45,9 +56,10 @@ public partial class ViewerServerTab
     private DataGridFilterManager<IoIssuesRow>? _seIoIssuesFilterMgr;
 
     /// <summary>
-    /// Registers the six System Events grids' column-filter managers into the shared
+    /// Registers the eight System Events grids' column-filter managers into the shared
     /// <c>_filterManagers</c> map (defined in <c>ViewerServerTab.Filters.cs</c>). Called from the
-    /// constructor after InitializeComponent, alongside the other Initialize* hooks.
+    /// constructor after InitializeComponent, alongside the other Initialize* hooks. The Corruption /
+    /// Contention chart sub-tabs have no grids, so they register no filter manager here.
     /// </summary>
     private void InitializeSystemEventsTab()
     {
@@ -94,6 +106,9 @@ public partial class ViewerServerTab
     {
         switch (SystemEventsSubTabControl.SelectedIndex)
         {
+            case SystemEventsSchedulerIssuesSubTabIndex:
+                await LoadSchedulerIssuesAsync();
+                break;
             case SystemEventsSevereErrorsSubTabIndex:
                 await LoadSevereErrorsAsync();
                 break;
@@ -115,9 +130,13 @@ public partial class ViewerServerTab
             case SystemEventsIoIssuesSubTabIndex:
                 await LoadIoIssuesAsync();
                 break;
-            case SystemEventsSchedulerIssuesSubTabIndex:
+            // Corruption Events (0) and Contention Events (1) share the one SYSTEM-component feed, so both
+            // render from a single load — mirroring the Dashboard's case 0/case 1 → RefreshSystemHealthAsync.
+            // This is also the default, so the first-shown sub-tab (Corruption Events) loads on activation.
+            case SystemEventsCorruptionSubTabIndex:
+            case SystemEventsContentionSubTabIndex:
             default:
-                await LoadSchedulerIssuesAsync();
+                await LoadSystemHealthChartsAsync();
                 break;
         }
     }

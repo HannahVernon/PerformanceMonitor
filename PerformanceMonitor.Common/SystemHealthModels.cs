@@ -459,13 +459,75 @@ namespace PerformanceMonitor.Common
     }
 
     /// <summary>
+    /// One system-component health snapshot, shredded from the SYSTEM component of an
+    /// <c>sp_server_diagnostics_component_result</c> event (the <c>&lt;system&gt;</c> node's attributes).
+    /// Mirrors sp_HealthParser's <c>*_SystemHealth</c> table — the counter set that carries BOTH the
+    /// corruption signals (bad pages, dump requests, access violations) and the contention signals
+    /// (non-yielding tasks, latch warnings, sick spinlocks, SQL-vs-system CPU). The sibling Dashboard
+    /// splits these same columns across its "Corruption Events" and "Contention Events" sub-tabs; here
+    /// they stay one record (one SYSTEM snapshot) and the viewer picks the columns per chart. Every
+    /// counter is a raw <c>bigint</c> off the <c>&lt;system&gt;</c> node (no unit conversion), and the two
+    /// spinlock-type strings are kept verbatim, exactly as sp_HealthParser logs them.
+    /// </summary>
+    public sealed record SystemHealthRecord
+    {
+        /// <summary>Event <c>@timestamp</c>, parsed as UTC.</summary>
+        public DateTime? EventTime { get; init; }
+
+        /// <summary>xpath <c>data[@name="state"]/text</c> — the component state text (CLEAN/WARNING/HAS_ISSUES).</summary>
+        public string? State { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@spinlockBackoffs</c> (bigint).</summary>
+        public long? SpinlockBackoffs { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@sickSpinlockType</c> (the sick spinlock's name, e.g. SOS_CACHESTORE).</summary>
+        public string? SickSpinlockType { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@sickSpinlockTypeAfterAv</c>.</summary>
+        public string? SickSpinlockTypeAfterAv { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@latchWarnings</c> (bigint).</summary>
+        public long? LatchWarnings { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@isAccessViolationOccurred</c> (bigint, as sp_HealthParser stores it).</summary>
+        public long? IsAccessViolationOccurred { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@writeAccessViolationCount</c> (bigint).</summary>
+        public long? WriteAccessViolationCount { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@totalDumpRequests</c> (bigint).</summary>
+        public long? TotalDumpRequests { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@intervalDumpRequests</c> (bigint).</summary>
+        public long? IntervalDumpRequests { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@nonYieldingTasksReported</c> (bigint).</summary>
+        public long? NonYieldingTasksReported { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@pageFaults</c> (bigint).</summary>
+        public long? PageFaults { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@systemCpuUtilization</c> (whole-percent bigint).</summary>
+        public long? SystemCpuUtilization { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@sqlCpuUtilization</c> (whole-percent bigint).</summary>
+        public long? SqlCpuUtilization { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@BadPagesDetected</c> (bigint).</summary>
+        public long? BadPagesDetected { get; init; }
+
+        /// <summary><c>&lt;system&gt;</c> attribute <c>@BadPagesFixed</c> (bigint).</summary>
+        public long? BadPagesFixed { get; init; }
+    }
+
+    /// <summary>
     /// The result of shredding a batch of raw system_health events: one list per unique warning category.
     /// Populated by <see cref="SystemHealthParser.ParseEvents"/>. Each event contributes to exactly one
     /// category — at most one record for every category except <see cref="IoIssues"/> (an IO_SUBSYSTEM
     /// event contributes one record per distinct pending-request file). An
     /// <c>sp_server_diagnostics_component_result</c> event routes to the category matching its component
-    /// (RESOURCE → memory conditions, QUERY_PROCESSING → CPU tasks, IO_SUBSYSTEM → IO issues); the other
-    /// components contribute nothing.
+    /// (SYSTEM → system health, RESOURCE → memory conditions, QUERY_PROCESSING → CPU tasks, IO_SUBSYSTEM →
+    /// IO issues); the other components contribute nothing.
     /// </summary>
     public sealed class SystemHealthParseResult
     {
@@ -477,5 +539,6 @@ namespace PerformanceMonitor.Common
         public List<SignificantWaitRecord> SignificantWaits { get; } = new();
         public List<CpuTasksRecord> CpuTasks { get; } = new();
         public List<IoIssuesRecord> IoIssues { get; } = new();
+        public List<SystemHealthRecord> SystemHealth { get; } = new();
     }
 }
