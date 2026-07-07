@@ -238,36 +238,101 @@
 
         <Grid Grid.Row="0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280"/>
+                <ColumnDefinition x:Name="SidebarColumn" Width="280" MinWidth="40"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <!-- Left: the server list. Single-click drives the aggregate tabs; double-click opens
-                 (or focuses) that server's per-server tab. -->
+                 (or focuses) that server's per-server tab. The header's « / » button collapses the
+                 sidebar to a thin rail (mirrors Lite's ToggleSidebar). -->
             <DockPanel Grid.Column="0" Margin="0,0,10,0">
-                <StackPanel DockPanel.Dock="Top">
-                    <TextBlock Text="Servers" Style="{StaticResource SectionHeader}" Margin="0,0,0,2"/>
-                    <TextBlock Text="Double-click to open a server tab" Foreground="#8B93A1" FontSize="11" Margin="0,0,0,6"/>
-                </StackPanel>
+                <Grid DockPanel.Dock="Top">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" x:Name="SidebarHeaderText">
+                        <TextBlock Text="Servers" Style="{StaticResource SectionHeader}" Margin="0,0,0,2"/>
+                        <TextBlock Text="Double-click to open a server tab" Foreground="#8B93A1" FontSize="11" Margin="0,0,0,6"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" x:Name="SidebarToggleButton" Content="«" Click="ToggleSidebar_Click"
+                            Style="{StaticResource DarkButton}"
+                            ToolTip="Collapse/expand the sidebar" VerticalAlignment="Top"
+                            Width="24" Height="24" Padding="0" FontSize="14"/>
+                </Grid>
 
-                <!-- Sidebar footer: a small button stack pinned to the bottom of the server list. Open
-                     Plan Viewer (opens/focuses the standalone Plan Viewer aggregate tab — paste or open a
-                     .sqlplan independent of any server) and About. The viewer writes no application log of
-                     its own (its diagnostics go to Debug output, and the shared store's collection log is a
-                     per-server tab), so there are no View Log / Open Log Folder buttons. Declared as the
-                     first Bottom-docked child so it sits at the very bottom, below the no-servers hint. -->
-                <Border DockPanel.Dock="Bottom"
+                <!-- Sidebar footer: the button stack pinned to the bottom of the server list, ported to
+                     parity with Lite. Server management (Add Server / Manage Servers) writes the viewer's
+                     own registry; the service honoring it is separate wiring (see the PR). Import Data
+                     (Lite's DuckDB import) is omitted — it has no viewer meaning. Declared as the first
+                     Bottom-docked child so it sits at the very bottom, below the no-servers hint. -->
+                <Border x:Name="SidebarFooter" DockPanel.Dock="Bottom"
                         BorderBrush="#2a2d35" BorderThickness="0,1,0,0"
                         Margin="0,8,0,0" Padding="0,8,0,0">
                     <StackPanel>
+                        <Button Click="AddServerButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                ToolTip="Add a monitored SQL Server to the viewer's registry">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Add Server" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="ManageServersButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="Add, edit, or remove monitored servers">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE8FD;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Manage Servers" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                         <Button Click="OpenPlanViewerButton_Click"
                                 Style="{StaticResource DarkButton}"
                                 Padding="8,5"
+                                Margin="0,8,0,0"
                                 ToolTip="Open or paste an execution plan (independent of any server)">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                            VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <TextBlock Text="Open Plan Viewer" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="ImportSettingsButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="Import server definitions and settings from a previous viewer install">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE8FA;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Import Settings" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="ViewLogButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="Open the current application log file">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="View Log" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="OpenLogFolderButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="Open the log folder in Explorer (for grabbing logs to attach to bug reports)">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE838;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Open Log Folder" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
                         <Button Click="SettingsButton_Click"
@@ -339,10 +404,92 @@
                     </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <StackPanel>
-                                <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="SemiBold"/>
-                                <TextBlock Text="{Binding VersionLabel}" FontSize="11" Foreground="#8B93A1"/>
-                            </StackPanel>
+                            <!-- Ported from Lite's server-row template: a freshness status dot (green/amber/red
+                                 from DotStatus), the name + version, a favorite star, and the right-click menu.
+                                 Connect/Disconnect are omitted — the viewer never connects to monitored servers
+                                 (it reads only the Postgres store). Transparent Border hosts the context menu so
+                                 the whole row is a right-click target; the item background comes from the
+                                 container style above. -->
+                            <Border Background="Transparent">
+                                <Border.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Toggle Favorite" Click="ServerContextMenu_ToggleFavorite_Click">
+                                            <MenuItem.Icon><TextBlock Text="&#x2B50;"/></MenuItem.Icon>
+                                        </MenuItem>
+                                        <Separator/>
+                                        <MenuItem Header="Edit..." Click="ServerContextMenu_Edit_Click">
+                                            <MenuItem.Icon><TextBlock Text="&#x270F;"/></MenuItem.Icon>
+                                        </MenuItem>
+                                        <MenuItem Header="Remove" Click="ServerContextMenu_Remove_Click">
+                                            <MenuItem.Icon><TextBlock Text="&#x1F5D1;"/></MenuItem.Icon>
+                                        </MenuItem>
+                                    </ContextMenu>
+                                </Border.ContextMenu>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Status dot (collection freshness) -->
+                                    <Ellipse Grid.Column="0" Grid.RowSpan="2"
+                                             Width="10" Height="10"
+                                             Margin="0,0,8,0"
+                                             VerticalAlignment="Center">
+                                        <Ellipse.Style>
+                                            <Style TargetType="Ellipse">
+                                                <Setter Property="Fill" Value="{DynamicResource ForegroundMutedBrush}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DotStatus}" Value="Online">
+                                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding DotStatus}" Value="Offline">
+                                                        <Setter Property="Fill" Value="{DynamicResource ErrorBrush}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding DotStatus}" Value="Warning">
+                                                        <Setter Property="Fill" Value="{DynamicResource WarningBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Ellipse.Style>
+                                    </Ellipse>
+
+                                    <!-- Server name -->
+                                    <TextBlock Grid.Column="1" Grid.Row="0"
+                                               Text="{Binding DisplayName}"
+                                               FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ForegroundBrush}"/>
+
+                                    <!-- Details (SQL version) -->
+                                    <TextBlock Grid.Column="1" Grid.Row="1"
+                                               Text="{Binding VersionLabel}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+
+                                    <!-- Favorite star -->
+                                    <TextBlock Grid.Column="2" Grid.RowSpan="2"
+                                               Text="★" FontSize="16"
+                                               VerticalAlignment="Center"
+                                               Foreground="#FFD700"
+                                               Margin="4,0,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsFavorite}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </Border>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
@@ -660,10 +807,22 @@
                        Foreground="#E4E6EB"/>
         </Border>
 
-        <TextBlock x:Name="StatusText"
-                   Grid.Row="1"
-                   Margin="0,8,0,0"
-                   FontSize="12"
-                   Foreground="#8B93A1"/>
+        <!-- Multi-field status bar (ported from Lite, adapted to what the viewer knows): general status,
+             collector health across all servers (from collection freshness), store database size, overall
+             collection status, and server count. -->
+        <Grid Grid.Row="1" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" x:Name="StatusText" FontSize="12" Foreground="#8B93A1" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="1" x:Name="CollectorHealthText" FontSize="12" Foreground="#8B93A1" Margin="16,0" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="2" x:Name="DatabaseSizeText" Text="Database: --" FontSize="12" Foreground="#8B93A1" Margin="16,0" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="3" x:Name="CollectionStatusText" Text="Collection: --" FontSize="12" Foreground="#8B93A1" Margin="16,0" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="4" x:Name="ServerCountText" Text="Servers: 0" FontSize="12" Foreground="#8B93A1" VerticalAlignment="Center"/>
+        </Grid>
     </Grid>
 </Window>

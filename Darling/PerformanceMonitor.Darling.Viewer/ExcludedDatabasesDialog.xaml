@@ -1,0 +1,40 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.ExcludedDatabasesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Excluded Databases"
+        Height="440" Width="460"
+        WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
+        Background="{DynamicResource BackgroundBrush}">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" x:Name="HeaderText" Text="Excluded Databases" FontSize="16" FontWeight="Bold"
+                   Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+
+        <!-- The viewer never connects to the monitored server, so it can't enumerate the live database list
+             the way Lite's dialog does. This is a manual editor for the same field the Darling service will
+             consume — one database name per line. -->
+        <TextBlock Grid.Row="1" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,8"
+                   Text="User databases to skip in per-database collectors — one name per line. System databases and the connection database are always excluded. The viewer can't list the server's live databases (it never connects to it), so enter the names to exclude here."/>
+
+        <TextBox Grid.Row="2" x:Name="ExclusionsBox"
+                 AcceptsReturn="True" TextWrapping="NoWrap"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                 FontFamily="Consolas" Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="3" x:Name="StatusText" Foreground="{DynamicResource ForegroundMutedBrush}"
+                   TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Save" Width="80" Height="30" Click="Save_Click" Style="{StaticResource AccentButton}" Margin="0,0,8,0"/>
+            <Button Content="Cancel" Width="80" Height="30" Click="Cancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

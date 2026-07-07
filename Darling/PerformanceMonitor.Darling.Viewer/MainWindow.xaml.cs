@@ -188,6 +188,11 @@ public partial class MainWindow : Window
 
     private async void OnRefreshTimerTick(object? sender, EventArgs e)
     {
+        /* Refresh the sidebar status dots + the status bar every cycle regardless of the visible tab (a
+           cheap pair of single-query reads), so freshness stays current even while a per-server tab is up. */
+        _ = RefreshServerStatusAsync();
+        _ = RefreshStoreSizeAsync();
+
         /* Two tabs opt out of the 60s auto-refresh: Recommendations refreshes on tab-activation only
            (matching Lite — analysis findings change on the service's 30-minute cadence, so a 60-second
            auto-refresh is pointless churn and would reset the incident expanders' state under the
@@ -214,6 +219,8 @@ public partial class MainWindow : Window
     {
         if (ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
         {
+            /* Refresh the sidebar dots on the snappier Overview cadence too, so they track the cards. */
+            _ = RefreshServerStatusAsync();
             await RefreshVisibleAsync();
         }
     }
@@ -255,8 +262,11 @@ public partial class MainWindow : Window
 
         try
         {
-            var servers = await _dataService.GetServersAsync();
+            /* Enrich the Postgres-sourced list with the viewer's favorite pins (matched by server name) and
+               sort favorites-first (Lite's ordering) before it drives the sidebar and the selectors. */
+            var servers = ApplyFavoritesAndSort(await _dataService.GetServersAsync());
             ServerList.ItemsSource = servers;
+            ServerCountText.Text = $"Servers: {servers.Count}";
 
             /* The Recommendations tab has its OWN server selector (independent of the sidebar, matching
                Lite). Populate it from the same list; the guard suppresses its SelectionChanged during
@@ -289,6 +299,11 @@ public partial class MainWindow : Window
             {
                 StatusText.Text = $"connected — no servers registered yet ({DateTime.Now:HH:mm:ss})";
             }
+
+            /* Seed the sidebar status dots + the status bar's collector-health / collection / database-size
+               fields (each a single lightweight store read). */
+            _ = RefreshServerStatusAsync();
+            _ = RefreshStoreSizeAsync();
         }
         catch (Exception ex)
         {
