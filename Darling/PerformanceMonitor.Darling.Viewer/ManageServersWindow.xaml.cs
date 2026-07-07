@@ -118,7 +118,26 @@ public partial class ManageServersWindow : Window
             return;
         }
 
-        var dialog = new AddServerDialog(_dataService, _serverStore, _profileStore, selected.Row, selected.IsFavorite) { Owner = this };
+        /* The Manage Servers LIST read no longer carries encrypted_password (#1416: a read-only viewer seat
+           lost SELECT on it, so MonitoredServersSelectSql omits the column). Editing needs the DPAPI blob to
+           keep the password when the user doesn't retype it, so reload the full row by id here — the edit-load
+           read (MonitoredServerByIdSql) DOES select the secret, which an admin-role seat can read. On a
+           read-only seat this read 42501s and the edit is aborted with a message (a read-only seat can't save
+           anyway). */
+        MonitoredServerRow row;
+        try
+        {
+            row = await _dataService.GetMonitoredServerAsync(selected.Row.ServerId) ?? selected.Row;
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ManageServersWindow", "Failed to load the server for editing", ex);
+            MessageBox.Show($"Could not load the server for editing: {ex.Message}",
+                "Edit Server", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var dialog = new AddServerDialog(_dataService, _serverStore, _profileStore, row, selected.IsFavorite) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             ServersChanged = true;

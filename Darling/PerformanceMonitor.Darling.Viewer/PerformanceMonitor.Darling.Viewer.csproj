@@ -32,6 +32,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
     <ProjectReference Include="..\..\PerformanceMonitor.Ui\PerformanceMonitor.Ui.csproj" />
+    <!-- ReproScriptBuilder for the query grids' "Copy Repro Script" (built from stored row fields, no live
+         connection). Reachable transitively via .Ui, but referenced explicitly since it is a direct dependency. -->
+    <ProjectReference Include="..\..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
     <!-- Wave 2: the shared blocked-process row/merge (Alerting), the finding model + advice
          table (Analysis), the persisted-action serializer (Notifications), and the Darling
          finding store the Recommendations tab reads through (Darling.Analysis). -->

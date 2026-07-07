@@ -46,8 +46,32 @@
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
 
+        <!-- Copy / Export menu for every plain grid (W1f cluster), copied from Lite's ServerTab.xaml
+             DataGridContextMenu (its copy/export half — the query grids get the plan-aware variants below).
+             Set on the base DarkGridRow so every DarkGrid grid that doesn't override RowStyle (RunningJobs,
+             ServerConfig, DatabaseConfig, DatabaseScopedConfig, TraceFlags, DailySummary, CollectionHealth,
+             latch/spinlock, CPU scheduler, plan cache, System Events, …) gets it. Copy/Export delegate to the
+             shared PerformanceMonitor.Ui DataGridExport (ViewerServerTab.CopyExport.cs). Defined before
+             DarkGridRow so the StaticResource resolves. -->
+        <ContextMenu x:Key="DataGridContextMenu">
+            <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+            </MenuItem>
+        </ContextMenu>
+
         <Style x:Key="DarkGridRow" TargetType="DataGridRow">
             <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="ContextMenu" Value="{StaticResource DataGridContextMenu}"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#1f232b"/>
@@ -176,9 +200,11 @@
              a comparison row is a current-vs-baseline aggregate with no single stored plan keyed on it, and
              the snapshot grid has its own dedicated Estimated / Actual plan buttons — so neither needs a
              "View Plan" context item. (Top Procedures moved OFF this menu to the plan-enabled variant below:
-             procedure_stats DOES store the plan since #1368 / V7.) Lite's "Get Actual Plan" (needs a live
-             execution) and "Copy Repro Script" (needs a live connection string) stay deferred everywhere.
-             Copy/Export delegate to the shared PerformanceMonitor.Ui DataGridExport (ViewerServerTab.CopyExport.cs). -->
+             procedure_stats DOES store the plan since #1368 / V7.) "Copy Repro Script" builds from STORED row
+             fields — Active Queries carries QueryText/DatabaseName/QueryPlan/TransactionIsolationLevel in-row,
+             so no live connection is needed (the comparison rows have no query text and no-op). Only Lite's
+             "Get Actual Plan" (a LIVE re-execution) stays omitted. Copy/Export/Repro delegate to
+             ViewerServerTab.CopyExport.cs (Copy/Export via the shared PerformanceMonitor.Ui DataGridExport). -->
         <ContextMenu x:Key="QueryGridContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
@@ -189,6 +215,9 @@
             <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
             </MenuItem>
+            <MenuItem Header="Copy Repro Script" Click="CopyReproScript_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4DD;"/></MenuItem.Icon>
+            </MenuItem>
             <Separator/>
             <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
@@ -198,7 +227,10 @@
         <!-- PLAN-enabled variant for Top Queries + Query Store + Top Procedures, whose plans the collector
              stores (query_stats.query_plan_xml / query_store_stats.query_plan_text, PR #1349;
              procedure_stats.query_plan_xml, #1368 / V7). "View Plan" opens the stored plan in the Plan
-             Viewer tab via ViewPlan_Click (ViewerServerTab.Plans.cs), which fetches by the row's key. -->
+             Viewer tab via ViewPlan_Click (ViewerServerTab.Plans.cs), which fetches by the row's key.
+             "Copy Repro Script" builds from stored fields; for these aggregate rows it best-effort reads the
+             STORED plan from Postgres (not a live connection) to enrich the extracted parameters, then falls
+             back to a plan-less repro (CopyReproScript_Click). Lite's "Get Actual Plan" (live) stays omitted. -->
         <ContextMenu x:Key="QueryPlanGridContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
@@ -208,6 +240,9 @@
             </MenuItem>
             <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Repro Script" Click="CopyReproScript_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4DD;"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
             <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">

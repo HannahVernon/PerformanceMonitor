@@ -883,6 +883,7 @@
           "PerformanceMonitor.Darling.Analysis": "[1.0.0, )",
           "PerformanceMonitor.Darling.Storage": "[1.0.0, )",
           "PerformanceMonitor.Notifications": "[1.0.0, )",
+          "PerformanceMonitor.PlanAnalysis": "[1.0.0, )",
           "PerformanceMonitor.Ui": "[1.0.0, )",
           "ScottPlot.WPF": "[5.1.58, )"
         }
