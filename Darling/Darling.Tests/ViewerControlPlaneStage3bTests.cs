@@ -27,8 +27,9 @@ namespace Darling.Tests;
 /// </summary>
 public sealed class ViewerAlertSettingsSqlTests
 {
-    /* The 29 AlertsConfig + AnalysisConfig columns the service reads (StoreConfigProvider.ReadAlertSettingsAsync)
-       — delivery_mode/per_event_max appended in V18 (#1141/#1236). */
+    /* The 36 AlertsConfig + AnalysisConfig columns the service reads (StoreConfigProvider.ReadAlertSettingsAsync)
+       — delivery_mode/per_event_max appended in V18 (#1141/#1236), the six long-running-query read knobs + the
+       connection-change notify toggle in V20. */
     private static readonly string[] Columns =
     {
         "enabled", "cpu_enabled", "cpu_threshold_percent", "cpu_mode", "blocking_enabled", "blocking_count_threshold",
@@ -38,6 +39,9 @@ public sealed class ViewerAlertSettingsSqlTests
         "long_running_job_enabled", "long_running_job_multiplier", "failed_job_enabled", "failed_job_lookback_minutes",
         "cooldown_minutes", "excluded_databases", "analysis_enabled", "analysis_interval_minutes",
         "analysis_notifications_enabled", "analysis_notify_severity", "delivery_mode", "per_event_max",
+        "long_running_query_max_results", "long_running_query_exclude_sp_server_diagnostics",
+        "long_running_query_exclude_wait_for", "long_running_query_exclude_backups",
+        "long_running_query_exclude_misc_waits", "long_running_query_exclude_cdc", "notify_connection_changes",
     };
 
     [Fact]
@@ -52,7 +56,7 @@ public sealed class ViewerAlertSettingsSqlTests
             Assert.Contains(column, sql, StringComparison.Ordinal);
         }
 
-        for (var i = 1; i <= 29; i++)
+        for (var i = 1; i <= 36; i++)
         {
             Assert.Contains("$" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), sql, StringComparison.Ordinal);
         }
@@ -442,6 +446,7 @@ public sealed class ViewerControlPlaneMigrationTests
         var settings = new ViewerAppSettings
         {
             AlertsEnabled = false,
+            NotifyConnectionChanges = false,
             AlertCpuThreshold = 66,
             AlertCpuMode = "SqlOnly",
             AlertExcludedDatabases = new List<string> { "msdb", "tempdb" },
@@ -449,11 +454,15 @@ public sealed class ViewerControlPlaneMigrationTests
             AnalysisNotifySeverity = 1.2,
             AlertDeliveryMode = "PerEvent",
             AlertPerEventMaxPerCycle = 7,
+            AlertLongRunningQueryMaxResults = 20,
+            AlertLongRunningQueryExcludeSpServerDiagnostics = false,
+            AlertLongRunningQueryExcludeCdc = false,
         };
 
         var row = ViewerControlPlaneMigration.BuildAlertRow(settings);
 
         Assert.False(row.Enabled);
+        Assert.False(row.NotifyConnectionChanges);
         Assert.Equal(66, row.CpuThresholdPercent);
         Assert.Equal("sql", row.CpuMode);
         Assert.Equal(new[] { "msdb", "tempdb" }, row.ExcludedDatabases);
@@ -462,6 +471,11 @@ public sealed class ViewerControlPlaneMigrationTests
         /* #1141/#1236: the delivery customization carries into the store row. */
         Assert.Equal("PerEvent", row.DeliveryMode);
         Assert.Equal(7, row.PerEventMax);
+        /* V20: the long-running-query read-shape customization carries into the store row too. */
+        Assert.Equal(20, row.LongRunningQueryMaxResults);
+        Assert.False(row.LongRunningQueryExcludeSpServerDiagnostics);
+        Assert.False(row.LongRunningQueryExcludeCdc);
+        Assert.True(row.LongRunningQueryExcludeWaitFor); /* untouched viewer default carries through */
     }
 
     [Fact]

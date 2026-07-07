@@ -252,13 +252,22 @@ public sealed class PostgresConfig
 /// member-for-member: cpu 80% (Total mode), blocking 1, deadlock 1, poison 500 ms, long-running
 /// query 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,
 /// cooldown 5 min. The long-running-query read shape (max results + the five noise filters) is
-/// deliberately NOT configurable here — Lite's defaults (5 / all on) are hardcoded in
-/// <see cref="DarlingAlertSettings"/> until someone actually needs a knob.
+/// control-plane-honored since V20 (was hardcoded); its defaults (5 / all on) still match Lite's.
 /// </summary>
 public sealed class AlertsConfig
 {
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether the service delivers the Server-Unreachable / Server-Restored connect-edge alerts (the headless
+    /// twin of Lite's connection-change tray toasts, fired by <see cref="!:DarlingSelfAlertEvaluator"/>). Default
+    /// true (matches Lite's App.NotifyConnectionChanges). Independent of the per-alert toggles — the connection
+    /// edge is a service-health signal, gated together with the master <c>alerts.enabled</c> switch. Stored as
+    /// <c>config_alert_settings.notify_connection_changes</c> (V20).
+    /// </summary>
+    [JsonPropertyName("notifyConnectionChanges")]
+    public bool NotifyConnectionChanges { get; set; } = true;
 
     [JsonPropertyName("cpuEnabled")]
     public bool CpuEnabled { get; set; } = true;
@@ -347,6 +356,35 @@ public sealed class AlertsConfig
     /// "+N more" batch (#1141); clamped 1–100 when applied. Stored as <c>config_alert_settings.per_event_max</c>.</summary>
     [JsonPropertyName("perEventMax")]
     public int PerEventMax { get; set; } = 5;
+
+    /* The long-running-query read shape (V20 control-plane knobs) — the row cap + the five noise-filter
+       opt-outs the shared AlertEngine forwards to GetLongRunningQueriesAsync. Defaults match Lite's App.*
+       (5 rows, every filter on) so an un-customized store suppresses the same noise it always did; stored as
+       config_alert_settings.long_running_query_*. */
+
+    /// <summary>Row cap for the long-running-query read (clamped 1–1000 when applied; default 5).</summary>
+    [JsonPropertyName("longRunningQueryMaxResults")]
+    public int LongRunningQueryMaxResults { get; set; } = 5;
+
+    /// <summary>Exclude sessions waiting on SP_SERVER_DIAGNOSTICS (default true).</summary>
+    [JsonPropertyName("longRunningQueryExcludeSpServerDiagnostics")]
+    public bool LongRunningQueryExcludeSpServerDiagnostics { get; set; } = true;
+
+    /// <summary>Exclude WAITFOR / BROKER_RECEIVE_WAITFOR sessions (default true).</summary>
+    [JsonPropertyName("longRunningQueryExcludeWaitFor")]
+    public bool LongRunningQueryExcludeWaitFor { get; set; } = true;
+
+    /// <summary>Exclude BACKUPTHREAD / BACKUPIO sessions (default true).</summary>
+    [JsonPropertyName("longRunningQueryExcludeBackups")]
+    public bool LongRunningQueryExcludeBackups { get; set; } = true;
+
+    /// <summary>Exclude XE_LIVE_TARGET_TVF sessions (default true).</summary>
+    [JsonPropertyName("longRunningQueryExcludeMiscWaits")]
+    public bool LongRunningQueryExcludeMiscWaits { get; set; } = true;
+
+    /// <summary>Exclude CDC capture sessions (default true).</summary>
+    [JsonPropertyName("longRunningQueryExcludeCdc")]
+    public bool LongRunningQueryExcludeCdc { get; set; } = true;
 }
 
 /// <summary>

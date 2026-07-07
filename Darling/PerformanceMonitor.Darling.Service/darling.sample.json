@@ -94,6 +94,9 @@
   // cooldown 5 min. Omit the whole section (or any key) for those defaults.
   "alerts": {
     "enabled": true,
+    // Deliver the Server-Unreachable / Server-Restored alerts when a monitored server's reachability flips
+    // (the headless twin of Lite's connection-change toasts). Default true; gated together with "enabled".
+    "notifyConnectionChanges": true,
     "cpuThresholdPercent": 80,
     "cpuMode": "total", // "total" (SQL + other processes) or "sql" (SQL process only)
     // How deadlock/blocking alerts are delivered: "Summary" (one batched card per cycle, the default)
@@ -103,6 +106,15 @@
     // Per-event mode's cap on incidents delivered individually per cycle before a trailing "+N more"
     // batch (so no incident is ever silently dropped). Clamped 1-100.
     "perEventMax": 5,
+    // Long-running-query alert read shape: the row cap (clamped 1-1000) and the five noise-filter opt-outs
+    // (skip SP_SERVER_DIAGNOSTICS / WAITFOR / backup / XE-live-target / CDC-capture sessions). Defaults 5 /
+    // all true suppress the usual always-on noise; set a filter false to include those sessions.
+    "longRunningQueryMaxResults": 5,
+    "longRunningQueryExcludeSpServerDiagnostics": true,
+    "longRunningQueryExcludeWaitFor": true,
+    "longRunningQueryExcludeBackups": true,
+    "longRunningQueryExcludeMiscWaits": true,
+    "longRunningQueryExcludeCdc": true,
     "excludedDatabases": []
   },
 

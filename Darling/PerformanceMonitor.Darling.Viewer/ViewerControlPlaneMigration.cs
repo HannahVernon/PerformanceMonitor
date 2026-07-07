@@ -140,6 +140,9 @@ public sealed class ViewerControlPlaneMigration
         return new AlertSettingsRow
         {
             Enabled = s.AlertsEnabled,
+            /* V20: carry a pre-3b viewer's connection-change notify choice into the store now that the service
+               honors it (was a dead knob before V20). Fresh-viewer default matches Defaults() → nothing imported. */
+            NotifyConnectionChanges = s.NotifyConnectionChanges,
             CpuEnabled = s.AlertCpuEnabled,
             CpuThresholdPercent = s.AlertCpuThreshold,
             CpuMode = ViewerDataService.MapCpuModeToStore(s.AlertCpuMode),
@@ -170,6 +173,14 @@ public sealed class ViewerControlPlaneMigration
                honors it (was a dead knob before V18). Fresh-viewer defaults match Defaults() → nothing imported. */
             DeliveryMode = (s.AlertDeliveryMode is "Summary" or "PerEvent") ? s.AlertDeliveryMode : "Summary",
             PerEventMax = s.AlertPerEventMaxPerCycle,
+            /* V20: carry a pre-3b viewer's long-running-query read customization into the store now that the
+               service honors it (was a dead knob before V20). Fresh-viewer defaults match Defaults() → nothing imported. */
+            LongRunningQueryMaxResults = s.AlertLongRunningQueryMaxResults,
+            LongRunningQueryExcludeSpServerDiagnostics = s.AlertLongRunningQueryExcludeSpServerDiagnostics,
+            LongRunningQueryExcludeWaitFor = s.AlertLongRunningQueryExcludeWaitFor,
+            LongRunningQueryExcludeBackups = s.AlertLongRunningQueryExcludeBackups,
+            LongRunningQueryExcludeMiscWaits = s.AlertLongRunningQueryExcludeMiscWaits,
+            LongRunningQueryExcludeCdc = s.AlertLongRunningQueryExcludeCdc,
         };
     }
 

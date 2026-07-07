@@ -158,9 +158,12 @@ INSERT INTO config_alert_settings (
     tempdb_space_threshold_percent, low_disk_enabled, low_disk_threshold_percent, low_disk_threshold_gb,
     long_running_job_enabled, long_running_job_multiplier, failed_job_enabled, failed_job_lookback_minutes,
     cooldown_minutes, excluded_databases, analysis_enabled, analysis_interval_minutes,
-    analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max, modified_at)
+    analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max,
+    long_running_query_max_results, long_running_query_exclude_sp_server_diagnostics,
+    long_running_query_exclude_wait_for, long_running_query_exclude_backups,
+    long_running_query_exclude_misc_waits, long_running_query_exclude_cdc, notify_connection_changes, modified_at)
 VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-        $22, $23, $24, $25, $26, $27, $28, $29, $30)
+        $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
 ON CONFLICT (id) DO NOTHING", connection);
         command.Parameters.AddWithValue(a.Enabled);
         command.Parameters.AddWithValue(a.CpuEnabled);
@@ -192,6 +195,15 @@ ON CONFLICT (id) DO NOTHING", connection);
         /* #1141 delivery mode: the enum name ("Summary"/"PerEvent") into the text column; the read parses it back. */
         command.Parameters.AddWithValue(a.DeliveryMode.ToString());
         command.Parameters.AddWithValue(a.PerEventMax);
+        /* V20 long-running-query read shape (max results + the five noise-filter opt-outs). */
+        command.Parameters.AddWithValue(a.LongRunningQueryMaxResults);
+        command.Parameters.AddWithValue(a.LongRunningQueryExcludeSpServerDiagnostics);
+        command.Parameters.AddWithValue(a.LongRunningQueryExcludeWaitFor);
+        command.Parameters.AddWithValue(a.LongRunningQueryExcludeBackups);
+        command.Parameters.AddWithValue(a.LongRunningQueryExcludeMiscWaits);
+        command.Parameters.AddWithValue(a.LongRunningQueryExcludeCdc);
+        /* V20 connection-change notify gate. */
+        command.Parameters.AddWithValue(a.NotifyConnectionChanges);
         command.Parameters.AddWithValue(now);
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -328,7 +340,10 @@ SELECT enabled, cpu_enabled, cpu_threshold_percent, cpu_mode, blocking_enabled, 
        tempdb_space_threshold_percent, low_disk_enabled, low_disk_threshold_percent, low_disk_threshold_gb,
        long_running_job_enabled, long_running_job_multiplier, failed_job_enabled, failed_job_lookback_minutes,
        cooldown_minutes, excluded_databases, analysis_enabled, analysis_interval_minutes,
-       analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max
+       analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max,
+       long_running_query_max_results, long_running_query_exclude_sp_server_diagnostics,
+       long_running_query_exclude_wait_for, long_running_query_exclude_backups,
+       long_running_query_exclude_misc_waits, long_running_query_exclude_cdc, notify_connection_changes
 FROM config_alert_settings WHERE id = 1", connection);
         using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
@@ -365,6 +380,16 @@ FROM config_alert_settings WHERE id = 1", connection);
                V18 can't reach here (the column is NOT NULL DEFAULT), but ParseDeliveryMode fails safe to Summary. */
             DeliveryMode = ParseDeliveryMode(reader.IsDBNull(27) ? null : reader.GetString(27)),
             PerEventMax = reader.GetInt32(28),
+            /* long-running-query read shape appended (V20) at ordinals 29–34; NOT NULL DEFAULT so a pre-V20
+               store row can't reach here without the columns present. */
+            LongRunningQueryMaxResults = reader.GetInt32(29),
+            LongRunningQueryExcludeSpServerDiagnostics = reader.GetBoolean(30),
+            LongRunningQueryExcludeWaitFor = reader.GetBoolean(31),
+            LongRunningQueryExcludeBackups = reader.GetBoolean(32),
+            LongRunningQueryExcludeMiscWaits = reader.GetBoolean(33),
+            LongRunningQueryExcludeCdc = reader.GetBoolean(34),
+            /* connection-change notify gate appended (V20) at ordinal 35. */
+            NotifyConnectionChanges = reader.GetBoolean(35),
         };
         var analysis = new AnalysisConfig
         {

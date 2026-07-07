@@ -439,20 +439,14 @@ public partial class SettingsWindow : Window
 
     // ── Notifications / alert thresholds ──
 
-    /// <summary>Seeds the viewer-LOCAL alert fields (no honored store column: tray minimize, connection-change
-    /// notify, LRQ max-results + the five noise filters, delivery mode, mute-rule default, dismissal logging).</summary>
+    /// <summary>Seeds the viewer-LOCAL alert fields (no honored store column: tray minimize, mute-rule default,
+    /// dismissal logging).</summary>
     private void LoadViewerLocalAlertFields()
     {
         MinimizeToTrayCheckBox.IsChecked = _appSettings.MinimizeToTray;
-        NotifyConnectionCheckBox.IsChecked = _appSettings.NotifyConnectionChanges;
-        AlertLongRunningQueryMaxResultsBox.Text = _appSettings.AlertLongRunningQueryMaxResults.ToString(CultureInfo.InvariantCulture);
-        LrqExcludeSpServerDiagnosticsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeSpServerDiagnostics;
-        LrqExcludeWaitForCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeWaitFor;
-        LrqExcludeBackupsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeBackups;
-        LrqExcludeMiscWaitsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeMiscWaits;
-        LrqExcludeCdcCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeCdc;
-        /* AlertDeliveryMode/PerEventMax moved to the STORE-backed controls (SeedAlertControlsFrom /
-           BuildAlertRowFromControls) now that the service honors them (#1141/#1236); no longer viewer-local. */
+        /* AlertDeliveryMode/PerEventMax (#1141/#1236), the long-running-query read shape (max-results + the five
+           noise filters), and connection-change notify (V20) moved to the STORE-backed controls
+           (SeedAlertControlsFrom / BuildAlertRowFromControls) now that the service honors them; no longer viewer-local. */
         MuteRuleDefaultExpirationCombo.SelectedIndex = _appSettings.MuteRuleDefaultExpiration switch
         {
             "1 hour" => 0,
@@ -468,6 +462,8 @@ public partial class SettingsWindow : Window
     private void SeedAlertControlsFrom(AlertSettingsRow r)
     {
         AlertsEnabledCheckBox.IsChecked = r.Enabled;
+        /* V20: connection-change notify is store-backed now (the service gates the connect edge on it). */
+        NotifyConnectionCheckBox.IsChecked = r.NotifyConnectionChanges;
         AlertCpuCheckBox.IsChecked = r.CpuEnabled;
         AlertCpuThresholdBox.Text = r.CpuThresholdPercent.ToString(CultureInfo.InvariantCulture);
         AlertCpuModeBox.SelectedIndex = ViewerDataService.MapCpuModeFromStore(r.CpuMode) == "SqlOnly" ? 1 : 0;
@@ -479,6 +475,13 @@ public partial class SettingsWindow : Window
         AlertPoisonWaitThresholdBox.Text = r.PoisonWaitThresholdMs.ToString(CultureInfo.InvariantCulture);
         AlertLongRunningQueryCheckBox.IsChecked = r.LongRunningQueryEnabled;
         AlertLongRunningQueryThresholdBox.Text = r.LongRunningQueryThresholdMinutes.ToString(CultureInfo.InvariantCulture);
+        /* V20: the long-running-query read shape (max-results + the five noise filters) is store-backed now. */
+        AlertLongRunningQueryMaxResultsBox.Text = r.LongRunningQueryMaxResults.ToString(CultureInfo.InvariantCulture);
+        LrqExcludeSpServerDiagnosticsCheckBox.IsChecked = r.LongRunningQueryExcludeSpServerDiagnostics;
+        LrqExcludeWaitForCheckBox.IsChecked = r.LongRunningQueryExcludeWaitFor;
+        LrqExcludeBackupsCheckBox.IsChecked = r.LongRunningQueryExcludeBackups;
+        LrqExcludeMiscWaitsCheckBox.IsChecked = r.LongRunningQueryExcludeMiscWaits;
+        LrqExcludeCdcCheckBox.IsChecked = r.LongRunningQueryExcludeCdc;
         AlertExcludedDatabasesBox.Text = string.Join(", ", r.ExcludedDatabases);
         AlertTempDbSpaceCheckBox.IsChecked = r.TempDbSpaceEnabled;
         AlertTempDbSpaceThresholdBox.Text = r.TempDbSpaceThresholdPercent.ToString(CultureInfo.InvariantCulture);
@@ -508,12 +511,19 @@ public partial class SettingsWindow : Window
         var row = new AlertSettingsRow
         {
             Enabled = AlertsEnabledCheckBox.IsChecked == true,
+            NotifyConnectionChanges = NotifyConnectionCheckBox.IsChecked == true,
             CpuEnabled = AlertCpuCheckBox.IsChecked == true,
             CpuMode = ViewerDataService.MapCpuModeToStore((AlertCpuModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Total"),
             BlockingEnabled = AlertBlockingCheckBox.IsChecked == true,
             DeadlockEnabled = AlertDeadlockCheckBox.IsChecked == true,
             PoisonWaitEnabled = AlertPoisonWaitCheckBox.IsChecked == true,
             LongRunningQueryEnabled = AlertLongRunningQueryCheckBox.IsChecked == true,
+            /* V20 long-running-query read shape (the five noise-filter opt-outs; max-results parsed below). */
+            LongRunningQueryExcludeSpServerDiagnostics = LrqExcludeSpServerDiagnosticsCheckBox.IsChecked == true,
+            LongRunningQueryExcludeWaitFor = LrqExcludeWaitForCheckBox.IsChecked == true,
+            LongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true,
+            LongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true,
+            LongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true,
             TempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true,
             LowDiskEnabled = AlertLowDiskCheckBox.IsChecked == true,
             LongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true,
@@ -537,6 +547,9 @@ public partial class SettingsWindow : Window
             row.PoisonWaitThresholdMs = poisonWait;
         if (int.TryParse(AlertLongRunningQueryThresholdBox.Text, out var lrq) && lrq > 0)
             row.LongRunningQueryThresholdMinutes = lrq;
+        /* V20: max-results (the read adapter re-clamps 1–1000; a bad value keeps the default 5). */
+        if (int.TryParse(AlertLongRunningQueryMaxResultsBox.Text, out var lrqMax) && lrqMax is >= 1 and <= 1000)
+            row.LongRunningQueryMaxResults = lrqMax;
         if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb is > 0 and <= 100)
             row.TempDbSpaceThresholdPercent = tempDb;
         if (int.TryParse(AlertLowDiskThresholdPercentBox.Text, out var lowDiskPct) && lowDiskPct is >= 0 and <= 100)
@@ -578,15 +591,8 @@ public partial class SettingsWindow : Window
     private void SaveViewerLocalAlertFields(List<string> errors)
     {
         _appSettings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked == true;
-        _appSettings.NotifyConnectionChanges = NotifyConnectionCheckBox.IsChecked == true;
-        if (int.TryParse(AlertLongRunningQueryMaxResultsBox.Text, out var lrqMax) && lrqMax >= 1)
-            _appSettings.AlertLongRunningQueryMaxResults = lrqMax;
-        _appSettings.AlertLongRunningQueryExcludeSpServerDiagnostics = LrqExcludeSpServerDiagnosticsCheckBox.IsChecked == true;
-        _appSettings.AlertLongRunningQueryExcludeWaitFor = LrqExcludeWaitForCheckBox.IsChecked == true;
-        _appSettings.AlertLongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true;
-        _appSettings.AlertLongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true;
-        _appSettings.AlertLongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true;
-        /* AlertDeliveryMode/PerEventMax are STORE-backed now (BuildAlertRowFromControls writes them); not here. */
+        /* AlertDeliveryMode/PerEventMax, the long-running-query read shape (max-results + the five noise filters),
+           and connection-change notify (V20) are STORE-backed now (BuildAlertRowFromControls writes them); not here. */
         _appSettings.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         _appSettings.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
     }
@@ -601,6 +607,13 @@ public partial class SettingsWindow : Window
         AlertDeadlockThresholdBox.Text = "1";
         AlertPoisonWaitThresholdBox.Text = "500";
         AlertLongRunningQueryThresholdBox.Text = "30";
+        /* V20: the long-running-query read shape resets to Lite's App defaults (5 rows, every filter on). */
+        AlertLongRunningQueryMaxResultsBox.Text = "5";
+        LrqExcludeSpServerDiagnosticsCheckBox.IsChecked = true;
+        LrqExcludeWaitForCheckBox.IsChecked = true;
+        LrqExcludeBackupsCheckBox.IsChecked = true;
+        LrqExcludeMiscWaitsCheckBox.IsChecked = true;
+        LrqExcludeCdcCheckBox.IsChecked = true;
         AlertTempDbSpaceThresholdBox.Text = "80";
         AlertLowDiskThresholdPercentBox.Text = "10";
         AlertLowDiskThresholdGbBox.Text = "5";
@@ -674,6 +687,13 @@ public partial class SettingsWindow : Window
         AlertPoisonWaitThresholdBox.IsEnabled = enabled;
         AlertLongRunningQueryCheckBox.IsEnabled = enabled;
         AlertLongRunningQueryThresholdBox.IsEnabled = enabled;
+        /* V20 long-running-query read-shape controls follow the master switch like the rest of the engine. */
+        AlertLongRunningQueryMaxResultsBox.IsEnabled = enabled;
+        LrqExcludeSpServerDiagnosticsCheckBox.IsEnabled = enabled;
+        LrqExcludeWaitForCheckBox.IsEnabled = enabled;
+        LrqExcludeBackupsCheckBox.IsEnabled = enabled;
+        LrqExcludeMiscWaitsCheckBox.IsEnabled = enabled;
+        LrqExcludeCdcCheckBox.IsEnabled = enabled;
         AlertTempDbSpaceCheckBox.IsEnabled = enabled;
         AlertTempDbSpaceThresholdBox.IsEnabled = enabled;
         AlertLowDiskCheckBox.IsEnabled = enabled;
