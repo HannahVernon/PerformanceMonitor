@@ -122,4 +122,14 @@ public class DailyHealthBandTests
         Assert.Contains("1 blocking event", described);
         Assert.Contains("3 alerts", described);
     }
+
+    [Fact]
+    public void Describe_MemoryPressure_DoesNotDoubleCountSevere()
+    {
+        // 3 pressure events, 1 severe -> "1 severe" + "2 (non-severe)", never "3 memory-pressure events".
+        var described = DailyHealthBandCalculator.Describe(Signals(memPressure: 3, memCritical: 1));
+        Assert.Contains("1 severe memory-pressure event", described);
+        Assert.Contains("2 memory-pressure events", described);
+        Assert.DoesNotContain("3 memory-pressure events", described);
+    }
 }

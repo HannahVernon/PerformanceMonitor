@@ -110,6 +110,7 @@ day_spine AS (
     UNION SELECT d FROM cpu
     UNION SELECT d FROM coll
     UNION SELECT d FROM mem
+    UNION SELECT d FROM alerts
 )
 SELECT
     s.d AS day,

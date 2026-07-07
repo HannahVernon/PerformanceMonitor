@@ -182,7 +182,10 @@ namespace PerformanceMonitor.Common
             AppendCount(lines, signals.HighCpuEvents, "high-CPU sample", "high-CPU samples");
             AppendCount(lines, signals.BlockingEvents, "blocking event", "blocking events");
             AppendCount(lines, signals.MemoryCriticalEvents, "severe memory-pressure event", "severe memory-pressure events");
-            AppendCount(lines, signals.MemoryPressureEvents, "memory-pressure event", "memory-pressure events");
+            // MemoryPressureEvents is the full count (medium + severe); severe is a subset already listed
+            // above, so only the non-severe remainder is shown here to avoid double-counting.
+            var nonSevereMemory = Math.Max(0, signals.MemoryPressureEvents - signals.MemoryCriticalEvents);
+            AppendCount(lines, nonSevereMemory, "memory-pressure event", "memory-pressure events");
             AppendCount(lines, signals.AlertCount, "alert", "alerts");
 
             return lines.Count == 0 ? "No issues detected." : string.Join(Environment.NewLine, lines);

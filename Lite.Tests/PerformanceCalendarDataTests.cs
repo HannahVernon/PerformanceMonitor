@@ -141,12 +141,19 @@ public class PerformanceCalendarDataTests : IDisposable
         await SeedCollectionRunAsync(Day(18));
         await SeedMemoryAsync(Day(18), process: 3, system: 1);
 
+        // 07-22 Warning via an alert alone (no collection-log run that day) -- the day must still appear
+        // (alerts are part of the day spine), banded Warning, not dropped as No-Data.
+        await SeedAlertAsync(Day(22), "Blocking Detected", dismissed: false);
+
         var rows = await _dataService.GetDailySummaryRangeAsync(ServerId, MonthStart, MonthEnd);
         var byDate = rows.ToDictionary(r => r.SummaryDate.Date);
 
-        // Exactly the seven seeded days appear; unseeded days are absent (calendar renders them No-Data).
-        Assert.Equal(7, rows.Count);
+        // Exactly the eight seeded days appear; unseeded days are absent (calendar renders them No-Data).
+        Assert.Equal(8, rows.Count);
         Assert.False(byDate.ContainsKey(Day(20)));
+
+        Assert.Equal(DailyHealthBand.Warning, byDate[Day(22)].HealthBand);
+        Assert.Equal(1, byDate[Day(22)].AlertCount);
 
         Assert.Equal(DailyHealthBand.Critical, byDate[Day(2)].HealthBand);
         Assert.Equal(1, byDate[Day(2)].DeadlockCount);
