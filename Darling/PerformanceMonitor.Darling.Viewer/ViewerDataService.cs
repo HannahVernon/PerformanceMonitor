@@ -309,6 +309,23 @@ LIMIT 1";
         }
     }
 
+    /// <summary>
+    /// The <c>RETURNING</c>-shaped sibling of <see cref="ExecuteWriteAsync"/>: runs a write that yields a
+    /// scalar (e.g. the <c>config_command.command_id</c> a command enqueue returns), translating a 42501 on a
+    /// read-only seat into <see cref="ViewerReadOnlyException"/> the same way. Any other failure propagates.
+    /// </summary>
+    internal async Task<object?> ExecuteWriteScalarAsync(NpgsqlCommand command, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await command.ExecuteScalarAsync(cancellationToken);
+        }
+        catch (PostgresException ex) when (ex.SqlState == InsufficientPrivilegeSqlState)
+        {
+            throw new ViewerReadOnlyException(ex);
+        }
+    }
+
     public ValueTask DisposeAsync() => _dataSource.DisposeAsync();
 }
 

@@ -237,6 +237,49 @@ public sealed class ViewerServerStore
         return entry.IsFavorite;
     }
 
+    /// <summary>
+    /// Sets (not toggles) the favorite flag for a server by name, creating a minimal viewer-local entry when
+    /// none exists, and persists. Favorites are the one thing this store keeps after Stage 3 moved server
+    /// DEFINITIONS to <c>config.config_monitored_servers</c> — they are viewer-local (the service never reads
+    /// them), so they legitimately stay in viewer-servers.json. Returns the resulting state.
+    /// </summary>
+    public bool SetFavorite(string serverName, bool isFavorite)
+    {
+        if (string.IsNullOrWhiteSpace(serverName))
+        {
+            return false;
+        }
+
+        var entry = GetByServerName(serverName);
+        if (entry is null)
+        {
+            if (!isFavorite)
+            {
+                /* Nothing pinned and nothing to pin — don't write an empty registry entry. */
+                return false;
+            }
+
+            _servers.Add(new ViewerServerEntry
+            {
+                ServerName = serverName,
+                DisplayName = serverName,
+                IsFavorite = true
+            });
+        }
+        else
+        {
+            if (entry.IsFavorite == isFavorite)
+            {
+                return isFavorite;
+            }
+
+            entry.IsFavorite = isFavorite;
+        }
+
+        Save();
+        return isFavorite;
+    }
+
     /// <summary>The stored (username, password) for a server id, or null — used to pre-fill the Edit dialog.</summary>
     public (string Username, string Password)? GetCredential(string id) => _secrets.Get(id);
 

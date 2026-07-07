@@ -129,6 +129,11 @@ public partial class MainWindow : Window
         FinOpsContent.StatusChanged += OnServerTabStatusChanged;
         FinOpsContent.PlanRequested += OpenStoredPlanInPlanViewer;
 
+        /* One-time import of any pre-Stage-3 viewer-servers.json definitions into the store, before the first
+           list load so imported servers appear immediately. Guarded (marker + ON CONFLICT DO NOTHING) so it
+           never double-seeds the service's darling.json seed nor resurrects a removed server. */
+        await MigrateViewerServersAsync();
+
         await LoadServersAsync();
 
         /* --open-server <name>: deep-link straight into a server's per-server tab on startup —
@@ -259,7 +264,7 @@ public partial class MainWindow : Window
         await RefreshVisibleAsync();
     }
 
-    private async Task LoadServersAsync()
+    private async Task LoadServersAsync(bool preserveSelection = false)
     {
         if (_dataService is null)
         {
@@ -268,9 +273,12 @@ public partial class MainWindow : Window
 
         try
         {
-            /* Enrich the Postgres-sourced list with the viewer's favorite pins (matched by server name) and
-               sort favorites-first (Lite's ordering) before it drives the sidebar and the selectors. */
-            var servers = ApplyFavoritesAndSort(await _dataService.GetServersAsync());
+            var previousSelection = (ServerList.SelectedItem as DarlingServer)?.ServerId;
+
+            /* The DESIRED-state managed set (config_monitored_servers), enriched with the observed
+               collect.servers facts by the shared server_id, so a viewer add/remove/enable is reflected at
+               once. Stamp the viewer's favorite pins (matched by server name) and sort favorites-first. */
+            var servers = ApplyFavoritesAndSort(await _dataService.GetManagedServersAsync());
             ServerList.ItemsSource = servers;
             ServerCountText.Text = $"Servers: {servers.Count}";
 
@@ -298,8 +306,20 @@ public partial class MainWindow : Window
 
             if (hasServers)
             {
-                /* Triggers SelectionChanged, which loads the active aggregate tab for the first server. */
-                ServerList.SelectedIndex = 0;
+                /* Triggers SelectionChanged, which loads the active aggregate tab. Restore the prior
+                   selection after a server add/edit/remove (preserveSelection) so the view doesn't jump
+                   back to the first server; the initial load selects the first. */
+                var restore = preserveSelection && previousSelection is int prev
+                    ? servers.Find(s => s.ServerId == prev)
+                    : null;
+                if (restore is not null)
+                {
+                    ServerList.SelectedItem = restore;
+                }
+                else
+                {
+                    ServerList.SelectedIndex = 0;
+                }
             }
             else
             {

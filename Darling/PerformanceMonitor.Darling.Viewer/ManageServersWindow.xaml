@@ -10,6 +10,7 @@
         <ResourceDictionary>
             <ContextMenu x:Key="DataGridContextMenu">
                 <MenuItem Header="Edit" Click="EditMenuItem_Click"/>
+                <MenuItem Header="Enable / Disable Collection" Click="ToggleEnabledMenuItem_Click"/>
                 <MenuItem Header="Excluded Databases" Click="ExcludedDatabases_Click"/>
                 <MenuItem Header="Delete" Click="DeleteMenuItem_Click"
                           Foreground="{DynamicResource ErrorBrush}"/>
