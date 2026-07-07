@@ -64,7 +64,9 @@
                         </Style>
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
-                <DataGridTextColumn Header="Last Connected" Binding="{Binding LastConnected, StringFormat=yyyy-MM-dd HH:mm}" Width="140"/>
+                <!-- "Added" (creation time), not Lite's "Last Connected": the viewer never connects to a
+                     monitored server, so a last-connected time would be meaningless here. -->
+                <DataGridTextColumn Header="Added" Binding="{Binding CreatedDate, StringFormat=yyyy-MM-dd HH:mm}" Width="140"/>
             </DataGrid.Columns>
         </DataGrid>
 
