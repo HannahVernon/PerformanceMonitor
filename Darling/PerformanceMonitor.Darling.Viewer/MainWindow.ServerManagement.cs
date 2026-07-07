@@ -22,14 +22,13 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// the sidebar's favorite pinning + collection-freshness status dots, the right-click server menu, the
 /// footer Add / Manage / Import / log buttons, the sidebar collapse toggle, and the multi-field status bar.
 ///
-/// <para>Adaptation (hard viewer facts, matching the rest of the Lite→Darling port). The sidebar lists the
-/// servers the Darling service is actually COLLECTING (the Postgres <c>servers</c> table), so its dots come
-/// from collection freshness — the viewer never pings a monitored server — and Connect/Disconnect have no
-/// meaning and are omitted. Add / Manage / Edit / Remove operate on the viewer's OWN registry
-/// (<see cref="ViewerServerStore"/> → viewer-servers.json); an added/edited server appears in the sidebar
-/// once the service registers it into the store (that service wiring is the follow-up flagged in the PR).
-/// Favorites are the one thing the viewer acts on today: pinned in the registry (matched by server name),
-/// starred and sorted-to-top here.</para>
+/// <para>Control plane (Stage 3): Add / Edit / Remove / Enable WRITE the desired-state
+/// <c>config.config_monitored_servers</c> through <see cref="ViewerDataService"/>, so the Darling service
+/// starts/stops collecting on its next reload — the sidebar shows that config-driven managed set
+/// (<see cref="ViewerDataService.GetManagedServersAsync"/>), enriched with the observed collection facts.
+/// The dots still come from collection freshness (the viewer never pings a monitored server), and
+/// Connect/Disconnect have no meaning and are omitted. Favorites remain viewer-local
+/// (<see cref="ViewerServerStore"/>, matched by server name), starred and sorted-to-top here.</para>
 /// </summary>
 public partial class MainWindow
 {
@@ -223,40 +222,51 @@ public partial class MainWindow
         StatusText.Text = isFavorite ? $"Pinned {server.DisplayName}" : $"Unpinned {server.DisplayName}";
     }
 
-    private void ServerContextMenu_Edit_Click(object sender, RoutedEventArgs e)
+    private async void ServerContextMenu_Edit_Click(object sender, RoutedEventArgs e)
     {
         var server = GetServerFromContextMenu(sender);
-        if (server is null)
+        if (server is null || _dataService is null)
         {
             return;
         }
 
-        /* Edit the matching registry entry, or "adopt" the collected server into the registry by seeding a
-           new entry from its name/display (the service registered it; the viewer had no definition yet). */
-        var entry = _serverStore.GetByServerName(server.ServerName)
-            ?? new ViewerServerEntry { ServerName = server.ServerName, DisplayName = server.DisplayName };
-
-        var dialog = new AddServerDialog(_serverStore, ProfileStore, entry) { Owner = this };
-        if (dialog.ShowDialog() == true)
+        try
         {
-            ReapplyFavoritesToServerList();
-            StatusText.Text = $"Saved '{server.DisplayName}' to the viewer registry.";
+            /* Load the store row by the shared server_id. It is normally present (the sidebar shows the
+               config-driven set); on a pre-seed store showing collect.servers, seed a new definition from the
+               server's name so the operator can add it to the store. */
+            var row = await _dataService.GetMonitoredServerAsync(server.ServerId);
+            var favorite = _serverStore.IsFavorite(server.ServerName);
+
+            var dialog = row is not null
+                ? new AddServerDialog(_dataService, _serverStore, ProfileStore, row, favorite) { Owner = this }
+                : new AddServerDialog(_dataService, _serverStore, ProfileStore, server.ServerName, server.DisplayName) { Owner = this };
+
+            if (dialog.ShowDialog() == true)
+            {
+                await LoadServersAsync(preserveSelection: true);
+                StatusText.Text = $"Saved '{dialog.SavedDisplayName ?? server.DisplayName}'.";
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ServerManagement", "Failed to open the edit dialog", ex);
+            StatusText.Text = $"Could not edit the server: {ex.Message}";
         }
     }
 
-    private void ServerContextMenu_Remove_Click(object sender, RoutedEventArgs e)
+    private async void ServerContextMenu_Remove_Click(object sender, RoutedEventArgs e)
     {
         var server = GetServerFromContextMenu(sender);
-        if (server is null)
+        if (server is null || _dataService is null)
         {
             return;
         }
 
         var result = MessageBox.Show(
-            $"Remove '{server.DisplayName}' from the viewer's registry?\n\n" +
-            "This removes only the viewer-side definition and its favorite pin. The Darling service keeps " +
-            "collecting this server (stopping collection is service-side — see the release notes), so its row " +
-            "stays in the list until the service is reconfigured.",
+            $"Remove '{server.DisplayName}' from monitoring?\n\n" +
+            "This deletes the server definition from the store, so the Darling service stops collecting it on " +
+            "its next reload. Already-collected history is kept.",
             "Remove Server",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
@@ -266,38 +276,79 @@ public partial class MainWindow
             return;
         }
 
-        var entry = _serverStore.GetByServerName(server.ServerName);
-        if (entry is not null)
+        try
         {
-            _serverStore.DeleteServer(entry.Id);
+            await _dataService.DeleteMonitoredServerAsync(server.ServerId);
+            /* Drop the viewer-local favorite pin too. */
+            _serverStore.SetFavorite(server.ServerName, false);
+            await LoadServersAsync(preserveSelection: true);
+            StatusText.Text = $"Removed '{server.DisplayName}' from monitoring.";
         }
-
-        server.IsFavorite = false;
-        ReapplyFavoritesToServerList();
-        StatusText.Text = $"Removed '{server.DisplayName}' from the viewer registry.";
+        catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ServerManagement", "Failed to remove server", ex);
+            StatusText.Text = $"Could not remove the server: {ex.Message}";
+        }
     }
 
     // ── Footer buttons (Add / Manage / Import Settings / View Log / Open Log Folder) ─────
 
-    private void AddServerButton_Click(object sender, RoutedEventArgs e)
+    private async void AddServerButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddServerDialog(_serverStore, ProfileStore) { Owner = this };
-        if (dialog.ShowDialog() == true && dialog.AddedServer is not null)
+        if (_dataService is null)
         {
-            ReapplyFavoritesToServerList();
-            StatusText.Text =
-                $"Saved server '{dialog.AddedServer.DisplayName}' to the viewer registry. " +
-                "The Darling service will collect it once server-registration wiring lands.";
+            StatusText.Text = "Connect to a Darling store before adding servers.";
+            return;
+        }
+
+        var dialog = new AddServerDialog(_dataService, _serverStore, ProfileStore) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            await LoadServersAsync(preserveSelection: true);
+            StatusText.Text = string.IsNullOrEmpty(dialog.SavedDisplayName)
+                ? "Server saved."
+                : $"Saved '{dialog.SavedDisplayName}'. The Darling service will start collecting it on its next reload.";
         }
     }
 
-    private void ManageServersButton_Click(object sender, RoutedEventArgs e)
+    private async void ManageServersButton_Click(object sender, RoutedEventArgs e)
     {
         var window = new ManageServersWindow(_serverStore, ProfileStore, _dataService) { Owner = this };
         window.ShowDialog();
         if (window.ServersChanged)
         {
-            ReapplyFavoritesToServerList();
+            await LoadServersAsync(preserveSelection: true);
+        }
+    }
+
+    /// <summary>
+    /// One-time import of the pre-Stage-3 <c>viewer-servers.json</c> server DEFINITIONS into the store, run
+    /// once on first connect (see <see cref="ViewerServerMigration"/>). Best-effort: a failure never blocks
+    /// startup — the sidebar still shows whatever the store already holds.
+    /// </summary>
+    private async Task MigrateViewerServersAsync()
+    {
+        if (_dataService is null || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            var migration = new ViewerServerMigration(_serverStore, ProfileStore);
+            var imported = await migration.MigrateAsync(_dataService);
+            if (imported > 0)
+            {
+                ViewerLogger.Info("ServerMigration", $"Imported {imported} viewer-registered server(s) into the store.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Warn("ServerMigration", $"viewer-servers.json migrate-in failed: {ex.Message}");
         }
     }
 
@@ -343,9 +394,11 @@ public partial class MainWindow
     /// <summary>
     /// Imports server definitions (and copies viewer settings/preferences when absent) from a previous
     /// viewer's per-user config folder — the Darling analog of Lite's Import Settings. Lite's DuckDB
-    /// "Import Data" has no viewer meaning and is omitted.
+    /// "Import Data" has no viewer meaning and is omitted. The migratable definitions are pushed into the
+    /// store (Stage 3) so the service picks them up; cross-machine secrets don't travel, so SQL servers
+    /// without a locally-resolvable secret land in the local registry only until re-credentialed.
     /// </summary>
-    private void ImportSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void ImportSettingsButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog
         {
@@ -393,10 +446,22 @@ public partial class MainWindow
                 }
             }
 
+            /* Push the migratable definitions into the store so the service collects them (integrated auth
+               travels; a SQL server's secret does not cross machines, so it lands locally only). */
+            var pushedToStore = 0;
+            if (_dataService is not null && !_dataService.IsReadOnly && OperatingSystem.IsWindows())
+            {
+                pushedToStore = await ViewerServerMigration.ImportFromStoreAsync(_serverStore, ProfileStore, _dataService);
+            }
+
             var message = $"Imported {imported} server definition(s).";
             if (skipped > 0)
             {
                 message += $"\nSkipped {skipped} already-configured server(s).";
+            }
+            if (pushedToStore > 0)
+            {
+                message += $"\nAdded {pushedToStore} to the monitored store (the service will collect them on its next reload).";
             }
             if (copied > 0)
             {
@@ -407,9 +472,9 @@ public partial class MainWindow
 
             MessageBox.Show(message, "Import Settings", MessageBoxButton.OK, MessageBoxImage.Information);
 
-            if (imported > 0)
+            if (imported > 0 || pushedToStore > 0)
             {
-                ReapplyFavoritesToServerList();
+                await LoadServersAsync(preserveSelection: true);
             }
         }
         catch (Exception ex)

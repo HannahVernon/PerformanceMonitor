@@ -7,7 +7,9 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using PerformanceMonitor.Ui;
@@ -15,13 +17,11 @@ using PerformanceMonitor.Ui;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The viewer's Manage Servers window — a faithful port of Lite's, over the viewer's own registry
-/// (<see cref="ViewerServerStore"/>). Adds / edits / removes server DEFINITIONS, edits per-server excluded
-/// databases (populated from the store's collected database list), and manages shared credential profiles
-/// (<see cref="ViewerProfileStore"/>) via the "Credential Profiles…" button — credential MANAGEMENT is in
-/// scope even though the viewer never makes the live connection (the Darling service resolves a chosen
-/// profile at connect time). Making the service honor these definitions is the separate wiring flagged in
-/// the PR.
+/// The viewer's Manage Servers window — the control-plane server list. It reads the DESIRED-state
+/// <c>config.config_monitored_servers</c> through <see cref="ViewerDataService"/> (the source of truth for
+/// what the Darling service collects, Stage 3) and Add / Edit / Delete / Enable-Disable all WRITE that store,
+/// so a change here starts or stops collection on the service's next reload. Excluded-databases editing and
+/// shared credential-profile management ride along. Favorites stay viewer-local (<see cref="ViewerServerStore"/>).
 /// </summary>
 public partial class ManageServersWindow : Window
 {
@@ -32,27 +32,50 @@ public partial class ManageServersWindow : Window
     /// <summary>True when servers were modified, so the caller refreshes the sidebar.</summary>
     public bool ServersChanged { get; private set; }
 
-    /// <param name="dataService">Store reader for the Excluded Databases picker's collected-database list;
-    /// null (viewer not connected) degrades that picker to manual-only.</param>
+    /// <param name="dataService">The store the server list reads + writes; null (viewer not connected) shows an
+    /// empty list with a note — server management needs the store.</param>
     public ManageServersWindow(ViewerServerStore serverStore, ViewerProfileStore profileStore, ViewerDataService? dataService)
     {
         InitializeComponent();
         _serverStore = serverStore;
         _profileStore = profileStore;
         _dataService = dataService;
-        RefreshGrid();
+        Loaded += async (_, _) => await RefreshGridAsync();
     }
 
-    private void RefreshGrid()
+    private async Task RefreshGridAsync()
     {
-        ServersGrid.ItemsSource = null;
-        var servers = _serverStore.GetAllServers();
-        var appVersion = GetAppVersion();
-        foreach (var s in servers)
+        if (_dataService is null)
         {
-            s.InstalledVersion = appVersion;
+            ServersGrid.ItemsSource = null;
+            return;
         }
-        ServersGrid.ItemsSource = servers;
+
+        try
+        {
+            /* Preserve the selected row across the reload (after Edit/Delete/Enable), matching the sidebar. */
+            var previouslySelected = (ServersGrid.SelectedItem as ManagedServerListItem)?.Row.ServerId;
+
+            var rows = await _dataService.GetMonitoredServersAsync();
+            var appVersion = GetAppVersion();
+            var items = new List<ManagedServerListItem>(rows.Count);
+            foreach (var row in rows)
+            {
+                items.Add(new ManagedServerListItem(row, _serverStore.IsFavorite(row.Host)) { InstalledVersion = appVersion });
+            }
+
+            ServersGrid.ItemsSource = items;
+            if (previouslySelected is int prev)
+            {
+                ServersGrid.SelectedItem = items.Find(i => i.Row.ServerId == prev);
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ManageServersWindow", "Failed to read the configured servers", ex);
+            MessageBox.Show($"Could not read the configured servers: {ex.Message}",
+                "Manage Servers", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private static string GetAppVersion()
@@ -69,13 +92,18 @@ public partial class ManageServersWindow : Window
             : trimmed;
     }
 
-    private void AddButton_Click(object sender, RoutedEventArgs e)
+    private async void AddButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddServerDialog(_serverStore, _profileStore) { Owner = this };
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        var dialog = new AddServerDialog(_dataService, _serverStore, _profileStore) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             ServersChanged = true;
-            RefreshGrid();
+            await RefreshGridAsync();
         }
     }
 
@@ -83,24 +111,50 @@ public partial class ManageServersWindow : Window
 
     private void ServersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e) => EditSelected();
 
-    private void EditSelected()
+    private async void EditSelected()
     {
-        if (ServersGrid.SelectedItem is not ViewerServerEntry selected)
+        if (_dataService is null || ServersGrid.SelectedItem is not ManagedServerListItem selected)
         {
             return;
         }
 
-        var dialog = new AddServerDialog(_serverStore, _profileStore, selected) { Owner = this };
+        var dialog = new AddServerDialog(_dataService, _serverStore, _profileStore, selected.Row, selected.IsFavorite) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             ServersChanged = true;
-            RefreshGrid();
+            await RefreshGridAsync();
         }
     }
 
     private void EditMenuItem_Click(object sender, RoutedEventArgs e) => EditSelected();
 
     private void DeleteMenuItem_Click(object sender, RoutedEventArgs e) => DeleteButton_Click(sender, e);
+
+    private async void ToggleEnabledMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null || ServersGrid.SelectedItem is not ManagedServerListItem selected)
+        {
+            return;
+        }
+
+        var newState = !selected.Row.IsEnabled;
+        try
+        {
+            await _dataService.SetMonitoredServerEnabledAsync(selected.Row.ServerId, newState);
+            ServersChanged = true;
+            await RefreshGridAsync();
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            MessageBox.Show(ex.Message, "Manage Servers", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ManageServersWindow", "Failed to toggle collection", ex);
+            MessageBox.Show($"Could not change collection state: {ex.Message}",
+                "Manage Servers", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     private void CredentialProfiles_Click(object sender, RoutedEventArgs e)
     {
@@ -109,43 +163,62 @@ public partial class ManageServersWindow : Window
         if (dialog.ProfilesChanged)
         {
             /* Server rows may reference a profile; refresh to reflect reassignments. */
-            RefreshGrid();
+            _ = RefreshGridAsync();
         }
     }
 
-    private void ExcludedDatabases_Click(object sender, RoutedEventArgs e)
+    private async void ExcludedDatabases_Click(object sender, RoutedEventArgs e)
     {
-        if (ServersGrid.SelectedItem is not ViewerServerEntry selected)
+        if (_dataService is null || ServersGrid.SelectedItem is not ManagedServerListItem selected)
         {
             return;
         }
 
-        var dialog = new ExcludedDatabasesDialog(_serverStore, selected, _dataService) { Owner = this };
+        var dialog = new ExcludedDatabasesDialog(_dataService, selected.Row, selected.DisplayNameWithIntent) { Owner = this };
         if (dialog.ShowDialog() == true && dialog.ExclusionsModified)
         {
             ServersChanged = true;
-            RefreshGrid();
+            await RefreshGridAsync();
         }
     }
 
-    private void DeleteButton_Click(object sender, RoutedEventArgs e)
+    private async void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
-        if (ServersGrid.SelectedItem is not ViewerServerEntry selected)
+        if (_dataService is null || ServersGrid.SelectedItem is not ManagedServerListItem selected)
         {
             return;
         }
 
         var result = MessageBox.Show(
-            $"Delete server '{selected.DisplayNameWithIntent}'?\n\nThis will remove the server definition and its stored credentials.",
+            $"Delete server '{selected.DisplayNameWithIntent}'?\n\n" +
+            "This removes the server definition from the store, so the Darling service stops collecting it on " +
+            "its next reload. Already-collected history is kept.",
             "Delete Server",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
 
-        if (result == MessageBoxResult.Yes)
+        if (result != MessageBoxResult.Yes)
         {
-            _serverStore.DeleteServer(selected.Id);
+            return;
+        }
+
+        try
+        {
+            await _dataService.DeleteMonitoredServerAsync(selected.Row.ServerId);
+            /* Drop the viewer-local favorite pin too, so a removed server doesn't linger starred. */
+            _serverStore.SetFavorite(selected.Row.Host, false);
             ServersChanged = true;
-            RefreshGrid();
+            await RefreshGridAsync();
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            MessageBox.Show(ex.Message, "Delete Server", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ManageServersWindow", "Failed to delete server", ex);
+            MessageBox.Show($"Could not delete the server: {ex.Message}",
+                "Delete Server", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -155,4 +228,41 @@ public partial class ManageServersWindow : Window
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "servers", ViewerExportSettings.CsvSeparator);
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+}
+
+/// <summary>
+/// One Manage-Servers grid row — a display projection of a <see cref="MonitoredServerRow"/> from the store.
+/// The bound property names match the grid's columns (<c>DisplayNameWithIntent</c> / <c>ServerNameDisplay</c>
+/// / <c>AuthenticationDisplay</c> / <c>StatusDisplay</c> / <c>MonthlyCostUsd</c> / <c>CreatedDate</c>), so the
+/// XAML is unchanged from the former <c>ViewerServerEntry</c> binding; the underlying <see cref="Row"/> drives
+/// the Edit / Delete / Enable / Excluded-Databases actions.
+/// </summary>
+public sealed class ManagedServerListItem
+{
+    public ManagedServerListItem(MonitoredServerRow row, bool isFavorite)
+    {
+        Row = row ?? throw new ArgumentNullException(nameof(row));
+        IsFavorite = isFavorite;
+    }
+
+    public MonitoredServerRow Row { get; }
+
+    public bool IsFavorite { get; }
+
+    /// <summary>Set once before binding; one viewer shows the same version for every row.</summary>
+    public string? InstalledVersion { get; set; }
+
+    public string DisplayNameWithIntent => Row.ReadOnlyIntent ? $"{Row.Name} (Read-Only)" : Row.Name;
+
+    public string ServerNameDisplay => Row.ReadOnlyIntent ? $"{Row.Host} (Read-Only)" : Row.Host;
+
+    public string AuthenticationDisplay =>
+        string.Equals(Row.Auth, ServerStoreCredential.Sql, StringComparison.OrdinalIgnoreCase) ? "SQL Server" : "Windows";
+
+    public string StatusDisplay => Row.IsEnabled ? "Enabled" : "Disabled";
+
+    public decimal MonthlyCostUsd => Row.MonthlyCostUsd;
+
+    /// <summary>The store's creation time (local, for the grid's "Added" column); falls back to now for a row read without it.</summary>
+    public DateTime CreatedDate => (Row.CreatedAt ?? DateTime.UtcNow).ToLocalTime();
 }

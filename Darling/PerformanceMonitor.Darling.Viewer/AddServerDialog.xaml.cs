@@ -8,44 +8,144 @@
 
 using System;
 using System.Globalization;
-using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using PerformanceMonitor.Common;
-using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The viewer's Add / Edit server dialog — a faithful port of Lite's <c>AddServerDialog</c>, with the one
-/// live-connection affordance dropped as a hard viewer fact: there is no <b>Test Connection</b> button (the
-/// viewer never opens a SqlClient connection to a monitored server — it reads only the Postgres store).
-/// Everything else — all five inline auth modes AND the shared credential-profile picker (credential
-/// MANAGEMENT is fully in scope; only live connection resolution is the service's job), encryption,
-/// connection options, database / utility DB, cost, alert-delivery override, favorite — is captured into a
-/// <see cref="ViewerServerEntry"/> and persisted through <see cref="ViewerServerStore"/> (per-server
-/// secrets to Credential Manager; a chosen profile via <see cref="ViewerServerEntry.CredentialProfileId"/>).
-/// Making the running service honor the saved definition is the separate wiring flagged in the PR.
+/// The viewer's Add / Edit server dialog — the control-plane authoring surface. It WRITES the server
+/// definition to <c>config.config_monitored_servers</c> through <see cref="ViewerDataService"/> so the
+/// running Darling service actually collects it (Stage 3), replacing the severed
+/// <c>viewer-servers.json</c> definition writes. <b>Test Connection</b> is restored as a
+/// <c>test_connect</c> command the SERVICE executes (it holds the network path + credentials); the dialog
+/// enqueues it and polls the result.
+///
+/// <para><b>Auth + secrets.</b> The service connects with Windows (integrated) or SQL auth only, so those
+/// are the two modes written (Windows → <c>integrated</c>, SQL → <c>sql</c> + a DPAPI-LocalMachine password
+/// blob via <see cref="ViewerServerSecret"/>, never plaintext). A SQL credential PROFILE is resolved to its
+/// concrete username + secret at write time. The three Azure/Entra modes have no service connect path yet
+/// (<see cref="ServerStoreCredential"/>) and are blocked with a clear message rather than written
+/// un-honorable. Favorites stay viewer-local (<see cref="ViewerServerStore.SetFavorite"/>).</para>
 /// </summary>
 public partial class AddServerDialog : Window
 {
+    private readonly ViewerDataService? _dataService;
     private readonly ViewerServerStore _serverStore;
     private readonly ViewerProfileStore _profileStore;
 
-    /// <summary>The server that was added or edited, or null when the dialog was cancelled.</summary>
-    public ViewerServerEntry? AddedServer { get; private set; }
+    /// <summary>The row being edited (null when adding); carries the existing DPAPI blob so a blank password on edit is kept.</summary>
+    private readonly MonitoredServerRow? _existing;
 
-    public AddServerDialog(ViewerServerStore serverStore, ViewerProfileStore profileStore)
+    /// <summary>The identity of the row being edited; when the identity fields change, the old row is replaced.</summary>
+    private readonly int? _originalServerId;
+
+    private bool _testInFlight;
+
+    /// <summary>The display name of the server that was saved (for the caller's status message), or null when cancelled.</summary>
+    public string? SavedDisplayName { get; private set; }
+
+    /// <summary>Add constructor. <paramref name="seedServerName"/>/<paramref name="seedDisplayName"/> prefill the
+    /// address/name when "adopting" a server the sidebar shows but the store does not have yet.</summary>
+    public AddServerDialog(
+        ViewerDataService? dataService,
+        ViewerServerStore serverStore,
+        ViewerProfileStore profileStore,
+        string? seedServerName = null,
+        string? seedDisplayName = null)
     {
         InitializeComponent();
+        _dataService = dataService;
         _serverStore = serverStore;
         _profileStore = profileStore;
         PopulateProfilePicker();
+
+        if (!string.IsNullOrWhiteSpace(seedServerName))
+        {
+            ServerNameBox.Text = seedServerName;
+        }
+        if (!string.IsNullOrWhiteSpace(seedDisplayName))
+        {
+            DisplayNameBox.Text = seedDisplayName;
+        }
+
+        ApplyReadOnlyGate();
     }
 
-    /// <summary>
-    /// Populates the profile dropdown from the current profile list. Disables the "use profile" option
-    /// when no profiles exist.
-    /// </summary>
+    /// <summary>Edit constructor — prefills from an existing store row.</summary>
+    public AddServerDialog(
+        ViewerDataService dataService,
+        ViewerServerStore serverStore,
+        ViewerProfileStore profileStore,
+        MonitoredServerRow existing,
+        bool isFavorite)
+        : this(dataService, serverStore, profileStore)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+
+        _existing = existing;
+        _originalServerId = existing.ServerId;
+        Title = "Edit SQL Server";
+        HeaderText.Text = "Edit SQL Server Connection";
+
+        ServerNameBox.Text = existing.Host;
+        DisplayNameBox.Text = existing.Name;
+        DatabaseNameBox.Text = existing.Database ?? "";
+        EnabledCheckBox.IsChecked = existing.IsEnabled;
+        TrustCertCheckBox.IsChecked = existing.TrustServerCertificate;
+        ReadOnlyIntentCheckBox.IsChecked = existing.ReadOnlyIntent;
+        MultiSubnetFailoverCheckBox.IsChecked = existing.MultiSubnetFailover;
+        MonthlyCostBox.Text = existing.MonthlyCostUsd.ToString(CultureInfo.InvariantCulture);
+        FavoriteCheckBox.IsChecked = isFavorite;
+
+        EncryptModeComboBox.SelectedIndex = existing.EncryptMode switch
+        {
+            "Mandatory" => 1,
+            "Strict" => 2,
+            _ => 0
+        };
+
+        if (string.Equals(existing.Auth, ServerStoreCredential.Sql, StringComparison.OrdinalIgnoreCase))
+        {
+            SqlAuthRadio.IsChecked = true;
+            UsernameBox.Text = existing.Username ?? "";
+            /* Decrypt the stored blob to pre-fill the password (same-machine managed deploy). A blob produced
+               on another machine can't be read here — leave it blank; a blank password on save keeps the
+               existing blob (see the save path), so the server is not broken by an un-readable pre-fill. */
+            var decrypted = OperatingSystem.IsWindows() ? ViewerServerSecret.TryUnprotect(existing.EncryptedPassword) : null;
+            PasswordBox.Password = decrypted ?? "";
+            if (decrypted is null && !string.IsNullOrEmpty(existing.EncryptedPassword))
+            {
+                StatusText.Text = "The stored password can't be read on this machine — leave it blank to keep it, or type a new one.";
+            }
+        }
+        else
+        {
+            WindowsAuthRadio.IsChecked = true;
+        }
+    }
+
+    /// <summary>Disables the write actions on a read-only connection (or when disconnected), with a clear note.</summary>
+    private void ApplyReadOnlyGate()
+    {
+        if (_dataService is null)
+        {
+            SaveButton.IsEnabled = false;
+            TestConnectionButton.IsEnabled = false;
+            StatusText.Text = "Not connected to a Darling store — server changes are unavailable.";
+        }
+        else if (_dataService.IsReadOnly)
+        {
+            SaveButton.IsEnabled = false;
+            /* Test Connection enqueues a command (a config write), so a read-only seat can't run it either. */
+            TestConnectionButton.IsEnabled = false;
+            StatusText.Text = "This viewer is connected read-only, so servers can't be added or changed. " +
+                "Set postgres.connectAs to \"admin\" in darling.json and restart.";
+        }
+    }
+
     private void PopulateProfilePicker()
     {
         var profiles = _profileStore.GetAll();
@@ -57,104 +157,12 @@ public partial class AddServerDialog : Window
         }
     }
 
-    /// <summary>Constructor for editing an existing server definition.</summary>
-    public AddServerDialog(ViewerServerStore serverStore, ViewerProfileStore profileStore, ViewerServerEntry existing)
-        : this(serverStore, profileStore)
-    {
-        Title = "Edit SQL Server";
-        ServerNameBox.Text = existing.ServerName;
-        DisplayNameBox.Text = existing.DisplayName;
-        EnabledCheckBox.IsChecked = existing.IsEnabled;
-        TrustCertCheckBox.IsChecked = existing.TrustServerCertificate;
-
-        EncryptModeComboBox.SelectedIndex = existing.EncryptMode switch
-        {
-            "Mandatory" => 1,
-            "Strict" => 2,
-            _ => 0
-        };
-
-        FavoriteCheckBox.IsChecked = existing.IsFavorite;
-        DescriptionTextBox.Text = existing.Description ?? "";
-        DatabaseNameBox.Text = existing.DatabaseName ?? "";
-        UtilityDatabaseBox.Text = existing.UtilityDatabase ?? "";
-        ReadOnlyIntentCheckBox.IsChecked = existing.ReadOnlyIntent;
-        MultiSubnetFailoverCheckBox.IsChecked = existing.MultiSubnetFailover;
-        MonthlyCostBox.Text = existing.MonthlyCostUsd.ToString(CultureInfo.InvariantCulture);
-        AlertDeliveryOverrideBox.SelectedIndex = existing.AlertDeliveryModeOverride switch
-        {
-            AlertNotificationMode.Summary => 1,
-            AlertNotificationMode.PerEvent => 2,
-            _ => 0
-        };
-
-        /* Profile-backed server: preselect "use profile" + the dropdown; the inline auth panels stay
-           hidden (CredentialSource_Changed, fired by IsChecked). No per-server secret is loaded. */
-        if (!string.IsNullOrEmpty(existing.CredentialProfileId))
-        {
-            UseProfileRadio.IsChecked = true;
-            var match = _profileStore.GetProfile(existing.CredentialProfileId);
-            if (match is not null)
-            {
-                ProfileComboBox.SelectedItem = ProfileComboBox.Items
-                    .Cast<ViewerCredentialProfile>().FirstOrDefault(p => p.Id == match.Id);
-            }
-
-            AddedServer = existing;
-            return;
-        }
-
-        if (existing.AuthenticationType == AuthenticationTypes.EntraMFA)
-        {
-            EntraMfaAuthRadio.IsChecked = true;
-            EntraMfaUsernameBox.Text = existing.EntraUsername ?? "";
-        }
-        else if (existing.AuthenticationType == AuthenticationTypes.SqlServer)
-        {
-            SqlAuthRadio.IsChecked = true;
-            var cred = _serverStore.GetCredential(existing.Id);
-            if (cred.HasValue)
-            {
-                UsernameBox.Text = cred.Value.Username;
-                PasswordBox.Password = cred.Value.Password;
-            }
-        }
-        else if (existing.AuthenticationType == AuthenticationTypes.ServicePrincipal)
-        {
-            ServicePrincipalAuthRadio.IsChecked = true;
-            AzureClientIdBox.Text = existing.AzureClientId ?? "";
-            AzureTenantIdBox.Text = existing.AzureTenantId ?? "";
-            var cred = _serverStore.GetCredential(existing.Id);
-            if (cred.HasValue)
-            {
-                if (string.IsNullOrEmpty(AzureClientIdBox.Text))
-                {
-                    AzureClientIdBox.Text = cred.Value.Username;
-                }
-                AzureClientSecretBox.Password = cred.Value.Password;
-            }
-        }
-        else if (existing.AuthenticationType == AuthenticationTypes.ManagedIdentity)
-        {
-            ManagedIdentityAuthRadio.IsChecked = true;
-            ManagedIdentityClientIdBox.Text = existing.ManagedIdentityClientId ?? "";
-        }
-        else
-        {
-            WindowsAuthRadio.IsChecked = true;
-        }
-
-        AddedServer = existing;
-    }
-
     /// <summary>
     /// Toggles between the inline per-server auth UI and the credential-profile picker. When a profile is
-    /// chosen the inline auth radios + all per-mode credential panels are hidden (the profile fully
-    /// overrides the server's auth type + creds).
+    /// chosen the inline auth radios + all per-mode credential panels are hidden.
     /// </summary>
     private void CredentialSource_Changed(object sender, RoutedEventArgs e)
     {
-        /* Guard against early Checked events during InitializeComponent. */
         if (ProfilePickerPanel is null || InlineAuthRadios is null)
         {
             return;
@@ -167,7 +175,6 @@ public partial class AddServerDialog : Window
 
         if (useProfile)
         {
-            /* Hide every per-mode inline credential panel. */
             if (SqlCredentialsPanel is not null) SqlCredentialsPanel.Visibility = Visibility.Collapsed;
             if (EntraMfaPanel is not null) EntraMfaPanel.Visibility = Visibility.Collapsed;
             if (ServicePrincipalPanel is not null) ServicePrincipalPanel.Visibility = Visibility.Collapsed;
@@ -175,7 +182,6 @@ public partial class AddServerDialog : Window
         }
         else
         {
-            /* Re-show the panel for the currently selected inline auth mode. */
             AuthMode_Changed(sender, e);
         }
     }
@@ -192,14 +198,21 @@ public partial class AddServerDialog : Window
         EntraMfaPanel.Visibility = EntraMfaAuthRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         ServicePrincipalPanel.Visibility = ServicePrincipalAuthRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         ManagedIdentityPanel.Visibility = ManagedIdentityAuthRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-    }
 
-    private AlertNotificationMode? GetSelectedDeliveryOverride() => AlertDeliveryOverrideBox.SelectedIndex switch
-    {
-        1 => AlertNotificationMode.Summary,
-        2 => AlertNotificationMode.PerEvent,
-        _ => null
-    };
+        /* Warn as soon as an Azure/Entra mode is picked — the service can't connect with it, and Save/Test
+           will block. (A profile-backed Azure identity is caught at resolve time.) */
+        var azureSelected = EntraMfaAuthRadio.IsChecked == true
+            || ServicePrincipalAuthRadio.IsChecked == true
+            || ManagedIdentityAuthRadio.IsChecked == true;
+        if (azureSelected)
+        {
+            StatusText.Text = ServerStoreCredential.UnsupportedAuthMessage;
+        }
+        else if (StatusText.Text == ServerStoreCredential.UnsupportedAuthMessage)
+        {
+            StatusText.Text = "";
+        }
+    }
 
     private string GetSelectedEncryptMode() => EncryptModeComboBox.SelectedIndex switch
     {
@@ -208,89 +221,115 @@ public partial class AddServerDialog : Window
         _ => "Optional"
     };
 
-    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Resolves the chosen credential source into the store's (auth, username, encrypted blob), or a
+    /// user-facing error. Shared by Save and Test Connection so both apply the identical rules — including
+    /// blocking the Azure/Entra modes the service can't honor and keeping an existing blob when the password
+    /// box is left blank on edit.
+    /// </summary>
+    private bool TryResolveCredential(out string auth, out string? username, out string? encryptedPassword, out string? error)
     {
-        var serverName = ServerNameBox.Text.Trim();
-        if (string.IsNullOrEmpty(serverName))
+        auth = ServerStoreCredential.Integrated;
+        username = null;
+        encryptedPassword = null;
+        error = null;
+
+        if (UseProfileRadio.IsChecked == true)
         {
-            StatusText.Text = "Server name is required.";
-            return;
+            if (ProfileComboBox.SelectedItem is not ViewerCredentialProfile profile)
+            {
+                error = "Select a credential profile, or choose \"Configure credentials on this server\".";
+                return false;
+            }
+
+            var mapped = ServerStoreCredential.MapAuth(profile.AuthType);
+            if (mapped is null)
+            {
+                error = ServerStoreCredential.UnsupportedAuthMessage;
+                return false;
+            }
+
+            /* Profile auth is SqlServer here (the only profile type the service honors). Resolve its concrete
+               secret and write those onto the row — the store keeps concrete creds; profiles are a viewer
+               authoring convenience the store needs no table for. */
+            var secret = _profileStore.GetSecret(profile.Id);
+            if (secret is null || string.IsNullOrEmpty(secret.Value.Password))
+            {
+                error = $"The credential profile '{profile.Name}' has no stored secret on this machine. Re-enter it under Credential Profiles.";
+                return false;
+            }
+
+            auth = mapped;
+            username = string.IsNullOrWhiteSpace(secret.Value.Username) ? profile.Username : secret.Value.Username;
+            encryptedPassword = ViewerServerSecret.Protect(secret.Value.Password);
+            return true;
+        }
+
+        if (WindowsAuthRadio.IsChecked == true)
+        {
+            auth = ServerStoreCredential.Integrated;
+            return true;
+        }
+
+        if (SqlAuthRadio.IsChecked == true)
+        {
+            auth = ServerStoreCredential.Sql;
+            username = UsernameBox.Text.Trim();
+            if (string.IsNullOrEmpty(username))
+            {
+                error = "Username is required for SQL Server authentication.";
+                return false;
+            }
+
+            var typed = PasswordBox.Password;
+            if (!string.IsNullOrEmpty(typed))
+            {
+                encryptedPassword = ViewerServerSecret.Protect(typed);
+                return true;
+            }
+
+            /* Blank password on edit → keep the existing stored blob (Lite's "blank means leave it"). */
+            if (_existing is not null && !string.IsNullOrEmpty(_existing.EncryptedPassword))
+            {
+                encryptedPassword = _existing.EncryptedPassword;
+                return true;
+            }
+
+            error = "Password is required for SQL Server authentication.";
+            return false;
+        }
+
+        /* EntraMFA / ServicePrincipal / ManagedIdentity — no Darling service connect path. */
+        error = ServerStoreCredential.UnsupportedAuthMessage;
+        return false;
+    }
+
+    /// <summary>Reads the form into a fresh store row (server_id derived from identity), or a user-facing error.</summary>
+    private MonitoredServerRow? BuildRowFromForm(out string? error)
+    {
+        error = null;
+
+        var host = ServerNameBox.Text.Trim();
+        if (string.IsNullOrEmpty(host))
+        {
+            error = "Server name is required.";
+            return null;
+        }
+
+        if (!TryResolveCredential(out var auth, out var username, out var encryptedPassword, out var credError))
+        {
+            error = credError;
+            return null;
         }
 
         var displayName = DisplayNameBox.Text.Trim();
         if (string.IsNullOrEmpty(displayName))
         {
-            displayName = serverName;
+            displayName = host;
         }
 
-        /* Credential source: a shared profile, or inline per-server auth. */
-        var useProfile = UseProfileRadio.IsChecked == true;
-        ViewerCredentialProfile? selectedProfile = null;
-
-        string authenticationType;
-        string? username = null;
-        string? password = null;
-        string? entraUsername = null;
-
-        if (useProfile)
-        {
-            selectedProfile = ProfileComboBox.SelectedItem as ViewerCredentialProfile;
-            if (selectedProfile is null)
-            {
-                StatusText.Text = "Select a credential profile, or choose \"Configure credentials on this server\".";
-                return;
-            }
-            /* The profile fully overrides the server's auth; mirror its auth type onto the entry (display
-               only). Resolution always comes from the profile via CredentialProfileId; no per-server
-               secret is stored. */
-            authenticationType = selectedProfile.AuthType;
-        }
-        else if (WindowsAuthRadio.IsChecked == true)
-        {
-            authenticationType = AuthenticationTypes.Windows;
-        }
-        else if (EntraMfaAuthRadio.IsChecked == true)
-        {
-            authenticationType = AuthenticationTypes.EntraMFA;
-            entraUsername = EntraMfaUsernameBox.Text.Trim();
-        }
-        else if (ServicePrincipalAuthRadio.IsChecked == true)
-        {
-            authenticationType = AuthenticationTypes.ServicePrincipal;
-            username = AzureClientIdBox.Text.Trim();
-            password = AzureClientSecretBox.Password;
-
-            if (string.IsNullOrEmpty(username))
-            {
-                StatusText.Text = "Client (Application) ID is required for service principal authentication.";
-                return;
-            }
-            if (string.IsNullOrEmpty(password))
-            {
-                StatusText.Text = "Client secret is required for service principal authentication.";
-                return;
-            }
-        }
-        else if (ManagedIdentityAuthRadio.IsChecked == true)
-        {
-            authenticationType = AuthenticationTypes.ManagedIdentity;
-        }
-        else if (SqlAuthRadio.IsChecked == true)
-        {
-            authenticationType = AuthenticationTypes.SqlServer;
-            username = UsernameBox.Text.Trim();
-            password = PasswordBox.Password;
-
-            if (string.IsNullOrEmpty(username))
-            {
-                StatusText.Text = "Username is required for SQL Server authentication.";
-                return;
-            }
-        }
-        else
-        {
-            authenticationType = AuthenticationTypes.Windows;
-        }
+        var database = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim();
+        var readOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true;
 
         decimal monthlyCost = 0m;
         if (decimal.TryParse(MonthlyCostBox.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedCost) && parsedCost >= 0)
@@ -298,88 +337,229 @@ public partial class AddServerDialog : Window
             monthlyCost = parsedCost;
         }
 
+        return new MonitoredServerRow
+        {
+            ServerId = ViewerDataService.ComputeServerId(host, database, readOnlyIntent),
+            Name = displayName,
+            Host = host,
+            Database = database,
+            Auth = auth,
+            Username = username,
+            EncryptedPassword = encryptedPassword,
+            EncryptMode = GetSelectedEncryptMode(),
+            TrustServerCertificate = TrustCertCheckBox.IsChecked == true,
+            ReadOnlyIntent = readOnlyIntent,
+            MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true,
+            /* Preserve the excluded-databases (edited via the dedicated dialog), not lost on a plain save. */
+            ExcludedDatabases = _existing?.ExcludedDatabases ?? new System.Collections.Generic.List<string>(),
+            MonthlyCostUsd = monthlyCost,
+            CapturePlans = _existing?.CapturePlans,
+            IsEnabled = EnabledCheckBox.IsChecked == true,
+        };
+    }
+
+    private async void SaveButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null)
+        {
+            return;
+        }
+
         try
         {
-            if (AddedServer is not null && Title == "Edit SQL Server")
-            {
-                /* Editing an existing definition — mutate in place and re-persist. */
-                var entry = AddedServer;
-                entry.ServerName = serverName;
-                entry.DisplayName = displayName;
-                entry.AuthenticationType = authenticationType;
-                entry.CredentialProfileId = useProfile ? selectedProfile!.Id : null;
-                entry.EntraUsername = (!useProfile && authenticationType == AuthenticationTypes.EntraMFA)
-                    ? (string.IsNullOrWhiteSpace(entraUsername) ? null : entraUsername)
-                    : null;
-                entry.AzureClientId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
-                    ? (string.IsNullOrWhiteSpace(AzureClientIdBox.Text) ? null : AzureClientIdBox.Text.Trim())
-                    : null;
-                entry.AzureTenantId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
-                    ? (string.IsNullOrWhiteSpace(AzureTenantIdBox.Text) ? null : AzureTenantIdBox.Text.Trim())
-                    : null;
-                entry.ManagedIdentityClientId = (!useProfile && authenticationType == AuthenticationTypes.ManagedIdentity)
-                    ? (string.IsNullOrWhiteSpace(ManagedIdentityClientIdBox.Text) ? null : ManagedIdentityClientIdBox.Text.Trim())
-                    : null;
-                entry.IsEnabled = EnabledCheckBox.IsChecked == true;
-                entry.TrustServerCertificate = TrustCertCheckBox.IsChecked == true;
-                entry.EncryptMode = GetSelectedEncryptMode();
-                entry.IsFavorite = FavoriteCheckBox.IsChecked == true;
-                entry.Description = DescriptionTextBox.Text.Trim();
-                entry.DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim();
-                entry.UtilityDatabase = string.IsNullOrWhiteSpace(UtilityDatabaseBox.Text) ? null : UtilityDatabaseBox.Text.Trim();
-                entry.ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true;
-                entry.MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true;
-                entry.MonthlyCostUsd = monthlyCost;
-                entry.AlertDeliveryModeOverride = GetSelectedDeliveryOverride();
+            SaveButton.IsEnabled = false;
 
-                /* Profile-backed → store no per-server secret (UpdateServer with null creds deletes any
-                   stale one, matching Lite's switch-cleanup). */
-                _serverStore.UpdateServer(entry, useProfile ? null : username, useProfile ? null : password);
-            }
-            else
+            /* Build (incl. DPAPI Protect, which can throw) inside the try so nothing escapes this async void. */
+            var row = BuildRowFromForm(out var error);
+            if (row is null)
             {
-                /* Adding a new definition. */
-                AddedServer = new ViewerServerEntry
-                {
-                    ServerName = serverName,
-                    DisplayName = displayName,
-                    AuthenticationType = authenticationType,
-                    CredentialProfileId = useProfile ? selectedProfile!.Id : null,
-                    EntraUsername = (!useProfile && authenticationType == AuthenticationTypes.EntraMFA)
-                        ? (string.IsNullOrWhiteSpace(entraUsername) ? null : entraUsername)
-                        : null,
-                    AzureClientId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
-                        ? (string.IsNullOrWhiteSpace(AzureClientIdBox.Text) ? null : AzureClientIdBox.Text.Trim())
-                        : null,
-                    AzureTenantId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
-                        ? (string.IsNullOrWhiteSpace(AzureTenantIdBox.Text) ? null : AzureTenantIdBox.Text.Trim())
-                        : null,
-                    ManagedIdentityClientId = (!useProfile && authenticationType == AuthenticationTypes.ManagedIdentity)
-                        ? (string.IsNullOrWhiteSpace(ManagedIdentityClientIdBox.Text) ? null : ManagedIdentityClientIdBox.Text.Trim())
-                        : null,
-                    IsEnabled = EnabledCheckBox.IsChecked == true,
-                    TrustServerCertificate = TrustCertCheckBox.IsChecked == true,
-                    EncryptMode = GetSelectedEncryptMode(),
-                    IsFavorite = FavoriteCheckBox.IsChecked == true,
-                    Description = DescriptionTextBox.Text.Trim(),
-                    DatabaseName = string.IsNullOrWhiteSpace(DatabaseNameBox.Text) ? null : DatabaseNameBox.Text.Trim(),
-                    UtilityDatabase = string.IsNullOrWhiteSpace(UtilityDatabaseBox.Text) ? null : UtilityDatabaseBox.Text.Trim(),
-                    ReadOnlyIntent = ReadOnlyIntentCheckBox.IsChecked == true,
-                    MultiSubnetFailover = MultiSubnetFailoverCheckBox.IsChecked == true,
-                    MonthlyCostUsd = monthlyCost,
-                    AlertDeliveryModeOverride = GetSelectedDeliveryOverride()
-                };
-
-                _serverStore.AddServer(AddedServer, useProfile ? null : username, useProfile ? null : password);
+                StatusText.Text = error;
+                SaveButton.IsEnabled = true;
+                return;
             }
 
+            /* Refuse to silently overwrite a DIFFERENT existing server that shares this identity — the upsert's
+               ON CONFLICT DO UPDATE would clobber its excluded databases / capture override. Covers Add and an
+               edit that re-points host/database/read-only-intent onto another server's identity. */
+            if (_originalServerId != row.ServerId
+                && await _dataService.GetMonitoredServerAsync(row.ServerId) is not null)
+            {
+                StatusText.Text = "A server with this address (and database / read-only intent) is already monitored. Edit it from Manage Servers instead.";
+                SaveButton.IsEnabled = true;
+                return;
+            }
+
+            /* Write the NEW row first, THEN drop the old identity on an edit that moved it — if the delete
+               fails we leave a recoverable duplicate rather than losing the definition entirely. */
+            await _dataService.UpsertMonitoredServerAsync(row);
+            if (_originalServerId is int original && original != row.ServerId)
+            {
+                await _dataService.DeleteMonitoredServerAsync(original);
+            }
+
+            /* Favorites are viewer-local (the service never reads them) — keyed by the server address. */
+            _serverStore.SetFavorite(row.Host, FavoriteCheckBox.IsChecked == true);
+
+            SavedDisplayName = row.Name;
             DialogResult = true;
             Close();
         }
+        catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
+            SaveButton.IsEnabled = true;
+        }
         catch (Exception ex)
         {
-            StatusText.Text = $"Error: {ex.Message}";
+            StatusText.Text = $"Error saving server: {ex.Message}";
+            SaveButton.IsEnabled = true;
             ViewerLogger.Error("AddServerDialog", "Failed to save server definition", ex);
+        }
+    }
+
+    private async void TestConnectionButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null || _testInFlight)
+        {
+            return;
+        }
+
+        try
+        {
+            _testInFlight = true;
+            TestConnectionButton.IsEnabled = false;
+            SaveButton.IsEnabled = false;
+
+            /* Build (incl. DPAPI Protect) inside the try — a crypto failure must not escape this async void. */
+            var row = BuildRowFromForm(out var error);
+            if (row is null)
+            {
+                StatusText.Text = error;
+                return;
+            }
+
+            var args = new TestConnectServer
+            {
+                Name = row.Name,
+                Host = row.Host,
+                Database = row.Database,
+                Auth = row.Auth,
+                Username = row.Username,
+                EncryptedPassword = row.EncryptedPassword,
+                ReadOnlyIntent = row.ReadOnlyIntent,
+                TrustServerCertificate = row.TrustServerCertificate,
+                EncryptMode = row.EncryptMode,
+                MultiSubnetFailover = row.MultiSubnetFailover,
+            };
+
+            StatusText.Text = "Testing connection via the Darling service…";
+
+            /* Enqueue + poll + delete the credential-bearing command row on a terminal result. */
+            var result = await _dataService.RunTestConnectAsync(
+                ViewerDataService.BuildTestConnectArgs(args),
+                requestedBy: "viewer");
+
+            StatusText.Text = DescribeTestResult(result);
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Could not run the connection test: {ex.Message}";
+            ViewerLogger.Error("AddServerDialog", "test_connect failed", ex);
+        }
+        finally
+        {
+            _testInFlight = false;
+            /* Stay disabled on a read-only / disconnected seat (matches ApplyReadOnlyGate). */
+            var writable = _dataService is { IsReadOnly: false };
+            TestConnectionButton.IsEnabled = writable;
+            SaveButton.IsEnabled = writable;
+        }
+    }
+
+    /// <summary>Turns a polled <c>test_connect</c> result into a one-line status: the probed facts on success,
+    /// the service's error on failure, or a still-running note on timeout.</summary>
+    private static string DescribeTestResult(CommandResult? result)
+    {
+        if (result is null)
+        {
+            return "The connection test is still running on the service — try again in a moment.";
+        }
+
+        if (result.Status == ViewerDataService.StatusSucceeded)
+        {
+            return DescribeProbeFacts(result.ResultJson);
+        }
+
+        var error = TryReadJsonString(result.ResultJson, "error");
+        return string.IsNullOrWhiteSpace(error)
+            ? $"Connection failed ({result.ResultStatus ?? "error"})."
+            : $"Connection failed: {error}";
+    }
+
+    private static string DescribeProbeFacts(string? resultJson)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson))
+        {
+            return "Connected.";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(resultJson);
+            var root = document.RootElement;
+
+            var major = root.TryGetProperty("majorVersion", out var mv) && mv.ValueKind == JsonValueKind.Number ? mv.GetInt32() : 0;
+            var edition = root.TryGetProperty("engineEditionDescription", out var ed) && ed.ValueKind == JsonValueKind.String
+                ? ed.GetString()
+                : null;
+
+            var versionLabel = ViewerDataService.SqlVersionLabel(major == 0 ? null : major);
+            var parts = new System.Collections.Generic.List<string> { "Connected" };
+            if (!string.IsNullOrEmpty(versionLabel))
+            {
+                parts.Add(versionLabel);
+            }
+            if (!string.IsNullOrWhiteSpace(edition))
+            {
+                parts.Add(edition!);
+            }
+
+            if (root.TryGetProperty("hasMsdbAccess", out var msdb) && msdb.ValueKind == JsonValueKind.False)
+            {
+                parts.Add("no msdb access (SQL Agent job data unavailable)");
+            }
+
+            return string.Join(" — ", parts) + ".";
+        }
+        catch (JsonException)
+        {
+            return "Connected.";
+        }
+    }
+
+    private static string? TryReadJsonString(string? json, string property)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty(property, out var element)
+                && element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 

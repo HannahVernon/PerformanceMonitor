@@ -24,7 +24,7 @@
         </Grid.RowDefinitions>
 
         <!-- Header -->
-        <TextBlock Grid.Row="0" Text="Add SQL Server Connection" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"
+        <TextBlock Grid.Row="0" x:Name="HeaderText" Text="Add SQL Server Connection" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"
                    Foreground="{DynamicResource ForegroundBrush}"/>
 
         <!-- Server Name -->
@@ -129,18 +129,9 @@
             <CheckBox x:Name="FavoriteCheckBox" Content="Mark as favorite (appears at top of list)"
                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,6,0,0"/>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                <TextBlock Text="Description:" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Width="80"/>
-                <TextBox x:Name="DescriptionTextBox" Width="250"/>
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Database:" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Width="80"/>
                 <TextBox x:Name="DatabaseNameBox" Width="250"
                          ToolTip="Required for Azure SQL Database. Leave empty for on-premises SQL Server."/>
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                <TextBlock Text="Utility DB:" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Width="80"/>
-                <TextBox x:Name="UtilityDatabaseBox" Width="250"
-                         ToolTip="Database where community stored procedures (sp_IndexCleanup) are installed. Leave empty to use the connection database."/>
             </StackPanel>
             <CheckBox x:Name="ReadOnlyIntentCheckBox" Content="Read-only intent (for AG listeners and readable replicas)"
                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,6,0,0"
@@ -153,25 +144,20 @@
                 <TextBox x:Name="MonthlyCostBox" Width="100" TextAlignment="Right" Text="0"
                          ToolTip="What this server costs per month (license, compute, storage combined). Used for FinOps cost attribution. Leave 0 to hide cost columns."/>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                <TextBlock Text="Alert delivery:" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Width="110"/>
-                <ComboBox x:Name="AlertDeliveryOverrideBox" Width="240" SelectedIndex="0"
-                          ToolTip="How deadlock/blocking alerts for THIS server are delivered. 'Use global setting' follows the app-wide Alerts setting; override to force Summary or Per-event for just this server.">
-                    <ComboBoxItem Content="Use global setting"/>
-                    <ComboBoxItem Content="Summary — one card per cycle"/>
-                    <ComboBoxItem Content="Per-event — one notification per incident"/>
-                </ComboBox>
-            </StackPanel>
         </StackPanel>
 
         <!-- Status -->
         <TextBlock Grid.Row="10" x:Name="StatusText" Foreground="{DynamicResource ForegroundMutedBrush}"
                    TextWrapping="Wrap" VerticalAlignment="Bottom" Margin="0,0,0,8"/>
 
-        <!-- Buttons (no Test Connection: the viewer never connects to monitored servers) -->
-        <StackPanel Grid.Row="11" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="SaveButton" Content="Save" Width="80" Height="30" Click="SaveButton_Click" Style="{StaticResource AccentButton}" Margin="0,0,8,0"/>
-            <Button Content="Cancel" Width="80" Height="30" Click="CancelButton_Click"/>
-        </StackPanel>
+        <!-- Buttons. Test Connection enqueues a test_connect command; the SERVICE opens the connection and
+             writes the probe result back, which the dialog polls for and shows. -->
+        <DockPanel Grid.Row="11" LastChildFill="False">
+            <Button x:Name="TestConnectionButton" Content="Test Connection" Width="130" Height="30"
+                    Click="TestConnectionButton_Click" DockPanel.Dock="Left"
+                    ToolTip="Asks the Darling service to connect to this server and report the version/edition, before saving."/>
+            <Button Content="Cancel" Width="80" Height="30" Click="CancelButton_Click" DockPanel.Dock="Right"/>
+            <Button x:Name="SaveButton" Content="Save" Width="80" Height="30" Click="SaveButton_Click" Style="{StaticResource AccentButton}" DockPanel.Dock="Right" Margin="0,0,8,0"/>
+        </DockPanel>
     </Grid>
 </Window>

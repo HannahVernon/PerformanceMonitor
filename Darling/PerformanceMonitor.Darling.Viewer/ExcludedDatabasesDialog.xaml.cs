@@ -24,54 +24,49 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// connects to the monitored server); the viewer never connects, but the store already holds the
 /// collected databases (<c>v_database_config</c> / <c>v_database_size_stats</c>), so the picker offers
 /// those instead of a free-text editor. A not-yet-collected database can still be added by hand (the
-/// manual fallback). Persists the checked names to <see cref="ViewerServerEntry.ExcludedDatabases"/>
-/// through <see cref="ViewerServerStore.UpdateServer(ViewerServerEntry)"/> for the Darling service to consume.
+/// manual fallback). Persists the checked names to <c>config.config_monitored_servers.excluded_databases</c>
+/// (Stage 3) so the Darling service honors them on its next reload — keyed by the shared <c>server_id</c>,
+/// which is why the collected-database read needs no name→id lookup.
 /// </summary>
 public partial class ExcludedDatabasesDialog : Window
 {
-    private readonly ViewerServerStore _serverStore;
-    private readonly ViewerServerEntry _entry;
-    private readonly ViewerDataService? _dataService;
+    private readonly ViewerDataService _dataService;
+    private readonly MonitoredServerRow _row;
     private ObservableCollection<ExcludedDatabaseItem> _items = new();
 
     /// <summary>Set true when the exclusion list was changed and saved, so the caller refreshes.</summary>
     public bool ExclusionsModified { get; private set; }
 
-    /// <param name="dataService">The store reader used to populate the collected-database list; null (viewer
-    /// not connected) degrades to a manual-only editor seeded with the existing exclusions.</param>
-    public ExcludedDatabasesDialog(ViewerServerStore serverStore, ViewerServerEntry entry, ViewerDataService? dataService)
+    /// <param name="dataService">The store this reads the collected-database list from and writes the exclusions to.</param>
+    /// <param name="row">The store row being edited (its <c>ExcludedDatabases</c> is updated in place on save).</param>
+    /// <param name="displayName">The header label (the server's display name with its read-only-intent suffix).</param>
+    public ExcludedDatabasesDialog(ViewerDataService dataService, MonitoredServerRow row, string displayName)
     {
         InitializeComponent();
-        _serverStore = serverStore;
-        _entry = entry;
-        _dataService = dataService;
-        HeaderText.Text = $"Excluded Databases — {entry.DisplayNameWithIntent}";
+        _dataService = dataService ?? throw new ArgumentNullException(nameof(dataService));
+        _row = row ?? throw new ArgumentNullException(nameof(row));
+        HeaderText.Text = $"Excluded Databases — {displayName}";
         Loaded += async (_, _) => await LoadAsync();
     }
 
     private async Task LoadAsync()
     {
-        var existing = _entry.ExcludedDatabases ?? new List<string>();
+        var existing = _row.ExcludedDatabases ?? new List<string>();
         StatusText.Text = "Loading collected databases…";
 
         List<string> collected = new();
         var collectedCount = 0;
-        if (_dataService is not null)
+        try
         {
-            try
-            {
-                var serverId = await _dataService.GetServerIdByNameAsync(_entry.ServerName);
-                if (serverId.HasValue)
-                {
-                    collected = await _dataService.GetCollectedDatabaseNamesAsync(serverId.Value);
-                    collectedCount = collected.Count;
-                }
-            }
-            catch (Exception ex)
-            {
-                /* A store read failure must never block editing exclusions — fall back to manual-only. */
-                ViewerLogger.Warn("ExcludedDatabasesDialog", $"Could not read collected databases: {ex.Message}");
-            }
+            /* The config row already carries the shared server_id, so the collected-database read needs no
+               name→id lookup (unlike the old registry path). */
+            collected = await _dataService.GetCollectedDatabaseNamesAsync(_row.ServerId);
+            collectedCount = collected.Count;
+        }
+        catch (Exception ex)
+        {
+            /* A store read failure must never block editing exclusions — fall back to manual-only. */
+            ViewerLogger.Warn("ExcludedDatabasesDialog", $"Could not read collected databases: {ex.Message}");
         }
 
         _items = new ObservableCollection<ExcludedDatabaseItem>(BuildDatabaseItems(collected, existing));
@@ -79,9 +74,7 @@ public partial class ExcludedDatabasesDialog : Window
 
         StatusText.Text = collectedCount > 0
             ? $"{collectedCount} collected database(s), {existing.Count} currently excluded."
-            : _dataService is null
-                ? $"Viewer not connected to a store — enter database names to exclude. {existing.Count} currently excluded."
-                : $"No collected databases for this server yet — add names to exclude. {existing.Count} currently excluded.";
+            : $"No collected databases for this server yet — add names to exclude. {existing.Count} currently excluded.";
     }
 
     /// <summary>
@@ -178,19 +171,24 @@ public partial class ExcludedDatabasesDialog : Window
         ManualAddBox.Focus();
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            _entry.ExcludedDatabases = _items
+            var names = _items
                 .Where(i => i.IsExcluded)
                 .Select(i => i.Name)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            _serverStore.UpdateServer(_entry);
+            await _dataService.SetMonitoredServerExcludedDatabasesAsync(_row.ServerId, names);
+            _row.ExcludedDatabases = names;
             ExclusionsModified = true;
             DialogResult = true;
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
         }
         catch (Exception ex)
         {
