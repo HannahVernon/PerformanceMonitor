@@ -577,6 +577,7 @@ public partial class MainWindow : Window
         if (ServerList.ItemsSource is not IEnumerable<DarlingServer> servers)
         {
             OverviewItemsControl.ItemsSource = null;
+            FleetRollupContainer.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -584,6 +585,7 @@ public partial class MainWindow : Window
         if (list.Count == 0)
         {
             OverviewItemsControl.ItemsSource = null;
+            FleetRollupContainer.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -605,8 +607,44 @@ public partial class MainWindow : Window
             }
         }));
 
-        OverviewItemsControl.ItemsSource = summaries.OfType<ServerSummaryItem>().ToList();
+        var cards = summaries.OfType<ServerSummaryItem>().ToList();
+        OverviewItemsControl.ItemsSource = cards;
+
+        /* Fleet-wide NOC roll-up above the cards — the cross-server totals SQL aggregate (the read only
+           Darling's central store can serve) plus the band counts / worst-N ranking reduced from the
+           cards' own #1426 banding. The totals use the SAME one-hour window the per-server cards use, so
+           they reconcile with the sum of the card counts. A totals-read failure degrades to zero totals
+           rather than blanking the Overview — the band counts and ranking still render from the cards. */
+        FleetTotals totals;
+        try
+        {
+            totals = await service.GetFleetTotalsAsync(nowUtc.AddHours(-1), nowUtc);
+        }
+        catch
+        {
+            totals = new FleetTotals();
+        }
+
+        ApplyFleetRollup(FleetRollup.Build(cards, totals));
+
         StatusText.Text = $"overview — refreshed {DateTime.Now:HH:mm:ss}";
+    }
+
+    /// <summary>
+    /// Renders the fleet roll-up above the Overview cards: sets the FleetRollupContainer's DataContext and
+    /// toggles the worst-first "Needs Attention" ranking against the all-clear line (there is no
+    /// inverse-visibility converter, so the swap is done here). The container shows only when there are
+    /// servers to roll up.
+    /// </summary>
+    private void ApplyFleetRollup(FleetRollup rollup)
+    {
+        FleetRollupContainer.DataContext = rollup;
+        FleetRollupContainer.Visibility = rollup.TotalServers > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        FleetWorstServersList.Visibility = rollup.HasProblems ? Visibility.Visible : Visibility.Collapsed;
+        FleetAdditionalProblemsText.Visibility =
+            rollup.AdditionalProblemCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+        FleetAllHealthyText.Visibility = rollup.HasProblems ? Visibility.Collapsed : Visibility.Visible;
     }
 
     /// <summary>Double-clicking an Overview card opens (or focuses) that server's tab (Lite's rule).</summary>
@@ -617,6 +655,24 @@ public partial class MainWindow : Window
             && ServerList.ItemsSource is IEnumerable<DarlingServer> servers)
         {
             var server = servers.FirstOrDefault(s => s.ServerId == summary.ServerId);
+            if (server is not null)
+            {
+                OpenServerTab(server);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clicking a "Needs Attention" ranking row opens (or focuses) that server's tab — the same
+    /// server-id → sidebar-server → OpenServerTab hop the Overview cards use (#1427 made OpenServerTab
+    /// return the tab).
+    /// </summary>
+    private void FleetWorstServer_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: FleetRankedServer ranked }
+            && ServerList.ItemsSource is IEnumerable<DarlingServer> servers)
+        {
+            var server = servers.FirstOrDefault(s => s.ServerId == ranked.ServerId);
             if (server is not null)
             {
                 OpenServerTab(server);
