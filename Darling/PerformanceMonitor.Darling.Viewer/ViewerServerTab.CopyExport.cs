@@ -126,6 +126,16 @@ public partial class ViewerServerTab
                     qs.QueryText, qs.DatabaseName, enrichedPlanXml, null,
                     "Query Store", productName: productName);
 
+            /* The unified Expensive Queries row carries its STORED plan in-row (ignore enrichedPlanXml, like
+               the Active Queries snapshot case). Only the statement sources (Query Stats / Query Store) have
+               runnable text; the procedure sources carry only the object name, so IsStatementSource is false
+               and they fall to the default no-op — matching Lite, where procedure rows have no repro. */
+            case ViewerExpensiveQueryRow eq when eq.IsStatementSource:
+                if (string.IsNullOrEmpty(eq.QueryText)) return null;
+                return ReproScriptBuilder.BuildReproScript(
+                    eq.QueryText, eq.DatabaseName, eq.QueryPlanXml, null,
+                    "Expensive Queries", productName: productName);
+
             default:
                 return null;
         }

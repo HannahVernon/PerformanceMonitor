@@ -34,14 +34,16 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public partial class ViewerServerTab
 {
-    /* Queries sub-tab order — matches Lite's QueriesSubTabControl exactly (W1f-2 completed the tab):
-       Performance Trends, Active Queries, the three grids, then Query Heatmap last. */
+    /* Queries sub-tab order — matches Lite's QueriesSubTabControl (W1f-2), plus the Darling-only unified
+       Expensive Queries grid inserted after the three per-source grids (Dashboard parity), keeping Query
+       Heatmap last: Performance Trends, Active Queries, the three grids, Expensive Queries, Query Heatmap. */
     private const int PerformanceTrendsSubTabIndex = 0;
     private const int ActiveQueriesSubTabIndex = 1;
     private const int TopQueriesSubTabIndex = 2;
     private const int TopProceduresSubTabIndex = 3;
     private const int QueryStoreSubTabIndex = 4;
-    private const int QueryHeatmapSubTabIndex = 5;
+    private const int ExpensiveQueriesSubTabIndex = 5;
+    private const int QueryHeatmapSubTabIndex = 6;
 
     private string _queryStatsSlicerMetric = "TotalCpu";
     private List<TimeSliceBucket>? _queryStatsSlicerData;
@@ -130,6 +132,9 @@ public partial class ViewerServerTab
             case QueryStoreSubTabIndex:
                 await LoadQueryStoreAsync(startUtc, endUtc);
                 break;
+            case ExpensiveQueriesSubTabIndex:
+                await LoadExpensiveQueriesAsync(startUtc, endUtc);
+                break;
             case QueryHeatmapSubTabIndex:
                 await LoadQueryHeatmapAsync(startUtc, endUtc);
                 break;
@@ -165,6 +170,19 @@ public partial class ViewerServerTab
         SetDefaultSortIfNone(QueryStoreGrid, "TotalDurationMs", ListSortDirection.Descending);
         await LoadQueryStoreSlicerAsync(startUtc, endUtc);
         await RefreshQueryStoreComparisonAsync(startUtc, endUtc);
+    }
+
+    /// <summary>
+    /// Loads the unified Expensive Queries grid — one cross-source ranked list (Query Stats + Stored
+    /// Procedures + Query Store) over the toolbar's settable window. No slicer / comparison (the read is
+    /// already a cross-source merge, not a single time series); the default sort matches the read's
+    /// average-CPU ranking so the first render is stable.
+    /// </summary>
+    private async Task LoadExpensiveQueriesAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetUnifiedExpensiveQueriesAsync(_server.ServerId, startUtc, endUtc);
+        _expensiveQueriesFilterMgr!.UpdateData(rows);
+        SetDefaultSortIfNone(ExpensiveQueriesGrid, "AvgWorkerTimeMs", ListSortDirection.Descending);
     }
 
     // ── Slicers (Lite's ServerTab.Slicers.cs; the slicer sends UTC bounds, the viewer reads take naive UTC) ──
