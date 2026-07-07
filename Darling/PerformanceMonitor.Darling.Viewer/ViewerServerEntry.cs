@@ -44,6 +44,14 @@ public sealed class ViewerServerEntry : INotifyPropertyChanged
     /// <summary>Windows, SqlServer, EntraMFA, ServicePrincipal, or ManagedIdentity (see <see cref="AuthenticationTypes"/>).</summary>
     public string AuthenticationType { get; set; } = AuthenticationTypes.Windows;
 
+    /// <summary>
+    /// Id of a shared <see cref="ViewerCredentialProfile"/> (from <see cref="ViewerProfileStore"/>) this
+    /// server references, or null for inline per-server auth. When set, the profile supplies the identity
+    /// (the Darling service resolves it at connect time) and no per-server secret is stored — mirroring
+    /// Lite's <c>ServerConnection.CredentialProfileId</c>.
+    /// </summary>
+    public string? CredentialProfileId { get; set; }
+
     /// <summary>Service-principal application/client id (non-secret; the SP secret lives in Credential Manager).</summary>
     public string? AzureClientId { get; set; }
 

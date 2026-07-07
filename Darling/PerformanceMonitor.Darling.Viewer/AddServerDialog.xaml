@@ -35,11 +35,30 @@
         <TextBlock Grid.Row="3" Text="Display Name (optional)" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
         <TextBox Grid.Row="4" x:Name="DisplayNameBox" Margin="0,0,0,12"/>
 
-        <!-- Authentication (inline per-server auth — the viewer never connects, so this is declarative
-             config the Darling service will consume; there is no shared credential-profile picker here). -->
+        <!-- Authentication. The credential source is either inline per-server auth or a shared credential
+             profile (the Darling service resolves the profile at connect time — the viewer never connects).
+             This is declarative config the service consumes. -->
         <TextBlock Grid.Row="5" Text="Authentication" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
         <StackPanel Grid.Row="6" Margin="0,0,0,12">
-            <StackPanel x:Name="InlineAuthRadios">
+            <!-- Credential source: inline (per-server) vs a shared credential profile -->
+            <RadioButton Content="Configure credentials on this server"
+                         Foreground="{DynamicResource ForegroundBrush}" IsChecked="True"
+                         Checked="CredentialSource_Changed" Margin="0,0,0,4"/>
+            <RadioButton x:Name="UseProfileRadio" Content="Use a credential profile"
+                         Foreground="{DynamicResource ForegroundBrush}"
+                         Checked="CredentialSource_Changed" Margin="0,0,0,4"
+                         ToolTip="Use a named, shared credential (set up under Manage Servers → Credential Profiles). The profile fully overrides this server's auth type and credentials."/>
+
+            <!-- Profile picker (shown when 'Use a credential profile' is selected) -->
+            <StackPanel x:Name="ProfilePickerPanel" Visibility="Collapsed" Margin="0,4,0,0">
+                <TextBlock Text="Credential Profile" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+                <ComboBox x:Name="ProfileComboBox" DisplayMemberPath="PickerDisplay"/>
+                <TextBlock x:Name="NoProfilesNote" TextWrapping="Wrap" FontSize="11" Visibility="Collapsed"
+                           Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0"
+                           Text="No credential profiles exist yet. Create one under Manage Servers → Credential Profiles."/>
+            </StackPanel>
+
+            <StackPanel x:Name="InlineAuthRadios" Margin="0,4,0,0">
                 <RadioButton x:Name="WindowsAuthRadio" Content="Windows Authentication" Foreground="{DynamicResource ForegroundBrush}"
                              IsChecked="True" Checked="AuthMode_Changed" Margin="0,0,0,4"/>
                 <RadioButton x:Name="SqlAuthRadio" Content="SQL Server Authentication" Foreground="{DynamicResource ForegroundBrush}"

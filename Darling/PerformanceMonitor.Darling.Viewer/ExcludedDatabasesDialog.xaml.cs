@@ -7,44 +7,184 @@
  */
 
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The viewer's Excluded Databases editor — adapted from Lite's dialog. Lite reads the server's LIVE
-/// database list (it connects to the monitored server) and offers a checkbox per database; the Darling
-/// viewer never connects to monitored servers, so this is a manual, one-name-per-line editor for the same
-/// <see cref="ViewerServerEntry.ExcludedDatabases"/> field the Darling service will consume. Persisted
-/// through <see cref="ViewerServerStore.UpdateServer(ViewerServerEntry)"/>.
+/// The viewer's Excluded Databases editor — a checkbox picker over the databases the Darling service has
+/// COLLECTED for this server, adapted from Lite's dialog. Lite reads the server's LIVE database list (it
+/// connects to the monitored server); the viewer never connects, but the store already holds the
+/// collected databases (<c>v_database_config</c> / <c>v_database_size_stats</c>), so the picker offers
+/// those instead of a free-text editor. A not-yet-collected database can still be added by hand (the
+/// manual fallback). Persists the checked names to <see cref="ViewerServerEntry.ExcludedDatabases"/>
+/// through <see cref="ViewerServerStore.UpdateServer(ViewerServerEntry)"/> for the Darling service to consume.
 /// </summary>
 public partial class ExcludedDatabasesDialog : Window
 {
     private readonly ViewerServerStore _serverStore;
     private readonly ViewerServerEntry _entry;
+    private readonly ViewerDataService? _dataService;
+    private ObservableCollection<ExcludedDatabaseItem> _items = new();
 
     /// <summary>Set true when the exclusion list was changed and saved, so the caller refreshes.</summary>
     public bool ExclusionsModified { get; private set; }
 
-    public ExcludedDatabasesDialog(ViewerServerStore serverStore, ViewerServerEntry entry)
+    /// <param name="dataService">The store reader used to populate the collected-database list; null (viewer
+    /// not connected) degrades to a manual-only editor seeded with the existing exclusions.</param>
+    public ExcludedDatabasesDialog(ViewerServerStore serverStore, ViewerServerEntry entry, ViewerDataService? dataService)
     {
         InitializeComponent();
         _serverStore = serverStore;
         _entry = entry;
+        _dataService = dataService;
         HeaderText.Text = $"Excluded Databases — {entry.DisplayNameWithIntent}";
-        ExclusionsBox.Text = string.Join(Environment.NewLine, entry.ExcludedDatabases ?? new System.Collections.Generic.List<string>());
-        StatusText.Text = $"{(entry.ExcludedDatabases?.Count ?? 0)} database(s) currently excluded.";
+        Loaded += async (_, _) => await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var existing = _entry.ExcludedDatabases ?? new List<string>();
+        StatusText.Text = "Loading collected databases…";
+
+        List<string> collected = new();
+        var collectedCount = 0;
+        if (_dataService is not null)
+        {
+            try
+            {
+                var serverId = await _dataService.GetServerIdByNameAsync(_entry.ServerName);
+                if (serverId.HasValue)
+                {
+                    collected = await _dataService.GetCollectedDatabaseNamesAsync(serverId.Value);
+                    collectedCount = collected.Count;
+                }
+            }
+            catch (Exception ex)
+            {
+                /* A store read failure must never block editing exclusions — fall back to manual-only. */
+                ViewerLogger.Warn("ExcludedDatabasesDialog", $"Could not read collected databases: {ex.Message}");
+            }
+        }
+
+        _items = new ObservableCollection<ExcludedDatabaseItem>(BuildDatabaseItems(collected, existing));
+        DatabasesItemsControl.ItemsSource = _items;
+
+        StatusText.Text = collectedCount > 0
+            ? $"{collectedCount} collected database(s), {existing.Count} currently excluded."
+            : _dataService is null
+                ? $"Viewer not connected to a store — enter database names to exclude. {existing.Count} currently excluded."
+                : $"No collected databases for this server yet — add names to exclude. {existing.Count} currently excluded.";
+    }
+
+    /// <summary>
+    /// Merges the store's collected user-database names with the entry's existing exclusions into the
+    /// checkbox list: every collected database is a checkbox (checked when already excluded), and any
+    /// existing exclusion the store has NOT collected is preserved as a checked "(not collected)" row so
+    /// saving never silently drops it (the viewer can't verify liveness, so it stays enabled/removable).
+    /// Pure so it is unit-testable without a store. Case-insensitive throughout.
+    /// </summary>
+    public static List<ExcludedDatabaseItem> BuildDatabaseItems(IEnumerable<string> collectedNames, IEnumerable<string> existingExclusions)
+    {
+        var excluded = new HashSet<string>(
+            (existingExclusions ?? Enumerable.Empty<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => n.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+
+        var collected = (collectedNames ?? Enumerable.Empty<string>())
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var collectedSet = new HashSet<string>(collected, StringComparer.OrdinalIgnoreCase);
+
+        var items = new List<ExcludedDatabaseItem>();
+        foreach (var name in collected)
+        {
+            items.Add(new ExcludedDatabaseItem
+            {
+                Name = name,
+                DisplayName = name,
+                IsExcluded = excluded.Contains(name),
+                IsCollected = true
+            });
+        }
+
+        /* Existing exclusions the store hasn't collected (yet, or ever): keep them, checked, so a save
+           preserves them. Enabled (not disabled like Lite's stale rows) — the viewer can't confirm the
+           database is truly gone, and this is exactly the not-yet-collected manual case. */
+        foreach (var name in excluded.Where(n => !collectedSet.Contains(n)).OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            items.Add(new ExcludedDatabaseItem
+            {
+                Name = name,
+                DisplayName = $"{name}  (not collected)",
+                IsExcluded = true,
+                IsCollected = false
+            });
+        }
+
+        return items;
+    }
+
+    private void ManualAddBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            AddManualDatabase();
+            e.Handled = true;
+        }
+    }
+
+    private void ManualAdd_Click(object sender, RoutedEventArgs e) => AddManualDatabase();
+
+    private void AddManualDatabase()
+    {
+        var name = ManualAddBox.Text.Trim();
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        var match = _items.FirstOrDefault(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+        {
+            /* Already listed (collected or previously added) — just tick it. */
+            match.IsExcluded = true;
+            StatusText.Text = $"'{name}' is already in the list — marked excluded.";
+        }
+        else
+        {
+            _items.Insert(0, new ExcludedDatabaseItem
+            {
+                Name = name,
+                DisplayName = $"{name}  (not collected)",
+                IsExcluded = true,
+                IsCollected = false
+            });
+            StatusText.Text = $"Added '{name}'.";
+        }
+
+        ManualAddBox.Clear();
+        ManualAddBox.Focus();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            _entry.ExcludedDatabases = ExclusionsBox.Text
-                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(name => name.Trim())
-                .Where(name => name.Length > 0)
+            _entry.ExcludedDatabases = _items
+                .Where(i => i.IsExcluded)
+                .Select(i => i.Name)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
@@ -60,4 +200,36 @@ public partial class ExcludedDatabasesDialog : Window
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+}
+
+/// <summary>
+/// One row of the Excluded Databases picker — a database name, its checked (excluded) state, and whether
+/// the store has actually collected it. Mirrors Lite's <c>DatabaseExclusionItem</c>; the viewer keeps
+/// not-collected rows enabled (Lite disabled its stale rows) because the viewer can't verify liveness.
+/// </summary>
+public sealed class ExcludedDatabaseItem : INotifyPropertyChanged
+{
+    public string Name { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+
+    private bool _isExcluded;
+    public bool IsExcluded
+    {
+        get => _isExcluded;
+        set { _isExcluded = value; OnPropertyChanged(nameof(IsExcluded)); }
+    }
+
+    /// <summary>True when the store has collected this database; false for a manually-added / not-yet-collected name.</summary>
+    public bool IsCollected { get; set; } = true;
+
+    /// <summary>Always editable — the viewer can't confirm a database is truly gone, so nothing is disabled.</summary>
+    public bool IsEnabled => true;
+
+    public Brush ForegroundBrush => IsCollected
+        ? (Brush)Application.Current.FindResource("ForegroundBrush")
+        : (Brush)Application.Current.FindResource("ForegroundMutedBrush");
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged(string propertyName)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }

@@ -8,6 +8,7 @@
 
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Windows;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Notifications;
@@ -15,31 +16,50 @@ using PerformanceMonitor.Notifications;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The viewer's Add / Edit server dialog — a faithful port of Lite's <c>AddServerDialog</c>, with the two
-/// live-connection affordances dropped as hard viewer facts: there is no <b>Test Connection</b> button (the
-/// viewer never opens a SqlClient connection to a monitored server — it reads only the Postgres store) and
-/// no shared credential-profile picker (the viewer has no <c>ProfileManager</c>). Everything else — all five
-/// inline auth modes, encryption, connection options, database / utility DB, cost, alert-delivery override,
-/// favorite — is captured verbatim into a <see cref="ViewerServerEntry"/> and persisted through
-/// <see cref="ViewerServerStore"/> (secrets to Credential Manager). Making the running service honor the
-/// saved definition is the separate wiring flagged in the PR.
+/// The viewer's Add / Edit server dialog — a faithful port of Lite's <c>AddServerDialog</c>, with the one
+/// live-connection affordance dropped as a hard viewer fact: there is no <b>Test Connection</b> button (the
+/// viewer never opens a SqlClient connection to a monitored server — it reads only the Postgres store).
+/// Everything else — all five inline auth modes AND the shared credential-profile picker (credential
+/// MANAGEMENT is fully in scope; only live connection resolution is the service's job), encryption,
+/// connection options, database / utility DB, cost, alert-delivery override, favorite — is captured into a
+/// <see cref="ViewerServerEntry"/> and persisted through <see cref="ViewerServerStore"/> (per-server
+/// secrets to Credential Manager; a chosen profile via <see cref="ViewerServerEntry.CredentialProfileId"/>).
+/// Making the running service honor the saved definition is the separate wiring flagged in the PR.
 /// </summary>
 public partial class AddServerDialog : Window
 {
     private readonly ViewerServerStore _serverStore;
+    private readonly ViewerProfileStore _profileStore;
 
     /// <summary>The server that was added or edited, or null when the dialog was cancelled.</summary>
     public ViewerServerEntry? AddedServer { get; private set; }
 
-    public AddServerDialog(ViewerServerStore serverStore)
+    public AddServerDialog(ViewerServerStore serverStore, ViewerProfileStore profileStore)
     {
         InitializeComponent();
         _serverStore = serverStore;
+        _profileStore = profileStore;
+        PopulateProfilePicker();
+    }
+
+    /// <summary>
+    /// Populates the profile dropdown from the current profile list. Disables the "use profile" option
+    /// when no profiles exist.
+    /// </summary>
+    private void PopulateProfilePicker()
+    {
+        var profiles = _profileStore.GetAll();
+        ProfileComboBox.ItemsSource = profiles;
+        if (profiles.Count == 0)
+        {
+            UseProfileRadio.IsEnabled = false;
+            NoProfilesNote.Visibility = Visibility.Visible;
+        }
     }
 
     /// <summary>Constructor for editing an existing server definition.</summary>
-    public AddServerDialog(ViewerServerStore serverStore, ViewerServerEntry existing)
-        : this(serverStore)
+    public AddServerDialog(ViewerServerStore serverStore, ViewerProfileStore profileStore, ViewerServerEntry existing)
+        : this(serverStore, profileStore)
     {
         Title = "Edit SQL Server";
         ServerNameBox.Text = existing.ServerName;
@@ -67,6 +87,22 @@ public partial class AddServerDialog : Window
             AlertNotificationMode.PerEvent => 2,
             _ => 0
         };
+
+        /* Profile-backed server: preselect "use profile" + the dropdown; the inline auth panels stay
+           hidden (CredentialSource_Changed, fired by IsChecked). No per-server secret is loaded. */
+        if (!string.IsNullOrEmpty(existing.CredentialProfileId))
+        {
+            UseProfileRadio.IsChecked = true;
+            var match = _profileStore.GetProfile(existing.CredentialProfileId);
+            if (match is not null)
+            {
+                ProfileComboBox.SelectedItem = ProfileComboBox.Items
+                    .Cast<ViewerCredentialProfile>().FirstOrDefault(p => p.Id == match.Id);
+            }
+
+            AddedServer = existing;
+            return;
+        }
 
         if (existing.AuthenticationType == AuthenticationTypes.EntraMFA)
         {
@@ -109,6 +145,39 @@ public partial class AddServerDialog : Window
         }
 
         AddedServer = existing;
+    }
+
+    /// <summary>
+    /// Toggles between the inline per-server auth UI and the credential-profile picker. When a profile is
+    /// chosen the inline auth radios + all per-mode credential panels are hidden (the profile fully
+    /// overrides the server's auth type + creds).
+    /// </summary>
+    private void CredentialSource_Changed(object sender, RoutedEventArgs e)
+    {
+        /* Guard against early Checked events during InitializeComponent. */
+        if (ProfilePickerPanel is null || InlineAuthRadios is null)
+        {
+            return;
+        }
+
+        var useProfile = UseProfileRadio.IsChecked == true;
+
+        ProfilePickerPanel.Visibility = useProfile ? Visibility.Visible : Visibility.Collapsed;
+        InlineAuthRadios.Visibility = useProfile ? Visibility.Collapsed : Visibility.Visible;
+
+        if (useProfile)
+        {
+            /* Hide every per-mode inline credential panel. */
+            if (SqlCredentialsPanel is not null) SqlCredentialsPanel.Visibility = Visibility.Collapsed;
+            if (EntraMfaPanel is not null) EntraMfaPanel.Visibility = Visibility.Collapsed;
+            if (ServicePrincipalPanel is not null) ServicePrincipalPanel.Visibility = Visibility.Collapsed;
+            if (ManagedIdentityPanel is not null) ManagedIdentityPanel.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            /* Re-show the panel for the currently selected inline auth mode. */
+            AuthMode_Changed(sender, e);
+        }
     }
 
     private void AuthMode_Changed(object sender, RoutedEventArgs e)
@@ -154,12 +223,29 @@ public partial class AddServerDialog : Window
             displayName = serverName;
         }
 
+        /* Credential source: a shared profile, or inline per-server auth. */
+        var useProfile = UseProfileRadio.IsChecked == true;
+        ViewerCredentialProfile? selectedProfile = null;
+
         string authenticationType;
         string? username = null;
         string? password = null;
         string? entraUsername = null;
 
-        if (WindowsAuthRadio.IsChecked == true)
+        if (useProfile)
+        {
+            selectedProfile = ProfileComboBox.SelectedItem as ViewerCredentialProfile;
+            if (selectedProfile is null)
+            {
+                StatusText.Text = "Select a credential profile, or choose \"Configure credentials on this server\".";
+                return;
+            }
+            /* The profile fully overrides the server's auth; mirror its auth type onto the entry (display
+               only). Resolution always comes from the profile via CredentialProfileId; no per-server
+               secret is stored. */
+            authenticationType = selectedProfile.AuthType;
+        }
+        else if (WindowsAuthRadio.IsChecked == true)
         {
             authenticationType = AuthenticationTypes.Windows;
         }
@@ -221,16 +307,17 @@ public partial class AddServerDialog : Window
                 entry.ServerName = serverName;
                 entry.DisplayName = displayName;
                 entry.AuthenticationType = authenticationType;
-                entry.EntraUsername = authenticationType == AuthenticationTypes.EntraMFA
+                entry.CredentialProfileId = useProfile ? selectedProfile!.Id : null;
+                entry.EntraUsername = (!useProfile && authenticationType == AuthenticationTypes.EntraMFA)
                     ? (string.IsNullOrWhiteSpace(entraUsername) ? null : entraUsername)
                     : null;
-                entry.AzureClientId = authenticationType == AuthenticationTypes.ServicePrincipal
+                entry.AzureClientId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
                     ? (string.IsNullOrWhiteSpace(AzureClientIdBox.Text) ? null : AzureClientIdBox.Text.Trim())
                     : null;
-                entry.AzureTenantId = authenticationType == AuthenticationTypes.ServicePrincipal
+                entry.AzureTenantId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
                     ? (string.IsNullOrWhiteSpace(AzureTenantIdBox.Text) ? null : AzureTenantIdBox.Text.Trim())
                     : null;
-                entry.ManagedIdentityClientId = authenticationType == AuthenticationTypes.ManagedIdentity
+                entry.ManagedIdentityClientId = (!useProfile && authenticationType == AuthenticationTypes.ManagedIdentity)
                     ? (string.IsNullOrWhiteSpace(ManagedIdentityClientIdBox.Text) ? null : ManagedIdentityClientIdBox.Text.Trim())
                     : null;
                 entry.IsEnabled = EnabledCheckBox.IsChecked == true;
@@ -245,7 +332,9 @@ public partial class AddServerDialog : Window
                 entry.MonthlyCostUsd = monthlyCost;
                 entry.AlertDeliveryModeOverride = GetSelectedDeliveryOverride();
 
-                _serverStore.UpdateServer(entry, username, password);
+                /* Profile-backed → store no per-server secret (UpdateServer with null creds deletes any
+                   stale one, matching Lite's switch-cleanup). */
+                _serverStore.UpdateServer(entry, useProfile ? null : username, useProfile ? null : password);
             }
             else
             {
@@ -255,16 +344,17 @@ public partial class AddServerDialog : Window
                     ServerName = serverName,
                     DisplayName = displayName,
                     AuthenticationType = authenticationType,
-                    EntraUsername = authenticationType == AuthenticationTypes.EntraMFA
+                    CredentialProfileId = useProfile ? selectedProfile!.Id : null,
+                    EntraUsername = (!useProfile && authenticationType == AuthenticationTypes.EntraMFA)
                         ? (string.IsNullOrWhiteSpace(entraUsername) ? null : entraUsername)
                         : null,
-                    AzureClientId = authenticationType == AuthenticationTypes.ServicePrincipal
+                    AzureClientId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
                         ? (string.IsNullOrWhiteSpace(AzureClientIdBox.Text) ? null : AzureClientIdBox.Text.Trim())
                         : null,
-                    AzureTenantId = authenticationType == AuthenticationTypes.ServicePrincipal
+                    AzureTenantId = (!useProfile && authenticationType == AuthenticationTypes.ServicePrincipal)
                         ? (string.IsNullOrWhiteSpace(AzureTenantIdBox.Text) ? null : AzureTenantIdBox.Text.Trim())
                         : null,
-                    ManagedIdentityClientId = authenticationType == AuthenticationTypes.ManagedIdentity
+                    ManagedIdentityClientId = (!useProfile && authenticationType == AuthenticationTypes.ManagedIdentity)
                         ? (string.IsNullOrWhiteSpace(ManagedIdentityClientIdBox.Text) ? null : ManagedIdentityClientIdBox.Text.Trim())
                         : null,
                     IsEnabled = EnabledCheckBox.IsChecked == true,
@@ -280,7 +370,7 @@ public partial class AddServerDialog : Window
                     AlertDeliveryModeOverride = GetSelectedDeliveryOverride()
                 };
 
-                _serverStore.AddServer(AddedServer, username, password);
+                _serverStore.AddServer(AddedServer, useProfile ? null : username, useProfile ? null : password);
             }
 
             DialogResult = true;

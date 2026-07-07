@@ -36,6 +36,10 @@ public partial class MainWindow
     /// <summary>The viewer's own server-definition registry, backing Add / Manage / Edit / Remove + favorites.</summary>
     private readonly ViewerServerStore _serverStore = new();
 
+    /// <summary>The viewer's credential-profile registry, lazily built (it depends on <see cref="_serverStore"/>).</summary>
+    private ViewerProfileStore? _profileStoreInstance;
+    private ViewerProfileStore ProfileStore => _profileStoreInstance ??= new ViewerProfileStore(_serverStore);
+
     private bool _sidebarCollapsed;
 
     // ── Server-list enrichment (favorites + freshness) ──────────────────────────────
@@ -232,7 +236,7 @@ public partial class MainWindow
         var entry = _serverStore.GetByServerName(server.ServerName)
             ?? new ViewerServerEntry { ServerName = server.ServerName, DisplayName = server.DisplayName };
 
-        var dialog = new AddServerDialog(_serverStore, entry) { Owner = this };
+        var dialog = new AddServerDialog(_serverStore, ProfileStore, entry) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             ReapplyFavoritesToServerList();
@@ -277,7 +281,7 @@ public partial class MainWindow
 
     private void AddServerButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddServerDialog(_serverStore) { Owner = this };
+        var dialog = new AddServerDialog(_serverStore, ProfileStore) { Owner = this };
         if (dialog.ShowDialog() == true && dialog.AddedServer is not null)
         {
             ReapplyFavoritesToServerList();
@@ -289,7 +293,7 @@ public partial class MainWindow
 
     private void ManageServersButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new ManageServersWindow(_serverStore) { Owner = this };
+        var window = new ManageServersWindow(_serverStore, ProfileStore, _dataService) { Owner = this };
         window.ShowDialog();
         if (window.ServersChanged)
         {
@@ -374,7 +378,9 @@ public partial class MainWindow
             var copied = 0;
             if (!string.IsNullOrEmpty(targetDir))
             {
-                foreach (var fileName in new[] { "viewer-settings.json", "viewer-preferences.json" })
+                /* viewer-profiles.json rides along so imported profile-backed servers don't reference a
+                   missing profile (secrets stay per-user in Credential Manager and are re-entered). */
+                foreach (var fileName in new[] { "viewer-settings.json", "viewer-preferences.json", "viewer-profiles.json" })
                 {
                     var source = Path.Combine(dialog.FolderName, fileName);
                     var destination = Path.Combine(targetDir, fileName);
