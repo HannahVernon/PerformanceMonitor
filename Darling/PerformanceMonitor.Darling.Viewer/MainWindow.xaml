@@ -513,7 +513,131 @@
                      server's tab. Status is derived from collection freshness (see ServerSummaryItem),
                      not a live ping — the viewer has no live connection to the monitored servers. -->
                 <TabItem x:Name="OverviewTab" Header="Overview">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                    <DockPanel Margin="0,8,0,0">
+                        <!-- Fleet-wide NOC roll-up (the signature capability Darling's single central
+                             store enables — the Dashboard/Lite each see one server's database and CANNOT
+                             rank/total servers against each other). Sits ABOVE the per-server cards, always
+                             visible. Three parts: (1) fleet health summary — total servers + counts by the
+                             SAME band #1426's cards compute (ServerSummaryItem.OverallMetricSeverity +
+                             freshness, reduced in FleetRollup.ClassifyBand); (2) fleet totals — the
+                             cross-server blocking / deadlock SQL aggregate (GetFleetTotalsAsync) + servers
+                             with collection failures; (3) the worst-first "Needs Attention" ranking, whose
+                             rows open that server's tab. DataContext (a FleetRollup) is set in code-behind
+                             after LoadOverviewAsync builds it. -->
+                        <Border x:Name="FleetRollupContainer" DockPanel.Dock="Top"
+                                Background="{DynamicResource BackgroundLightBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6"
+                                Margin="6,0,6,10" Padding="16,12" Visibility="Collapsed">
+                            <StackPanel>
+                                <!-- Header -->
+                                <DockPanel Margin="0,0,0,10">
+                                    <TextBlock Text="Fleet Health" FontSize="16" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <TextBlock Text="{Binding MonitoringText}" FontSize="11"
+                                               Foreground="{DynamicResource ForegroundMutedBrush}"
+                                               VerticalAlignment="Center" Margin="12,1,0,0"/>
+                                </DockPanel>
+
+                                <!-- (1) Health-band summary tiles: total + counts by band. Tile colours are
+                                     the card severity palette (green / amber / red / grey-for-offline). -->
+                                <WrapPanel Margin="0,0,0,12">
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#3a3d45"
+                                            BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding TotalServers}" FontSize="22" FontWeight="Bold"
+                                                       Foreground="{DynamicResource ForegroundBrush}" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="Servers" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#81C784"
+                                            BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding HealthyCount}" FontSize="22" FontWeight="Bold"
+                                                       Foreground="#81C784" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="Healthy" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#FFB74D"
+                                            BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding WarningCount}" FontSize="22" FontWeight="Bold"
+                                                       Foreground="#FFB74D" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="Warning" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#E57373"
+                                            BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding CriticalCount}" FontSize="22" FontWeight="Bold"
+                                                       Foreground="#E57373" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="Critical" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#888888"
+                                            BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding OfflineCount}" FontSize="22" FontWeight="Bold"
+                                                       Foreground="#AAAAAA" HorizontalAlignment="Center"/>
+                                            <TextBlock Text="Offline" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                                       HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                </WrapPanel>
+
+                                <!-- (2) Fleet totals: the cross-server aggregate over the last hour (the
+                                     same window the per-server cards use, so these reconcile with the card
+                                     counts). -->
+                                <WrapPanel Margin="0,0,0,12">
+                                    <TextBlock Text="Last hour:" FontSize="11" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                    <TextBlock FontSize="11" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,16,0" VerticalAlignment="Center"
+                                               Text="{Binding TotalBlockingEvents, StringFormat='Blocking events: {0}'}"/>
+                                    <TextBlock FontSize="11" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,16,0" VerticalAlignment="Center"
+                                               Text="{Binding TotalDeadlocks, StringFormat='Deadlocks: {0}'}"/>
+                                    <TextBlock FontSize="11" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,16,0" VerticalAlignment="Center"
+                                               Text="{Binding CollectionFailuresText, StringFormat='Collection failures: {0}'}"/>
+                                </WrapPanel>
+
+                                <!-- (3) Worst-first "Needs Attention" ranking — problem servers only, opens
+                                     the server's tab on click. Hidden and replaced by the all-clear line
+                                     when the fleet is healthy (toggled in code-behind). -->
+                                <TextBlock Text="Needs Attention" FontSize="12" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+                                <ItemsControl x:Name="FleetWorstServersList" ItemsSource="{Binding WorstServers}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="Transparent" Cursor="Hand" Padding="2,3" Margin="0,1"
+                                                    ToolTip="Open this server's tab"
+                                                    MouseLeftButtonUp="FleetWorstServer_Click">
+                                                <DockPanel LastChildFill="True">
+                                                    <Ellipse Width="9" Height="9" Fill="{Binding BandBrush}"
+                                                             VerticalAlignment="Center" Margin="0,0,8,0" DockPanel.Dock="Left"/>
+                                                    <TextBlock Text="{Binding BandLabel}" Foreground="{Binding BandBrush}"
+                                                               FontSize="11" FontWeight="SemiBold" Width="58"
+                                                               VerticalAlignment="Center" DockPanel.Dock="Left"/>
+                                                    <TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource ForegroundBrush}"
+                                                               FontSize="11" FontWeight="SemiBold" Width="160"
+                                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" DockPanel.Dock="Left"/>
+                                                    <TextBlock Text="{Binding Reason}" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                                               FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                                </DockPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="FleetAdditionalProblemsText" Text="{Binding AdditionalProblemText}"
+                                           FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"
+                                           Margin="17,2,0,0" Visibility="Collapsed"/>
+                                <TextBlock x:Name="FleetAllHealthyText" Text="{Binding AllHealthyText}"
+                                           FontSize="12" Foreground="#81C784" Margin="0,0,0,2" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </Border>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <ItemsControl x:Name="OverviewItemsControl">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -619,7 +743,8 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                    </ScrollViewer>
+                        </ScrollViewer>
+                    </DockPanel>
                 </TabItem>
 
                 <!-- Recommendations: re-skinned to Lite's advise-only card design (W2b). Its OWN server
