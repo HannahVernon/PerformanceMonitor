@@ -39,6 +39,8 @@ public partial class ViewerServerTab
     private ChartHoverHelper? _deadlockTrendHover;
     private ChartHoverHelper? _blockingDurationHover;
     private ChartHoverHelper? _blockingTotalDurationHover;
+    private ChartHoverHelper? _deadlockWaitHover;
+    private ChartHoverHelper? _deadlockTotalWaitHover;
     private ChartHoverHelper? _currentWaitsDurationHover;
     private ChartHoverHelper? _currentWaitsBlockedHover;
 
@@ -69,6 +71,10 @@ public partial class ViewerServerTab
         BlockingDurationChart.Refresh();
         ApplyTheme(BlockingTotalDurationChart);
         BlockingTotalDurationChart.Refresh();
+        ApplyTheme(DeadlockWaitChart);
+        DeadlockWaitChart.Refresh();
+        ApplyTheme(DeadlockTotalWaitChart);
+        DeadlockTotalWaitChart.Refresh();
         ApplyTheme(CurrentWaitsDurationChart);
         CurrentWaitsDurationChart.Refresh();
         ApplyTheme(CurrentWaitsBlockedChart);
@@ -79,6 +85,8 @@ public partial class ViewerServerTab
         _deadlockTrendHover = new ChartHoverHelper(DeadlockTrendChart, "deadlocks");
         _blockingDurationHover = new ChartHoverHelper(BlockingDurationChart, "ms");
         _blockingTotalDurationHover = new ChartHoverHelper(BlockingTotalDurationChart, "ms");
+        _deadlockWaitHover = new ChartHoverHelper(DeadlockWaitChart, "ms");
+        _deadlockTotalWaitHover = new ChartHoverHelper(DeadlockTotalWaitChart, "ms");
         _currentWaitsDurationHover = new ChartHoverHelper(CurrentWaitsDurationChart, "ms");
         _currentWaitsBlockedHover = new ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
 
@@ -138,14 +146,20 @@ public partial class ViewerServerTab
             case BlockingStatsSubTabIndex:
                 /* Blocking SEVERITY: the duration aggregate reconciles with the count trend (same XE→DMV
                    source selection); the deadlock COUNT is the cheap sibling of the Trends tab's deadlock
-                   trend, summed here for the summary strip (its per-minute buckets share this window). */
+                   trend, summed here for the summary strip. The deadlock SEVERITY aggregate (victim_count +
+                   total/max/avg wait, parsed on-the-fly from deadlock_graph_xml) is drawn from the SAME
+                   v_deadlocks/collection_time window as the count, so the two reconcile in period. */
                 var durationStatsTask = _dataService.GetBlockingDurationStatsAsync(_server.ServerId, startUtc, endUtc);
                 var deadlockCountTask = _dataService.GetDeadlockTrendAsync(_server.ServerId, startUtc, endUtc);
+                var deadlockSeverityTask = _dataService.GetDeadlockSeverityStatsAsync(_server.ServerId, startUtc, endUtc);
                 var durationStats = await durationStatsTask;
                 var deadlockCounts = await deadlockCountTask;
+                var deadlockSeverity = await deadlockSeverityTask;
                 RenderBlockingDurationChart(durationStats);
                 RenderBlockingTotalDurationChart(durationStats);
-                UpdateBlockingStatsSummary(durationStats, deadlockCounts);
+                RenderDeadlockWaitChart(deadlockSeverity);
+                RenderDeadlockTotalWaitChart(deadlockSeverity);
+                UpdateBlockingStatsSummary(durationStats, deadlockCounts, deadlockSeverity);
                 break;
             case BlockingCurrentWaitsSubTabIndex:
                 var durationTask = _dataService.GetWaitingTaskTrendAsync(_server.ServerId, startUtc, endUtc);
@@ -625,25 +639,152 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
+    /// Max + Avg deadlock wait (ms) per minute — the per-process deadlock severity signal (how long the
+    /// deadlocked processes had waited before the monitor broke the cycle). Two connected-scatter series on one
+    /// shared ms axis (Max ≥ Avg, comparable magnitudes), the deadlock analog of
+    /// <see cref="RenderBlockingDurationChart"/>. Total deadlock wait lands on its own chart
+    /// (<see cref="RenderDeadlockTotalWaitChart"/>) because its aggregate magnitude dwarfs these.
+    /// </summary>
+    private void RenderDeadlockWaitChart(List<DeadlockSeverityStatsPoint> data)
+    {
+        ClearChart(DeadlockWaitChart);
+        ApplyTheme(DeadlockWaitChart);
+
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
+
+        _deadlockWaitHover?.Clear();
+        if (data.Count == 0)
+        {
+            var zeroLine = DeadlockWaitChart.Plot.Add.Scatter(
+                new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
+                new[] { 0.0, 0.0 });
+            zeroLine.LegendText = "Max Deadlock Wait";
+            zeroLine.Color = ScottPlot.Color.FromHex(SeriesColors[0]);
+            zeroLine.MarkerSize = 0;
+            DeadlockWaitChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            DeadlockWaitChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+            ReapplyAxisColors(DeadlockWaitChart);
+            DeadlockWaitChart.Plot.YLabel("Deadlock Wait (ms)");
+            SetChartYLimitsWithLegendPadding(DeadlockWaitChart, 0, 1);
+            ShowChartLegend(DeadlockWaitChart);
+            DeadlockWaitChart.Refresh();
+            return;
+        }
+
+        var ordered = data.OrderBy(d => d.Time).ToList();
+        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
+        var maxValues = ordered.Select(d => (double)d.MaxWaitMs).ToArray();
+        var avgValues = ordered.Select(d => d.AvgWaitMs).ToArray();
+
+        var maxPlot = DeadlockWaitChart.Plot.Add.Scatter(times, maxValues);
+        maxPlot.LegendText = "Max Deadlock Wait";
+        maxPlot.Color = ScottPlot.Color.FromHex(SeriesColors[0]);
+        ChartStyle.StyleScatter(maxPlot);
+        _deadlockWaitHover?.Add(maxPlot, "Max Deadlock Wait");
+
+        var avgPlot = DeadlockWaitChart.Plot.Add.Scatter(times, avgValues);
+        avgPlot.LegendText = "Avg Deadlock Wait";
+        avgPlot.Color = ScottPlot.Color.FromHex(SeriesColors[1]);
+        ChartStyle.StyleScatter(avgPlot);
+        _deadlockWaitHover?.Add(avgPlot, "Avg Deadlock Wait");
+
+        double globalMax = maxValues.Length > 0 ? maxValues.Max() : 0;
+
+        DeadlockWaitChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        DeadlockWaitChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+        ReapplyAxisColors(DeadlockWaitChart);
+        DeadlockWaitChart.Plot.YLabel("Deadlock Wait (ms)");
+        SetChartYLimitsWithLegendPadding(DeadlockWaitChart, 0, globalMax > 0 ? globalMax : 1);
+        ShowChartLegend(DeadlockWaitChart);
+        DeadlockWaitChart.Refresh();
+    }
+
+    /// <summary>
+    /// Total deadlock wait (ms) per minute — the aggregate signal (the sum of every deadlocked process's wait
+    /// time in the bucket). Single connected-scatter series on its own chart/axis so its magnitude doesn't
+    /// swamp the per-process Max/Avg chart; colored with the Deadlocks identity so it reads as a sibling of the
+    /// Trends tab's deadlock-count chart. The deadlock analog of <see cref="RenderBlockingTotalDurationChart"/>.
+    /// </summary>
+    private void RenderDeadlockTotalWaitChart(List<DeadlockSeverityStatsPoint> data)
+    {
+        ClearChart(DeadlockTotalWaitChart);
+        ApplyTheme(DeadlockTotalWaitChart);
+
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
+
+        _deadlockTotalWaitHover?.Clear();
+        if (data.Count == 0)
+        {
+            var zeroLine = DeadlockTotalWaitChart.Plot.Add.Scatter(
+                new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
+                new[] { 0.0, 0.0 });
+            zeroLine.LegendText = "Total Deadlock Wait";
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks"));
+            zeroLine.MarkerSize = 0;
+            DeadlockTotalWaitChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            DeadlockTotalWaitChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+            ReapplyAxisColors(DeadlockTotalWaitChart);
+            DeadlockTotalWaitChart.Plot.YLabel("Total Deadlock Wait (ms)");
+            SetChartYLimitsWithLegendPadding(DeadlockTotalWaitChart, 0, 1);
+            ShowChartLegend(DeadlockTotalWaitChart);
+            DeadlockTotalWaitChart.Refresh();
+            return;
+        }
+
+        var ordered = data.OrderBy(d => d.Time).ToList();
+        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
+        var totals = ordered.Select(d => (double)d.TotalWaitMs).ToArray();
+
+        var plot = DeadlockTotalWaitChart.Plot.Add.Scatter(times, totals);
+        plot.LegendText = "Total Deadlock Wait";
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Deadlocks"));
+        ChartStyle.StyleScatter(plot);
+        _deadlockTotalWaitHover?.Add(plot, "Total Deadlock Wait");
+
+        double globalMax = totals.Length > 0 ? totals.Max() : 0;
+
+        DeadlockTotalWaitChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        DeadlockTotalWaitChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+        ReapplyAxisColors(DeadlockTotalWaitChart);
+        DeadlockTotalWaitChart.Plot.YLabel("Total Deadlock Wait (ms)");
+        SetChartYLimitsWithLegendPadding(DeadlockTotalWaitChart, 0, globalMax > 0 ? globalMax : 1);
+        ShowChartLegend(DeadlockTotalWaitChart);
+        DeadlockTotalWaitChart.Refresh();
+    }
+
+    /// <summary>
     /// Window-rollup summary strip for the Blocking Stats sub-tab: total blocking events, total / max / avg
     /// block duration (the avg is EVENT-weighted — total ÷ events — not a mean of the per-minute averages),
-    /// and the deadlock COUNT over the window. The deadlock count is the cheap signal; the Dashboard's
-    /// victim_count / total_deadlock_wait_time_ms need deadlock-graph XML parsing (a collector port) and are
-    /// deferred. Durations render with the viewer's blocking wait-time format (ms under a second, else sec).
+    /// the deadlock COUNT, and the deadlock SEVERITY rollup (total victim processes + total deadlock wait) over
+    /// the window. The deadlock count is the cheap incident signal; the victim_count / total-deadlock-wait are
+    /// parsed on-the-fly from <c>deadlock_graph_xml</c> over the SAME v_deadlocks window (so they reconcile in
+    /// period), the Darling equivalent of the Dashboard's <c>victim_count</c> / <c>total_deadlock_wait_time_ms</c>.
+    /// Durations render with the viewer's blocking wait-time format (ms under a second, else sec).
     /// </summary>
-    private void UpdateBlockingStatsSummary(List<BlockingDurationStatsPoint> stats, List<BlockingTrendPoint> deadlocks)
+    private void UpdateBlockingStatsSummary(
+        List<BlockingDurationStatsPoint> stats,
+        List<BlockingTrendPoint> deadlocks,
+        List<DeadlockSeverityStatsPoint> deadlockSeverity)
     {
         long totalEvents = stats.Sum(s => (long)s.EventCount);
         long totalDuration = stats.Sum(s => s.TotalDurationMs);
         long maxDuration = stats.Count > 0 ? stats.Max(s => s.MaxDurationMs) : 0;
         long totalDeadlocks = deadlocks.Sum(d => (long)d.Count);
         long avgDuration = totalEvents > 0 ? (long)Math.Round((double)totalDuration / totalEvents) : 0;
+        long totalVictims = deadlockSeverity.Sum(d => (long)d.VictimCount);
+        long totalDeadlockWait = deadlockSeverity.Sum(d => d.TotalWaitMs);
 
         BlockingStatsEventCountText.Text = totalEvents.ToString("N0");
         BlockingStatsTotalDurationText.Text = totalEvents > 0 ? ViewerDataService.FormatWaitTime(totalDuration) : "--";
         BlockingStatsMaxDurationText.Text = totalEvents > 0 ? ViewerDataService.FormatWaitTime(maxDuration) : "--";
         BlockingStatsAvgDurationText.Text = totalEvents > 0 ? ViewerDataService.FormatWaitTime(avgDuration) : "--";
         BlockingStatsDeadlockCountText.Text = totalDeadlocks.ToString("N0");
+        BlockingStatsDeadlockVictimsText.Text = totalVictims.ToString("N0");
+        BlockingStatsDeadlockWaitText.Text = totalDeadlocks > 0 ? ViewerDataService.FormatWaitTime(totalDeadlockWait) : "--";
     }
 
     private void RenderCurrentWaitsDurationChart(List<WaitingTaskTrendPoint> data)
@@ -766,6 +907,8 @@ public partial class ViewerServerTab
         _deadlockTrendHover?.Dispose();
         _blockingDurationHover?.Dispose();
         _blockingTotalDurationHover?.Dispose();
+        _deadlockWaitHover?.Dispose();
+        _deadlockTotalWaitHover?.Dispose();
         _currentWaitsDurationHover?.Dispose();
         _currentWaitsBlockedHover?.Dispose();
     }
