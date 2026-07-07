@@ -41,6 +41,7 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<ViewerQueryStatsRow>? _queryStatsFilterMgr;
     private DataGridFilterManager<ViewerProcedureStatsRow>? _procStatsFilterMgr;
     private DataGridFilterManager<ViewerQueryStoreRow>? _queryStoreFilterMgr;
+    private DataGridFilterManager<ViewerExpensiveQueryRow>? _expensiveQueriesFilterMgr;
     private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
 
@@ -63,6 +64,7 @@ public partial class ViewerServerTab : UserControl
         _queryStatsFilterMgr = new DataGridFilterManager<ViewerQueryStatsRow>(QueryStatsGrid);
         _procStatsFilterMgr = new DataGridFilterManager<ViewerProcedureStatsRow>(ProcedureStatsGrid);
         _queryStoreFilterMgr = new DataGridFilterManager<ViewerQueryStoreRow>(QueryStoreGrid);
+        _expensiveQueriesFilterMgr = new DataGridFilterManager<ViewerExpensiveQueryRow>(ExpensiveQueriesGrid);
         _collectionHealthFilterMgr = new DataGridFilterManager<CollectorHealthRow>(CollectionHealthGrid);
         _collectionLogFilterMgr = new DataGridFilterManager<CollectionLogRow>(CollectionLogGrid);
 
@@ -77,6 +79,7 @@ public partial class ViewerServerTab : UserControl
         _filterManagers[QueryStatsGrid] = _queryStatsFilterMgr;
         _filterManagers[ProcedureStatsGrid] = _procStatsFilterMgr;
         _filterManagers[QueryStoreGrid] = _queryStoreFilterMgr;
+        _filterManagers[ExpensiveQueriesGrid] = _expensiveQueriesFilterMgr;
         _filterManagers[CollectionHealthGrid] = _collectionHealthFilterMgr;
         _filterManagers[CollectionLogGrid] = _collectionLogFilterMgr;
     }
