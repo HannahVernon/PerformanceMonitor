@@ -134,7 +134,7 @@ public sealed class DarlingCollectorRunnerTests
         try
         {
             /* Flag OFF (Lite parity): rows land, every query_plan_xml is NULL. */
-            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: false);
+            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => false);
             var off = await offRunner.RunAsync(QueryStatsCollector.Instance, runtime, ct);
             Assert.SkipWhen(off.Rows == 0, "No recent query_stats activity on the target to capture; skipping.");
             Assert.Equal(0L, await CountNonEmptyAsync(dataSource, "query_stats", "query_plan_xml", runtime.ServerId, ct));
@@ -144,7 +144,7 @@ public sealed class DarlingCollectorRunnerTests
             await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
 
             /* Flag ON (Darling): at least one captured row carries a query_plan_xml that parses. */
-            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: true);
+            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => true);
             var on = await onRunner.RunAsync(QueryStatsCollector.Instance, runtime, ct);
             Assert.True(on.Rows > 0, "flag-on cycle should still land rows");
 
@@ -182,7 +182,7 @@ public sealed class DarlingCollectorRunnerTests
         {
             /* Flag ON: probe by collecting. Zero rows => no Query Store-enabled database with recent
                activity on the target — skip with reason rather than fail. */
-            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: true);
+            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => true);
             var on = await onRunner.RunAsync(QueryStoreCollector.Instance, runtime, ct);
             Assert.SkipWhen(on.Rows == 0, "No Query Store-enabled database with recent activity on the target; skipping.");
 
@@ -192,7 +192,7 @@ public sealed class DarlingCollectorRunnerTests
 
             /* Flag OFF (Lite parity): reset, re-collect the same window, every plan is NULL. */
             await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
-            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: false);
+            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => false);
             var off = await offRunner.RunAsync(QueryStoreCollector.Instance, runtime, ct);
             Assert.True(off.Rows > 0, "the same window should re-collect after the reset");
             Assert.Equal(0L, await CountNonEmptyAsync(dataSource, "query_store_stats", "query_plan_text", runtime.ServerId, ct));

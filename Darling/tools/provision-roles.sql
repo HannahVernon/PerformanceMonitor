@@ -16,7 +16,11 @@
 --
 -- PREREQUISITE: the V8 migration (which the service applies on startup) must already have created
 -- the collect and config schemas and moved the tables into them. Run this AFTER the service has
--- started at least once against your store.
+-- started at least once against your store. Re-running after a later schema upgrade is safe and
+-- idempotent: the GRANT ... ON ALL TABLES statements below re-cover every table that now exists
+-- (including the V17 control-plane tables config_monitored_servers / config_alert_settings /
+-- config_notification / config_collector_schedules / config_service / config_command), and the
+-- ALTER DEFAULT PRIVILEGES already auto-grant any config table the owner creates after this runs.
 --
 -- BEFORE RUNNING:
 --   1. Replace CHANGE_ME_ADMIN_PASSWORD and CHANGE_ME_VIEWER_PASSWORD with strong passwords.
@@ -72,7 +76,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config
    GRANT SELECT ON TABLES TO admin, viewer;
 ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config
    GRANT INSERT, UPDATE, DELETE ON TABLES TO admin;
--- Fail-closed for a future serial/identity config column: INSERT needs sequence USAGE too.
+-- Sequence USAGE for admin: config_command (V17) is GENERATED ALWAYS AS IDENTITY, which needs NO
+-- sequence USAGE to INSERT (unlike serial) -- but keep this fail-closed grant so a future serial
+-- config column would still work without a follow-up migration.
 ALTER DEFAULT PRIVILEGES FOR ROLE darling IN SCHEMA config
    GRANT USAGE, SELECT ON SEQUENCES TO admin;
 

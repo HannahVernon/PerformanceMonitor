@@ -60,6 +60,7 @@ public static class PgMigrations
         new Migration(14, "refresh-passthrough-views", PgSchemaGenerator.GenerateV14RefreshViews()),
         new Migration(15, "index-metadata-columns", V15Sql),
         new Migration(16, "server-utc-offset", V16Sql),
+        new Migration(17, "config-control-plane", V17Sql),
     };
 
     /// <summary>
@@ -332,6 +333,225 @@ CREATE OR REPLACE VIEW v_index_object_stats AS SELECT * FROM index_object_stats;
     /// </summary>
     private const string V16Sql = @"
 ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS utc_offset_minutes integer;";
+
+    /// <summary>
+    /// V17 — the store&lt;-&gt;service control plane (Phase A, Stage 1): the six operator-writable
+    /// <c>config.*</c> tables the Viewer will WRITE and the service READS + honors on the
+    /// <c>config_version</c> reload beacon. Two directions over the V8 <c>config</c> schema (the
+    /// admin-writable surface): the config plane (desired state — monitored servers, alert /
+    /// analysis knobs, notification delivery, per-collector schedule overrides, service flags) and
+    /// the command plane (<c>config_command</c>, the imperative queue Stage 2 executes).
+    ///
+    /// <para><b>CRITICAL — every object is schema-qualified <c>config.&lt;name&gt;</c>.</b> V17 is
+    /// the first migration to CREATE directly in <c>config</c>; the migrate session runs under
+    /// <c>search_path = collect, config, public</c> (<see cref="PgSchemaGenerator.SearchPath"/>), so
+    /// an UNQUALIFIED <c>CREATE TABLE foo</c> would resolve to <c>collect</c> (first in the path) —
+    /// wrong schema, wrong ACL (the V8 split grants config-writes to <c>admin</c> only). Qualifying
+    /// every table/index/function/trigger with <c>config.</c> pins them into the admin-writable
+    /// schema. The managed role provisioning (<c>DarlingManagedRoles</c>) and BYO
+    /// <c>tools/provision-roles.sql</c> both <c>GRANT … ON ALL TABLES IN SCHEMA config</c> after
+    /// migration + carry <c>ALTER DEFAULT PRIVILEGES</c>, so these new tables auto-inherit the
+    /// admin/viewer grants with no per-table grant; <c>config_command</c> uses
+    /// <c>GENERATED ALWAYS AS IDENTITY</c> (not <c>serial</c>) so INSERTs need no sequence USAGE.
+    ///
+    /// <para>The <c>config_version</c> reload beacon: statement-level bump triggers on the four
+    /// desired-state tables increment <c>config_service.config_version</c> on any write (so the
+    /// Viewer cannot forget to signal), and a BEFORE-UPDATE trigger on <c>config_service</c> itself
+    /// self-increments the beacon on direct writes (pause/capture/mcp) without recursing — the
+    /// service polls this one integer each sweep and reloads only when it changes. Single-row global
+    /// tables are pinned to <c>id = 1</c>; <c>config_collector_schedules</c> is sparse (absent row /
+    /// NULL column = the <c>CollectorScheduleDefaults</c> code default, <c>server_id</c> NULL =
+    /// fleet-wide) with two partial-unique indexes because a PRIMARY KEY cannot span a nullable
+    /// <c>server_id</c>. Timestamps store naive-UTC (<c>now() AT TIME ZONE 'UTC'</c>) to match the
+    /// store-wide convention (Npgsql rejects Kind=Utc against <c>timestamp</c>). Server secrets are
+    /// NEVER plaintext here — <c>encrypted_password</c>/<c>smtp_encrypted_password</c> are the
+    /// DPAPI blobs (the <c>--encrypt-password</c> pattern); integrated auth needs none.</para>
+    /// </summary>
+    private const string V17Sql = @"
+/* V17: store<->service control plane (Stage 1). EVERY object is schema-qualified config.* —
+   the migrate session's search_path resolves bare names to collect (wrong schema/ACL). */
+
+/* --- A. Config plane: the Viewer writes desired state, the service reads + honors it. --- */
+
+/* 1. config_monitored_servers — the desired-state twin of the collect.servers observed registry.
+      server_id = ServerIdHelper.GetDeterministicHashCode(BuildStorageName(host,database,ro)), the
+      SAME identity the collectors stamp, so it JOINs collected data. is_enabled drives collection;
+      the connection fields reconstruct a MonitoredServer for the service's connect path. */
+CREATE TABLE IF NOT EXISTS config.config_monitored_servers (
+    server_id integer NOT NULL PRIMARY KEY,
+    name text NOT NULL,
+    host text NOT NULL,
+    database text,
+    auth text NOT NULL DEFAULT 'integrated',
+    username text,
+    encrypted_password text,
+    encrypt_mode text NOT NULL DEFAULT 'Mandatory',
+    trust_server_certificate boolean NOT NULL DEFAULT FALSE,
+    read_only_intent boolean NOT NULL DEFAULT FALSE,
+    multi_subnet_failover boolean NOT NULL DEFAULT FALSE,
+    excluded_databases text[] NOT NULL DEFAULT '{}'::text[],
+    monthly_cost_usd numeric NOT NULL DEFAULT 0,
+    capture_plans boolean,
+    is_enabled boolean NOT NULL DEFAULT TRUE,
+    created_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+    modified_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
+);
+
+/* 2. config_alert_settings — single row (id=1), one column per AlertsConfig field + the analysis
+      cadence knobs (analysis_enabled / interval / notifications_enabled / notify_severity). */
+CREATE TABLE IF NOT EXISTS config.config_alert_settings (
+    id smallint NOT NULL PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    enabled boolean NOT NULL DEFAULT TRUE,
+    cpu_enabled boolean NOT NULL DEFAULT TRUE,
+    cpu_threshold_percent integer NOT NULL DEFAULT 80,
+    cpu_mode text NOT NULL DEFAULT 'total',
+    blocking_enabled boolean NOT NULL DEFAULT TRUE,
+    blocking_count_threshold integer NOT NULL DEFAULT 1,
+    deadlock_enabled boolean NOT NULL DEFAULT TRUE,
+    deadlock_count_threshold integer NOT NULL DEFAULT 1,
+    poison_wait_enabled boolean NOT NULL DEFAULT TRUE,
+    poison_wait_threshold_ms integer NOT NULL DEFAULT 500,
+    long_running_query_enabled boolean NOT NULL DEFAULT TRUE,
+    long_running_query_threshold_minutes integer NOT NULL DEFAULT 30,
+    tempdb_space_enabled boolean NOT NULL DEFAULT TRUE,
+    tempdb_space_threshold_percent integer NOT NULL DEFAULT 80,
+    low_disk_enabled boolean NOT NULL DEFAULT TRUE,
+    low_disk_threshold_percent integer NOT NULL DEFAULT 10,
+    low_disk_threshold_gb integer NOT NULL DEFAULT 5,
+    long_running_job_enabled boolean NOT NULL DEFAULT TRUE,
+    long_running_job_multiplier integer NOT NULL DEFAULT 3,
+    failed_job_enabled boolean NOT NULL DEFAULT TRUE,
+    failed_job_lookback_minutes integer NOT NULL DEFAULT 60,
+    cooldown_minutes integer NOT NULL DEFAULT 5,
+    excluded_databases text[] NOT NULL DEFAULT '{}'::text[],
+    analysis_enabled boolean NOT NULL DEFAULT TRUE,
+    analysis_interval_minutes integer NOT NULL DEFAULT 30,
+    analysis_notifications_enabled boolean NOT NULL DEFAULT TRUE,
+    analysis_notify_severity double precision NOT NULL DEFAULT 1.5,
+    modified_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
+);
+
+/* 3. config_notification — single row: SMTP + webhook delivery. Non-secret fields plus the SMTP
+      DPAPI blob (smtp_encrypted_password); webhook URLs/proxies carry as darling.json holds them. */
+CREATE TABLE IF NOT EXISTS config.config_notification (
+    id smallint NOT NULL PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    smtp_host text NOT NULL DEFAULT '',
+    smtp_port integer NOT NULL DEFAULT 587,
+    smtp_use_ssl boolean NOT NULL DEFAULT TRUE,
+    smtp_username text,
+    smtp_encrypted_password text,
+    smtp_from_address text NOT NULL DEFAULT '',
+    smtp_recipients text NOT NULL DEFAULT '',
+    email_cooldown_minutes integer NOT NULL DEFAULT 15,
+    teams_url text NOT NULL DEFAULT '',
+    teams_proxy text NOT NULL DEFAULT '',
+    slack_url text NOT NULL DEFAULT '',
+    slack_proxy text NOT NULL DEFAULT '',
+    modified_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
+);
+
+/* 4. config_collector_schedules — SPARSE per-collector overrides layered on CollectorScheduleDefaults.
+      Absent row / NULL column = code default; server_id NULL = fleet-wide. A PRIMARY KEY cannot span a
+      nullable server_id, so two partial-unique indexes enforce one fleet-wide row + one per-server row
+      per collector. */
+CREATE TABLE IF NOT EXISTS config.config_collector_schedules (
+    server_id integer,
+    collector_name text NOT NULL,
+    frequency_minutes integer,
+    retention_days integer,
+    enabled boolean NOT NULL DEFAULT TRUE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_config_collector_schedules_fleet
+    ON config.config_collector_schedules (collector_name) WHERE server_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_config_collector_schedules_server
+    ON config.config_collector_schedules (server_id, collector_name) WHERE server_id IS NOT NULL;
+
+/* 5. config_service — single row: the service-wide flags + the config_version reload beacon. */
+CREATE TABLE IF NOT EXISTS config.config_service (
+    id smallint NOT NULL PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    paused boolean NOT NULL DEFAULT FALSE,
+    capture_plans boolean NOT NULL DEFAULT TRUE,
+    mcp_enabled boolean NOT NULL DEFAULT FALSE,
+    mcp_port integer NOT NULL DEFAULT 5152,
+    config_version bigint NOT NULL DEFAULT 0,
+    updated_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+    updated_by text
+);
+
+/* --- B. Command plane: the Viewer enqueues, the service (Stage 2) claims/executes/reports. --- */
+
+/* 6. config_command — the imperative queue. GENERATED ALWAYS AS IDENTITY (a natural queue key that
+      needs no sequence USAGE grant for admin INSERTs, unlike serial). */
+CREATE TABLE IF NOT EXISTS config.config_command (
+    command_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+    requested_by text,
+    command_type text NOT NULL,
+    target_server_id integer,
+    args_json jsonb,
+    status text NOT NULL DEFAULT 'pending',
+    claimed_at timestamp,
+    completed_at timestamp,
+    result_status text,
+    result_json jsonb,
+    service_instance text
+);
+CREATE INDEX IF NOT EXISTS idx_config_command_status ON config.config_command (status);
+
+/* --- C. The config_version reload beacon (bump triggers). --- */
+
+/* Statement-level bump on the four desired-state tables: any write increments the beacon so the
+   Viewer can never forget to signal. Targets config_service by qualified name (SECURITY INVOKER —
+   both writers, the owner during seed and admin via the Viewer, hold UPDATE on config_service). */
+CREATE OR REPLACE FUNCTION config.config_bump_version() RETURNS trigger
+LANGUAGE plpgsql AS $bump$
+BEGIN
+    UPDATE config.config_service
+       SET config_version = config_version + 1,
+           updated_at = (now() AT TIME ZONE 'UTC')
+     WHERE id = 1;
+    RETURN NULL;
+END;
+$bump$;
+
+/* Direct writes to config_service (pause/capture/mcp) self-bump the beacon without recursion: the
+   BEFORE-UPDATE trigger increments NEW.config_version only when the writer did not already change it
+   (so the config_bump_version UPDATE above, which sets config_version explicitly, is not doubled). */
+CREATE OR REPLACE FUNCTION config.config_service_bump() RETURNS trigger
+LANGUAGE plpgsql AS $svc$
+BEGIN
+    IF NEW.config_version = OLD.config_version THEN
+        NEW.config_version := OLD.config_version + 1;
+    END IF;
+    NEW.updated_at := (now() AT TIME ZONE 'UTC');
+    RETURN NEW;
+END;
+$svc$;
+
+DROP TRIGGER IF EXISTS trg_bump_monitored_servers ON config.config_monitored_servers;
+CREATE TRIGGER trg_bump_monitored_servers
+    AFTER INSERT OR UPDATE OR DELETE ON config.config_monitored_servers
+    FOR EACH STATEMENT EXECUTE FUNCTION config.config_bump_version();
+
+DROP TRIGGER IF EXISTS trg_bump_alert_settings ON config.config_alert_settings;
+CREATE TRIGGER trg_bump_alert_settings
+    AFTER INSERT OR UPDATE OR DELETE ON config.config_alert_settings
+    FOR EACH STATEMENT EXECUTE FUNCTION config.config_bump_version();
+
+DROP TRIGGER IF EXISTS trg_bump_notification ON config.config_notification;
+CREATE TRIGGER trg_bump_notification
+    AFTER INSERT OR UPDATE OR DELETE ON config.config_notification
+    FOR EACH STATEMENT EXECUTE FUNCTION config.config_bump_version();
+
+DROP TRIGGER IF EXISTS trg_bump_collector_schedules ON config.config_collector_schedules;
+CREATE TRIGGER trg_bump_collector_schedules
+    AFTER INSERT OR UPDATE OR DELETE ON config.config_collector_schedules
+    FOR EACH STATEMENT EXECUTE FUNCTION config.config_bump_version();
+
+DROP TRIGGER IF EXISTS trg_service_self_bump ON config.config_service;
+CREATE TRIGGER trg_service_self_bump
+    BEFORE UPDATE ON config.config_service
+    FOR EACH ROW EXECUTE FUNCTION config.config_service_bump();";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

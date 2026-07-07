@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_SixteenVersions_V15IndexMetadata_V16ServerUtcOffset()
+    public void MigrationScripts_SeventeenVersions_V16ServerUtcOffset_V17ConfigControlPlane()
     {
-        Assert.Equal(16, PgMigrations.Scripts.Count);
+        Assert.Equal(17, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -51,7 +51,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(14, PgMigrations.Scripts[13].Version);
         Assert.Equal(15, PgMigrations.Scripts[14].Version);
         Assert.Equal(16, PgMigrations.Scripts[15].Version);
-        Assert.Equal(16, StorageVersion.SchemaVersion);
+        Assert.Equal(17, PgMigrations.Scripts[16].Version);
+        Assert.Equal(17, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -240,6 +241,30 @@ public sealed class DarlingObservabilityTests
         Assert.Equal("server-utc-offset", PgMigrations.Scripts[15].Name);
         Assert.Contains("ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS utc_offset_minutes integer;", v16, StringComparison.Ordinal);
 
+        /* V17 creates the six operator-writable control-plane tables (Stage 1). CRITICAL: every object
+           MUST be schema-qualified config.* — the migrate session's search_path (collect, config, public)
+           resolves a bare name to collect, so an unqualified CREATE would land in the wrong schema/ACL.
+           Pin the config.-qualification on every table + the config_command identity PK + the
+           config_version bump triggers so a future edit can never drop the qualification. */
+        var v17 = PgMigrations.Scripts[16].Sql;
+        Assert.Equal("config-control-plane", PgMigrations.Scripts[16].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.config_monitored_servers (", v17, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.config_alert_settings (", v17, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.config_notification (", v17, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.config_collector_schedules (", v17, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.config_service (", v17, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.config_command (", v17, StringComparison.Ordinal);
+        /* The command queue's identity PK (no sequence USAGE grant needed) and the analysis knobs + the
+           config_version reload beacon + its bump triggers. */
+        Assert.Contains("command_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY", v17, StringComparison.Ordinal);
+        Assert.Contains("config_version bigint NOT NULL DEFAULT 0", v17, StringComparison.Ordinal);
+        Assert.Contains("analysis_interval_minutes integer NOT NULL DEFAULT 30", v17, StringComparison.Ordinal);
+        Assert.Contains("analysis_notify_severity double precision NOT NULL DEFAULT 1.5", v17, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE FUNCTION config.config_bump_version()", v17, StringComparison.Ordinal);
+        Assert.Contains("ON config.config_monitored_servers", v17, StringComparison.Ordinal);
+        /* No unqualified CREATE TABLE may sneak in — every control-plane table is config.-qualified. */
+        Assert.DoesNotContain("CREATE TABLE IF NOT EXISTS config_", v17, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -262,7 +287,9 @@ public sealed class DarlingObservabilityTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(15L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            /* A fully-migrated store has one stamped row per script — assert against the live count so
+               this never goes stale as migrations are appended (it was pinned at a literal that drifted). */
+            Assert.Equal((long)PgMigrations.Scripts.Count, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

@@ -60,7 +60,14 @@ public static class DarlingRetention
     /// activity count: rows deleted by the DELETE paths plus whole chunks dropped by
     /// drop_chunks (Timescale doesn't report per-row counts for dropped chunks).
     /// </summary>
-    public static async Task<int> PurgeAsync(NpgsqlDataSource postgres, bool timescaleAvailable, ILogger? logger, CancellationToken cancellationToken)
+    /// <param name="retentionDaysFor">
+    /// Optional resolver for a collector's effective retention horizon (control-plane fleet-wide overrides
+    /// layered on <see cref="CollectorScheduleDefaults"/>). Null (or a value it does not override) uses the
+    /// shared default. A per-server override cannot apply here — the purge is per shared table, not per server.
+    /// </param>
+    public static async Task<int> PurgeAsync(
+        NpgsqlDataSource postgres, bool timescaleAvailable, ILogger? logger, CancellationToken cancellationToken,
+        Func<string, int>? retentionDaysFor = null)
     {
         var sw = Stopwatch.StartNew();
         var tablesPurged = 0;
@@ -81,10 +88,12 @@ public static class DarlingRetention
                 continue;
             }
 
+            var retentionDays = retentionDaysFor?.Invoke(definition.Name) ?? schedule.RetentionDays;
+
             if (timescaleAvailable)
             {
                 var dropped = await DropChunksOneAsync(
-                    postgres, definition.TargetTable, DropChunksSqlFor(definition, schedule.RetentionDays),
+                    postgres, definition.TargetTable, DropChunksSqlFor(definition, retentionDays),
                     logger, cancellationToken);
                 if (dropped is not null)
                 {
@@ -100,7 +109,7 @@ public static class DarlingRetention
 
             var deleted = await PurgeOneAsync(
                 postgres, definition.TargetTable, DeleteSqlFor(definition),
-                utcNow.AddDays(-schedule.RetentionDays), logger, cancellationToken);
+                utcNow.AddDays(-retentionDays), logger, cancellationToken);
             if (deleted is not null)
             {
                 tablesPurged++;

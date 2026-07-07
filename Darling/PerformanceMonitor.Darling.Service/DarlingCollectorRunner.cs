@@ -42,8 +42,10 @@ public sealed class DarlingCollectorRunner
 
     /* Feeds CollectorContext.CapturePlanXml on every cycle — the query_stats / query_store
        collectors capture the execution plan when true (darling.json "capturePlans", default true).
-       Lite never sets the context flag; this is what makes Darling the plan-capturing SKU. */
-    private readonly bool _capturePlans;
+       Lite never sets the context flag; this is what makes Darling the plan-capturing SKU. Read
+       through a provider (not a captured bool) so a control-plane store reload of config_service's
+       capture_plans is honored on the NEXT cycle without reconstructing the runner. */
+    private readonly Func<bool> _capturePlans;
 
     /* Azure SQL DB logins without master access fall back to single-database mode, cached per
        server so master isn't retried every cycle (#857 — mirrors Lite). */
@@ -51,12 +53,17 @@ public sealed class DarlingCollectorRunner
 
     public const int CommandTimeoutSeconds = 60;
 
-    public DarlingCollectorRunner(NpgsqlDataSource postgres, CollectorDeltaCalculator deltas, ILogger? logger = null, bool capturePlans = true)
+    /// <param name="capturePlans">
+    /// Live provider for the plan-capture flag; null defaults to always-on (Darling's SKU default).
+    /// The worker passes <c>() =&gt; config.CapturePlans</c> so a store reload takes effect next cycle;
+    /// tests pass a constant lambda.
+    /// </param>
+    public DarlingCollectorRunner(NpgsqlDataSource postgres, CollectorDeltaCalculator deltas, ILogger? logger = null, Func<bool>? capturePlans = null)
     {
         _postgres = postgres ?? throw new ArgumentNullException(nameof(postgres));
         _deltas = deltas ?? throw new ArgumentNullException(nameof(deltas));
         _logger = logger;
-        _capturePlans = capturePlans;
+        _capturePlans = capturePlans ?? (() => true);
     }
 
     public async Task<CollectorRunResult> RunAsync<TRow>(
@@ -90,7 +97,7 @@ public sealed class DarlingCollectorRunner
             IgnoredWaitTypes = IgnoredWaitDefaults.All,
             ExcludedDatabases = server.Config.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
             PerfmonCounterOverride = null,
-            CapturePlanXml = _capturePlans,
+            CapturePlanXml = _capturePlans(),
         };
 
         var sqlSw = Stopwatch.StartNew();
