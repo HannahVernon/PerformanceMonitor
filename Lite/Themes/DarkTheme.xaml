@@ -20,10 +20,14 @@
     <Color x:Key="BackgroundLightColor">#22252b</Color>
     <Color x:Key="BackgroundLighterColor">#2a2d35</Color>
 
-    <!-- Text Colors (off-white to reduce eye strain) -->
+    <!-- Text Colors: 3-tier readable hierarchy, all >= 4.5:1 on the dark backgrounds
+         (Foreground ~11-14:1, Dim ~8.5:1, Muted ~6:1). Foreground = primary values/headers;
+         Dim = secondary captions/labels (dimmed a step off primary); Muted = the quietest tier
+         for empty-state/placeholder text. Dim stays brighter than Muted. NOTE: no truly-dim tone
+         here on purpose; every tier must remain comfortably readable. -->
     <Color x:Key="ForegroundColor">#E4E6EB</Color>
-    <Color x:Key="ForegroundDimColor">#E4E6EB</Color>
-    <Color x:Key="ForegroundMutedColor">#6B7280</Color>
+    <Color x:Key="ForegroundDimColor">#C7CBD4</Color>
+    <Color x:Key="ForegroundMutedColor">#A8AEBA</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#2a2d35</Color>
@@ -60,7 +64,7 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
