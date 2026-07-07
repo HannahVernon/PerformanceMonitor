@@ -279,6 +279,13 @@ The embedded MCP server, over Streamable HTTP bound to `localhost` only. It expo
   - *Discovery / health* — `list_servers` (with collection-freshness status), `get_collection_health`, `get_server_properties`.
 
   These are the tools the analysis findings' `next_tools` recommendations point at, so a client following a finding's advice resolves them on this same server. Result shapes match Lite's (the store is Lite's collector schema); where Lite and the Dashboard's shapes diverge, Darling follows Lite — the shape its collector-mirror store can serve faithfully.
+- **Fifteen diagnostic-depth data-read tools** — deeper reads for a blocking / deadlock / session / configuration / storage investigation, each a stored read:
+  - *Blocking / deadlocks* — `get_blocking` (blocked/blocking pairs from the blocked-process-report XE + the always-on DMV fallback), `get_deadlocks`, `get_deadlock_detail` (raw graph XML), `get_blocked_process_xml` (raw report XML).
+  - *Sessions* — `get_session_stats` (latest per-application connection counts), `get_active_queries` (captured running-query snapshots), `get_waiting_tasks`.
+  - *Config history* — `get_server_config_changes`, `get_database_config_changes`, `get_trace_flag_changes`, and `get_database_scoped_config` (latest snapshot).
+  - *Index / object* — `get_table_index_sizes` (size + growth), `get_index_usage` (Unused / Write-only / Active), `get_object_locking` (lock/latch contention), `get_database_sizes`.
+
+  The three config-change tools diff the store's config snapshots. This edition captures configuration **when the service connects** to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. The Dashboard's `get_blocking_deadlock_stats` aggregate is **not** hosted (Darling has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events); the resource-contention (`get_latch_stats`, `get_spinlock_stats`, `get_resource_semaphore`, `get_memory_grants`, `get_plan_cache_bloat`, `get_cpu_scheduler_pressure`) and `get_running_jobs` reads are planned for a later slice.
 
 | Key | Default | Notes |
 |---|---|---|

@@ -40,7 +40,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes twenty-five tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, and fourteen core data-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes forty tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fourteen core data-read tools, and fifteen diagnostic-depth data-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -86,7 +86,31 @@ internal static class DarlingMcpInstructions
         | `get_collection_health` | Per-collector health (running / failing / stale) over the last 7 days | `server_name` |
         | `get_server_properties` | Instance properties: edition, version, CPU count, memory, socket/core topology, HADR | `server_name` |
 
-        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. Some recommended tools are NOT on this server yet (e.g. get_perfmon_trend, get_blocked_process_reports, get_deadlocks, get_memory_grants, get_waiting_tasks, get_query_trend, get_running_jobs, get_active_queries) — if you are also connected to a Performance Monitor Lite / Dashboard MCP server, follow those there; otherwise treat them as investigation hints.
+        ### Diagnostic-depth data-read tools
+
+        Deeper reads for a blocking / deadlock / session / configuration / storage investigation. Same names + parameters Lite and the Dashboard expose; where the two SKUs' result shapes diverge these follow Lite (the store-faithful shape).
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_blocking` | Recent blocked/blocking pairs from the blocked-process-report XE + the always-on DMV fallback | `server_name`, `hours_back` (default 24), `limit` (default 30) |
+        | `get_deadlocks` | Recent deadlocks: victim process/SQL + a process summary | `server_name`, `hours_back` (default 24), `limit` (default 20) |
+        | `get_deadlock_detail` | The raw deadlock graph XML for the recent deadlocks | `server_name`, `hours_back` (default 24), `limit` (default 5) |
+        | `get_blocked_process_xml` | The raw blocked-process-report XML | `server_name`, `hours_back` (default 24), `limit` (default 5) |
+        | `get_session_stats` | Latest per-application connection/session counts (running/sleeping/dormant) + resource totals | `server_name` |
+        | `get_active_queries` | Captured running-query snapshots over the window (waits, CPU, blocking, grants) | `server_name`, `hours_back` (default 1), `database_name`, `blocking_only`, `limit` (default 50) |
+        | `get_waiting_tasks` | Individual waiting tasks captured at collection time | `server_name`, `hours_back` (default 1), `limit` (default 30) |
+        | `get_server_config_changes` | sp_configure changes, diffed from config snapshots | `server_name`, `hours_back` (default 168) |
+        | `get_database_config_changes` | sys.databases setting changes, diffed from config snapshots | `server_name`, `hours_back` (default 168) |
+        | `get_trace_flag_changes` | Trace flags enabled/disabled/modified, diffed from config snapshots | `server_name`, `hours_back` (default 168) |
+        | `get_database_scoped_config` | Latest database-scoped configuration (MAXDOP, legacy CE, ...) | `server_name`, `database_name` |
+        | `get_table_index_sizes` | Largest tables with size + growth (7d/30d/daily) from the latest daily snapshot | `server_name` |
+        | `get_index_usage` | Per-index usage classified Unused / Write-only / Active | `server_name` |
+        | `get_object_locking` | Per-index lock/latch contention, most contended first | `server_name` |
+        | `get_database_sizes` | Per-file database sizes, space usage, and volume free space | `server_name` |
+
+        The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
+
+        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. Some recommended tools are NOT on this server yet (e.g. get_perfmon_trend, get_memory_grants, get_query_trend, get_running_jobs, get_latch_stats, get_spinlock_stats, get_resource_semaphore, get_cpu_scheduler_pressure, get_plan_cache_bloat) — if you are also connected to a Performance Monitor Lite / Dashboard MCP server, follow those there; otherwise treat them as investigation hints.
 
         ## Recommended Workflow
 
