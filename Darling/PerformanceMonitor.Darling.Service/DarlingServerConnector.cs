@@ -127,4 +127,83 @@ FROM sys.dm_os_sys_info";
             EngineEdition = engineEdition,
         };
     }
+
+    /// <summary>
+    /// Non-throwing connect-and-probe: runs <see cref="ConnectAsync"/> and packages the outcome as a
+    /// <see cref="ConnectionProbeResult"/> — success carries the probed version/edition/engine facts, a
+    /// failure carries the error message (never plaintext credentials). Shared by the <c>test_connect</c>
+    /// command (the Stage-3 Add-dialog validates a server BEFORE saving; the SERVICE holds the network
+    /// path + credentials) and the <c>--test-connection</c>/<c>--validate-config</c> CLI verb, so both
+    /// classify a server identically. <see cref="OperationCanceledException"/> propagates (shutdown).
+    /// </summary>
+    public static async Task<ConnectionProbeResult> ProbeAsync(MonitoredServer config, ILogger? logger, CancellationToken cancellationToken)
+    {
+        if (config is null)
+        {
+            throw new ArgumentNullException(nameof(config));
+        }
+
+        try
+        {
+            var runtime = await ConnectAsync(config, logger, cancellationToken);
+            return new ConnectionProbeResult(
+                Success: true,
+                MajorVersion: runtime.Target.SqlMajorVersion,
+                EngineEdition: runtime.EngineEdition,
+                EngineEditionDescription: DescribeEngineEdition(runtime.EngineEdition),
+                IsAzureSqlDb: runtime.Target.IsAzureSqlDb,
+                IsAzureManagedInstance: runtime.Target.IsAzureManagedInstance,
+                IsAwsRds: runtime.IsAwsRds,
+                HasMsdbAccess: runtime.HasMsdbAccess,
+                Error: null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new ConnectionProbeResult(
+                Success: false,
+                MajorVersion: 0,
+                EngineEdition: 0,
+                EngineEditionDescription: null,
+                IsAzureSqlDb: false,
+                IsAzureManagedInstance: false,
+                IsAwsRds: false,
+                HasMsdbAccess: false,
+                Error: ex.Message);
+        }
+    }
+
+    /// <summary>Human-readable SERVERPROPERTY('EngineEdition') description for the probe result.</summary>
+    public static string DescribeEngineEdition(int engineEdition) => engineEdition switch
+    {
+        1 => "Personal/Desktop",
+        2 => "Standard",
+        3 => "Enterprise",
+        4 => "Express",
+        5 => "Azure SQL Database",
+        6 => "Azure Synapse Analytics",
+        8 => "Azure SQL Managed Instance",
+        9 => "Azure SQL Edge",
+        11 => "Azure Synapse serverless SQL pool",
+        _ => $"Unknown ({engineEdition})",
+    };
 }
+
+/// <summary>
+/// The outcome of a connect-and-probe attempt (<see cref="DarlingServerConnector.ProbeAsync"/>): the
+/// success flag plus the probed target facts, or the error message on failure. Deliberately carries NO
+/// credentials so it is safe to serialize into <c>config_command.result_json</c> and print from the CLI.
+/// </summary>
+public sealed record ConnectionProbeResult(
+    bool Success,
+    int MajorVersion,
+    int EngineEdition,
+    string? EngineEditionDescription,
+    bool IsAzureSqlDb,
+    bool IsAzureManagedInstance,
+    bool IsAwsRds,
+    bool HasMsdbAccess,
+    string? Error);

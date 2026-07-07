@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using PerformanceMonitor.Darling.Service;
@@ -33,6 +34,15 @@ if (args.Length > 0 && string.Equals(args[0], "--encrypt-password", StringCompar
     Console.WriteLine(DarlingSecrets.Protect(plaintext));
     Console.Error.WriteLine("Paste the line above into the server's \"encryptedPassword\" in darling.json.");
     return 0;
+}
+
+/* CLI verb: validate darling.json and probe every configured server (reachability + permission pre-flight),
+   reusing the same DarlingServerConnector probe the test_connect command runs. Optional second arg = an
+   explicit config path (else the usual DARLING_CONFIG / next-to-binary resolution). Exit 0 iff all pass. */
+if (args.Length > 0 && DarlingCliCommands.IsValidateConfigVerb(args[0]))
+{
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.ValidateConfigAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
 }
 
 var builder = Host.CreateApplicationBuilder(args);

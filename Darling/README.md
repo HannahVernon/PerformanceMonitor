@@ -89,6 +89,16 @@ It prompts for the password on stdin (so the plaintext never lands in your shell
 
 **excludedDatabases** (per server) removes databases from collection: per-database collectors skip them and the exclusion is spliced into the collector queries — the same filter Lite applies. There is a second, separate `alerts.excludedDatabases` list that excludes databases from blocking/deadlock/long-running-query **alert evaluation** without affecting collection.
 
+### Validate the Config (Pre-flight)
+
+Before installing the service, check that `darling.json` is well-formed and that every monitored server is reachable with the configured credentials:
+
+```
+PerformanceMonitor.Darling.Service.exe --test-connection
+```
+
+(`--validate-config` is an alias.) It validates the file, then connects to and probes each server, printing a `[PASS]`/`[FAIL]` line per server (SQL major version, engine edition, and whether the account has msdb access for failed-job alerts). It exits `0` only when the file is valid **and** every server is reachable, so it doubles as a deployment gate. Add an explicit config path as a second argument if `darling.json` is not next to the exe and `DARLING_CONFIG` is not set. This is the same probe the Viewer's **Test Connection** button runs through the service.
+
 ### Run It — Console Mode
 
 The same executable serves interactive debugging and service installation; the Windows-service lifetime is a no-op when run from a console.

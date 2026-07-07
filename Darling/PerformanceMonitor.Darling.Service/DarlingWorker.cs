@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
@@ -59,6 +60,13 @@ public sealed class DarlingWorker : BackgroundService
        edge-trigger gates shape delivery on top of this. */
     private static readonly TimeSpan s_alertSweepInterval = TimeSpan.FromSeconds(30);
 
+    /* The command plane's poll cadence (Stage 2): a tighter 5-second tick, run on its OWN loop
+       independent of the 15-second collection sweep and the 30-second alert sweep, so an operator
+       command (pause, test_connect, snapshot_now, ...) is picked up within ~5s and a slow command
+       (a test_connect against an unreachable host can block for the connect timeout) never starves
+       collection — the two loops share a cancellation token and the guarded server set only. */
+    private static readonly TimeSpan s_commandPollInterval = TimeSpan.FromSeconds(5);
+
     /* The analysis pipeline's per-run budget — Lite's App default hardcoded (AnalysisTimeoutSeconds
        120; not a control-plane knob). The CADENCE (interval), the enabled gate, and the notify gate
        are now control-plane knobs read live from config.Analysis (config_alert_settings' analysis
@@ -72,6 +80,14 @@ public sealed class DarlingWorker : BackgroundService
     /// <summary>Test hook: the hardcoded per-run analysis budget, pinned against Lite's default.</summary>
     internal static TimeSpan AnalysisTimeout => s_analysisTimeout;
 
+    /// <summary>
+    /// The Stage 2 pause gate: whether the collection sweep does work this tick. FALSE while the service is
+    /// paused (<c>config_service.paused</c>, mirrored into <c>_paused</c> on reload) — the loop then skips all
+    /// collection/alert/analysis/purge work but keeps polling the reload beacon and the command queue, so a
+    /// resume un-pauses it on the next tick. Pure so the gate is unit-testable without driving the loop.
+    /// </summary>
+    internal static bool ShouldRunCollection(bool paused) => !paused;
+
     private readonly ILogger<DarlingWorker> _logger;
     private readonly ILoggerFactory _loggerFactory;
 
@@ -83,6 +99,19 @@ public sealed class DarlingWorker : BackgroundService
        read by the schedule-resolution path (TryConnectAsync / RunDueCollectorsAsync) and the reload. */
     private long _lastConfigVersion = -1;
     private IReadOnlyList<ScheduleOverride> _scheduleOverrides = Array.Empty<ScheduleOverride>();
+
+    /* The service-pause flag (Stage 2): read from config_service.paused on every reload and honored by
+       the collection loop (skip collection/alert/analysis/purge while paused — Lite's IsPaused gate). Set
+       ONLY by the main loop's reload (single writer); the command loop keeps running while paused so a
+       resume command is processed. A pause/resume command writes the store, the bump trigger fires the
+       reload beacon, and the reload sets this — the same path every other control-plane setting takes. */
+    private bool _paused;
+
+    /* Guards structural access to the monitored-server list because the command loop (a concurrent task)
+       looks servers up by id while the main loop reconciles (adds/removes) them and the alert / analysis
+       plan/failed-job fetchers enumerate them. Only ever held for the microsecond lookup/mutation — never
+       across collection I/O — so a long-running command never blocks the collection loop on it. */
+    private readonly object _serversLock = new();
 
     /* Server IDs whose scheduled analysis is currently running — prevents relaunching
        analysis for a server whose previous (possibly hung) pass has not finished
@@ -120,6 +149,13 @@ public sealed class DarlingWorker : BackgroundService
            (Lite's GetTotalDataSpanHoursAsync gate), so a fresh server simply re-checks
            every interval while an already-populated store analyzes right away. */
         public DateTime NextAnalysisDue { get; set; } = DateTime.MinValue;
+
+        /* Serializes this server's collector batch so an on-demand snapshot_now (from the command loop)
+           and the scheduled sweep (from the main loop) never run the same server's collectors at once —
+           which would double-COPY overlapping rows and race the shared delta baselines. The main loop
+           try-acquires with a zero timeout (skip this server this sweep if a snapshot holds it); the
+           snapshot waits its turn. Binary (1,1). */
+        public SemaphoreSlim CollectionGate { get; } = new(1, 1);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -301,6 +337,13 @@ public sealed class DarlingWorker : BackgroundService
             StoreConfigProvider.ApplyToConfig(config, initialView);
             _scheduleOverrides = initialView.ScheduleOverrides;
             _lastConfigVersion = initialView.ConfigVersion;
+            /* Stage 2: honor config_service.paused from the very first sweep (a service that was paused
+               before a restart comes back up paused). */
+            _paused = initialView.Paused;
+            /* Reconcile the observed collect.servers.is_enabled to the desired state up front, so a server
+               disabled in the store while the service was down shows disabled even though it never connects
+               (never upserts) this run. */
+            await DarlingObservability.SyncServerEnabledStatesAsync(postgres, _logger, stoppingToken);
             /* Post-seed the store carries darling.json's servers; fall back to the file only if the store
                read is empty (a partially-seeded store), so the service never starts up monitoring nothing. */
             if (initialView.EnabledServers.Count > 0)
@@ -342,15 +385,34 @@ public sealed class DarlingWorker : BackgroundService
            Lite's cadence); the serverId resolver is Lite's shape (the finding's int id as a
            string), no silencing predicate and no tray sink (headless). */
         var planFetcher = new PgPlanFetcher(
-            serverId => servers
-                .Select(s => s.Runtime)
-                .FirstOrDefault(r => r is not null && r.ServerId == serverId)?.ConnectionString,
+            /* Enumerated from the command loop (analyze_now) as well as the main loop, so guard the read
+               against a concurrent reconcile add/remove. Held only for the lookup, never across the fetch. */
+            serverId =>
+            {
+                lock (_serversLock)
+                {
+                    return servers
+                        .Select(s => s.Runtime)
+                        .FirstOrDefault(r => r is not null && r.ServerId == serverId)?.ConnectionString;
+                }
+            },
             _logger);
         var notificationService = new AnalysisNotificationService(
             new DarlingFindingAlertSender(alertSettings, historyStore, webhookAlertService, _logger),
             alertSettings,
             finding => finding.ServerId.ToString(CultureInfo.InvariantCulture),
             _loggerFactory.CreateLogger<AnalysisNotificationService>());
+
+        /* Command plane (Stage 2): the executor claims/executes/reports config_command rows on its OWN
+           5-second loop, concurrent with the collection sweep, so a slow command never stalls collection.
+           The host lets snapshot_now/analyze_now reach the LIVE loop (the running server set + runner +
+           analysis pieces) without the executor touching that mutable state directly; every other command
+           only writes the config.* tables and rides the reload beacon. Launched here and awaited after the
+           collection loop stops so both drain cleanly on shutdown. */
+        var commandHost = new WorkerCommandHost(this, servers, runner, planFetcher, notificationService, config);
+        var serviceInstance = $"{Environment.MachineName}:{Environment.ProcessId.ToString(CultureInfo.InvariantCulture)}";
+        var commandExecutor = new DarlingCommandExecutor(postgres, commandHost, serviceInstance, _logger);
+        var commandLoop = RunCommandLoopAsync(commandExecutor, stoppingToken);
 
         _logger.LogInformation("PerformanceMonitor Darling collection loop started");
 
@@ -366,6 +428,25 @@ public sealed class DarlingWorker : BackgroundService
             {
                 _lastConfigVersion = configVersion.Value;
                 await ReloadFromStoreAsync(configProvider, config, servers, muteRuleService, stoppingToken);
+            }
+
+            /* Stage 2 pause gate (Lite's IsPaused): while paused, skip ALL collection/alert/analysis/purge
+               work but keep looping — the reload beacon above still runs (so a resume, applied via the same
+               reload, un-pauses on the very next tick) and the command loop keeps draining commands. A
+               resume that reloaded THIS iteration already flipped _paused to false above, so it takes effect
+               immediately, not a sweep later. */
+            if (!ShouldRunCollection(_paused))
+            {
+                try
+                {
+                    await Task.Delay(s_sweepInterval, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                continue;
             }
 
             foreach (var server in servers)
@@ -437,7 +518,60 @@ public sealed class DarlingWorker : BackgroundService
             }
         }
 
+        /* Drain the concurrent command loop on shutdown (it observes the same token). */
+        try
+        {
+            await commandLoop;
+        }
+        catch (OperationCanceledException)
+        {
+            /* Expected on shutdown. */
+        }
+
         _logger.LogInformation("PerformanceMonitor Darling collection loop stopped");
+    }
+
+    /// <summary>
+    /// The command plane's poll loop (Stage 2), run concurrently with the collection sweep on its own
+    /// ~5-second tick. Each tick DRAINS every currently-pending command (claim one at a time until the
+    /// queue is empty), so a burst of viewer commands is not throttled to one per 5 seconds. Never throws
+    /// out — a per-command failure is reported on the row and swallowed by the executor — so the loop lives
+    /// for the service's lifetime. Cancellation ends it cleanly.
+    /// </summary>
+    private async Task RunCommandLoopAsync(DarlingCommandExecutor executor, CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                while (await executor.PollOnceAsync(stoppingToken))
+                {
+                    if (stoppingToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                /* Belt-and-suspenders: PollOnceAsync already swallows its own failures, but a truly
+                   unexpected throw must not kill the loop. */
+                _logger.LogWarning("Command loop tick failed: {Message}", ex.Message);
+            }
+
+            try
+            {
+                await Task.Delay(s_commandPollInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
     }
 
     /// <summary>
@@ -460,15 +594,30 @@ public sealed class DarlingWorker : BackgroundService
 
         StoreConfigProvider.ApplyToConfig(config, view);
         _scheduleOverrides = view.ScheduleOverrides;
+        /* Stage 2: honor a pause/resume issued through the store (config_service.paused) — the collection
+           loop reads this on its next tick. Single writer (this reload), so no interlock needed. */
+        _paused = view.Paused;
 
-        ReconcileServers(servers, view.EnabledServers);
+        /* Structural reconcile mutates the server list; the command loop reads it concurrently, so hold
+           the lock across the add/remove. NextDue recompute mutates only per-server state (safe against a
+           concurrent id lookup) so it stays outside the lock. */
+        lock (_serversLock)
+        {
+            ReconcileServers(servers, view.EnabledServers);
+        }
+
         RecomputeNextDue(servers);
+
+        /* Mirror the desired enable state onto the observed collect.servers registry so a disable_server
+           flips its observed row FALSE even though the disabled server drops out of the loop (stops
+           upserting), and an enable_server flips it back. */
+        await DarlingObservability.SyncServerEnabledStatesAsync(_postgres!, _logger, cancellationToken);
 
         await muteRuleService.LoadAsync();
 
         _logger.LogInformation(
-            "Control-plane reload applied (config_version {Version}, {Servers} monitored server(s))",
-            _lastConfigVersion, servers.Count);
+            "Control-plane reload applied (config_version {Version}, {Servers} monitored server(s), paused: {Paused})",
+            _lastConfigVersion, servers.Count, _paused);
     }
 
     /// <summary>
@@ -759,19 +908,46 @@ LIMIT 1", connection);
             return;
         }
 
-        var serverId = runtime.ServerId;
+        /* The scheduled caller discards the outcome — the analyze_now command maps it to a result. */
+        await RunAnalysisPassAsync(
+            runtime.ServerId, runtime.StorageName, server.Config.DisplayName,
+            planFetcher, notificationService, notifyFindings, stoppingToken);
+    }
 
-        /* Skip a server whose previous analysis is still running — a hung
-           connection that outlived its timeout would otherwise pile up tasks. */
+    /// <summary>Terminal states of one analysis pass — surfaced to the analyze_now command result.</summary>
+    private enum AnalysisPassStatus { Ran, Skipped, TimedOut, InsufficientData, Error }
+
+    private sealed record AnalysisPassResult(AnalysisPassStatus Status, int FindingCount, string? Message);
+
+    /// <summary>
+    /// One analysis pass for a server — the shared core of the scheduled sweep and the <c>analyze_now</c>
+    /// command. Lite's per-server body: the in-flight guard skips a server whose previous (possibly hung)
+    /// pass has not finished; a FRESH <see cref="DarlingAnalysisService"/> per run (IsAnalyzing is a single
+    /// instance flag); the 120-second timeout moves on without clearing the in-flight marker (the
+    /// continuation clears it only when the task truly finishes, so a hung server is not relaunched);
+    /// findings persist inside AnalyzeAsync and route to the notification channels only when delivery is on
+    /// (Lite's D0 split). Returns the terminal state so the command path can report it; the scheduled caller
+    /// ignores the return. Analyzes the STORAGE identity (Lite's GetServerNameForStorage), so a disconnected
+    /// but previously-collected server can still be analyzed on demand (its stored data drives the pass).
+    /// </summary>
+    private async Task<AnalysisPassResult> RunAnalysisPassAsync(
+        int serverId,
+        string storageName,
+        string displayName,
+        PgPlanFetcher planFetcher,
+        AnalysisNotificationService notificationService,
+        bool notifyFindings,
+        CancellationToken stoppingToken)
+    {
         if (!_analysisInFlight.TryAdd(serverId, 0))
         {
-            return;
+            return new AnalysisPassResult(AnalysisPassStatus.Skipped, 0, "analysis is already running for this server");
         }
 
         try
         {
             var analysisService = new DarlingAnalysisService(_postgres!, planFetcher, _logger);
-            var analyzeTask = analysisService.AnalyzeAsync(serverId, runtime.StorageName, hoursBack: 4);
+            var analyzeTask = analysisService.AnalyzeAsync(serverId, storageName, hoursBack: 4);
 
             /* Clear the in-flight marker only when the task truly finishes — not
                when the timeout below moves us on — so a hung server is not relaunched. */
@@ -783,15 +959,15 @@ LIMIT 1", connection);
 
             if (stoppingToken.IsCancellationRequested)
             {
-                return;
+                return new AnalysisPassResult(AnalysisPassStatus.Skipped, 0, "service is stopping");
             }
 
             if (finished != analyzeTask)
             {
                 _logger.LogWarning(
-                    "[{Server}] Scheduled analysis exceeded {Timeout}s — skipped this cycle",
-                    server.Config.DisplayName, (int)s_analysisTimeout.TotalSeconds);
-                return;
+                    "[{Server}] Analysis exceeded {Timeout}s — skipped this cycle",
+                    displayName, (int)s_analysisTimeout.TotalSeconds);
+                return new AnalysisPassResult(AnalysisPassStatus.TimedOut, 0, $"analysis exceeded {(int)s_analysisTimeout.TotalSeconds}s");
             }
 
             /* Analysis already persisted its findings inside AnalyzeAsync. Only route them
@@ -802,19 +978,106 @@ LIMIT 1", connection);
             {
                 await notificationService.NotifyAsync(findings);
             }
+
+            if (analysisService.InsufficientDataMessage is string insufficient)
+            {
+                return new AnalysisPassResult(AnalysisPassStatus.InsufficientData, 0, insufficient);
+            }
+
+            return new AnalysisPassResult(AnalysisPassStatus.Ran, findings.Count, null);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             /* Shutting down — the loop's own cancellation check ends the sweep. */
+            return new AnalysisPassResult(AnalysisPassStatus.Skipped, 0, "service is stopping");
         }
         catch (Exception ex)
         {
-            _logger.LogError("[{Server}] Scheduled analysis failed: {Message}",
-                server.Config.DisplayName, ex.Message);
+            _logger.LogError("[{Server}] Analysis failed: {Message}", displayName, ex.Message);
             /* If analyzeTask was never created (e.g. ctor threw), the continuation
                never ran — clear the marker defensively. */
             _analysisInFlight.TryRemove(serverId, out _);
+            return new AnalysisPassResult(AnalysisPassStatus.Error, 0, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// The <c>analyze_now</c> command handler (Recommendations "Generate now", control-plane form): forces
+    /// an immediate analysis pass for one monitored server, bypassing its NextAnalysisDue wait, and maps the
+    /// terminal outcome to a command result. Shares the in-flight guard with the scheduled sweep, so it
+    /// no-ops (reported "already running") rather than racing a pass in flight for the same server.
+    /// </summary>
+    private async Task<CommandOutcome> RunAnalyzeNowAsync(
+        List<ServerLoopState> servers,
+        PgPlanFetcher planFetcher,
+        AnalysisNotificationService notificationService,
+        DarlingConfig config,
+        int serverId,
+        CancellationToken cancellationToken)
+    {
+        ServerLoopState? server;
+        lock (_serversLock)
+        {
+            server = servers.Find(s => ServerIdHelper.GetDeterministicHashCode(s.Config.StorageName) == serverId);
+        }
+
+        if (server is null)
+        {
+            return new CommandOutcome(false, "server not monitored", JsonError($"no monitored server with server_id {serverId}"));
+        }
+
+        var result = await RunAnalysisPassAsync(
+            serverId, server.Config.StorageName, server.Config.DisplayName,
+            planFetcher, notificationService, config.Analysis.NotificationsEnabled, cancellationToken);
+
+        return result.Status switch
+        {
+            AnalysisPassStatus.Ran => new CommandOutcome(true, "analysis complete",
+                JsonSerializer.Serialize(new { success = true, server = server.Config.DisplayName, findings = result.FindingCount })),
+            AnalysisPassStatus.InsufficientData => new CommandOutcome(true, "insufficient data",
+                JsonSerializer.Serialize(new { success = true, server = server.Config.DisplayName, message = result.Message })),
+            AnalysisPassStatus.Skipped => new CommandOutcome(false, "analysis already running", JsonError(result.Message ?? "skipped")),
+            AnalysisPassStatus.TimedOut => new CommandOutcome(false, "analysis timed out", JsonError(result.Message ?? "timed out")),
+            _ => new CommandOutcome(false, "analysis failed", JsonError(result.Message ?? "error")),
+        };
+    }
+
+    /// <summary>A failure result_json body: <c>{ "success": false, "error": ... }</c>.</summary>
+    private static string JsonError(string error) => JsonSerializer.Serialize(new { success = false, error });
+
+    /// <summary>
+    /// The worker's <see cref="IDarlingCommandHost"/> adapter (Stage 2): lets the command executor reach the
+    /// two imperative commands that need the LIVE loop (snapshot_now / analyze_now) without the executor
+    /// holding the worker's mutable loop state. Captures the running server set + collector runner + analysis
+    /// pieces created in <see cref="RunCollectionLoopAsync"/>; the worker methods it calls take the
+    /// <see cref="_serversLock"/> for the server lookup.
+    /// </summary>
+    private sealed class WorkerCommandHost : IDarlingCommandHost
+    {
+        private readonly DarlingWorker _worker;
+        private readonly List<ServerLoopState> _servers;
+        private readonly DarlingCollectorRunner _runner;
+        private readonly PgPlanFetcher _planFetcher;
+        private readonly AnalysisNotificationService _notificationService;
+        private readonly DarlingConfig _config;
+
+        public WorkerCommandHost(
+            DarlingWorker worker, List<ServerLoopState> servers, DarlingCollectorRunner runner,
+            PgPlanFetcher planFetcher, AnalysisNotificationService notificationService, DarlingConfig config)
+        {
+            _worker = worker;
+            _servers = servers;
+            _runner = runner;
+            _planFetcher = planFetcher;
+            _notificationService = notificationService;
+            _config = config;
+        }
+
+        public Task<CommandOutcome> SnapshotNowAsync(int serverId, CancellationToken cancellationToken)
+            => _worker.RunSnapshotAsync(_servers, _runner, serverId, cancellationToken);
+
+        public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
+            => _worker.RunAnalyzeNowAsync(_servers, _planFetcher, _notificationService, _config, serverId, cancellationToken);
     }
 
     /// <summary>
@@ -828,10 +1091,17 @@ LIMIT 1", connection);
     private async Task<List<FailedJobInfo>> FetchFailedJobsAsync(
         List<ServerLoopState> servers, string serverKey, int lookbackMinutes, CancellationToken cancellationToken)
     {
-        var runtime = servers
-            .Select(s => s.Runtime)
-            .FirstOrDefault(r => r is not null
-                && string.Equals(r.ServerId.ToString(CultureInfo.InvariantCulture), serverKey, StringComparison.Ordinal));
+        /* Lookup only — held briefly under the lock (the command loop reconciles the list concurrently),
+           then the connection I/O runs outside it. */
+        ServerRuntime? runtime;
+        lock (_serversLock)
+        {
+            runtime = servers
+                .Select(s => s.Runtime)
+                .FirstOrDefault(r => r is not null
+                    && string.Equals(r.ServerId.ToString(CultureInfo.InvariantCulture), serverKey, StringComparison.Ordinal));
+        }
+
         if (runtime is null || runtime.Target.IsAzureSqlDb)
         {
             return new List<FailedJobInfo>();
@@ -890,7 +1160,12 @@ LIMIT 1", connection);
             /* On-load config snapshots (effective FrequencyMinutes 0) run once per connect, then every
                scheduled collector becomes immediately due — mirrors Lite's server-open behavior. The
                effective schedule layers config_collector_schedules overrides on CollectorScheduleDefaults;
-               a collector disabled by an override is neither run on-load nor scheduled. */
+               a collector disabled by an override is neither run on-load nor scheduled.
+
+               These on-load runs are NOT under the per-server CollectionGate (unlike the scheduled sweep and
+               snapshot_now). Safe today: this path only runs while Runtime is null, and a snapshot_now needs
+               a non-null Runtime, so the two never overlap for one server. If TryConnect's timing ever changes
+               so a connect can race a snapshot, gate this loop too. */
             var now = DateTime.UtcNow;
             foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
@@ -926,37 +1201,131 @@ LIMIT 1", connection);
             return;
         }
 
-        var now = DateTime.UtcNow;
-        foreach (var name in CollectorScheduleDefaults.All.Keys)
+        /* Non-blocking: if an on-demand snapshot_now holds this server's gate, skip its scheduled sweep
+           this pass (the due collectors run next sweep) — the main loop NEVER blocks on the gate, so a
+           long snapshot cannot starve collection of the OTHER servers. */
+        if (!await server.CollectionGate.WaitAsync(0, cancellationToken))
         {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
+            return;
+        }
 
-            /* Effective schedule = config_collector_schedules override layered on the code default.
-               A disabled or on-load-only (freq 0) collector is skipped; the frequency the NextDue stamp
-               advances by is the EFFECTIVE one, so an override takes effect immediately. */
-            var effective = StoreConfigProvider.ResolveSchedule(name, runtime.ServerId, _scheduleOverrides);
-            if (!effective.Enabled
-                || effective.FrequencyMinutes == 0
-                || !server.NextDue.TryGetValue(name, out var due)
-                || now < due)
+        try
+        {
+            var now = DateTime.UtcNow;
+            foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
-                continue;
-            }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
 
-            server.NextDue[name] = now.AddMinutes(effective.FrequencyMinutes);
-            await RunOneAsync(server, runner, name, cancellationToken);
+                /* Effective schedule = config_collector_schedules override layered on the code default.
+                   A disabled or on-load-only (freq 0) collector is skipped; the frequency the NextDue stamp
+                   advances by is the EFFECTIVE one, so an override takes effect immediately. */
+                var effective = StoreConfigProvider.ResolveSchedule(name, runtime.ServerId, _scheduleOverrides);
+                if (!effective.Enabled
+                    || effective.FrequencyMinutes == 0
+                    || !server.NextDue.TryGetValue(name, out var due)
+                    || now < due)
+                {
+                    continue;
+                }
+
+                server.NextDue[name] = now.AddMinutes(effective.FrequencyMinutes);
+                await RunOneAsync(server, runner, name, cancellationToken);
+            }
+        }
+        finally
+        {
+            server.CollectionGate.Release();
         }
     }
 
-    private async Task RunOneAsync(ServerLoopState server, DarlingCollectorRunner runner, string collectorName, CancellationToken cancellationToken)
+    /// <summary>
+    /// The <c>snapshot_now</c> command handler (Lite's Live Snapshot, control-plane form): runs EVERY
+    /// enabled collector for one connected server immediately, bypassing the schedule, and reports the
+    /// collectors run + total rows. Serialized against the scheduled sweep by the per-server
+    /// <see cref="ServerLoopState.CollectionGate"/> so the two never double-collect. Waits its turn for the
+    /// gate (unlike the main loop, which skips) because an explicit operator snapshot should not be dropped.
+    /// </summary>
+    private async Task<CommandOutcome> RunSnapshotAsync(
+        List<ServerLoopState> servers, DarlingCollectorRunner runner, int serverId, CancellationToken cancellationToken)
+    {
+        ServerLoopState? server;
+        lock (_serversLock)
+        {
+            server = servers.Find(s => ServerIdHelper.GetDeterministicHashCode(s.Config.StorageName) == serverId);
+        }
+
+        if (server is null)
+        {
+            return new CommandOutcome(false, "server not monitored", JsonError($"no monitored server with server_id {serverId}"));
+        }
+
+        if (server.Runtime is null)
+        {
+            return new CommandOutcome(false, "server not connected",
+                JsonError($"server '{server.Config.DisplayName}' is not currently connected — snapshot skipped"));
+        }
+
+        await server.CollectionGate.WaitAsync(cancellationToken);
+        try
+        {
+            /* Runtime can be dropped by a concurrent connection failure between the check above and here;
+               re-read under the gate. */
+            var runtime = server.Runtime;
+            if (runtime is null)
+            {
+                return new CommandOutcome(false, "server not connected",
+                    JsonError($"server '{server.Config.DisplayName}' disconnected before the snapshot ran"));
+            }
+
+            var collectorsRun = 0;
+            var totalRows = 0;
+            foreach (var name in CollectorScheduleDefaults.All.Keys)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                /* Honor a disabled-by-override collector (mirrors the on-load/scheduled gates); run every
+                   enabled one NOW regardless of frequency or NextDue — that is what "snapshot" means. */
+                var effective = StoreConfigProvider.ResolveSchedule(name, runtime.ServerId, _scheduleOverrides);
+                if (!effective.Enabled)
+                {
+                    continue;
+                }
+
+                totalRows += await RunOneAsync(server, runner, name, cancellationToken);
+                collectorsRun++;
+            }
+
+            _logger.LogInformation("[{Server}] snapshot_now ran {Collectors} collector(s), {Rows} row(s)",
+                server.Config.DisplayName, collectorsRun, totalRows);
+            var json = JsonSerializer.Serialize(new
+            {
+                success = true,
+                server = server.Config.DisplayName,
+                collectorsRun,
+                rows = totalRows,
+            });
+            return new CommandOutcome(true, "snapshot complete", json);
+        }
+        finally
+        {
+            server.CollectionGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Runs one collector for a server and logs its outcome to collection_log. Returns the rows written
+    /// (0 on skip/permissions/error) so an on-demand snapshot can tally them; the scheduled/on-load callers
+    /// simply discard the count.
+    /// </summary>
+    private async Task<int> RunOneAsync(ServerLoopState server, DarlingCollectorRunner runner, string collectorName, CancellationToken cancellationToken)
     {
         var runtime = server.Runtime;
         if (runtime is null || !s_dispatch.TryGetValue(collectorName, out var run))
         {
-            return;
+            return 0;
         }
 
         try
@@ -967,6 +1336,7 @@ LIMIT 1", connection);
 
             await DarlingObservability.LogCollectionAsync(
                 _postgres!, runtime, collectorName, "SUCCESS", result.Rows, result.SqlMs, result.StorageMs, null, _logger, cancellationToken);
+            return result.Rows;
         }
         catch (OperationCanceledException)
         {
@@ -979,6 +1349,7 @@ LIMIT 1", connection);
 
             await DarlingObservability.LogCollectionAsync(
                 _postgres!, runtime, collectorName, "PERMISSIONS", 0, 0, 0, ex.Message, _logger, cancellationToken);
+            return 0;
         }
         catch (Exception ex)
         {
@@ -995,6 +1366,7 @@ LIMIT 1", connection);
 
             await DarlingObservability.LogCollectionAsync(
                 _postgres!, runtime, collectorName, "ERROR", 0, 0, 0, ex.Message, _logger, cancellationToken);
+            return 0;
         }
     }
 

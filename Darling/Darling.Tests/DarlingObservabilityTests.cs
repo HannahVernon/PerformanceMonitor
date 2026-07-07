@@ -358,10 +358,92 @@ public sealed class DarlingObservabilityTests
         await DeleteTestRowsAsync(connection);
     }
 
+    [Fact]
+    public async Task SyncServerEnabledStates_MirrorsDesiredOntoObservedRegistry_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the enable-state sync test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteTestRowsAsync(connection);
+
+        /* Desired: DISABLED. Observed (a stale row from a prior connect): still ENABLED. */
+        await ExecAsync(connection,
+            "INSERT INTO config.config_monitored_servers (server_id, name, host, is_enabled) VALUES ($1, 'sync-test', 'sync-host', FALSE)");
+        await ExecAsync(connection,
+            "INSERT INTO collect.servers (server_id, server_name, is_enabled, created_date, modified_date) VALUES ($1, 'sync-host', TRUE, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')");
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+
+        await DarlingObservability.SyncServerEnabledStatesAsync(postgres, null, TestContext.Current.CancellationToken);
+        Assert.Equal(false, await ReadObservedEnabledAsync(connection));
+
+        /* Re-enable desired -> the sync flips the observed row back to TRUE. */
+        await ExecAsync(connection, "UPDATE config.config_monitored_servers SET is_enabled = TRUE WHERE server_id = $1");
+        await DarlingObservability.SyncServerEnabledStatesAsync(postgres, null, TestContext.Current.CancellationToken);
+        Assert.Equal(true, await ReadObservedEnabledAsync(connection));
+
+        await DeleteTestRowsAsync(connection);
+    }
+
+    [Fact]
+    public async Task UpsertServer_ReconnectDoesNotReEnableADisabledObservedRow_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the upsert no-clobber test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteTestRowsAsync(connection);
+
+        /* An observed row that has been DISABLED via the control plane. */
+        await ExecAsync(connection,
+            "INSERT INTO collect.servers (server_id, server_name, is_enabled, created_date, modified_date) VALUES ($1, 'noclobber-host', FALSE, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')");
+
+        var server = new ServerRuntime
+        {
+            Config = new MonitoredServer { Name = "noclobber", Host = "noclobber-host" },
+            ConnectionString = "Server=noclobber-host",
+            Target = new CollectorTargetInfo { SqlMajorVersion = 16 },
+            StorageName = "noclobber-host",
+            ServerId = TestServerId,
+            EngineEdition = 3,
+        };
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+
+        /* A re-connect upsert (ON CONFLICT) must NOT resurrect is_enabled to TRUE (Stage 2 fix). */
+        await DarlingObservability.UpsertServerAsync(postgres, server, null, TestContext.Current.CancellationToken);
+        Assert.Equal(false, await ReadObservedEnabledAsync(connection));
+
+        await DeleteTestRowsAsync(connection);
+    }
+
+    private static async Task<bool> ReadObservedEnabledAsync(NpgsqlConnection connection)
+    {
+        using var read = new NpgsqlCommand("SELECT is_enabled FROM collect.servers WHERE server_id = $1", connection);
+        read.Parameters.AddWithValue(TestServerId);
+        return (bool)(await read.ExecuteScalarAsync(TestContext.Current.CancellationToken))!;
+    }
+
+    private static async Task ExecAsync(NpgsqlConnection connection, string sql)
+    {
+        using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue(TestServerId);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
     private static async Task DeleteTestRowsAsync(NpgsqlConnection connection)
     {
         using var cleanup = new NpgsqlCommand(
-            $"DELETE FROM collection_log WHERE server_id = {TestServerId}; DELETE FROM servers WHERE server_id = {TestServerId};", connection);
+            $"DELETE FROM collection_log WHERE server_id = {TestServerId}; " +
+            $"DELETE FROM collect.servers WHERE server_id = {TestServerId}; " +
+            $"DELETE FROM config.config_monitored_servers WHERE server_id = {TestServerId};", connection);
         await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 }
