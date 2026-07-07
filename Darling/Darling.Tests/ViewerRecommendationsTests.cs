@@ -278,7 +278,8 @@ public sealed class ViewerRecommendationCardTests
         Assert.Equal(point.AddMinutes(ViewerServerTab.DrillDownHalfWindowMinutes), to);
     }
 
-    private static RecommendationCardViewModel Card(int serverId, DateTime? windowStart, DateTime? windowEnd)
+    private static RecommendationCardViewModel Card(
+        int serverId, DateTime? windowStart, DateTime? windowEnd, RemediationAction? remediation = null)
         => new(new RecommendationItem
         {
             Severity = RecommendationSeverity.Warning,
@@ -286,7 +287,68 @@ public sealed class ViewerRecommendationCardTests
             ServerId = serverId,
             WindowStartUtc = windowStart,
             WindowEndUtc = windowEnd,
+            Remediation = remediation,
         });
+
+    // ── Incident-vs-config-fix gate on the deep-link (fixes the #1427 "shows on every finding" bug) ──
+
+    [Fact]
+    public void Card_ShowOpenInActiveQueries_HiddenForConfigFixFindings_EvenWithAWindowAndServer()
+    {
+        var start = new DateTime(2026, 7, 1, 10, 0, 0, DateTimeKind.Utc);
+        var end = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        // A safe DB_CONFIG standing fix (AUTO_SHRINK) is a config fix, not an incident -> deep-link hidden
+        // despite carrying a full window + a real server id.
+        var dbConfig = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff) });
+        var dbConfigCard = Card(serverId: 7, windowStart: start, windowEnd: end, remediation: dbConfig);
+        Assert.True(dbConfigCard.IsConfigFix);
+        Assert.False(dbConfigCard.IsIncident);
+        Assert.False(dbConfigCard.ShowOpenInActiveQueries);
+
+        // A DB_CONFIG action can carry ONLY per-db RCSI targets (no safe targets) — still a config fix.
+        var rcsiOnly = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            RcsiTargets: new[] { new RcsiTarget("StackOverflow", new RcsiInactionFigures(50, 2, 60)) });
+        Assert.False(Card(serverId: 7, windowStart: start, windowEnd: end, remediation: rcsiOnly).ShowOpenInActiveQueries);
+
+        // Percent-autogrowth (FILE_AUTOGROWTH_PERCENT) is a config fix.
+        var autogrowth = new RemediationAction(
+            "FILE_AUTOGROWTH_PERCENT", "set", Array.Empty<ForcePlanTarget>(),
+            FileGrowthTargets: new[] { new FileGrowthTarget("StackOverflow", "SO_data", 90000, 10, 1024) });
+        Assert.False(Card(serverId: 7, windowStart: start, windowEnd: end, remediation: autogrowth).ShowOpenInActiveQueries);
+
+        // Server-level config (MAXDOP) is a config fix.
+        var serverConfig = new RemediationAction(
+            "SERVER_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            ServerConfigTargets: new[] { new ServerConfigTarget(ServerConfigSetting.Maxdop, 0, 8) });
+        Assert.False(Card(serverId: 7, windowStart: start, windowEnd: end, remediation: serverConfig).ShowOpenInActiveQueries);
+    }
+
+    [Fact]
+    public void Card_ShowOpenInActiveQueries_ShownForIncidentFindings_WithAWindowAndServer()
+    {
+        var start = new DateTime(2026, 7, 1, 10, 0, 0, DateTimeKind.Utc);
+        var end = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        // A pure incident (CPU/blocking/waits) reads back with no remediation action -> shown.
+        var bare = Card(serverId: 7, windowStart: start, windowEnd: end, remediation: null);
+        Assert.True(bare.IsIncident);
+        Assert.True(bare.ShowOpenInActiveQueries);
+
+        // Plan-regression (force-plan) is Apply-able but stays an INCIDENT (no structured config targets) -> shown.
+        var forcePlan = new RemediationAction(
+            "PLAN_REGRESSION", "force", new[] { new ForcePlanTarget("StackOverflow", QueryId: 42, PlanId: 7) });
+        Assert.True(Card(serverId: 7, windowStart: start, windowEnd: end, remediation: forcePlan).ShowOpenInActiveQueries);
+
+        // MISSING_INDEX is copy-paste-only but deliberately stays an incident (Dashboard parity) -> shown.
+        var missingIndex = new RemediationAction(
+            "MISSING_INDEX", "advise", Array.Empty<ForcePlanTarget>(),
+            MissingIndexTargets: new[] { new MissingIndexTarget("dbo.Posts", 92.5, "CREATE INDEX IX ON dbo.Posts (OwnerUserId);") });
+        Assert.True(Card(serverId: 7, windowStart: start, windowEnd: end, remediation: missingIndex).ShowOpenInActiveQueries);
+    }
 
     [Theory]
     [InlineData(RecommendationSeverity.Critical, "CRITICAL", "")]

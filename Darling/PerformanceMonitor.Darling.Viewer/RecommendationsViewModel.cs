@@ -97,6 +97,17 @@ public sealed class RecommendationItem
     public string? CopyPasteSql { get; init; }
 
     /// <summary>
+    /// The finding's PERSISTED remediation action (or null) — the same object <see cref="CopyPasteSql"/>
+    /// is derived from. Carried so the card can reconstruct the incident-vs-config-fix distinction the
+    /// Dashboard draws from its RecommendationSetting taxonomy (<c>RecommendationsViewModel.IsIncident</c>).
+    /// The viewer reads only engine findings (there is no legacy critical_issues RecommendationSetting
+    /// store here), so a structured standing-config action — DB_CONFIG / RCSI / FILE_AUTOGROWTH_PERCENT /
+    /// SERVER_CONFIG — is the only signal that a finding is a config fix rather than a time-bound incident,
+    /// and it gates whether the "Open in Active Queries" deep-link is offered.
+    /// </summary>
+    public RemediationAction? Remediation { get; init; }
+
+    /// <summary>
     /// The finding's incident id — the group key the surface collapses cards under so related
     /// findings render as one report. Empty for findings analyzed before incident_id existed; the
     /// view-model treats an empty id as a standalone single-card incident.
@@ -202,15 +213,53 @@ public sealed class RecommendationCardViewModel
     public DateTime? WindowEndUtc => Item.WindowEndUtc;
 
     /// <summary>
-    /// Whether the "Open in Active Queries" deep-link is shown — an incident-type finding that carries
-    /// BOTH a time window (to scope the Active Queries read to when it fired) AND a server id (to open the
-    /// right per-server tab). This is the Dashboard's incident affordance (<c>ShowOpenInActiveQueries</c>)
-    /// ported to the viewer's advise-only model: the viewer has no RecommendationSetting/structured-fix
-    /// taxonomy, so the gate is simply "has a time anchor + a server" — a finding with no time window
-    /// (or no server id) hides it, because deep-linking to Active Queries needs both.
+    /// Whether this row carries a STRUCTURED standing config-fix action — a persisted
+    /// <see cref="RemediationAction"/> whose typed per-target lists map to a database- or server-level
+    /// configuration change: DB_CONFIG safe settings (<see cref="RemediationAction.DbConfigTargets"/>),
+    /// per-database RCSI (<see cref="RemediationAction.RcsiTargets"/> — a DB_CONFIG action can carry ONLY
+    /// these, so they must be checked), percent-autogrowth files
+    /// (<see cref="RemediationAction.FileGrowthTargets"/>), or server config MAXDOP/CTFP/memory
+    /// (<see cref="RemediationAction.ServerConfigTargets"/>). Mirrors the Dashboard card's
+    /// <c>HasStructuredFixAction</c>. Plan-regression (force-plan), clear-plan, and MISSING_INDEX actions
+    /// are deliberately NOT structured config fixes — their target lists are empty here — so they remain
+    /// incidents, matching the Dashboard (where MISSING_INDEX keeps the incident affordances).
+    /// </summary>
+    private bool HasStructuredFixAction =>
+        Item.Remediation is { } r &&
+        ((r.DbConfigTargets is { Count: > 0 }) ||
+         (r.RcsiTargets is { Count: > 0 }) ||
+         (r.FileGrowthTargets is { Count: > 0 }) ||
+         (r.ServerConfigTargets is { Count: > 0 }));
+
+    /// <summary>
+    /// Whether this is a standing CONFIG-FIX finding (a structured config action) rather than a time-bound
+    /// incident. The viewer reads only engine findings (no legacy critical_issues RecommendationSetting
+    /// store), so — unlike the Dashboard, which also flags a config fix via a non-None Setting — the
+    /// structured action is the only config-fix signal available here.
+    /// </summary>
+    public bool IsConfigFix => HasStructuredFixAction;
+
+    /// <summary>
+    /// Whether this is a time-bound INCIDENT finding (CPU/memory/blocking/waits/plan-regression/
+    /// missing-index) — anything that is NOT a structured standing config fix. Mirrors the Dashboard's
+    /// <c>IsIncident</c> (<c>Setting == None &amp;&amp; !HasStructuredFixAction</c>), reduced to the
+    /// <c>!HasStructuredFixAction</c> half the viewer can observe. Incidents get the deep-link to Active
+    /// Queries; config fixes do not.
+    /// </summary>
+    public bool IsIncident => !HasStructuredFixAction;
+
+    /// <summary>
+    /// Whether the "Open in Active Queries" deep-link is shown — an INCIDENT-type finding (not a standing
+    /// config fix) that ALSO carries BOTH a time window (to scope the Active Queries read to when it fired)
+    /// AND a server id (to open the right per-server tab). This is the Dashboard's incident affordance
+    /// (<c>ShowOpenInActiveQueries => IsIncident</c>) ported to the viewer's advise-only model: a config-fix
+    /// finding (e.g. AUTO_SHRINK, RCSI, autogrowth, MAXDOP) hides the deep-link even when it carries a
+    /// window+server, because sending the operator to Active Queries makes no sense for a standing
+    /// misconfiguration; a finding with no time window (or no server id) also hides it, because deep-linking
+    /// needs both.
     /// </summary>
     public bool ShowOpenInActiveQueries =>
-        Item.ServerId != 0 && Item.WindowStartUtc.HasValue && Item.WindowEndUtc.HasValue;
+        IsIncident && Item.ServerId != 0 && Item.WindowStartUtc.HasValue && Item.WindowEndUtc.HasValue;
 
     /// <summary>
     /// The UTC window the deep-link scopes Active Queries to: the finding's own window when it carries a
@@ -377,6 +426,7 @@ public sealed class RecommendationsViewModel
             Title = row.Title,
             AdviceText = ComposeAdvice(advice),
             CopyPasteSql = BuildCopyPasteSql(finding.Remediation),
+            Remediation = finding.Remediation,
             IncidentId = finding.IncidentId,
             ServerName = serverName ?? string.Empty,
             ServerId = finding.ServerId,
