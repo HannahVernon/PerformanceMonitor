@@ -2838,7 +2838,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="Scheduler Issues (last 24h)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="Scheduler Issues" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="SchedulerIssuesCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -2866,7 +2866,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="Severe Errors (last 24h, severity ≥ 19)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="Severe Errors (severity ≥ 19)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="SevereErrorsCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -2895,7 +2895,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="Memory Conditions (last 24h, low physical memory)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="Memory Conditions (low physical memory)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="MemoryConditionsCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -2946,7 +2946,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="Memory Broker (last 24h, low physical memory)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="Memory Broker (low physical memory)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="MemoryBrokerCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -2978,7 +2978,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="Memory Node OOM (last 24h)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="Memory Node OOM" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="MemoryNodeOomCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -3025,7 +3025,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="Significant Waits (last 24h, duration ≥ 500 ms)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="Significant Waits (duration ≥ 500 ms)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="SignificantWaitsCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -3054,7 +3054,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="CPU Tasks (last 24h, WARNING with 10+ pending tasks)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="CPU Tasks (WARNING with 10+ pending tasks)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="CpuTasksCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
@@ -3084,7 +3084,7 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
-                            <TextBlock Text="I/O Issues (last 24h, WARNING with pending I/O)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <TextBlock Text="I/O Issues (WARNING with pending I/O)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
                             <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
                             <TextBlock x:Name="IoIssuesCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                         </StackPanel>
