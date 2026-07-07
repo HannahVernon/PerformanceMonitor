@@ -55,8 +55,13 @@ public partial class ViewerServerTab
     /// </summary>
     private async Task LoadHealthAsync()
     {
+        /* Health Summary stays Lite's fixed 7-day per-collector rollup (its staleness banding needs a
+           stable horizon regardless of the toolbar window). The Collection Log + Duration Trends honor the
+           settable window EXACTLY — a preset or a custom From/To — via GetWindowUtc(), matching the Wait
+           Stats / Blocking tabs (the old GetWindowHoursBack() rounded a custom range to a now-relative span). */
+        var (startUtc, endUtc) = GetWindowUtc();
         var healthTask = _dataService.GetCollectionHealthAsync(_server.ServerId);
-        var logTask = _dataService.GetRecentCollectionLogAsync(_server.ServerId, GetWindowHoursBack());
+        var logTask = _dataService.GetRecentCollectionLogAsync(_server.ServerId, startUtc, endUtc);
         await Task.WhenAll(healthTask, logTask);
 
         _collectionHealthFilterMgr!.UpdateData(healthTask.Result);

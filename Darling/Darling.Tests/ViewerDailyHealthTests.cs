@@ -130,14 +130,17 @@ public sealed class ViewerCollectionHealthSqlTests
     }
 
     [Fact]
-    public void RecentCollectionLogSql_ReadsTheLogNewestFirst_Capped()
+    public void RecentCollectionLogSql_BoundsTheWindowOnBothSides_NewestFirst_Capped()
     {
         var sql = ViewerDataService.RecentCollectionLogSql;
         Assert.Contains("FROM v_collection_log", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        /* Both-sided window bound so the toolbar's custom From/To is honored EXACTLY (not rounded to a
+           now-relative hours-back span). $2 = window start, $3 = window end, $4 = row cap. */
         Assert.Contains("collection_time >= $2", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $3", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY collection_time DESC", sql, StringComparison.Ordinal);
-        Assert.Contains("LIMIT $3", sql, StringComparison.Ordinal);
+        Assert.Contains("LIMIT $4", sql, StringComparison.Ordinal);
         /* The two phase-timing columns the grid surfaces (Store (ms) = duckdb_duration_ms). */
         Assert.Contains("sql_duration_ms", sql, StringComparison.Ordinal);
         Assert.Contains("duckdb_duration_ms", sql, StringComparison.Ordinal);
@@ -552,6 +555,51 @@ public sealed class ViewerDailyHealthLivePostgresTests
             Assert.Equal(t1.Ticks, logs[1].CollectionTime.Ticks);
             Assert.Equal(120, logs[1].DurationMs);
             Assert.Equal(20, logs[1].DuckDbDurationMs);             // the store-phase column
+        }
+        finally
+        {
+            await DeleteHealthLogRowsAsync(connection);
+        }
+    }
+
+    [Fact]
+    public async Task RecentCollectionLog_HonorsTheExactWindow_ExcludingRowsOutsideBothBounds_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live windowed-log test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteHealthLogRowsAsync(connection);
+
+        await using var viewer = new ViewerDataService(connectionString!);
+
+        try
+        {
+            /* A three-hour custom window [start, end] set entirely in the PAST (end is an hour ago). A row 30
+               min BEFORE start and a row 30 min AFTER end must BOTH be excluded. The after-end exclusion is
+               the behavior the old hours-back read (a single now-relative lower bound) could not express — it
+               would have swept everything up to "now", pulling in the after-end row. */
+            var end = TruncateToSeconds(DateTime.UtcNow.AddHours(-1));
+            var start = end.AddHours(-3);
+            var beforeStart = start.AddMinutes(-30);
+            var inWindowEarly = start.AddMinutes(15);
+            var inWindowLate = end.AddMinutes(-15);
+            var afterEnd = end.AddMinutes(30);
+
+            await InsertCollectionLogAsync(connection, HealthServerId, "wait_stats", beforeStart, "SUCCESS");
+            await InsertCollectionLogAsync(connection, HealthServerId, "wait_stats", inWindowEarly, "SUCCESS");
+            await InsertCollectionLogAsync(connection, HealthServerId, "cpu_utilization", inWindowLate, "SUCCESS");
+            await InsertCollectionLogAsync(connection, HealthServerId, "wait_stats", afterEnd, "SUCCESS");
+
+            var logs = await viewer.GetRecentCollectionLogAsync(HealthServerId, start, end);
+
+            Assert.Equal(2, logs.Count);
+            Assert.All(logs, l => Assert.InRange(l.CollectionTime.Ticks, start.Ticks, end.Ticks));
+            Assert.Equal(inWindowLate.Ticks, logs[0].CollectionTime.Ticks);    // newest first
+            Assert.Equal(inWindowEarly.Ticks, logs[1].CollectionTime.Ticks);
         }
         finally
         {

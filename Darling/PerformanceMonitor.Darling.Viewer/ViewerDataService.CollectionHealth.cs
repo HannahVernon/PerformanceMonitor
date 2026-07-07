@@ -21,12 +21,20 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// query and its simple <c>CollectorHealthRow</c> record, both removed from <c>ViewerDataService.cs</c>)
 /// with Lite's rich 7-day aggregate: per-collector run/success/error counts, average duration, last
 /// success / last run / last error timestamps, and the <see cref="CollectorHealthRow.HealthStatus"/>
-/// banding. The SQL is byte-portable between DuckDB and Postgres (positional <c>$1/$2/$3</c>, plain
-/// aggregates), so only the parameter binding differs: window-start <see cref="DateTime"/>s go in with
+/// banding. The SQL is byte-portable between DuckDB and Postgres (positional params, plain aggregates),
+/// so only the parameter binding differs: window <see cref="DateTime"/>s go in with
 /// <c>DateTimeKind.Unspecified</c> (the naive-UTC store convention), and the SUM/COUNT/AVG results are
 /// read type-agnostically (Postgres returns <c>bigint</c> for the counts and <c>numeric</c> for AVG,
 /// where DuckDB returned HUGEINT/DECIMAL) — the same intent as Lite's <c>ToInt64</c>/<c>ToDouble</c>
 /// helpers, minus the DuckDB BigInteger case Postgres never produces.
+/// <para>
+/// The <b>Health Summary</b> aggregate keeps Lite's fixed 7-day horizon (its staleness banding needs a
+/// stable window regardless of the toolbar). The <b>Collection Log</b> read (feeding the log grid + the
+/// Duration Trends chart) diverges from Lite in ONE deliberate way: it bounds <c>collection_time</c> on
+/// BOTH sides so the per-server toolbar's custom From/To is honored EXACTLY — Lite (and this file's first
+/// port) took a single now-relative <c>hoursBack</c> lower bound, which rounded a custom range to a
+/// hours-back-from-now span.
+/// </para>
 /// </summary>
 public sealed partial class ViewerDataService
 {
@@ -57,9 +65,13 @@ public sealed partial class ViewerDataService
         """;
 
     /// <summary>
-    /// Lite's recent-log read (<c>GetRecentCollectionLogAsync</c>) verbatim: the collection_log rows for
-    /// one server since the window start, newest first, capped. Feeds the Collection Log sub-tab grid.
-    /// $1 server_id, $2 window start (naive UTC), $3 row cap.
+    /// The Collection Log sub-tab's recent-log read, adapted from Lite's <c>GetRecentCollectionLogAsync</c>
+    /// to honor the per-server toolbar's settable window EXACTLY: the collection_log rows for one server
+    /// between the window's start and end bounds, newest first, capped. Where Lite (and the shell's first
+    /// port) passed a single now-relative <c>hoursBack</c> lower bound — so a custom From/To rounded to a
+    /// hours-back-from-now span — this bounds <c>collection_time</c> on BOTH sides, matching how the Wait
+    /// Stats / Blocking tabs window their reads. $1 server_id, $2 window start, $3 window end (all naive
+    /// UTC), $4 row cap.
     /// </summary>
     public const string RecentCollectionLogSql = """
         SELECT
@@ -75,8 +87,9 @@ public sealed partial class ViewerDataService
         FROM v_collection_log
         WHERE server_id = $1
         AND   collection_time >= $2
+        AND   collection_time <= $3
         ORDER BY collection_time DESC
-        LIMIT $3
+        LIMIT $4
         """;
 
     /// <summary>
@@ -140,16 +153,23 @@ public sealed partial class ViewerDataService
     }
 
     /// <summary>
-    /// Recent collection_log entries for one server, most recent first. Copied from Lite's
-    /// <c>GetRecentCollectionLogAsync</c> (default 4-hour window, 500-row cap).
+    /// Collection_log entries for one server between the window's naive-UTC start/end bounds, most recent
+    /// first (500-row cap). Feeds the Collection Log sub-tab grid and the Duration Trends chart. The window
+    /// is the per-server toolbar's settable range (<c>GetWindowUtc</c>): a preset ends "now", a custom
+    /// From/To bounds EXACTLY — unlike the old hours-back read, a custom range no longer rounds to a
+    /// hours-back-from-now span. Mirrors how <see cref="GetDistinctWaitTypesAsync"/> windows its read.
     /// </summary>
-    public async Task<List<CollectionLogRow>> GetRecentCollectionLogAsync(int serverId, int hoursBack = 4, int maxRows = 500, CancellationToken cancellationToken = default)
+    public async Task<List<CollectionLogRow>> GetRecentCollectionLogAsync(int serverId, DateTime startUtc, DateTime endUtc, int maxRows = 500, CancellationToken cancellationToken = default)
     {
         await using var command = _dataSource.CreateCommand(RecentCollectionLogSql);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
         command.Parameters.Add(new NpgsqlParameter<DateTime>
         {
-            TypedValue = DateTime.SpecifyKind(DateTime.UtcNow.AddHours(-hoursBack), DateTimeKind.Unspecified),
+            TypedValue = DateTime.SpecifyKind(startUtc, DateTimeKind.Unspecified),
+        });
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
+        {
+            TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified),
         });
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = maxRows });
 
