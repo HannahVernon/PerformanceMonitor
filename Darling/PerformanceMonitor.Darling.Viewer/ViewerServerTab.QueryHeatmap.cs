@@ -73,16 +73,19 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
-    /// Builds the heatmap's right-click "Show Active Queries at This Time" menu — Lite's heatmap drill-down
-    /// (ServerTab.xaml.cs:285-315) minus the ContextMenuHelper save/export chrome. ScottPlot's own
-    /// right-click responses are removed so the WPF menu shows; the Opened handler resolves the time bin
-    /// under the cursor and the Click routes it to <see cref="OnHeatmapDrillDown"/>.
+    /// Builds the heatmap's right-click menu — Lite's heatmap drill-down (ServerTab.xaml.cs:285-315): the
+    /// "Show Active Queries at This Time" item Inserted at the TOP of the chart's copy/save/export menu
+    /// (<see cref="BuildChartContextMenu"/>), so it reads [drill-down] [separator] [Copy/Save/Export] like
+    /// every other drill-down chart. BuildChartContextMenu already takes right-click over from ScottPlot; the
+    /// Opened handler resolves the time bin under the cursor and the Click routes it to
+    /// <see cref="OnHeatmapDrillDown"/>.
     /// </summary>
     private void WireHeatmapDrillDownMenu()
     {
-        var menu = new ContextMenu();
+        var menu = BuildChartContextMenu(QueryHeatmapChart, "Query_Heatmap");
         var drillItem = new MenuItem { Header = "Show Active Queries at This Time" };
-        menu.Items.Add(drillItem);
+        menu.Items.Insert(0, drillItem);
+        menu.Items.Insert(1, new Separator());
 
         menu.Opened += (_, _) =>
         {
@@ -112,17 +115,6 @@ public partial class ViewerServerTab
         {
             if (drillItem.Tag is DateTime bucketTime)
                 _ = OnHeatmapDrillDown(bucketTime);
-        };
-
-        /* Take over right-click from ScottPlot's default menu/pan so our WPF menu shows (shared with the
-           per-chart drill-downs in ViewerServerTab.DrillDown.cs). */
-        RemoveScottPlotContextMenuResponses(QueryHeatmapChart);
-        QueryHeatmapChart.PreviewMouseRightButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-            menu.PlacementTarget = QueryHeatmapChart;
-            menu.Placement = PlacementMode.MousePoint;
-            menu.IsOpen = true;
         };
     }
 

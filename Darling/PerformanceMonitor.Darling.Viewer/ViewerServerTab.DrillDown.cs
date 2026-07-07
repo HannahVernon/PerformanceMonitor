@@ -25,10 +25,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// "Show Blocking / Deadlocks at This Time"; the Wait Stats chart gets a wait-specific
 /// "Show Queries With &lt;wait&gt;" that opens the <see cref="WaitDrillDownWindow"/>.
 ///
-/// <para>Two adaptations from Lite, both inherent to the viewer: (1) Lite builds these on its
-/// <c>ContextMenuHelper</c> chart menu (Copy/Save Image, CSV, …), which is Lite-only and never ported, so the
-/// viewer attaches a single-item WPF <see cref="ContextMenu"/> per chart the same way the ported heatmap
-/// drill-down does (<see cref="RemoveScottPlotContextMenuResponses"/> takes over right-click from ScottPlot).
+/// <para>Two notes, both inherent to the viewer: (1) Like Lite, each drill-down item is Inserted at the top of
+/// the chart's copy/save/export <see cref="ContextMenu"/> (now a Darling-local port of Lite's
+/// <c>ContextMenuHelper</c>, in ViewerServerTab.ChartContextMenu.cs) — <see cref="BuildChartContextMenu"/>
+/// builds that menu and takes right-click over from ScottPlot (<see cref="RemoveScottPlotContextMenuResponses"/>),
+/// then <see cref="AddChartDrillDownMenuItem"/> adds the drill-down item to the SAME menu, so both coexist.
 /// (2) The chart X axis is display-time (every viewer chart plots through
 /// <see cref="ViewerTimeHelper.ForDisplay"/>), so the nearest-series time the <see cref="ChartHoverHelper"/>
 /// returns is converted back to the store's naive UTC via <see cref="ViewerTimeHelper.DisplayToNaiveUtc"/>
@@ -46,62 +47,72 @@ public partial class ViewerServerTab
     /// </summary>
     private void WireChartDrillDowns()
     {
-        /* The hover accessors are lambdas, not captured values: WaitStats + Perfmon create their
+        /* Each drill-down chart's menu is ONE ContextMenu = [drill-down item] + [separator] + [copy/save/
+           export items], exactly like Lite (ServerTab.xaml.cs:318-365 pairs SetupChartContextMenu with
+           AddChartDrillDownMenuItem on the SAME menu). BuildChartContextMenu builds the copy/export items and
+           takes right-click over from ScottPlot; AddChart/WaitDrillDownMenuItem then Insert their item at the
+           top of that returned menu — one right-click owner, no competing handler.
+
+           The hover accessors are lambdas, not captured values: WaitStats + Perfmon create their
            ChartHoverHelper LAZILY on the tab's first load (not in an Initialize*Charts call), so their fields
            are still null here in the constructor. Reading the field at menu-Opened time (by which point the
            tab has loaded and the hover exists) is correct for both the eager and the lazy charts. */
 
         /* Wait Stats — the specialized "Show Queries With <wait>" drill-down (opens WaitDrillDownWindow). */
-        AddWaitDrillDownMenuItem(WaitStatsChart, () => _waitStatsHover);
+        AddWaitDrillDownMenuItem(WaitStatsChart, BuildChartContextMenu(WaitStatsChart, "Wait_Stats"), () => _waitStatsHover);
 
         /* CPU / Memory / tempdb / Perfmon — "Show Active Queries at This Time" (Item 2, 10 charts). */
-        AddChartDrillDownMenuItem(CpuChart, () => _cpuHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(MemoryChart, () => _memoryHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(MemoryClerksChart, () => _memoryClerksHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(MemoryGrantSizingChart, () => _memoryGrantSizingHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(MemoryGrantActivityChart, () => _memoryGrantActivityHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(MemoryPressureEventsChart, () => _memoryPressureEventsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(TempDbChart, () => _tempDbHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(TempDbSizeChart, () => _tempDbSizeHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(TempDbFileIoChart, () => _tempDbFileIoHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(PerfmonChart, () => _perfmonHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(CpuChart, BuildChartContextMenu(CpuChart, "CPU_Usage"), () => _cpuHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(MemoryChart, BuildChartContextMenu(MemoryChart, "Memory_Usage"), () => _memoryHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(MemoryClerksChart, BuildChartContextMenu(MemoryClerksChart, "Memory_Clerks"), () => _memoryClerksHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(MemoryGrantSizingChart, BuildChartContextMenu(MemoryGrantSizingChart, "Memory_Grant_Sizing"), () => _memoryGrantSizingHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(MemoryGrantActivityChart, BuildChartContextMenu(MemoryGrantActivityChart, "Memory_Grant_Activity"), () => _memoryGrantActivityHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(MemoryPressureEventsChart, BuildChartContextMenu(MemoryPressureEventsChart, "Memory_Pressure_Events"), () => _memoryPressureEventsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(TempDbChart, BuildChartContextMenu(TempDbChart, "TempDB_Stats"), () => _tempDbHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(TempDbSizeChart, BuildChartContextMenu(TempDbSizeChart, "TempDB_Allocated_Size"), () => _tempDbSizeHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(TempDbFileIoChart, BuildChartContextMenu(TempDbFileIoChart, "TempDB_File_IO"), () => _tempDbFileIoHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(PerfmonChart, BuildChartContextMenu(PerfmonChart, "Perfmon_Counters"), () => _perfmonHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
 
         /* Performance Trends — "Show Active Queries at This Time" (Item 3, 4 charts). */
-        AddChartDrillDownMenuItem(QueryDurationTrendChart, () => _queryDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(ProcDurationTrendChart, () => _procDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(QueryStoreDurationTrendChart, () => _queryStoreDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(ExecutionCountTrendChart, () => _executionCountTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(QueryDurationTrendChart, BuildChartContextMenu(QueryDurationTrendChart, "Query_Duration_Trends"), () => _queryDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(ProcDurationTrendChart, BuildChartContextMenu(ProcDurationTrendChart, "Procedure_Duration_Trends"), () => _procDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(QueryStoreDurationTrendChart, BuildChartContextMenu(QueryStoreDurationTrendChart, "QueryStore_Duration_Trends"), () => _queryStoreDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(ExecutionCountTrendChart, BuildChartContextMenu(ExecutionCountTrendChart, "Execution_Count_Trends"), () => _executionCountTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
 
         /* Blocking Trends — Lock Wait + Blocking -> "Show Blocking at This Time"; Deadlock ->
            "Show Deadlocks at This Time" (Item 3, 3 charts). */
-        AddChartDrillDownMenuItem(LockWaitTrendChart, () => _lockWaitTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
-        AddChartDrillDownMenuItem(BlockingTrendChart, () => _blockingTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
-        AddChartDrillDownMenuItem(DeadlockTrendChart, () => _deadlockTrendHover, "Show Deadlocks at This Time", OnDeadlockDrillDown);
+        AddChartDrillDownMenuItem(LockWaitTrendChart, BuildChartContextMenu(LockWaitTrendChart, "Lock_Wait_Trends"), () => _lockWaitTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
+        AddChartDrillDownMenuItem(BlockingTrendChart, BuildChartContextMenu(BlockingTrendChart, "Blocking_Trends"), () => _blockingTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
+        AddChartDrillDownMenuItem(DeadlockTrendChart, BuildChartContextMenu(DeadlockTrendChart, "Deadlock_Trends"), () => _deadlockTrendHover, "Show Deadlocks at This Time", OnDeadlockDrillDown);
 
         /* File I/O (4) + Blocking > Current Waits (2) — the rest of Lite's "Show Active Queries at This Time"
            set (ServerTab.xaml.cs:340-363, in the same referenced block). Charts in this same viewer surface,
            same drill target; wired for faithful parity so no sibling chart is left without the drill-down. */
-        AddChartDrillDownMenuItem(FileIoReadChart, () => _fileIoReadHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(FileIoWriteChart, () => _fileIoWriteHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(FileIoReadThroughputChart, () => _fileIoReadThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(FileIoWriteThroughputChart, () => _fileIoWriteThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(CurrentWaitsDurationChart, () => _currentWaitsDurationHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        AddChartDrillDownMenuItem(CurrentWaitsBlockedChart, () => _currentWaitsBlockedHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(FileIoReadChart, BuildChartContextMenu(FileIoReadChart, "File_IO_Read_Latency"), () => _fileIoReadHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(FileIoWriteChart, BuildChartContextMenu(FileIoWriteChart, "File_IO_Write_Latency"), () => _fileIoWriteHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(FileIoReadThroughputChart, BuildChartContextMenu(FileIoReadThroughputChart, "File_IO_Read_Throughput"), () => _fileIoReadThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(FileIoWriteThroughputChart, BuildChartContextMenu(FileIoWriteThroughputChart, "File_IO_Write_Throughput"), () => _fileIoWriteThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(CurrentWaitsDurationChart, BuildChartContextMenu(CurrentWaitsDurationChart, "Current_Waits_Duration"), () => _currentWaitsDurationHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(CurrentWaitsBlockedChart, BuildChartContextMenu(CurrentWaitsBlockedChart, "Current_Waits_Blocked"), () => _currentWaitsBlockedHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
     }
 
     /// <summary>
-    /// Attaches a single-item right-click drill-down menu to a chart (Lite's
-    /// <c>AddChartDrillDownMenuItem</c>). The Opened handler resolves the nearest-series display-time under
-    /// the cursor via the chart's hover helper (disabling the item when the cursor is off any series); the
-    /// Click routes that time to <paramref name="handler"/>, which converts it back to UTC and reads the window.
-    /// <paramref name="hoverAccessor"/> is read at Opened time (not captured) so lazily-created hovers resolve.
+    /// Inserts a right-click drill-down item at the TOP of a chart's existing copy/export
+    /// <paramref name="menu"/> (Lite's <c>AddChartDrillDownMenuItem</c>: <c>Insert(0, item)</c> +
+    /// <c>Insert(0, separator)</c>, so the menu reads [drill-down] [separator] [copy/save/export]). The menu's
+    /// right-click was already taken over by <see cref="BuildChartContextMenu"/>; this only adds the item +
+    /// its Opened/Click behavior, so the two coexist in one menu. The Opened handler resolves the
+    /// nearest-series display-time under the cursor via the chart's hover helper (disabling the item off any
+    /// series); the Click routes that time to <paramref name="handler"/>, which converts it back to UTC and
+    /// reads the window. <paramref name="hoverAccessor"/> is read at Opened time (not captured) so
+    /// lazily-created hovers resolve.
     /// </summary>
     private void AddChartDrillDownMenuItem(
-        ScottPlot.WPF.WpfPlot chart, Func<ChartHoverHelper?> hoverAccessor, string label, Action<DateTime> handler)
+        ScottPlot.WPF.WpfPlot chart, ContextMenu menu, Func<ChartHoverHelper?> hoverAccessor, string label, Action<DateTime> handler)
     {
-        var menu = new ContextMenu();
+        menu.Items.Insert(0, new Separator());
         var item = new MenuItem { Header = label };
-        menu.Items.Add(item);
+        menu.Items.Insert(0, item);
 
         menu.Opened += (_, _) =>
         {
@@ -123,21 +134,21 @@ public partial class ViewerServerTab
             if (item.Tag is DateTime displayTime)
                 handler(displayTime);
         };
-
-        AttachChartContextMenu(chart, menu);
     }
 
     /// <summary>
     /// The Wait Stats chart's specialized right-click "Show Queries With &lt;wait&gt;" (Lite's
-    /// <c>AddWaitDrillDownMenuItem</c>): the hover's nearest series is a wait TYPE (the series label), so the
-    /// item header names it and the Click opens the <see cref="WaitDrillDownWindow"/> for that wait over the
-    /// drill window. Underscores in the wait type are doubled so WPF doesn't treat them as an access key.
+    /// <c>AddWaitDrillDownMenuItem</c>), inserted at the top of the chart's copy/export <paramref name="menu"/>
+    /// (same coexistence as <see cref="AddChartDrillDownMenuItem"/>). The hover's nearest series is a wait TYPE
+    /// (the series label), so the item header names it and the Click opens the <see cref="WaitDrillDownWindow"/>
+    /// for that wait over the drill window. Underscores in the wait type are doubled so WPF doesn't treat them
+    /// as an access key.
     /// </summary>
-    private void AddWaitDrillDownMenuItem(ScottPlot.WPF.WpfPlot chart, Func<ChartHoverHelper?> hoverAccessor)
+    private void AddWaitDrillDownMenuItem(ScottPlot.WPF.WpfPlot chart, ContextMenu menu, Func<ChartHoverHelper?> hoverAccessor)
     {
-        var menu = new ContextMenu();
+        menu.Items.Insert(0, new Separator());
         var item = new MenuItem { Header = "Show Queries With This Wait" };
-        menu.Items.Add(item);
+        menu.Items.Insert(0, item);
 
         menu.Opened += (_, _) =>
         {
@@ -161,8 +172,6 @@ public partial class ViewerServerTab
             if (item.Tag is ValueTuple<string, DateTime> tag)
                 ShowQueriesForWaitType(tag.Item1, tag.Item2);
         };
-
-        AttachChartContextMenu(chart, menu);
     }
 
     /// <summary>

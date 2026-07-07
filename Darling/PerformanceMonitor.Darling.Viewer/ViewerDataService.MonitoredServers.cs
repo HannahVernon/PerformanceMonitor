@@ -95,9 +95,13 @@ ON CONFLICT (server_id) DO NOTHING";
     public const string MonitoredServerSetExcludedDatabasesSql =
         "UPDATE config_monitored_servers SET excluded_databases = $2, modified_at = (now() AT TIME ZONE 'UTC') WHERE server_id = $1";
 
-    /// <summary>All configured servers, for the Manage Servers list. Ordered by display name.</summary>
+    /// <summary>All configured servers, for the Manage Servers list. Ordered by display name. Deliberately
+    /// OMITS <c>encrypted_password</c>: the list is a display / sidebar-reconcile read that never needs the
+    /// secret, and #1416 revoked the read-only <c>viewer</c> role's SELECT on that column — selecting it here
+    /// would fail the whole list with SQLSTATE 42501 for a read-only seat. The Edit dialog reloads the row
+    /// (including the DPAPI blob) by id via <see cref="MonitoredServerByIdSql"/>, which is an admin-role action.</summary>
     public const string MonitoredServersSelectSql = @"
-SELECT server_id, name, host, database, auth, username, encrypted_password, encrypt_mode,
+SELECT server_id, name, host, database, auth, username, encrypt_mode,
        trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases,
        monthly_cost_usd, capture_plans, is_enabled, created_at
 FROM config_monitored_servers
@@ -205,7 +209,9 @@ ORDER BY COALESCE(s.display_name, c.name)";
     public static int ComputeServerId(string host, string? database, bool readOnlyIntent) =>
         ServerIdHelper.GetDeterministicHashCode(ServerIdHelper.BuildStorageName(host, database, readOnlyIntent));
 
-    /// <summary>All configured servers (Manage Servers list + the sidebar reconcile source).</summary>
+    /// <summary>All configured servers (Manage Servers list + the sidebar reconcile source), read without the
+    /// <c>encrypted_password</c> secret so a read-only <c>viewer</c> seat can list them (#1416). The Edit dialog
+    /// reloads the blob by id via <see cref="GetMonitoredServerAsync"/>.</summary>
     public async Task<List<MonitoredServerRow>> GetMonitoredServersAsync(CancellationToken cancellationToken = default)
     {
         var servers = new List<MonitoredServerRow>();
@@ -214,7 +220,7 @@ ORDER BY COALESCE(s.display_name, c.name)";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            servers.Add(ReadMonitoredServerRow(reader));
+            servers.Add(ReadMonitoredServerRowNoSecret(reader));
         }
 
         return servers;
@@ -329,6 +335,34 @@ ORDER BY COALESCE(s.display_name, c.name)";
         CapturePlans = reader.IsDBNull(13) ? null : reader.GetBoolean(13),
         IsEnabled = reader.GetBoolean(14),
         CreatedAt = reader.IsDBNull(15) ? null : DateTime.SpecifyKind(reader.GetDateTime(15), DateTimeKind.Utc),
+    };
+
+    /// <summary>
+    /// Reads a <see cref="MonitoredServerRow"/> from the secret-free LIST projection
+    /// (<see cref="MonitoredServersSelectSql"/>): identical to <see cref="ReadMonitoredServerRow"/> but the
+    /// query omits <c>encrypted_password</c> (a read-only <c>viewer</c> seat lost SELECT on it, #1416), so
+    /// <see cref="MonitoredServerRow.EncryptedPassword"/> stays null and every column after <c>username</c>
+    /// shifts down one ordinal. The Manage Servers grid never displays the secret; the Edit dialog reloads the
+    /// blob by id (<see cref="GetMonitoredServerAsync"/>).
+    /// </summary>
+    private static MonitoredServerRow ReadMonitoredServerRowNoSecret(NpgsqlDataReader reader) => new()
+    {
+        ServerId = reader.GetInt32(0),
+        Name = reader.GetString(1),
+        Host = reader.GetString(2),
+        Database = reader.IsDBNull(3) ? null : reader.GetString(3),
+        Auth = reader.GetString(4),
+        Username = reader.IsDBNull(5) ? null : reader.GetString(5),
+        EncryptedPassword = null, /* not selected — the LIST read omits the secret column (#1416) */
+        EncryptMode = reader.GetString(6),
+        TrustServerCertificate = reader.GetBoolean(7),
+        ReadOnlyIntent = reader.GetBoolean(8),
+        MultiSubnetFailover = reader.GetBoolean(9),
+        ExcludedDatabases = reader.IsDBNull(10) ? new List<string>() : reader.GetFieldValue<string[]>(10).ToList(),
+        MonthlyCostUsd = reader.GetDecimal(11),
+        CapturePlans = reader.IsDBNull(12) ? null : reader.GetBoolean(12),
+        IsEnabled = reader.GetBoolean(13),
+        CreatedAt = reader.IsDBNull(14) ? null : DateTime.SpecifyKind(reader.GetDateTime(14), DateTimeKind.Utc),
     };
 
     private static void AddTextArray(NpgsqlCommand command, IEnumerable<string>? values) =>

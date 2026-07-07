@@ -161,8 +161,11 @@ public partial class ViewerServerTab : UserControl
 
         /* Right-click chart drill-downs (ViewerServerTab.DrillDown.cs) + slicer overlay-on-select
            (ViewerServerTab.SlicerOverlay.cs). Wired LAST — after every Initialize*Charts has created its
-           hover helpers, which the drill-down menus read for the nearest-series time. */
+           hover helpers, which the drill-down menus read for the nearest-series time. WireChartDrillDowns
+           builds each drill-down chart's copy/save/export menu (BuildChartContextMenu) and adds the drill-down
+           to it; WireChartContextMenus gives the same menu to every chart that has NO drill-down. */
         WireChartDrillDowns();
+        WireChartContextMenus();
         WireSlicerOverlays();
 
         /* Per-row double-click history windows (ViewerServerTab.History.cs) on the three query grids — a
