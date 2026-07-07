@@ -58,10 +58,31 @@ public partial class ManageServersWindow : Window
 
             var rows = await _dataService.GetMonitoredServersAsync();
             var appVersion = GetAppVersion();
+
+            /* One collection-freshness read for the whole list — the same MAX(collection_time) per server the
+               sidebar dots + Overview cards derive freshness from — so the grid shows when the Darling SERVICE
+               last collected each server (the viewer never connects to a monitored server). Defensive: a
+               read-only seat or a transient failure just leaves the column showing "Never". */
+            Dictionary<int, DateTime> freshness;
+            try
+            {
+                freshness = await _dataService.GetServerFreshnessAsync();
+            }
+            catch (Exception ex)
+            {
+                ViewerLogger.Warn("ManageServersWindow", $"collection-freshness read failed: {ex.Message}");
+                freshness = new Dictionary<int, DateTime>();
+            }
+
             var items = new List<ManagedServerListItem>(rows.Count);
             foreach (var row in rows)
             {
-                items.Add(new ManagedServerListItem(row, _serverStore.IsFavorite(row.Host)) { InstalledVersion = appVersion });
+                var lastCollected = freshness.TryGetValue(row.ServerId, out var t) ? t : (DateTime?)null;
+                items.Add(new ManagedServerListItem(row, _serverStore.IsFavorite(row.Host))
+                {
+                    InstalledVersion = appVersion,
+                    LastCollectedUtc = lastCollected,
+                });
             }
 
             ServersGrid.ItemsSource = items;
@@ -284,4 +305,15 @@ public sealed class ManagedServerListItem
 
     /// <summary>The store's creation time (local, for the grid's "Added" column); falls back to now for a row read without it.</summary>
     public DateTime CreatedDate => (Row.CreatedAt ?? DateTime.UtcNow).ToLocalTime();
+
+    /// <summary>The store's naive-UTC newest collection time for this server (MAX(collection_time) across all
+    /// collectors), set once before binding; null when the Darling service has not collected this server yet.</summary>
+    public DateTime? LastCollectedUtc { get; set; }
+
+    /// <summary>The "Last Collected" cell: the newest collection time rendered in the viewer's timestamp-display
+    /// mode (Server/Local/UTC via <see cref="ViewerTimeHelper.ForDisplay"/>), or "Never" when the service has
+    /// not collected this server yet. Labeled "Last Collected" — the SERVICE connects and collects, the viewer
+    /// never does — so this reflects service activity, not a viewer connection.</summary>
+    public string LastCollectedDisplay =>
+        LastCollectedUtc is { } utc ? ViewerTimeHelper.ForDisplay(utc).ToString("yyyy-MM-dd HH:mm") : "Never";
 }
