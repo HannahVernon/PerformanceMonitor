@@ -67,12 +67,20 @@ ORDER BY collector_name";
     }
 
     /// <summary>
-    /// Gets recent collection log entries for a server, most recent first.
+    /// Gets recent collection log entries for a server, most recent first, bounded to the tab's
+    /// settable window. A preset ends "now" (<paramref name="hoursBack"/> from now); a custom range
+    /// (<paramref name="fromDate"/>/<paramref name="toDate"/>, both already server-time) bounds
+    /// <c>collection_time</c> on BOTH sides EXACTLY via <see cref="GetTimeRange"/> — mirroring how
+    /// <see cref="GetWaitStatsAsync"/> windows its read. The old single now-relative lower bound ignored
+    /// the custom To, rounding a custom range to a hours-back-from-now span.
     /// </summary>
-    public async Task<List<CollectionLogRow>> GetRecentCollectionLogAsync(int serverId, int hoursBack = 4, int maxRows = 500)
+    public async Task<List<CollectionLogRow>> GetRecentCollectionLogAsync(int serverId, int hoursBack = 4, DateTime? fromDate = null, DateTime? toDate = null, int maxRows = 500)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
+
+        var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+
         command.CommandText = @"
 SELECT
     collector_name,
@@ -87,11 +95,13 @@ SELECT
 FROM v_collection_log
 WHERE server_id = $1
 AND   collection_time >= $2
+AND   collection_time <= $3
 ORDER BY collection_time DESC
-LIMIT $3";
+LIMIT $4";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
-        command.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow.AddHours(-hoursBack) });
+        command.Parameters.Add(new DuckDBParameter { Value = startTime });
+        command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = maxRows });
 
         var items = new List<CollectionLogRow>();
