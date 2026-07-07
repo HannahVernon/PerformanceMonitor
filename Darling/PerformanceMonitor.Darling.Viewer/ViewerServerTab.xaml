@@ -2756,33 +2756,19 @@
                             <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
-                            <Border Grid.Row="0" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Bad Pages Detected" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="BadPagesChart"/>
-                                </Grid>
+                            <!-- Borderless tiles matching every other chart tab; each chart identifies itself
+                                 via its descriptive Y-axis label (like File I/O's "Read Latency (ms)"). -->
+                            <Border Grid.Row="0" Grid.Column="0" Margin="2">
+                                <scottplot:WpfPlot x:Name="BadPagesChart"/>
                             </Border>
-                            <Border Grid.Row="0" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Interval Dump Requests" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="DumpRequestsChart"/>
-                                </Grid>
+                            <Border Grid.Row="0" Grid.Column="1" Margin="2">
+                                <scottplot:WpfPlot x:Name="DumpRequestsChart"/>
                             </Border>
-                            <Border Grid.Row="1" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Access Violations Occurred" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="AccessViolationsChart"/>
-                                </Grid>
+                            <Border Grid.Row="1" Grid.Column="0" Margin="2">
+                                <scottplot:WpfPlot x:Name="AccessViolationsChart"/>
                             </Border>
-                            <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Write Access Violation Count" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="WriteAccessViolationsChart"/>
-                                </Grid>
+                            <Border Grid.Row="1" Grid.Column="1" Margin="2">
+                                <scottplot:WpfPlot x:Name="WriteAccessViolationsChart"/>
                             </Border>
                         </Grid>
                     </Grid>
@@ -2801,33 +2787,19 @@
                             <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
-                            <Border Grid.Row="0" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Non-Yielding Tasks Reported" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="NonYieldingTasksChart"/>
-                                </Grid>
+                            <!-- Borderless tiles matching every other chart tab; each chart identifies itself
+                                 via its descriptive Y-axis label / legend (like File I/O's "Read Latency (ms)"). -->
+                            <Border Grid.Row="0" Grid.Column="0" Margin="2">
+                                <scottplot:WpfPlot x:Name="NonYieldingTasksChart"/>
                             </Border>
-                            <Border Grid.Row="0" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Latch Warnings" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="LatchWarningsChart"/>
-                                </Grid>
+                            <Border Grid.Row="0" Grid.Column="1" Margin="2">
+                                <scottplot:WpfPlot x:Name="LatchWarningsChart"/>
                             </Border>
-                            <Border Grid.Row="1" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="Sick Spinlocks by Type" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="SickSpinlocksChart"/>
-                                </Grid>
+                            <Border Grid.Row="1" Grid.Column="0" Margin="2">
+                                <scottplot:WpfPlot x:Name="SickSpinlocksChart"/>
                             </Border>
-                            <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                    <TextBlock Text="SQL CPU vs System CPU" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
-                                    <scottplot:WpfPlot Grid.Row="1" x:Name="CpuComparisonChart"/>
-                                </Grid>
+                            <Border Grid.Row="1" Grid.Column="1" Margin="2">
+                                <scottplot:WpfPlot x:Name="CpuComparisonChart"/>
                             </Border>
                         </Grid>
                     </Grid>

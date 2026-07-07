@@ -132,7 +132,9 @@ public partial class ViewerServerTab
         chart.Plot.Axes.DateTimeTicksBottomDateChange();
         ReapplyAxisColors(chart);
         chart.Plot.Axes.SetLimitsX(xMin, xMax);
-        chart.Plot.YLabel("Count");
+        /* The tiles are borderless (no in-panel title), so the descriptive Y-axis label is the chart's
+           identifier — the same convention the File I/O charts use ("Read Latency (ms)"). */
+        chart.Plot.YLabel(label);
         chart.Plot.Axes.SetLimitsY(0, max > 0 ? max * 1.15 : 1);
         chart.Refresh();
     }
@@ -190,7 +192,7 @@ public partial class ViewerServerTab
         SickSpinlocksChart.Plot.Axes.DateTimeTicksBottomDateChange();
         ReapplyAxisColors(SickSpinlocksChart);
         SickSpinlocksChart.Plot.Axes.SetLimitsX(xMin, xMax);
-        SickSpinlocksChart.Plot.YLabel("Backoffs");
+        SickSpinlocksChart.Plot.YLabel("Sick Spinlocks (backoffs)");
         SetChartYLimitsWithLegendPadding(SickSpinlocksChart, 0, max);
         SickSpinlocksChart.Refresh();
     }
