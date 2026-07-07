@@ -32,6 +32,11 @@
         "resolved": "1.0.2",
         "contentHash": "VkP04/jFXaxT3TkcRhzETYtOrznQxRmQ2J1XJdbXz47Bir7hIzPR7mFZk4GJQ4An4gozW+vonpf+iqTHomAkQw=="
       },
+      "Hardcodet.NotifyIcon.Wpf": {
+        "type": "Transitive",
+        "resolved": "2.0.1",
+        "contentHash": "dtxmeZXzV2GzSm91aZ3hqzgoeVoARSkDPVCYfhVUNyyKBWYxMgNC0EcLiSYxD4Uc4alq/2qb3SmV8DgAENLRLQ=="
+      },
       "HarfBuzzSharp": {
         "type": "Transitive",
         "resolved": "8.3.1.1",
@@ -877,6 +882,7 @@
       "performancemonitor.darling.viewer": {
         "type": "Project",
         "dependencies": {
+          "Hardcodet.NotifyIcon.Wpf": "[2.0.1, )",
           "PerformanceMonitor.Alerting": "[1.0.0, )",
           "PerformanceMonitor.Analysis": "[1.0.0, )",
           "PerformanceMonitor.Common": "[1.0.0, )",

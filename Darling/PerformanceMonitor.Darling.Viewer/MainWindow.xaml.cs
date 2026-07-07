@@ -17,6 +17,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
@@ -74,6 +75,37 @@ public partial class MainWindow : Window
     /// </summary>
     private readonly ViewerAppSettingsStore _appSettingsStore = new();
 
+    /// <summary>
+    /// The system-tray icon + minimize-to-tray behavior (ported from Lite's SystemTrayService, adapted for
+    /// the headless viewer). Null until <see cref="OnLoaded"/> initializes it once the store connects.
+    /// </summary>
+    private SystemTrayService? _trayService;
+
+    /// <summary>
+    /// Turns polled alert-history rows into non-duplicated, cooldown-gated tray toasts — the headless
+    /// stand-in for Lite's in-process alert-engine toast. Primed at startup so history isn't replayed.
+    /// </summary>
+    private AlertToastCoordinator? _toastCoordinator;
+    private bool _alertPollInFlight;
+
+    /// <summary>
+    /// Restores the window from the tray if a sleep-/lock-driven minimize hid it (Lite #1050). Reachable now
+    /// that minimize-to-tray can hide the viewer; paired with the App-startup SoftwareOnly render mode.
+    /// </summary>
+    private WindowResumeGuard? _resumeGuard;
+
+    /* Live copies of the three ViewerAppSettings values the tray/toast path honors at runtime: seeded in
+       the constructor and refreshed when the Settings window closes (mirroring ViewerExportSettings). */
+    private bool _minimizeToTray;
+    private bool _alertsEnabled;
+    private int _alertCooldownMinutes;
+
+    /// <summary>How far back each toast poll reads alert history; the coordinator dedupes the overlap.</summary>
+    private static readonly TimeSpan s_alertPollWindow = TimeSpan.FromMinutes(15);
+
+    /// <summary>Seen-row retention (poll window + margin) so a row still inside the window is never pruned early.</summary>
+    private static readonly TimeSpan s_alertSeenRetention = TimeSpan.FromMinutes(20);
+
     public MainWindow()
     {
         InitializeComponent();
@@ -89,6 +121,14 @@ public partial class MainWindow : Window
            dismiss/mute action-logging opt-in the Alerts tab honors. */
         MuteRuleEditDialog.DefaultExpiration = appSettings.MuteRuleDefaultExpiration;
         AlertsHistoryTab.LogDismissals = appSettings.LogAlertDismissals;
+        /* Seed the runtime tray/toast knobs. Minimize-to-tray is genuinely viewer-local (ViewerAppSettings).
+           The alerts-master and the "Tray notification cooldown" are STORE-backed (AlertSettingsRow.Enabled /
+           .CooldownMinutes — the same fields the Settings window's "Enable notifications" + cooldown drive and
+           the service honors); these ViewerAppSettings copies are only a pre-connect fallback, overwritten by
+           RefreshAlertToastSettingsFromStoreAsync once the store connects and again on Settings close. */
+        _minimizeToTray = appSettings.MinimizeToTray;
+        _alertsEnabled = appSettings.AlertsEnabled;
+        _alertCooldownMinutes = appSettings.AlertCooldownMinutes;
         ApplyTimeDisplayMode(appSettings.TimeDisplayMode);
         Loaded += OnLoaded;
         Closed += OnClosed;
@@ -200,6 +240,35 @@ public partial class MainWindow : Window
             }
         }
 
+        /* System tray + in-app alert toasts (the ported Lite tray, adapted for headless). The tray icon lives
+           for the process; restore shares the single-instance SurfaceWindow path so the tray Restore and a
+           second-launch surface behave identically. Minimize-to-tray reads the live _minimizeToTray value. */
+        _trayService = new SystemTrayService(this, SurfaceWindow, () => _minimizeToTray);
+        _trayService.Initialize();
+
+        /* #1050: restore the window from the tray on resume/unlock if a sleep- or lock-driven minimize hid it.
+           ??= so a repeated Loaded can't double-subscribe (static SystemEvents). Shares the SurfaceWindow path. */
+        _resumeGuard ??= new WindowResumeGuard(this, SurfaceWindow);
+
+        /* Pull the store-authoritative alerts-master + toast cooldown (AlertSettingsRow) so the toast path
+           honors the same "Enable notifications" + "Tray notification cooldown" the service does. */
+        await RefreshAlertToastSettingsFromStoreAsync();
+
+        /* Prime the toast watermark with the rows already present so startup doesn't replay history as a
+           toast storm — only alerts that arrive after this point can toast. Best-effort: a failed prime just
+           means the first poll may toast up to one card per condition in the window (bounded by the cooldown). */
+        _toastCoordinator = new AlertToastCoordinator(s_alertSeenRetention);
+        try
+        {
+            var existing = await _dataService.GetAlertHistoryAsync(
+                DateTime.UtcNow - s_alertPollWindow, serverId: null, limit: 500);
+            _toastCoordinator.Prime(existing);
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Warn("AlertToasts", $"Priming the alert-toast watermark failed: {ex.Message}");
+        }
+
         _refreshTimer = new DispatcherTimer { Interval = s_refreshInterval };
         _refreshTimer.Tick += OnRefreshTimerTick;
         _refreshTimer.Start();
@@ -254,6 +323,10 @@ public partial class MainWindow : Window
         _ = RefreshServerStatusAsync();
         _ = RefreshStoreSizeAsync();
 
+        /* Poll alert history for new rows to surface as tray toasts, regardless of the visible tab (the
+           headless stand-in for Lite's in-process alert-engine toast). */
+        _ = PollAlertToastsAsync();
+
         /* Two tabs opt out of the 60s auto-refresh: Recommendations refreshes on tab-activation only
            (matching Lite — analysis findings change on the service's 30-minute cadence, so a 60-second
            auto-refresh is pointless churn and would reset the incident expanders' state under the
@@ -285,6 +358,158 @@ public partial class MainWindow : Window
             await RefreshVisibleAsync();
         }
     }
+
+    // ── In-app alert toasts (headless poll of alert history) ─────────────────────────────
+
+    /// <summary>
+    /// Refreshes the two store-authoritative toast knobs — the alerts master (<see cref="AlertSettingsRow.Enabled"/>,
+    /// the Settings window's "Enable notifications") and the per-condition cooldown
+    /// (<see cref="AlertSettingsRow.CooldownMinutes"/>, the "Tray notification cooldown") — from the store, so
+    /// the viewer's toasts honor exactly what the Settings window drives + the service applies. Best-effort:
+    /// a null row (store not seeded yet) or a read failure leaves the pre-connect fallback values in place.
+    /// </summary>
+    private async Task RefreshAlertToastSettingsFromStoreAsync()
+    {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var row = await _dataService.GetAlertSettingsAsync();
+            if (row is not null)
+            {
+                _alertsEnabled = row.Enabled;
+                _alertCooldownMinutes = row.CooldownMinutes;
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Warn("AlertToasts", $"Reading alert settings for toasts failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Polls recent, non-dismissed alert history and surfaces genuinely-new rows as tray toasts — the
+    /// headless viewer's substitute for Lite's in-process alert-engine toast (the service already delivered
+    /// them via email/Teams/Slack; this is the supplementary in-app nudge). Duplicate-suppression and the
+    /// per-condition "Tray notification cooldown" gate live in <see cref="AlertToastCoordinator"/>; this only
+    /// does the read + render. Skips when notifications are disabled and never throws (a broken poll must not
+    /// disturb the refresh loop).
+    /// </summary>
+    private async Task PollAlertToastsAsync()
+    {
+        if (_dataService is null || _trayService is null || _toastCoordinator is null)
+        {
+            return;
+        }
+
+        if (!_alertsEnabled || _alertPollInFlight)
+        {
+            return;
+        }
+
+        _alertPollInFlight = true;
+        try
+        {
+            var rows = await _dataService.GetAlertHistoryAsync(
+                DateTime.UtcNow - s_alertPollWindow, serverId: null, limit: 500);
+
+            var cooldown = TimeSpan.FromMinutes(Math.Max(0, _alertCooldownMinutes));
+            foreach (var row in _toastCoordinator.SelectToasts(rows, DateTime.UtcNow, cooldown))
+            {
+                ShowAlertToast(row);
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Warn("AlertToasts", $"Alert-toast poll failed: {ex.Message}");
+        }
+        finally
+        {
+            _alertPollInFlight = false;
+        }
+    }
+
+    /// <summary>
+    /// Renders one polled alert row as a tray toast: a green "resolved" styled card for resolution notices
+    /// (Cleared/Resolved/Restored), otherwise an interactive snoozable card (Error accent for
+    /// deadlock/poison, Warning otherwise) whose Snooze writes a scoped mute rule to the store.
+    /// </summary>
+    private void ShowAlertToast(ViewerAlertRow row)
+    {
+        if (_trayService is null)
+        {
+            return;
+        }
+
+        var body = $"{row.ServerName}: {ToastBody(row)}";
+
+        if (row.IsResolved)
+        {
+            _trayService.ShowStyledNotification(row.MetricName, body, ToastSeverity.Success);
+            return;
+        }
+
+        var icon = row.IsCritical
+            ? Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Error
+            : Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Warning;
+
+        /* Capture the identity so the snooze callback scopes the mute rule to THIS alert's server + metric. */
+        var serverName = row.ServerName;
+        var metricName = row.MetricName;
+        _trayService.ShowSnoozableNotification(
+            row.MetricName, body, icon, duration => SnoozeAlertAsync(serverName, metricName, duration));
+    }
+
+    /// <summary>
+    /// The toast one-liner: the first meaningful line of the stored detail (the richest summary, the analog
+    /// of Lite's per-metric ShortMessage), falling back to the formatted current value.
+    /// </summary>
+    private static string ToastBody(ViewerAlertRow row)
+    {
+        if (!string.IsNullOrEmpty(row.DetailText))
+        {
+            foreach (var line in row.DetailText.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
+                {
+                    return trimmed;
+                }
+            }
+        }
+
+        return row.CurrentValueDisplay;
+    }
+
+    /// <summary>
+    /// Persists a snooze from a tray toast: a temporary mute rule scoped to the alert's server + metric
+    /// (Lite's SnoozeBalloon semantics), written straight to <c>config_mute_rules</c>. The running Darling
+    /// service re-reads it on its next config load, so the condition stops re-alerting until it expires.
+    /// </summary>
+    private async Task SnoozeAlertAsync(string serverName, string metricName, TimeSpan duration)
+    {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        var rule = new MuteRule
+        {
+            ServerName = string.IsNullOrEmpty(serverName) ? null : serverName,
+            MetricName = metricName,
+            ExpiresAtUtc = DateTime.UtcNow + duration,
+            Reason = $"Snoozed from tray ({FormatSnoozeDuration(duration)})",
+        };
+
+        await _dataService.InsertMuteRuleAsync(rule);
+        StatusText.Text = $"Snoozed {metricName} on {serverName} for {FormatSnoozeDuration(duration)} — {DateTime.Now:HH:mm:ss}";
+    }
+
+    private static string FormatSnoozeDuration(TimeSpan d) =>
+        d.TotalHours >= 1 ? $"{(int)d.TotalHours}h" : $"{(int)d.TotalMinutes}m";
 
     /// <summary>
     /// Single-clicking a sidebar server drives the server-scoped aggregate tabs to it: it syncs the
@@ -1031,6 +1256,11 @@ public partial class MainWindow : Window
         /* Re-seed the new-mute-rule default expiration + dismiss/mute logging opt-in in case the operator changed them. */
         MuteRuleEditDialog.DefaultExpiration = reloaded.MuteRuleDefaultExpiration;
         AlertsHistoryTab.LogDismissals = reloaded.LogAlertDismissals;
+        /* Re-seed the runtime tray/toast knobs so a change takes effect immediately (the tray reads
+           _minimizeToTray live). Minimize-to-tray is viewer-local (the reloaded file); the alerts-master +
+           "Tray notification cooldown" the window just wrote to the STORE are re-read from there. */
+        _minimizeToTray = reloaded.MinimizeToTray;
+        _ = RefreshAlertToastSettingsFromStoreAsync();
         var previousMode = ViewerTimeHelper.CurrentDisplayMode;
         ApplyTimeDisplayMode(reloaded.TimeDisplayMode);
         if (ViewerTimeHelper.CurrentDisplayMode != previousMode)
@@ -1050,10 +1280,12 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Brings the viewer window to the foreground when a second launch is folded into this instance (the
-    /// shared single-instance surface path). Restores a minimized window to Maximized — the viewer's startup
-    /// state — and activates it through WPF's own Show()/Activate() path. The viewer has no tray, so there is
-    /// no hidden-Visibility state to reconcile.
+    /// The one true window-restore path, shared by the tray (Show Window / double-click), minimize-to-tray
+    /// restore, and the single-instance second-launch surface, so the window can never be left hidden-but-blank.
+    /// Reconciles a tray-hidden window — minimize-to-tray calls <see cref="Window.Hide"/>, which sets
+    /// Visibility=Hidden; only <see cref="Window.Show"/> re-runs layout/render (a raw Win32 ShowWindow would
+    /// leave it blank, Lite #1050) — and restores a minimized window to the viewer's Maximized startup state.
+    /// Must run on the UI thread.
     /// </summary>
     public void SurfaceWindow()
     {
@@ -1063,6 +1295,7 @@ public partial class MainWindow : Window
         }
 
         Show();
+        ShowInTaskbar = true;
         Activate();
         /* Nudge to the top without pinning topmost. */
         Topmost = true;
@@ -1080,6 +1313,8 @@ public partial class MainWindow : Window
     {
         _refreshTimer?.Stop();
         _overviewTimer?.Stop();
+        _resumeGuard?.Dispose();
+        _trayService?.Dispose();
 
         if (_dataService is not null)
         {
