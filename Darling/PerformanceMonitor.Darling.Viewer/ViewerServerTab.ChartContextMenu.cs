@@ -183,6 +183,7 @@ public partial class ViewerServerTab
            duration chart Lite also leaves drill-less. */
         BuildChartContextMenu(LatchStatsChart, "Latch_Stats");
         BuildChartContextMenu(SpinlockStatsChart, "Spinlock_Stats");
+        BuildChartContextMenu(SessionStatsChart, "Session_Stats");
         BuildChartContextMenu(CpuSchedulerChart, "CPU_Scheduler");
         BuildChartContextMenu(PlanCacheChart, "Plan_Cache");
         BuildChartContextMenu(CollectorDurationChart, "Collector_Duration");

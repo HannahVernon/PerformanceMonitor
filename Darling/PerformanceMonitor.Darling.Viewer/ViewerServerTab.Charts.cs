@@ -85,6 +85,7 @@ public partial class ViewerServerTab : IDisposable
         DisposePlanCacheHelpers();
         DisposeCpuSchedulerHelpers();
         DisposeLatchSpinlockHelpers();
+        DisposeSessionStatsHelpers();
         DisposeFileIoHelpers();
         DisposeBlockingHelpers();
         DisposePerfmonHelpers();

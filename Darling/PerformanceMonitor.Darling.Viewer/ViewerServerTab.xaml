@@ -2160,6 +2160,36 @@
             </Grid>
         </TabItem>
 
+        <!-- Session Stats Tab — the Dashboard-parity port of ResourceMetricsContent's Session Stats sub-tab.
+             A single server-wide session-count trend chart (Total / Running / Sleeping / Background / Dormant /
+             Idle >30m / Waiting for Memory) over the settable window, with a summary strip below for the
+             non-chartable attribution (top application / top host by connections + distinct databases with
+             connections). Feed is v_session_summary_stats (the server-wide SUMMARY collector = 1:1 with the
+             Dashboard's session_stats table), NOT the per-application v_session_stats FinOps uses. Placed
+             after Perfmon, mirroring the Dashboard's Perfmon -> Session Stats adjacency. -->
+        <TabItem Header="Session Stats">
+            <Grid Margin="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="Session Counts Over Time" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                <scottplot:WpfPlot Grid.Row="1" x:Name="SessionStatsChart"/>
+                <Border Grid.Row="2" Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="0,1,0,0" Padding="10,8" Margin="0,8,0,0" CornerRadius="0,0,4,4">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <TextBlock Text="Top Application:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <TextBlock x:Name="SessionStatsTopAppText" Text="N/A" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                        <TextBlock Text="Top Host:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <TextBlock x:Name="SessionStatsTopHostText" Text="N/A" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                        <TextBlock Text="Databases:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <TextBlock x:Name="SessionStatsDatabasesText" Text="N/A" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </TabItem>
+
         <!-- Running Jobs Tab — copied from Lite's ServerTab.xaml Running Jobs tab: the latest-snapshot
              grid of currently-running SQL Agent jobs (8 columns, IsRunningLong row highlight) with the
              W1g column-filter headers. Reads rewired to Postgres; the msdb-access banner is derived
