@@ -45,8 +45,9 @@ namespace PerformanceMonitor.Darling.Service;
 /// transition, not every sweep — exactly the Dashboard's <c>_activeXAlert</c>/<c>_lastXAlert</c> shape.
 /// On recovery a "…Resumed"/"…Restored" row is written to alert history (closing the audit loop the
 /// same way the engine's resolution callback now does — see <see cref="BuildResolutionRecord"/>).
-/// Gated on the master <c>alerts.enabled</c> switch; thresholds are sensible hardcoded defaults
-/// (defaults over speculative config — no new config knobs, no migration).
+/// Gated on the master <c>alerts.enabled</c> switch — plus, for the connect edge, the V20
+/// <c>notify_connection_changes</c> toggle (Lite's <c>App.NotifyConnectionChanges</c> twin); the
+/// collection-stopped / capture-down thresholds stay sensible hardcoded defaults.
 /// </summary>
 internal sealed class DarlingSelfAlertEvaluator
 {
@@ -68,6 +69,13 @@ internal sealed class DarlingSelfAlertEvaluator
     private readonly Func<AlertMuteContext, bool> _isAlertMuted;
     private readonly ILogger? _logger;
     private readonly Func<DateTime> _utcNow;
+
+    /* The connection-change notify gate (V20), read live so a store reload takes effect on the next connect
+       edge. A Func rather than a settings-interface member because NotifyConnectionChanges is a Darling-specific
+       concrete DarlingAlertSettings knob, not on the shared IAlertEngineSettings (the DeliveryMode precedent);
+       the Func seam also keeps the test fakes — which implement only IAlertEngineSettings — untouched. Defaults
+       to always-on when unsupplied (preserving the pre-V20 behavior). */
+    private readonly Func<bool> _notifyConnectionChanges;
 
     /* Edge state, keyed by the engine's serverKey (the server_id as an invariant string — the same
        identity the deliverer/history/watermark stores use). In-memory only, exactly like the shared
@@ -94,7 +102,8 @@ internal sealed class DarlingSelfAlertEvaluator
         IAlertHistoryStore historyStore,
         Func<AlertMuteContext, bool> isAlertMuted,
         ILogger? logger = null,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        Func<bool>? notifyConnectionChanges = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _deliverer = deliverer ?? throw new ArgumentNullException(nameof(deliverer));
@@ -102,6 +111,7 @@ internal sealed class DarlingSelfAlertEvaluator
         _isAlertMuted = isAlertMuted ?? throw new ArgumentNullException(nameof(isAlertMuted));
         _logger = logger;
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
+        _notifyConnectionChanges = notifyConnectionChanges ?? (() => true);
     }
 
     private enum ConnectionState
@@ -289,7 +299,8 @@ internal sealed class DarlingSelfAlertEvaluator
     /// NOT re-fire, and the first-ever outcome (Unknown→online/offline) is a silent baseline, mirroring the
     /// Dashboard's skip-first-check. Both edges are FULL alerts (email/webhook, Dashboard parity — the
     /// restore is not a silent resolution). State is tracked even while alerts are disabled so re-enabling
-    /// resumes from the correct baseline; only delivery is gated on the master switch.
+    /// resumes from the correct baseline; only delivery is gated — on the master switch AND the V20
+    /// connection-change notify toggle (<see cref="DarlingAlertSettings.NotifyConnectionChanges"/>).
     /// </summary>
     public async Task ApplyConnectionOutcomeAsync(
         int serverId, string serverName, bool online, string? error, CancellationToken cancellationToken)
@@ -305,7 +316,11 @@ internal sealed class DarlingSelfAlertEvaluator
             _hasBeenOnline[key] = true;
         }
 
-        if (!_settings.AlertsEnabled)
+        /* Delivery is gated on the master switch AND the connection-change notify toggle (V20); the state
+           machine above already advanced, so toggling either off then back on resumes from the correct
+           baseline rather than replaying a stale edge — the same "track always, deliver conditionally"
+           posture the master switch already had. */
+        if (!_settings.AlertsEnabled || !_notifyConnectionChanges())
         {
             return;
         }

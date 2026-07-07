@@ -111,10 +111,15 @@ public sealed class DarlingSelfAlertTests
         public RecordingDeliverer Deliverer { get; } = new();
         public FakeHistoryStore History { get; } = new();
         public bool Muted { get; set; }
+
+        /// <summary>The V20 connection-change notify gate, read live by the evaluator's connect edge (default on).</summary>
+        public bool NotifyConnectionChanges { get; set; } = true;
+
         public DateTime Now { get; set; } = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
 
         public DarlingSelfAlertEvaluator Build() => new(
-            Settings, Deliverer, History, _ => Muted, logger: null, utcNow: () => Now);
+            Settings, Deliverer, History, _ => Muted, logger: null, utcNow: () => Now,
+            notifyConnectionChanges: () => NotifyConnectionChanges);
     }
 
     /* ---------------- collection-stopped detection (pure) ---------------- */
@@ -352,6 +357,40 @@ public sealed class DarlingSelfAlertTests
         /* Staying online does not re-fire. */
         await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
         Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task Connection_Lost_NotDelivered_WhenNotifyConnectionChangesOff()
+    {
+        /* V20: the connection-change notify toggle gates DELIVERY of the connect edge, independently of the
+           per-alert enables. Off -> even a genuine online->offline transition delivers nothing. */
+        var h = new Harness { NotifyConnectionChanges = false };
+        var e = h.Build();
+
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);   /* baseline */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "boom", Ct); /* lost — muted by the toggle */
+
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Connection_NotifyOff_StillTracksState_SoLaterEnabledRestoreFires()
+    {
+        /* The gate suppresses delivery only, NOT the state machine (mirrors the master-switch posture): a loss
+           missed while the toggle was off still advances the state, so flipping it back on and reconnecting
+           fires "Server Restored" from the correct baseline rather than replaying nothing. */
+        var h = new Harness { NotifyConnectionChanges = false };
+        var e = h.Build();
+
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);   /* Online baseline */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "boom", Ct); /* Offline (state advanced, no delivery) */
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        h.NotifyConnectionChanges = true; /* operator re-enables the toggle */
+
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);   /* Offline -> Online: restore fires */
+        var restored = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Server Restored", restored.MetricName);
     }
 
     [Fact]

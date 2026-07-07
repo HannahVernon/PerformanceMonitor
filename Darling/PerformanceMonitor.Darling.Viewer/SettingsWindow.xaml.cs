@@ -435,15 +435,14 @@ public partial class SettingsWindow : Window
 
     // ── Notifications / alert thresholds ──
 
-    /// <summary>Seeds the viewer-LOCAL alert fields (no honored store column: tray minimize, connection-change
-    /// notify, mute-rule default, dismissal logging).</summary>
+    /// <summary>Seeds the viewer-LOCAL alert fields (no honored store column: tray minimize, mute-rule default,
+    /// dismissal logging).</summary>
     private void LoadViewerLocalAlertFields()
     {
         MinimizeToTrayCheckBox.IsChecked = _appSettings.MinimizeToTray;
-        NotifyConnectionCheckBox.IsChecked = _appSettings.NotifyConnectionChanges;
-        /* AlertDeliveryMode/PerEventMax (#1141/#1236) and the long-running-query read shape (max-results + the
-           five noise filters, V20) moved to the STORE-backed controls (SeedAlertControlsFrom /
-           BuildAlertRowFromControls) now that the service honors them; no longer viewer-local. */
+        /* AlertDeliveryMode/PerEventMax (#1141/#1236), the long-running-query read shape (max-results + the five
+           noise filters), and connection-change notify (V20) moved to the STORE-backed controls
+           (SeedAlertControlsFrom / BuildAlertRowFromControls) now that the service honors them; no longer viewer-local. */
         MuteRuleDefaultExpirationCombo.SelectedIndex = _appSettings.MuteRuleDefaultExpiration switch
         {
             "1 hour" => 0,
@@ -459,6 +458,8 @@ public partial class SettingsWindow : Window
     private void SeedAlertControlsFrom(AlertSettingsRow r)
     {
         AlertsEnabledCheckBox.IsChecked = r.Enabled;
+        /* V20: connection-change notify is store-backed now (the service gates the connect edge on it). */
+        NotifyConnectionCheckBox.IsChecked = r.NotifyConnectionChanges;
         AlertCpuCheckBox.IsChecked = r.CpuEnabled;
         AlertCpuThresholdBox.Text = r.CpuThresholdPercent.ToString(CultureInfo.InvariantCulture);
         AlertCpuModeBox.SelectedIndex = ViewerDataService.MapCpuModeFromStore(r.CpuMode) == "SqlOnly" ? 1 : 0;
@@ -506,6 +507,7 @@ public partial class SettingsWindow : Window
         var row = new AlertSettingsRow
         {
             Enabled = AlertsEnabledCheckBox.IsChecked == true,
+            NotifyConnectionChanges = NotifyConnectionCheckBox.IsChecked == true,
             CpuEnabled = AlertCpuCheckBox.IsChecked == true,
             CpuMode = ViewerDataService.MapCpuModeToStore((AlertCpuModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Total"),
             BlockingEnabled = AlertBlockingCheckBox.IsChecked == true,
@@ -585,9 +587,8 @@ public partial class SettingsWindow : Window
     private void SaveViewerLocalAlertFields(List<string> errors)
     {
         _appSettings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked == true;
-        _appSettings.NotifyConnectionChanges = NotifyConnectionCheckBox.IsChecked == true;
-        /* AlertDeliveryMode/PerEventMax and the long-running-query read shape (max-results + the five noise
-           filters, V20) are STORE-backed now (BuildAlertRowFromControls writes them); not here. */
+        /* AlertDeliveryMode/PerEventMax, the long-running-query read shape (max-results + the five noise filters),
+           and connection-change notify (V20) are STORE-backed now (BuildAlertRowFromControls writes them); not here. */
         _appSettings.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         _appSettings.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
     }

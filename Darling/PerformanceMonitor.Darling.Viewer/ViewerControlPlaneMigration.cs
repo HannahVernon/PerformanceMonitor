@@ -140,6 +140,9 @@ public sealed class ViewerControlPlaneMigration
         return new AlertSettingsRow
         {
             Enabled = s.AlertsEnabled,
+            /* V20: carry a pre-3b viewer's connection-change notify choice into the store now that the service
+               honors it (was a dead knob before V20). Fresh-viewer default matches Defaults() → nothing imported. */
+            NotifyConnectionChanges = s.NotifyConnectionChanges,
             CpuEnabled = s.AlertCpuEnabled,
             CpuThresholdPercent = s.AlertCpuThreshold,
             CpuMode = ViewerDataService.MapCpuModeToStore(s.AlertCpuMode),

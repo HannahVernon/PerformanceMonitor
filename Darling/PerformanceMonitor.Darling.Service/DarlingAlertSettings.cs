@@ -73,6 +73,14 @@ public sealed class DarlingAlertSettings : IAlertEngineSettings, IAlertSettings
     /// Lite/the viewer so a hand-edited store value can't drive an unbounded fan-out.</summary>
     public int PerEventMax => Math.Clamp(_config.Alerts.PerEventMax, 1, 100);
 
+    /// <summary>
+    /// Whether the Server-Unreachable / Server-Restored connect-edge alerts are delivered (V20), read live
+    /// through the by-reference config seam. Not on the shared <see cref="IAlertEngineSettings"/> surface — the
+    /// connect edge is not a sweep condition; it is Darling's own service-health concern, consumed by
+    /// <see cref="DarlingSelfAlertEvaluator"/> off this concrete type (the DeliveryMode precedent). Default true.
+    /// </summary>
+    public bool NotifyConnectionChanges => _config.Alerts.NotifyConnectionChanges;
+
     /// <summary>"sql" → SqlProcess; anything else (incl. Lite's default "total") → TotalServer.</summary>
     public CpuAlertMode CpuAlertMode =>
         string.Equals(_config.Alerts.CpuMode, "sql", StringComparison.OrdinalIgnoreCase)

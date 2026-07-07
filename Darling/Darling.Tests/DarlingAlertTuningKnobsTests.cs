@@ -83,6 +83,36 @@ public sealed class DarlingAlertTuningKnobsTests
         Assert.True(settings.LongRunningQueryExcludeMiscWaits);
     }
 
+    /* ---------------- pure: the connection-change notify toggle through the settings seam ---------------- */
+
+    [Fact]
+    public void DarlingAlertSettings_ReadsNotifyConnectionChanges_ThroughTheByReferenceSeam()
+    {
+        var config = new DarlingConfig();
+        var settings = new DarlingAlertSettings(config);
+
+        /* Default mirrors the V20 DDL (and Lite's App.NotifyConnectionChanges): on. */
+        Assert.True(settings.NotifyConnectionChanges);
+
+        /* A store reload mutating the held config is reflected on the same adapter instance. */
+        config.Alerts.NotifyConnectionChanges = false;
+        Assert.False(settings.NotifyConnectionChanges);
+    }
+
+    [Fact]
+    public void ApplyToConfig_SwapsNotifyConnectionChanges_ReflectedThroughTheSettingsSeam()
+    {
+        var config = new DarlingConfig();
+        var settings = new DarlingAlertSettings(config);
+
+        StoreConfigProvider.ApplyToConfig(config, new StoreConfigView
+        {
+            Alerts = new AlertsConfig { NotifyConnectionChanges = false },
+        });
+
+        Assert.False(settings.NotifyConnectionChanges);
+    }
+
     /* ---------------- live (DARLING_TEST_PG): seed -> read round-trip of the V20 columns ---------------- */
 
     [Fact]
@@ -110,6 +140,7 @@ public sealed class DarlingAlertTuningKnobsTests
         config.Alerts.LongRunningQueryExcludeBackups = true;
         config.Alerts.LongRunningQueryExcludeMiscWaits = false;
         config.Alerts.LongRunningQueryExcludeCdc = true;
+        config.Alerts.NotifyConnectionChanges = false;
         config.Servers.Add(new MonitoredServer { Name = "v20-lrq", Host = "v20-scratch-host", Auth = "integrated" });
 
         await provider.SeedIfEmptyAsync(config, ct);
@@ -123,5 +154,6 @@ public sealed class DarlingAlertTuningKnobsTests
         Assert.True(view.Alerts.LongRunningQueryExcludeBackups);
         Assert.False(view.Alerts.LongRunningQueryExcludeMiscWaits);
         Assert.True(view.Alerts.LongRunningQueryExcludeCdc);
+        Assert.False(view.Alerts.NotifyConnectionChanges);
     }
 }

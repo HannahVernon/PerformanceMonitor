@@ -39,10 +39,10 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public sealed partial class ViewerDataService
 {
-    /* The 35 AlertsConfig + AnalysisConfig columns in the SAME order the service reads them
+    /* The 36 AlertsConfig + AnalysisConfig columns in the SAME order the service reads them
        (StoreConfigProvider.ReadAlertSettingsAsync), so the parity test pins one list against both ends.
-       delivery_mode/per_event_max (V18, #1141) then the six long-running-query read knobs (V20) are appended
-       so the existing ordinals stay pinned. */
+       delivery_mode/per_event_max (V18, #1141) then the six long-running-query read knobs + the connection-change
+       notify toggle (V20) are appended so the existing ordinals stay pinned. */
     private const string AlertSettingsColumns =
         "enabled, cpu_enabled, cpu_threshold_percent, cpu_mode, blocking_enabled, blocking_count_threshold, " +
         "deadlock_enabled, deadlock_count_threshold, poison_wait_enabled, poison_wait_threshold_ms, " +
@@ -53,7 +53,7 @@ public sealed partial class ViewerDataService
         "analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max, " +
         "long_running_query_max_results, long_running_query_exclude_sp_server_diagnostics, " +
         "long_running_query_exclude_wait_for, long_running_query_exclude_backups, " +
-        "long_running_query_exclude_misc_waits, long_running_query_exclude_cdc";
+        "long_running_query_exclude_misc_waits, long_running_query_exclude_cdc, notify_connection_changes";
 
     /// <summary>The single global alert-settings row (id=1), for the Settings window prefill + the migrate-in
     /// defaults check. Column order matches <see cref="AlertSettingsColumns"/>.</summary>
@@ -62,11 +62,11 @@ public sealed partial class ViewerDataService
 
     /// <summary>Upserts the single global alert-settings row (Settings window Save). ON CONFLICT rewrites every
     /// column and bumps <c>modified_at</c> (and, via the V17 statement trigger, <c>config_version</c> — the
-    /// service reloads on its next sweep). $1..$35 bind the columns in <see cref="AlertSettingsColumns"/> order.</summary>
+    /// service reloads on its next sweep). $1..$36 bind the columns in <see cref="AlertSettingsColumns"/> order.</summary>
     public const string AlertSettingsUpsertSql = @"
 INSERT INTO config_alert_settings (id, " + AlertSettingsColumns + @", modified_at)
 VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-        $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, (now() AT TIME ZONE 'UTC'))
+        $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, (now() AT TIME ZONE 'UTC'))
 ON CONFLICT (id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     cpu_enabled = EXCLUDED.cpu_enabled,
@@ -103,6 +103,7 @@ ON CONFLICT (id) DO UPDATE SET
     long_running_query_exclude_backups = EXCLUDED.long_running_query_exclude_backups,
     long_running_query_exclude_misc_waits = EXCLUDED.long_running_query_exclude_misc_waits,
     long_running_query_exclude_cdc = EXCLUDED.long_running_query_exclude_cdc,
+    notify_connection_changes = EXCLUDED.notify_connection_changes,
     modified_at = (now() AT TIME ZONE 'UTC')";
 
     /// <summary>The two <c>cpu_mode</c> values the service honors (it compares case-insensitively against
@@ -167,6 +168,7 @@ ON CONFLICT (id) DO UPDATE SET
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = r.LongRunningQueryExcludeBackups });   // $33
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = r.LongRunningQueryExcludeMiscWaits });  // $34
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = r.LongRunningQueryExcludeCdc });       // $35
+        command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = r.NotifyConnectionChanges });          // $36
     }
 
     private static AlertSettingsRow ReadAlertSettingsRow(NpgsqlDataReader reader) => new()
@@ -206,6 +208,7 @@ ON CONFLICT (id) DO UPDATE SET
         LongRunningQueryExcludeBackups = reader.GetBoolean(32),
         LongRunningQueryExcludeMiscWaits = reader.GetBoolean(33),
         LongRunningQueryExcludeCdc = reader.GetBoolean(34),
+        NotifyConnectionChanges = reader.GetBoolean(35),
     };
 
     /// <summary>Maps the Settings window's CPU-mode combo tag ("Total"/"SqlOnly") to the store value.</summary>
@@ -221,16 +224,21 @@ ON CONFLICT (id) DO UPDATE SET
 /// A <c>config.config_alert_settings</c> row (the single id=1 global row) as the viewer authors + reads it —
 /// the desired-state twin of the service's <c>AlertsConfig</c> + <c>AnalysisConfig</c> the store hot-swaps in.
 /// Carries ONLY the columns the store (and hence the service) has, now INCLUDING the Summary/Per-event delivery
-/// mode + per-event cap (#1141/#1236, V18 — the service honors them at delivery time) and the long-running-query
-/// read shape (max-results + the five noise filters, V20 — the service forwards them to the LRQ read). The
-/// remaining viewer-only alert fields the Settings window also edits (tray minimize, connection-change notify,
-/// mute-rule default expiration, dismissal logging, analysis re-notify cooldown) are NOT service-honored config
-/// and stay viewer-local in <see cref="ViewerAppSettings"/>. Defaults mirror the V17/V18/V20 DDL (and Lite's
-/// <c>App.*</c>) member-for-member so <see cref="Defaults"/> equals a freshly-seeded row.
+/// mode + per-event cap (#1141/#1236, V18 — the service honors them at delivery time), the long-running-query
+/// read shape (max-results + the five noise filters, V20 — the service forwards them to the LRQ read), and the
+/// connection-change notify toggle (V20 — the service gates the Server-Unreachable/Restored edge on it). The
+/// remaining viewer-only alert fields the Settings window also edits (tray minimize, mute-rule default expiration,
+/// dismissal logging, analysis re-notify cooldown) are NOT service-honored config and stay viewer-local in
+/// <see cref="ViewerAppSettings"/>. Defaults mirror the V17/V18/V20 DDL (and Lite's <c>App.*</c>) member-for-member
+/// so <see cref="Defaults"/> equals a freshly-seeded row.
 /// </summary>
 public sealed class AlertSettingsRow
 {
     public bool Enabled { get; set; } = true;
+
+    /// <summary>Whether the service delivers the Server-Unreachable/Restored connect-edge alerts (V20 DDL default true).</summary>
+    public bool NotifyConnectionChanges { get; set; } = true;
+
     public bool CpuEnabled { get; set; } = true;
     public int CpuThresholdPercent { get; set; } = 80;
 
@@ -300,6 +308,7 @@ public sealed class AlertSettingsRow
     {
         ArgumentNullException.ThrowIfNull(other);
         return Enabled == other.Enabled
+            && NotifyConnectionChanges == other.NotifyConnectionChanges
             && CpuEnabled == other.CpuEnabled
             && CpuThresholdPercent == other.CpuThresholdPercent
             && string.Equals(CpuMode, other.CpuMode, StringComparison.OrdinalIgnoreCase)

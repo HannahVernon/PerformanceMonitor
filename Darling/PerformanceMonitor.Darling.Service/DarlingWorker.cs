@@ -416,7 +416,10 @@ public sealed class DarlingWorker : BackgroundService
            collection-stopped / capture-down are polled from collection_log on the alert cadence below;
            connection lost/restored fire on the connect edges in TryConnectAsync. */
         _selfAlerts = new DarlingSelfAlertEvaluator(
-            alertSettings, deliverer, historyStore, muteRuleService.IsAlertMuted, _logger);
+            alertSettings, deliverer, historyStore, muteRuleService.IsAlertMuted, _logger,
+            /* V20: the connect-edge Server-Unreachable/Restored delivery honors the notify toggle, read live
+               through the same by-reference alertSettings seam a store reload hot-swaps. */
+            notifyConnectionChanges: () => alertSettings.NotifyConnectionChanges);
 
         /* Phase-5 analysis slice AN3: the analysis pipeline's shared pieces, constructed once.
            The plan fetcher resolves a finding's serverId to the CONNECTED runtime's connection

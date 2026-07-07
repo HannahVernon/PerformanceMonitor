@@ -94,6 +94,9 @@
   // cooldown 5 min. Omit the whole section (or any key) for those defaults.
   "alerts": {
     "enabled": true,
+    // Deliver the Server-Unreachable / Server-Restored alerts when a monitored server's reachability flips
+    // (the headless twin of Lite's connection-change toasts). Default true; gated together with "enabled".
+    "notifyConnectionChanges": true,
     "cpuThresholdPercent": 80,
     "cpuMode": "total", // "total" (SQL + other processes) or "sql" (SQL process only)
     // How deadlock/blocking alerts are delivered: "Summary" (one batched card per cycle, the default)

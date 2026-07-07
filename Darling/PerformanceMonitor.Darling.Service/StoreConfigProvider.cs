@@ -161,9 +161,9 @@ INSERT INTO config_alert_settings (
     analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max,
     long_running_query_max_results, long_running_query_exclude_sp_server_diagnostics,
     long_running_query_exclude_wait_for, long_running_query_exclude_backups,
-    long_running_query_exclude_misc_waits, long_running_query_exclude_cdc, modified_at)
+    long_running_query_exclude_misc_waits, long_running_query_exclude_cdc, notify_connection_changes, modified_at)
 VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-        $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+        $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
 ON CONFLICT (id) DO NOTHING", connection);
         command.Parameters.AddWithValue(a.Enabled);
         command.Parameters.AddWithValue(a.CpuEnabled);
@@ -202,6 +202,8 @@ ON CONFLICT (id) DO NOTHING", connection);
         command.Parameters.AddWithValue(a.LongRunningQueryExcludeBackups);
         command.Parameters.AddWithValue(a.LongRunningQueryExcludeMiscWaits);
         command.Parameters.AddWithValue(a.LongRunningQueryExcludeCdc);
+        /* V20 connection-change notify gate. */
+        command.Parameters.AddWithValue(a.NotifyConnectionChanges);
         command.Parameters.AddWithValue(now);
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -341,7 +343,7 @@ SELECT enabled, cpu_enabled, cpu_threshold_percent, cpu_mode, blocking_enabled, 
        analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max,
        long_running_query_max_results, long_running_query_exclude_sp_server_diagnostics,
        long_running_query_exclude_wait_for, long_running_query_exclude_backups,
-       long_running_query_exclude_misc_waits, long_running_query_exclude_cdc
+       long_running_query_exclude_misc_waits, long_running_query_exclude_cdc, notify_connection_changes
 FROM config_alert_settings WHERE id = 1", connection);
         using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
@@ -386,6 +388,8 @@ FROM config_alert_settings WHERE id = 1", connection);
             LongRunningQueryExcludeBackups = reader.GetBoolean(32),
             LongRunningQueryExcludeMiscWaits = reader.GetBoolean(33),
             LongRunningQueryExcludeCdc = reader.GetBoolean(34),
+            /* connection-change notify gate appended (V20) at ordinal 35. */
+            NotifyConnectionChanges = reader.GetBoolean(35),
         };
         var analysis = new AnalysisConfig
         {

@@ -259,6 +259,16 @@ public sealed class AlertsConfig
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Whether the service delivers the Server-Unreachable / Server-Restored connect-edge alerts (the headless
+    /// twin of Lite's connection-change tray toasts, fired by <see cref="!:DarlingSelfAlertEvaluator"/>). Default
+    /// true (matches Lite's App.NotifyConnectionChanges). Independent of the per-alert toggles — the connection
+    /// edge is a service-health signal, gated together with the master <c>alerts.enabled</c> switch. Stored as
+    /// <c>config_alert_settings.notify_connection_changes</c> (V20).
+    /// </summary>
+    [JsonPropertyName("notifyConnectionChanges")]
+    public bool NotifyConnectionChanges { get; set; } = true;
+
     [JsonPropertyName("cpuEnabled")]
     public bool CpuEnabled { get; set; } = true;
 
