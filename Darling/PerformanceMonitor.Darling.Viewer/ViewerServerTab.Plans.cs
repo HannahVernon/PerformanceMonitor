@@ -248,6 +248,43 @@ public partial class ViewerServerTab
         }
     }
 
+    /// <summary>
+    /// The Top Procedures grid's "Query Plan" Download button (mirrors <see cref="DownloadQueryStatsPlan_Click"/>
+    /// and Lite's <c>DownloadProcedurePlan_Click</c>): reads the stored procedure_stats.query_plan_xml for the
+    /// row's object identity and saves it as a .sqlplan file. Gated on
+    /// <see cref="ViewerProcedureStatsRow.HasQueryPlan"/> in XAML, so it only fires when a plan was captured.
+    /// </summary>
+    private async void DownloadProcedureStatsPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.DataContext is not ViewerProcedureStatsRow row) return;
+        if (string.IsNullOrEmpty(row.ObjectName)) return;
+
+        btn.Content = "...";
+        try
+        {
+            var plan = await _dataService.GetProcedureStatsPlanXmlAsync(_server.ServerId, row.DatabaseName, row.SchemaName, row.ObjectName);
+            if (string.IsNullOrEmpty(plan))
+            {
+                MessageBox.Show(
+                    "No execution plan was captured for this procedure.",
+                    "Plan Not Found",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            SavePlanFile(plan, $"ProcedurePlan_{row.FullName}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to retrieve plan: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            btn.Content = "Download";
+        }
+    }
+
     private void SavePlanFile(string planXml, string defaultName)
     {
         var dialog = new SaveFileDialog

@@ -9,11 +9,11 @@
     <!-- Ported from Lite's Windows/WaitDrillDownWindow.xaml (the Wait Stats "Show Queries With <wait>"
          drill-down). Same three classified views (correlated / uncapturable / chain / filtered) driving the
          shared PerformanceMonitor.Ui WaitDrillDownHelper + blocking-chain walker; the read is repointed to
-         ViewerDataService Postgres (correlated query snapshots). Two viewer adaptations: (1) columns match the
-         viewer's trimmed ViewerQuerySnapshotRow (the ~26-column Active Queries grid) rather than Lite's wider
-         row; (2) Lite's live "Get Actual Plan" is dropped (the viewer never opens a SqlClient) — "View Plan"
-         shows the stored plan. Dark-styled via the shared ViewerDarkTheme dictionary with a local NumericCell,
-         mirroring CollectionLogWindow. -->
+         ViewerDataService Postgres (correlated query snapshots). Columns mirror Lite's WaitDrillDownWindow
+         grid in full, including the #1286 memory-grant / tempdb / transaction triage columns (all verified
+         present in query_snapshots). One viewer adaptation: Lite's live "Get Actual Plan" is dropped (the
+         viewer never opens a SqlClient) — "View Plan" shows the stored plan. Dark-styled via the shared
+         ViewerDarkTheme dictionary with a local NumericCell, mirroring CollectionLogWindow. -->
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -134,6 +134,31 @@
                 </DataGridTextColumn>
                 <DataGridTextColumn Binding="{Binding GrantedQueryMemoryGb, StringFormat=F2}" ElementStyle="{StaticResource NumericCell}" Width="90">
                     <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="GrantedQueryMemoryGb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Memory (GB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <!-- #1286 memory-grant / tempdb / transaction triage columns (mirrors Lite's WaitDrillDownWindow) -->
+                <DataGridTextColumn Binding="{Binding RequestedMemoryMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RequestedMemoryMb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Req Mem (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding UsedMemoryMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="UsedMemoryMb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Used Mem (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding MaxUsedMemoryMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="130">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxUsedMemoryMb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Max Used Mem (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding TempdbCurrentMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TempdbCurrentMb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="tempdb Cur (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding TempdbAllocationsMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TempdbAllocationsMb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="tempdb Alloc (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding TranLogUsedMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="105">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TranLogUsedMb" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Tran Log (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding TranStartTimeLocal}" Width="140">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TranStartTimeLocal" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Tran Start" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding RequestId}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RequestId" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Req ID" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                 </DataGridTextColumn>
                 <DataGridTextColumn Binding="{Binding TransactionIsolationLevel}" Width="140">
                     <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TransactionIsolationLevel" Click="Filter_Click" Margin="0,0,4,0"/><TextBlock Text="Isolation" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>

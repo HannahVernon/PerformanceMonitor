@@ -91,7 +91,28 @@ public sealed partial class ViewerDataService
                  WHERE server_id = $1
                  AND   status = 'ERROR'
                  AND   collection_time >= $2 AND collection_time < $3), 0
-            ) AS collection_errors
+            ) AS collection_errors,
+            /* Memory-pressure events for the day (Dashboard's report.daily_summary parity,
+               DatabaseService.Overview.cs:105-113): a RING_BUFFER_RESOURCE_MONITOR sample counts as pressure
+               when the process OR system indicator reached medium (>= 2). Windowed on collection_time (the
+               prefix time, matching the Dashboard) — not the payload sample_time the chart uses. */
+            COALESCE(
+                (SELECT COUNT(*)
+                 FROM v_memory_pressure_events
+                 WHERE server_id = $1
+                 AND   collection_time >= $2 AND collection_time < $3
+                 AND   (memory_indicators_process >= 2 OR memory_indicators_system >= 2)), 0
+            ) AS memory_pressure_events,
+            /* MEMORY_CRITICAL escalation source: any process indicator that reached severe (>= 3) in the day
+               (Dashboard's overall_health branch, DatabaseService.Overview.cs:151-160). Not displayed as a
+               column — it only decides the health band. */
+            COALESCE(
+                (SELECT COUNT(*)
+                 FROM v_memory_pressure_events
+                 WHERE server_id = $1
+                 AND   collection_time >= $2 AND collection_time < $3
+                 AND   memory_indicators_process >= 3), 0
+            ) AS memory_critical_events
         """;
 
     /// <summary>
@@ -116,11 +137,8 @@ public sealed partial class ViewerDataService
         var deadlocks = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3));
         var blocking = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4));
         var highCpu = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5));
-
-        var health = "NORMAL";
-        if (deadlocks > 0) health = "DEADLOCKS";
-        else if (highCpu > 5) health = "CPU_CRITICAL";
-        else if (blocking > 10) health = "BLOCKING";
+        var memoryPressure = reader.IsDBNull(7) ? 0L : Convert.ToInt64(reader.GetValue(7));
+        var memoryCritical = reader.IsDBNull(8) ? 0L : Convert.ToInt64(reader.GetValue(8));
 
         return new DailySummaryRow
         {
@@ -131,9 +149,27 @@ public sealed partial class ViewerDataService
             DeadlockCount = deadlocks,
             BlockingEvents = blocking,
             HighCpuEvents = highCpu,
+            MemoryPressureEvents = memoryPressure,
             CollectionErrors = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
-            OverallHealth = health
+            OverallHealth = ClassifyDailyHealth(deadlocks, highCpu, memoryCritical, blocking)
         };
+    }
+
+    /// <summary>
+    /// The Daily Summary health band, computed on the read (Lite's <c>LocalDataService.DailySummary.cs</c>
+    /// bands NORMAL / DEADLOCKS / CPU_CRITICAL / BLOCKING) plus the Dashboard's MEMORY_CRITICAL escalation
+    /// (report.daily_summary / DatabaseService.Overview.cs:151-160): a severe memory-pressure day
+    /// (<paramref name="memoryCriticalEvents"/> &gt; 0, from a process indicator &gt;= 3) ranks with the other
+    /// critical bands, ahead of BLOCKING. Severity order: deadlocks &gt; high-CPU &gt; memory-critical &gt;
+    /// blocking. Static + internal so the banding is unit-testable without Postgres.
+    /// </summary>
+    internal static string ClassifyDailyHealth(long deadlocks, long highCpuEvents, long memoryCriticalEvents, long blockingEvents)
+    {
+        if (deadlocks > 0) return "DEADLOCKS";
+        if (highCpuEvents > 5) return "CPU_CRITICAL";
+        if (memoryCriticalEvents > 0) return "MEMORY_CRITICAL";
+        if (blockingEvents > 10) return "BLOCKING";
+        return "NORMAL";
     }
 }
 
@@ -150,6 +186,7 @@ public class DailySummaryRow
     public long DeadlockCount { get; set; }
     public long BlockingEvents { get; set; }
     public long HighCpuEvents { get; set; }
+    public long MemoryPressureEvents { get; set; }
     public long CollectionErrors { get; set; }
     public string OverallHealth { get; set; } = "";
 

@@ -113,6 +113,9 @@ public sealed class ViewerQueriesSqlTests
         Assert.Contains("CAST(SUM(delta_execution_count) AS bigint)", sql, StringComparison.Ordinal);
         /* avg_spills is the one derived double in the proc read. */
         Assert.Contains("CAST(SUM(delta_spills) AS double precision) / NULLIF(SUM(delta_execution_count), 0)", sql, StringComparison.Ordinal);
+        /* Item 7: whether the collector stored a plan for the object — gates the grid's Download button on the
+           same query_plan_xml IS NOT NULL filter GetProcedureStatsPlanXmlAsync fetches on. */
+        Assert.Contains("bool_or(query_plan_xml IS NOT NULL) AS has_query_plan", sql, StringComparison.Ordinal);
     }
 
     // ── Query Store ──

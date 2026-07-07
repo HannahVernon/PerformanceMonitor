@@ -10,6 +10,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Npgsql;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
@@ -193,6 +194,40 @@ public sealed class ViewerQuerySnapshotsSqlTests
         Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY bucket", sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void QuerySnapshotColumns_SelectTheHash286TriageColumns_ForTheWaitDrillDownGrid()
+    {
+        /* Item 8: the #1286 memory-grant / tempdb / transaction triage columns Lite's WaitDrillDownWindow
+           binds are now selected (they were dropped from the viewer's ~26-column read). Pinned via the
+           shared LatestQuerySnapshotsSql, which is built from QuerySnapshotColumns. */
+        var sql = ViewerDataService.LatestQuerySnapshotsSql;
+        foreach (var column in new[]
+        {
+            "requested_memory_mb", "used_memory_mb", "max_used_memory_mb",
+            "tempdb_current_mb", "tempdb_allocations_mb", "tran_log_used_mb", "tran_start_time", "request_id",
+        })
+        {
+            Assert.Contains(column, sql, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void QuerySnapshotTriageColumns_ExistInTheGeneratedStoreTable()
+    {
+        /* Verification gate for item 8: every triage column the viewer now surfaces IS collected into
+           query_snapshots (no collector gap). */
+        Assert.Equal("query_snapshots", QuerySnapshotsCollector.Instance.TargetTable);
+        var ddl = PgSchemaGenerator.CreateTable(QuerySnapshotsCollector.Instance);
+        foreach (var column in new[]
+        {
+            "requested_memory_mb", "used_memory_mb", "max_used_memory_mb",
+            "tempdb_current_mb", "tempdb_allocations_mb", "tran_log_used_mb", "tran_start_time", "request_id",
+        })
+        {
+            Assert.Contains(column, ddl, StringComparison.Ordinal);
+        }
+    }
 }
 
 /// <summary>The W1f-2 row models' pure helpers: snapshot plan gating + naive-UTC collection-time display.</summary>
@@ -224,6 +259,17 @@ public sealed class ViewerActiveQueriesDisplayTests
         var p = new QueryTrendPoint { CollectionTime = new DateTime(2026, 7, 1, 9, 0, 0), Value = 2.5, ExecutionCount = 7 };
         Assert.Equal(2.5, p.Value);
         Assert.Equal(7, p.ExecutionCount);
+    }
+
+    [Fact]
+    public void QuerySnapshotRow_TranStartTimeLocal_RendersRawServerClock_EmptyWhenNoOpenTransaction()
+    {
+        /* Item 8: the WaitDrillDownWindow's "Tran Start" column. transaction_begin_time is a server-local
+           wall-clock time (NOT naive UTC), so it renders raw via FormatServerClock like the other dm_exec_*
+           times — no UTC→display conversion. A null TranStartTime (no open transaction) renders empty. */
+        Assert.Equal("", new ViewerQuerySnapshotRow().TranStartTimeLocal);
+        var row = new ViewerQuerySnapshotRow { TranStartTime = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Unspecified) };
+        Assert.Equal("2026-07-01 12:00:00", row.TranStartTimeLocal);
     }
 }
 

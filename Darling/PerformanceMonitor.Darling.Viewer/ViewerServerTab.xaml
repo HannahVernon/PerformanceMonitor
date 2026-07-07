@@ -742,6 +742,20 @@
                                     <DataGridTextColumn Binding="{Binding MaxIdealGrantKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxIdealGrantKb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Max Ideal Grant KB" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
+                                    <!-- Min/Max Spills + Min/Max DOP (Lite ServerTab.xaml:537-547): ViewerQueryStatsRow
+                                         already maps these; they were the only Top Queries columns the viewer dropped. -->
+                                    <DataGridTextColumn Binding="{Binding MinSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinSpills" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Min Spills" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding MaxSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxSpills" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Max Spills" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding MinDop}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinDop" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Min DOP" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Binding="{Binding MaxDop}" ElementStyle="{StaticResource NumericCell}" Width="70">
+                                        <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxDop" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Max DOP" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                    </DataGridTextColumn>
                                     <DataGridTextColumn Binding="{Binding MinReservedThreads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MinReservedThreads" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Min Rsvd Threads" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
@@ -1004,6 +1018,20 @@
                                     <DataGridTextColumn Binding="{Binding PlanHandle}" Width="140">
                                         <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PlanHandle" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Plan Handle" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
                                     </DataGridTextColumn>
+                                    <!-- Query Plan download column (mirrors Lite's Top Procedures "Download" button + the
+                                         Top Queries column above), gated on HasQueryPlan so it's only actionable when the
+                                         collector stored a plan for this object. Saves procedure_stats.query_plan_xml to a
+                                         .sqlplan file; "View Plan" (context menu) opens it in the Plan Viewer tab instead. -->
+                                    <DataGridTemplateColumn Header="Query Plan" Width="Auto" MinWidth="90">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Download" Click="DownloadProcedureStatsPlan_Click"
+                                                        IsEnabled="{Binding HasQueryPlan}"
+                                                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                        Padding="8,4"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <DataGrid Grid.Row="2" x:Name="ProcStatsComparisonGrid" Visibility="Collapsed"
@@ -1605,7 +1633,12 @@
                                 <TextBlock Text="Total Plans:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
                                 <TextBlock x:Name="PlanCacheTotalPlansText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
                                 <TextBlock Text="Oldest Plan Age:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
-                                <TextBlock x:Name="PlanCacheOldestPlanText" Text="--" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="PlanCacheOldestPlanText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                <!-- Derived single-use bloat badge + forced-parameterization hint (install/47
+                                     report.plan_cache_bloat parity): a client-side CASE on single-use/total plans. -->
+                                <TextBlock Text="Bloat Level:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                <TextBlock x:Name="PlanCacheBloatLevelText" Text="--" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                <TextBlock x:Name="PlanCacheRecommendationText" Text="" FontStyle="Italic" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <DataGrid Grid.Row="2" x:Name="PlanCacheCompositionGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0"
@@ -2273,6 +2306,9 @@
                         </DataGridTextColumn>
                         <DataGridTextColumn Binding="{Binding BlockingEvents, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120">
                             <DataGridTextColumn.Header><TextBlock Text="Blocking Events" FontWeight="Bold"/></DataGridTextColumn.Header>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Binding="{Binding MemoryPressureEvents, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130">
+                            <DataGridTextColumn.Header><TextBlock Text="Memory Pressure" FontWeight="Bold"/></DataGridTextColumn.Header>
                         </DataGridTextColumn>
                         <DataGridTextColumn Binding="{Binding HighCpuEvents, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
                             <DataGridTextColumn.Header><TextBlock Text="High CPU" FontWeight="Bold"/></DataGridTextColumn.Header>

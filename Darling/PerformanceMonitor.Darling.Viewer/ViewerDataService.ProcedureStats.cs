@@ -53,6 +53,9 @@ public sealed class ViewerProcedureStatsRow
     public DateTime? LastExecutionTime { get; set; }
     public string SqlHandle { get; set; } = "";
     public string PlanHandle { get; set; } = "";
+    /// <summary>Whether the collector stored an execution plan for this object in the window — gates the
+    /// grid's per-row "Query Plan" Download button (mirrors Lite's Top Procedures HasQueryPlan gating).</summary>
+    public bool HasQueryPlan { get; set; }
     public string FullName => string.IsNullOrEmpty(SchemaName) ? ObjectName : $"{SchemaName}.{ObjectName}";
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;
@@ -108,7 +111,11 @@ public sealed partial class ViewerDataService
             MAX(last_execution_time) AS last_execution_time,
             MAX(sql_handle) AS sql_handle,
             MAX(plan_handle) AS plan_handle,
-            CAST(SUM(delta_spills) AS double precision) / NULLIF(SUM(delta_execution_count), 0) AS avg_spills
+            CAST(SUM(delta_spills) AS double precision) / NULLIF(SUM(delta_execution_count), 0) AS avg_spills,
+            /* Whether the collector captured a plan for this object anywhere in the window — gates the grid's
+               per-row "Query Plan" Download button, matching the same query_plan_xml IS NOT NULL filter
+               GetProcedureStatsPlanXmlAsync fetches on. */
+            bool_or(query_plan_xml IS NOT NULL) AS has_query_plan
         FROM procedure_stats
         WHERE server_id = $1
         AND   collection_time >= $2
@@ -164,6 +171,7 @@ public sealed partial class ViewerDataService
                 SqlHandle = reader.IsDBNull(25) ? "" : reader.GetString(25),
                 PlanHandle = reader.IsDBNull(26) ? "" : reader.GetString(26),
                 AvgSpills = reader.IsDBNull(27) ? 0 : Convert.ToDouble(reader.GetValue(27)),
+                HasQueryPlan = !reader.IsDBNull(28) && reader.GetBoolean(28),
             });
         }
 

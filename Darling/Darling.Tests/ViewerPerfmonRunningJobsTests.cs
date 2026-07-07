@@ -155,19 +155,20 @@ public sealed class ViewerRunningJobsSqlTests
 
     [Theory]
     [InlineData("PERMISSIONS", true)]
-    [InlineData("ERROR", true)]
     [InlineData("permissions", true)]   // case-insensitive
+    [InlineData("Permissions", true)]
+    [InlineData("ERROR", false)]        // a transient ERROR is NOT a permission problem — banner must stay hidden
+    [InlineData("error", false)]
     [InlineData("SUCCESS", false)]
+    [InlineData("SKIPPED", false)]
+    [InlineData("", false)]
     [InlineData(null, false)]           // collector never ran
-    public void MsdbBannerVisibility_DerivedFromLatestCollectorStatus(string? status, bool expectVisible)
+    public void MsdbBanner_ShowsOnlyForPermissionsStatus_NotTransientError(string? status, bool expectVisible)
     {
-        /* Behavior spec mirroring LoadRunningJobsAsync's store-derived banner: the banner shows for a
-           PERMISSIONS or ERROR latest status (case-insensitive), and hides for SUCCESS / never-ran. */
-        bool lacksMsdbAccess =
-            string.Equals(status, "PERMISSIONS", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(status, "ERROR", StringComparison.OrdinalIgnoreCase);
-
-        Assert.Equal(expectVisible, lacksMsdbAccess);
+        /* Item 6: the banner is restricted to the running_jobs collector's PERMISSIONS outcome (the store
+           stand-in for Lite's real _hasMsdbAccess probe). A generic ERROR (timeout/blip) must no longer
+           raise the misleading "grant msdb access" guidance. Calls the real production decision. */
+        Assert.Equal(expectVisible, ViewerServerTab.ShouldShowMsdbBanner(status));
     }
 
     [Theory]

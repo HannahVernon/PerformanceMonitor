@@ -110,8 +110,18 @@ public partial class ViewerServerTab
         {
             PlanCacheTotalPlansText.Text = "--";
             PlanCacheOldestPlanText.Text = "--";
+            PlanCacheBloatLevelText.Text = "--";
+            PlanCacheBloatLevelText.Foreground = System.Windows.Media.Brushes.Gray;
+            PlanCacheRecommendationText.Text = "";
             return;
         }
+
+        /* Derived single-use bloat badge + forced-parameterization hint (install/47 report.plan_cache_bloat
+           parity): a pure client-side CASE on the single-use / total ratio Darling already reads. */
+        var bloat = ViewerDataService.ClassifyPlanCacheBloat(summary.TotalPlans, summary.SingleUsePlans);
+        PlanCacheBloatLevelText.Text = bloat.Level;
+        PlanCacheBloatLevelText.Foreground = BloatLevelBrush(bloat.Level);
+        PlanCacheRecommendationText.Text = bloat.Recommendation;
 
         PlanCacheTotalPlansText.Text = summary.TotalPlans.ToString("N0", CultureInfo.CurrentCulture);
 
@@ -133,6 +143,23 @@ public partial class ViewerServerTab
             : age.TotalHours >= 1
                 ? $"{age.Hours}h {age.Minutes}m"
                 : $"{age.Minutes}m";
+    }
+
+    /// <summary>Maps a plan-cache bloat level to its badge colour (CRITICAL red → HIGH orange → MEDIUM
+    /// goldenrod → NORMAL green), mirroring the severity palette the warning highlights use elsewhere.</summary>
+    private static System.Windows.Media.SolidColorBrush BloatLevelBrush(string level)
+    {
+        var hex = level switch
+        {
+            "CRITICAL" => "#FF6B6B",
+            "HIGH" => "#FFA94D",
+            "MEDIUM" => "#E0C341",
+            _ => "#4CAF50",
+        };
+        var brush = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
+        brush.Freeze();
+        return brush;
     }
 
     /// <summary>Tears down the plan-cache hover helper (mirrors the other tabs' dispose).</summary>

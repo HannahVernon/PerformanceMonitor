@@ -71,8 +71,10 @@ public sealed class ViewerPlanCacheSqlTests
         Assert.Contains("FROM v_plan_cache_stats", sql, StringComparison.Ordinal);
         Assert.Contains("SELECT MAX(collection_time) AS mx", sql, StringComparison.Ordinal);
         Assert.Contains("collection_time = (SELECT mx FROM latest)", sql, StringComparison.Ordinal);
-        /* TRUE total across every group + oldest plan; COALESCE so an empty window yields 0 not NULL. */
+        /* TRUE total across every group + single-use total (for the bloat badge) + oldest plan; COALESCE so
+           an empty window yields 0 not NULL. */
         Assert.Contains("COALESCE(SUM(total_plans), 0)", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(SUM(single_use_plans), 0)", sql, StringComparison.Ordinal);
         Assert.Contains("MIN(oldest_plan_create_time)", sql, StringComparison.Ordinal);
         /* Must NOT be capped — the summary is the exact total, independent of the grid's LIMIT 30. */
         Assert.DoesNotContain("LIMIT", sql, StringComparison.Ordinal);
@@ -119,6 +121,49 @@ public sealed class ViewerPlanCacheSqlTests
     [Fact]
     public void PlanCacheView_IsPinnedInTheAuthoritativeViewList()
         => Assert.Contains("v_plan_cache_stats", PgSchemaGenerator.AllPassthroughViews);
+}
+
+/// <summary>
+/// Pins the derived single-use plan-cache bloat badge (<see cref="ViewerDataService.ClassifyPlanCacheBloat"/>),
+/// a pure client-side CASE mirroring install/47's report.plan_cache_bloat: bloat_level banding on the
+/// single-use / total plan ratio (&gt; 50 CRITICAL / &gt; 30 HIGH / &gt; 20 MEDIUM / else NORMAL) and the
+/// paired forced-parameterization recommendation flipping at the same &gt; 20% threshold.
+/// </summary>
+public sealed class ViewerPlanCacheBloatTests
+{
+    [Theory]
+    [InlineData(100, 60, "CRITICAL")]   // 60% > 50
+    [InlineData(100, 51, "CRITICAL")]
+    [InlineData(100, 50, "HIGH")]       // exactly 50 is NOT > 50 → HIGH
+    [InlineData(100, 40, "HIGH")]       // 40% > 30
+    [InlineData(100, 31, "HIGH")]
+    [InlineData(100, 30, "MEDIUM")]     // exactly 30 → MEDIUM
+    [InlineData(100, 25, "MEDIUM")]     // 25% > 20
+    [InlineData(100, 21, "MEDIUM")]
+    [InlineData(100, 20, "NORMAL")]     // exactly 20 → NORMAL
+    [InlineData(100, 5, "NORMAL")]
+    [InlineData(0, 0, "NORMAL")]        // empty cache → no divide-by-zero, NORMAL
+    public void ClassifyPlanCacheBloat_BandsOnSingleUsePercent(long total, long singleUse, string expectedLevel)
+        => Assert.Equal(expectedLevel, ViewerDataService.ClassifyPlanCacheBloat(total, singleUse).Level);
+
+    [Theory]
+    [InlineData(100, 25, true)]         // > 20% → forced-parameterization hint
+    [InlineData(100, 21, true)]
+    [InlineData(100, 20, false)]        // <= 20% → healthy
+    [InlineData(100, 0, false)]
+    [InlineData(0, 0, false)]
+    public void ClassifyPlanCacheBloat_RecommendationFlipsAtTwentyPercent(long total, long singleUse, bool expectHint)
+    {
+        var rec = ViewerDataService.ClassifyPlanCacheBloat(total, singleUse).Recommendation;
+        if (expectHint)
+        {
+            Assert.Contains("Forced Parameterization", rec, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Equal("Plan cache composition is healthy", rec);
+        }
+    }
 }
 
 /// <summary>
