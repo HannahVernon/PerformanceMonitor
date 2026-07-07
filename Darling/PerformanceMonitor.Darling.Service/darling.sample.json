@@ -2,6 +2,14 @@
   // Copy this file to darling.json next to the service binary (or point the
   // DARLING_CONFIG environment variable at it) and edit. Comments are allowed.
   //
+  // FIRST-RUN SEED, then the store is authoritative: on first start the service seeds the
+  // config.* control-plane tables from this file (servers, alerts, analysis, smtp, webhooks,
+  // capturePlans, mcp) and thereafter reads its LIVE operational config from the store. Edits the
+  // Viewer makes to the store win over this file across restarts; this file is only re-consulted
+  // for a config section that is still empty in the store (and always for the postgres bootstrap +
+  // the SQL-auth secrets, which are never written to the store). If the store is unreachable the
+  // service falls back to this file — never worse than a file-only config.
+  //
   // The Postgres store has TWO modes:
   //
   // 1) Managed (the shipped default, below): the service runs its own bundled
@@ -80,14 +88,22 @@
   // cpu 80% (total mode), blocking 1, deadlock 1, poison wait 500 ms, long-running query
   // 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,
   // cooldown 5 min. Omit the whole section (or any key) for those defaults.
-  // "enabled" also gates scheduled-analysis finding notifications (the analysis itself
-  // always runs every 30 minutes per server and persists its findings; severity >= 1.5
-  // notifies with a 6-hour per-finding cooldown — Lite's defaults, not configurable here).
   "alerts": {
     "enabled": true,
     "cpuThresholdPercent": 80,
     "cpuMode": "total", // "total" (SQL + other processes) or "sql" (SQL process only)
     "excludedDatabases": []
+  },
+
+  // Scheduled analysis (optional section). The engine analyzes each server on a cadence and persists
+  // its findings; notifications are delivered independently when a finding's severity meets the floor.
+  // Defaults: enabled, every 30 minutes (clamped 5-360), notifications on, severity floor 1.5 (0-2) with
+  // a fixed 6-hour per-finding re-notify cooldown. Omit the section (or any key) for the defaults.
+  "analysis": {
+    "enabled": true,
+    "intervalMinutes": 30,
+    "notificationsEnabled": true,
+    "notifySeverity": 1.5
   },
 
   // SMTP alert delivery (optional). Enabled when host + from + to are all set. For an

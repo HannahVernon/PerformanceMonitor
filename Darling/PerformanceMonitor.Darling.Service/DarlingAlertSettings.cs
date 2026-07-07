@@ -121,10 +121,10 @@ public sealed class DarlingAlertSettings : IAlertEngineSettings, IAlertSettings
     public string SlackWebhookUrl => _config.Webhooks.SlackUrl;
     public string SlackProxyAddress => _config.Webhooks.SlackProxy;
 
-    /* Scheduled-analysis notifications (AN3): the shared AnalysisNotificationService's
-       severity floor + per-finding re-notify cooldown — Lite's App defaults hardcoded
-       (AnalysisNotifySeverity 1.5, AnalysisNotifyCooldownMinutes 360; defaults over
-       speculative config). */
-    public double AnalysisNotifySeverity => 1.5;
+    /* Scheduled-analysis notifications (AN3): the shared AnalysisNotificationService's severity floor
+       + per-finding re-notify cooldown. The severity floor is now a control-plane knob (config Stage
+       1) read through the by-reference config seam — a store reload reflects it immediately; clamped
+       0–2 like Lite/Dashboard. The re-notify cooldown stays Lite's hardcoded default (not a knob). */
+    public double AnalysisNotifySeverity => Math.Clamp(_config.Analysis.NotifySeverity, 0.0, 2.0);
     public int AnalysisNotifyCooldownMinutes => 360;
 }

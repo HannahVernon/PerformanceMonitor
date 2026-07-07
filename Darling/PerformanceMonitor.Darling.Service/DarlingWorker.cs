@@ -20,6 +20,7 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Alerting;
 using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Analysis;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Notifications;
@@ -58,14 +59,17 @@ public sealed class DarlingWorker : BackgroundService
        edge-trigger gates shape delivery on top of this. */
     private static readonly TimeSpan s_alertSweepInterval = TimeSpan.FromSeconds(30);
 
-    /* The analysis pipeline's cadence + per-run budget — Lite's App defaults hardcoded
-       (AnalysisIntervalMinutes 30 / AnalysisTimeoutSeconds 120; defaults over speculative
-       config). Each run analyzes the last 4 hours (Lite's hoursBack default). */
-    private static readonly TimeSpan s_analysisInterval = TimeSpan.FromMinutes(30);
+    /* The analysis pipeline's per-run budget — Lite's App default hardcoded (AnalysisTimeoutSeconds
+       120; not a control-plane knob). The CADENCE (interval), the enabled gate, and the notify gate
+       are now control-plane knobs read live from config.Analysis (config_alert_settings' analysis
+       columns) — see the loop below. Each run analyzes the last 4 hours (Lite's hoursBack default). */
     private static readonly TimeSpan s_analysisTimeout = TimeSpan.FromSeconds(120);
 
-    /// <summary>Test hooks: the hardcoded analysis cadence/budget, pinned against Lite's defaults.</summary>
-    internal static TimeSpan AnalysisInterval => s_analysisInterval;
+    /* Clamp the store-driven analysis interval to Lite's accepted range (App clamps 5-360). */
+    private const int MinAnalysisIntervalMinutes = 5;
+    private const int MaxAnalysisIntervalMinutes = 360;
+
+    /// <summary>Test hook: the hardcoded per-run analysis budget, pinned against Lite's default.</summary>
     internal static TimeSpan AnalysisTimeout => s_analysisTimeout;
 
     private readonly ILogger<DarlingWorker> _logger;
@@ -73,6 +77,12 @@ public sealed class DarlingWorker : BackgroundService
 
     /* Set once by ExecuteAsync before the loop starts; the observability writes need it. */
     private NpgsqlDataSource? _postgres;
+
+    /* The live control-plane state (Stage 1): the last-seen config_version reload beacon and the
+       current sparse per-collector schedule overrides. Both updated on startup and on each reload;
+       read by the schedule-resolution path (TryConnectAsync / RunDueCollectorsAsync) and the reload. */
+    private long _lastConfigVersion = -1;
+    private IReadOnlyList<ScheduleOverride> _scheduleOverrides = Array.Empty<ScheduleOverride>();
 
     /* Server IDs whose scheduled analysis is currently running — prevents relaunching
        analysis for a server whose previous (possibly hung) pass has not finished
@@ -95,7 +105,9 @@ public sealed class DarlingWorker : BackgroundService
 
     private sealed class ServerLoopState
     {
-        public required MonitoredServer Config { get; init; }
+        /* Settable so the reconcile can replace a still-connected server's definition on a config
+           change (host/auth/excluded-dbs/cost) — paired with dropping Runtime to force a reconnect. */
+        public required MonitoredServer Config { get; set; }
         public ServerRuntime? Runtime { get; set; }
         public Dictionary<string, DateTime> NextDue { get; } = new(StringComparer.OrdinalIgnoreCase);
         public DateTime NextConnectAttempt { get; set; } = DateTime.MinValue;
@@ -273,9 +285,35 @@ public sealed class DarlingWorker : BackgroundService
         var deltas = new DarlingDeltaCalculator();
         await deltas.SeedFromStoreAsync(postgres, _logger, stoppingToken);
 
-        var runner = new DarlingCollectorRunner(postgres, deltas, _logger, config.CapturePlans);
+        /* Control-plane Stage 1: SEED the config store from darling.json once (idempotent; only empty
+           sections), then read the store view and make it authoritative — the held DarlingConfig is
+           mutated in place so the alert-settings/capture-plans/analysis seams below all reflect the
+           store. Store-unreachable degrades to the darling.json-loaded config (never worse than before).
+           The initial server set comes from config_monitored_servers WHERE is_enabled = TRUE (post-seed
+           equivalent to darling.json, but store-authoritative); the config_version read here is the
+           reload baseline, so the seed's own version bumps do not trigger a spurious first-sweep reload. */
+        var configProvider = new StoreConfigProvider(postgres, _logger);
+        await configProvider.SeedIfEmptyAsync(config, stoppingToken);
+        var initialView = await configProvider.LoadViewAsync(config, stoppingToken);
+        IReadOnlyList<MonitoredServer> initialServers = config.Servers;
+        if (initialView is not null)
+        {
+            StoreConfigProvider.ApplyToConfig(config, initialView);
+            _scheduleOverrides = initialView.ScheduleOverrides;
+            _lastConfigVersion = initialView.ConfigVersion;
+            /* Post-seed the store carries darling.json's servers; fall back to the file only if the store
+               read is empty (a partially-seeded store), so the service never starts up monitoring nothing. */
+            if (initialView.EnabledServers.Count > 0)
+            {
+                initialServers = initialView.EnabledServers;
+            }
+        }
+
+        /* Capture-plans is read live (() => config.CapturePlans) so a store reload of
+           config_service.capture_plans is honored on the next collector cycle without rebuilding. */
+        var runner = new DarlingCollectorRunner(postgres, deltas, _logger, () => config.CapturePlans);
         var servers = new List<ServerLoopState>();
-        foreach (var server in config.Servers)
+        foreach (var server in initialServers)
         {
             servers.Add(new ServerLoopState { Config = server });
         }
@@ -283,13 +321,18 @@ public sealed class DarlingWorker : BackgroundService
         /* Phase-5 slice D: the shared alert engine, wired to the PG-backed stores (V3) and the
            shared email/webhook delivery. Constructed once — the engine holds the per-server
            edge-trigger state for the service's lifetime. The settings/history/webhook pieces
-           are hoisted here because the AN3 analysis-notification path below shares them. */
+           are hoisted here because the AN3 analysis-notification path below shares them. The mute
+           service is hoisted too so a reload can re-LoadAsync() it (closes F16 — the engine holds
+           its IsAlertMuted delegate, so refreshing the same instance's cache mutes the next sweep). */
         var alertSettings = new DarlingAlertSettings(config);
         var historyStore = new PgAlertHistoryStore(postgres, _logger);
         var webhookAlertService = new WebhookAlertService(
             alertSettings, DarlingAlertDeliverer.Branding,
             _loggerFactory.CreateLogger<WebhookAlertService>(), historyStore);
-        var engine = await BuildAlertEngineAsync(config, postgres, servers, alertSettings, historyStore, webhookAlertService);
+        var muteRuleService = new MuteRuleService(
+            new PgMuteRuleStore(postgres, _logger), _loggerFactory.CreateLogger<MuteRuleService>());
+        await muteRuleService.LoadAsync();
+        var engine = BuildAlertEngine(config, servers, alertSettings, historyStore, webhookAlertService, muteRuleService);
 
         /* Phase-5 analysis slice AN3: the analysis pipeline's shared pieces, constructed once.
            The plan fetcher resolves a finding's serverId to the CONNECTED runtime's connection
@@ -309,16 +352,22 @@ public sealed class DarlingWorker : BackgroundService
             finding => finding.ServerId.ToString(CultureInfo.InvariantCulture),
             _loggerFactory.CreateLogger<AnalysisNotificationService>());
 
-        /* Delivery gate: Lite gates finding delivery on its AnalysisNotificationsEnabled
-           setting while analysis always runs + persists; Darling's headless twin of that
-           gate is the master alerts.enabled switch — an operator who turned alerts off gets
-           no analysis-finding notifications either, but findings still land in the store. */
-        var notifyFindings = config.Alerts.Enabled;
-
         _logger.LogInformation("PerformanceMonitor Darling collection loop started");
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            /* Control-plane reload beacon: poll config_version at a SAFE point (top of the sweep, never
+               mid-collection). On change, re-read the store and hot-swap the live config: the alert /
+               SMTP / webhook / capture / analysis settings (via the by-reference DarlingAlertSettings
+               seam + the runner's capture provider), the monitored-server set (add/remove/replace
+               ServerLoopState), the per-collector schedule overrides + NextDue, and the mute-rule cache. */
+            var configVersion = await configProvider.ReadConfigVersionAsync(stoppingToken);
+            if (configVersion.HasValue && configVersion.Value != _lastConfigVersion)
+            {
+                _lastConfigVersion = configVersion.Value;
+                await ReloadFromStoreAsync(configProvider, config, servers, muteRuleService, stoppingToken);
+            }
+
             foreach (var server in servers)
             {
                 if (stoppingToken.IsCancellationRequested)
@@ -343,20 +392,33 @@ public sealed class DarlingWorker : BackgroundService
                     await EvaluateAlertsAsync(engine, server, stoppingToken);
                 }
 
-                /* AN3: the scheduled analysis pipeline, per-server on Lite's 30-minute
-                   cadence. The next-due stamp advances up front (Lite's scheduler shape), so
-                   a timed-out pass is skipped, not retried immediately. */
-                if (DateTime.UtcNow >= server.NextAnalysisDue)
+                /* AN3: the scheduled analysis pipeline, per-server. The cadence, the enabled gate, and
+                   the notify gate are now control-plane knobs read LIVE from config.Analysis (a reload
+                   takes effect on the next tick). When analysis is disabled the pass is skipped and
+                   NextAnalysisDue is left in the past, so re-enabling runs immediately. The next-due
+                   stamp advances up front (Lite's scheduler shape), so a timed-out pass is skipped, not
+                   retried immediately. Delivery is gated on analysis_notifications_enabled (Lite's D0
+                   split: production unconditional, delivery gated) — replacing the old alerts.enabled
+                   gate; the interval is clamped to Lite's 5-360 range. */
+                if (config.Analysis.Enabled && DateTime.UtcNow >= server.NextAnalysisDue)
                 {
-                    server.NextAnalysisDue = DateTime.UtcNow.Add(s_analysisInterval);
-                    await RunScheduledAnalysisAsync(server, planFetcher, notificationService, notifyFindings, stoppingToken);
+                    var intervalMinutes = Math.Clamp(config.Analysis.IntervalMinutes, MinAnalysisIntervalMinutes, MaxAnalysisIntervalMinutes);
+                    server.NextAnalysisDue = DateTime.UtcNow.AddMinutes(intervalMinutes);
+                    await RunScheduledAnalysisAsync(
+                        server, planFetcher, notificationService, config.Analysis.NotificationsEnabled, stoppingToken);
                 }
             }
 
             if (DateTime.UtcNow >= _nextPurgeUtc)
             {
                 _nextPurgeUtc = DateTime.UtcNow.AddHours(24);
-                await DarlingRetention.PurgeAsync(postgres, _timescaleAvailable, _logger, stoppingToken);
+                /* Honor fleet-wide retention overrides (config_collector_schedules, server_id NULL) layered
+                   on CollectorScheduleDefaults; a per-server override can't apply to a shared-table purge.
+                   Empty overrides (Stage 1 seeds none) resolve to the defaults — identical behavior. */
+                var overrides = _scheduleOverrides;
+                await DarlingRetention.PurgeAsync(
+                    postgres, _timescaleAvailable, _logger, stoppingToken,
+                    name => StoreConfigProvider.ResolveFleetRetentionDays(name, overrides));
 
                 /* AN3: findings retention. Both apps' finding stores declare a 30-day cleanup
                    but neither app schedules it (Lite's DuckDB archive-reset bounds it
@@ -377,6 +439,144 @@ public sealed class DarlingWorker : BackgroundService
 
         _logger.LogInformation("PerformanceMonitor Darling collection loop stopped");
     }
+
+    /// <summary>
+    /// Applies a control-plane reload at a SAFE point (top of a sweep, never mid-collection): re-reads the
+    /// store, hot-swaps the held config's alert/SMTP/webhook/capture/analysis settings IN PLACE (the
+    /// by-reference DarlingAlertSettings seam + the runner's capture provider reflect it immediately),
+    /// reconciles the monitored-server set, recomputes each connected server's NextDue from the fresh
+    /// schedule overrides, and reloads the mute-rule cache (F16). Store-unreachable is a no-op — the current
+    /// live config stands, never worse than before.
+    /// </summary>
+    private async Task ReloadFromStoreAsync(
+        StoreConfigProvider provider, DarlingConfig config, List<ServerLoopState> servers,
+        MuteRuleService muteRuleService, CancellationToken cancellationToken)
+    {
+        var view = await provider.LoadViewAsync(config, cancellationToken);
+        if (view is null)
+        {
+            return;
+        }
+
+        StoreConfigProvider.ApplyToConfig(config, view);
+        _scheduleOverrides = view.ScheduleOverrides;
+
+        ReconcileServers(servers, view.EnabledServers);
+        RecomputeNextDue(servers);
+
+        await muteRuleService.LoadAsync();
+
+        _logger.LogInformation(
+            "Control-plane reload applied (config_version {Version}, {Servers} monitored server(s))",
+            _lastConfigVersion, servers.Count);
+    }
+
+    /// <summary>
+    /// Reconciles the live <see cref="ServerLoopState"/> set to the store's desired enabled set, keyed by the
+    /// shared server_id. ADD: a new enabled server gets a disconnected state that connects on its next tick
+    /// exactly like a startup server (via <see cref="TryConnectAsync"/> — no novel connection logic). REMOVE:
+    /// a server no longer enabled/present is dropped; its runtime holds no persistent connection (the
+    /// collectors open per run), so dropping the state is a clean disconnect. STAY: an unchanged definition is
+    /// left untouched (connection + NextDue preserved); a changed one has its config replaced and its runtime
+    /// dropped so it reconnects with the new definition through the same startup path.
+    /// </summary>
+    private void ReconcileServers(List<ServerLoopState> servers, IReadOnlyList<MonitoredServer> desired)
+    {
+        var desiredById = new Dictionary<int, MonitoredServer>();
+        foreach (var d in desired)
+        {
+            desiredById[ServerIdHelper.GetDeterministicHashCode(d.StorageName)] = d;
+        }
+
+        for (int i = servers.Count - 1; i >= 0; i--)
+        {
+            var state = servers[i];
+            var id = ServerIdHelper.GetDeterministicHashCode(state.Config.StorageName);
+            if (!desiredById.TryGetValue(id, out var desiredServer))
+            {
+                _logger.LogInformation(
+                    "[{Server}] Removed from the monitored set (disabled/deleted) — stopping collection",
+                    state.Config.DisplayName);
+                state.Runtime = null;
+                servers.RemoveAt(i);
+                continue;
+            }
+
+            if (!ServerDefinitionEquals(state.Config, desiredServer))
+            {
+                _logger.LogInformation(
+                    "[{Server}] Definition changed — reconnecting with the new configuration", desiredServer.DisplayName);
+                state.Config = desiredServer;
+                state.Runtime = null;
+                state.NextConnectAttempt = DateTime.MinValue;
+                state.NextDue.Clear();
+            }
+
+            desiredById.Remove(id);
+        }
+
+        foreach (var addition in desiredById.Values)
+        {
+            _logger.LogInformation(
+                "[{Server}] Added to the monitored set — will connect on the next sweep", addition.DisplayName);
+            servers.Add(new ServerLoopState { Config = addition });
+        }
+    }
+
+    /// <summary>
+    /// Recomputes each CONNECTED server's per-collector NextDue from the current schedule overrides after a
+    /// reload: a disabled or on-load-only (freq 0) collector is dropped from the schedule; a newly-enabled one
+    /// becomes due now; an existing entry is pulled in to at most now + the (possibly shortened) effective
+    /// interval so a frequency change takes effect promptly without over-firing. A server still connecting has
+    /// no NextDue yet — <see cref="TryConnectAsync"/> seeds it from the fresh overrides when it connects.
+    /// </summary>
+    private void RecomputeNextDue(List<ServerLoopState> servers)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var server in servers)
+        {
+            var runtime = server.Runtime;
+            if (runtime is null)
+            {
+                continue;
+            }
+
+            foreach (var name in CollectorScheduleDefaults.All.Keys)
+            {
+                var effective = StoreConfigProvider.ResolveSchedule(name, runtime.ServerId, _scheduleOverrides);
+                if (!effective.Enabled || effective.FrequencyMinutes == 0)
+                {
+                    server.NextDue.Remove(name);
+                    continue;
+                }
+
+                var capped = now.AddMinutes(effective.FrequencyMinutes);
+                server.NextDue[name] = server.NextDue.TryGetValue(name, out var existing) && existing < capped
+                    ? existing
+                    : capped;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether two server definitions are identical for the collection loop — the connection-relevant fields
+    /// plus the collection-affecting ones (excluded databases, cost, display name). A difference triggers a
+    /// reconnect on reconcile so the new definition takes effect.
+    /// </summary>
+    private static bool ServerDefinitionEquals(MonitoredServer a, MonitoredServer b)
+        => string.Equals(a.Name, b.Name, StringComparison.Ordinal)
+        && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(a.Database, b.Database, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(a.Auth, b.Auth, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(a.Username, b.Username, StringComparison.Ordinal)
+        && string.Equals(a.EncryptedPassword, b.EncryptedPassword, StringComparison.Ordinal)
+        && string.Equals(a.Password, b.Password, StringComparison.Ordinal)
+        && string.Equals(a.EncryptMode, b.EncryptMode, StringComparison.OrdinalIgnoreCase)
+        && a.TrustServerCertificate == b.TrustServerCertificate
+        && a.ReadOnlyIntent == b.ReadOnlyIntent
+        && a.MultiSubnetFailover == b.MultiSubnetFailover
+        && a.MonthlyCostUsd == b.MonthlyCostUsd
+        && a.ExcludedDatabases.SequenceEqual(b.ExcludedDatabases, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Ensures the store connection string carries the collect/config search path (the V8 schema
@@ -426,17 +626,17 @@ public sealed class DarlingWorker : BackgroundService
     /// server's own connection, and a resolution hook that logs recovered conditions (the
     /// headless stand-in for Lite's tray "Cleared" toasts).
     /// </summary>
-    private async Task<AlertEngine> BuildAlertEngineAsync(
-        DarlingConfig config, NpgsqlDataSource postgres, List<ServerLoopState> servers,
-        DarlingAlertSettings alertSettings, PgAlertHistoryStore historyStore, WebhookAlertService webhookAlertService)
+    private AlertEngine BuildAlertEngine(
+        DarlingConfig config, List<ServerLoopState> servers,
+        DarlingAlertSettings alertSettings, PgAlertHistoryStore historyStore, WebhookAlertService webhookAlertService,
+        MuteRuleService muteRuleService)
     {
+        var postgres = _postgres!;
         var stateStore = new PgAlertStateStore(postgres, _logger);
 
-        /* Mute rules load once at startup, like Lite's — the headless store starts empty
-           (nothing muted) until rows are added to config_mute_rules. */
-        var muteRuleService = new MuteRuleService(
-            new PgMuteRuleStore(postgres, _logger), _loggerFactory.CreateLogger<MuteRuleService>());
-        await muteRuleService.LoadAsync();
+        /* The mute service is loaded + owned by the caller (RunCollectionLoopAsync) so a control-plane
+           reload can re-LoadAsync() the SAME instance and mute the very next sweep (F16). The engine
+           binds its IsAlertMuted delegate, which reads the refreshed cache. */
 
         /* The webhook service was constructed first and injected into the deliverer's send core
            (Lite's MainWindow wiring); the shared history store seeds both channels' cooldowns
@@ -687,12 +887,20 @@ LIMIT 1", connection);
 
             await DarlingXeSessions.EnsureAllAsync(server.Runtime, _logger, cancellationToken);
 
-            /* On-load config snapshots (FrequencyMinutes 0) run once per connect, then every
-               scheduled collector becomes immediately due — mirrors Lite's server-open behavior. */
+            /* On-load config snapshots (effective FrequencyMinutes 0) run once per connect, then every
+               scheduled collector becomes immediately due — mirrors Lite's server-open behavior. The
+               effective schedule layers config_collector_schedules overrides on CollectorScheduleDefaults;
+               a collector disabled by an override is neither run on-load nor scheduled. */
             var now = DateTime.UtcNow;
-            foreach (var (name, schedule) in CollectorScheduleDefaults.All)
+            foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
-                if (schedule.FrequencyMinutes == 0)
+                var effective = StoreConfigProvider.ResolveSchedule(name, server.Runtime.ServerId, _scheduleOverrides);
+                if (!effective.Enabled)
+                {
+                    continue;
+                }
+
+                if (effective.FrequencyMinutes == 0)
                 {
                     await RunOneAsync(server, runner, name, cancellationToken);
                 }
@@ -712,22 +920,33 @@ LIMIT 1", connection);
 
     private async Task RunDueCollectorsAsync(ServerLoopState server, DarlingCollectorRunner runner, CancellationToken cancellationToken)
     {
+        var runtime = server.Runtime;
+        if (runtime is null)
+        {
+            return;
+        }
+
         var now = DateTime.UtcNow;
-        foreach (var (name, schedule) in CollectorScheduleDefaults.All)
+        foreach (var name in CollectorScheduleDefaults.All.Keys)
         {
             if (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
 
-            if (schedule.FrequencyMinutes == 0
+            /* Effective schedule = config_collector_schedules override layered on the code default.
+               A disabled or on-load-only (freq 0) collector is skipped; the frequency the NextDue stamp
+               advances by is the EFFECTIVE one, so an override takes effect immediately. */
+            var effective = StoreConfigProvider.ResolveSchedule(name, runtime.ServerId, _scheduleOverrides);
+            if (!effective.Enabled
+                || effective.FrequencyMinutes == 0
                 || !server.NextDue.TryGetValue(name, out var due)
                 || now < due)
             {
                 continue;
             }
 
-            server.NextDue[name] = now.AddMinutes(schedule.FrequencyMinutes);
+            server.NextDue[name] = now.AddMinutes(effective.FrequencyMinutes);
             await RunOneAsync(server, runner, name, cancellationToken);
         }
     }

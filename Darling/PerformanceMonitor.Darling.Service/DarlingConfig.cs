@@ -73,6 +73,18 @@ public sealed class DarlingConfig
     public WebhooksConfig Webhooks { get; set; } = new();
 
     /// <summary>
+    /// The scheduled-analysis cadence + delivery knobs (Phase-5 AN3 / control-plane Stage 1). Every
+    /// default mirrors Lite's <c>App.*</c> analysis defaults (enabled, 30-minute interval,
+    /// notify-severity 1.5) EXCEPT <see cref="AnalysisConfig.NotificationsEnabled"/>, which defaults
+    /// TRUE to preserve Darling's shipped behavior (the service gated analysis-finding delivery on the
+    /// master <c>alerts.enabled</c> switch, default on) rather than Lite's App default of false. Seeded
+    /// into <c>config_alert_settings</c>' analysis columns and read back live so the store is
+    /// authoritative after the first run. Optional — omit the section entirely for the defaults.
+    /// </summary>
+    [JsonPropertyName("analysis")]
+    public AnalysisConfig Analysis { get; set; } = new();
+
+    /// <summary>
     /// The embedded MCP server (analysis slice AN4): the six analysis tools — the same tool
     /// surface Lite and the Dashboard expose — over Streamable HTTP on localhost. Default OFF:
     /// a headless service should not open a local port unless the operator asks for it (both
@@ -317,6 +329,33 @@ public sealed class AlertsConfig
     /// <summary>Databases excluded from blocking/deadlock/long-running-query alert evaluation.</summary>
     [JsonPropertyName("excludedDatabases")]
     public List<string> ExcludedDatabases { get; set; } = new();
+}
+
+/// <summary>
+/// The scheduled-analysis cadence + delivery knobs (control-plane Stage 1). These live in
+/// <c>config_alert_settings</c>' analysis columns in the store; before this section existed the
+/// service hardcoded the interval (30 min) and gated finding delivery on <c>alerts.enabled</c>.
+/// Defaults mirror Lite's <c>App.*</c> analysis defaults (enabled, 30-minute interval clamped to
+/// 5–360, notify-severity 1.5 clamped to 0–2) except <see cref="NotificationsEnabled"/>, which is
+/// TRUE to keep Darling's shipped notify-on default (Lite's App default is false).
+/// </summary>
+public sealed class AnalysisConfig
+{
+    /// <summary>Whether the scheduled analysis pipeline runs (findings still require notify gating).</summary>
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>How often scheduled analysis runs, per server (clamped 5–360 when applied).</summary>
+    [JsonPropertyName("intervalMinutes")]
+    public int IntervalMinutes { get; set; } = 30;
+
+    /// <summary>Whether findings are delivered to the notification channels (analysis still runs + persists).</summary>
+    [JsonPropertyName("notificationsEnabled")]
+    public bool NotificationsEnabled { get; set; } = true;
+
+    /// <summary>Minimum finding severity (0.0–2.0) to notify on — the shared AnalysisNotificationService floor.</summary>
+    [JsonPropertyName("notifySeverity")]
+    public double NotifySeverity { get; set; } = 1.5;
 }
 
 /// <summary>

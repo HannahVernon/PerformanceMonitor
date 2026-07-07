@@ -71,6 +71,30 @@ public sealed class DarlingSecuritySplitLiveTests
     }
 
     [Fact]
+    public async Task V17_ControlPlaneTables_LandInConfigSchema_NotCollect()
+    {
+        var connectionString = RequireLivePostgres();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+
+        /* The Stage 1 control-plane tables must be CREATEd directly into config (the admin-writable
+           schema), NOT collect — V17 is the first migration to create in config, and an unqualified
+           name would resolve to collect (first in the migrate session's search_path). This is the live
+           proof of the schema-qualify gotcha the migration guards against. */
+        foreach (var table in new[]
+        {
+            "config_monitored_servers", "config_alert_settings", "config_notification",
+            "config_collector_schedules", "config_service", "config_command",
+        })
+        {
+            Assert.Equal("config", await SchemaOfAsync(connection, table, ct));
+        }
+    }
+
+    [Fact]
     public async Task Roles_AdminWritesConfig_ViewerDenied_AndNewCollectTableAutoGrants()
     {
         var connectionString = RequireLivePostgres();

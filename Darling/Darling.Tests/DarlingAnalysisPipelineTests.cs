@@ -270,9 +270,15 @@ public sealed class DarlingAnalysisPipelineTests
     [Fact]
     public void Worker_AnalysisCadence_MirrorsLitesAppDefaults()
     {
-        /* Lite's App.xaml.cs defaults: AnalysisIntervalMinutes = 30, AnalysisTimeoutSeconds =
-           120 — hardcoded here (defaults over speculative config; no darling.json knob). */
-        Assert.Equal(TimeSpan.FromMinutes(30), DarlingWorker.AnalysisInterval);
+        /* Lite's App.xaml.cs defaults, now seeded from config.Analysis into config_alert_settings and read
+           live (control-plane Stage 1): AnalysisEnabled = true, AnalysisIntervalMinutes = 30, notify-severity
+           1.5. NotificationsEnabled keeps Darling's shipped notify-on default (Lite's App default is false).
+           AnalysisTimeoutSeconds = 120 stays hardcoded (not a knob). */
+        var analysis = new AnalysisConfig();
+        Assert.True(analysis.Enabled);
+        Assert.Equal(30, analysis.IntervalMinutes);
+        Assert.True(analysis.NotificationsEnabled);
+        Assert.Equal(1.5, analysis.NotifySeverity);
         Assert.Equal(TimeSpan.FromSeconds(120), DarlingWorker.AnalysisTimeout);
     }
 
