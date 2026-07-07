@@ -273,6 +273,12 @@ The embedded MCP server, over Streamable HTTP bound to `localhost` only. It expo
 
 - **Six diagnostic-analysis tools** — `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding`.
 - **Five plan-analysis tools** — `analyze_query_plan` (by `query_hash`), `analyze_procedure_plan` (by `sql_handle`), `analyze_query_store_plan` (by `database_name` + `query_id`), `analyze_plan_xml` (raw showplan XML, no fetch), and `get_plan_xml` (raw stored plan XML by `query_hash`). These run the shared execution-plan analyzer over the plan XML the collectors already captured into the store — a stored-plan read, never a live query against the monitored server. `analyze_query_plan`/`get_plan_xml` accept an optional `database_name`, and `analyze_query_store_plan` an optional `plan_id`, to pin the exact stored plan when the caller knows it.
+- **Fourteen core data-read tools** — the diagnostic reads an assistant needs to investigate a server, each a stored read of the collected data (never a live query against the monitored server):
+  - *Resource metrics* — `get_cpu_utilization`, `get_wait_stats`, `get_wait_trend`, `get_memory_stats`, `get_memory_clerks`, `get_file_io_stats`, `get_tempdb_trend`, `get_perfmon_stats`.
+  - *Query performance* — `get_top_queries_by_cpu`, `get_top_procedures_by_cpu`, `get_query_store_top` (these hand back the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys the plan-analysis tools consume).
+  - *Discovery / health* — `list_servers` (with collection-freshness status), `get_collection_health`, `get_server_properties`.
+
+  These are the tools the analysis findings' `next_tools` recommendations point at, so a client following a finding's advice resolves them on this same server. Result shapes match Lite's (the store is Lite's collector schema); where Lite and the Dashboard's shapes diverge, Darling follows Lite — the shape its collector-mirror store can serve faithfully.
 
 | Key | Default | Notes |
 |---|---|---|

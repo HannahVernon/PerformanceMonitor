@@ -162,7 +162,15 @@ public sealed class DarlingMcpHostService : BackgroundService
                    analyze_query_store_plan / analyze_plan_xml / get_plan_xml) — the same names the
                    Dashboard and Lite expose, fetching the collectors' STORED plan XML from Postgres
                    (no live monitored-server hit) and running the SHARED PlanAnalysis engine. */
-                .WithGeminiCompatibleTools<DarlingMcpPlanTools>();
+                .WithGeminiCompatibleTools<DarlingMcpPlanTools>()
+                /* The core data-read tools (resource metrics, query performance, discovery/health —
+                   get_cpu_utilization / get_wait_stats / get_wait_trend / get_memory_stats /
+                   get_memory_clerks / get_file_io_stats / get_tempdb_trend / get_perfmon_stats /
+                   get_top_queries_by_cpu / get_top_procedures_by_cpu / get_query_store_top /
+                   list_servers / get_collection_health / get_server_properties), the same names Lite
+                   and the Dashboard expose, over Darling's Postgres store (STORED reads, no live hit).
+                   These are the tools the analysis findings' next_tools recommendations point at. */
+                .WithGeminiCompatibleTools<DarlingMcpDataTools>();
 
             _app = builder.Build();
             _app.MapMcp();
