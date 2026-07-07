@@ -389,7 +389,8 @@ SELECT
     wait_time_ms, lock_mode, blocking_status, contentious_object,
     blocked_sql_text, blocking_sql_text,
     blocked_login_name, blocked_host_name, blocked_client_app,
-    blocked_last_tran_started, blocking_last_tran_started, monitor_loop
+    blocked_last_tran_started, blocking_last_tran_started, monitor_loop,
+    blocking_login_name, blocking_host_name, blocking_client_app
 FROM v_dmv_blocking_snapshots
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
 ORDER BY event_time DESC
@@ -422,6 +423,11 @@ LIMIT 200";
                     BlockedLastTranStarted = reader.IsDBNull(16) ? null : reader.GetDateTime(16),
                     BlockingLastTranStarted = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
                     MonitorLoop = reader.IsDBNull(18) ? (int?)null : reader.GetInt32(18),
+                    /* Blocking-side identity — the DMV snapshot is the only blocking source on AWS RDS / when the
+                       BPR threshold is unset, so surface it here too (the XE path already sets these). */
+                    BlockingLoginName = reader.IsDBNull(19) ? "" : reader.GetString(19),
+                    BlockingHostName = reader.IsDBNull(20) ? "" : reader.GetString(20),
+                    BlockingClientApp = reader.IsDBNull(21) ? "" : reader.GetString(21),
                     Source = BlockedProcessAlertRow.DmvSnapshotSource
                 });
             }

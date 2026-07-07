@@ -98,6 +98,10 @@ public sealed class ViewerQueryStatsHistoryRow
     public string CollectionTimeLocal => HistoryTime.CollectionLocal(CollectionTime);
     public string CreationTimeLocal => ViewerDataService.FormatServerClock(CreationTime);
     public string LastExecutionTimeLocal => ViewerDataService.FormatServerClock(LastExecutionTime);
+
+    /// <summary>Whether this snapshot carries a plan_handle — gates the history grid's "Fetch Live Plan" item
+    /// (the live-cache fetch is keyed on plan_handle, distinct from the stored plan "View Plan" opens).</summary>
+    public bool HasLivePlanHandle => !string.IsNullOrEmpty(PlanHandle);
 }
 
 /// <summary>One collected procedure_stats snapshot for a single (database, schema, object) — Lite's
@@ -154,6 +158,10 @@ public sealed class ViewerProcedureStatsHistoryRow
     public string CollectionTimeLocal => HistoryTime.CollectionLocal(CollectionTime);
     public string CachedTimeLocal => ViewerDataService.FormatServerClock(CachedTime);
     public string LastExecutionTimeLocal => ViewerDataService.FormatServerClock(LastExecutionTime);
+
+    /// <summary>Whether this snapshot carries a plan_handle — gates the history grid's "Fetch Live Plan" item
+    /// (the live-cache fetch is keyed on plan_handle, distinct from the stored plan "View Plan" opens).</summary>
+    public bool HasLivePlanHandle => !string.IsNullOrEmpty(PlanHandle);
 }
 
 /// <summary>One collected query_store_stats snapshot for a single (database, query_id) plan — Lite's

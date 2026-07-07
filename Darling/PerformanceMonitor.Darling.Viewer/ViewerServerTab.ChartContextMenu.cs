@@ -32,9 +32,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <see cref="ContextMenu"/> = [drill-down item] + [separator] + [these copy/save/export items], exactly like
 /// Lite: <see cref="BuildChartContextMenu"/> builds the copy/export items and takes over right-click (via the
 /// shared <c>AttachChartContextMenu</c> in ViewerServerTab.DrillDown.cs), then the drill-down wiring
-/// <c>Insert</c>s its item at the top of the SAME menu. Charts that have no drill-down (latch/spinlock,
-/// CPU scheduler, plan cache, collector duration, System Events) get this menu on its own via
-/// <see cref="WireChartContextMenus"/>.</para>
+/// <c>Insert</c>s its item at the top of the SAME menu. The only chart with no drill-down (collector duration,
+/// which Lite also leaves drill-less) gets this menu on its own via <see cref="WireChartContextMenus"/>.</para>
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -179,24 +178,12 @@ public partial class ViewerServerTab
     /// </summary>
     private void WireChartContextMenus()
     {
-        /* Darling-only collectors Lite lacks (latch/spinlock, CPU scheduler, plan cache) + the collector
-           duration chart Lite also leaves drill-less. */
-        BuildChartContextMenu(LatchStatsChart, "Latch_Stats");
-        BuildChartContextMenu(SpinlockStatsChart, "Spinlock_Stats");
-        BuildChartContextMenu(SessionStatsChart, "Session_Stats");
-        BuildChartContextMenu(CpuSchedulerChart, "CPU_Scheduler");
-        BuildChartContextMenu(PlanCacheChart, "Plan_Cache");
+        /* Only the collector-duration chart is menu-only here — Lite leaves its collector-duration chart
+           drill-less too. The other Darling-only charts (latch/spinlock, CPU scheduler, plan cache, session
+           counts, the eight System Events charts) now carry a "Show Active Queries at This Time" drill-down,
+           so they get their copy/export menu from WireChartDrillDowns instead (one menu per chart — no
+           double-menuing). */
         BuildChartContextMenu(CollectorDurationChart, "Collector_Duration");
-
-        /* System Events (system_health XE) charts. */
-        BuildChartContextMenu(BadPagesChart, "Bad_Pages");
-        BuildChartContextMenu(DumpRequestsChart, "Dump_Requests");
-        BuildChartContextMenu(AccessViolationsChart, "Access_Violations");
-        BuildChartContextMenu(WriteAccessViolationsChart, "Write_Access_Violations");
-        BuildChartContextMenu(NonYieldingTasksChart, "Non_Yielding_Tasks");
-        BuildChartContextMenu(LatchWarningsChart, "Latch_Warnings");
-        BuildChartContextMenu(SickSpinlocksChart, "Sick_Spinlocks");
-        BuildChartContextMenu(CpuComparisonChart, "CPU_Comparison");
     }
 
     private static void CopyChartImage(WpfPlot chart)

@@ -42,6 +42,13 @@
                 <MenuItem Header="View Plan" Click="ViewPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- Live plan fetch for the RIGHT-CLICKED snapshot by its plan_handle (headless-safe cached read,
+                     no re-exec) — distinct from the stored "View Plan". Gated on the current row's
+                     HasLivePlanHandle so a snapshot without a plan_handle shows it disabled. -->
+                <MenuItem Header="Fetch Live Plan" Click="FetchLivePlan_Click"
+                          IsEnabled="{Binding CurrentItem.HasLivePlanHandle, ElementName=HistoryDataGrid, FallbackValue=False}">
+                    <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
+                </MenuItem>
             </ContextMenu>
         </ResourceDictionary>
     </Window.Resources>

@@ -126,6 +126,18 @@ public sealed class ViewerUnifiedExpensiveQueriesSqlTests
     }
 
     [Fact]
+    public void UnifiedSql_CarriesPlanHandle_OnStatementAndProcedureArms_NullForQueryStore()
+    {
+        /* "Fetch Live Plan" is keyed on plan_handle: the query_stats + procedure_stats arms carry
+           MAX(plan_handle) (mirroring their standalone reads), while the Query Store arm has none
+           (NULL::text) — so QS-sourced rows keep "Fetch Live Plan" correctly disabled. The UNION stays
+           column-aligned across all three branches. */
+        var sql = ViewerDataService.UnifiedExpensiveQueriesSql;
+        Assert.Equal(2, CountOccurrences(sql, "MAX(plan_handle) AS plan_handle"));
+        Assert.Contains("NULL::text AS plan_handle", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UnifiedSql_IsPostgresDialect_FivePositionalParams_NoTsqlIsms()
     {
         var sql = ViewerDataService.UnifiedExpensiveQueriesSql;
@@ -183,6 +195,15 @@ public sealed class ViewerUnifiedExpensiveQueriesRowTests
         Assert.True(new ViewerExpensiveQueryRow { QueryPlanXml = "<ShowPlanXML/>" }.HasQueryPlan);
         Assert.False(new ViewerExpensiveQueryRow { QueryPlanXml = null }.HasQueryPlan);
         Assert.False(new ViewerExpensiveQueryRow { QueryPlanXml = "" }.HasQueryPlan);
+    }
+
+    [Fact]
+    public void HasLivePlanHandle_ReflectsThePlanHandlePresence()
+    {
+        /* Gates "Fetch Live Plan": the query_stats + procedure_stats sources carry a plan_handle; a Query
+           Store row (or any plan_handle-less row) leaves it empty and stays disabled. */
+        Assert.True(new ViewerExpensiveQueryRow { PlanHandle = "0x06000100AB" }.HasLivePlanHandle);
+        Assert.False(new ViewerExpensiveQueryRow { PlanHandle = "" }.HasLivePlanHandle);
     }
 
     [Fact]
@@ -307,18 +328,19 @@ public sealed class ViewerUnifiedExpensiveQueriesLivePostgresTests
 
         try
         {
-            /* Query Stats: highest avg worker. Two collections summed → exec 5, worker 500_000 us → avg 100 ms. */
+            /* Query Stats: highest avg worker. Two collections summed → exec 5, worker 500_000 us → avg 100 ms.
+               Same plan_handle in both collections so MAX(plan_handle) is deterministic. */
             await InsertQueryStatsAsync(connection, t1, "StackOverflow", "0xHOT",
                 deltaExec: 2, deltaWorker: 200_000, deltaElapsed: 400_000, deltaReads: 200,
-                maxGrantKb: 2048, queryText: "SELECT hot", planXml: "<ShowPlanXML>qs</ShowPlanXML>");
+                maxGrantKb: 2048, queryText: "SELECT hot", planXml: "<ShowPlanXML>qs</ShowPlanXML>", planHandle: "0x0500QSHANDLE");
             await InsertQueryStatsAsync(connection, t2, "StackOverflow", "0xHOT",
                 deltaExec: 3, deltaWorker: 300_000, deltaElapsed: 600_000, deltaReads: 300,
-                maxGrantKb: 2048, queryText: "SELECT hot", planXml: "<ShowPlanXML>qs</ShowPlanXML>");
+                maxGrantKb: 2048, queryText: "SELECT hot", planXml: "<ShowPlanXML>qs</ShowPlanXML>", planHandle: "0x0500QSHANDLE");
 
             /* Procedure: medium avg worker. exec 4, worker 200_000 us → avg 50 ms. No grant column. */
             await InsertProcedureStatsAsync(connection, t1, "StackOverflow", "dbo", "usp_Mid", "PROCEDURE",
                 deltaExec: 4, deltaWorker: 200_000, deltaElapsed: 400_000, deltaReads: 400,
-                planXml: "<ShowPlanXML>ps</ShowPlanXML>");
+                planXml: "<ShowPlanXML>ps</ShowPlanXML>", planHandle: "0x0500PSHANDLE");
 
             /* Query Store: lowest avg worker. exec 10, worker = avg 10_000 us * 10 → avg 10 ms. Grant 1024 pages. */
             await InsertQueryStoreAsync(connection, t1, "StackOverflow", queryId: 99, module: "dbo.usp_Qs",
@@ -338,17 +360,22 @@ public sealed class ViewerUnifiedExpensiveQueriesLivePostgresTests
             Assert.Equal(2.0, rows[0].MaxGrantMb!.Value, 3);        /* 2048 KB → 2 MB */
             Assert.Equal("SELECT hot", rows[0].QueryText);
             Assert.Equal("<ShowPlanXML>qs</ShowPlanXML>", rows[0].QueryPlanXml);
+            Assert.Equal("0x0500QSHANDLE", rows[0].PlanHandle);     /* MAX(plan_handle) across both collections */
+            Assert.True(rows[0].HasLivePlanHandle);
 
             Assert.Equal(ViewerDataService.ExpensiveSourceStoredProcedure, rows[1].Source);
             Assert.Equal("dbo.usp_Mid", rows[1].ObjectName);
             Assert.Equal(50.0, rows[1].AvgWorkerTimeMs, 3);
             Assert.Null(rows[1].MaxGrantMb);                        /* procedure DMVs carry no grant */
+            Assert.Equal("0x0500PSHANDLE", rows[1].PlanHandle);     /* the procedure arm carries plan_handle too */
 
             Assert.Equal(ViewerDataService.ExpensiveSourceQueryStore, rows[2].Source);
             Assert.Equal("dbo.usp_Qs", rows[2].ObjectName);
             Assert.Equal(10, rows[2].ExecutionCount);
             Assert.Equal(10.0, rows[2].AvgWorkerTimeMs, 3);
             Assert.Equal(8.0, rows[2].MaxGrantMb!.Value, 3);        /* 1024 pages * 8 KB / 1024 → 8 MB */
+            Assert.Equal("", rows[2].PlanHandle);                   /* Query Store has no plan_handle → disabled */
+            Assert.False(rows[2].HasLivePlanHandle);
         }
         finally
         {
@@ -362,7 +389,8 @@ public sealed class ViewerUnifiedExpensiveQueriesLivePostgresTests
 
     private static async Task InsertQueryStatsAsync(
         NpgsqlConnection connection, DateTime collectionTimeUtc, string databaseName, string queryHash,
-        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, long maxGrantKb, string queryText, string planXml)
+        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, long maxGrantKb, string queryText, string planXml,
+        string planHandle)
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO query_stats
@@ -370,8 +398,8 @@ INSERT INTO query_stats
      database_name, query_hash, creation_time, last_execution_time,
      delta_execution_count, delta_worker_time, delta_elapsed_time,
      delta_logical_reads, delta_logical_writes, delta_physical_reads,
-     max_grant_kb, query_text, query_plan_xml)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)", connection);
+     max_grant_kb, query_text, query_plan_xml, plan_handle)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)", connection);
         command.Parameters.AddWithValue(1L);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(ServerId);
@@ -389,13 +417,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         command.Parameters.AddWithValue(maxGrantKb);
         command.Parameters.AddWithValue(queryText);
         command.Parameters.AddWithValue(planXml);
+        command.Parameters.AddWithValue(planHandle);
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
     private static async Task InsertProcedureStatsAsync(
         NpgsqlConnection connection, DateTime collectionTimeUtc,
         string databaseName, string schemaName, string objectName, string objectType,
-        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string planXml)
+        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string planXml, string planHandle)
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO procedure_stats
@@ -403,8 +432,8 @@ INSERT INTO procedure_stats
      database_name, schema_name, object_name, object_type,
      cached_time, last_execution_time,
      delta_execution_count, delta_worker_time, delta_elapsed_time,
-     delta_logical_reads, delta_logical_writes, delta_physical_reads, query_plan_xml)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)", connection);
+     delta_logical_reads, delta_logical_writes, delta_physical_reads, query_plan_xml, plan_handle)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)", connection);
         command.Parameters.AddWithValue(1L);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(ServerId);
@@ -422,6 +451,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         command.Parameters.AddWithValue(0L);
         command.Parameters.AddWithValue(0L);
         command.Parameters.AddWithValue(planXml);
+        command.Parameters.AddWithValue(planHandle);
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 

@@ -375,20 +375,37 @@ public sealed class ViewerConfigChangesDiffTests
 }
 
 /// <summary>
-/// Pins the inner-tab renumber: the Configuration Changes tab is inserted immediately after the latest-snapshot
-/// Configuration tab, so every tab after it shifts up by one. A stale constant would send LoadInnerTabAsync's
-/// switch to the wrong loader.
+/// Pins the reworked inner-tab order: the resource run (Overview … Configuration Changes) followed by a
+/// diagnostics tail — Daily Summary -> System Events -> Latches &amp; Spinlocks -> Collection Health. These
+/// constants are the source of truth for LoadInnerTabAsync's switch + the drill-down SelectedIndex navigation,
+/// so a stale constant would route to the wrong loader / tab. Must match the &lt;TabItem&gt; order in
+/// ViewerServerTab.xaml.
 /// </summary>
 public sealed class ViewerConfigChangesTabTests
 {
     [Fact]
-    public void InnerTabIndices_ConfigChangesInsertedAfterConfiguration_ShiftsRest()
+    public void InnerTabIndices_MatchTheReworkedDiagnosticsTailOrder()
     {
-        Assert.Equal(13, ViewerServerTab.ConfigurationInnerTabIndex);
-        Assert.Equal(14, ViewerServerTab.ConfigChangesInnerTabIndex);
-        Assert.Equal(15, ViewerServerTab.DailySummaryInnerTabIndex);
-        Assert.Equal(16, ViewerServerTab.HealthInnerTabIndex);
-        Assert.Equal(17, ViewerServerTab.SystemEventsInnerTabIndex);
+        /* Resource run. */
+        Assert.Equal(0, ViewerServerTab.OverviewInnerTabIndex);
+        Assert.Equal(1, ViewerServerTab.WaitStatsInnerTabIndex);
+        Assert.Equal(2, ViewerServerTab.QueriesInnerTabIndex);
+        Assert.Equal(3, ViewerServerTab.PlanViewerInnerTabIndex);
+        Assert.Equal(4, ViewerServerTab.CpuInnerTabIndex);
+        Assert.Equal(5, ViewerServerTab.MemoryInnerTabIndex);
+        Assert.Equal(6, ViewerServerTab.FileIoInnerTabIndex);
+        Assert.Equal(7, ViewerServerTab.TempDbInnerTabIndex);
+        Assert.Equal(8, ViewerServerTab.BlockingInnerTabIndex);
+        Assert.Equal(9, ViewerServerTab.PerfmonInnerTabIndex);
+        Assert.Equal(10, ViewerServerTab.SessionStatsInnerTabIndex);
+        Assert.Equal(11, ViewerServerTab.RunningJobsInnerTabIndex);
+        Assert.Equal(12, ViewerServerTab.ConfigurationInnerTabIndex);
+        Assert.Equal(13, ViewerServerTab.ConfigChangesInnerTabIndex);
+        /* Diagnostics tail: Daily Summary -> System Events -> Latches & Spinlocks -> Collection Health. */
+        Assert.Equal(14, ViewerServerTab.DailySummaryInnerTabIndex);
+        Assert.Equal(15, ViewerServerTab.SystemEventsInnerTabIndex);
+        Assert.Equal(16, ViewerServerTab.LatchSpinlockInnerTabIndex);
+        Assert.Equal(17, ViewerServerTab.HealthInnerTabIndex);
     }
 }
 

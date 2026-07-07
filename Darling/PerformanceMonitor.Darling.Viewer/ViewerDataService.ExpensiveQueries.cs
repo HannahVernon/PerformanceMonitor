@@ -60,6 +60,13 @@ public sealed class ViewerExpensiveQueryRow
     /// <summary>The collector's STORED plan XML for the row, carried in-row so "View Plan" / "Copy Repro
     /// Script" need no extra read; null when no plan was captured (best-effort, or aged out of retention).</summary>
     public string? QueryPlanXml { get; set; }
+
+    /// <summary>The row's plan_handle for the LIVE-cache fetch ("Fetch Live Plan"), distinct from the stored
+    /// <see cref="QueryPlanXml"/> that "View Plan" opens. The query_stats + procedure_stats arms carry it
+    /// (MAX(plan_handle) per group); the Query Store arm has no plan_handle, so its rows leave this empty and
+    /// keep "Fetch Live Plan" correctly disabled.</summary>
+    public string PlanHandle { get; set; } = "";
+
     public DateTime? FirstExecutionTime { get; set; }
     public DateTime? LastExecutionTime { get; set; }
 
@@ -75,6 +82,10 @@ public sealed class ViewerExpensiveQueryRow
     /// <summary>Whether a stored plan rode back for this row — gates the "View Plan" context item so a
     /// plan-less row shows it disabled instead of shown-and-failed.</summary>
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlanXml);
+
+    /// <summary>Whether this row carries a plan_handle — gates the "Fetch Live Plan" context item (the
+    /// live-cache fetch is keyed on plan_handle). Query Store rows have none and stay disabled.</summary>
+    public bool HasLivePlanHandle => !string.IsNullOrEmpty(PlanHandle);
 
     /// <summary>
     /// True when <see cref="QueryText"/> holds a RUNNABLE statement (the Query Stats / Query Store
@@ -166,6 +177,7 @@ public sealed partial class ViewerDataService
                 r.max_grant_mb,
                 COALESCE(t.query_text, '') AS query_text_sample,
                 t.query_plan_xml,
+                r.plan_handle,
                 r.first_execution_time,
                 r.last_execution_time
             FROM (
@@ -179,6 +191,7 @@ public sealed partial class ViewerDataService
                     CAST(SUM(delta_logical_writes) AS bigint) AS total_logical_writes,
                     CAST(SUM(delta_physical_reads) AS bigint) AS total_physical_reads,
                     (MAX(max_grant_kb) / 1024.0)::double precision AS max_grant_mb,
+                    MAX(plan_handle) AS plan_handle,
                     MIN(creation_time) AS first_execution_time,
                     MAX(last_execution_time) AS last_execution_time
                 FROM query_stats
@@ -224,6 +237,7 @@ public sealed partial class ViewerDataService
                 NULL::double precision AS max_grant_mb,
                 r.database_name || '.' || r.schema_name || '.' || r.object_name AS query_text_sample,
                 p.query_plan_xml,
+                r.plan_handle,
                 r.first_execution_time,
                 r.last_execution_time
             FROM (
@@ -238,6 +252,7 @@ public sealed partial class ViewerDataService
                     CAST(SUM(delta_logical_reads) AS bigint) AS total_logical_reads,
                     CAST(SUM(delta_logical_writes) AS bigint) AS total_logical_writes,
                     CAST(SUM(delta_physical_reads) AS bigint) AS total_physical_reads,
+                    MAX(plan_handle) AS plan_handle,
                     MIN(cached_time) AS first_execution_time,
                     MAX(last_execution_time) AS last_execution_time
                 FROM procedure_stats
@@ -280,6 +295,7 @@ public sealed partial class ViewerDataService
                 r.max_grant_mb,
                 COALESCE(t.query_text, '') AS query_text_sample,
                 t.query_plan_text AS query_plan_xml,
+                NULL::text AS plan_handle,
                 r.first_execution_time,
                 r.last_execution_time
             FROM (
@@ -335,7 +351,8 @@ public sealed partial class ViewerDataService
             query_text_sample,
             query_plan_xml,
             first_execution_time,
-            last_execution_time
+            last_execution_time,
+            plan_handle
         FROM all_sources
         ORDER BY avg_worker_ms DESC NULLS LAST
         LIMIT $5
@@ -382,6 +399,7 @@ public sealed partial class ViewerDataService
                 QueryPlanXml = reader.IsDBNull(16) ? null : reader.GetString(16),
                 FirstExecutionTime = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
                 LastExecutionTime = reader.IsDBNull(18) ? null : reader.GetDateTime(18),
+                PlanHandle = reader.IsDBNull(19) ? "" : reader.GetString(19),
             });
         }
 

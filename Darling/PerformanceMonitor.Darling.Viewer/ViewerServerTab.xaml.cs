@@ -34,50 +34,36 @@ public partial class ViewerServerTab : UserControl
        time-range dropdown / custom From-To (see ViewerServerTab.TimeRange.cs). Every inner-tab load
        reads GetWindowUtc() / GetWindowHoursBack() instead of the removed s_dataWindow. */
 
-    /* Inner-tab order mirrors Lite's ServerTab relative order (Overview, Wait Stats, Queries,
-       Plan Viewer, CPU, Memory, File I/O, tempdb, Blocking, Perfmon, Running Jobs, Configuration, Daily
-       Summary, Collection Health) — ported tabs slot into Lite's positions as they arrive (Plan
-       Viewer sits BETWEEN Queries and CPU, Memory sits BETWEEN CPU and File I/O, File I/O sits BEFORE
-       tempdb, Perfmon/Running Jobs sit between Blocking and Configuration, and Daily Summary sits between
-       Configuration and Collection Health, matching Lite's own order), so the constants renumber when a
-       wave lands between existing tabs. */
+    /* Inner-tab order: the main resource run mirrors Lite's ServerTab relative order (Overview, Wait Stats,
+       Queries, Plan Viewer, CPU, Memory, File I/O, tempdb, Blocking, Perfmon, Session Stats, Running Jobs,
+       Configuration, Configuration Changes), followed by a Darling-specific DIAGNOSTICS TAIL:
+       Daily Summary -> System Events -> Latches & Spinlocks -> Collection Health. Latches & Spinlocks and
+       System Events are Darling-only tabs grouped into that tail rather than the resource run. These index
+       constants are the source of truth for SelectedIndex navigation (drill-downs), so they MUST match the
+       <TabItem> order in ViewerServerTab.xaml. */
     internal const int OverviewInnerTabIndex = 0;
     internal const int WaitStatsInnerTabIndex = 1;
+    internal const int QueriesInnerTabIndex = 2;
+    internal const int PlanViewerInnerTabIndex = 3;
+    internal const int CpuInnerTabIndex = 4;
+    internal const int MemoryInnerTabIndex = 5;
+    internal const int FileIoInnerTabIndex = 6;
+    internal const int TempDbInnerTabIndex = 7;
+    internal const int BlockingInnerTabIndex = 8;
+    internal const int PerfmonInnerTabIndex = 9;
+    internal const int SessionStatsInnerTabIndex = 10;
+    internal const int RunningJobsInnerTabIndex = 11;
+    internal const int ConfigurationInnerTabIndex = 12;
+    internal const int ConfigChangesInnerTabIndex = 13;
 
-    /* Latches & Spinlocks sits BETWEEN Wait Stats and Queries — the contention-stats grouping mirroring
-       the Dashboard (its Latch/Spinlock sub-tabs live alongside waits in ResourceMetrics). A new top-level
-       tab holding two sub-tabs (Latch Stats + Spinlock Stats); everything after it renumbers by one. */
-    internal const int LatchSpinlockInnerTabIndex = 2;
-    internal const int QueriesInnerTabIndex = 3;
-    internal const int PlanViewerInnerTabIndex = 4;
-    internal const int CpuInnerTabIndex = 5;
-    internal const int MemoryInnerTabIndex = 6;
-    internal const int FileIoInnerTabIndex = 7;
-    internal const int TempDbInnerTabIndex = 8;
-    internal const int BlockingInnerTabIndex = 9;
-    internal const int PerfmonInnerTabIndex = 10;
-
-    /* Session Stats sits BETWEEN Perfmon and Running Jobs — the Dashboard-parity port of
-       ResourceMetricsContent's Session Stats sub-tab (which the Dashboard places right after Perfmon). Not a
-       Lite ServerTab tab (it is Dashboard-only), so it has no Lite position to mirror; a new top-level tab,
-       and everything after it renumbers by one. */
-    internal const int SessionStatsInnerTabIndex = 11;
-    internal const int RunningJobsInnerTabIndex = 12;
-    internal const int ConfigurationInnerTabIndex = 13;
-
-    /* Configuration Changes sits immediately AFTER Configuration (the latest-snapshot tab): the Dashboard's
-       dedicated ConfigChangesContent ported as its own tab — three grids diffing the append-only config
-       snapshots into server-config / database-config / trace-flag DRIFT over the window. A new top-level tab,
-       so everything after it renumbers by one. */
-    internal const int ConfigChangesInnerTabIndex = 14;
-    internal const int DailySummaryInnerTabIndex = 15;
-    internal const int HealthInnerTabIndex = 16;
-
-    /* System Events is appended AFTER Collection Health (system_health parity, Stage 2b): six parse-on-read
-       sub-tabs, one per unique system_health warning category. FinOps used to sit between them as a per-server
-       inner tab, but it was promoted to a top-level cross-server aggregate tab (FinOpsTab, in MainWindow's
-       MainTabs), so System Events now takes Collection Health's next slot. */
-    internal const int SystemEventsInnerTabIndex = 17;
+    /* Diagnostics tail (Daily Summary -> System Events -> Latches & Spinlocks -> Collection Health): the
+       reworked per-server tab order groups the two Darling-only diagnostic tabs (System Events, Latches &
+       Spinlocks) with Daily Summary and Collection Health at the end, instead of scattering them through the
+       resource run (Latches & Spinlocks was formerly at position 3, System Events dead last). */
+    internal const int DailySummaryInnerTabIndex = 14;
+    internal const int SystemEventsInnerTabIndex = 15;
+    internal const int LatchSpinlockInnerTabIndex = 16;
+    internal const int HealthInnerTabIndex = 17;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -99,6 +85,11 @@ public partial class ViewerServerTab : UserControl
         _dataService = dataService;
         _server = server;
         InitializeComponent();
+
+        /* Per-server toolbar identity label: the display name is static (it also heads the tab), while the
+           freshness readout to its right is filled on the first (and every) refresh from the shared
+           collection-time read (UpdateServerFreshnessLabelAsync). */
+        ServerNameText.Text = _server.DisplayName;
 
         /* Column-filter managers for the Configuration sub-grids (copied from Lite's ServerTab filter
            wiring) — after InitializeComponent so the named grids exist. */
@@ -243,6 +234,10 @@ public partial class ViewerServerTab : UserControl
             await EnsureServerOffsetLoadedAsync();
             ApplyServerOffsetToHelper();
 
+            /* Refresh the toolbar freshness readout in the same pass (after the offset is applied so it renders
+               in the active display mode). Non-critical chrome — its own try/catch keeps it off the load path. */
+            await UpdateServerFreshnessLabelAsync();
+
             do
             {
                 _refreshRequested = false;
@@ -260,6 +255,28 @@ public partial class ViewerServerTab : UserControl
         finally
         {
             _refreshInFlight = false;
+        }
+    }
+
+    /// <summary>
+    /// Fills the toolbar's freshness readout with this server's newest collection time (the shared
+    /// MAX(collection_time) read the sidebar dots use), rendered in the active Server/Local/UTC display mode
+    /// exactly like the Manage Servers "Last Collected" column. A server the service hasn't collected yet is
+    /// absent from the freshness map, shown as "no data collected yet". Best-effort chrome: a read failure
+    /// blanks the readout rather than disturbing the tab load.
+    /// </summary>
+    private async Task UpdateServerFreshnessLabelAsync()
+    {
+        try
+        {
+            var freshness = await _dataService.GetServerFreshnessAsync();
+            ServerFreshnessText.Text = freshness.TryGetValue(_server.ServerId, out var lastUtc)
+                ? $"collected {ViewerTimeHelper.ForDisplay(lastUtc):yyyy-MM-dd HH:mm}"
+                : "no data collected yet";
+        }
+        catch
+        {
+            ServerFreshnessText.Text = string.Empty;
         }
     }
 

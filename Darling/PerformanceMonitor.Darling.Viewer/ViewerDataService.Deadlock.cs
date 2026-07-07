@@ -69,11 +69,19 @@ public sealed class DeadlockProcessDetail
     /// <summary>
     /// The BEST-EFFORT victim plan for this deadlock (deadlocks.victim_query_plan_xml, #1368 / V7) — one
     /// plan per deadlock, copied onto every process row parsed from the same graph. The "View Victim Plan"
-    /// context item is gated per row on <see cref="HasVictimQueryPlan"/> so a plan-less deadlock (NULL, the
+    /// context item is gated per row on <see cref="CanViewVictimPlan"/> so a plan-less deadlock (NULL, the
     /// common case, and always so under Lite) shows it disabled rather than shown-and-failed.
     /// </summary>
     public string? VictimQueryPlanXml { get; set; }
     public bool HasVictimQueryPlan => !string.IsNullOrEmpty(VictimQueryPlanXml);
+
+    /// <summary>
+    /// Whether "View Victim Plan" should be active for THIS row. The victim plan is a single per-deadlock plan
+    /// copied onto every process row, so gating only on <see cref="HasVictimQueryPlan"/> lit it up on the
+    /// deadlocker rows too (where it reads as "this process's plan", which it isn't). Requires the row to be the
+    /// victim AND to carry a plan, so the item is active only on the victim row.
+    /// </summary>
+    public bool CanViewVictimPlan => IsVictim && HasVictimQueryPlan;
 
     /* New fields from sp_BlitzLock analysis */
     public string DeadlockType { get; set; } = "";
