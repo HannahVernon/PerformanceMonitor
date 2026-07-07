@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -67,6 +68,97 @@ public partial class ViewerServerTab
         _collectionHealthFilterMgr!.UpdateData(healthTask.Result);
         _collectionLogFilterMgr!.UpdateData(logTask.Result);
         RenderCollectorDurationChart(logTask.Result);
+    }
+
+    /// <summary>
+    /// "Purge Now" (Collection Health): runs the daily retention purge on demand via the fleet-wide
+    /// <c>purge_now</c> control command, after a confirm — it permanently deletes collected data older than the
+    /// configured retention horizons across ALL monitored servers (the purge is fleet-wide over the shared
+    /// store). A read-only viewer seat can't enqueue commands, so it shows an explanation instead (same rule as
+    /// Pause / live-plan fetch). On success it shows the purged summary and reloads the tab so the grids/chart
+    /// reflect the purge.
+    /// </summary>
+    private async void PurgeNow_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService.IsReadOnly)
+        {
+            MessageBox.Show(
+                "Purging asks the service to run the retention purge, which it does by running a command — a " +
+                "read-only viewer seat can't enqueue commands. Reconnect with a read-write profile to purge.",
+                "Read-Only Viewer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "Run the retention purge now?\n\n" +
+            "This permanently deletes collected data older than the configured retention horizons across ALL " +
+            "monitored servers (the purge is fleet-wide over the shared store). It is exactly what the service " +
+            "does automatically once a day — running it now just does it immediately. This cannot be undone.",
+            "Purge Now", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        PurgeNowButton.IsEnabled = false;
+        PurgeNowIndicator.Text = "Purging...";
+        try
+        {
+            var result = await _dataService.RequestPurgeNowAsync();
+            if (result is null)
+            {
+                PurgeNowIndicator.Text = "Purge still running — re-open Collection Health to see the result";
+            }
+            else if (result.Status != ViewerDataService.StatusSucceeded)
+            {
+                PurgeNowIndicator.Text = $"Purge failed: {result.ResultStatus ?? "unknown error"}";
+            }
+            else
+            {
+                PurgeNowIndicator.Text = FormatPurgeSummary(result.ResultJson);
+                /* Reflect the purge in the grids + duration chart. */
+                await LoadHealthAsync();
+            }
+        }
+        catch (ViewerReadOnlyException)
+        {
+            /* Grants changed under us (the enqueue already threw). */
+            PurgeNowIndicator.Text = "Read-only viewer — cannot purge";
+        }
+        catch (Exception ex)
+        {
+            PurgeNowIndicator.Text = "";
+            StatusChanged?.Invoke($"purge failed: {ex.Message}");
+        }
+        finally
+        {
+            PurgeNowButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// Formats the <c>purge_now</c> result_json (<c>{ tablesPurged, rowsPurged, ... }</c>) into the one-line
+    /// summary the indicator shows. Degrades to a plain "Purge complete" if the JSON is missing/unparseable.
+    /// </summary>
+    private static string FormatPurgeSummary(string? resultJson)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson))
+        {
+            return "Purge complete";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(resultJson);
+            var root = doc.RootElement;
+            var tables = root.TryGetProperty("tablesPurged", out var t) && t.TryGetInt32(out var ti) ? ti : 0;
+            var rows = root.TryGetProperty("rowsPurged", out var r) && r.TryGetInt32(out var ri) ? ri : 0;
+            return $"Purged {rows:N0} row(s)/chunk(s) across {tables:N0} table(s)";
+        }
+        catch (JsonException)
+        {
+            return "Purge complete";
+        }
     }
 
     /// <summary>

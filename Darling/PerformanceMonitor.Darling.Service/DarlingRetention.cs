@@ -64,8 +64,13 @@ public static class DarlingRetention
     /// Optional resolver for a collector's effective retention horizon (control-plane fleet-wide overrides
     /// layered on <see cref="CollectorScheduleDefaults"/>). Null (or a value it does not override) uses the
     /// shared default. A per-server override cannot apply here — the purge is per shared table, not per server.
+    /// The on-demand <c>purge_now</c> command passes a <c>_ =&gt; customDays</c> resolver for its custom-N mode.
     /// </param>
-    public static async Task<int> PurgeAsync(
+    /// <returns>
+    /// A <see cref="PurgeSummary"/>: how many tables were touched and the coarse activity count (DELETE rows
+    /// plus dropped chunks). The daily caller discards it; the on-demand <c>purge_now</c> command reports it.
+    /// </returns>
+    public static async Task<PurgeSummary> PurgeAsync(
         NpgsqlDataSource postgres, bool timescaleAvailable, ILogger? logger, CancellationToken cancellationToken,
         Func<string, int>? retentionDaysFor = null)
     {
@@ -131,7 +136,7 @@ public static class DarlingRetention
 
         logger?.LogInformation("Retention purge: {Tables} table(s) purged, {Rows} row(s) deleted, {Chunks} chunk(s) dropped, {ElapsedMs}ms",
             tablesPurged, totalRowsDeleted, totalChunksDropped, sw.ElapsedMilliseconds);
-        return totalRowsDeleted + totalChunksDropped;
+        return new PurgeSummary(tablesPurged, totalRowsDeleted, totalChunksDropped);
     }
 
     /// <summary>
@@ -216,4 +221,17 @@ public static class DarlingRetention
             return null;
         }
     }
+}
+
+/// <summary>
+/// The outcome of one <see cref="DarlingRetention.PurgeAsync"/> sweep: how many tables were touched
+/// (<paramref name="TablesPurged"/>) and the coarse activity count split into DELETE rows
+/// (<paramref name="RowsDeleted"/>) and dropped Timescale chunks (<paramref name="ChunksDropped"/> —
+/// drop_chunks doesn't report per-row counts). <see cref="TotalPurged"/> is the single headline number the
+/// daily log and the on-demand <c>purge_now</c> result report.
+/// </summary>
+public readonly record struct PurgeSummary(int TablesPurged, int RowsDeleted, int ChunksDropped)
+{
+    /// <summary>Rows deleted plus whole chunks dropped — the coarse "how much did this purge remove" count.</summary>
+    public int TotalPurged => RowsDeleted + ChunksDropped;
 }

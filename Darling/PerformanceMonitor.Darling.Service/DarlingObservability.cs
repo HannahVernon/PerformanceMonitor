@@ -42,17 +42,22 @@ ON CONFLICT (server_id) DO UPDATE SET
     modified_date = EXCLUDED.modified_date,
     monthly_cost_usd = EXCLUDED.monthly_cost_usd;";
 
-    /* Mirror the DESIRED enable state (config.config_monitored_servers.is_enabled) onto the OBSERVED
-       registry (collect.servers.is_enabled). A disabled server drops out of the collection loop and stops
-       upserting, so without this its observed row would keep its last (TRUE) value forever; the viewer /
-       FinOps read collect.servers, so the observed flag must track the desired one. Runs on every reload. */
-    private const string SyncEnabledStatesSql = @"
+    /* Mirror the DESIRED config (config.config_monitored_servers) onto the OBSERVED registry
+       (collect.servers) for the two fields the viewer/FinOps read straight off collect.servers: is_enabled
+       and monthly_cost_usd. A disabled server drops out of the collection loop and stops upserting, so without
+       this its observed row would keep its last (TRUE) value forever; likewise a cost-only edit reaches the
+       FinOps display (which reads collect.servers) through THIS sync, so a cost change needs no
+       disconnect+reconnect (see DarlingWorker.ServerDefinitionEquals, which deliberately no longer compares
+       cost). Fires when EITHER field drifts. Internal so a pure test can pin the SHAPE. Runs on every reload. */
+    internal const string SyncEnabledStatesSql = @"
 UPDATE collect.servers s
 SET is_enabled = c.is_enabled,
+    monthly_cost_usd = c.monthly_cost_usd,
     modified_date = (now() AT TIME ZONE 'UTC')
 FROM config.config_monitored_servers c
 WHERE s.server_id = c.server_id
-  AND s.is_enabled IS DISTINCT FROM c.is_enabled;";
+  AND (s.is_enabled IS DISTINCT FROM c.is_enabled
+       OR s.monthly_cost_usd IS DISTINCT FROM c.monthly_cost_usd);";
 
     private const string InsertCollectionLogSql = @"
 INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, duration_ms, status, error_message, rows_collected, sql_duration_ms, duckdb_duration_ms)
@@ -92,11 +97,13 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
     }
 
     /// <summary>
-    /// Mirrors the DESIRED enable state (<c>config.config_monitored_servers.is_enabled</c>) onto the
-    /// OBSERVED registry (<c>collect.servers.is_enabled</c>) for every server present in both — so a
-    /// control-plane <c>disable_server</c> flips the observed row to FALSE even though the disabled server
-    /// stops upserting, and a later <c>enable_server</c> flips it back. Runs on each control-plane reload.
-    /// Failure-isolated (Debug + no-op) like the other observability writes.
+    /// Mirrors the DESIRED config (<c>config.config_monitored_servers</c>) onto the OBSERVED registry
+    /// (<c>collect.servers</c>) for the two fields the viewer/FinOps read straight off <c>collect.servers</c>:
+    /// <c>is_enabled</c> and <c>monthly_cost_usd</c>. So a control-plane <c>disable_server</c> flips the
+    /// observed row to FALSE even though the disabled server stops upserting (a later <c>enable_server</c>
+    /// flips it back), and a cost-only edit reaches the FinOps display through this reload sync with NO
+    /// disconnect+reconnect. Runs on each control-plane reload. Failure-isolated (Debug + no-op) like the
+    /// other observability writes.
     /// </summary>
     public static async Task SyncServerEnabledStatesAsync(NpgsqlDataSource postgres, ILogger? logger, CancellationToken cancellationToken)
     {
@@ -107,7 +114,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
             var changed = await command.ExecuteNonQueryAsync(cancellationToken);
             if (changed > 0)
             {
-                logger?.LogInformation("Synced observed enable-state for {Count} server(s) from the desired config", changed);
+                logger?.LogInformation("Synced observed enable-state/cost for {Count} server(s) from the desired config", changed);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

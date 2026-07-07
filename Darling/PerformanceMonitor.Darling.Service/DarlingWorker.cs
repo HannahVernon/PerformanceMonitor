@@ -760,10 +760,14 @@ public sealed class DarlingWorker : BackgroundService
 
     /// <summary>
     /// Whether two server definitions are identical for the collection loop — the connection-relevant fields
-    /// plus the collection-affecting ones (excluded databases, cost, display name). A difference triggers a
-    /// reconnect on reconcile so the new definition takes effect.
+    /// plus the collection-affecting excluded databases. A difference triggers a reconnect on reconcile so the
+    /// new definition takes effect. <c>MonthlyCostUsd</c> is deliberately NOT compared: it does not affect
+    /// collection at all, and the reload's <see cref="DarlingObservability.SyncServerEnabledStatesAsync"/>
+    /// mirrors a cost change straight onto <c>collect.servers</c> (which the FinOps display reads) with no
+    /// connection churn — so a cost-only edit must NOT trigger a disconnect+reconnect. Internal so a unit test
+    /// can pin exactly that.
     /// </summary>
-    private static bool ServerDefinitionEquals(MonitoredServer a, MonitoredServer b)
+    internal static bool ServerDefinitionEquals(MonitoredServer a, MonitoredServer b)
         => string.Equals(a.Name, b.Name, StringComparison.Ordinal)
         && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
         && string.Equals(a.Database, b.Database, StringComparison.OrdinalIgnoreCase)
@@ -775,7 +779,6 @@ public sealed class DarlingWorker : BackgroundService
         && a.TrustServerCertificate == b.TrustServerCertificate
         && a.ReadOnlyIntent == b.ReadOnlyIntent
         && a.MultiSubnetFailover == b.MultiSubnetFailover
-        && a.MonthlyCostUsd == b.MonthlyCostUsd
         && a.ExcludedDatabases.SequenceEqual(b.ExcludedDatabases, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -1098,6 +1101,46 @@ LIMIT 1", connection);
     private static string JsonError(string error) => JsonSerializer.Serialize(new { success = false, error });
 
     /// <summary>
+    /// The <c>purge_now</c> command handler (the daily retention purge on demand): runs
+    /// <see cref="DarlingRetention.PurgeAsync"/> over the shared store immediately and reports the tables +
+    /// rows purged. Fleet-wide over the SHARED tables (no target server). When
+    /// <paramref name="customRetentionDays"/> is set it purges every collector to that horizon (a
+    /// <c>_ =&gt; customDays</c> resolver — PurgeAsync clamps a sub-1-day horizon at its destructive sink, so a
+    /// bad custom-N can never wipe a table); otherwise it uses the SAME fleet resolver the scheduled daily
+    /// purge uses (<see cref="StoreConfigProvider.ResolveFleetRetentionDays"/> over the live overrides). Takes
+    /// NO collection gate: unlike snapshot_now a purge writes no collector state and races no delta baseline,
+    /// and PurgeAsync is idempotent + failure-isolated per table, so it may safely overlap the daily sweep.
+    /// </summary>
+    private async Task<CommandOutcome> RunPurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken)
+    {
+        /* Reference read of the live overrides, matching the daily purge caller (never held under a lock —
+           the reload swaps the whole list atomically). */
+        var overrides = _scheduleOverrides;
+        Func<string, int> resolver = customRetentionDays is int days
+            ? _ => days
+            : name => StoreConfigProvider.ResolveFleetRetentionDays(name, overrides);
+
+        var summary = await DarlingRetention.PurgeAsync(
+            _postgres!, _timescaleAvailable, _logger, cancellationToken, resolver);
+
+        _logger.LogInformation(
+            "purge_now purged {Tables} table(s), {Rows} row(s)/chunk(s){Custom}",
+            summary.TablesPurged, summary.TotalPurged,
+            customRetentionDays is int cd ? $" (custom retention {cd}d)" : string.Empty);
+
+        var json = JsonSerializer.Serialize(new
+        {
+            success = true,
+            tablesPurged = summary.TablesPurged,
+            rowsPurged = summary.TotalPurged,
+            rowsDeleted = summary.RowsDeleted,
+            chunksDropped = summary.ChunksDropped,
+            customRetentionDays,
+        });
+        return new CommandOutcome(true, "purge complete", json);
+    }
+
+    /// <summary>
     /// The worker's <see cref="IDarlingCommandHost"/> adapter (Stage 2): lets the command executor reach the
     /// two imperative commands that need the LIVE loop (snapshot_now / analyze_now) without the executor
     /// holding the worker's mutable loop state. Captures the running server set + collector runner + analysis
@@ -1130,6 +1173,9 @@ LIMIT 1", connection);
 
         public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
             => _worker.RunAnalyzeNowAsync(_servers, _planFetcher, _notificationService, _config, serverId, cancellationToken);
+
+        public Task<CommandOutcome> PurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken)
+            => _worker.RunPurgeNowAsync(customRetentionDays, cancellationToken);
 
         public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
             => _worker.RunFetchPlanAsync(_servers, _planFetcher, serverId, request, cancellationToken);

@@ -39,8 +39,36 @@ public sealed class DarlingCommandExecutorTests
         public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
             => throw new InvalidOperationException("host should not be called for this command");
 
+        public Task<CommandOutcome> PurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("host should not be called for this command");
+
         public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
             => throw new InvalidOperationException("host should not be called for this command");
+    }
+
+    /// <summary>Records the custom-retention argument a <c>purge_now</c> dispatch passed the host — for the
+    /// custom-N-vs-default parsing round-trip (no live store or SQL Server).</summary>
+    private sealed class PurgeRecordingHost : IDarlingCommandHost
+    {
+        public bool WasCalled { get; private set; }
+        public int? ReceivedCustomRetentionDays { get; private set; }
+
+        public Task<CommandOutcome> SnapshotNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> PurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken)
+        {
+            WasCalled = true;
+            ReceivedCustomRetentionDays = customRetentionDays;
+            return Task.FromResult(new CommandOutcome(true, "purge complete",
+                "{\"success\":true,\"tablesPurged\":3,\"rowsPurged\":42}"));
+        }
+
+        public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
     }
 
     /// <summary>A host that records the fetch_plan request it received and returns a canned plan — for the
@@ -54,6 +82,9 @@ public sealed class DarlingCommandExecutorTests
             => throw new InvalidOperationException("not this command");
 
         public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> PurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken)
             => throw new InvalidOperationException("not this command");
 
         public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
@@ -201,6 +232,57 @@ public sealed class DarlingCommandExecutorTests
         Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("analyze_now")).Kind);
         Assert.Equal(CommandKind.Snapshot, DarlingCommandExecutor.ResolvePlan(Command("snapshot_now", target: 3)).Kind);
         Assert.Equal(CommandKind.Analyze, DarlingCommandExecutor.ResolvePlan(Command("analyze_now", target: 3)).Kind);
+    }
+
+    [Fact]
+    public void ResolvePlan_PurgeNow_ResolvesToPurge_WithNoTargetAndOptionalArgs()
+    {
+        /* Fleet-wide over the shared tables — NO target_server_id required (unlike snapshot_now/analyze_now). */
+        Assert.Equal(CommandKind.Purge, DarlingCommandExecutor.ResolvePlan(Command("purge_now")).Kind);
+
+        /* An optional custom-retention arg doesn't change the plan kind (it's read at execution time). */
+        Assert.Equal(CommandKind.Purge,
+            DarlingCommandExecutor.ResolvePlan(Command("purge_now", args: "{\"retention_days\":7}")).Kind);
+
+        /* Case-insensitive like every other command_type. */
+        Assert.Equal(CommandKind.Purge, DarlingCommandExecutor.ResolvePlan(Command("Purge_Now")).Kind);
+    }
+
+    [Fact]
+    public async Task ExecuteAndReport_PurgeNow_PassesCustomRetentionToHost_ElseNull()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the purge_now dispatch round-trip.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+
+        /* Custom-N days -> the host receives the parsed value. Build the args with the VIEWER's own builder so
+           this pins the two ends agree on the retention_days key, not just a hand-written literal. */
+        var customHost = new PurgeRecordingHost();
+        var customExecutor = new DarlingCommandExecutor(postgres, customHost, "test-instance", null);
+        await customExecutor.ExecuteAndReportAsync(
+            new ClaimedCommand(-1, "purge_now", null, PerformanceMonitor.Darling.Viewer.ViewerDataService.BuildPurgeNowArgs(7), "sentinel-test"), ct);
+        Assert.True(customHost.WasCalled);
+        Assert.Equal(7, customHost.ReceivedCustomRetentionDays);
+
+        /* No args -> the host receives null (the service falls back to the configured fleet horizons). */
+        var defaultHost = new PurgeRecordingHost();
+        var defaultExecutor = new DarlingCommandExecutor(postgres, defaultHost, "test-instance", null);
+        await defaultExecutor.ExecuteAndReportAsync(
+            new ClaimedCommand(-1, "purge_now", null, null, "sentinel-test"), ct);
+        Assert.True(defaultHost.WasCalled);
+        Assert.Null(defaultHost.ReceivedCustomRetentionDays);
+
+        using (var cleanup = new NpgsqlCommand("DELETE FROM config.config_command WHERE requested_by = 'sentinel-test'", connection))
+        {
+            await cleanup.ExecuteNonQueryAsync(ct);
+        }
     }
 
     [Fact]
