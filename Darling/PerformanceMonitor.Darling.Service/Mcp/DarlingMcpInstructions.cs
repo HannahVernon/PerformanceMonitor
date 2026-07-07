@@ -40,7 +40,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes forty-seven tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fourteen core data-read tools, fifteen diagnostic-depth data-read tools, and seven resource-contention + jobs data-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes sixty tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fourteen core data-read tools, fifteen diagnostic-depth data-read tools, seven resource-contention + jobs data-read tools, five trend data-read tools, and eight system-health parse-on-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -122,9 +122,36 @@ internal static class DarlingMcpInstructions
         | `get_cpu_scheduler_pressure` | Latest scheduler snapshot: runnable queue, worker utilization, pressure_level + warnings | `server_name` |
         | `get_running_jobs` | Currently running SQL Agent jobs with duration vs historical average / p95 | `server_name` |
 
+        ### Trend data-read tools
+
+        Windowed time-series siblings of the core data-read tools — the per-collection / per-second trend for a metric over the window. Same names + parameters Lite and the Dashboard expose; the shape follows Lite where the SKUs diverge.
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_memory_trend` | Memory usage over time: total / target server memory, buffer pool, plan cache | `server_name`, `hours_back` (default 24) |
+        | `get_perfmon_trend` | A single performance counter's value + delta over time (summed across instances) | `counter_name` (required), `server_name`, `hours_back` (default 24) |
+        | `get_file_io_trend` | Per-database file I/O read/write latency over time (top-10 busiest files) | `server_name`, `hours_back` (default 24) |
+        | `get_query_trend` | One query's per-collection history (deltas, avg cpu/elapsed, DOP) by query_hash | `query_hash` (required), `database_name` (required), `server_name`, `hours_back` (default 24) |
+        | `get_query_duration_trend` | Overall query elapsed-ms/sec + executions/sec across all queries over time | `server_name`, `hours_back` (default 24) |
+
+        ### System-health parse-on-read tools
+
+        The `get_health_parser_*` family the Dashboard exposes, over Darling's raw `system_health_events`. Where the Dashboard reads its server-side-parsed `collect.HealthParser_*` tables, these shred the raw extended-event XML ON READ with the shared SystemHealthParser and return the same SIGNIFICANT warning set (sp_HealthParser at `@warnings_only = 1`) — the exception is `get_health_parser_system_health`, whose corruption/contention counter series is UNGATED (every snapshot). Each returns the full sp_HealthParser column set per row keyed on the event's `event_time`; the tools window on `event_time` (the event's real time), so "last 24 hours" means events that happened in the last 24 hours.
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_health_parser_system_health` | SYSTEM-component snapshots: corruption (bad pages / dumps / access violations) + contention (non-yielding / latch / sick spinlock / CPU) counters | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_severe_errors` | error_reported severity >= 19 (excl. 17830 / 18056), with database_id resolved to a name | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_scheduler_issues` | Non-yielding / offline scheduler WARNING rows | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_memory_conditions` | RESOURCE_MEMPHYSICAL_LOW memory-pressure snapshots | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_memory_broker` | RESOURCE_MEMPHYSICAL_LOW memory-broker ratio changes | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_memory_node_oom` | Every recorded per-NUMA-node out-of-memory event (never gated) | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_cpu_tasks` | QUERY_PROCESSING WARNING rows with pendingTasks >= 10 (worker-thread exhaustion) | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+        | `get_health_parser_io_issues` | IO_SUBSYSTEM WARNING rows (15-second I/O warnings), one per pending-request file | `server_name`, `hours_back` (default 24), `limit` (default 50) |
+
         The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
 
-        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. The resource-contention + jobs tools (`get_latch_stats`, `get_spinlock_stats`, `get_resource_semaphore`, `get_memory_grants`, `get_plan_cache_bloat`, `get_cpu_scheduler_pressure`, `get_running_jobs`) are hosted here too. Some recommended tools are NOT on this server yet (e.g. the trend siblings get_memory_trend, get_perfmon_trend, get_query_trend, get_query_duration_trend, get_file_io_trend, and the get_health_parser_* system-health family) — if you are also connected to a Performance Monitor Lite / Dashboard MCP server, follow those there; otherwise treat them as investigation hints.
+        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. The resource-contention + jobs tools (`get_latch_stats`, `get_spinlock_stats`, `get_resource_semaphore`, `get_memory_grants`, `get_plan_cache_bloat`, `get_cpu_scheduler_pressure`, `get_running_jobs`), the trend siblings (`get_memory_trend`, `get_perfmon_trend`, `get_file_io_trend`, `get_query_trend`, `get_query_duration_trend`), and the `get_health_parser_*` system-health family are all hosted here too — follow those `next_tools` on this server. The one exception is `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock rollup), which this edition does not host; use `get_blocking` / `get_deadlocks` instead.
 
         ## Recommended Workflow
 

@@ -194,7 +194,21 @@ public sealed class DarlingMcpHostService : BackgroundService
                 .WithGeminiCompatibleTools<DarlingMcpLatchSpinlockTools>()
                 .WithGeminiCompatibleTools<DarlingMcpMemoryGrantTools>()
                 .WithGeminiCompatibleTools<DarlingMcpPlanCacheSchedulerTools>()
-                .WithGeminiCompatibleTools<DarlingMcpJobTools>();
+                .WithGeminiCompatibleTools<DarlingMcpJobTools>()
+                /* The windowed-trend siblings of the core data-read tools — get_memory_trend /
+                   get_perfmon_trend / get_file_io_trend / get_query_trend / get_query_duration_trend — the
+                   same names Lite and the Dashboard expose, over Darling's Postgres store (STORED reads of
+                   the collected memory / perfmon / file-io / query-stats series, no live hit). Each mirrors
+                   the viewer's proven chart read; the shape follows Lite where the SKUs diverge. */
+                .WithGeminiCompatibleTools<DarlingMcpTrendTools>()
+                /* The system_health parse-on-read family — get_health_parser_cpu_tasks / _io_issues /
+                   _memory_broker / _memory_conditions / _memory_node_oom / _scheduler_issues /
+                   _severe_errors / _system_health — the same names the Dashboard exposes. Where the Dashboard
+                   reads its server-side-parsed collect.HealthParser_* tables, these shred the raw
+                   system_health_events on read via the shared SystemHealthParser (Common) and gate with the
+                   service-side twin of the viewer's SystemEventSignificance, exactly as the viewer's System
+                   Events tab does — the same SIGNIFICANT warning set, no live hit. */
+                .WithGeminiCompatibleTools<DarlingMcpHealthParserTools>();
 
             _app = builder.Build();
             _app.MapMcp();
