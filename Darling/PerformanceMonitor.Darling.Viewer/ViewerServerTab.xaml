@@ -305,6 +305,18 @@
              works because the server's UTC offset is collected in server_properties.utc_offset_minutes. -->
         <Border Grid.Row="0" Background="{DynamicResource BackgroundDarkBrush}" Padding="12,8">
             <WrapPanel Orientation="Horizontal">
+                <!-- Leading identity + freshness readout (Lite's header shows the server name + a live status;
+                     the headless-appropriate equivalent is the display name + the newest collection time, since
+                     the SERVICE collects and the viewer only reads). Populated from the shared MAX(collection_time)
+                     freshness read, rendered in the toolbar's Server/Local/UTC display mode. -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,4">
+                    <TextBlock x:Name="ServerNameText" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBlock x:Name="ServerFreshnessText" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"
+                               ToolTip="Newest collection time across all collectors — the service collects, the viewer reads"/>
+                </StackPanel>
+                <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="8,2"/>
                 <ComboBox x:Name="TimeRangeCombo" SelectedIndex="3" Width="120" Margin="0,0,8,4"
                           SelectionChanged="TimeRangeCombo_SelectionChanged"
                           ToolTip="Time window every inner tab reads">

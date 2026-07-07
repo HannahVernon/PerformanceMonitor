@@ -86,6 +86,11 @@ public partial class ViewerServerTab : UserControl
         _server = server;
         InitializeComponent();
 
+        /* Per-server toolbar identity label: the display name is static (it also heads the tab), while the
+           freshness readout to its right is filled on the first (and every) refresh from the shared
+           collection-time read (UpdateServerFreshnessLabelAsync). */
+        ServerNameText.Text = _server.DisplayName;
+
         /* Column-filter managers for the Configuration sub-grids (copied from Lite's ServerTab filter
            wiring) — after InitializeComponent so the named grids exist. */
         InitializeFilterManagers();
@@ -229,6 +234,10 @@ public partial class ViewerServerTab : UserControl
             await EnsureServerOffsetLoadedAsync();
             ApplyServerOffsetToHelper();
 
+            /* Refresh the toolbar freshness readout in the same pass (after the offset is applied so it renders
+               in the active display mode). Non-critical chrome — its own try/catch keeps it off the load path. */
+            await UpdateServerFreshnessLabelAsync();
+
             do
             {
                 _refreshRequested = false;
@@ -246,6 +255,28 @@ public partial class ViewerServerTab : UserControl
         finally
         {
             _refreshInFlight = false;
+        }
+    }
+
+    /// <summary>
+    /// Fills the toolbar's freshness readout with this server's newest collection time (the shared
+    /// MAX(collection_time) read the sidebar dots use), rendered in the active Server/Local/UTC display mode
+    /// exactly like the Manage Servers "Last Collected" column. A server the service hasn't collected yet is
+    /// absent from the freshness map, shown as "no data collected yet". Best-effort chrome: a read failure
+    /// blanks the readout rather than disturbing the tab load.
+    /// </summary>
+    private async Task UpdateServerFreshnessLabelAsync()
+    {
+        try
+        {
+            var freshness = await _dataService.GetServerFreshnessAsync();
+            ServerFreshnessText.Text = freshness.TryGetValue(_server.ServerId, out var lastUtc)
+                ? $"collected {ViewerTimeHelper.ForDisplay(lastUtc):yyyy-MM-dd HH:mm}"
+                : "no data collected yet";
+        }
+        catch
+        {
+            ServerFreshnessText.Text = string.Empty;
         }
     }
 
