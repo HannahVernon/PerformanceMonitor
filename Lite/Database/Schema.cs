@@ -893,7 +893,8 @@ CREATE TABLE IF NOT EXISTS server_properties (
     memory_dump_count INTEGER,
     sqlserver_start_time TIMESTAMP,
     host_os_version VARCHAR,
-    ag_replica_role VARCHAR
+    ag_replica_role VARCHAR,
+    utc_offset_minutes INTEGER
 )";
 
     public const string CreateServerPropertiesIndex = @"

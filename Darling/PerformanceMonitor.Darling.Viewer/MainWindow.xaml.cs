@@ -17,6 +17,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -75,9 +76,14 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _preferences = _preferencesStore.Load();
-        /* Seed the one persisted app setting the viewer honors at runtime (the CSV export separator) so grid
-           exports use the chosen separator from the first one, before the Settings window is ever opened. */
-        ViewerExportSettings.Apply(_appSettingsStore.Load());
+        /* Seed the persisted app settings the viewer honors at runtime BEFORE any tab/chart renders: the CSV
+           export separator (grid exports) and the Server/Local/UTC time-display mode (every timestamp render
+           routes through ViewerTimeHelper, which reads CurrentDisplayMode). UiTimeContext is deliberately left
+           at its identity default — Darling charts pre-convert their X through ForDisplay, so wiring it would
+           double-convert on hover/crosshair. */
+        var appSettings = _appSettingsStore.Load();
+        ViewerExportSettings.Apply(appSettings);
+        ApplyTimeDisplayMode(appSettings.TimeDisplayMode);
         Loaded += OnLoaded;
         Closed += OnClosed;
     }
@@ -398,6 +404,7 @@ public partial class MainWindow : Window
         var serverTab = new ViewerServerTab(_dataService, server, _preferences);
         serverTab.StatusChanged += OnServerTabStatusChanged;
         serverTab.ApplyTimeRangeRequested += OnApplyTimeRangeToAllRequested;
+        serverTab.DisplayModeChanged += OnDisplayModeChanged;
 
         var tabItem = new TabItem
         {
@@ -422,6 +429,7 @@ public partial class MainWindow : Window
         {
             serverTab.StatusChanged -= OnServerTabStatusChanged;
             serverTab.ApplyTimeRangeRequested -= OnApplyTimeRangeToAllRequested;
+            serverTab.DisplayModeChanged -= OnDisplayModeChanged;
             /* One dispose path: tears down every chart hover helper the tab's partials own. */
             serverTab.Dispose();
         }
@@ -469,8 +477,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// "Apply to All" from one server tab's toolbar: copy its selected range (and, for a custom range, the
-    /// From/To in machine-local display time) to every OTHER open server tab so they window on the same
-    /// period. The source tab is skipped — it already holds the range.
+    /// From/To in the current display-mode wall clock) to every OTHER open server tab so they window on the
+    /// same period. The source tab is skipped — it already holds the range.
     /// </summary>
     private void OnApplyTimeRangeToAllRequested(ViewerServerTab source, int index, DateTime? customFromLocal, DateTime? customToLocal)
     {
@@ -481,6 +489,43 @@ public partial class MainWindow : Window
                 serverTab.ApplyExternalTimeRange(index, customFromLocal, customToLocal);
             }
         }
+    }
+
+    // ── Time-display mode (Server / Local / UTC) ─────────────────────────────────────
+
+    /// <summary>
+    /// A server tab's Server/Local/UTC picker changed (the raising tab already set the global mode via
+    /// <see cref="ViewerTimeHelper.CurrentDisplayMode"/> and reloaded itself). Persist the new mode and sync
+    /// every OTHER open tab's picker so they agree — the mode is process-wide, and a background tab reloads
+    /// on activation and picks it up.
+    /// </summary>
+    private void OnDisplayModeChanged(TimeDisplayMode mode)
+    {
+        var settings = _appSettingsStore.Load();
+        settings.TimeDisplayMode = mode.ToString();
+        _appSettingsStore.Save(settings);
+        SyncDisplayModeToOpenTabs(mode);
+    }
+
+    /// <summary>Sets every open server tab's toolbar picker to <paramref name="mode"/> without raising a
+    /// change (each tab suppresses it), keeping the process-wide mode's UI in sync across tabs.</summary>
+    private void SyncDisplayModeToOpenTabs(TimeDisplayMode mode)
+    {
+        foreach (var tab in _openServerTabs.Values)
+        {
+            if (tab.Content is ViewerServerTab serverTab)
+            {
+                serverTab.SetDisplayModeSelection(mode);
+            }
+        }
+    }
+
+    /// <summary>Sets the process-wide display mode from a persisted string ("ServerTime"/"LocalTime"/"UTC");
+    /// an invalid/absent value falls to Server-time (Lite's default, matching ViewerAppSettings.Normalize).</summary>
+    private static void ApplyTimeDisplayMode(string? modeText)
+    {
+        ViewerTimeHelper.CurrentDisplayMode =
+            Enum.TryParse<TimeDisplayMode>(modeText, ignoreCase: true, out var mode) ? mode : TimeDisplayMode.ServerTime;
     }
 
     // ── Overview tab (all-servers server cards; refreshes on its own 30s timer) ──────
@@ -683,9 +728,18 @@ public partial class MainWindow : Window
             _preferencesStore.Save(_preferences);
         }
 
-        /* Re-seed the runtime export separator from whatever the window persisted (it self-saves the app
-           settings), so a CSV-separator change takes effect on the next export without a restart. */
-        ViewerExportSettings.Apply(_appSettingsStore.Load());
+        /* Re-seed the runtime settings the viewer honors from whatever the window persisted (it self-saves):
+           the CSV export separator (next export) and the Server/Local/UTC time-display mode. If the mode
+           changed there, sync every open tab's picker and reload the visible tab so its timestamps re-render. */
+        var reloaded = _appSettingsStore.Load();
+        ViewerExportSettings.Apply(reloaded);
+        var previousMode = ViewerTimeHelper.CurrentDisplayMode;
+        ApplyTimeDisplayMode(reloaded.TimeDisplayMode);
+        if (ViewerTimeHelper.CurrentDisplayMode != previousMode)
+        {
+            SyncDisplayModeToOpenTabs(ViewerTimeHelper.CurrentDisplayMode);
+            _ = LoadVisibleTabAsync();
+        }
     }
 
     // ── About ────────────────────────────────────────────────────────────────────────

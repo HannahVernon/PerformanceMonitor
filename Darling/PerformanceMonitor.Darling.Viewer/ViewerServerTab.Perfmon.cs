@@ -196,7 +196,7 @@ public partial class ViewerServerTab
             if (selected.Count == 0) { PerfmonChart.Refresh(); return; }
 
             /* The per-server toolbar's settable window (preset or custom From/To). The store is naive-UTC;
-               display converts via ViewerDataService.ToLocalTime. */
+               display converts via ViewerTimeHelper.ForDisplay. */
             var (startUtc, endUtc) = GetWindowUtc();
             double globalMax = 0;
 
@@ -209,7 +209,7 @@ public partial class ViewerServerTab
             {
                 if (!trendsByCounter.TryGetValue(selected[i].DisplayName, out var trend) || trend.Count == 0) continue;
 
-                var times = trend.Select(t => ViewerDataService.ToLocalTime(t.CollectionTime).ToOADate()).ToArray();
+                var times = trend.Select(t => ViewerTimeHelper.ForDisplay(t.CollectionTime).ToOADate()).ToArray();
                 var values = trend.Select(t => (double)t.DeltaValue).ToArray();
 
                 var plot = PerfmonChart.Plot.Add.Scatter(times, values);
@@ -222,8 +222,8 @@ public partial class ViewerServerTab
             }
 
             PerfmonChart.Plot.Axes.DateTimeTicksBottomDateChange();
-            var rangeStart = ViewerDataService.ToLocalTime(startUtc);
-            var rangeEnd = ViewerDataService.ToLocalTime(endUtc);
+            var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
+            var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
             PerfmonChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
             ReapplyAxisColors(PerfmonChart);
             PerfmonChart.Plot.YLabel("Value");

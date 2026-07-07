@@ -95,7 +95,7 @@ public partial class ViewerServerTab
         foreach (var group in byClass)
         {
             var points = group.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
             var values = points.Select(d => d.WaitTimeMsPerSecond).ToArray();
 
             var plot = LatchStatsChart.Plot.Add.Scatter(times, values);
@@ -136,7 +136,7 @@ public partial class ViewerServerTab
         foreach (var group in byName)
         {
             var points = group.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
             var values = points.Select(d => d.CollisionsPerSecond).ToArray();
 
             var plot = SpinlockStatsChart.Plot.Add.Scatter(times, values);
@@ -157,8 +157,8 @@ public partial class ViewerServerTab
     private void FinishContentionChart(ScottPlot.WPF.WpfPlot chart, DateTime startUtc, DateTime endUtc, double globalMax)
     {
         chart.Plot.Axes.DateTimeTicksBottomDateChange();
-        var rangeStart = ViewerDataService.ToLocalTime(startUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(endUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
         chart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
         ReapplyAxisColors(chart);
         SetChartYLimitsWithLegendPadding(chart, 0, globalMax > 0 ? globalMax : 10);

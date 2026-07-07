@@ -182,7 +182,7 @@ public partial class ViewerServerTab
             if (_waitStatsHover != null) _waitStatsHover.Unit = useAvgPerWait ? "ms/wait" : "ms/sec";
 
             /* The per-server toolbar's settable window (preset or custom From/To). The store is naive-UTC;
-               display converts via ViewerDataService.ToLocalTime. */
+               display converts via ViewerTimeHelper.ForDisplay. */
             var (startUtc, endUtc) = GetWindowUtc();
             double globalMax = 0;
 
@@ -195,7 +195,7 @@ public partial class ViewerServerTab
             {
                 if (!trendsByType.TryGetValue(selected[i].DisplayName, out var trend) || trend.Count == 0) continue;
 
-                var times = trend.Select(t => ViewerDataService.ToLocalTime(t.CollectionTime).ToOADate()).ToArray();
+                var times = trend.Select(t => ViewerTimeHelper.ForDisplay(t.CollectionTime).ToOADate()).ToArray();
                 var values = useAvgPerWait
                     ? trend.Select(t => t.AvgMsPerWait).ToArray()
                     : trend.Select(t => t.WaitTimeMsPerSecond).ToArray();
@@ -210,8 +210,8 @@ public partial class ViewerServerTab
             }
 
             WaitStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
-            var rangeStart = ViewerDataService.ToLocalTime(startUtc);
-            var rangeEnd = ViewerDataService.ToLocalTime(endUtc);
+            var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
+            var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
             WaitStatsChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
             ReapplyAxisColors(WaitStatsChart);
             WaitStatsChart.Plot.YLabel(useAvgPerWait ? "Avg Wait Time (ms/wait)" : "Wait Time (ms/sec)");

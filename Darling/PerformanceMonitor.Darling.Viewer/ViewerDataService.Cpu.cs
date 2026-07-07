@@ -23,7 +23,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// store, read as int and cast to double at plot time, byte-for-byte with Lite's chart body.
 /// <c>SampleTime</c> is the store's server-LOCAL <c>sample_time</c> de-skewed to naive UTC by the read
 /// (see <see cref="CpuUtilizationSql"/>, #1262), so both consumers plot it through
-/// <see cref="ToLocalTime"/> like every other Darling series.
+/// <see cref="ViewerTimeHelper.ForDisplay"/> like every other Darling series.
 /// </summary>
 public sealed record CpuUtilizationSample(DateTime SampleTime, int SqlServerCpu, int OtherProcessCpu);
 
@@ -38,7 +38,7 @@ public sealed partial class ViewerDataService
     ///
     /// <para><b>sample_time de-skew (#1262).</b> Unlike every other stored column, <c>sample_time</c> is
     /// the MONITORED SERVER'S LOCAL wall clock (<c>SYSDATETIME()</c> on the server, minus each
-    /// ring-buffer sample's age), NOT naive UTC — so feeding it straight to <see cref="ToLocalTime"/>
+    /// ring-buffer sample's age), NOT naive UTC — so feeding it straight to <see cref="ViewerTimeHelper.ForDisplay"/>
     /// (which assumes naive-UTC input) shifts the whole CPU series by the server's UTC offset relative
     /// to every <c>collection_time</c>-based lane — a visible misalignment in the correlated Overview
     /// (e.g. a Pacific-time server, offset -7/-8h, sits 7-8h off).
@@ -51,7 +51,7 @@ public sealed partial class ViewerDataService
     /// the server's UTC offset plus that sub-minute anchor age; rounding to 15 minutes recovers the exact
     /// whole/half/quarter-hour offset and absorbs the anchor age (and any few-second clock skew).
     /// Subtracting that per-batch offset turns each local <c>sample_time</c> into true naive UTC, so
-    /// <see cref="ToLocalTime"/> then aligns the CPU series with every other lane. A UTC server yields
+    /// <see cref="ViewerTimeHelper.ForDisplay"/> then aligns the CPU series with every other lane. A UTC server yields
     /// offset 0 — byte-identical to the pre-fix read. The per-batch derivation also handles a DST
     /// transition inside the window (each batch recovers its own offset). Reads the base
     /// <c>cpu_utilization_stats</c> table. $1 server_id, $2 window start (naive UTC).</para>
@@ -80,7 +80,7 @@ public sealed partial class ViewerDataService
     /// Raw CPU samples for one server since <paramref name="sinceUtc"/>, time-ordered — one point per
     /// ring-buffer sample, feeding both the CPU tab's scatter chart and the Overview's CPU lane. Each
     /// sample's <c>SampleTime</c> is de-skewed to naive UTC in the read (see <see cref="CpuUtilizationSql"/>,
-    /// #1262), so both consumers can plot it through <see cref="ToLocalTime"/> unchanged.
+    /// #1262), so both consumers can plot it through <see cref="ViewerTimeHelper.ForDisplay"/> unchanged.
     /// </summary>
     public async Task<List<CpuUtilizationSample>> GetCpuUtilizationAsync(int serverId, DateTime sinceUtc, CancellationToken cancellationToken = default)
     {

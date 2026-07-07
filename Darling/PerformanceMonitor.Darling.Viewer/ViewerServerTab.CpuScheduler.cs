@@ -73,7 +73,7 @@ public partial class ViewerServerTab
         double globalMax = 0;
         if (data.Count > 0)
         {
-            var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
 
             var series = new (string Name, Func<CpuSchedulerTrendPoint, double> Selector)[]
             {
@@ -97,8 +97,8 @@ public partial class ViewerServerTab
         }
 
         CpuSchedulerChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        var rangeStart = ViewerDataService.ToLocalTime(startUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(endUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
         CpuSchedulerChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
         ReapplyAxisColors(CpuSchedulerChart);
         SetChartYLimitsWithLegendPadding(CpuSchedulerChart, 0, globalMax > 0 ? globalMax : 5);

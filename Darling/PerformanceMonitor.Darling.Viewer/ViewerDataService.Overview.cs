@@ -247,7 +247,7 @@ public sealed class ServerSummaryItem
     /// (the viewer convention — Lite used its per-server offset helper instead).
     /// </summary>
     public string LastCollectionDisplay => LastCollectionTime.HasValue
-        ? ViewerDataService.ToLocalTime(LastCollectionTime.Value).ToString("HH:mm:ss")
+        ? ViewerTimeHelper.ForDisplay(LastCollectionTime.Value).ToString("HH:mm:ss")
         : "Never";
 
     /* Connection status — verbatim from Lite; in the viewer the inputs come from ApplyFreshness. */

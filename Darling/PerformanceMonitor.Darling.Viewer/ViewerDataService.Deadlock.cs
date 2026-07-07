@@ -43,7 +43,7 @@ public sealed class ViewerDeadlockRow : DeadlockAlertRow
 /// (victim detection, owner/waiter modes, object names, proc-name resolution) is CPU-bound XML work, so
 /// callers run <see cref="ParseFromRows"/> off the UI thread. The only deviation is the two *Local
 /// display strings: Lite's per-server <c>ServerTimeHelper.FormatServerTime</c> becomes the viewer's one
-/// machine-local <see cref="ViewerDataService.ToLocalTime"/> (the same swap the widened BPR row makes).
+/// machine-local <see cref="ViewerTimeHelper.ForDisplay"/> (the same swap the widened BPR row makes).
 /// </summary>
 public sealed class DeadlockProcessDetail
 {
@@ -88,11 +88,11 @@ public sealed class DeadlockProcessDetail
     public DateTime? LastBatchCompleted { get; set; }
 
     public string DeadlockTimeLocal
-        => DeadlockTime is { } t ? ViewerDataService.ToLocalTime(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
+        => DeadlockTime is { } t ? ViewerTimeHelper.ForDisplay(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
     public string VictimDisplay => IsVictim ? "Victim" : "";
     public string WaitTimeFormatted => WaitTime > 0 ? $"{WaitTime:N0} ms" : "";
     public string LastTranStartedLocal
-        => LastTranStarted is { } t ? ViewerDataService.ToLocalTime(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
+        => LastTranStarted is { } t ? ViewerTimeHelper.ForDisplay(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
 
     /// <summary>
     /// Parses a list of deadlock rows into per-process detail rows.

@@ -239,11 +239,11 @@
 
         <!-- Per-server toolbar (mirrors Lite's ServerTab.xaml header): the time-range dropdown +
              custom From/To, Apply-to-all, the shared Compare baseline (moved up from the Queries tab),
-             Refresh, and the auto-refresh toggle + interval. These drive a SETTABLE window (replacing
-             the old fixed 24-hour s_dataWindow) that every inner tab reads via GetWindowUtc. A
-             Server/Local/UTC time-display picker is intentionally NOT here yet — see the class summary /
-             the PR: the viewer has no per-server UTC offset for "Server Time", so that plumbing is a
-             follow-up rather than a half-wired control. -->
+             Refresh, the auto-refresh toggle + interval, and the Server/Local/UTC time-display picker.
+             The time controls drive a SETTABLE window (replacing the old fixed 24-hour s_dataWindow) that
+             every inner tab reads via GetWindowUtc; the display picker (ported from Lite's
+             TimeDisplayModeBox) drives how every timestamp renders via ViewerTimeHelper — Server Time now
+             works because the server's UTC offset is collected in server_properties.utc_offset_minutes. -->
         <Border Grid.Row="0" Background="{DynamicResource BackgroundDarkBrush}" Padding="12,8">
             <WrapPanel Orientation="Horizontal">
                 <ComboBox x:Name="TimeRangeCombo" SelectedIndex="3" Width="120" Margin="0,0,8,4"
@@ -294,6 +294,16 @@
                     <ComboBoxItem Content="30s"/>
                     <ComboBoxItem Content="1m"/>
                     <ComboBoxItem Content="5m"/>
+                </ComboBox>
+                <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="8,2"/>
+                <TextBlock Text="Times:" VerticalAlignment="Center" Margin="0,0,4,0"
+                           Foreground="{DynamicResource ForegroundBrush}"/>
+                <ComboBox x:Name="TimeDisplayModeBox" Width="120" Margin="0,0,0,4"
+                          SelectionChanged="TimeDisplayMode_SelectionChanged"
+                          ToolTip="How timestamps are displayed">
+                    <ComboBoxItem Content="Server Time" Tag="ServerTime"/>
+                    <ComboBoxItem Content="Local Time" Tag="LocalTime"/>
+                    <ComboBoxItem Content="UTC" Tag="UTC"/>
                 </ComboBox>
             </WrapPanel>
         </Border>

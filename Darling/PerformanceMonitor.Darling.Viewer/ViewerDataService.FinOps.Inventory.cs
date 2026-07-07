@@ -188,7 +188,7 @@ ORDER BY server_name";
                 CoresPerSocket = reader.IsDBNull(10) ? null : Convert.ToInt32(reader.GetValue(10)),
                 IsHadrEnabled = reader.IsDBNull(11) ? null : reader.GetBoolean(11),
                 IsClustered = reader.IsDBNull(12) ? null : reader.GetBoolean(12),
-                LastUpdated = reader.IsDBNull(13) ? null : ToLocalTime(reader.GetDateTime(13)),
+                LastUpdated = reader.IsDBNull(13) ? null : ViewerTimeHelper.ForDisplay(reader.GetDateTime(13)),
                 /* sqlserver_start_time is the server's LOCAL clock — read verbatim, shown as-is like Lite
                    (UptimeDisplay = Now - start). host OS + AG role are the collected guarded values. */
                 SqlServerStartTime = reader.IsDBNull(14) ? null : reader.GetDateTime(14),

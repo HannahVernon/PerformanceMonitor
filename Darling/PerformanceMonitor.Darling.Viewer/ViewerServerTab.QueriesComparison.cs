@@ -92,8 +92,8 @@ public partial class ViewerServerTab
 
         if (active && baselineRange.HasValue)
         {
-            var from = ViewerDataService.ToLocalTime(baselineRange.Value.From).ToString("yyyy-MM-dd HH:mm");
-            var to = ViewerDataService.ToLocalTime(baselineRange.Value.To).ToString("yyyy-MM-dd HH:mm");
+            var from = ViewerTimeHelper.ForDisplay(baselineRange.Value.From).ToString("yyyy-MM-dd HH:mm");
+            var to = ViewerTimeHelper.ForDisplay(baselineRange.Value.To).ToString("yyyy-MM-dd HH:mm");
             banner.Text = $"Comparing against baseline: {from} → {to}";
         }
     }

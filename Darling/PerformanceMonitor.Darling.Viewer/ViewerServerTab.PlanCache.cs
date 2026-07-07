@@ -72,7 +72,7 @@ public partial class ViewerServerTab
         double globalMax = 0;
         if (data.Count > 0)
         {
-            var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
 
             var singleUse = data.Select(d => d.SingleUseSizeMb).ToArray();
             var singlePlot = PlanCacheChart.Plot.Add.Scatter(times, singleUse);
@@ -92,8 +92,8 @@ public partial class ViewerServerTab
         }
 
         PlanCacheChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        var rangeStart = ViewerDataService.ToLocalTime(startUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(endUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
         PlanCacheChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
         ReapplyAxisColors(PlanCacheChart);
         SetChartYLimitsWithLegendPadding(PlanCacheChart, 0, globalMax > 0 ? globalMax : 10);

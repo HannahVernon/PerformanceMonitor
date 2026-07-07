@@ -25,7 +25,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// Collection Log = the recent run log; Duration Trends = the per-collector success-duration scatter.
 /// The chart's only render-body change from Lite is the time axis: where Lite shifts the raw stored
 /// time by its per-server <c>UtcOffsetMinutes</c>, the viewer runs every point through
-/// <see cref="ViewerDataService.ToLocalTime"/> (the naive-UTC-to-viewer-local convention every Darling
+/// <see cref="ViewerTimeHelper.ForDisplay"/> (the naive-UTC-to-viewer-local convention every Darling
 /// chart uses), and line polish flows through the shared <see cref="ChartStyle"/> like the other viewer
 /// charts. Lite's per-chart context menu / "Open Log File" button are intentionally not ported.
 /// </summary>
@@ -83,7 +83,7 @@ public partial class ViewerServerTab
     /// Per-collector success-duration scatter over the window. Copied from Lite's
     /// <c>UpdateCollectorDurationChart</c>: one line per collector (SUCCESS runs with a duration, needing
     /// at least two points), cycling the shared palette. The one change is the time axis — every point
-    /// runs through <see cref="ViewerDataService.ToLocalTime"/> (Lite shifts by its per-server
+    /// runs through <see cref="ViewerTimeHelper.ForDisplay"/> (Lite shifts by its per-server
     /// UtcOffsetMinutes) — and line polish uses the shared <see cref="ChartStyle.StyleScatter"/>.
     /// </summary>
     private void RenderCollectorDurationChart(List<CollectionLogRow> data)
@@ -107,7 +107,7 @@ public partial class ViewerServerTab
             var points = group.OrderBy(d => d.CollectionTime).ToList();
             if (points.Count < 2) continue;
 
-            var times = points.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
             var durations = points.Select(d => (double)d.DurationMs!.Value).ToArray();
 
             var scatter = CollectorDurationChart.Plot.Add.Scatter(times, durations);

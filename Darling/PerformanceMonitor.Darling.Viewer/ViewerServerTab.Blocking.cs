@@ -24,7 +24,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// re-hosted unchanged as the third sub-tab. The five trend-chart bodies are COPIES of Lite's
 /// <c>ServerTab.Charts.cs</c> Update* methods, reads rewired to <see cref="ViewerDataService"/> Postgres.
 /// Two render-body deviations from Lite: (1) the time axis runs through
-/// <see cref="ViewerDataService.ToLocalTime"/> instead of Lite's per-server <c>UtcOffsetMinutes</c> shift;
+/// <see cref="ViewerTimeHelper.ForDisplay"/> instead of Lite's per-server <c>UtcOffsetMinutes</c> shift;
 /// (2) the per-server toolbar's settable window supplies the X-axis range. The spike-plot /
 /// zero-line-when-empty shapes, the fixed
 /// <see cref="ChartPalette.SeriesColor"/> identities for the single-series charts, and the cycling
@@ -281,8 +281,8 @@ public partial class ViewerServerTab
         ApplyTheme(LockWaitTrendChart);
 
         var (winStartUtc, winEndUtc) = GetWindowUtc();
-        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
 
         _lockWaitTrendHover?.Clear();
         if (data.Count == 0)
@@ -309,7 +309,7 @@ public partial class ViewerServerTab
         for (int i = 0; i < grouped.Count; i++)
         {
             var group = grouped[i];
-            var times = group.Select(t => ViewerDataService.ToLocalTime(t.CollectionTime).ToOADate()).ToArray();
+            var times = group.Select(t => ViewerTimeHelper.ForDisplay(t.CollectionTime).ToOADate()).ToArray();
             var values = group.Select(t => t.WaitTimeMsPerSecond).ToArray();
 
             var plot = LockWaitTrendChart.Plot.Add.Scatter(times, values);
@@ -336,8 +336,8 @@ public partial class ViewerServerTab
         ApplyTheme(BlockingTrendChart);
 
         var (winStartUtc, winEndUtc) = GetWindowUtc();
-        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
 
         _blockingTrendHover?.Clear();
         if (data.Count == 0)
@@ -369,7 +369,7 @@ public partial class ViewerServerTab
 
         foreach (var point in data.OrderBy(d => d.Time))
         {
-            var time = ViewerDataService.ToLocalTime(point.Time).ToOADate();
+            var time = ViewerTimeHelper.ForDisplay(point.Time).ToOADate();
             /* Go to zero just before the spike */
             expandedTimes.Add(time - 0.0001);
             expandedCounts.Add(0);
@@ -406,8 +406,8 @@ public partial class ViewerServerTab
         ApplyTheme(DeadlockTrendChart);
 
         var (winStartUtc, winEndUtc) = GetWindowUtc();
-        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
 
         _deadlockTrendHover?.Clear();
         if (data.Count == 0)
@@ -439,7 +439,7 @@ public partial class ViewerServerTab
 
         foreach (var point in data.OrderBy(d => d.Time))
         {
-            var time = ViewerDataService.ToLocalTime(point.Time).ToOADate();
+            var time = ViewerTimeHelper.ForDisplay(point.Time).ToOADate();
             /* Go to zero just before the spike */
             expandedTimes.Add(time - 0.0001);
             expandedCounts.Add(0);
@@ -476,8 +476,8 @@ public partial class ViewerServerTab
         ApplyTheme(CurrentWaitsDurationChart);
 
         var (winStartUtc, winEndUtc) = GetWindowUtc();
-        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
 
         _currentWaitsDurationHover?.Clear();
         if (data.Count == 0)
@@ -505,7 +505,7 @@ public partial class ViewerServerTab
         {
             var group = grouped[i];
             var ordered = group.OrderBy(t => t.CollectionTime).ToList();
-            var times = ordered.Select(t => ViewerDataService.ToLocalTime(t.CollectionTime).ToOADate()).ToArray();
+            var times = ordered.Select(t => ViewerTimeHelper.ForDisplay(t.CollectionTime).ToOADate()).ToArray();
             var values = ordered.Select(t => (double)t.TotalWaitMs).ToArray();
 
             var plot = CurrentWaitsDurationChart.Plot.Add.Scatter(times, values);
@@ -532,8 +532,8 @@ public partial class ViewerServerTab
         ApplyTheme(CurrentWaitsBlockedChart);
 
         var (winStartUtc, winEndUtc) = GetWindowUtc();
-        var rangeStart = ViewerDataService.ToLocalTime(winStartUtc);
-        var rangeEnd = ViewerDataService.ToLocalTime(winEndUtc);
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
 
         _currentWaitsBlockedHover?.Clear();
         if (data.Count == 0)
@@ -561,7 +561,7 @@ public partial class ViewerServerTab
         {
             var group = grouped[i];
             var ordered = group.OrderBy(t => t.CollectionTime).ToList();
-            var times = ordered.Select(t => ViewerDataService.ToLocalTime(t.CollectionTime).ToOADate()).ToArray();
+            var times = ordered.Select(t => ViewerTimeHelper.ForDisplay(t.CollectionTime).ToOADate()).ToArray();
             var values = ordered.Select(t => (double)t.BlockedCount).ToArray();
 
             var plot = CurrentWaitsBlockedChart.Plot.Add.Scatter(times, values);

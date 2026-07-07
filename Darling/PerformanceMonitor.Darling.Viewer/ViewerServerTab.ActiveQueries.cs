@@ -129,7 +129,7 @@ public partial class ViewerServerTab
             var (batchTime, rows) = await _dataService.GetLatestQuerySnapshotBatchAsync(_server.ServerId);
             _querySnapshotsFilterMgr!.UpdateData(rows);
             LatestSnapshotIndicator.Text = batchTime.HasValue
-                ? $"Latest snapshot: {ViewerDataService.ToLocalTime(batchTime.Value):yyyy-MM-dd HH:mm:ss}"
+                ? $"Latest snapshot: {ViewerTimeHelper.ForDisplay(batchTime.Value):yyyy-MM-dd HH:mm:ss}"
                 : "No snapshots stored";
         }
         catch (Exception ex)

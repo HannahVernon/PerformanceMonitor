@@ -17,13 +17,13 @@
  *   - PerformanceMonitorLite.Analysis BaselineBucket + MetricNames -> the structurally-identical
  *     PerformanceMonitor.Darling.Analysis twins (PgBaselineProvider.cs).
  *   - AppLogger -> Debug.WriteLine.
- *   - Time axis: Lite shifts by its per-server ServerTimeHelper.UtcOffsetMinutes; the viewer has no
- *     per-server offset, so every lane plots collection_time (naive-UTC) through
- *     ViewerDataService.ToLocalTime (the naive-UTC-to-viewer-local convention every Darling chart uses).
+ *   - Time axis: every lane plots collection_time (naive-UTC) through ViewerTimeHelper.ForDisplay, the
+ *     viewer's mode-aware Server/Local/UTC conversion (Server mode adds the collected
+ *     server_properties.utc_offset_minutes, matching Lite's per-server ServerTimeHelper shift).
  *     The CPU lane's sample_time is the monitored server's LOCAL wall clock, so GetCpuUtilizationAsync
- *     de-skews it to naive UTC in SQL before it too goes through ToLocalTime (#1262: per-batch offset =
- *     round(MAX(sample_time) over the batch - collection_time) to 15 min, recovered from the batch
- *     because the viewer has no per-server timezone config). The CPU lane therefore aligns with the
+ *     de-skews it to naive UTC in SQL before it too goes through ForDisplay (#1262: per-batch offset =
+ *     round(MAX(sample_time) over the batch - collection_time) to 15 min, recovered from the batch — a
+ *     data correction independent of the display mode). The CPU lane therefore aligns with the
  *     collection_time lanes on any server timezone; a UTC server is unchanged.
  * Deliberately dropped for v1 (noted in the PR): Lite's comparison-range ghost-line overlay (the whole
  * comparisonRange block, AddGhostLine, ComparisonLabel). The "Show Active Queries at This Time"
@@ -197,8 +197,8 @@ public partial class CorrelatedTimelineLanesControl : UserControl
             {
                 /* Total non-idle CPU = SQL + other-process (Lite's CpuUtilizationData.TotalCpu). The
                    viewer's raw read exposes the two components; sum them here for the Total series. */
-                var sqlSeries = cpuTask.Result.Select(d => (ViewerDataService.ToLocalTime(d.SampleTime).ToOADate(), (double)d.SqlServerCpu)).ToList();
-                var totalSeries = cpuTask.Result.Select(d => (ViewerDataService.ToLocalTime(d.SampleTime).ToOADate(), (double)(d.SqlServerCpu + d.OtherProcessCpu))).ToList();
+                var sqlSeries = cpuTask.Result.Select(d => (ViewerTimeHelper.ForDisplay(d.SampleTime).ToOADate(), (double)d.SqlServerCpu)).ToList();
+                var totalSeries = cpuTask.Result.Select(d => (ViewerTimeHelper.ForDisplay(d.SampleTime).ToOADate(), (double)(d.SqlServerCpu + d.OtherProcessCpu))).ToList();
                 UpdateCpuLane(sqlSeries, totalSeries, cpuBaseline);
             }
             else
@@ -206,24 +206,24 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
             if (waitTask.IsCompletedSuccessfully)
                 UpdateLane(WaitStatsChart, "Wait ms/sec",
-                    waitTask.Result.Select(d => (ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate(), d.WaitTimeMsPerSecond)).ToList(),
+                    waitTask.Result.Select(d => (ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate(), d.WaitTimeMsPerSecond)).ToList(),
                     "#FFB74D", baseline: waitBaseline, minAnomalyValue: 100);
             else
                 ShowEmpty(WaitStatsChart, "Wait ms/sec");
 
             {
                 var blockingData = blockingTask.IsCompletedSuccessfully
-                    ? blockingTask.Result.Select(d => (ViewerDataService.ToLocalTime(d.Time).ToOADate(), (double)d.Count)).ToList()
+                    ? blockingTask.Result.Select(d => (ViewerTimeHelper.ForDisplay(d.Time).ToOADate(), (double)d.Count)).ToList()
                     : new List<(double, double)>();
                 var deadlockData = deadlockTask.IsCompletedSuccessfully
-                    ? deadlockTask.Result.Select(d => (ViewerDataService.ToLocalTime(d.Time).ToOADate(), (double)d.Count)).ToList()
+                    ? deadlockTask.Result.Select(d => (ViewerTimeHelper.ForDisplay(d.Time).ToOADate(), (double)d.Count)).ToList()
                     : new List<(double, double)>();
                 UpdateBlockingLane(blockingData, deadlockData, blockingBaseline);
             }
 
             if (memoryTask.IsCompletedSuccessfully)
                 UpdateLane(MemoryChart, "Buffer Pool MB",
-                    memoryTask.Result.Select(d => (ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate(), d.BufferPoolMb)).ToList(),
+                    memoryTask.Result.Select(d => (ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate(), d.BufferPoolMb)).ToList(),
                     "#CE93D8");
             else
                 ShowEmpty(MemoryChart, "Memory MB");
@@ -233,7 +233,7 @@ public partial class CorrelatedTimelineLanesControl : UserControl
                 var ioGrouped = fileIoTask.Result
                     .GroupBy(d => d.CollectionTime)
                     .OrderBy(g => g.Key)
-                    .Select(g => (ViewerDataService.ToLocalTime(g.Key).ToOADate(), g.Average(x => x.AvgReadLatencyMs)))
+                    .Select(g => (ViewerTimeHelper.ForDisplay(g.Key).ToOADate(), g.Average(x => x.AvgReadLatencyMs)))
                     .ToList();
                 UpdateLane(FileIoChart, "I/O ms", ioGrouped, "#81C784", baseline: ioBaseline, minAnomalyValue: 2);
             }
@@ -540,12 +540,12 @@ public partial class CorrelatedTimelineLanesControl : UserControl
         DateTime xStart, xEnd;
         if (fromDate.HasValue && toDate.HasValue)
         {
-            xStart = ViewerDataService.ToLocalTime(fromDate.Value);
-            xEnd = ViewerDataService.ToLocalTime(toDate.Value);
+            xStart = ViewerTimeHelper.ForDisplay(fromDate.Value);
+            xEnd = ViewerTimeHelper.ForDisplay(toDate.Value);
         }
         else
         {
-            xEnd = ViewerDataService.ToLocalTime(DateTime.UtcNow);
+            xEnd = ViewerTimeHelper.ForDisplay(DateTime.UtcNow);
             xStart = xEnd.AddHours(-hoursBack);
         }
 

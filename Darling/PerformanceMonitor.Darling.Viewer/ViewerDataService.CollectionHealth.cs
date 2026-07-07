@@ -202,11 +202,10 @@ public sealed partial class ViewerDataService
 /// <summary>
 /// One row of the Collection Log grid / drill window — a single collector run's outcome. Copied
 /// VERBATIM from Lite's <c>CollectionLogRow</c> (LocalDataService.CollectionHealth.cs): every display
-/// property is a pure format of stored values, and <see cref="CollectionTimeFormatted"/>'s
-/// <c>ToLocalTime()</c> on the store's naive-UTC collection_time is correct because Npgsql reads a
-/// <c>timestamp</c> column as an <c>Unspecified</c>-kind <see cref="DateTime"/> and
-/// <see cref="DateTime.ToLocalTime"/> treats Unspecified as UTC (the same convention Lite's DuckDB
-/// reader produced). <see cref="DuckDbDurationMs"/> keeps its store column name (<c>duckdb_duration_ms</c>)
+/// property is a pure format of stored values, and <see cref="CollectionTimeFormatted"/> routes the
+/// store's naive-UTC collection_time through <see cref="ViewerTimeHelper.ForDisplay"/> — the viewer's
+/// mode-aware Server/Local/UTC conversion every other Darling timestamp also uses.
+/// <see cref="DuckDbDurationMs"/> keeps its store column name (<c>duckdb_duration_ms</c>)
 /// but in the Darling store that column records the POSTGRES write phase — the Collection Log grid
 /// labels it "Store (ms)".
 /// </summary>
@@ -225,7 +224,7 @@ public class CollectionLogRow
     public string Status { get; set; } = "";
     public string? ErrorMessage { get; set; }
 
-    public string CollectionTimeFormatted => CollectionTime.ToLocalTime().ToString("g");
+    public string CollectionTimeFormatted => ViewerTimeHelper.ForDisplay(CollectionTime).ToString("g");
 
     public string DurationFormatted => DurationMs.HasValue
         ? (DurationMs.Value < 1000 ? $"{DurationMs.Value} ms" : $"{DurationMs.Value / 1000.0:F1} s")
@@ -300,14 +299,14 @@ public class CollectorHealthRow
         : $"{AvgDurationMs / 1000:F1} s";
 
     public string LastSuccessFormatted => LastSuccessTime.HasValue
-        ? LastSuccessTime.Value.ToLocalTime().ToString("g")
+        ? ViewerTimeHelper.ForDisplay(LastSuccessTime.Value).ToString("g")
         : "Never";
 
     public string LastRunFormatted => LastRunTime.HasValue
-        ? LastRunTime.Value.ToLocalTime().ToString("g")
+        ? ViewerTimeHelper.ForDisplay(LastRunTime.Value).ToString("g")
         : "Never";
 
     public string LastErrorFormatted => LastErrorTime.HasValue
-        ? LastErrorTime.Value.ToLocalTime().ToString("g")
+        ? ViewerTimeHelper.ForDisplay(LastErrorTime.Value).ToString("g")
         : "";
 }

@@ -26,7 +26,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// Lite's <c>BlockedProcessReportRow</c> exactly. event_time is stored naive-UTC (the XE @timestamp is
 /// UTC; the DMV snapshot stamps the collector's UTC collection time), so <see cref="EventTimeLocal"/>
 /// converts to viewer-local like every other collection_time — Lite's per-server
-/// <c>ServerTimeHelper.FormatServerTime</c> becomes <see cref="ViewerDataService.ToLocalTime"/> (the
+/// <c>ServerTimeHelper.FormatServerTime</c> becomes <see cref="ViewerTimeHelper.ForDisplay"/> (the
 /// viewer's one machine-local convention; the same swap the trend charts already document).
 /// </summary>
 public sealed class ViewerBlockedProcessRow : BlockedProcessAlertRow
@@ -62,7 +62,7 @@ public sealed class ViewerBlockedProcessRow : BlockedProcessAlertRow
 
     /// <summary>The stored naive-UTC event time in the viewer machine's local time (Lite's grid format).</summary>
     public string EventTimeLocal
-        => EventTime is { } eventTime ? ViewerDataService.ToLocalTime(eventTime).ToString("yyyy-MM-dd HH:mm:ss") : "";
+        => EventTime is { } eventTime ? ViewerTimeHelper.ForDisplay(eventTime).ToString("yyyy-MM-dd HH:mm:ss") : "";
 
     /// <summary>Lite's wait-time rendering: sub-second in ms, else one-decimal seconds.</summary>
     public string WaitTimeFormatted => ViewerDataService.FormatWaitTime(WaitTimeMs);

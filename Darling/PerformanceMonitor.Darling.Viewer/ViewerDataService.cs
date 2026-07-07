@@ -241,9 +241,32 @@ public sealed partial class ViewerDataService : IAsyncDisposable
         _ => $"SQL Server v{sqlMajorVersion}",
     };
 
-    /// <summary>The store's timestamps are naive UTC; re-stamp as UTC and convert for display.</summary>
-    public static DateTime ToLocalTime(DateTime naiveUtc)
-        => DateTime.SpecifyKind(naiveUtc, DateTimeKind.Utc).ToLocalTime();
+    /// <summary>
+    /// The active server's UTC offset in minutes from its most recent <c>server_properties</c> row — the
+    /// value the Server-time display mode adds to the naive-UTC store (UTC + offset = server local). The
+    /// naive-UTC → display conversion every rendered timestamp uses lives in <see cref="ViewerTimeHelper"/>
+    /// (it replaced this class's former fixed <c>ToLocalTime</c>); this only fetches the per-server offset
+    /// that mode feeds into it. Returns null when the column has not been collected yet (an older store
+    /// just migrated, or a server whose properties collector has not re-run since the V16 upgrade); the
+    /// caller then keeps the viewer's machine-local offset so Server mode degrades to ~Local until then.
+    /// </summary>
+    public const string ServerUtcOffsetSql = @"
+SELECT utc_offset_minutes
+FROM server_properties
+WHERE server_id = $1
+AND   utc_offset_minutes IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    public async Task<int?> GetServerUtcOffsetMinutesAsync(int serverId, CancellationToken cancellationToken = default)
+    {
+        await using var command = _dataSource.CreateCommand(ServerUtcOffsetSql);
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull
+            ? null
+            : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     /// <summary>
     /// Binds the standard per-server window parameters shared by the settable-window tab reads:

@@ -171,9 +171,9 @@ ORDER BY ds.total_size_mb DESC";
                 TotalSizeMb = reader.IsDBNull(1) ? 0m : Convert.ToDecimal(reader.GetValue(1)),
                 FileCount = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
                 /* last_execution_time (sys.dm_exec_query_stats) is SERVER-LOCAL in the store, not naive
-                   UTC, so it is read verbatim like Lite — NOT through ToLocalTime (which assumes UTC and
-                   would shift it by the viewer's offset). Contrast the collection_time-derived timestamps
-                   in this port, which ARE naive UTC and correctly use ToLocalTime. */
+                   UTC, so it is read verbatim like Lite — NOT through ViewerTimeHelper.ForDisplay (which
+                   assumes naive UTC and, in Local/Server mode, would shift it). Contrast the
+                   collection_time-derived timestamps in this port, which ARE naive UTC and correctly use ForDisplay. */
                 LastExecutionTime = reader.IsDBNull(3) ? null : reader.GetDateTime(3)
             });
         }
@@ -537,7 +537,7 @@ ORDER BY index_id";
                 UserUpdates = reader.IsDBNull(12) ? 0L : Convert.ToInt64(reader.GetValue(12)),
                 /* last_user_seek/scan/lookup/update (sys.dm_db_index_usage_stats) are SERVER-LOCAL in the
                    store, not naive UTC, so this GREATEST is read verbatim like Lite — NOT through
-                   ToLocalTime (which would shift it by the viewer's offset). */
+                   ViewerTimeHelper.ForDisplay (which assumes naive UTC and, in Local/Server mode, would shift it). */
                 LastUserAccess = reader.IsDBNull(13) ? null : reader.GetDateTime(13),
                 Classification = reader.IsDBNull(14) ? "" : reader.GetString(14)
             });

@@ -152,8 +152,8 @@ ORDER BY max_connections DESC";
                 AvgConnections = reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1)),
                 MaxConnections = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
                 SampleCount = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
-                FirstSeenLocal = ToLocalTime(reader.GetDateTime(4)),
-                LastSeenLocal = ToLocalTime(reader.GetDateTime(5))
+                FirstSeenLocal = ViewerTimeHelper.ForDisplay(reader.GetDateTime(4)),
+                LastSeenLocal = ViewerTimeHelper.ForDisplay(reader.GetDateTime(5))
             });
         }
         return items;

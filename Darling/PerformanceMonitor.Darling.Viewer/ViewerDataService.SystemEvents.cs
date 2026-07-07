@@ -28,7 +28,7 @@ namespace PerformanceMonitor.Darling.Viewer;
  * The row view-models below are flat projections of the Common records (all shredded columns preserved,
  * so the grids faithfully match sp_HealthParser's per-category table shape) plus an EventTimeLocal
  * display string — the machine-local render of the event's naive-UTC XE @timestamp, via the same
- * ViewerDataService.ToLocalTime the deadlock / blocked-process grids use. Only SevereError adds a
+ * ViewerTimeHelper.ForDisplay the deadlock / blocked-process grids use. Only SevereError adds a
  * resolved DatabaseName (see ResolveDatabaseName).
  */
 
@@ -36,7 +36,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 internal static class SystemEventRowFormat
 {
     public static string Local(DateTime? utc) =>
-        utc is { } t ? ViewerDataService.ToLocalTime(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
+        utc is { } t ? ViewerTimeHelper.ForDisplay(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
 }
 
 /// <summary>One scheduler-monitor WARNING row (Scheduler Issues sub-tab). Mirrors <c>*_SchedulerIssues</c>.</summary>

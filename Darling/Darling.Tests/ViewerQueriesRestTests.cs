@@ -213,7 +213,7 @@ public sealed class ViewerActiveQueriesDisplayTests
         /* collection_time is naive UTC in the store; the display converts to local (unlike the raw
            server-clock last_execution_time). MinValue (no row) renders empty. */
         var row = new ViewerQuerySnapshotRow { CollectionTime = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Unspecified) };
-        var expected = ViewerDataService.ToLocalTime(row.CollectionTime).ToString("yyyy-MM-dd HH:mm:ss");
+        var expected = ViewerTimeHelper.ForDisplay(row.CollectionTime).ToString("yyyy-MM-dd HH:mm:ss");
         Assert.Equal(expected, row.CollectionTimeLocal);
         Assert.Equal("", new ViewerQuerySnapshotRow().CollectionTimeLocal);
     }

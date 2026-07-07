@@ -25,7 +25,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// so <see cref="SelectionStartUtc"/>/<see cref="SelectionEndUtc"/> and the <see cref="RangeChanged"/>
 /// payload are UTC and flow straight into the viewer's naive-UTC reads with no clock conversion. The
 /// only deviation from Lite is the two display strings (axis labels + range label): Lite's per-server
-/// <c>ServerTimeHelper.FormatServerTime</c> becomes <see cref="ViewerDataService.ToLocalTime"/> (the
+/// <c>ServerTimeHelper.FormatServerTime</c> becomes <see cref="ViewerTimeHelper.ForDisplay"/> (the
 /// viewer's one machine-local convention).
 /// </summary>
 public partial class TimeRangeSlicerControl : UserControl
@@ -260,7 +260,7 @@ public partial class TimeRangeSlicerControl : UserControl
             var x = NormAtUtc(tickTime) * w;
             if (x - lastLabelX < minLabelSpacingPx) continue;
             if (x < 10 || x > w - 40) continue;
-            var dt = ViewerDataService.ToLocalTime(tickTime).ToString("MM/dd HH:mm");
+            var dt = ViewerTimeHelper.ForDisplay(tickTime).ToString("MM/dd HH:mm");
             var tb = new TextBlock { Text = dt, FontSize = 9, Foreground = labelBrush };
             Canvas.SetLeft(tb, x - 25);
             Canvas.SetTop(tb, chartBottom + 2);
@@ -373,8 +373,8 @@ public partial class TimeRangeSlicerControl : UserControl
     private void UpdateRangeLabel()
     {
         if (_data.Count == 0) { RangeLabel.Text = ""; return; }
-        var startDisplay = ViewerDataService.ToLocalTime(UtcAtNorm(_rangeStart)).ToString("yyyy-MM-dd HH:mm");
-        var endDisplay = ViewerDataService.ToLocalTime(UtcAtNorm(_rangeEnd)).ToString("yyyy-MM-dd HH:mm");
+        var startDisplay = ViewerTimeHelper.ForDisplay(UtcAtNorm(_rangeStart)).ToString("yyyy-MM-dd HH:mm");
+        var endDisplay = ViewerTimeHelper.ForDisplay(UtcAtNorm(_rangeEnd)).ToString("yyyy-MM-dd HH:mm");
         var spanHours = (UtcAtNorm(_rangeEnd) - UtcAtNorm(_rangeStart)).TotalHours;
         var spanLabel = spanHours >= 1 ? $"{spanHours:F0}h" : $"{spanHours * 60:F0}m";
         RangeLabel.Text = $"{startDisplay} → {endDisplay}  ({spanLabel})";
