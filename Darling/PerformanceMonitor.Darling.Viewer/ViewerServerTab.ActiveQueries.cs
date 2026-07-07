@@ -118,16 +118,40 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
-    /// "Latest Snapshot" button — re-reads the newest STORED snapshot batch (no live SQL). Semantics
-    /// change from Lite's "Live Snapshot" (query the monitored server now): the viewer only sees what the
-    /// collector persisted, so this shows the most recent captured batch of running queries.
+    /// "Latest Snapshot" button (Stage 3b) — asks the Darling service to CAPTURE a fresh snapshot NOW via a
+    /// <c>snapshot_now</c> command, then re-reads the newest stored batch to show it. This restores Lite's
+    /// "Live Snapshot" intent (a capture on demand) through the command plane rather than a direct hit on the
+    /// monitored server. <c>snapshot_now</c> runs even while the service is paused (explicit operator intent —
+    /// the service honors it), so the button stays enabled while paused. A read-only seat cannot command the
+    /// service, so it degrades to simply re-reading the most recent stored batch (the pre-3b behavior).
     /// </summary>
     private async void LatestSnapshot_Click(object sender, RoutedEventArgs e)
     {
         LatestSnapshotButton.IsEnabled = false;
-        LatestSnapshotIndicator.Text = "Loading...";
         try
         {
+            if (!_dataService.IsReadOnly)
+            {
+                LatestSnapshotIndicator.Text = "Capturing...";
+                try
+                {
+                    var result = await _dataService.RequestSnapshotNowAsync(_server.ServerId);
+                    if (result is null)
+                    {
+                        StatusChanged?.Invoke("snapshot: still running — showing the latest stored capture");
+                    }
+                    else if (result.Status != ViewerDataService.StatusSucceeded)
+                    {
+                        StatusChanged?.Invoke($"snapshot: the service reported {result.ResultStatus} — showing the latest stored capture");
+                    }
+                }
+                catch (ViewerReadOnlyException)
+                {
+                    /* Grants changed under us — fall back to reading whatever is stored. */
+                }
+            }
+
+            LatestSnapshotIndicator.Text = "Loading...";
             var (batchTime, rows) = await _dataService.GetLatestQuerySnapshotBatchAsync(_server.ServerId);
             _querySnapshotsFilterMgr!.UpdateData(rows);
             LatestSnapshotIndicator.Text = batchTime.HasValue

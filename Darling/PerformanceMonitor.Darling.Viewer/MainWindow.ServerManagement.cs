@@ -352,6 +352,35 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>
+    /// One-time import of the pre-Stage-3b viewer-local OPERATIONAL settings (alert engine, automated
+    /// analysis, SMTP + Teams/Slack, MCP) out of viewer-settings.json into the control-plane store — the
+    /// operational twin of <see cref="MigrateViewerServersAsync"/>. Defaults-only + marker-guarded (see
+    /// <see cref="ViewerControlPlaneMigration"/>): never clobbers an operator-tuned store, runs once,
+    /// best-effort. Read-only/disconnected seats skip.
+    /// </summary>
+    private async Task MigrateControlPlaneSettingsAsync()
+    {
+        if (_dataService is null || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            var migration = new ViewerControlPlaneMigration(_appSettingsStore.Load());
+            var imported = await migration.MigrateAsync(_dataService);
+            if (imported > 0)
+            {
+                ViewerLogger.Info("ControlPlaneMigration", $"Imported {imported} viewer-local settings section(s) into the store.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Warn("ControlPlaneMigration", $"viewer-settings.json operational migrate-in failed: {ex.Message}");
+        }
+    }
+
     private void ViewLogButton_Click(object sender, RoutedEventArgs e)
     {
         var logFile = ViewerLogger.GetCurrentLogFile();

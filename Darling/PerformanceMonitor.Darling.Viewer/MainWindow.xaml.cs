@@ -117,6 +117,9 @@ public partial class MainWindow : Window
            the write paths translate a live 42501 into a friendly message as a backstop. */
         await _dataService.DetectReadOnlyAsync();
 
+        /* A read-only seat cannot command the service, so "Generate now" (analyze_now) is disabled. */
+        RecommendationsGenerateButton.IsEnabled = !_dataService.IsReadOnly;
+
         /* The Alerts tab is a self-loading control (all-servers by default); give it the store and let
            it surface load/dismiss/mute outcomes on the shared status bar. */
         AlertsHistoryContent.Initialize(_dataService);
@@ -133,6 +136,11 @@ public partial class MainWindow : Window
            list load so imported servers appear immediately. Guarded (marker + ON CONFLICT DO NOTHING) so it
            never double-seeds the service's darling.json seed nor resurrects a removed server. */
         await MigrateViewerServersAsync();
+
+        /* One-time import of any pre-Stage-3b viewer-local operational settings (alerts, analysis, SMTP,
+           Teams/Slack, MCP) into the control-plane store — only when the store section is still at defaults,
+           so an operator-tuned store is never clobbered. Guarded by a marker; read-only/disconnected skip. */
+        await MigrateControlPlaneSettingsAsync();
 
         await LoadServersAsync();
 
@@ -697,6 +705,54 @@ public partial class MainWindow : Window
         => await RefreshVisibleAsync();
 
     /// <summary>
+    /// "Generate now" — asks the Darling service to run an immediate analysis pass for the selected server via
+    /// an <c>analyze_now</c> command, then refreshes the cards from the fresh findings. Restores Lite's
+    /// on-demand analysis (the Darling service otherwise runs it on its own ~30-minute cadence). A read-only
+    /// seat can't command the service (the button is disabled); a timeout surfaces a "still running" note.
+    /// </summary>
+    private async void RecommendationsGenerateNow_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null || _dataService.IsReadOnly)
+        {
+            return;
+        }
+
+        if (RecommendationsServerSelector.SelectedItem is not DarlingServer server)
+        {
+            return;
+        }
+
+        RecommendationsGenerateButton.IsEnabled = false;
+        RecommendationsStatusText.Text = $"Analyzing {server.DisplayName}...";
+        try
+        {
+            var result = await _dataService.RequestAnalyzeNowAsync(server.ServerId);
+            if (result is null)
+            {
+                RecommendationsStatusText.Text = "Analysis is still running — refresh in a moment.";
+            }
+            else if (result.Status != ViewerDataService.StatusSucceeded)
+            {
+                RecommendationsStatusText.Text = $"Analysis did not complete: {result.ResultStatus}";
+            }
+
+            await LoadRecommendationsAsync();
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            RecommendationsStatusText.Text = $"Generate now failed: {ex.Message}";
+        }
+        finally
+        {
+            RecommendationsGenerateButton.IsEnabled = _dataService?.IsReadOnly == false;
+        }
+    }
+
+    /// <summary>
     /// Copies a card's suggested T-SQL to the clipboard (advise-only). SetDataObject with copy=false
     /// avoids WPF's problematic Clipboard.Flush() (matches the Lite convention).
     /// </summary>
@@ -741,7 +797,9 @@ public partial class MainWindow : Window
     /// </summary>
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var settings = new SettingsWindow(_preferences, _appSettingsStore, _dataService) { Owner = this };
+        /* Hand the current managed-server list to the collector-schedule editor's per-server scope. */
+        var servers = (ServerList.ItemsSource as IReadOnlyList<DarlingServer>) ?? Array.Empty<DarlingServer>();
+        var settings = new SettingsWindow(_preferences, _appSettingsStore, _dataService, servers) { Owner = this };
         if (settings.ShowDialog() == true && settings.Result is not null)
         {
             _preferences = settings.Result;

@@ -701,6 +701,10 @@
                             <Button Content="Refresh" Margin="10,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}"
                                     Click="RecommendationsRefresh_Click"
                                     ToolTip="Re-read recommendations for the selected server"/>
+                            <Button x:Name="RecommendationsGenerateButton" Content="Generate now" Margin="8,0,0,0" Padding="12,4"
+                                    Style="{StaticResource DarkButton}"
+                                    Click="RecommendationsGenerateNow_Click"
+                                    ToolTip="Ask the Darling service to run analysis for this server now, then refresh"/>
                             <TextBlock x:Name="RecommendationsStatusText" Margin="12,0,0,0" VerticalAlignment="Center"
                                        FontStyle="Italic" Foreground="#8B93A1"/>
                         </StackPanel>

@@ -54,19 +54,29 @@
 
         <!-- Collection Control -->
         <Border Grid.Row="1" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="Data Collection" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
-                    <TextBlock x:Name="CollectionStatusText" Text="Status: Managed by the Darling service" FontSize="12"
-                               Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
-                </StackPanel>
-                <Button Grid.Column="1" x:Name="PauseResumeButton" Content="Pause Collection"
-                        Click="PauseResumeButton_Click" VerticalAlignment="Center"/>
-            </Grid>
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Data Collection" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                        <TextBlock x:Name="CollectionStatusText" Text="Status: Managed by the Darling service" FontSize="12"
+                                   Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" x:Name="PauseResumeButton" Content="Pause Collection"
+                            Click="PauseResumeButton_Click" VerticalAlignment="Center"/>
+                </Grid>
+                <CheckBox x:Name="CapturePlansCheckBox" Content="Capture execution plans (all servers)" Margin="0,12,0,0"
+                          Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBlock Text="Store query and Query Store execution-plan XML across the fleet. Disable to shave storage on a very large fleet; a per-server override lives on each server's dialog."
+                           FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                           Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <TextBlock x:Name="SettingsReadOnlyBanner" FontSize="12" Foreground="#E0A030" Margin="0,8,0,0" TextWrapping="Wrap"
+                           Visibility="Collapsed"
+                           Text="This viewer is connected with a read-only role. Monitoring settings below are shown for reference but can't be changed from here."/>
+            </StackPanel>
         </Border>
 
         <!-- MCP Server Settings -->
@@ -532,13 +542,15 @@
             </StackPanel>
         </Border>
 
-        <!-- Collection Schedule (service-managed) -->
+        <!-- Collection Schedule (control-plane editor) -->
         <Border Grid.Row="7" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="Collection Schedule" FontSize="14" FontWeight="SemiBold"
                            Foreground="{DynamicResource ForegroundBrush}"/>
-                <TextBlock Text="Collection cadence is managed by the Darling service (darling.json). The service collects from every registered server on its own schedule; the viewer reads what it has collected and does not control the schedule."
+                <TextBlock Text="Tune how often the Darling service collects each metric and how long it keeps it — fleet-wide or per server. Blank overrides fall back to the built-in defaults; presets bulk-set frequencies."
                            FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                <Button x:Name="EditSchedulesButton" Content="Edit Collector Schedules..." HorizontalAlignment="Left"
+                        Padding="12,4" Margin="0,8,0,0" Click="EditSchedulesButton_Click"/>
             </StackPanel>
         </Border>
 
