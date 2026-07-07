@@ -391,7 +391,25 @@ public sealed class DarlingWorker : BackgroundService
         /* The shared record-and-send deliverer — hoisted so BOTH the shared alert engine and the Stage 4
            service self-alerts (DarlingSelfAlertEvaluator) fire through the SAME instance: identical
            email/webhook delivery, per-fingerprint delivery cooldown, and history-seeded restart replay. */
-        var deliverer = new DarlingAlertDeliverer(alertSettings, historyStore, webhookAlertService, _logger);
+        var deliverer = new DarlingAlertDeliverer(
+            alertSettings, historyStore, webhookAlertService, _logger,
+            /* #1236: map a fired alert's ServerKey (the storage-name hash the engine keys on) back to the live
+               server's per-server delivery override, under the servers lock (mirrors FetchFailedJobsAsync). A
+               store reload swaps ServerLoopState.Config, so this always reads the current override. */
+            resolveServerOverride: serverKey =>
+            {
+                if (!int.TryParse(serverKey, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id))
+                {
+                    return null;
+                }
+
+                lock (_serversLock)
+                {
+                    return servers
+                        .Find(s => ServerIdHelper.GetDeterministicHashCode(s.Config.StorageName) == id)
+                        ?.Config.AlertDeliveryModeOverride;
+                }
+            });
         var engine = BuildAlertEngine(config, servers, alertSettings, historyStore, muteRuleService, deliverer);
 
         /* Stage 4: the service self-alerts, over the SAME deliverer + history + mute check the engine uses.
@@ -673,9 +691,11 @@ public sealed class DarlingWorker : BackgroundService
     /// shared server_id. ADD: a new enabled server gets a disconnected state that connects on its next tick
     /// exactly like a startup server (via <see cref="TryConnectAsync"/> — no novel connection logic). REMOVE:
     /// a server no longer enabled/present is dropped; its runtime holds no persistent connection (the
-    /// collectors open per run), so dropping the state is a clean disconnect. STAY: an unchanged definition is
-    /// left untouched (connection + NextDue preserved); a changed one has its config replaced and its runtime
-    /// dropped so it reconnects with the new definition through the same startup path.
+    /// collectors open per run), so dropping the state is a clean disconnect. STAY: the held config is always
+    /// refreshed to the desired definition (so a non-connection edit — cost, the #1236 alert-delivery override
+    /// — goes live without churn), but the connection + NextDue are preserved unless a connection/collection
+    /// field changed (per <see cref="ServerDefinitionEquals"/>), in which case the runtime is dropped so it
+    /// reconnects with the new definition through the same startup path.
     /// </summary>
     private void ReconcileServers(List<ServerLoopState> servers, IReadOnlyList<MonitoredServer> desired)
     {
@@ -702,11 +722,16 @@ public sealed class DarlingWorker : BackgroundService
                 continue;
             }
 
-            if (!ServerDefinitionEquals(state.Config, desiredServer))
+            /* Always refresh the held definition so a NON-connection edit — the FinOps cost, or the #1236
+               alert-delivery override the deliverer's resolver reads live off state.Config — takes effect on
+               this reload without connection churn. Only a connection/collection-affecting change (per
+               ServerDefinitionEquals) drops the runtime to reconnect through the startup path. */
+            var connectionChanged = !ServerDefinitionEquals(state.Config, desiredServer);
+            state.Config = desiredServer;
+            if (connectionChanged)
             {
                 _logger.LogInformation(
                     "[{Server}] Definition changed — reconnecting with the new configuration", desiredServer.DisplayName);
-                state.Config = desiredServer;
                 state.Runtime = null;
                 state.NextConnectAttempt = DateTime.MinValue;
                 state.NextDue.Clear();

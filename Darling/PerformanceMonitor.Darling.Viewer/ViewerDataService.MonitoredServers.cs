@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using Npgsql;
 using NpgsqlTypes;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -46,10 +47,10 @@ public sealed partial class ViewerDataService
     private const string MonitoredServerColumns =
         "server_id, name, host, database, auth, username, encrypted_password, encrypt_mode, " +
         "trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases, " +
-        "monthly_cost_usd, capture_plans, is_enabled";
+        "monthly_cost_usd, capture_plans, is_enabled, alert_delivery_mode_override";
 
     private const string MonitoredServerValues =
-        "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, " +
+        "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, " +
         "(now() AT TIME ZONE 'UTC'), (now() AT TIME ZONE 'UTC')";
 
     /// <summary>Upsert by <c>server_id</c> — the Add/Edit save. ON CONFLICT rewrites every field but
@@ -72,6 +73,7 @@ ON CONFLICT (server_id) DO UPDATE SET
     monthly_cost_usd = EXCLUDED.monthly_cost_usd,
     capture_plans = EXCLUDED.capture_plans,
     is_enabled = EXCLUDED.is_enabled,
+    alert_delivery_mode_override = EXCLUDED.alert_delivery_mode_override,
     modified_at = (now() AT TIME ZONE 'UTC')";
 
     /// <summary>Insert only when the <c>server_id</c> is absent — the one-time <c>viewer-servers.json</c>
@@ -103,7 +105,7 @@ ON CONFLICT (server_id) DO NOTHING";
     public const string MonitoredServersSelectSql = @"
 SELECT server_id, name, host, database, auth, username, encrypt_mode,
        trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases,
-       monthly_cost_usd, capture_plans, is_enabled, created_at
+       monthly_cost_usd, capture_plans, is_enabled, created_at, alert_delivery_mode_override
 FROM config_monitored_servers
 ORDER BY name";
 
@@ -111,7 +113,7 @@ ORDER BY name";
     public const string MonitoredServerByIdSql = @"
 SELECT server_id, name, host, database, auth, username, encrypted_password, encrypt_mode,
        trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases,
-       monthly_cost_usd, capture_plans, is_enabled, created_at
+       monthly_cost_usd, capture_plans, is_enabled, created_at, alert_delivery_mode_override
 FROM config_monitored_servers
 WHERE server_id = $1";
 
@@ -315,6 +317,8 @@ ORDER BY COALESCE(s.display_name, c.name)";
         command.Parameters.Add(new NpgsqlParameter<decimal> { TypedValue = row.MonthlyCostUsd });       // $13
         AddNullableBool(command, row.CapturePlans);                                                      // $14
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = row.IsEnabled });               // $15
+        /* #1236: per-server delivery override as its enum name, or NULL = "inherit the global". */
+        AddNullableText(command, row.AlertDeliveryModeOverride?.ToString());                             // $16
     }
 
     private static MonitoredServerRow ReadMonitoredServerRow(NpgsqlDataReader reader) => new()
@@ -335,6 +339,7 @@ ORDER BY COALESCE(s.display_name, c.name)";
         CapturePlans = reader.IsDBNull(13) ? null : reader.GetBoolean(13),
         IsEnabled = reader.GetBoolean(14),
         CreatedAt = reader.IsDBNull(15) ? null : DateTime.SpecifyKind(reader.GetDateTime(15), DateTimeKind.Utc),
+        AlertDeliveryModeOverride = ParseDeliveryOverride(reader.IsDBNull(16) ? null : reader.GetString(16)),
     };
 
     /// <summary>
@@ -363,6 +368,7 @@ ORDER BY COALESCE(s.display_name, c.name)";
         CapturePlans = reader.IsDBNull(12) ? null : reader.GetBoolean(12),
         IsEnabled = reader.GetBoolean(13),
         CreatedAt = reader.IsDBNull(14) ? null : DateTime.SpecifyKind(reader.GetDateTime(14), DateTimeKind.Utc),
+        AlertDeliveryModeOverride = ParseDeliveryOverride(reader.IsDBNull(15) ? null : reader.GetString(15)),
     };
 
     private static void AddTextArray(NpgsqlCommand command, IEnumerable<string>? values) =>
@@ -378,15 +384,21 @@ ORDER BY COALESCE(s.display_name, c.name)";
             NpgsqlDbType = NpgsqlDbType.Boolean,
             Value = value.HasValue ? value.Value : DBNull.Value,
         });
+
+    /// <summary>Parses the nullable <c>alert_delivery_mode_override</c> text ("Summary"/"PerEvent") to the enum;
+    /// null/empty/unknown = null = "inherit the global delivery mode". Mirrors the service's read parse.</summary>
+    private static AlertNotificationMode? ParseDeliveryOverride(string? value) =>
+        Enum.TryParse<AlertNotificationMode>(value, ignoreCase: true, out var mode) ? mode : null;
 }
 
 /// <summary>
 /// A <c>config.config_monitored_servers</c> row as the viewer authors + reads it — the connection definition
 /// the Darling service reconstructs a <c>MonitoredServer</c> from. Deliberately carries only the columns the
-/// store (and hence the service) has; the viewer-only cosmetics some Lite fields kept (description, utility
-/// DB, per-server alert-delivery override, the Azure client ids) are NOT part of the service-honored server
-/// model and stay out of the store. <see cref="EncryptedPassword"/> is a DPAPI-LocalMachine blob, never
-/// plaintext. Favorites remain viewer-local (<see cref="ViewerServerStore"/>).
+/// store (and hence the service) has — now INCLUDING the per-server alert-delivery override (#1236, V18, the
+/// service honors it at delivery time); the remaining viewer-only cosmetics some Lite fields kept (description,
+/// utility DB, the Azure client ids) are NOT part of the service-honored server model and stay out of the store.
+/// <see cref="EncryptedPassword"/> is a DPAPI-LocalMachine blob, never plaintext. Favorites remain viewer-local
+/// (<see cref="ViewerServerStore"/>).
 /// </summary>
 public sealed class MonitoredServerRow
 {
@@ -412,6 +424,10 @@ public sealed class MonitoredServerRow
 
     /// <summary>Per-server plan-capture override; null = follow the global <c>config_service.capture_plans</c>.</summary>
     public bool? CapturePlans { get; set; }
+
+    /// <summary>Per-server deadlock/blocking delivery-mode override (#1236); null = inherit the global
+    /// <c>config_alert_settings.delivery_mode</c>. Stored as the enum name in <c>alert_delivery_mode_override</c>.</summary>
+    public AlertNotificationMode? AlertDeliveryModeOverride { get; set; }
 
     public bool IsEnabled { get; set; } = true;
 

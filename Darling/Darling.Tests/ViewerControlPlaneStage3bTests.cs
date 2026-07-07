@@ -27,7 +27,8 @@ namespace Darling.Tests;
 /// </summary>
 public sealed class ViewerAlertSettingsSqlTests
 {
-    /* The 27 AlertsConfig + AnalysisConfig columns the service reads (StoreConfigProvider.ReadAlertSettingsAsync). */
+    /* The 29 AlertsConfig + AnalysisConfig columns the service reads (StoreConfigProvider.ReadAlertSettingsAsync)
+       — delivery_mode/per_event_max appended in V18 (#1141/#1236). */
     private static readonly string[] Columns =
     {
         "enabled", "cpu_enabled", "cpu_threshold_percent", "cpu_mode", "blocking_enabled", "blocking_count_threshold",
@@ -36,7 +37,7 @@ public sealed class ViewerAlertSettingsSqlTests
         "tempdb_space_threshold_percent", "low_disk_enabled", "low_disk_threshold_percent", "low_disk_threshold_gb",
         "long_running_job_enabled", "long_running_job_multiplier", "failed_job_enabled", "failed_job_lookback_minutes",
         "cooldown_minutes", "excluded_databases", "analysis_enabled", "analysis_interval_minutes",
-        "analysis_notifications_enabled", "analysis_notify_severity",
+        "analysis_notifications_enabled", "analysis_notify_severity", "delivery_mode", "per_event_max",
     };
 
     [Fact]
@@ -51,7 +52,7 @@ public sealed class ViewerAlertSettingsSqlTests
             Assert.Contains(column, sql, StringComparison.Ordinal);
         }
 
-        for (var i = 1; i <= 27; i++)
+        for (var i = 1; i <= 29; i++)
         {
             Assert.Contains("$" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), sql, StringComparison.Ordinal);
         }
@@ -446,6 +447,8 @@ public sealed class ViewerControlPlaneMigrationTests
             AlertExcludedDatabases = new List<string> { "msdb", "tempdb" },
             AnalysisIntervalMinutes = 45,
             AnalysisNotifySeverity = 1.2,
+            AlertDeliveryMode = "PerEvent",
+            AlertPerEventMaxPerCycle = 7,
         };
 
         var row = ViewerControlPlaneMigration.BuildAlertRow(settings);
@@ -456,6 +459,9 @@ public sealed class ViewerControlPlaneMigrationTests
         Assert.Equal(new[] { "msdb", "tempdb" }, row.ExcludedDatabases);
         Assert.Equal(45, row.AnalysisIntervalMinutes);
         Assert.Equal(1.2, row.AnalysisNotifySeverity, 3);
+        /* #1141/#1236: the delivery customization carries into the store row. */
+        Assert.Equal("PerEvent", row.DeliveryMode);
+        Assert.Equal(7, row.PerEventMax);
     }
 
     [Fact]

@@ -166,6 +166,10 @@ public sealed class ViewerControlPlaneMigration
             AnalysisIntervalMinutes = s.AnalysisIntervalMinutes,
             AnalysisNotificationsEnabled = s.AnalysisNotificationsEnabled,
             AnalysisNotifySeverity = s.AnalysisNotifySeverity,
+            /* #1141/#1236: carry a pre-3b viewer's delivery customization into the store now that the service
+               honors it (was a dead knob before V18). Fresh-viewer defaults match Defaults() → nothing imported. */
+            DeliveryMode = (s.AlertDeliveryMode is "Summary" or "PerEvent") ? s.AlertDeliveryMode : "Summary",
+            PerEventMax = s.AlertPerEventMaxPerCycle,
         };
     }
 

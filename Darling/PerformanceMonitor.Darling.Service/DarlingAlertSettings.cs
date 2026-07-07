@@ -61,6 +61,18 @@ public sealed class DarlingAlertSettings : IAlertEngineSettings, IAlertSettings
 
     public IReadOnlyList<string> ExcludedDatabases => _config.Alerts.ExcludedDatabases;
 
+    /// <summary>
+    /// The GLOBAL deadlock/blocking delivery mode (#1141), read live through the by-reference config seam so a
+    /// store reload reflects immediately. The deliverer resolves a per-server override against this via the
+    /// shared <c>AlertDeliveryModeResolver</c>. Not on the shared IAlertSettings surface — it is Darling's
+    /// delivery concern, consumed by <see cref="DarlingAlertDeliverer"/> off the concrete type.
+    /// </summary>
+    public AlertNotificationMode DeliveryMode => _config.Alerts.DeliveryMode;
+
+    /// <summary>Per-event mode's per-cycle incident cap before the "+N more" batch (#1141); clamped 1–100 like
+    /// Lite/the viewer so a hand-edited store value can't drive an unbounded fan-out.</summary>
+    public int PerEventMax => Math.Clamp(_config.Alerts.PerEventMax, 1, 100);
+
     /// <summary>"sql" → SqlProcess; anything else (incl. Lite's default "total") → TotalServer.</summary>
     public CpuAlertMode CpuAlertMode =>
         string.Equals(_config.Alerts.CpuMode, "sql", StringComparison.OrdinalIgnoreCase)

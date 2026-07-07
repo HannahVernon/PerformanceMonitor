@@ -447,8 +447,8 @@ public partial class SettingsWindow : Window
         LrqExcludeBackupsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeBackups;
         LrqExcludeMiscWaitsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeMiscWaits;
         LrqExcludeCdcCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeCdc;
-        AlertDeliveryModeBox.SelectedIndex = _appSettings.AlertDeliveryMode == "PerEvent" ? 1 : 0;
-        AlertPerEventMaxBox.Text = _appSettings.AlertPerEventMaxPerCycle.ToString(CultureInfo.InvariantCulture);
+        /* AlertDeliveryMode/PerEventMax moved to the STORE-backed controls (SeedAlertControlsFrom /
+           BuildAlertRowFromControls) now that the service honors them (#1141/#1236); no longer viewer-local. */
         MuteRuleDefaultExpirationCombo.SelectedIndex = _appSettings.MuteRuleDefaultExpiration switch
         {
             "1 hour" => 0,
@@ -490,6 +490,10 @@ public partial class SettingsWindow : Window
         AnalysisIntervalBox.Text = r.AnalysisIntervalMinutes.ToString(CultureInfo.InvariantCulture);
         AnalysisNotificationsCheckBox.IsChecked = r.AnalysisNotificationsEnabled;
         AnalysisNotifySeverityBox.Text = r.AnalysisNotifySeverity.ToString("0.0", CultureInfo.InvariantCulture);
+        /* #1141/#1236: the delivery mode + per-event cap are now STORE-backed (the service honors them),
+           seeded from the row like every other alert-engine control. */
+        AlertDeliveryModeBox.SelectedIndex = r.DeliveryMode == "PerEvent" ? 1 : 0;
+        AlertPerEventMaxBox.Text = r.PerEventMax.ToString(CultureInfo.InvariantCulture);
         UpdateAlertControlStates();
     }
 
@@ -556,6 +560,13 @@ public partial class SettingsWindow : Window
         else
             errors.Add("Analysis notify severity must be between 0.0 and 2.0.");
 
+        /* #1141/#1236: delivery mode + per-event cap (store-backed). */
+        row.DeliveryMode = AlertDeliveryModeBox.SelectedIndex == 1 ? "PerEvent" : "Summary";
+        if (int.TryParse(AlertPerEventMaxBox.Text, out var perEventMax) && perEventMax is >= 1 and <= 100)
+            row.PerEventMax = perEventMax;
+        else
+            errors.Add("Per-event max-per-cycle must be between 1 and 100.");
+
         return row;
     }
 
@@ -571,11 +582,7 @@ public partial class SettingsWindow : Window
         _appSettings.AlertLongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true;
         _appSettings.AlertLongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true;
         _appSettings.AlertLongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true;
-        _appSettings.AlertDeliveryMode = AlertDeliveryModeBox.SelectedIndex == 1 ? "PerEvent" : "Summary";
-        if (int.TryParse(AlertPerEventMaxBox.Text, out var perEventMax) && perEventMax is >= 1 and <= 100)
-            _appSettings.AlertPerEventMaxPerCycle = perEventMax;
-        else
-            errors.Add("Per-event max-per-cycle must be between 1 and 100.");
+        /* AlertDeliveryMode/PerEventMax are STORE-backed now (BuildAlertRowFromControls writes them); not here. */
         _appSettings.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         _appSettings.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
     }
@@ -598,7 +605,7 @@ public partial class SettingsWindow : Window
         AlertCooldownBox.Text = "5";
         EmailCooldownBox.Text = "15";
         AlertDeliveryModeBox.SelectedIndex = 0;
-        AlertPerEventMaxBox.Text = "10";
+        AlertPerEventMaxBox.Text = "5";
         AnalysisIntervalBox.Text = "30";
         AnalysisNotifySeverityBox.Text = "1.5";
         AlertExcludedDatabasesBox.Text = "";

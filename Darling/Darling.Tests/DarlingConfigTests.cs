@@ -11,6 +11,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.Data.SqlClient;
 using PerformanceMonitor.Darling.Service;
+using PerformanceMonitor.Notifications;
 using Xunit;
 
 namespace Darling.Tests;
@@ -70,11 +71,40 @@ public sealed class DarlingConfigTests
         Assert.True(config.Alerts.Enabled);
         Assert.Equal(80, config.Alerts.CpuThresholdPercent);
         Assert.Equal("total", config.Alerts.CpuMode);
+        /* #1141/#1236: the sample documents the delivery-mode knobs (global default Summary / 5, and a
+           per-server override that inherits the global when null). */
+        Assert.Equal(AlertNotificationMode.Summary, config.Alerts.DeliveryMode);
+        Assert.Equal(5, config.Alerts.PerEventMax);
+        Assert.Null(config.Servers[0].AlertDeliveryModeOverride);
         Assert.Equal(587, config.Smtp.Port);
         Assert.Equal("", config.Smtp.Host);
         Assert.Equal("dba-team@example.com", config.Smtp.To);
         Assert.Equal("", config.Webhooks.TeamsUrl);
         Assert.Equal("", config.Webhooks.SlackUrl);
+    }
+
+    [Fact]
+    public void DeliveryMode_DefaultsSummary_ParsesEnumNames_AndPerServerOverride()
+    {
+        /* Defaults mirror the V18 DDL: global Summary / 5, per-server override null (inherit). */
+        var config = new DarlingConfig();
+        Assert.Equal(AlertNotificationMode.Summary, config.Alerts.DeliveryMode);
+        Assert.Equal(5, config.Alerts.PerEventMax);
+
+        /* darling.json carries the enum by NAME (JsonStringEnumConverter), and the per-server override
+           is nullable ("PerEvent" on one server, absent/null on another = inherit). */
+        var parsed = DarlingConfig.Parse(@"{
+            ""postgres"": { ""managed"": true },
+            ""servers"": [
+                { ""host"": ""noisy"", ""alertDeliveryModeOverride"": ""PerEvent"" },
+                { ""host"": ""quiet"" }
+            ],
+            ""alerts"": { ""deliveryMode"": ""PerEvent"", ""perEventMax"": 3 }
+        }");
+        Assert.Equal(AlertNotificationMode.PerEvent, parsed.Alerts.DeliveryMode);
+        Assert.Equal(3, parsed.Alerts.PerEventMax);
+        Assert.Equal(AlertNotificationMode.PerEvent, parsed.Servers[0].AlertDeliveryModeOverride);
+        Assert.Null(parsed.Servers[1].AlertDeliveryModeOverride);
     }
 
     [Fact]

@@ -60,6 +60,10 @@
       // figure is proportional math on this one number (a database's share = its size fraction x budget).
       // Omit or 0 (the default) to hide all cost columns/cards, exactly like Performance Monitor Lite.
       "monthlyCostUsd": 0,
+      // Optional per-server override of the global alerts.deliveryMode: "Summary" or "PerEvent" forces
+      // that mode for THIS server (e.g. Per-event for one noisy prod box while the fleet stays Summary);
+      // omit (or null) to inherit the global setting.
+      "alertDeliveryModeOverride": null,
       "excludedDatabases": []
     },
     {
@@ -92,6 +96,13 @@
     "enabled": true,
     "cpuThresholdPercent": 80,
     "cpuMode": "total", // "total" (SQL + other processes) or "sql" (SQL process only)
+    // How deadlock/blocking alerts are delivered: "Summary" (one batched card per cycle, the default)
+    // or "PerEvent" (one notification per distinct incident, so downstream automation can open one
+    // ticket per incident). A per-server "alertDeliveryModeOverride" (see servers[]) wins over this.
+    "deliveryMode": "Summary",
+    // Per-event mode's cap on incidents delivered individually per cycle before a trailing "+N more"
+    // batch (so no incident is ever silently dropped). Clamped 1-100.
+    "perEventMax": 5,
     "excludedDatabases": []
   },
 

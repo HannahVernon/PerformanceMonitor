@@ -17,6 +17,7 @@ using Npgsql;
 using NpgsqlTypes;
 using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Service;
 
@@ -157,9 +158,9 @@ INSERT INTO config_alert_settings (
     tempdb_space_threshold_percent, low_disk_enabled, low_disk_threshold_percent, low_disk_threshold_gb,
     long_running_job_enabled, long_running_job_multiplier, failed_job_enabled, failed_job_lookback_minutes,
     cooldown_minutes, excluded_databases, analysis_enabled, analysis_interval_minutes,
-    analysis_notifications_enabled, analysis_notify_severity, modified_at)
+    analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max, modified_at)
 VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-        $22, $23, $24, $25, $26, $27, $28)
+        $22, $23, $24, $25, $26, $27, $28, $29, $30)
 ON CONFLICT (id) DO NOTHING", connection);
         command.Parameters.AddWithValue(a.Enabled);
         command.Parameters.AddWithValue(a.CpuEnabled);
@@ -188,6 +189,9 @@ ON CONFLICT (id) DO NOTHING", connection);
         command.Parameters.AddWithValue(an.IntervalMinutes);
         command.Parameters.AddWithValue(an.NotificationsEnabled);
         command.Parameters.AddWithValue(an.NotifySeverity);
+        /* #1141 delivery mode: the enum name ("Summary"/"PerEvent") into the text column; the read parses it back. */
+        command.Parameters.AddWithValue(a.DeliveryMode.ToString());
+        command.Parameters.AddWithValue(a.PerEventMax);
         command.Parameters.AddWithValue(now);
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -228,8 +232,8 @@ ON CONFLICT (id) DO NOTHING", connection);
 INSERT INTO config_monitored_servers (
     server_id, name, host, database, auth, username, encrypted_password, encrypt_mode,
     trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases,
-    monthly_cost_usd, capture_plans, is_enabled, created_at, modified_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL, TRUE, $14, $14)
+    monthly_cost_usd, capture_plans, alert_delivery_mode_override, is_enabled, created_at, modified_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL, $14, TRUE, $15, $15)
 ON CONFLICT (server_id) DO NOTHING", connection);
             command.Parameters.AddWithValue(ServerIdHelper.GetDeterministicHashCode(server.StorageName));
             command.Parameters.AddWithValue(server.DisplayName);
@@ -246,6 +250,8 @@ ON CONFLICT (server_id) DO NOTHING", connection);
             command.Parameters.AddWithValue(server.MultiSubnetFailover);
             AddTextArray(command, server.ExcludedDatabases);
             command.Parameters.AddWithValue(server.MonthlyCostUsd);
+            /* Per-server delivery override (#1236): the enum name or NULL = "inherit the global". */
+            AddNullableText(command, server.AlertDeliveryModeOverride?.ToString());
             command.Parameters.AddWithValue(now);
             await command.ExecuteNonQueryAsync(ct);
         }
@@ -322,7 +328,7 @@ SELECT enabled, cpu_enabled, cpu_threshold_percent, cpu_mode, blocking_enabled, 
        tempdb_space_threshold_percent, low_disk_enabled, low_disk_threshold_percent, low_disk_threshold_gb,
        long_running_job_enabled, long_running_job_multiplier, failed_job_enabled, failed_job_lookback_minutes,
        cooldown_minutes, excluded_databases, analysis_enabled, analysis_interval_minutes,
-       analysis_notifications_enabled, analysis_notify_severity
+       analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max
 FROM config_alert_settings WHERE id = 1", connection);
         using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
@@ -355,6 +361,10 @@ FROM config_alert_settings WHERE id = 1", connection);
             FailedJobLookbackMinutes = reader.GetInt32(20),
             CooldownMinutes = reader.GetInt32(21),
             ExcludedDatabases = ReadTextArray(reader, 22),
+            /* delivery_mode/per_event_max appended (V18) so ordinals 0–26 stay pinned; a store row from before
+               V18 can't reach here (the column is NOT NULL DEFAULT), but ParseDeliveryMode fails safe to Summary. */
+            DeliveryMode = ParseDeliveryMode(reader.IsDBNull(27) ? null : reader.GetString(27)),
+            PerEventMax = reader.GetInt32(28),
         };
         var analysis = new AnalysisConfig
         {
@@ -405,7 +415,7 @@ FROM config_notification WHERE id = 1", connection);
         var servers = new List<MonitoredServer>();
         using var command = new NpgsqlCommand(@"
 SELECT name, host, database, auth, username, encrypted_password, encrypt_mode, trust_server_certificate,
-       read_only_intent, multi_subnet_failover, excluded_databases, monthly_cost_usd
+       read_only_intent, multi_subnet_failover, excluded_databases, monthly_cost_usd, alert_delivery_mode_override
 FROM config_monitored_servers WHERE is_enabled = TRUE
 ORDER BY name", connection);
         using var reader = await command.ExecuteReaderAsync(ct);
@@ -443,6 +453,8 @@ ORDER BY name", connection);
             MultiSubnetFailover = reader.GetBoolean(9),
             ExcludedDatabases = ReadTextArray(reader, 10),
             MonthlyCostUsd = reader.GetDecimal(11),
+            /* #1236: the per-server delivery override (null = inherit the global), available at delivery time. */
+            AlertDeliveryModeOverride = ParseDeliveryOverride(reader.IsDBNull(12) ? null : reader.GetString(12)),
         };
 
         if (server.UsesSqlAuth && string.IsNullOrWhiteSpace(server.EncryptedPassword))
@@ -589,6 +601,15 @@ ORDER BY name", connection);
 
     /// <summary>Npgsql rejects Kind=Utc against `timestamp`; store all timestamps naive-UTC.</summary>
     private static DateTime Naive(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
+
+    /// <summary>Parses the <c>delivery_mode</c>/<c>alert_delivery_mode_override</c> text ("Summary"/"PerEvent")
+    /// to the enum; an unknown or empty value fails safe to <see cref="AlertNotificationMode.Summary"/>.</summary>
+    private static AlertNotificationMode ParseDeliveryMode(string? value) =>
+        Enum.TryParse<AlertNotificationMode>(value, ignoreCase: true, out var mode) ? mode : AlertNotificationMode.Summary;
+
+    /// <summary>Parses a nullable per-server delivery override; null/empty = "inherit the global" (returns null).</summary>
+    private static AlertNotificationMode? ParseDeliveryOverride(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : ParseDeliveryMode(value);
 
     private static void AddNullableText(NpgsqlCommand command, string? value) =>
         command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)value ?? DBNull.Value });

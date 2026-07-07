@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_SeventeenVersions_V16ServerUtcOffset_V17ConfigControlPlane()
+    public void MigrationScripts_EighteenVersions_V17ConfigControlPlane_V18AlertDeliveryMode()
     {
-        Assert.Equal(17, PgMigrations.Scripts.Count);
+        Assert.Equal(18, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -52,7 +52,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(15, PgMigrations.Scripts[14].Version);
         Assert.Equal(16, PgMigrations.Scripts[15].Version);
         Assert.Equal(17, PgMigrations.Scripts[16].Version);
-        Assert.Equal(17, StorageVersion.SchemaVersion);
+        Assert.Equal(18, PgMigrations.Scripts[17].Version);
+        Assert.Equal(18, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -264,6 +265,18 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("ON config.config_monitored_servers", v17, StringComparison.Ordinal);
         /* No unqualified CREATE TABLE may sneak in — every control-plane table is config.-qualified. */
         Assert.DoesNotContain("CREATE TABLE IF NOT EXISTS config_", v17, StringComparison.Ordinal);
+
+        /* V18 adds the per-server + per-event alert delivery mode (#1236/#1141): the two global columns on
+           config_alert_settings (delivery_mode text default Summary + per_event_max int default 5) and the
+           nullable per-server override on config_monitored_servers. CRITICAL: schema-qualified config.* like V17
+           (a bare ALTER would resolve to collect). Pin the qualification + the shipped defaults. */
+        var v18 = PgMigrations.Scripts[17].Sql;
+        Assert.Equal("alert-delivery-mode", PgMigrations.Scripts[17].Name);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS delivery_mode text NOT NULL DEFAULT 'Summary';", v18, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS per_event_max integer NOT NULL DEFAULT 5;", v18, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_monitored_servers ADD COLUMN IF NOT EXISTS alert_delivery_mode_override text;", v18, StringComparison.Ordinal);
+        /* Every V18 object is config.-qualified (a bare ALTER TABLE config_* would hit the wrong schema). */
+        Assert.DoesNotContain("ALTER TABLE config_", v18, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);

@@ -12,6 +12,7 @@ using System.Linq;
 using Npgsql;
 using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Service;
+using PerformanceMonitor.Notifications;
 using Xunit;
 
 namespace Darling.Tests;
@@ -112,6 +113,24 @@ public sealed class DarlingWorkerTests
 
         Assert.True(DarlingWorker.ServerDefinitionEquals(original, costChanged),
             "a cost-only change must compare equal (no reconnect) — cost is synced onto collect.servers without connection churn");
+    }
+
+    /// <summary>
+    /// #1236: a per-server alert-delivery override edit is likewise NON-connection — it must compare equal so
+    /// ReconcileServers does not tear down the connection. The deliverer reads the override live off the
+    /// refreshed state.Config, so the change still takes effect on the reload without connection churn.
+    /// </summary>
+    [Fact]
+    public void ServerDefinitionEquals_DeliveryOverrideDelta_IsEqual_SoNoReconnect()
+    {
+        var original = SampleServer();
+        original.AlertDeliveryModeOverride = null;
+
+        var overrideSet = SampleServer();
+        overrideSet.AlertDeliveryModeOverride = AlertNotificationMode.PerEvent;
+
+        Assert.True(DarlingWorker.ServerDefinitionEquals(original, overrideSet),
+            "an alert-delivery-override change must compare equal (no reconnect) — it is read live off state.Config, not a connection field");
     }
 
     /// <summary>

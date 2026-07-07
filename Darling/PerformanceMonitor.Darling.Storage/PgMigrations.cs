@@ -61,6 +61,7 @@ public static class PgMigrations
         new Migration(15, "index-metadata-columns", V15Sql),
         new Migration(16, "server-utc-offset", V16Sql),
         new Migration(17, "config-control-plane", V17Sql),
+        new Migration(18, "alert-delivery-mode", V18Sql),
     };
 
     /// <summary>
@@ -552,6 +553,25 @@ DROP TRIGGER IF EXISTS trg_service_self_bump ON config.config_service;
 CREATE TRIGGER trg_service_self_bump
     BEFORE UPDATE ON config.config_service
     FOR EACH ROW EXECUTE FUNCTION config.config_service_bump();";
+
+    /// <summary>
+    /// V18 — the per-server + per-event alert delivery mode (#1236 / #1141) the Viewer writes and the
+    /// service honors at delivery time. The GLOBAL default lives on <c>config_alert_settings</c>
+    /// (<c>delivery_mode</c> = Summary/PerEvent, <c>per_event_max</c> = the "+N more" cap the shared
+    /// <c>PerEventNotification.Split</c> applies); a PER-SERVER override lives on
+    /// <c>config_monitored_servers</c> (<c>alert_delivery_mode_override</c>, nullable = "use the global"),
+    /// resolved through the shared <c>AlertDeliveryModeResolver</c>. Additive ALTERs, schema-qualified
+    /// <c>config.*</c> exactly like V17 (the migrate session's <c>search_path = collect, config, public</c>
+    /// resolves a bare name to <c>collect</c> — the wrong schema/ACL); <c>IF NOT EXISTS</c> matches the
+    /// file's ALTER idiom (V7/V9/V15/V16) so a re-run is a harmless no-op. The two settings columns are
+    /// NOT NULL with the shipped defaults (Summary / 5) so the single seeded row comes up honoring Summary;
+    /// the per-server column is nullable so an un-overridden server inherits the global. Neither table has a
+    /// <c>v_*</c> passthrough view, so nothing to refresh.
+    /// </summary>
+    private const string V18Sql = @"
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS delivery_mode text NOT NULL DEFAULT 'Summary';
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS per_event_max integer NOT NULL DEFAULT 5;
+ALTER TABLE config.config_monitored_servers ADD COLUMN IF NOT EXISTS alert_delivery_mode_override text;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (
