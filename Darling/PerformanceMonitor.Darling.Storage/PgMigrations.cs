@@ -63,6 +63,7 @@ public static class PgMigrations
         new Migration(17, "config-control-plane", V17Sql),
         new Migration(18, "alert-delivery-mode", V18Sql),
         new Migration(19, "analysis-state-marker", V19Sql),
+        new Migration(20, "alert-tuning-knobs", V20Sql),
     };
 
     /// <summary>
@@ -604,6 +605,29 @@ CREATE TABLE IF NOT EXISTS collect.analysis_state (
     message text,
     analysis_time timestamp NOT NULL
 );";
+
+    /// <summary>
+    /// V20 — the alert-tuning knobs the Viewer writes and the service honors that had no store column before:
+    /// the long-running-query read shape (<c>long_running_query_max_results</c> + the five noise-filter opt-outs
+    /// the shared <c>AlertEngine</c> forwards to <c>GetLongRunningQueriesAsync</c>) and
+    /// <c>notify_connection_changes</c> (the Server-Unreachable/Restored connect-edge gate in
+    /// <see cref="!:DarlingSelfAlertEvaluator"/>). Before this the service HARDCODED all of them (Lite's App
+    /// defaults: max 5, every filter on, connection-notify on), so suppression happened by default but the
+    /// operator could not customize it — the Settings controls were inert. All columns are additive
+    /// <c>ADD COLUMN IF NOT EXISTS</c> and NOT NULL with the shipped defaults, so a pre-V20 store's single
+    /// seeded row comes up honoring exactly the old hardcoded behavior and a re-run is a harmless no-op.
+    /// Schema-qualified <c>config.*</c> exactly like V17/V18 (the migrate session's
+    /// <c>search_path = collect, config, public</c> resolves a bare name to <c>collect</c> — the wrong
+    /// schema/ACL). <c>config_alert_settings</c> has no <c>v_*</c> passthrough view, so nothing to refresh.
+    /// </summary>
+    private const string V20Sql = @"
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_max_results integer NOT NULL DEFAULT 5;
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_sp_server_diagnostics boolean NOT NULL DEFAULT TRUE;
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_wait_for boolean NOT NULL DEFAULT TRUE;
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_backups boolean NOT NULL DEFAULT TRUE;
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_misc_waits boolean NOT NULL DEFAULT TRUE;
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_cdc boolean NOT NULL DEFAULT TRUE;
+ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS notify_connection_changes boolean NOT NULL DEFAULT TRUE;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

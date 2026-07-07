@@ -79,14 +79,16 @@ public sealed class DarlingAlertSettings : IAlertEngineSettings, IAlertSettings
             ? CpuAlertMode.SqlProcess
             : CpuAlertMode.TotalServer;
 
-    /* The long-running-query read shape — Lite's App defaults hardcoded (defaults over
-       speculative config): max 5 rows, all five noise filters on. */
-    public int LongRunningQueryMaxResults => 5;
-    public bool LongRunningQueryExcludeSpServerDiagnostics => true;
-    public bool LongRunningQueryExcludeWaitFor => true;
-    public bool LongRunningQueryExcludeBackups => true;
-    public bool LongRunningQueryExcludeMiscWaits => true;
-    public bool LongRunningQueryExcludeCdc => true;
+    /* The long-running-query read shape — control-plane knobs since V20, read live through the by-reference
+       config seam so a store reload reflects immediately (the read adapter re-clamps max results 1–1000). The
+       shipped defaults still match Lite's App.* (5 rows, every filter on), so an un-customized store is
+       unchanged from the previously-hardcoded behavior. */
+    public int LongRunningQueryMaxResults => _config.Alerts.LongRunningQueryMaxResults;
+    public bool LongRunningQueryExcludeSpServerDiagnostics => _config.Alerts.LongRunningQueryExcludeSpServerDiagnostics;
+    public bool LongRunningQueryExcludeWaitFor => _config.Alerts.LongRunningQueryExcludeWaitFor;
+    public bool LongRunningQueryExcludeBackups => _config.Alerts.LongRunningQueryExcludeBackups;
+    public bool LongRunningQueryExcludeMiscWaits => _config.Alerts.LongRunningQueryExcludeMiscWaits;
+    public bool LongRunningQueryExcludeCdc => _config.Alerts.LongRunningQueryExcludeCdc;
 
     /* ---------------- IAlertSettings (delivery) ---------------- */
 

@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_NineteenVersions_V18AlertDeliveryMode_V19AnalysisStateMarker()
+    public void MigrationScripts_TwentyVersions_V18AlertDeliveryMode_V19AnalysisStateMarker_V20AlertTuningKnobs()
     {
-        Assert.Equal(19, PgMigrations.Scripts.Count);
+        Assert.Equal(20, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -54,7 +54,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(17, PgMigrations.Scripts[16].Version);
         Assert.Equal(18, PgMigrations.Scripts[17].Version);
         Assert.Equal(19, PgMigrations.Scripts[18].Version);
-        Assert.Equal(19, StorageVersion.SchemaVersion);
+        Assert.Equal(20, PgMigrations.Scripts[19].Version);
+        Assert.Equal(20, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -296,6 +297,23 @@ public sealed class DarlingObservabilityTests
         /* Observed-output tier -> collect, never the config control plane; and no passthrough view. */
         Assert.DoesNotContain("config.analysis_state", v19, StringComparison.Ordinal);
         Assert.DoesNotContain("CREATE OR REPLACE VIEW", v19, StringComparison.Ordinal);
+
+        /* V20 adds the previously-hardcoded alert-tuning knobs to config_alert_settings: the long-running-query
+           read shape (max_results + the five noise-filter opt-outs the shared engine forwards to the LRQ read)
+           and notify_connection_changes (the Server-Unreachable/Restored connect-edge gate). CRITICAL:
+           schema-qualified config.* like V17/V18 (a bare ALTER would resolve to collect). All NOT NULL with the
+           shipped defaults (5 / TRUE) so a pre-V20 seeded row comes up honoring the old hardcoded behavior. */
+        var v20 = PgMigrations.Scripts[19].Sql;
+        Assert.Equal("alert-tuning-knobs", PgMigrations.Scripts[19].Name);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_max_results integer NOT NULL DEFAULT 5;", v20, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_sp_server_diagnostics boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_wait_for boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_backups boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_misc_waits boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_cdc boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS notify_connection_changes boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
+        /* Every V20 object is config.-qualified (a bare ALTER TABLE config_* would hit the wrong schema). */
+        Assert.DoesNotContain("ALTER TABLE config_", v20, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
