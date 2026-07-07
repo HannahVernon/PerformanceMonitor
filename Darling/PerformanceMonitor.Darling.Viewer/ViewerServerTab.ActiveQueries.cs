@@ -195,18 +195,48 @@ public partial class ViewerServerTab
         }
     }
 
-    /// <summary>Opens the snapshot's stored ESTIMATED plan in the Plan Viewer (gated on HasQueryPlan).</summary>
+    /// <summary>Opens the snapshot's stored ESTIMATED plan in the Plan Viewer (gated on HasQueryPlan). Wired to
+    /// the in-row "Estimated" button (DataContext is the row).</summary>
     private void OpenSnapshotEstimatedPlan_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button btn || btn.DataContext is not ViewerQuerySnapshotRow row) return;
+        if (sender is FrameworkElement { DataContext: ViewerQuerySnapshotRow row })
+            OpenSnapshotEstimatedPlan(row);
+    }
+
+    /// <summary>Opens the snapshot's stored ACTUAL (live) plan in the Plan Viewer (gated on HasLiveQueryPlan).
+    /// Wired to the in-row "Actual" button (DataContext is the row).</summary>
+    private void OpenSnapshotActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ViewerQuerySnapshotRow row })
+            OpenSnapshotActualPlan(row);
+    }
+
+    /// <summary>Right-click "View Estimated Plan" on the snapshot grid — resolves the right-clicked row from the
+    /// grid (menu items are outside the visual tree, so DataContext doesn't flow) and opens its stored plan,
+    /// mirroring the in-row button (Lite parity).</summary>
+    private void ViewSnapshotEstimatedPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem menuItem && FindParentDataGrid(menuItem)?.CurrentItem is ViewerQuerySnapshotRow row)
+            OpenSnapshotEstimatedPlan(row);
+    }
+
+    /// <summary>Right-click "View Actual Plan" on the snapshot grid (see <see cref="ViewSnapshotEstimatedPlan_Click"/>).</summary>
+    private void ViewSnapshotActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem menuItem && FindParentDataGrid(menuItem)?.CurrentItem is ViewerQuerySnapshotRow row)
+            OpenSnapshotActualPlan(row);
+    }
+
+    /// <summary>Opens the snapshot row's stored estimated plan (shared by the button + context-menu handlers).</summary>
+    private void OpenSnapshotEstimatedPlan(ViewerQuerySnapshotRow row)
+    {
         if (string.IsNullOrEmpty(row.QueryPlan)) return;
         OpenPlanTab(row.QueryPlan, $"Estimated Plan — Session {row.SessionId}", row.QueryText);
     }
 
-    /// <summary>Opens the snapshot's stored ACTUAL (live) plan in the Plan Viewer (gated on HasLiveQueryPlan).</summary>
-    private void OpenSnapshotActualPlan_Click(object sender, RoutedEventArgs e)
+    /// <summary>Opens the snapshot row's stored actual plan (shared by the button + context-menu handlers).</summary>
+    private void OpenSnapshotActualPlan(ViewerQuerySnapshotRow row)
     {
-        if (sender is not Button btn || btn.DataContext is not ViewerQuerySnapshotRow row) return;
         if (string.IsNullOrEmpty(row.LiveQueryPlan)) return;
         OpenPlanTab(row.LiveQueryPlan, $"Actual Plan — Session {row.SessionId}", row.QueryText);
     }

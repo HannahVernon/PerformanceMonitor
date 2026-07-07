@@ -288,6 +288,44 @@
             <Setter Property="ContextMenu" Value="{StaticResource QueryPlanGridContextMenu}"/>
         </Style>
 
+        <!-- PLAN variant for the Active Queries snapshot grid: its plans are the snapshot's OWN captured XML
+             (estimated always; actual only when the snapshot caught a live plan), opened via the OpenSnapshot*
+             handlers — a different mechanism from the plan_handle live-fetch the aggregate grids use, so it
+             gets its own menu rather than reusing QueryPlanGridContextMenu. Mirrors the in-row Estimated/Actual
+             buttons so plan access is available by right-click too (Lite parity). Each item is gated on the
+             row's HasQueryPlan / HasLiveQueryPlan exactly like the buttons. -->
+        <ContextMenu x:Key="QuerySnapshotGridContextMenu">
+            <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Repro Script" Click="CopyReproScript_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4DD;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="View Estimated Plan" Click="ViewSnapshotEstimatedPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="View Actual Plan" Click="ViewSnapshotActualPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasLiveQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
+            </MenuItem>
+        </ContextMenu>
+
+        <Style x:Key="QuerySnapshotGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Setter Property="ContextMenu" Value="{StaticResource QuerySnapshotGridContextMenu}"/>
+        </Style>
+
     </UserControl.Resources>
 
     <Grid>
@@ -529,7 +567,7 @@
                                            Foreground="DarkGoldenrod" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             </StackPanel>
                             <DataGrid Grid.Row="2" x:Name="QuerySnapshotsGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource QueryGridRowStyle}"
+                                      RowStyle="{StaticResource QuerySnapshotGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                       Sorting="QuerySnapshotsGrid_Sorting">
                                 <DataGrid.Columns>
