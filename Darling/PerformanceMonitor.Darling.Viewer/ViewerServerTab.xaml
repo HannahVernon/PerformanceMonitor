@@ -1886,6 +1886,45 @@
                             </Border>
                         </Grid>
                     </TabItem>
+                    <!-- Blocking Stats — the blocking-SEVERITY companion to the count-only "Trends" tab
+                         (the "are blocks getting LONGER, not just more frequent" signal). Computed ON-THE-FLY
+                         from the same blocked_process_reports (XE) rows the count trend uses, with the identical
+                         v_dmv_blocking_snapshots fallback (WHERE NOT EXISTS) so the two reconcile — the Darling
+                         equivalent of the Dashboard's pre-aggregated collect.blocking_deadlock_stats. Two charts
+                         split the magnitude scales: per-incident Max/Avg block duration on one, aggregate Total
+                         duration on the other (Total dwarfs per-incident on a shared linear axis). A window
+                         summary strip carries events / total / max / avg duration + the (cheap) deadlock COUNT.
+                         The Dashboard's victim_count / total_deadlock_wait_time_ms need deadlock-graph XML
+                         parsing (a collector port), so they are deferred, not shown here. -->
+                    <TabItem Header="Blocking Stats">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Margin="0,0,0,4">
+                                <scottplot:WpfPlot x:Name="BlockingDurationChart"/>
+                            </Border>
+                            <Border Grid.Row="1" Margin="0,4,0,4">
+                                <scottplot:WpfPlot x:Name="BlockingTotalDurationChart"/>
+                            </Border>
+                            <Border Grid.Row="2" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,4,0,0">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <TextBlock Text="Blocking Events:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock x:Name="BlockingStatsEventCountText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                    <TextBlock Text="Total Duration:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock x:Name="BlockingStatsTotalDurationText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                    <TextBlock Text="Max Duration:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock x:Name="BlockingStatsMaxDurationText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                    <TextBlock Text="Avg Duration:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock x:Name="BlockingStatsAvgDurationText" Text="--" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                    <TextBlock Text="Deadlocks:" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock x:Name="BlockingStatsDeadlockCountText" Text="--" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </TabItem>
                     <TabItem Header="Current Waits">
                         <Grid>
                             <Grid.RowDefinitions>

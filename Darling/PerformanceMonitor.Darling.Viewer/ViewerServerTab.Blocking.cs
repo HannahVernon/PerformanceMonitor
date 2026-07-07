@@ -37,16 +37,20 @@ public partial class ViewerServerTab
     private ChartHoverHelper? _lockWaitTrendHover;
     private ChartHoverHelper? _blockingTrendHover;
     private ChartHoverHelper? _deadlockTrendHover;
+    private ChartHoverHelper? _blockingDurationHover;
+    private ChartHoverHelper? _blockingTotalDurationHover;
     private ChartHoverHelper? _currentWaitsDurationHover;
     private ChartHoverHelper? _currentWaitsBlockedHover;
 
     /* Blocking sub-tab order (mirrors LoadBlockingAsync's switch + Lite's BlockingSubTabControl): Trends,
-       Current Waits, Blocked Process Reports, Deadlocks. Named so the chart drill-downs
-       (OnBlockingDrillDown / OnDeadlockDrillDown) target the right sub-tab without a magic literal. */
+       Blocking Stats, Current Waits, Blocked Process Reports, Deadlocks. Named so the chart drill-downs
+       (OnBlockingDrillDown / OnDeadlockDrillDown) target the right sub-tab without a magic literal; the
+       Blocking Stats severity sub-tab sits right after Trends (its count-only sibling). */
     private const int BlockingTrendsSubTabIndex = 0;
-    private const int BlockingCurrentWaitsSubTabIndex = 1;
-    private const int BlockedProcessReportsSubTabIndex = 2;
-    private const int DeadlocksSubTabIndex = 3;
+    private const int BlockingStatsSubTabIndex = 1;
+    private const int BlockingCurrentWaitsSubTabIndex = 2;
+    private const int BlockedProcessReportsSubTabIndex = 3;
+    private const int DeadlocksSubTabIndex = 4;
 
     /// <summary>
     /// Applies the shared chrome to the five Blocking trend charts and wires their hover tooltips
@@ -61,6 +65,10 @@ public partial class ViewerServerTab
         BlockingTrendChart.Refresh();
         ApplyTheme(DeadlockTrendChart);
         DeadlockTrendChart.Refresh();
+        ApplyTheme(BlockingDurationChart);
+        BlockingDurationChart.Refresh();
+        ApplyTheme(BlockingTotalDurationChart);
+        BlockingTotalDurationChart.Refresh();
         ApplyTheme(CurrentWaitsDurationChart);
         CurrentWaitsDurationChart.Refresh();
         ApplyTheme(CurrentWaitsBlockedChart);
@@ -69,6 +77,8 @@ public partial class ViewerServerTab
         _lockWaitTrendHover = new ChartHoverHelper(LockWaitTrendChart, "ms/sec");
         _blockingTrendHover = new ChartHoverHelper(BlockingTrendChart, "incidents");
         _deadlockTrendHover = new ChartHoverHelper(DeadlockTrendChart, "deadlocks");
+        _blockingDurationHover = new ChartHoverHelper(BlockingDurationChart, "ms");
+        _blockingTotalDurationHover = new ChartHoverHelper(BlockingTotalDurationChart, "ms");
         _currentWaitsDurationHover = new ChartHoverHelper(CurrentWaitsDurationChart, "ms");
         _currentWaitsBlockedHover = new ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
 
@@ -124,6 +134,18 @@ public partial class ViewerServerTab
                 RenderLockWaitTrendChart(lockWaits);
                 RenderBlockingTrendChart(blocking);
                 RenderDeadlockTrendChart(deadlocks);
+                break;
+            case BlockingStatsSubTabIndex:
+                /* Blocking SEVERITY: the duration aggregate reconciles with the count trend (same XE→DMV
+                   source selection); the deadlock COUNT is the cheap sibling of the Trends tab's deadlock
+                   trend, summed here for the summary strip (its per-minute buckets share this window). */
+                var durationStatsTask = _dataService.GetBlockingDurationStatsAsync(_server.ServerId, startUtc, endUtc);
+                var deadlockCountTask = _dataService.GetDeadlockTrendAsync(_server.ServerId, startUtc, endUtc);
+                var durationStats = await durationStatsTask;
+                var deadlockCounts = await deadlockCountTask;
+                RenderBlockingDurationChart(durationStats);
+                RenderBlockingTotalDurationChart(durationStats);
+                UpdateBlockingStatsSummary(durationStats, deadlockCounts);
                 break;
             case BlockingCurrentWaitsSubTabIndex:
                 var durationTask = _dataService.GetWaitingTaskTrendAsync(_server.ServerId, startUtc, endUtc);
@@ -485,6 +507,145 @@ public partial class ViewerServerTab
         DeadlockTrendChart.Refresh();
     }
 
+    /// <summary>
+    /// Max + Avg block duration (ms) per minute — the per-incident severity signal (how long an individual
+    /// block lasts). Two connected-scatter series on one shared ms axis (Max ≥ Avg, comparable magnitudes),
+    /// mirroring the Current Waits duration chart's render idiom. Total duration lands on its own chart
+    /// (<see cref="RenderBlockingTotalDurationChart"/>) because its aggregate magnitude dwarfs these.
+    /// </summary>
+    private void RenderBlockingDurationChart(List<BlockingDurationStatsPoint> data)
+    {
+        ClearChart(BlockingDurationChart);
+        ApplyTheme(BlockingDurationChart);
+
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
+
+        _blockingDurationHover?.Clear();
+        if (data.Count == 0)
+        {
+            var zeroLine = BlockingDurationChart.Plot.Add.Scatter(
+                new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
+                new[] { 0.0, 0.0 });
+            zeroLine.LegendText = "Max Block Duration";
+            zeroLine.Color = ScottPlot.Color.FromHex(SeriesColors[0]);
+            zeroLine.MarkerSize = 0;
+            BlockingDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            BlockingDurationChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+            ReapplyAxisColors(BlockingDurationChart);
+            BlockingDurationChart.Plot.YLabel("Block Duration (ms)");
+            SetChartYLimitsWithLegendPadding(BlockingDurationChart, 0, 1);
+            ShowChartLegend(BlockingDurationChart);
+            BlockingDurationChart.Refresh();
+            return;
+        }
+
+        var ordered = data.OrderBy(d => d.Time).ToList();
+        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
+        var maxValues = ordered.Select(d => (double)d.MaxDurationMs).ToArray();
+        var avgValues = ordered.Select(d => d.AvgDurationMs).ToArray();
+
+        var maxPlot = BlockingDurationChart.Plot.Add.Scatter(times, maxValues);
+        maxPlot.LegendText = "Max Block Duration";
+        maxPlot.Color = ScottPlot.Color.FromHex(SeriesColors[0]);
+        ChartStyle.StyleScatter(maxPlot);
+        _blockingDurationHover?.Add(maxPlot, "Max Block Duration");
+
+        var avgPlot = BlockingDurationChart.Plot.Add.Scatter(times, avgValues);
+        avgPlot.LegendText = "Avg Block Duration";
+        avgPlot.Color = ScottPlot.Color.FromHex(SeriesColors[1]);
+        ChartStyle.StyleScatter(avgPlot);
+        _blockingDurationHover?.Add(avgPlot, "Avg Block Duration");
+
+        double globalMax = maxValues.Length > 0 ? maxValues.Max() : 0;
+
+        BlockingDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        BlockingDurationChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+        ReapplyAxisColors(BlockingDurationChart);
+        BlockingDurationChart.Plot.YLabel("Block Duration (ms)");
+        SetChartYLimitsWithLegendPadding(BlockingDurationChart, 0, globalMax > 0 ? globalMax : 1);
+        ShowChartLegend(BlockingDurationChart);
+        BlockingDurationChart.Refresh();
+    }
+
+    /// <summary>
+    /// Total block duration (ms) per minute — the aggregate volume×severity signal (the sum of every block's
+    /// wait time in the bucket). Single connected-scatter series on its own chart/axis so its magnitude
+    /// doesn't swamp the per-incident Max/Avg chart; colored with the blocking identity so it reads as a
+    /// sibling of the Trends tab's blocking-incident chart.
+    /// </summary>
+    private void RenderBlockingTotalDurationChart(List<BlockingDurationStatsPoint> data)
+    {
+        ClearChart(BlockingTotalDurationChart);
+        ApplyTheme(BlockingTotalDurationChart);
+
+        var (winStartUtc, winEndUtc) = GetWindowUtc();
+        var rangeStart = ViewerTimeHelper.ForDisplay(winStartUtc);
+        var rangeEnd = ViewerTimeHelper.ForDisplay(winEndUtc);
+
+        _blockingTotalDurationHover?.Clear();
+        if (data.Count == 0)
+        {
+            var zeroLine = BlockingTotalDurationChart.Plot.Add.Scatter(
+                new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
+                new[] { 0.0, 0.0 });
+            zeroLine.LegendText = "Total Block Duration";
+            zeroLine.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking"));
+            zeroLine.MarkerSize = 0;
+            BlockingTotalDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            BlockingTotalDurationChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+            ReapplyAxisColors(BlockingTotalDurationChart);
+            BlockingTotalDurationChart.Plot.YLabel("Total Block Duration (ms)");
+            SetChartYLimitsWithLegendPadding(BlockingTotalDurationChart, 0, 1);
+            ShowChartLegend(BlockingTotalDurationChart);
+            BlockingTotalDurationChart.Refresh();
+            return;
+        }
+
+        var ordered = data.OrderBy(d => d.Time).ToList();
+        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
+        var totals = ordered.Select(d => (double)d.TotalDurationMs).ToArray();
+
+        var plot = BlockingTotalDurationChart.Plot.Add.Scatter(times, totals);
+        plot.LegendText = "Total Block Duration";
+        plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("Blocking"));
+        ChartStyle.StyleScatter(plot);
+        _blockingTotalDurationHover?.Add(plot, "Total Block Duration");
+
+        double globalMax = totals.Length > 0 ? totals.Max() : 0;
+
+        BlockingTotalDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        BlockingTotalDurationChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+        ReapplyAxisColors(BlockingTotalDurationChart);
+        BlockingTotalDurationChart.Plot.YLabel("Total Block Duration (ms)");
+        SetChartYLimitsWithLegendPadding(BlockingTotalDurationChart, 0, globalMax > 0 ? globalMax : 1);
+        ShowChartLegend(BlockingTotalDurationChart);
+        BlockingTotalDurationChart.Refresh();
+    }
+
+    /// <summary>
+    /// Window-rollup summary strip for the Blocking Stats sub-tab: total blocking events, total / max / avg
+    /// block duration (the avg is EVENT-weighted — total ÷ events — not a mean of the per-minute averages),
+    /// and the deadlock COUNT over the window. The deadlock count is the cheap signal; the Dashboard's
+    /// victim_count / total_deadlock_wait_time_ms need deadlock-graph XML parsing (a collector port) and are
+    /// deferred. Durations render with the viewer's blocking wait-time format (ms under a second, else sec).
+    /// </summary>
+    private void UpdateBlockingStatsSummary(List<BlockingDurationStatsPoint> stats, List<BlockingTrendPoint> deadlocks)
+    {
+        long totalEvents = stats.Sum(s => (long)s.EventCount);
+        long totalDuration = stats.Sum(s => s.TotalDurationMs);
+        long maxDuration = stats.Count > 0 ? stats.Max(s => s.MaxDurationMs) : 0;
+        long totalDeadlocks = deadlocks.Sum(d => (long)d.Count);
+        long avgDuration = totalEvents > 0 ? (long)Math.Round((double)totalDuration / totalEvents) : 0;
+
+        BlockingStatsEventCountText.Text = totalEvents.ToString("N0");
+        BlockingStatsTotalDurationText.Text = totalEvents > 0 ? ViewerDataService.FormatWaitTime(totalDuration) : "--";
+        BlockingStatsMaxDurationText.Text = totalEvents > 0 ? ViewerDataService.FormatWaitTime(maxDuration) : "--";
+        BlockingStatsAvgDurationText.Text = totalEvents > 0 ? ViewerDataService.FormatWaitTime(avgDuration) : "--";
+        BlockingStatsDeadlockCountText.Text = totalDeadlocks.ToString("N0");
+    }
+
     private void RenderCurrentWaitsDurationChart(List<WaitingTaskTrendPoint> data)
     {
         ClearChart(CurrentWaitsDurationChart);
@@ -603,6 +764,8 @@ public partial class ViewerServerTab
         _lockWaitTrendHover?.Dispose();
         _blockingTrendHover?.Dispose();
         _deadlockTrendHover?.Dispose();
+        _blockingDurationHover?.Dispose();
+        _blockingTotalDurationHover?.Dispose();
         _currentWaitsDurationHover?.Dispose();
         _currentWaitsBlockedHover?.Dispose();
     }

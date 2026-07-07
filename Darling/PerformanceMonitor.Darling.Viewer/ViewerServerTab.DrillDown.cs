@@ -85,6 +85,12 @@ public partial class ViewerServerTab
         AddChartDrillDownMenuItem(BlockingTrendChart, BuildChartContextMenu(BlockingTrendChart, "Blocking_Trends"), () => _blockingTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
         AddChartDrillDownMenuItem(DeadlockTrendChart, BuildChartContextMenu(DeadlockTrendChart, "Deadlock_Trends"), () => _deadlockTrendHover, "Show Deadlocks at This Time", OnDeadlockDrillDown);
 
+        /* Blocking Stats (this feature) — the severity duration charts drill to the same blocked-process
+           reports as their count-trend siblings, so right-clicking a duration spike opens the blocks at that
+           time ("Show Blocking at This Time" -> OnBlockingDrillDown). */
+        AddChartDrillDownMenuItem(BlockingDurationChart, BuildChartContextMenu(BlockingDurationChart, "Blocking_Duration"), () => _blockingDurationHover, "Show Blocking at This Time", OnBlockingDrillDown);
+        AddChartDrillDownMenuItem(BlockingTotalDurationChart, BuildChartContextMenu(BlockingTotalDurationChart, "Blocking_Total_Duration"), () => _blockingTotalDurationHover, "Show Blocking at This Time", OnBlockingDrillDown);
+
         /* File I/O (4) + Blocking > Current Waits (2) — the rest of Lite's "Show Active Queries at This Time"
            set (ServerTab.xaml.cs:340-363, in the same referenced block). Charts in this same viewer surface,
            same drill target; wired for faithful parity so no sibling chart is left without the drill-down. */
