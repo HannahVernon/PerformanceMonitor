@@ -863,6 +863,7 @@
           "PerformanceMonitor.Common": "[1.0.0, )",
           "PerformanceMonitor.Darling.Analysis": "[1.0.0, )",
           "PerformanceMonitor.Darling.Storage": "[1.0.0, )",
+          "PerformanceMonitor.PlanAnalysis": "[1.0.0, )",
           "System.IO.FileSystem.AccessControl": "[5.0.0, )"
         }
       },
