@@ -269,7 +269,10 @@ A channel is enabled by a non-empty URL.
 
 ### mcp
 
-The embedded MCP server: the six diagnostic-analysis tools — `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding` — the same analysis surface Lite and the Dashboard expose, over Streamable HTTP bound to `localhost` only.
+The embedded MCP server, over Streamable HTTP bound to `localhost` only. It exposes the same tool names Lite and the Dashboard expose:
+
+- **Six diagnostic-analysis tools** — `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding`.
+- **Five plan-analysis tools** — `analyze_query_plan` (by `query_hash`), `analyze_procedure_plan` (by `sql_handle`), `analyze_query_store_plan` (by `database_name` + `query_id`), `analyze_plan_xml` (raw showplan XML, no fetch), and `get_plan_xml` (raw stored plan XML by `query_hash`). These run the shared execution-plan analyzer over the plan XML the collectors already captured into the store — a stored-plan read, never a live query against the monitored server. `analyze_query_plan`/`get_plan_xml` accept an optional `database_name`, and `analyze_query_store_plan` an optional `plan_id`, to pin the exact stored plan when the caller knows it.
 
 | Key | Default | Notes |
 |---|---|---|

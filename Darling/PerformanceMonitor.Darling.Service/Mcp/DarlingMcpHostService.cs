@@ -157,7 +157,12 @@ public sealed class DarlingMcpHostService : BackgroundService
                 /* WithGeminiCompatibleTools (not the SDK's WithTools) rewrites parameter schemas into
                    the subset Gemini/Antigravity accepts — collapsing nullable type unions and
                    dropping the default keyword. The companion to stateless transport for issue #1074. */
-                .WithGeminiCompatibleTools<DarlingMcpTools>();
+                .WithGeminiCompatibleTools<DarlingMcpTools>()
+                /* The five plan-analysis tools (analyze_query_plan / analyze_procedure_plan /
+                   analyze_query_store_plan / analyze_plan_xml / get_plan_xml) — the same names the
+                   Dashboard and Lite expose, fetching the collectors' STORED plan XML from Postgres
+                   (no live monitored-server hit) and running the SHARED PlanAnalysis engine. */
+                .WithGeminiCompatibleTools<DarlingMcpPlanTools>();
 
             _app = builder.Build();
             _app.MapMcp();

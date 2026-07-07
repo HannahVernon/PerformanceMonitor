@@ -40,6 +40,10 @@
     <!-- AN3: the analysis pipeline (DarlingAnalysisService/PgPlanFetcher). Dependency points
          service → analysis only; the analysis library never references the service. -->
     <ProjectReference Include="..\PerformanceMonitor.Darling.Analysis\PerformanceMonitor.Darling.Analysis.csproj" />
+    <!-- The plan-analysis MCP tools run the SHARED ShowPlanParser/PlanAnalyzer and serialize via
+         McpPlanAnalysisFormatter (the same projection both apps' McpPlanTools call). Referenced
+         directly (it also flows transitively through Darling.Analysis) since it is a direct dependency. -->
+    <ProjectReference Include="..\..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
   </ItemGroup>
 
