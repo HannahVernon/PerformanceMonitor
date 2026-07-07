@@ -73,6 +73,10 @@ public sealed class ViewerAppSettings
 
     public bool MinimizeToTray { get; set; } = true;
     public bool AlertsEnabled { get; set; } = true;
+
+    /// <summary>Whether the service delivers the Server-Unreachable/Restored connect-edge alerts. Store-backed since
+    /// V20 (the service honors it); retained here only as the pre-3b migrate-in source, its default matching
+    /// <see cref="AlertSettingsRow.Defaults"/> so a fresh viewer imports nothing.</summary>
     public bool NotifyConnectionChanges { get; set; } = true;
 
     public bool AlertCpuEnabled { get; set; } = true;
@@ -90,6 +94,10 @@ public sealed class ViewerAppSettings
 
     public bool AlertLongRunningQueryEnabled { get; set; } = true;
     public int AlertLongRunningQueryThresholdMinutes { get; set; } = 30;
+
+    /* The long-running-query read shape (max-results + the five noise filters). Store-backed since V20 (the
+       service forwards them to the LRQ read); retained here only as the pre-3b migrate-in source, defaults
+       matching AlertSettingsRow.Defaults so a fresh viewer imports nothing. */
     public int AlertLongRunningQueryMaxResults { get; set; } = 5;
     public bool AlertLongRunningQueryExcludeSpServerDiagnostics { get; set; } = true;
     public bool AlertLongRunningQueryExcludeWaitFor { get; set; } = true;
