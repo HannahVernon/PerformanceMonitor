@@ -23,30 +23,21 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// The viewer's full Settings window — a faithful, section-for-section port of Performance Monitor Lite's
-/// <c>SettingsWindow</c> (Lite/Windows/SettingsWindow.xaml.cs), adapted DuckDB/in-process → Postgres/service
-/// the same way the rest of the viewer was ported. Every section from Lite is present: Data Collection, MCP
-/// server, viewer defaults (with the #1401 time-range + auto-refresh preferences folded in), the full
-/// notifications block (alert thresholds, toggles, LRQ filters, cooldowns, delivery mode, global filters,
-/// mute-rule default, automated analysis), SMTP email, Teams/Slack webhooks, and the collection schedule.
+/// <c>SettingsWindow</c>, now (Stage 3b) writing the CONTROL-PLANE store so the running Darling service honors
+/// the operator's changes. The Notifications (alert engine + automated analysis), Email (SMTP), and Teams/Slack
+/// sections write <c>config.config_alert_settings</c> + <c>config.config_notification</c>; the MCP toggle/port
+/// and the global plan-capture flag write <c>config.config_service</c>; the Data Collection Pause/Resume button
+/// drives a <c>pause</c>/<c>resume</c> command; and the Collection Schedule section opens the real per-server /
+/// per-collector editor (<see cref="CollectorScheduleEditorWindow"/>) writing <c>config.config_collector_schedules</c>.
+/// Each store write flows through <see cref="ViewerDataService"/> (the shared 42501 → <see
+/// cref="ViewerReadOnlyException"/> gate); a read-only seat shows a banner and the writes degrade gracefully.
 ///
-/// <para>
-/// Persistence: the alert/notification/SMTP/webhook/MCP values are persisted in <see cref="ViewerAppSettings"/>
-/// (the Darling equivalent of Lite's <c>App.*</c> + settings.json); secrets go to Windows Credential Manager
-/// via <see cref="ViewerSecretStore"/>, exactly as Lite stores them. The folded-in viewer preferences round-trip
-/// through <see cref="ViewerPreferences"/> (handed back to <see cref="MainWindow"/> via <see cref="Result"/>).
-/// In Darling those alert/collection values are the SERVICE's domain (darling.json); the window persists them
-/// faithfully so it is complete and its state survives a restart — the service honoring a change is a separate
-/// wiring concern (see the PR body). The controls that act inside the viewer TODAY work immediately: Manage Mute
-/// Rules (writes Postgres), Send Test Email / Send Test Notification (the shared, connection-independent
-/// renderers), Validate Settings, and the viewer preferences.
-/// </para>
-///
-/// <para>
-/// Two Lite-only MECHANISMS are adapted sensibly (matching how "Pause Collection" is handled in the port):
-/// the Data Collection Pause button can't reach the remote service, so it is shown disabled with a
-/// service-managed status; and the per-server Collector Schedule editor (Lite's ScheduleManager +
-/// CollectorScheduleEditorWindow) has no store model in Darling, so the section is an informational panel.
-/// </para>
+/// <para>The genuinely viewer-LOCAL preferences stay in <see cref="ViewerAppSettings"/> /
+/// <see cref="ViewerPreferences"/>: the default time range + auto-refresh, connection timeout, CSV separator,
+/// timestamp-display mode, tray-minimize, the connection-change/LRQ-noise/delivery-mode/mute-default/dismissal-
+/// logging toggles the service has no honored column for, and the theme (dark-only). Send Test Email / Send Test
+/// Notification stay working — they render + send straight from the live UI via the shared, connection-
+/// independent renderers, so the operator verifies exactly what they typed before saving.</para>
 /// </summary>
 public partial class SettingsWindow : Window
 {
@@ -56,6 +47,21 @@ public partial class SettingsWindow : Window
     private readonly ViewerAppSettingsStore _appSettingsStore;
     private readonly ViewerAppSettings _appSettings;
     private readonly ViewerDataService? _dataService;
+    private readonly IReadOnlyList<DarlingServer> _servers;
+
+    /// <summary>The store's current SMTP blob, held so an unchanged (or undecryptable) password survives a Save
+    /// without being wiped — mirrors the server dialog's DPAPI "re-enter to change" handling.</summary>
+    private string? _loadedSmtpBlob;
+
+    /// <summary>The service's paused state as last read from <c>config_service</c>, reflected on the button.</summary>
+    private bool _paused;
+
+    /// <summary>
+    /// True once the operator config was READ from the store without error. Save writes the store sections only
+    /// when this is set — so a transient read failure (which leaves the controls showing defaults) can never
+    /// clobber an operator-tuned store back to defaults. False when disconnected or a read threw.
+    /// </summary>
+    private bool _storeLoaded;
 
     /// <summary>
     /// The edited viewer preferences (default time range + auto-refresh), populated on a successful Save so
@@ -65,9 +71,14 @@ public partial class SettingsWindow : Window
     public ViewerPreferences? Result { get; private set; }
 
     /// <param name="preferences">Current viewer preferences (the toolbar-seed defaults) to seed the controls.</param>
-    /// <param name="appSettingsStore">The store this window loads from and saves the app settings to.</param>
-    /// <param name="dataService">The store connection, for "Manage Mute Rules"; null when not connected yet (button disabled).</param>
-    public SettingsWindow(ViewerPreferences preferences, ViewerAppSettingsStore appSettingsStore, ViewerDataService? dataService)
+    /// <param name="appSettingsStore">The store for the viewer-LOCAL preferences (operational settings now live in the control-plane store).</param>
+    /// <param name="dataService">The control-plane connection; null when not connected yet (store surfaces disabled).</param>
+    /// <param name="servers">The managed servers, for the collector-schedule editor's per-server scope.</param>
+    public SettingsWindow(
+        ViewerPreferences preferences,
+        ViewerAppSettingsStore appSettingsStore,
+        ViewerDataService? dataService,
+        IReadOnlyList<DarlingServer>? servers = null)
     {
         ArgumentNullException.ThrowIfNull(preferences);
         ArgumentNullException.ThrowIfNull(appSettingsStore);
@@ -77,6 +88,7 @@ public partial class SettingsWindow : Window
         _appSettingsStore = appSettingsStore;
         _appSettings = appSettingsStore.Load();
         _dataService = dataService;
+        _servers = servers ?? Array.Empty<DarlingServer>();
 
         LoadViewerPreferences(preferences);
         UpdateCollectionStatus();
@@ -85,12 +97,83 @@ public partial class SettingsWindow : Window
         LoadConnectionTimeout();
         LoadCsvSeparator();
         LoadTimeDisplayMode();
-        LoadAlertSettings();
-        LoadSmtpSettings();
-        LoadWebhookSettings();
+        LoadViewerLocalAlertFields();
+        SeedAlertControlsFrom(AlertSettingsRow.Defaults());
+        SeedNotificationControlsFrom(NotificationRow.Defaults());
+        /* Default the global plan-capture flag to the store's default (TRUE) so an unread/unseeded state never
+           shows it off — the store read overwrites it, and Save is guarded by _storeLoaded regardless. */
+        CapturePlansCheckBox.IsChecked = true;
 
         /* Manage Mute Rules writes the shared Postgres config; needs a live store connection. */
         ManageMuteRulesButton.IsEnabled = _dataService is not null;
+        EditSchedulesButton.IsEnabled = _dataService is not null;
+
+        /* Read the authoritative operator config from the store (async), then apply read-only gating. */
+        Loaded += async (_, _) => await LoadFromStoreAsync();
+    }
+
+    /// <summary>
+    /// Overwrites the store-backed controls with the authoritative values from the control-plane store (the
+    /// alert engine + analysis, SMTP + webhooks, MCP + plan capture, and the paused state), leaving the
+    /// synchronous defaults in place if the store is unreachable or has not seeded a section yet. Then applies
+    /// read-only gating. Runs once on load.
+    /// </summary>
+    private async Task LoadFromStoreAsync()
+    {
+        if (_dataService is not null)
+        {
+            try
+            {
+                var alert = await _dataService.GetAlertSettingsAsync();
+                if (alert is not null)
+                {
+                    SeedAlertControlsFrom(alert);
+                }
+
+                var notify = await _dataService.GetNotificationAsync();
+                if (notify is not null)
+                {
+                    SeedNotificationControlsFrom(notify);
+                }
+
+                var service = await _dataService.GetServiceConfigAsync();
+                if (service is not null)
+                {
+                    CapturePlansCheckBox.IsChecked = service.CapturePlans;
+                    McpEnabledCheckBox.IsChecked = service.McpEnabled;
+                    McpPortTextBox.Text = service.McpPort.ToString(CultureInfo.InvariantCulture);
+                    _paused = service.Paused;
+                }
+
+                /* All reads completed — Save may now write the store sections without risk of clobbering
+                   tuned config with the on-screen defaults. */
+                _storeLoaded = true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"SettingsWindow: could not read the control-plane store, showing defaults: {ex.Message}");
+            }
+        }
+
+        ApplyReadOnlyGating();
+        UpdateCollectionStatus();
+        UpdateMcpStatus();
+        UpdateAlertControlStates();
+        UpdateSmtpControlStates();
+        UpdateTeamsControlStates();
+        UpdateSlackControlStates();
+    }
+
+    /// <summary>Reflects a read-only seat: a banner + the operator-action buttons disabled. The threshold
+    /// inputs stay visible for reference; a Save attempt surfaces the friendly read-only message.</summary>
+    private void ApplyReadOnlyGating()
+    {
+        var readOnly = _dataService?.IsReadOnly == true;
+        SettingsReadOnlyBanner.Visibility = readOnly ? Visibility.Visible : Visibility.Collapsed;
+        if (readOnly)
+        {
+            PauseResumeButton.IsEnabled = false;
+        }
     }
 
     // ── Viewer preferences (folded in from #1401: default time range + auto-refresh) ──
@@ -128,27 +211,77 @@ public partial class SettingsWindow : Window
         }
     }
 
-    // ── Data Collection (adapted: collection runs in the remote service) ──
+    // ── Data Collection (pause/resume drives the service via the command plane) ──
 
     private void UpdateCollectionStatus()
     {
-        /* The viewer has no in-process collector to pause — collection runs in the Darling service, which the
-           viewer cannot reach to pause. Present it honestly and disable the button (Lite disables it the same
-           way when it has no background service). */
-        CollectionStatusText.Text = "Status: Managed by the Darling service (the viewer cannot pause remote collection)";
-        PauseResumeButton.IsEnabled = false;
+        if (_dataService is null)
+        {
+            CollectionStatusText.Text = "Status: not connected to the Darling store";
+            PauseResumeButton.IsEnabled = false;
+            PauseResumeButton.Content = "Pause Collection";
+            return;
+        }
+
+        CollectionStatusText.Text = _paused
+            ? "Status: Paused — the Darling service is not collecting"
+            : "Status: Collecting — managed by the Darling service";
+        PauseResumeButton.Content = _paused ? "Resume Collection" : "Pause Collection";
+        PauseResumeButton.IsEnabled = !_dataService.IsReadOnly;
     }
 
-    private void PauseResumeButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>Enqueues a <c>pause</c>/<c>resume</c> command, waits for the result, then reflects the new
+    /// state. A read-only seat can't command the service (the button is disabled; a stray click no-ops).</summary>
+    private async void PauseResumeButton_Click(object sender, RoutedEventArgs e)
     {
-        /* No-op: collection runs in the remote service. The button is disabled; this handler only satisfies
-           the XAML binding. */
+        if (_dataService is null || _dataService.IsReadOnly)
+        {
+            return;
+        }
+
+        var pausing = !_paused;
+        PauseResumeButton.IsEnabled = false;
+        PauseResumeButton.Content = pausing ? "Pausing..." : "Resuming...";
+        try
+        {
+            var result = pausing
+                ? await _dataService.PauseServiceAsync()
+                : await _dataService.ResumeServiceAsync();
+
+            if (result is null)
+            {
+                CollectionStatusText.Text = "Status: command sent — the service has not confirmed yet";
+            }
+            else if (result.Status == ViewerDataService.StatusSucceeded)
+            {
+                _paused = pausing;
+            }
+            else
+            {
+                MessageBox.Show(
+                    $"The service could not {(pausing ? "pause" : "resume")} collection: {result.ResultStatus}",
+                    "Data Collection", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not reach the service: {ex.Message}", "Data Collection", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            UpdateCollectionStatus();
+        }
     }
 
-    // ── MCP server (the service hosts the MCP; the viewer persists the desired config) ──
+    // ── MCP server (config_service.mcp_enabled / mcp_port) ──
 
     private void LoadMcpSettings()
     {
+        /* Seed from the last-known viewer copy for an immediate, non-blank UI; the store read overwrites it. */
         McpEnabledCheckBox.IsChecked = _appSettings.McpEnabled;
         McpPortTextBox.Text = _appSettings.McpPort.ToString(CultureInfo.InvariantCulture);
     }
@@ -156,22 +289,25 @@ public partial class SettingsWindow : Window
     private void UpdateMcpStatus()
     {
         McpStatusText.Text = McpEnabledCheckBox.IsChecked == true
-            ? "The MCP server is hosted by the Darling service; restart the service to apply changes."
+            ? "The Darling service hosts the MCP server; it applies on the service's next reload."
             : "Status: Disabled";
     }
 
-    /// <summary>Applies the MCP fields to <see cref="_appSettings"/>. Returns false only when an ENABLED server has a bad port.</summary>
-    private bool SaveMcpSettings()
+    /// <summary>Validates the MCP port and the (always-valid) capture-plans + enabled flags for the
+    /// <c>config_service</c> write. Returns false only when an ENABLED MCP server has a bad port.</summary>
+    private bool TryReadServiceFlags(out bool capturePlans, out bool mcpEnabled, out int mcpPort)
     {
-        _appSettings.McpEnabled = McpEnabledCheckBox.IsChecked == true;
+        capturePlans = CapturePlansCheckBox.IsChecked == true;
+        mcpEnabled = McpEnabledCheckBox.IsChecked == true;
+        mcpPort = _appSettings.McpPort;
 
         if (int.TryParse(McpPortTextBox.Text, out var port) && port is >= 1024 and <= 65535)
         {
-            _appSettings.McpPort = port;
+            mcpPort = port;
             return true;
         }
 
-        if (_appSettings.McpEnabled)
+        if (mcpEnabled)
         {
             MessageBox.Show(
                 "MCP port must be between 1024 and 65535.\nPorts 0–1023 are well-known privileged ports reserved by the operating system.",
@@ -219,7 +355,20 @@ public partial class SettingsWindow : Window
         }
     }
 
-    // ── Viewer defaults (connection timeout, CSV separator, timestamp display) ──
+    // ── Collection schedule (the real per-server / per-collector editor) ──
+
+    private void EditSchedulesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null)
+        {
+            return;
+        }
+
+        var editor = new CollectorScheduleEditorWindow(_dataService, _servers) { Owner = this };
+        editor.ShowDialog();
+    }
+
+    // ── Viewer defaults (connection timeout, CSV separator, timestamp display) — viewer-local ──
 
     private void LoadConnectionTimeout() =>
         ConnectionTimeoutBox.Text = _appSettings.ConnectionTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
@@ -282,40 +431,18 @@ public partial class SettingsWindow : Window
 
     // ── Notifications / alert thresholds ──
 
-    private void LoadAlertSettings()
+    /// <summary>Seeds the viewer-LOCAL alert fields (no honored store column: tray minimize, connection-change
+    /// notify, LRQ max-results + the five noise filters, delivery mode, mute-rule default, dismissal logging).</summary>
+    private void LoadViewerLocalAlertFields()
     {
         MinimizeToTrayCheckBox.IsChecked = _appSettings.MinimizeToTray;
-        AlertsEnabledCheckBox.IsChecked = _appSettings.AlertsEnabled;
         NotifyConnectionCheckBox.IsChecked = _appSettings.NotifyConnectionChanges;
-        AlertCpuCheckBox.IsChecked = _appSettings.AlertCpuEnabled;
-        AlertCpuThresholdBox.Text = _appSettings.AlertCpuThreshold.ToString(CultureInfo.InvariantCulture);
-        AlertCpuModeBox.SelectedIndex = _appSettings.AlertCpuMode == "SqlOnly" ? 1 : 0;
-        AlertBlockingCheckBox.IsChecked = _appSettings.AlertBlockingEnabled;
-        AlertBlockingThresholdBox.Text = _appSettings.AlertBlockingThreshold.ToString(CultureInfo.InvariantCulture);
-        AlertDeadlockCheckBox.IsChecked = _appSettings.AlertDeadlockEnabled;
-        AlertDeadlockThresholdBox.Text = _appSettings.AlertDeadlockThreshold.ToString(CultureInfo.InvariantCulture);
-        AlertPoisonWaitCheckBox.IsChecked = _appSettings.AlertPoisonWaitEnabled;
-        AlertPoisonWaitThresholdBox.Text = _appSettings.AlertPoisonWaitThresholdMs.ToString(CultureInfo.InvariantCulture);
-        AlertLongRunningQueryCheckBox.IsChecked = _appSettings.AlertLongRunningQueryEnabled;
-        AlertLongRunningQueryThresholdBox.Text = _appSettings.AlertLongRunningQueryThresholdMinutes.ToString(CultureInfo.InvariantCulture);
         AlertLongRunningQueryMaxResultsBox.Text = _appSettings.AlertLongRunningQueryMaxResults.ToString(CultureInfo.InvariantCulture);
         LrqExcludeSpServerDiagnosticsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeSpServerDiagnostics;
         LrqExcludeWaitForCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeWaitFor;
         LrqExcludeBackupsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeBackups;
         LrqExcludeMiscWaitsCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeMiscWaits;
         LrqExcludeCdcCheckBox.IsChecked = _appSettings.AlertLongRunningQueryExcludeCdc;
-        AlertExcludedDatabasesBox.Text = string.Join(", ", _appSettings.AlertExcludedDatabases);
-        AlertTempDbSpaceCheckBox.IsChecked = _appSettings.AlertTempDbSpaceEnabled;
-        AlertTempDbSpaceThresholdBox.Text = _appSettings.AlertTempDbSpaceThresholdPercent.ToString(CultureInfo.InvariantCulture);
-        AlertLowDiskCheckBox.IsChecked = _appSettings.AlertLowDiskEnabled;
-        AlertLowDiskThresholdPercentBox.Text = _appSettings.AlertLowDiskThresholdPercent.ToString(CultureInfo.InvariantCulture);
-        AlertLowDiskThresholdGbBox.Text = _appSettings.AlertLowDiskThresholdGb.ToString(CultureInfo.InvariantCulture);
-        AlertLongRunningJobCheckBox.IsChecked = _appSettings.AlertLongRunningJobEnabled;
-        AlertLongRunningJobMultiplierBox.Text = _appSettings.AlertLongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
-        AlertFailedJobCheckBox.IsChecked = _appSettings.AlertFailedJobEnabled;
-        AlertFailedJobLookbackBox.Text = _appSettings.AlertFailedJobLookbackMinutes.ToString(CultureInfo.InvariantCulture);
-        AlertCooldownBox.Text = _appSettings.AlertCooldownMinutes.ToString(CultureInfo.InvariantCulture);
-        EmailCooldownBox.Text = _appSettings.EmailCooldownMinutes.ToString(CultureInfo.InvariantCulture);
         AlertDeliveryModeBox.SelectedIndex = _appSettings.AlertDeliveryMode == "PerEvent" ? 1 : 0;
         AlertPerEventMaxBox.Text = _appSettings.AlertPerEventMaxPerCycle.ToString(CultureInfo.InvariantCulture);
         MuteRuleDefaultExpirationCombo.SelectedIndex = _appSettings.MuteRuleDefaultExpiration switch
@@ -326,34 +453,113 @@ public partial class SettingsWindow : Window
             _ => 3
         };
         LogAlertDismissalsCheckBox.IsChecked = _appSettings.LogAlertDismissals;
-        AnalysisEnabledCheckBox.IsChecked = _appSettings.AnalysisEnabled;
-        AnalysisNotificationsCheckBox.IsChecked = _appSettings.AnalysisNotificationsEnabled;
-        AnalysisIntervalBox.Text = _appSettings.AnalysisIntervalMinutes.ToString(CultureInfo.InvariantCulture);
-        AnalysisNotifySeverityBox.Text = _appSettings.AnalysisNotifySeverity.ToString("0.0", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Seeds the STORE-backed alert + analysis controls from a <see cref="AlertSettingsRow"/> (the
+    /// store's authoritative values, or defaults before the store read completes).</summary>
+    private void SeedAlertControlsFrom(AlertSettingsRow r)
+    {
+        AlertsEnabledCheckBox.IsChecked = r.Enabled;
+        AlertCpuCheckBox.IsChecked = r.CpuEnabled;
+        AlertCpuThresholdBox.Text = r.CpuThresholdPercent.ToString(CultureInfo.InvariantCulture);
+        AlertCpuModeBox.SelectedIndex = ViewerDataService.MapCpuModeFromStore(r.CpuMode) == "SqlOnly" ? 1 : 0;
+        AlertBlockingCheckBox.IsChecked = r.BlockingEnabled;
+        AlertBlockingThresholdBox.Text = r.BlockingCountThreshold.ToString(CultureInfo.InvariantCulture);
+        AlertDeadlockCheckBox.IsChecked = r.DeadlockEnabled;
+        AlertDeadlockThresholdBox.Text = r.DeadlockCountThreshold.ToString(CultureInfo.InvariantCulture);
+        AlertPoisonWaitCheckBox.IsChecked = r.PoisonWaitEnabled;
+        AlertPoisonWaitThresholdBox.Text = r.PoisonWaitThresholdMs.ToString(CultureInfo.InvariantCulture);
+        AlertLongRunningQueryCheckBox.IsChecked = r.LongRunningQueryEnabled;
+        AlertLongRunningQueryThresholdBox.Text = r.LongRunningQueryThresholdMinutes.ToString(CultureInfo.InvariantCulture);
+        AlertExcludedDatabasesBox.Text = string.Join(", ", r.ExcludedDatabases);
+        AlertTempDbSpaceCheckBox.IsChecked = r.TempDbSpaceEnabled;
+        AlertTempDbSpaceThresholdBox.Text = r.TempDbSpaceThresholdPercent.ToString(CultureInfo.InvariantCulture);
+        AlertLowDiskCheckBox.IsChecked = r.LowDiskEnabled;
+        AlertLowDiskThresholdPercentBox.Text = r.LowDiskThresholdPercent.ToString(CultureInfo.InvariantCulture);
+        AlertLowDiskThresholdGbBox.Text = r.LowDiskThresholdGb.ToString(CultureInfo.InvariantCulture);
+        AlertLongRunningJobCheckBox.IsChecked = r.LongRunningJobEnabled;
+        AlertLongRunningJobMultiplierBox.Text = r.LongRunningJobMultiplier.ToString(CultureInfo.InvariantCulture);
+        AlertFailedJobCheckBox.IsChecked = r.FailedJobEnabled;
+        AlertFailedJobLookbackBox.Text = r.FailedJobLookbackMinutes.ToString(CultureInfo.InvariantCulture);
+        AlertCooldownBox.Text = r.CooldownMinutes.ToString(CultureInfo.InvariantCulture);
+        AnalysisEnabledCheckBox.IsChecked = r.AnalysisEnabled;
+        AnalysisIntervalBox.Text = r.AnalysisIntervalMinutes.ToString(CultureInfo.InvariantCulture);
+        AnalysisNotificationsCheckBox.IsChecked = r.AnalysisNotificationsEnabled;
+        AnalysisNotifySeverityBox.Text = r.AnalysisNotifySeverity.ToString("0.0", CultureInfo.InvariantCulture);
         UpdateAlertControlStates();
     }
 
-    private bool SaveAlertSettings()
+    /// <summary>Builds the store row from the alert + analysis controls, validating the numeric fields. Adds
+    /// range errors to <paramref name="errors"/>; a bad field keeps its default rather than throwing.</summary>
+    private AlertSettingsRow BuildAlertRowFromControls(List<string> errors)
+    {
+        var row = new AlertSettingsRow
+        {
+            Enabled = AlertsEnabledCheckBox.IsChecked == true,
+            CpuEnabled = AlertCpuCheckBox.IsChecked == true,
+            CpuMode = ViewerDataService.MapCpuModeToStore((AlertCpuModeBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Total"),
+            BlockingEnabled = AlertBlockingCheckBox.IsChecked == true,
+            DeadlockEnabled = AlertDeadlockCheckBox.IsChecked == true,
+            PoisonWaitEnabled = AlertPoisonWaitCheckBox.IsChecked == true,
+            LongRunningQueryEnabled = AlertLongRunningQueryCheckBox.IsChecked == true,
+            TempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true,
+            LowDiskEnabled = AlertLowDiskCheckBox.IsChecked == true,
+            LongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true,
+            FailedJobEnabled = AlertFailedJobCheckBox.IsChecked == true,
+            AnalysisEnabled = AnalysisEnabledCheckBox.IsChecked == true,
+            AnalysisNotificationsEnabled = AnalysisNotificationsCheckBox.IsChecked == true,
+            ExcludedDatabases = AlertExcludedDatabasesBox.Text
+                .Split(',')
+                .Select(s => s.Trim())
+                .Where(s => s.Length > 0)
+                .ToList(),
+        };
+
+        if (int.TryParse(AlertCpuThresholdBox.Text, out var cpu) && cpu is > 0 and <= 100)
+            row.CpuThresholdPercent = cpu;
+        if (int.TryParse(AlertBlockingThresholdBox.Text, out var blocking) && blocking > 0)
+            row.BlockingCountThreshold = blocking;
+        if (int.TryParse(AlertDeadlockThresholdBox.Text, out var deadlock) && deadlock > 0)
+            row.DeadlockCountThreshold = deadlock;
+        if (int.TryParse(AlertPoisonWaitThresholdBox.Text, out var poisonWait) && poisonWait > 0)
+            row.PoisonWaitThresholdMs = poisonWait;
+        if (int.TryParse(AlertLongRunningQueryThresholdBox.Text, out var lrq) && lrq > 0)
+            row.LongRunningQueryThresholdMinutes = lrq;
+        if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb is > 0 and <= 100)
+            row.TempDbSpaceThresholdPercent = tempDb;
+        if (int.TryParse(AlertLowDiskThresholdPercentBox.Text, out var lowDiskPct) && lowDiskPct is >= 0 and <= 100)
+            row.LowDiskThresholdPercent = lowDiskPct;
+        if (int.TryParse(AlertLowDiskThresholdGbBox.Text, out var lowDiskGb) && lowDiskGb >= 0)
+            row.LowDiskThresholdGb = lowDiskGb;
+        if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult is >= 2 and <= 20)
+            row.LongRunningJobMultiplier = jobMult;
+        if (int.TryParse(AlertFailedJobLookbackBox.Text, out var failedJobLookback) && failedJobLookback is >= 1 and <= 1440)
+            row.FailedJobLookbackMinutes = failedJobLookback;
+
+        if (int.TryParse(AlertCooldownBox.Text, out var alertCooldown) && alertCooldown is >= 1 and <= 120)
+            row.CooldownMinutes = alertCooldown;
+        else
+            errors.Add("Tray notification cooldown must be between 1 and 120 minutes.");
+
+        if (int.TryParse(AnalysisIntervalBox.Text, out var analysisInterval) && analysisInterval is >= 5 and <= 360)
+            row.AnalysisIntervalMinutes = analysisInterval;
+        else
+            errors.Add("Analysis interval must be between 5 and 360 minutes.");
+
+        if (double.TryParse(AnalysisNotifySeverityBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var analysisSeverity)
+            && analysisSeverity is >= 0.0 and <= 2.0)
+            row.AnalysisNotifySeverity = analysisSeverity;
+        else
+            errors.Add("Analysis notify severity must be between 0.0 and 2.0.");
+
+        return row;
+    }
+
+    /// <summary>Persists the viewer-LOCAL alert fields to <see cref="ViewerAppSettings"/> (the store never sees them).</summary>
+    private void SaveViewerLocalAlertFields(List<string> errors)
     {
         _appSettings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked == true;
-        _appSettings.AlertsEnabled = AlertsEnabledCheckBox.IsChecked == true;
         _appSettings.NotifyConnectionChanges = NotifyConnectionCheckBox.IsChecked == true;
-        _appSettings.AlertCpuEnabled = AlertCpuCheckBox.IsChecked == true;
-        if (int.TryParse(AlertCpuThresholdBox.Text, out var cpu) && cpu is > 0 and <= 100)
-            _appSettings.AlertCpuThreshold = cpu;
-        _appSettings.AlertCpuMode = AlertCpuModeBox.SelectedIndex == 1 ? "SqlOnly" : "Total";
-        _appSettings.AlertBlockingEnabled = AlertBlockingCheckBox.IsChecked == true;
-        if (int.TryParse(AlertBlockingThresholdBox.Text, out var blocking) && blocking > 0)
-            _appSettings.AlertBlockingThreshold = blocking;
-        _appSettings.AlertDeadlockEnabled = AlertDeadlockCheckBox.IsChecked == true;
-        if (int.TryParse(AlertDeadlockThresholdBox.Text, out var deadlock) && deadlock > 0)
-            _appSettings.AlertDeadlockThreshold = deadlock;
-        _appSettings.AlertPoisonWaitEnabled = AlertPoisonWaitCheckBox.IsChecked == true;
-        if (int.TryParse(AlertPoisonWaitThresholdBox.Text, out var poisonWait) && poisonWait > 0)
-            _appSettings.AlertPoisonWaitThresholdMs = poisonWait;
-        _appSettings.AlertLongRunningQueryEnabled = AlertLongRunningQueryCheckBox.IsChecked == true;
-        if (int.TryParse(AlertLongRunningQueryThresholdBox.Text, out var lrq) && lrq > 0)
-            _appSettings.AlertLongRunningQueryThresholdMinutes = lrq;
         if (int.TryParse(AlertLongRunningQueryMaxResultsBox.Text, out var lrqMax) && lrqMax >= 1)
             _appSettings.AlertLongRunningQueryMaxResults = lrqMax;
         _appSettings.AlertLongRunningQueryExcludeSpServerDiagnostics = LrqExcludeSpServerDiagnosticsCheckBox.IsChecked == true;
@@ -361,64 +567,13 @@ public partial class SettingsWindow : Window
         _appSettings.AlertLongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true;
         _appSettings.AlertLongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true;
         _appSettings.AlertLongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true;
-        _appSettings.AlertExcludedDatabases = AlertExcludedDatabasesBox.Text
-            .Split(',')
-            .Select(s => s.Trim())
-            .Where(s => s.Length > 0)
-            .ToList();
-        _appSettings.AlertTempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true;
-        if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb is > 0 and <= 100)
-            _appSettings.AlertTempDbSpaceThresholdPercent = tempDb;
-        _appSettings.AlertLowDiskEnabled = AlertLowDiskCheckBox.IsChecked == true;
-        if (int.TryParse(AlertLowDiskThresholdPercentBox.Text, out var lowDiskPct) && lowDiskPct is >= 0 and <= 100)
-            _appSettings.AlertLowDiskThresholdPercent = lowDiskPct;
-        if (int.TryParse(AlertLowDiskThresholdGbBox.Text, out var lowDiskGb) && lowDiskGb >= 0)
-            _appSettings.AlertLowDiskThresholdGb = lowDiskGb;
-        _appSettings.AlertLongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true;
-        if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult is >= 2 and <= 20)
-            _appSettings.AlertLongRunningJobMultiplier = jobMult;
-        _appSettings.AlertFailedJobEnabled = AlertFailedJobCheckBox.IsChecked == true;
-        if (int.TryParse(AlertFailedJobLookbackBox.Text, out var failedJobLookback) && failedJobLookback is >= 1 and <= 1440)
-            _appSettings.AlertFailedJobLookbackMinutes = failedJobLookback;
-
-        var validationErrors = new List<string>();
-        if (int.TryParse(AlertCooldownBox.Text, out var alertCooldown) && alertCooldown is >= 1 and <= 120)
-            _appSettings.AlertCooldownMinutes = alertCooldown;
-        else
-            validationErrors.Add("Tray notification cooldown must be between 1 and 120 minutes.");
-        if (int.TryParse(EmailCooldownBox.Text, out var emailCooldown) && emailCooldown is >= 1 and <= 120)
-            _appSettings.EmailCooldownMinutes = emailCooldown;
-        else
-            validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes.");
         _appSettings.AlertDeliveryMode = AlertDeliveryModeBox.SelectedIndex == 1 ? "PerEvent" : "Summary";
         if (int.TryParse(AlertPerEventMaxBox.Text, out var perEventMax) && perEventMax is >= 1 and <= 100)
             _appSettings.AlertPerEventMaxPerCycle = perEventMax;
         else
-            validationErrors.Add("Per-event max-per-cycle must be between 1 and 100.");
+            errors.Add("Per-event max-per-cycle must be between 1 and 100.");
         _appSettings.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         _appSettings.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
-        _appSettings.AnalysisEnabled = AnalysisEnabledCheckBox.IsChecked == true;
-        _appSettings.AnalysisNotificationsEnabled = AnalysisNotificationsCheckBox.IsChecked == true;
-        if (int.TryParse(AnalysisIntervalBox.Text, out var analysisInterval) && analysisInterval is >= 5 and <= 360)
-            _appSettings.AnalysisIntervalMinutes = analysisInterval;
-        else
-            validationErrors.Add("Analysis interval must be between 5 and 360 minutes.");
-        if (double.TryParse(AnalysisNotifySeverityBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var analysisSeverity)
-            && analysisSeverity is >= 0.0 and <= 2.0)
-            _appSettings.AnalysisNotifySeverity = analysisSeverity;
-        else
-            validationErrors.Add("Analysis notify severity must be between 0.0 and 2.0.");
-
-        if (validationErrors.Count > 0)
-        {
-            MessageBox.Show(
-                "Some alert settings have invalid values and were not changed:\n\n" +
-                string.Join("\n", validationErrors),
-                "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-
-        return true;
     }
 
     private void AlertsEnabledCheckBox_Changed(object sender, RoutedEventArgs e) => UpdateAlertControlStates();
@@ -516,43 +671,93 @@ public partial class SettingsWindow : Window
         UpdateAlertPreviewText();
     }
 
-    // ── SMTP email ──
+    // ── SMTP email + webhooks (config_notification) ──
 
-    private void LoadSmtpSettings()
+    /// <summary>Seeds the SMTP + Teams/Slack controls from a <see cref="NotificationRow"/> (the store's values,
+    /// or defaults). The SMTP enable toggle reflects whether the store carries connect fields; the password box
+    /// is prefilled from the decrypted store blob (blank + remembered when it was sealed on another machine).</summary>
+    private void SeedNotificationControlsFrom(NotificationRow r)
     {
-        SmtpEnabledCheckBox.IsChecked = _appSettings.SmtpEnabled;
-        SmtpServerBox.Text = _appSettings.SmtpServer;
-        SmtpPortBox.Text = _appSettings.SmtpPort.ToString(CultureInfo.InvariantCulture);
-        SmtpSslCheckBox.IsChecked = _appSettings.SmtpUseSsl;
-        SmtpUsernameBox.Text = _appSettings.SmtpUsername;
-        SmtpFromBox.Text = _appSettings.SmtpFromAddress;
-        SmtpRecipientsBox.Text = _appSettings.SmtpRecipients;
+        var smtpConfigured = !string.IsNullOrWhiteSpace(r.SmtpHost)
+            || !string.IsNullOrWhiteSpace(r.SmtpFromAddress)
+            || !string.IsNullOrWhiteSpace(r.SmtpRecipients);
+        SmtpEnabledCheckBox.IsChecked = smtpConfigured;
+        SmtpServerBox.Text = r.SmtpHost;
+        SmtpPortBox.Text = r.SmtpPort.ToString(CultureInfo.InvariantCulture);
+        SmtpSslCheckBox.IsChecked = r.SmtpUseSsl;
+        SmtpUsernameBox.Text = r.SmtpUsername ?? "";
+        SmtpFromBox.Text = r.SmtpFromAddress;
+        SmtpRecipientsBox.Text = r.SmtpRecipients;
+        EmailCooldownBox.Text = r.EmailCooldownMinutes.ToString(CultureInfo.InvariantCulture);
 
-        var password = ViewerSecretStore.GetSmtpPassword();
-        if (!string.IsNullOrEmpty(password))
-        {
-            SmtpPasswordBox.Password = password;
-        }
+        _loadedSmtpBlob = r.SmtpEncryptedPassword;
+        SmtpPasswordBox.Password = OperatingSystem.IsWindows()
+            ? ViewerServerSecret.TryUnprotect(r.SmtpEncryptedPassword) ?? ""
+            : "";
+
+        TeamsWebhookEnabledCheckBox.IsChecked = !string.IsNullOrWhiteSpace(r.TeamsUrl);
+        TeamsWebhookUrlBox.Text = r.TeamsUrl;
+        TeamsProxyAddressBox.Text = r.TeamsProxy;
+        SlackWebhookEnabledCheckBox.IsChecked = !string.IsNullOrWhiteSpace(r.SlackUrl);
+        SlackWebhookUrlBox.Text = r.SlackUrl;
+        SlackProxyAddressBox.Text = r.SlackProxy;
 
         UpdateSmtpControlStates();
+        UpdateTeamsControlStates();
+        UpdateSlackControlStates();
     }
 
-    private void SaveSmtpSettings()
+    /// <summary>Builds the <see cref="NotificationRow"/> from the SMTP + webhook controls. A DISABLED channel
+    /// writes EMPTY key fields so the service (which derives enablement from non-empty fields) treats it as off;
+    /// an enabled SMTP channel seals the typed password (or preserves the existing blob when left unchanged).</summary>
+    private NotificationRow BuildNotificationRowFromControls(List<string> errors)
     {
-        _appSettings.SmtpEnabled = SmtpEnabledCheckBox.IsChecked == true;
-        _appSettings.SmtpServer = SmtpServerBox.Text?.Trim() ?? "";
-        if (int.TryParse(SmtpPortBox.Text, out var port) && port is > 0 and < 65536)
-            _appSettings.SmtpPort = port;
-        _appSettings.SmtpUseSsl = SmtpSslCheckBox.IsChecked == true;
-        _appSettings.SmtpUsername = SmtpUsernameBox.Text?.Trim() ?? "";
-        _appSettings.SmtpFromAddress = SmtpFromBox.Text?.Trim() ?? "";
-        _appSettings.SmtpRecipients = SmtpRecipientsBox.Text?.Trim() ?? "";
+        var row = new NotificationRow();
 
-        /* Password goes to Windows Credential Manager, never the JSON settings file. */
-        if (!string.IsNullOrEmpty(SmtpPasswordBox.Password))
+        if (int.TryParse(EmailCooldownBox.Text, out var emailCooldown) && emailCooldown is >= 1 and <= 120)
+            row.EmailCooldownMinutes = emailCooldown;
+        else
+            errors.Add("Email alert cooldown must be between 1 and 120 minutes.");
+
+        if (SmtpEnabledCheckBox.IsChecked == true)
         {
-            ViewerSecretStore.SaveSmtpPassword(_appSettings.SmtpUsername, SmtpPasswordBox.Password);
+            row.SmtpHost = SmtpServerBox.Text?.Trim() ?? "";
+            if (int.TryParse(SmtpPortBox.Text, out var port) && port is > 0 and < 65536)
+                row.SmtpPort = port;
+            row.SmtpUseSsl = SmtpSslCheckBox.IsChecked == true;
+            var username = SmtpUsernameBox.Text?.Trim();
+            row.SmtpUsername = string.IsNullOrWhiteSpace(username) ? null : username;
+            row.SmtpFromAddress = SmtpFromBox.Text?.Trim() ?? "";
+            row.SmtpRecipients = SmtpRecipientsBox.Text?.Trim() ?? "";
+            row.SmtpEncryptedPassword = ResolveSmtpBlob();
         }
+
+        if (TeamsWebhookEnabledCheckBox.IsChecked == true)
+        {
+            row.TeamsUrl = TeamsWebhookUrlBox.Text?.Trim() ?? "";
+            row.TeamsProxy = TeamsProxyAddressBox.Text?.Trim() ?? "";
+        }
+
+        if (SlackWebhookEnabledCheckBox.IsChecked == true)
+        {
+            row.SlackUrl = SlackWebhookUrlBox.Text?.Trim() ?? "";
+            row.SlackProxy = SlackProxyAddressBox.Text?.Trim() ?? "";
+        }
+
+        return row;
+    }
+
+    /// <summary>The SMTP blob to persist: seal the typed password when the box holds one; otherwise keep the
+    /// store's existing blob (so an unchanged — or another-machine, undecryptable — password survives Save).</summary>
+    private string? ResolveSmtpBlob()
+    {
+        var typed = SmtpPasswordBox.Password;
+        if (!string.IsNullOrEmpty(typed) && OperatingSystem.IsWindows())
+        {
+            return ViewerServerSecret.Protect(typed);
+        }
+
+        return string.IsNullOrEmpty(typed) ? _loadedSmtpBlob : null;
     }
 
     private void SmtpEnabledCheckBox_Changed(object sender, RoutedEventArgs e) => UpdateSmtpControlStates();
@@ -624,32 +829,6 @@ public partial class SettingsWindow : Window
             TestEmailButton.Content = "Send Test Email";
             TestEmailButton.IsEnabled = true;
         }
-    }
-
-    // ── Webhooks (Teams / Slack) ──
-
-    private void LoadWebhookSettings()
-    {
-        TeamsWebhookEnabledCheckBox.IsChecked = _appSettings.TeamsWebhookEnabled;
-        TeamsWebhookUrlBox.Text = ViewerSecretStore.GetTeamsWebhookUrl();
-        TeamsProxyAddressBox.Text = _appSettings.TeamsProxyAddress;
-        SlackWebhookEnabledCheckBox.IsChecked = _appSettings.SlackWebhookEnabled;
-        SlackWebhookUrlBox.Text = ViewerSecretStore.GetSlackWebhookUrl();
-        SlackProxyAddressBox.Text = _appSettings.SlackProxyAddress;
-        UpdateTeamsControlStates();
-        UpdateSlackControlStates();
-    }
-
-    private void SaveWebhookSettings()
-    {
-        _appSettings.TeamsWebhookEnabled = TeamsWebhookEnabledCheckBox.IsChecked == true;
-        _appSettings.TeamsProxyAddress = TeamsProxyAddressBox.Text?.Trim() ?? "";
-        _appSettings.SlackWebhookEnabled = SlackWebhookEnabledCheckBox.IsChecked == true;
-        _appSettings.SlackProxyAddress = SlackProxyAddressBox.Text?.Trim() ?? "";
-
-        /* Webhook URLs go to Windows Credential Manager, never the JSON settings file. */
-        ViewerSecretStore.SaveTeamsWebhookUrl(TeamsWebhookUrlBox.Text?.Trim() ?? "");
-        ViewerSecretStore.SaveSlackWebhookUrl(SlackWebhookUrlBox.Text?.Trim() ?? "");
     }
 
     private void TeamsWebhookEnabledCheckBox_Changed(object sender, RoutedEventArgs e) => UpdateTeamsControlStates();
@@ -746,26 +925,70 @@ public partial class SettingsWindow : Window
 
     // ── Save / Close ──
 
-    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
-        var mcpValid = SaveMcpSettings();
+        var errors = new List<string>();
+        var mcpValid = TryReadServiceFlags(out var capturePlans, out var mcpEnabled, out var mcpPort);
+        var alertRow = BuildAlertRowFromControls(errors);
+        SaveViewerLocalAlertFields(errors);
+        var notifyRow = BuildNotificationRowFromControls(errors);
+
+        /* Persist the viewer-LOCAL preferences immediately (valid values applied above), and capture the
+           edited viewer preferences for MainWindow to save + re-seed tabs from. */
         SaveConnectionTimeout();
         SaveCsvSeparator();
         SaveTimeDisplayMode();
-        var alertsValid = SaveAlertSettings();
-        SaveSmtpSettings();
-        SaveWebhookSettings();
-
-        /* Persist the app settings (valid values were applied above; invalid ones were skipped and warned
-           about) and capture the edited viewer preferences for MainWindow to save + re-seed tabs from. */
         _appSettingsStore.Save(_appSettings);
         Result = BuildViewerPreferences();
 
-        /* Leave the window open on a validation warning so the user can fix the flagged value; otherwise
-           the close IS the confirmation (mirrors the viewer's other dialogs). */
-        if (!alertsValid || !mcpValid)
+        if (errors.Count > 0)
         {
+            MessageBox.Show(
+                "Some settings have invalid values and were not saved:\n\n" + string.Join("\n", errors),
+                "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
+        }
+
+        if (!mcpValid)
+        {
+            return; /* TryReadServiceFlags already warned about the bad MCP port. */
+        }
+
+        /* Guard against clobbering: if the current settings could not be READ (a transient store error left the
+           controls at defaults), do NOT write them back — that would overwrite an operator-tuned store with the
+           on-screen defaults. Save the viewer-local preferences (already done above) and say so. */
+        if (_dataService is not null && !_storeLoaded)
+        {
+            MessageBox.Show(
+                "Your viewer preferences were saved. The current monitoring settings could not be read from the " +
+                "Darling store, so they were left unchanged (to avoid overwriting them). Try again once the store " +
+                "is reachable.",
+                "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        /* Write the operator config to the control-plane store (the service reloads on the config_version bump).
+           A read-only seat surfaces the friendly message and the window stays open. */
+        if (_dataService is not null)
+        {
+            try
+            {
+                await _dataService.UpsertAlertSettingsAsync(alertRow);
+                await _dataService.UpsertNotificationAsync(notifyRow);
+                await _dataService.UpdateServiceFlagsAsync(capturePlans, mcpEnabled, mcpPort);
+            }
+            catch (ViewerReadOnlyException ex)
+            {
+                MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"The viewer-local preferences were saved, but the monitoring settings could not be written to the store:\n\n{ex.Message}",
+                    "Settings", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
         }
 
         DialogResult = true;
@@ -807,6 +1030,7 @@ public partial class SettingsWindow : Window
         public static TestAlertSettings FromUi(SettingsWindow w)
         {
             int.TryParse(w.SmtpPortBox.Text, out var smtpPort);
+            int.TryParse(w.EmailCooldownBox.Text, out var emailCooldown);
             return new TestAlertSettings
             {
                 SmtpEnabled = w.SmtpEnabledCheckBox.IsChecked == true,
@@ -817,7 +1041,7 @@ public partial class SettingsWindow : Window
                 SmtpFromAddress = w.SmtpFromBox.Text?.Trim() ?? "",
                 SmtpRecipients = w.SmtpRecipientsBox.Text?.Trim() ?? "",
                 SmtpPassword = w.SmtpPasswordBox.Password,
-                EmailCooldownMinutes = w._appSettings.EmailCooldownMinutes,
+                EmailCooldownMinutes = emailCooldown,
                 TeamsWebhookEnabled = w.TeamsWebhookEnabledCheckBox.IsChecked == true,
                 TeamsWebhookUrl = w.TeamsWebhookUrlBox.Text?.Trim() ?? "",
                 TeamsProxyAddress = w.TeamsProxyAddressBox.Text?.Trim() ?? "",

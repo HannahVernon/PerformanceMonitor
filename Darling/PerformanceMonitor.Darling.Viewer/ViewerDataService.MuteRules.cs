@@ -122,6 +122,7 @@ WHERE id = $1";
         AddNullableText(command, rule.WaitTypePattern);
         AddNullableText(command, rule.JobNamePattern);
         await ExecuteWriteAsync(command, cancellationToken);
+        await SignalConfigReloadAsync(cancellationToken);
     }
 
     /// <summary>Updates an existing mute rule (the Edit dialog's Save).</summary>
@@ -144,6 +145,7 @@ WHERE id = $1";
         AddNullableText(command, rule.WaitTypePattern);
         AddNullableText(command, rule.JobNamePattern);
         await ExecuteWriteAsync(command, cancellationToken);
+        await SignalConfigReloadAsync(cancellationToken);
     }
 
     /// <summary>Toggles a rule's enabled flag without rewriting its other columns.</summary>
@@ -153,10 +155,19 @@ WHERE id = $1";
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = ruleId });
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = enabled });
         await ExecuteWriteAsync(command, cancellationToken);
+        await SignalConfigReloadAsync(cancellationToken);
     }
 
     /// <summary>Deletes a mute rule by id (the Delete action).</summary>
     public async Task DeleteMuteRuleAsync(string ruleId, CancellationToken cancellationToken = default)
+    {
+        await DeleteMuteRuleRawAsync(ruleId, cancellationToken);
+        await SignalConfigReloadAsync(cancellationToken);
+    }
+
+    /// <summary>The bare delete without the reload signal — shared by the single delete and the purge so the
+    /// purge signals the beacon ONCE for the whole batch rather than per row.</summary>
+    private async Task DeleteMuteRuleRawAsync(string ruleId, CancellationToken cancellationToken)
     {
         await using var command = _dataSource.CreateCommand(MuteRuleDeleteSql);
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = ruleId });
@@ -167,6 +178,7 @@ WHERE id = $1";
     /// Deletes every currently-expired rule (the "Purge Expired" action). Returns the number
     /// removed. Expiry is evaluated in memory from the read (matching Lite's
     /// <see cref="MuteRuleService.PurgeExpiredRulesAsync"/> flow: load, pick expired, delete).
+    /// Signals the reload beacon once if anything was removed so the service drops the rules live (F16).
     /// </summary>
     public async Task<int> PurgeExpiredMuteRulesAsync(CancellationToken cancellationToken = default)
     {
@@ -176,9 +188,14 @@ WHERE id = $1";
         {
             if (rule.IsExpired)
             {
-                await DeleteMuteRuleAsync(rule.Id, cancellationToken);
+                await DeleteMuteRuleRawAsync(rule.Id, cancellationToken);
                 removed++;
             }
+        }
+
+        if (removed > 0)
+        {
+            await SignalConfigReloadAsync(cancellationToken);
         }
 
         return removed;
