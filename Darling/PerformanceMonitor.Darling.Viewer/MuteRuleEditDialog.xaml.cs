@@ -18,11 +18,20 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// (Lite/Windows/MuteRuleDialog.xaml.cs) ported field-for-field, including the metric-driven
 /// pattern-field show/hide and the "no filters = mute all" confirmation, dark-styled for the
 /// viewer. On Save it composes the edited <see cref="MuteRule"/>; the caller persists it straight
-/// to Postgres (config_mute_rules). The viewer defaults new rules to "Never (permanent)" — it has
-/// no App-level default-expiration preference like Lite.
+/// to Postgres (config_mute_rules). New rules default to the operator's
+/// <see cref="ViewerAppSettings.MuteRuleDefaultExpiration"/> preference (via <see cref="DefaultExpiration"/>),
+/// mirroring Lite's <c>App.MuteRuleDefaultExpiration</c> / the Dashboard's <c>MuteRuleDialog.DefaultExpiration</c>.
 /// </summary>
 public partial class MuteRuleEditDialog : Window
 {
+    /// <summary>
+    /// The default expiration selection for NEW rules ("1 hour" / "24 hours" / "7 days" / "Never"), seeded from
+    /// <see cref="ViewerAppSettings.MuteRuleDefaultExpiration"/> by <see cref="MainWindow"/> at startup and after
+    /// the Settings window saves — the viewer's static twin of the Dashboard's <c>MuteRuleDialog.DefaultExpiration</c>
+    /// (the viewer loads its app settings per-window, so a process-wide static carries the preference to every dialog).
+    /// </summary>
+    public static string DefaultExpiration { get; set; } = "24 hours";
+
     public MuteRule Rule { get; private set; }
 
     public MuteRuleEditDialog(MuteRule? existingRule = null)
@@ -39,8 +48,21 @@ public partial class MuteRuleEditDialog : Window
         else
         {
             Rule = new MuteRule();
-            ExpirationCombo.SelectedIndex = 3; /* Never (permanent). */
+            ApplyDefaultExpiration();
         }
+    }
+
+    /// <summary>Selects the operator's default-expiration preference for a new rule; unknown values fall back to
+    /// "Never (permanent)" (SelectedIndex 3), matching Lite's / the Dashboard's switch.</summary>
+    private void ApplyDefaultExpiration()
+    {
+        ExpirationCombo.SelectedIndex = DefaultExpiration switch
+        {
+            "1 hour" => 0,
+            "24 hours" => 1,
+            "7 days" => 2,
+            _ => 3
+        };
     }
 
     /// <summary>Creates a dialog pre-populated for muting from an alert context (Lite parity).</summary>
