@@ -22,7 +22,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <c>UpdateExecutionCountTrendChart</c>, :993-1091) with the data layer rewired to
 /// <see cref="ViewerDataService"/> Postgres reads. The only render-body change is the time axis: where
 /// Lite shifts each point by its per-server <c>UtcOffsetMinutes</c>, the viewer runs the naive-UTC
-/// <c>collection_time</c> through <see cref="ViewerDataService.ToLocalTime"/> — the same convention the
+/// <c>collection_time</c> through <see cref="ViewerTimeHelper.ForDisplay"/> — the same convention the
 /// shell's other copied charts use. Hover tooltips are kept; Lite's per-chart "Show Active Queries at
 /// This Time" context-menu drill-down is NOT ported (matching every other viewer chart — the viewer has
 /// no chart context menus), so these stay hover-only.
@@ -86,7 +86,7 @@ public partial class ViewerServerTab
 
         if (data.Count == 0) { RefreshEmptyChart(QueryDurationTrendChart, "Query Duration", "Duration (ms/sec)"); return; }
 
-        var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+        var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
         _queryDurationTrendHover?.Clear();
@@ -111,7 +111,7 @@ public partial class ViewerServerTab
 
         if (data.Count == 0) { RefreshEmptyChart(ProcDurationTrendChart, "Procedure Duration", "Duration (ms/sec)"); return; }
 
-        var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+        var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
         _procDurationTrendHover?.Clear();
@@ -136,7 +136,7 @@ public partial class ViewerServerTab
 
         if (data.Count == 0) { RefreshEmptyChart(QueryStoreDurationTrendChart, "Query Store Duration", "Duration (ms/sec)"); return; }
 
-        var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+        var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
         _queryStoreDurationTrendHover?.Clear();
@@ -161,7 +161,7 @@ public partial class ViewerServerTab
 
         if (data.Count == 0) { RefreshEmptyChart(ExecutionCountTrendChart, "Executions", "Executions/sec"); return; }
 
-        var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+        var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
         _executionCountTrendHover?.Clear();

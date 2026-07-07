@@ -19,8 +19,9 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins the viewer's SQL against the Darling store contract (no live Postgres needed) and
-/// unit-tests the pure display helpers: the version label and the naive-UTC-to-local conversion.
-/// (The Overview trend reads + wait-category roll-up are pinned in <c>ViewerTrendsTests</c>.)
+/// unit-tests the pure display helpers: the version label. (The naive-UTC → display conversion moved to
+/// the mode-aware <c>ViewerTimeHelper</c>, pinned in <c>ViewerTimeHelperTests</c>; the Overview trend
+/// reads + wait-category roll-up are pinned in <c>ViewerTrendsTests</c>.)
 /// </summary>
 public sealed class ViewerDataServiceTests
 {
@@ -49,17 +50,8 @@ public sealed class ViewerDataServiceTests
         Assert.Equal(expected, ViewerDataService.SqlVersionLabel(major));
     }
 
-    [Fact]
-    public void ToLocalTime_TreatsTheNaiveValueAsUtc()
-    {
-        var naive = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Unspecified);
-
-        var local = ViewerDataService.ToLocalTime(naive);
-
-        Assert.Equal(DateTimeKind.Local, local.Kind);
-        /* Round-tripping back to UTC recovers the stored value, whatever the machine's zone. */
-        Assert.Equal(naive.Ticks, local.ToUniversalTime().Ticks);
-    }
+    /* The naive-UTC → display conversion moved from ViewerDataService.ToLocalTime to the mode-aware
+       ViewerTimeHelper (Server/Local/UTC); it is pinned in ViewerTimeHelperTests. */
 
     [Fact]
     public void DarlingServer_VersionLabel_ComesFromTheMajorVersion()

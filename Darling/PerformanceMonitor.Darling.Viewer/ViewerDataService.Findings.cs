@@ -39,7 +39,7 @@ public sealed class ViewerFindingRow
     public required AnalysisFinding Finding { get; init; }
 
     /// <summary>The batch's analysis time in the viewer machine's local time.</summary>
-    public DateTime AnalysisTimeLocal => ViewerDataService.ToLocalTime(Finding.AnalysisTime);
+    public DateTime AnalysisTimeLocal => ViewerTimeHelper.ForDisplay(Finding.AnalysisTime);
 
     /// <summary>
     /// True when this finding's story pattern is in <c>analysis_muted</c> for the server (the

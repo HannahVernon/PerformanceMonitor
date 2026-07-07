@@ -26,7 +26,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// keeps the sp_HealthParser-significant rows. Mirrors the FinOps tab's inner sub-tab-strip + DataGrid
 /// conventions (visible-only load, shared column filters, per-sub-tab count indicator + refresh).
 /// Timestamps render machine-local like the deadlock / blocked-process grids (the event's naive-UTC XE
-/// @timestamp via <see cref="ViewerDataService.ToLocalTime"/>).
+/// @timestamp via <see cref="ViewerTimeHelper.ForDisplay"/>).
 /// </summary>
 public partial class ViewerServerTab
 {

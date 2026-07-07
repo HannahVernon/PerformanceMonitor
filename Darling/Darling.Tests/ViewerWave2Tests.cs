@@ -154,7 +154,7 @@ public sealed class ViewerWave2DisplayTests
         var storedUtc = new DateTime(2026, 7, 1, 3, 30, 0, DateTimeKind.Unspecified);
         var row = new ViewerBlockedProcessRow { EventTime = storedUtc };
 
-        Assert.Equal(ViewerDataService.ToLocalTime(storedUtc).ToString("yyyy-MM-dd HH:mm:ss"), row.EventTimeLocal);
+        Assert.Equal(ViewerTimeHelper.ForDisplay(storedUtc).ToString("yyyy-MM-dd HH:mm:ss"), row.EventTimeLocal);
         Assert.Equal("", new ViewerBlockedProcessRow().EventTimeLocal);
     }
 

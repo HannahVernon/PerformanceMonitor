@@ -59,6 +59,7 @@ public static class PgMigrations
         new Migration(13, "system-health-events-collector", PgSchemaGenerator.GenerateV13AddSystemHealthEvents()),
         new Migration(14, "refresh-passthrough-views", PgSchemaGenerator.GenerateV14RefreshViews()),
         new Migration(15, "index-metadata-columns", V15Sql),
+        new Migration(16, "server-utc-offset", V16Sql),
     };
 
     /// <summary>
@@ -318,6 +319,19 @@ ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_row_locks boolean;
 ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_indexed_view boolean;
 
 CREATE OR REPLACE VIEW v_index_object_stats AS SELECT * FROM index_object_stats;";
+
+    /// <summary>
+    /// V16 — the monitored server's UTC offset, added additively to <c>server_properties</c> so the
+    /// headless viewer can render timestamps in the server's own local time (the Server-time display
+    /// mode ported from Lite). The store is naive-UTC; Server-time = UTC + this offset. It is nullable
+    /// and appended, so a fresh store's V1 <c>server_properties</c> (generated from the current collector
+    /// definition, which now includes it) already has it and <c>ADD COLUMN IF NOT EXISTS</c> no-ops,
+    /// while an upgraded store gets the real add — with an identical physical column order for the binary
+    /// COPY either way. <c>server_properties</c> has no <c>v_*</c> passthrough view, so nothing to refresh.
+    /// Runs after V8, so the bare name resolves through <c>search_path = collect, config, public</c>.
+    /// </summary>
+    private const string V16Sql = @"
+ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS utc_offset_minutes integer;";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

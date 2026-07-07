@@ -75,8 +75,8 @@ public partial class ViewerServerTab
         var (startUtc, endUtc) = GetWindowUtc();
         var data = await _dataService.GetSystemHealthAsync(_server.ServerId, startUtc, endUtc);
 
-        double xMin = ViewerDataService.ToLocalTime(startUtc).ToOADate();
-        double xMax = ViewerDataService.ToLocalTime(endUtc).ToOADate();
+        double xMin = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        double xMax = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
 
         // Corruption Events (2x2).
         RenderCounterChart(BadPagesChart, _badPagesHover, data, d => d.BadPagesDetected, "Bad Pages",
@@ -118,7 +118,7 @@ public partial class ViewerServerTab
         }
         else
         {
-            var xs = data.Select(d => ViewerDataService.ToLocalTime(d.EventTime!.Value).ToOADate()).ToArray();
+            var xs = data.Select(d => ViewerTimeHelper.ForDisplay(d.EventTime!.Value).ToOADate()).ToArray();
             var ys = data.Select(d => (double)(selector(d) ?? 0)).ToArray();
 
             var scatter = chart.Plot.Add.Scatter(xs, ys);
@@ -169,7 +169,7 @@ public partial class ViewerServerTab
                 if (typeData.Count == 0)
                     continue;
 
-                var xs = typeData.Select(d => ViewerDataService.ToLocalTime(d.EventTime!.Value).ToOADate()).ToArray();
+                var xs = typeData.Select(d => ViewerTimeHelper.ForDisplay(d.EventTime!.Value).ToOADate()).ToArray();
                 var ys = typeData.Select(d => (double)(d.SpinlockBackoffs ?? 1)).ToArray();
 
                 var scatter = SickSpinlocksChart.Plot.Add.Scatter(xs, ys);
@@ -212,7 +212,7 @@ public partial class ViewerServerTab
         }
         else
         {
-            var xs = data.Select(d => ViewerDataService.ToLocalTime(d.EventTime!.Value).ToOADate()).ToArray();
+            var xs = data.Select(d => ViewerTimeHelper.ForDisplay(d.EventTime!.Value).ToOADate()).ToArray();
 
             var sysScatter = CpuComparisonChart.Plot.Add.Scatter(xs, data.Select(d => (double)(d.SystemCpuUtilization ?? 0)).ToArray());
             sysScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));

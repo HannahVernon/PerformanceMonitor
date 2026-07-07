@@ -412,7 +412,7 @@ public sealed class ViewerSystemEventsTests
     public void Rows_EventTimeLocal_RendersTheUtcTimestampAsMachineLocal()
     {
         var utc = new DateTime(2026, 7, 5, 12, 0, 5, DateTimeKind.Utc);
-        var expected = ViewerDataService.ToLocalTime(utc).ToString("yyyy-MM-dd HH:mm:ss");
+        var expected = ViewerTimeHelper.ForDisplay(utc).ToString("yyyy-MM-dd HH:mm:ss");
 
         Assert.Equal(expected, new SchedulerIssueRow(new SchedulerIssueRecord { EventTime = utc }).EventTimeLocal);
         Assert.Equal(expected, new SignificantWaitRow(new SignificantWaitRecord { EventTime = utc }).EventTimeLocal);
@@ -437,7 +437,7 @@ public sealed class ViewerSystemEventsTests
     public void CpuTasksRow_And_IoIssuesRow_ProjectRecordFields()
     {
         var utc = new DateTime(2026, 7, 5, 12, 6, 0, DateTimeKind.Utc);
-        var expected = ViewerDataService.ToLocalTime(utc).ToString("yyyy-MM-dd HH:mm:ss");
+        var expected = ViewerTimeHelper.ForDisplay(utc).ToString("yyyy-MM-dd HH:mm:ss");
 
         var cpu = new CpuTasksRow(new CpuTasksRecord
             { EventTime = utc, State = "WARNING", PendingTasks = 15, DidBlockingOccur = true });

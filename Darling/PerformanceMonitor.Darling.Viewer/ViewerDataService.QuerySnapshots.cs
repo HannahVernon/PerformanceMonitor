@@ -19,7 +19,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// One Active-Queries snapshot row — the viewer copy of Lite's <c>QuerySnapshotRow</c>
 /// (LocalDataService.Blocking.cs) trimmed to the ~26 columns the viewer's grid binds. A captured
 /// running request from one collection cycle. <see cref="CollectionTime"/> is the collector's naive-UTC
-/// capture time, so <see cref="CollectionTimeLocal"/> converts through <see cref="ViewerDataService.ToLocalTime"/>
+/// capture time, so <see cref="CollectionTimeLocal"/> converts through <see cref="ViewerTimeHelper.ForDisplay"/>
 /// (Lite's <c>ServerTimeHelper.FormatServerTime</c>). <see cref="QueryPlan"/> / <see cref="LiveQueryPlan"/>
 /// are the stored estimated / live plan XML the collector now captures inline; <see cref="HasQueryPlan"/> /
 /// <see cref="HasLiveQueryPlan"/> gate the grid's Estimated / Actual plan buttons.
@@ -57,7 +57,7 @@ public sealed class ViewerQuerySnapshotRow
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
     public bool HasLiveQueryPlan => !string.IsNullOrEmpty(LiveQueryPlan);
     public string CollectionTimeLocal =>
-        CollectionTime == DateTime.MinValue ? "" : ViewerDataService.ToLocalTime(CollectionTime).ToString("yyyy-MM-dd HH:mm:ss");
+        CollectionTime == DateTime.MinValue ? "" : ViewerTimeHelper.ForDisplay(CollectionTime).ToString("yyyy-MM-dd HH:mm:ss");
 }
 
 public sealed partial class ViewerDataService

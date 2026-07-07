@@ -21,7 +21,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// (5-minute bin × per-execution magnitude bucket), copied from Lite's <c>ServerTab.Charts.cs</c>
 /// (<c>UpdateQueryHeatmapChart</c> + the hover, :1095-1252) with the read rewired to
 /// <see cref="ViewerDataService.GetQueryHeatmapAsync"/> Postgres. The only render-body change is the
-/// time axis (Lite's per-server <c>UtcOffsetMinutes</c> shift → <see cref="ViewerDataService.ToLocalTime"/>).
+/// time axis (Lite's per-server <c>UtcOffsetMinutes</c> shift → <see cref="ViewerTimeHelper.ForDisplay"/>).
 /// The right-click "Show Active Queries at This Time" drill-down IS wired here (the task calls for it, and
 /// Active Queries is a sibling sub-tab of this one) — it's the one viewer chart with a context menu, built
 /// inline (Lite's <c>ContextMenuHelper</c> is Lite-only and can't be referenced): ScottPlot's default
@@ -194,7 +194,7 @@ public partial class ViewerServerTab
         int xStep = Math.Max(1, numCols / 12); // ~12 labels max
         for (int i = 0; i < numCols; i += xStep)
         {
-            var t = ViewerDataService.ToLocalTime(result.TimeBuckets[i]);
+            var t = ViewerTimeHelper.ForDisplay(result.TimeBuckets[i]);
             xTicks.AddMajor(i, t.ToString("M/d\nHH:mm"));
         }
         QueryHeatmapChart.Plot.Axes.Bottom.TickGenerator = xTicks;
@@ -284,7 +284,7 @@ public partial class ViewerServerTab
         }
 
         var cell = _lastHeatmapResult.CellDetails[row, col];
-        var time = ViewerDataService.ToLocalTime(_lastHeatmapResult.TimeBuckets[col]);
+        var time = ViewerTimeHelper.ForDisplay(_lastHeatmapResult.TimeBuckets[col]);
         var bucketLabel = row < _lastHeatmapResult.BucketLabels.Length
             ? _lastHeatmapResult.BucketLabels[row]
             : "?";
@@ -314,7 +314,7 @@ public partial class ViewerServerTab
     {
         var fromUtc = bucketTimeUtc.AddMinutes(-5);
         var toUtc = bucketTimeUtc.AddMinutes(10);
-        var indicator = $"Drill-down: {ViewerDataService.ToLocalTime(fromUtc):HH:mm} → {ViewerDataService.ToLocalTime(toUtc):HH:mm}";
+        var indicator = $"Drill-down: {ViewerTimeHelper.ForDisplay(fromUtc):HH:mm} → {ViewerTimeHelper.ForDisplay(toUtc):HH:mm}";
         await NavigateToActiveQueriesForWindowAsync(fromUtc, toUtc, indicator);
     }
 }

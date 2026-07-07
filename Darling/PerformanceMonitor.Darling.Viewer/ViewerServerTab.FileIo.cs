@@ -22,7 +22,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// (stacked read + write latency charts, with the queued-I/O dashed overlay) and "File I/O Throughput"
 /// (stacked read + write MB/s charts) — each plotting the top 10 files as its own cycling-colored
 /// series. The only render-body change is the time axis: Lite shifts by its per-server
-/// <c>UtcOffsetMinutes</c>, the viewer runs every point through <see cref="ViewerDataService.ToLocalTime"/>
+/// <c>UtcOffsetMinutes</c>, the viewer runs every point through <see cref="ViewerTimeHelper.ForDisplay"/>
 /// (the naive-UTC-to-viewer-local convention every Darling chart uses). Series colors ride the shared
 /// cycling <see cref="ChartPalette"/> and <see cref="ChartStyle.StyleScatter"/> line polish; hover
 /// tooltips carry the per-chart unit. Lite's per-chart context menu / save-image are NOT ported.
@@ -122,7 +122,7 @@ public partial class ViewerServerTab
         foreach (var dbGroup in databases)
         {
             var points = dbGroup.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
             var readLatency = points.Select(d => d.AvgReadLatencyMs).ToArray();
             var writeLatency = points.Select(d => d.AvgWriteLatencyMs).ToArray();
             var color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
@@ -215,7 +215,7 @@ public partial class ViewerServerTab
         foreach (var fileGroup in files)
         {
             var points = fileGroup.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
             var readThroughput = points.Select(d => d.ReadMbPerSec).ToArray();
             var writeThroughput = points.Select(d => d.WriteMbPerSec).ToArray();
             var color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);

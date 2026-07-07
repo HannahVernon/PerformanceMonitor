@@ -14,17 +14,20 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Threading;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The per-server toolbar's time-window + auto-refresh state (the header row added above the inner tab
-/// strip), mirroring Lite's <c>ServerTab.TimeRange.cs</c> but adapted to the viewer: there is no
-/// <c>ServerTimeHelper</c> / per-server UTC offset, so the custom-range pickers are read in the viewer's
-/// one machine-LOCAL display convention (<see cref="ViewerDataService.ToLocalTime"/>) and inverted back
-/// to the store's naive-UTC bounds here. This replaces the old hardcoded 24-hour <c>s_dataWindow</c>: every
-/// inner-tab load now reads <see cref="GetWindowUtc"/> (preset 1h/4h/12h/24h/7d or a custom From/To), and
-/// the auto-refresh cadence comes from the toolbar instead of MainWindow's fixed 60-second timer.
+/// The per-server toolbar's time-window + auto-refresh + time-display state (the header row added above
+/// the inner tab strip), mirroring Lite's <c>ServerTab.TimeRange.cs</c>: the custom-range pickers are read
+/// in the CURRENT display mode (Server/Local/UTC — <see cref="ViewerTimeHelper"/>, ported from Lite's
+/// <c>TimeDisplayModeBox</c>) and inverted back to the store's naive-UTC bounds here
+/// (<see cref="ViewerTimeHelper.DisplayToNaiveUtc(System.DateTime)"/>). This replaces the old hardcoded
+/// 24-hour <c>s_dataWindow</c>: every inner-tab load reads <see cref="GetWindowUtc"/> (preset
+/// 1h/4h/12h/24h/7d or a custom From/To), the auto-refresh cadence comes from the toolbar instead of
+/// MainWindow's fixed 60-second timer, and the display-mode picker re-renders the visible tab so every
+/// timestamp honors the chosen mode.
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -39,10 +42,27 @@ public partial class ViewerServerTab
 
     /// <summary>
     /// Raised when the user clicks "Apply to All": MainWindow broadcasts the selected range (index plus,
-    /// for a custom range, the From/To in machine-local display time) to every other open server tab. The
-    /// source tab is carried so the broadcast can skip it (it already holds the range).
+    /// for a custom range, the From/To in the CURRENT display-mode wall clock) to every other open server
+    /// tab. The source tab is carried so the broadcast can skip it (it already holds the range).
     /// </summary>
     public event Action<ViewerServerTab, int, DateTime?, DateTime?>? ApplyTimeRangeRequested;
+
+    /// <summary>
+    /// Raised when the user changes the toolbar's Server/Local/UTC display picker. MainWindow persists the
+    /// new global mode to <see cref="ViewerAppSettings.TimeDisplayMode"/> and syncs every other open tab's
+    /// picker (the mode is process-wide). The raising tab has already updated
+    /// <see cref="ViewerTimeHelper.CurrentDisplayMode"/> and reloaded itself.
+    /// </summary>
+    public event Action<TimeDisplayMode>? DisplayModeChanged;
+
+    /// <summary>This server's UTC offset in minutes (from <c>server_properties.utc_offset_minutes</c>),
+    /// applied to <see cref="ViewerTimeHelper.UtcOffsetMinutes"/> before this tab renders so Server-time
+    /// mode shows the monitored server's own local time. Seeds to the viewer machine's offset until the
+    /// per-server value is loaded (so Server mode degrades gracefully to ~Local meanwhile).</summary>
+    private int _serverUtcOffsetMinutes = (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalMinutes;
+
+    /// <summary>Caches the one-shot offset load so repeated refreshes don't re-query it.</summary>
+    private Task? _serverOffsetLoad;
 
     /// <summary>Preset combo index → hours back. Index 5 (custom) and any stray value fall to the
     /// viewer's historical 24-hour default. Pure + static so the mapping is unit-testable.</summary>
@@ -155,25 +175,17 @@ public partial class ViewerServerTab
     /// <summary>Reads the custom From/To pickers as naive-UTC bounds, or (null,null) when either is unset.</summary>
     private (DateTime? fromUtc, DateTime? toUtc) GetCustomRangeUtc()
     {
-        var fromLocal = GetDateTimeFromPickers(FromDatePicker!, FromHourCombo, FromMinuteCombo);
-        var toLocal = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
-        if (!fromLocal.HasValue || !toLocal.HasValue)
+        var fromDisplay = GetDateTimeFromPickers(FromDatePicker!, FromHourCombo, FromMinuteCombo);
+        var toDisplay = GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo);
+        if (!fromDisplay.HasValue || !toDisplay.HasValue)
         {
             return (null, null);
         }
 
-        return (LocalDisplayToNaiveUtc(fromLocal.Value), LocalDisplayToNaiveUtc(toLocal.Value));
-    }
-
-    /// <summary>
-    /// Inverts <see cref="ViewerDataService.ToLocalTime"/>: the pickers show machine-local wall-clock time
-    /// (the viewer's one display convention), and the store windows on naive UTC, so a picked local time
-    /// converts to UTC and drops its kind for the reads (which re-stamp it Unspecified).
-    /// </summary>
-    private static DateTime LocalDisplayToNaiveUtc(DateTime localDisplay)
-    {
-        var utc = DateTime.SpecifyKind(localDisplay, DateTimeKind.Local).ToUniversalTime();
-        return DateTime.SpecifyKind(utc, DateTimeKind.Unspecified);
+        /* The pickers hold wall-clock time in the CURRENT display mode; invert to the store's naive-UTC
+           window bounds (the reads re-stamp them Unspecified). ViewerTimeHelper.DisplayToNaiveUtc uses the
+           active server offset applied before each load, so a Server-mode window maps to the right UTC. */
+        return (ViewerTimeHelper.DisplayToNaiveUtc(fromDisplay.Value), ViewerTimeHelper.DisplayToNaiveUtc(toDisplay.Value));
     }
 
     private static DateTime? GetDateTimeFromPickers(DatePicker datePicker, ComboBox hourCombo, ComboBox minuteCombo)
@@ -323,6 +335,142 @@ public partial class ViewerServerTab
         }
 
         ApplyTimeRangeRequested?.Invoke(this, TimeRangeCombo.SelectedIndex, fromLocal, toLocal);
+    }
+
+    // ── Time-display mode (Server / Local / UTC) ─────────────────────────────────────
+
+    /// <summary>Maps a picker item's Tag to the mode; unknown/absent falls to Server-time (Lite's default).</summary>
+    private static TimeDisplayMode ParseDisplayMode(string? tag) => tag switch
+    {
+        "LocalTime" => TimeDisplayMode.LocalTime,
+        "UTC" => TimeDisplayMode.UTC,
+        _ => TimeDisplayMode.ServerTime,
+    };
+
+    /// <summary>
+    /// Loads this server's UTC offset once (from <c>server_properties</c>) and caches it. Awaited before
+    /// each render (see <c>RefreshActiveInnerTabAsync</c>) so the visible tab's timestamps use ITS server's
+    /// offset; a failure keeps the machine-local seed. Idempotent — the cached Task means repeated
+    /// refreshes don't re-query.
+    /// </summary>
+    internal Task EnsureServerOffsetLoadedAsync() => _serverOffsetLoad ??= LoadServerOffsetAsync();
+
+    private async Task LoadServerOffsetAsync()
+    {
+        try
+        {
+            var offset = await _dataService.GetServerUtcOffsetMinutesAsync(_server.ServerId);
+            if (offset.HasValue)
+            {
+                _serverUtcOffsetMinutes = offset.Value;
+            }
+        }
+        catch
+        {
+            /* No collected offset yet (or a read hiccup): keep the viewer machine's offset so Server mode
+               degrades gracefully to ~Local until server_properties.utc_offset_minutes is populated. */
+        }
+    }
+
+    /// <summary>Pushes this tab's server offset onto the process-wide helper. Called before every render so
+    /// the visible tab (only it renders) drives the conversions with its own server's offset.</summary>
+    internal void ApplyServerOffsetToHelper() => ViewerTimeHelper.UtcOffsetMinutes = _serverUtcOffsetMinutes;
+
+    /// <summary>
+    /// The Server/Local/UTC picker changed: apply this tab's offset, re-express the custom-range pickers
+    /// from the old mode into the new one (same absolute window, mirroring Lite's
+    /// <c>TimeDisplayMode_SelectionChanged</c>), set the new global mode, then persist (via
+    /// <see cref="DisplayModeChanged"/>) and reload the visible tab so every timestamp and chart re-renders
+    /// in the new mode. No-op while loading/suppressed or when the mode is unchanged.
+    /// </summary>
+    private async void TimeDisplayMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || _suppressRangeEvents)
+        {
+            return;
+        }
+        if (TimeDisplayModeBox.SelectedItem is not ComboBoxItem item)
+        {
+            return;
+        }
+
+        var mode = ParseDisplayMode(item.Tag?.ToString());
+        if (mode == ViewerTimeHelper.CurrentDisplayMode)
+        {
+            return;
+        }
+
+        var oldMode = ViewerTimeHelper.CurrentDisplayMode;
+
+        /* Server-mode conversions (and the picker re-conversion below) need this server's offset. */
+        await EnsureServerOffsetLoadedAsync();
+        ApplyServerOffsetToHelper();
+
+        /* Re-express the custom-range pickers so the same absolute window stays selected across the switch.
+           Suppress range events while rewriting them so this drives exactly one reload (below), not a cascade. */
+        _suppressRangeEvents = true;
+        try
+        {
+            var fromPicked = IsCustomRange ? GetDateTimeFromPickers(FromDatePicker!, FromHourCombo, FromMinuteCombo) : null;
+            var toPicked = IsCustomRange ? GetDateTimeFromPickers(ToDatePicker!, ToHourCombo, ToMinuteCombo) : null;
+            if (fromPicked.HasValue && toPicked.HasValue)
+            {
+                var fromUtc = ViewerTimeHelper.DisplayToNaiveUtc(fromPicked.Value, oldMode);
+                var toUtc = ViewerTimeHelper.DisplayToNaiveUtc(toPicked.Value, oldMode);
+                ViewerTimeHelper.CurrentDisplayMode = mode;
+                var fromNew = ViewerTimeHelper.ForDisplay(fromUtc);
+                var toNew = ViewerTimeHelper.ForDisplay(toUtc);
+                FromDatePicker!.SelectedDate = fromNew.Date;
+                FromHourCombo.SelectedIndex = fromNew.Hour;
+                FromMinuteCombo.SelectedIndex = fromNew.Minute / 15;
+                ToDatePicker!.SelectedDate = toNew.Date;
+                ToHourCombo.SelectedIndex = toNew.Hour;
+                ToMinuteCombo.SelectedIndex = toNew.Minute / 15;
+            }
+            else
+            {
+                ViewerTimeHelper.CurrentDisplayMode = mode;
+            }
+        }
+        finally
+        {
+            _suppressRangeEvents = false;
+        }
+
+        DisplayModeChanged?.Invoke(mode);
+        await RefreshActiveInnerTabAsync();
+    }
+
+    /// <summary>
+    /// Sets the toolbar's display-mode picker WITHOUT raising a change — used by MainWindow to keep every
+    /// open tab's picker in sync when the global mode changes elsewhere (another tab's picker, or the
+    /// Settings window). Suppressed so it drives no reload/persist. Also used to seed the picker on
+    /// construction from the persisted mode.
+    /// </summary>
+    public void SetDisplayModeSelection(TimeDisplayMode mode)
+    {
+        if (TimeDisplayModeBox is null)
+        {
+            return;
+        }
+
+        var tag = mode.ToString();
+        _suppressRangeEvents = true;
+        try
+        {
+            foreach (var candidate in TimeDisplayModeBox.Items)
+            {
+                if (candidate is ComboBoxItem item && item.Tag?.ToString() == tag)
+                {
+                    TimeDisplayModeBox.SelectedItem = item;
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            _suppressRangeEvents = false;
+        }
     }
 
     /// <summary>

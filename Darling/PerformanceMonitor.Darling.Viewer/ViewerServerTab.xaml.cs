@@ -150,6 +150,11 @@ public partial class ViewerServerTab : UserControl
            drive replaces the removed 24-hour s_dataWindow constant. */
         InitializeTimeComboBoxes();
         InitializeAutoRefreshTimer();
+
+        /* Seed the toolbar's Server/Local/UTC picker from the persisted global mode (MainWindow set
+           ViewerTimeHelper.CurrentDisplayMode from ViewerAppSettings on startup). Suppressed inside
+           SetDisplayModeSelection, and the handler no-ops before IsLoaded anyway, so this drives no reload. */
+        SetDisplayModeSelection(ViewerTimeHelper.CurrentDisplayMode);
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -194,6 +199,11 @@ public partial class ViewerServerTab : UserControl
         _refreshInFlight = true;
         try
         {
+            /* Point the process-wide time helper at THIS server's UTC offset before rendering — only the
+               visible tab renders (the viewer's visible-only rule), so its offset wins. Loaded once, cached. */
+            await EnsureServerOffsetLoadedAsync();
+            ApplyServerOffsetToHelper();
+
             do
             {
                 _refreshRequested = false;

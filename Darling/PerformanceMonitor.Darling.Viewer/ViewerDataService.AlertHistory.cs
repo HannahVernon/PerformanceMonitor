@@ -55,7 +55,7 @@ public sealed class ViewerAlertRow
     public string? ContextJson { get; init; }
 
     /// <summary>Stored naive-UTC; shown in the viewer machine's local time (the viewer convention).</summary>
-    public string TimeLocal => ViewerDataService.ToLocalTime(AlertTime).ToString("yyyy-MM-dd HH:mm:ss");
+    public string TimeLocal => ViewerTimeHelper.ForDisplay(AlertTime).ToString("yyyy-MM-dd HH:mm:ss");
 
     public string CurrentValueDisplay => FormatValue(MetricName, CurrentValue);
 

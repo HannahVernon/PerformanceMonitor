@@ -21,7 +21,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// to <see cref="ViewerDataService"/> Postgres reads. The only render-body change is the time axis:
 /// where Lite shifts by its per-server <c>UtcOffsetMinutes</c> (CPU plots the raw server-local
 /// sample_time directly), the viewer has no server-offset concept, so every point runs through
-/// <see cref="ViewerDataService.ToLocalTime"/> — the naive-UTC-to-viewer-local convention the shell's
+/// <see cref="ViewerTimeHelper.ForDisplay"/> — the naive-UTC-to-viewer-local convention the shell's
 /// Overview charts already use. Lite's per-chart context menu and "Show Active Queries at This Time"
 /// drill-down are intentionally NOT ported (the viewer has no drill-down surfaces yet); the hover
 /// tooltips are kept. Chart chrome/legend/line polish flow through the shared <see cref="ChartStyle"/>
@@ -143,11 +143,11 @@ public partial class ViewerServerTab : IDisposable
         if (data.Count == 0) { CpuChart.Refresh(); return; }
 
         /* sample_time is the monitored server's LOCAL wall clock in the store, so GetCpuUtilizationAsync
-           de-skews it to naive UTC in SQL (#1262); it then runs through ToLocalTime like every other
-           Darling chart. (Lite instead shifts the raw server-local sample_time by its per-server
-           ServerTimeHelper.UtcOffsetMinutes; the viewer has no such config and recovers the offset from
-           the collection batch in the read.) */
-        var times = data.Select(d => ViewerDataService.ToLocalTime(d.SampleTime).ToOADate()).ToArray();
+           de-skews it to naive UTC in SQL (#1262); it then runs through ViewerTimeHelper.ForDisplay like
+           every other Darling chart. (The SQL de-skew — recovering the offset from the collection batch —
+           is a data correction independent of the Server/Local/UTC display mode ForDisplay then applies;
+           Lite instead shifts the raw server-local sample_time by its per-server ServerTimeHelper offset.) */
+        var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.SampleTime).ToOADate()).ToArray();
         var sqlCpu = data.Select(d => (double)d.SqlServerCpu).ToArray();
         var otherCpu = data.Select(d => (double)d.OtherProcessCpu).ToArray();
 
@@ -180,7 +180,7 @@ public partial class ViewerServerTab : IDisposable
 
         if (data.Count == 0) { TempDbChart.Refresh(); return; }
 
-        var times = data.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+        var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var userObj = data.Select(d => d.UserObjectReservedMb).ToArray();
         var internalObj = data.Select(d => d.InternalObjectReservedMb).ToArray();
         var versionStore = data.Select(d => d.VersionStoreReservedMb).ToArray();
@@ -226,7 +226,7 @@ public partial class ViewerServerTab : IDisposable
         if (data.Count == 0) { TempDbSizeChart.Refresh(); return; }
 
         var sorted = data.OrderBy(d => d.CollectionTime).ToList();
-        var times = sorted.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+        var times = sorted.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var totals = sorted.Select(d => d.TotalReservedMb + d.UnallocatedMb).ToArray();
 
         var sizePlot = TempDbSizeChart.Plot.Add.Scatter(times, totals);
@@ -262,7 +262,7 @@ public partial class ViewerServerTab : IDisposable
         foreach (var fileGroup in files)
         {
             var points = fileGroup.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerDataService.ToLocalTime(d.CollectionTime).ToOADate()).ToArray();
+            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
             var latency = points.Select(d => d.AvgReadLatencyMs + d.AvgWriteLatencyMs).ToArray();
             var color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
             colorIdx++;

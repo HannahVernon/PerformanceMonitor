@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 41;
+    internal const int CurrentSchemaVersion = 42;
 
     private readonly string _archivePath;
 
@@ -983,6 +983,24 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v41 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 42)
+        {
+            /* v42: server_properties gains utc_offset_minutes — the monitored server's UTC offset the
+                    shared collector now writes (DATEDIFF(MINUTE, GETUTCDATE(), GETDATE())). Appended at
+                    the end to keep the positional appender aligned; the collector now writes it, so an
+                    un-migrated DB would mis-align on the next append — this ALTER is required. Nullable
+                    (DuckDB has no ADD COLUMN NOT NULL); the offset is a stored fact, not a delta. */
+            _logger?.LogInformation("Running migration to v42: adding utc_offset_minutes column to server_properties");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS utc_offset_minutes INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v42 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

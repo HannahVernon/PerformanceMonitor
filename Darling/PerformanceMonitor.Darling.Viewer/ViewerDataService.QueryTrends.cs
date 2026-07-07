@@ -19,7 +19,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// (elapsed ms/sec for the duration trends, executions/sec for the execution-count trend);
 /// <see cref="ExecutionCount"/> carries the executions/sec rate the duration trends also compute
 /// (unused by the execution-count trend). CollectionTime is naive UTC — the chart converts it
-/// through <see cref="ViewerDataService.ToLocalTime"/>.
+/// through <see cref="ViewerTimeHelper.ForDisplay"/>.
 /// </summary>
 public sealed class QueryTrendPoint
 {

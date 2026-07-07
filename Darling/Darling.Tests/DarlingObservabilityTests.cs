@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_FifteenVersions_V14RefreshViews_V15IndexMetadata()
+    public void MigrationScripts_SixteenVersions_V15IndexMetadata_V16ServerUtcOffset()
     {
-        Assert.Equal(15, PgMigrations.Scripts.Count);
+        Assert.Equal(16, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -50,7 +50,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(13, PgMigrations.Scripts[12].Version);
         Assert.Equal(14, PgMigrations.Scripts[13].Version);
         Assert.Equal(15, PgMigrations.Scripts[14].Version);
-        Assert.Equal(15, StorageVersion.SchemaVersion);
+        Assert.Equal(16, PgMigrations.Scripts[15].Version);
+        Assert.Equal(16, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -230,6 +231,14 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_row_locks boolean;", v15, StringComparison.Ordinal);
         Assert.Contains("ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_indexed_view boolean;", v15, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_index_object_stats AS SELECT * FROM index_object_stats;", v15, StringComparison.Ordinal);
+
+        /* V16 adds server_properties.utc_offset_minutes additively (the monitored server's UTC offset the
+           shared collector now writes), so the headless viewer's Server-time display mode can render
+           timestamps in the server's own local time — one nullable ADD COLUMN IF NOT EXISTS, appended to
+           keep the positional binary COPY aligned. server_properties has no v_* view, so nothing to refresh. */
+        var v16 = PgMigrations.Scripts[15].Sql;
+        Assert.Equal("server-utc-offset", PgMigrations.Scripts[15].Name);
+        Assert.Contains("ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS utc_offset_minutes integer;", v16, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);

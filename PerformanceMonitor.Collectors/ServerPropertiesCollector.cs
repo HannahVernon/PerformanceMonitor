@@ -51,7 +51,8 @@ public sealed class ServerPropertiesCollector : CollectorDefinitionBase<ServerPr
         int? MemoryDumpCount,
         DateTime? SqlServerStartTime,
         string? HostOsVersion,
-        string? AgReplicaRole);
+        string? AgReplicaRole,
+        int? UtcOffsetMinutes);
 
     private const string QueryText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -141,7 +142,12 @@ SELECT
     host_os_version =
         @host_os,
     ag_replica_role =
-        @ag_role
+        @ag_role,
+    /* The monitored server's UTC offset in minutes — the same live derivation Lite computes at
+       connect (ServerManager). Collected so the headless viewer, which cannot query the target
+       live, can render timestamps in the server's own local time (Server-time display mode). */
+    utc_offset_minutes =
+        DATEDIFF(MINUTE, GETUTCDATE(), GETDATE())
 FROM sys.dm_os_sys_info AS osi
 OPTION(RECOMPILE);";
 
@@ -257,6 +263,10 @@ SELECT
         new CollectorColumn("sqlserver_start_time", CollectorColumnType.Timestamp),
         new CollectorColumn("host_os_version", CollectorColumnType.Varchar),
         new CollectorColumn("ag_replica_role", CollectorColumnType.Varchar),
+        /* Appended (never inserted) so a fresh V1 store and an ALTER-migrated store keep an identical
+           physical column order for the positional writers. The monitored server's UTC offset in
+           minutes — the viewer's Server-time display mode reads it (UTC + offset = server local). */
+        new CollectorColumn("utc_offset_minutes", CollectorColumnType.Integer),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
@@ -275,6 +285,9 @@ SELECT
         var sqlServerStartTime = reader.IsDBNull(14) ? (DateTime?)null : reader.GetDateTime(14);
         var hostOsVersion = reader.IsDBNull(15) ? null : reader.GetString(15);
         var agReplicaRole = reader.IsDBNull(16) ? null : reader.GetString(16);
+        /* utc_offset_minutes (17): DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) — always non-null in
+           practice, guarded anyway for a defensive read. */
+        var utcOffsetMinutes = reader.IsDBNull(17) ? (int?)null : reader.GetInt32(17);
 
         /* For Azure SQL DB, sys.dm_os_sys_info.cpu_count returns the compute node's total cores,
            not the per-database vCore allocation. Parse the actual vCore count from the service
@@ -305,7 +318,8 @@ SELECT
             MemoryDumpCount: null,
             SqlServerStartTime: sqlServerStartTime,
             HostOsVersion: hostOsVersion,
-            AgReplicaRole: agReplicaRole));
+            AgReplicaRole: agReplicaRole,
+            UtcOffsetMinutes: utcOffsetMinutes));
 
         return rows;
     }
@@ -348,7 +362,8 @@ SELECT
             .Value(row.MemoryDumpCount)
             .Value(row.SqlServerStartTime)
             .Value(row.HostOsVersion)
-            .Value(row.AgReplicaRole);
+            .Value(row.AgReplicaRole)
+            .Value(row.UtcOffsetMinutes);
     }
 
     /// <summary>
