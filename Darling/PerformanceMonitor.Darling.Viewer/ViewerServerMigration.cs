@@ -203,6 +203,8 @@ public sealed class ViewerServerMigration
         MultiSubnetFailover = entry.MultiSubnetFailover,
         ExcludedDatabases = entry.ExcludedDatabases ?? new List<string>(),
         MonthlyCostUsd = entry.MonthlyCostUsd,
+        /* #1236: carry the per-server delivery override into the store (was viewer-local / dead pre-V18). */
+        AlertDeliveryModeOverride = entry.AlertDeliveryModeOverride,
         IsEnabled = entry.IsEnabled,
     };
 

@@ -39,8 +39,9 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public sealed partial class ViewerDataService
 {
-    /* The 27 AlertsConfig + AnalysisConfig columns in the SAME order the service reads them
-       (StoreConfigProvider.ReadAlertSettingsAsync), so the parity test pins one list against both ends. */
+    /* The 29 AlertsConfig + AnalysisConfig columns in the SAME order the service reads them
+       (StoreConfigProvider.ReadAlertSettingsAsync), so the parity test pins one list against both ends.
+       delivery_mode/per_event_max (V18, #1141) are appended so the existing ordinals stay pinned. */
     private const string AlertSettingsColumns =
         "enabled, cpu_enabled, cpu_threshold_percent, cpu_mode, blocking_enabled, blocking_count_threshold, " +
         "deadlock_enabled, deadlock_count_threshold, poison_wait_enabled, poison_wait_threshold_ms, " +
@@ -48,7 +49,7 @@ public sealed partial class ViewerDataService
         "tempdb_space_threshold_percent, low_disk_enabled, low_disk_threshold_percent, low_disk_threshold_gb, " +
         "long_running_job_enabled, long_running_job_multiplier, failed_job_enabled, failed_job_lookback_minutes, " +
         "cooldown_minutes, excluded_databases, analysis_enabled, analysis_interval_minutes, " +
-        "analysis_notifications_enabled, analysis_notify_severity";
+        "analysis_notifications_enabled, analysis_notify_severity, delivery_mode, per_event_max";
 
     /// <summary>The single global alert-settings row (id=1), for the Settings window prefill + the migrate-in
     /// defaults check. Column order matches <see cref="AlertSettingsColumns"/>.</summary>
@@ -57,11 +58,11 @@ public sealed partial class ViewerDataService
 
     /// <summary>Upserts the single global alert-settings row (Settings window Save). ON CONFLICT rewrites every
     /// column and bumps <c>modified_at</c> (and, via the V17 statement trigger, <c>config_version</c> — the
-    /// service reloads on its next sweep). $1..$27 bind the columns in <see cref="AlertSettingsColumns"/> order.</summary>
+    /// service reloads on its next sweep). $1..$29 bind the columns in <see cref="AlertSettingsColumns"/> order.</summary>
     public const string AlertSettingsUpsertSql = @"
 INSERT INTO config_alert_settings (id, " + AlertSettingsColumns + @", modified_at)
 VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-        $23, $24, $25, $26, $27, (now() AT TIME ZONE 'UTC'))
+        $23, $24, $25, $26, $27, $28, $29, (now() AT TIME ZONE 'UTC'))
 ON CONFLICT (id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     cpu_enabled = EXCLUDED.cpu_enabled,
@@ -90,6 +91,8 @@ ON CONFLICT (id) DO UPDATE SET
     analysis_interval_minutes = EXCLUDED.analysis_interval_minutes,
     analysis_notifications_enabled = EXCLUDED.analysis_notifications_enabled,
     analysis_notify_severity = EXCLUDED.analysis_notify_severity,
+    delivery_mode = EXCLUDED.delivery_mode,
+    per_event_max = EXCLUDED.per_event_max,
     modified_at = (now() AT TIME ZONE 'UTC')";
 
     /// <summary>The two <c>cpu_mode</c> values the service honors (it compares case-insensitively against
@@ -146,6 +149,8 @@ ON CONFLICT (id) DO UPDATE SET
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = r.AnalysisIntervalMinutes });           // $25
         command.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = r.AnalysisNotificationsEnabled });     // $26
         command.Parameters.Add(new NpgsqlParameter<double> { TypedValue = r.AnalysisNotifySeverity });         // $27
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = r.DeliveryMode });                   // $28
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = r.PerEventMax });                       // $29
     }
 
     private static AlertSettingsRow ReadAlertSettingsRow(NpgsqlDataReader reader) => new()
@@ -177,6 +182,8 @@ ON CONFLICT (id) DO UPDATE SET
         AnalysisIntervalMinutes = reader.GetInt32(24),
         AnalysisNotificationsEnabled = reader.GetBoolean(25),
         AnalysisNotifySeverity = reader.GetDouble(26),
+        DeliveryMode = reader.GetString(27),
+        PerEventMax = reader.GetInt32(28),
     };
 
     /// <summary>Maps the Settings window's CPU-mode combo tag ("Total"/"SqlOnly") to the store value.</summary>
@@ -191,11 +198,12 @@ ON CONFLICT (id) DO UPDATE SET
 /// <summary>
 /// A <c>config.config_alert_settings</c> row (the single id=1 global row) as the viewer authors + reads it —
 /// the desired-state twin of the service's <c>AlertsConfig</c> + <c>AnalysisConfig</c> the store hot-swaps in.
-/// Carries ONLY the columns the store (and hence the service) has: the viewer-only alert fields the Settings
-/// window also edits (tray minimize, connection-change notify, LRQ max-results + the five noise filters,
-/// Summary/Per-event delivery, mute-rule default expiration, dismissal logging, analysis re-notify cooldown)
-/// are NOT service-honored config and stay viewer-local in <see cref="ViewerAppSettings"/>. Defaults mirror
-/// the V17 DDL (and Lite's <c>App.*</c>) member-for-member so <see cref="Defaults"/> equals a freshly-seeded row.
+/// Carries ONLY the columns the store (and hence the service) has, now INCLUDING the Summary/Per-event delivery
+/// mode + per-event cap (#1141/#1236, V18 — the service honors them at delivery time). The remaining viewer-only
+/// alert fields the Settings window also edits (tray minimize, connection-change notify, LRQ max-results + the
+/// five noise filters, mute-rule default expiration, dismissal logging, analysis re-notify cooldown) are NOT
+/// service-honored config and stay viewer-local in <see cref="ViewerAppSettings"/>. Defaults mirror the V17/V18
+/// DDL (and Lite's <c>App.*</c>) member-for-member so <see cref="Defaults"/> equals a freshly-seeded row.
 /// </summary>
 public sealed class AlertSettingsRow
 {
@@ -232,7 +240,14 @@ public sealed class AlertSettingsRow
     public bool AnalysisNotificationsEnabled { get; set; } = true;
     public double AnalysisNotifySeverity { get; set; } = 1.5;
 
-    /// <summary>A row equal to the V17 seed defaults — the migrate-in "is the service section still at defaults?" baseline.</summary>
+    /// <summary>Deadlock/blocking delivery mode: "Summary" (one card per cycle) or "PerEvent" (#1141) — the store's
+    /// <c>delivery_mode</c> text, matching the service's <c>AlertNotificationMode</c> names. Default "Summary" (V18 DDL).</summary>
+    public string DeliveryMode { get; set; } = "Summary";
+
+    /// <summary>Per-event mode's per-cycle incident cap before the "+N more" batch. Default 5 (V18 DDL); clamped 1–100.</summary>
+    public int PerEventMax { get; set; } = 5;
+
+    /// <summary>A row equal to the V17/V18 seed defaults — the migrate-in "is the service section still at defaults?" baseline.</summary>
     public static AlertSettingsRow Defaults() => new();
 
     /// <summary>Value-equality against another row (sequence-comparing the excluded-databases list) — the
@@ -266,6 +281,8 @@ public sealed class AlertSettingsRow
             && AnalysisEnabled == other.AnalysisEnabled
             && AnalysisIntervalMinutes == other.AnalysisIntervalMinutes
             && AnalysisNotificationsEnabled == other.AnalysisNotificationsEnabled
-            && Math.Abs(AnalysisNotifySeverity - other.AnalysisNotifySeverity) < 0.0001;
+            && Math.Abs(AnalysisNotifySeverity - other.AnalysisNotifySeverity) < 0.0001
+            && string.Equals(DeliveryMode, other.DeliveryMode, StringComparison.OrdinalIgnoreCase)
+            && PerEventMax == other.PerEventMax;
     }
 }

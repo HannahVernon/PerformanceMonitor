@@ -24,8 +24,14 @@ namespace PerformanceMonitor.Darling.Service;
 /// muted, channels skipped) and alerts with no channel configured at all (recorded as 'tray',
 /// Lite's taxonomy for delivered-without-email; the headless smoke asserts this row exists).
 /// Never throws — a dead SMTP server or Postgres store must not abort the engine's sweep.
-/// Delivery-mode fan-out (#1141 Per-event splitting, #1236 per-server override) is deliberately
-/// NOT implemented: Darling ships Lite's Summary default.
+///
+/// <para>Delivery-mode fan-out (Lite/Dashboard parity): the effective mode is the shared
+/// <see cref="AlertDeliveryModeResolver"/> of a per-server override (#1236,
+/// <see cref="MonitoredServer.AlertDeliveryModeOverride"/> via the injected resolver) against the global
+/// <see cref="DarlingAlertSettings.DeliveryMode"/>. In Per-event mode an alert carrying incidents is split by
+/// the shared <see cref="PerEventNotification.Split"/> into one send+row per distinct incident (capped at
+/// <see cref="DarlingAlertSettings.PerEventMax"/> with a trailing "+N more"); Summary mode — or any alert
+/// without incidents (CPU, low-disk, jobs) — takes the single combined send unchanged.</para>
 /// </summary>
 public sealed class DarlingAlertDeliverer : IAlertDeliverer
 {
@@ -40,15 +46,26 @@ public sealed class DarlingAlertDeliverer : IAlertDeliverer
     private readonly IAlertHistoryStore _historyStore;
     private readonly EmailSendCore _core;
     private readonly ILogger _logger;
+    private readonly DarlingAlertSettings _settings;
+    private readonly Func<string, AlertNotificationMode?> _resolveServerOverride;
 
+    /// <param name="resolveServerOverride">
+    /// Maps a fired alert's <see cref="AlertOutcome.ServerKey"/> to that server's
+    /// <see cref="MonitoredServer.AlertDeliveryModeOverride"/> (or null to inherit the global mode). Optional —
+    /// null (the default) means every server inherits the global <see cref="DarlingAlertSettings.DeliveryMode"/>,
+    /// which is also correct for incident-free self-alerts. The service passes a resolver over its live server set.
+    /// </param>
     public DarlingAlertDeliverer(
-        IAlertSettings settings,
+        DarlingAlertSettings settings,
         IAlertHistoryStore historyStore,
         WebhookAlertService webhookAlertService,
-        ILogger logger)
+        ILogger logger,
+        Func<string, AlertNotificationMode?>? resolveServerOverride = null)
     {
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _resolveServerOverride = resolveServerOverride ?? (_ => null);
         _core = new EmailSendCore(settings, historyStore, webhookAlertService, s_branding, logger);
     }
 
@@ -61,37 +78,28 @@ public sealed class DarlingAlertDeliverer : IAlertDeliverer
 
         try
         {
-            /* Lite's EmailAlertService.cs:65-66 — muted alerts skip both channels but still
-               record their history row below. */
-            var result = await _core.TrySendAsync(
-                outcome.MetricName, outcome.ServerName, outcome.CurrentValue, outcome.ThresholdValue,
-                outcome.ServerKey, outcome.Context, attemptChannels: !outcome.Muted);
-
-            /* Lite's single-row notification_type taxonomy (EmailAlertService.cs:68-80):
-               muted → "muted"; email attempted → "email"; webhook delivery upgrades to
-               "email+webhook"/"webhook"; otherwise "tray". */
-            var notificationType = outcome.Muted ? "muted" : "tray";
-            if (result.EmailAttempted)
+            /* #1236/#1141: a per-server override wins over the global mode; Per-event splits an
+               incident-carrying alert into one send+row per distinct incident (capped, "+N more"). */
+            var mode = AlertDeliveryModeResolver.Resolve(_resolveServerOverride(outcome.ServerKey), _settings.DeliveryMode);
+            if (mode == AlertNotificationMode.PerEvent && outcome.Context?.Incidents is { Count: > 0 })
             {
-                notificationType = "email";
+                foreach (var message in PerEventNotification.Split(outcome.Context, _settings.PerEventMax))
+                {
+                    /* Per-incident card: msg.CurrentValue is the incident's occurrence count; no server-level
+                       numerics (matching Lite/Dashboard's per-event sends), detail text rebuilt from the split context. */
+                    await SendAndRecordAsync(
+                        outcome, message.CurrentValue, message.Context,
+                        AlertContextBuilders.ContextToDetailText(message.Context),
+                        numericCurrentValue: null, numericThresholdValue: null);
+                }
+
+                return;
             }
 
-            var sent = result.EmailSent;
-            if (result.WebhookSent)
-            {
-                notificationType = notificationType == "email" ? "email+webhook" : "webhook";
-                sent = true;
-            }
-
-            /* Always log the alert, regardless of channel status (EmailAlertService.cs:82-94) —
-               the structured context persists as JSON alongside the flat detail_text. */
-            string? contextJson = outcome.Context is not null ? AlertContextSerializer.Serialize(outcome.Context) : null;
-            await _historyStore.RecordAlertAsync(new AlertHistoryRecord(
-                outcome.ServerKey, outcome.ServerName, outcome.MetricName,
-                outcome.CurrentValue, outcome.ThresholdValue,
-                outcome.NumericCurrentValue, outcome.NumericThresholdValue,
-                sent, notificationType, result.SendError,
-                outcome.Muted, outcome.DetailText, contextJson));
+            /* Summary mode, or an alert with no incidents (CPU/low-disk/jobs): one combined send+row, unchanged. */
+            await SendAndRecordAsync(
+                outcome, outcome.CurrentValue, outcome.Context, outcome.DetailText,
+                outcome.NumericCurrentValue, outcome.NumericThresholdValue);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -102,5 +110,47 @@ public sealed class DarlingAlertDeliverer : IAlertDeliverer
             _logger.LogError("Alert delivery failed for {Metric} on {Server}: {Message}",
                 outcome.MetricName, outcome.ServerName, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Sends one alert message (email + webhook fan-out via the shared core) and writes exactly one combined
+    /// <c>config_alert_log</c> row for it — Lite's record-and-send cadence. Called once for a Summary alert and
+    /// once per split incident in Per-event mode, so every send is paired with its own history row (the
+    /// structured context persists as JSON alongside the flat detail_text). Muted alerts skip both channels but
+    /// still record (flagged muted).
+    /// </summary>
+    private async Task SendAndRecordAsync(
+        AlertOutcome outcome, string currentValue, AlertContext? context, string? detailText,
+        double? numericCurrentValue, double? numericThresholdValue)
+    {
+        /* Lite's EmailAlertService.cs:65-66 — muted alerts skip both channels but still record below. */
+        var result = await _core.TrySendAsync(
+            outcome.MetricName, outcome.ServerName, currentValue, outcome.ThresholdValue,
+            outcome.ServerKey, context, attemptChannels: !outcome.Muted);
+
+        /* Lite's single-row notification_type taxonomy (EmailAlertService.cs:68-80):
+           muted → "muted"; email attempted → "email"; webhook delivery upgrades to
+           "email+webhook"/"webhook"; otherwise "tray". */
+        var notificationType = outcome.Muted ? "muted" : "tray";
+        if (result.EmailAttempted)
+        {
+            notificationType = "email";
+        }
+
+        var sent = result.EmailSent;
+        if (result.WebhookSent)
+        {
+            notificationType = notificationType == "email" ? "email+webhook" : "webhook";
+            sent = true;
+        }
+
+        /* Always log the alert, regardless of channel status (EmailAlertService.cs:82-94). */
+        string? contextJson = context is not null ? AlertContextSerializer.Serialize(context) : null;
+        await _historyStore.RecordAlertAsync(new AlertHistoryRecord(
+            outcome.ServerKey, outcome.ServerName, outcome.MetricName,
+            currentValue, outcome.ThresholdValue,
+            numericCurrentValue, numericThresholdValue,
+            sent, notificationType, result.SendError,
+            outcome.Muted, detailText, contextJson));
     }
 }

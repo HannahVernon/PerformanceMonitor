@@ -29,11 +29,11 @@ public sealed class ViewerMonitoredServerSqlTests
     {
         "server_id", "name", "host", "database", "auth", "username", "encrypted_password", "encrypt_mode",
         "trust_server_certificate", "read_only_intent", "multi_subnet_failover", "excluded_databases",
-        "monthly_cost_usd", "capture_plans", "is_enabled",
+        "monthly_cost_usd", "capture_plans", "is_enabled", "alert_delivery_mode_override",
     };
 
     [Fact]
-    public void UpsertSql_WritesEveryV17Column_AsBoundParameters_OnConflictUpdate()
+    public void UpsertSql_WritesEveryStoreColumn_AsBoundParameters_OnConflictUpdate()
     {
         var sql = ViewerDataService.MonitoredServerUpsertSql;
 
@@ -43,8 +43,8 @@ public sealed class ViewerMonitoredServerSqlTests
             Assert.Contains(column, sql, StringComparison.Ordinal);
         }
 
-        /* Every value is a $N parameter (15 columns), never inlined. */
-        for (var i = 1; i <= 15; i++)
+        /* Every value is a $N parameter (16 columns incl. the V18 alert_delivery_mode_override), never inlined. */
+        for (var i = 1; i <= 16; i++)
         {
             Assert.Contains("$" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), sql, StringComparison.Ordinal);
         }

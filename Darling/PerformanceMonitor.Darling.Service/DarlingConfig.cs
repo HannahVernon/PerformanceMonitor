@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Service;
 
@@ -329,6 +330,23 @@ public sealed class AlertsConfig
     /// <summary>Databases excluded from blocking/deadlock/long-running-query alert evaluation.</summary>
     [JsonPropertyName("excludedDatabases")]
     public List<string> ExcludedDatabases { get; set; } = new();
+
+    /// <summary>
+    /// How deadlock/blocking alerts are delivered (#1141): <see cref="AlertNotificationMode.Summary"/>
+    /// (one batched card per cycle — the default, matching Lite) or <see cref="AlertNotificationMode.PerEvent"/>
+    /// (one notification per distinct incident, capped at <see cref="PerEventMax"/> with a trailing "+N more").
+    /// A per-server override (<see cref="MonitoredServer.AlertDeliveryModeOverride"/>) wins over this global
+    /// default via the shared <c>AlertDeliveryModeResolver</c>. Serialized as its name ("Summary"/"PerEvent")
+    /// in darling.json and stored as <c>config_alert_settings.delivery_mode</c>.
+    /// </summary>
+    [JsonPropertyName("deliveryMode")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public AlertNotificationMode DeliveryMode { get; set; } = AlertNotificationMode.Summary;
+
+    /// <summary>Per-event mode's cap on incidents delivered individually per cycle before the trailing
+    /// "+N more" batch (#1141); clamped 1–100 when applied. Stored as <c>config_alert_settings.per_event_max</c>.</summary>
+    [JsonPropertyName("perEventMax")]
+    public int PerEventMax { get; set; } = 5;
 }
 
 /// <summary>
@@ -473,6 +491,17 @@ public sealed class MonitoredServer
     /// </summary>
     [JsonPropertyName("monthlyCostUsd")]
     public decimal MonthlyCostUsd { get; set; }
+
+    /// <summary>
+    /// Per-server override of the deadlock/blocking alert delivery mode (#1236); null (the default) inherits
+    /// the global <see cref="AlertsConfig.DeliveryMode"/>. Forces Summary or Per-event for THIS server only
+    /// (e.g. Per-event for one noisy prod box while the fleet default stays Summary). Populated from
+    /// <c>config_monitored_servers.alert_delivery_mode_override</c> at read time so the deliverer can resolve
+    /// it per fired alert via the shared <c>AlertDeliveryModeResolver</c>; serialized as its name in darling.json.
+    /// </summary>
+    [JsonPropertyName("alertDeliveryModeOverride")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public AlertNotificationMode? AlertDeliveryModeOverride { get; set; }
 
     [JsonIgnore]
     public bool UsesSqlAuth => string.Equals(Auth, "sql", StringComparison.OrdinalIgnoreCase);

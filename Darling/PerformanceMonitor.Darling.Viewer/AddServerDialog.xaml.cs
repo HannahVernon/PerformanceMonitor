@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using PerformanceMonitor.Common;
+using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -98,6 +99,13 @@ public partial class AddServerDialog : Window
         ReadOnlyIntentCheckBox.IsChecked = existing.ReadOnlyIntent;
         MultiSubnetFailoverCheckBox.IsChecked = existing.MultiSubnetFailover;
         MonthlyCostBox.Text = existing.MonthlyCostUsd.ToString(CultureInfo.InvariantCulture);
+        /* #1236: prefill the per-server delivery override (null = "Use global setting"). */
+        AlertDeliveryOverrideBox.SelectedIndex = existing.AlertDeliveryModeOverride switch
+        {
+            AlertNotificationMode.Summary => 1,
+            AlertNotificationMode.PerEvent => 2,
+            _ => 0
+        };
         FavoriteCheckBox.IsChecked = isFavorite;
 
         EncryptModeComboBox.SelectedIndex = existing.EncryptMode switch
@@ -354,9 +362,19 @@ public partial class AddServerDialog : Window
             ExcludedDatabases = _existing?.ExcludedDatabases ?? new System.Collections.Generic.List<string>(),
             MonthlyCostUsd = monthlyCost,
             CapturePlans = _existing?.CapturePlans,
+            AlertDeliveryModeOverride = GetSelectedDeliveryOverride(),
             IsEnabled = EnabledCheckBox.IsChecked == true,
         };
     }
+
+    /// <summary>The per-server delivery override the combo encodes: index 0 = inherit the global (null),
+    /// 1 = force Summary, 2 = force Per-event (#1236).</summary>
+    private AlertNotificationMode? GetSelectedDeliveryOverride() => AlertDeliveryOverrideBox.SelectedIndex switch
+    {
+        1 => AlertNotificationMode.Summary,
+        2 => AlertNotificationMode.PerEvent,
+        _ => null
+    };
 
     private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
