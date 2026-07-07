@@ -67,6 +67,18 @@ public sealed class DarlingWorkerTests
     }
 
     /// <summary>
+    /// The Stage 2 pause gate: the collection sweep runs only when NOT paused. This pins the gate the loop
+    /// keys off (config_service.paused -> _paused -> skip collection/alert/analysis/purge) so a future edit
+    /// can't silently invert or drop it; the command loop keeps running while paused so a resume is honored.
+    /// </summary>
+    [Fact]
+    public void ShouldRunCollection_SkipsOnlyWhenPaused()
+    {
+        Assert.True(DarlingWorker.ShouldRunCollection(paused: false));
+        Assert.False(DarlingWorker.ShouldRunCollection(paused: true));
+    }
+
+    /// <summary>
     /// A connection string that ALREADY specifies a Search Path (managed mode carries it, and a BYO
     /// operator may set their own) is returned untouched — no double-set, and a non-default choice
     /// is respected.

@@ -26,26 +26,43 @@ namespace PerformanceMonitor.Darling.Service;
 /// </summary>
 public static class DarlingObservability
 {
+    /* is_enabled is written ONLY on first insert (a server reaching a connect is enabled by definition —
+       only enabled servers are in the loop). The ON CONFLICT re-connect deliberately does NOT touch
+       is_enabled, so a control-plane disable (config_monitored_servers.is_enabled = FALSE, mirrored onto
+       this observed row by SyncServerEnabledStatesAsync) is never clobbered back to TRUE on the next
+       connect. Before Stage 2 this forced is_enabled = TRUE on every connect and nothing ever read it. */
     private const string UpsertServerSql = @"
 INSERT INTO servers (server_id, server_name, display_name, is_enabled, sql_engine_edition, sql_major_version, created_date, modified_date, monthly_cost_usd)
 VALUES ($1, $2, $3, TRUE, $4, $5, $6, $6, $7)
 ON CONFLICT (server_id) DO UPDATE SET
     server_name = EXCLUDED.server_name,
     display_name = EXCLUDED.display_name,
-    is_enabled = TRUE,
     sql_engine_edition = EXCLUDED.sql_engine_edition,
     sql_major_version = EXCLUDED.sql_major_version,
     modified_date = EXCLUDED.modified_date,
     monthly_cost_usd = EXCLUDED.monthly_cost_usd;";
+
+    /* Mirror the DESIRED enable state (config.config_monitored_servers.is_enabled) onto the OBSERVED
+       registry (collect.servers.is_enabled). A disabled server drops out of the collection loop and stops
+       upserting, so without this its observed row would keep its last (TRUE) value forever; the viewer /
+       FinOps read collect.servers, so the observed flag must track the desired one. Runs on every reload. */
+    private const string SyncEnabledStatesSql = @"
+UPDATE collect.servers s
+SET is_enabled = c.is_enabled,
+    modified_date = (now() AT TIME ZONE 'UTC')
+FROM config.config_monitored_servers c
+WHERE s.server_id = c.server_id
+  AND s.is_enabled IS DISTINCT FROM c.is_enabled;";
 
     private const string InsertCollectionLogSql = @"
 INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, duration_ms, status, error_message, rows_collected, sql_duration_ms, duckdb_duration_ms)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
 
     /// <summary>
-    /// Registers (or refreshes) a connected server in the registry: created_date is written only
-    /// on first insert, modified_date on every connect, and a disabled row is re-enabled — a
-    /// server present in darling.json is by definition monitored.
+    /// Registers (or refreshes) a connected server in the registry: created_date is written only on first
+    /// insert, modified_date on every connect. is_enabled is set TRUE on first insert only and left
+    /// UNTOUCHED on re-connect (Stage 2) so a control-plane disable is not resurrected — the desired enable
+    /// state is mirrored onto this observed row by <see cref="SyncServerEnabledStatesAsync"/> on each reload.
     /// </summary>
     public static async Task UpsertServerAsync(NpgsqlDataSource postgres, ServerRuntime server, ILogger? logger, CancellationToken cancellationToken)
     {
@@ -71,6 +88,32 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
             /* Failure-isolated by design — an observability write must never break the collection loop. */
             logger?.LogDebug("Observability: servers upsert for '{Server}' failed: {Message}",
                 server.Config.DisplayName, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Mirrors the DESIRED enable state (<c>config.config_monitored_servers.is_enabled</c>) onto the
+    /// OBSERVED registry (<c>collect.servers.is_enabled</c>) for every server present in both — so a
+    /// control-plane <c>disable_server</c> flips the observed row to FALSE even though the disabled server
+    /// stops upserting, and a later <c>enable_server</c> flips it back. Runs on each control-plane reload.
+    /// Failure-isolated (Debug + no-op) like the other observability writes.
+    /// </summary>
+    public static async Task SyncServerEnabledStatesAsync(NpgsqlDataSource postgres, ILogger? logger, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(SyncEnabledStatesSql, connection);
+            var changed = await command.ExecuteNonQueryAsync(cancellationToken);
+            if (changed > 0)
+            {
+                logger?.LogInformation("Synced observed enable-state for {Count} server(s) from the desired config", changed);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            /* Failure-isolated by design — an observability write must never break the collection loop. */
+            logger?.LogDebug("Observability: server enable-state sync failed: {Message}", ex.Message);
         }
     }
 
