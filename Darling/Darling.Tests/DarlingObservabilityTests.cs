@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_EighteenVersions_V17ConfigControlPlane_V18AlertDeliveryMode()
+    public void MigrationScripts_NineteenVersions_V18AlertDeliveryMode_V19AnalysisStateMarker()
     {
-        Assert.Equal(18, PgMigrations.Scripts.Count);
+        Assert.Equal(19, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -53,7 +53,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(16, PgMigrations.Scripts[15].Version);
         Assert.Equal(17, PgMigrations.Scripts[16].Version);
         Assert.Equal(18, PgMigrations.Scripts[17].Version);
-        Assert.Equal(18, StorageVersion.SchemaVersion);
+        Assert.Equal(19, PgMigrations.Scripts[18].Version);
+        Assert.Equal(19, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -278,6 +279,24 @@ public sealed class DarlingObservabilityTests
         /* Every V18 object is config.-qualified (a bare ALTER TABLE config_* would hit the wrong schema). */
         Assert.DoesNotContain("ALTER TABLE config_", v18, StringComparison.Ordinal);
 
+        /* V19 creates the per-server analysis-state marker (the "still collecting vs all-clear" signal the
+           viewer reads). It lives in collect (service-produced observed output read by the viewer, like
+           analysis_findings/collection_log) and is EXPLICITLY collect.-qualified — the opposite direction
+           from the config control plane. Single row per server (server_id PK) so the writer upserts; the
+           columns are exactly the marker's four (insufficient flag, engine message, analysis time). It has
+           NO v_* passthrough view (no Lite SQL ports through it), so the AllPassthroughViews cross-check
+           above is unaffected. */
+        var v19 = PgMigrations.Scripts[18].Sql;
+        Assert.Equal("analysis-state-marker", PgMigrations.Scripts[18].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS collect.analysis_state (", v19, StringComparison.Ordinal);
+        Assert.Contains("server_id integer NOT NULL PRIMARY KEY", v19, StringComparison.Ordinal);
+        Assert.Contains("insufficient_data boolean NOT NULL DEFAULT FALSE", v19, StringComparison.Ordinal);
+        Assert.Contains("message text", v19, StringComparison.Ordinal);
+        Assert.Contains("analysis_time timestamp NOT NULL", v19, StringComparison.Ordinal);
+        /* Observed-output tier -> collect, never the config control plane; and no passthrough view. */
+        Assert.DoesNotContain("config.analysis_state", v19, StringComparison.Ordinal);
+        Assert.DoesNotContain("CREATE OR REPLACE VIEW", v19, StringComparison.Ordinal);
+
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS collection_log (", v2, StringComparison.Ordinal);
@@ -304,6 +323,24 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("s.is_enabled IS DISTINCT FROM c.is_enabled", sql, StringComparison.Ordinal);
         Assert.Contains("s.monthly_cost_usd IS DISTINCT FROM c.monthly_cost_usd", sql, StringComparison.Ordinal);
         Assert.Contains(" OR ", sql, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The analysis-state marker write (V19) is an UPSERT on the natural server_id key over the four marker
+    /// columns, so a re-run for a server overwrites its prior determination rather than accumulating rows.
+    /// Bare <c>analysis_state</c> resolves through the collect/config search path to collect.analysis_state
+    /// (the observed-output schema). Pure SQL-shape pin (no store).
+    /// </summary>
+    [Fact]
+    public void WriteAnalysisStateSql_UpsertsTheFourMarkerColumnsOnServerId()
+    {
+        var sql = DarlingObservability.WriteAnalysisStateSql;
+
+        Assert.Contains("INSERT INTO analysis_state (server_id, insufficient_data, message, analysis_time)", sql, StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT (server_id) DO UPDATE SET", sql, StringComparison.Ordinal);
+        Assert.Contains("insufficient_data = EXCLUDED.insufficient_data", sql, StringComparison.Ordinal);
+        Assert.Contains("message = EXCLUDED.message", sql, StringComparison.Ordinal);
+        Assert.Contains("analysis_time = EXCLUDED.analysis_time", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -491,6 +528,56 @@ public sealed class DarlingObservabilityTests
         await DeleteTestRowsAsync(connection);
     }
 
+    [Fact]
+    public async Task WriteAnalysisState_InsufficientThenSufficient_UpsertsTheMarker_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the analysis-state marker test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteTestRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+
+        /* Insufficient-data pass: the marker upserts insufficient_data = true with the engine's message. */
+        await DarlingObservability.WriteAnalysisStateAsync(
+            postgres, TestServerId, insufficientData: true, "Not enough data for reliable analysis. Need 1.0 days.",
+            null, TestContext.Current.CancellationToken);
+
+        var (insufficient1, message1) = await ReadAnalysisStateAsync(connection);
+        Assert.True(insufficient1);
+        Assert.Equal("Not enough data for reliable analysis. Need 1.0 days.", message1);
+
+        /* A real pass on enough data: the SAME row (server_id PK) flips to false and clears the message —
+           the upsert overwrites rather than inserting a second row. */
+        await DarlingObservability.WriteAnalysisStateAsync(
+            postgres, TestServerId, insufficientData: false, null, null, TestContext.Current.CancellationToken);
+
+        var (insufficient2, message2) = await ReadAnalysisStateAsync(connection);
+        Assert.False(insufficient2);
+        Assert.Null(message2);
+
+        using (var count = new NpgsqlCommand("SELECT COUNT(*) FROM analysis_state WHERE server_id = $1", connection))
+        {
+            count.Parameters.AddWithValue(TestServerId);
+            Assert.Equal(1L, await count.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        }
+
+        await DeleteTestRowsAsync(connection);
+    }
+
+    private static async Task<(bool Insufficient, string? Message)> ReadAnalysisStateAsync(NpgsqlConnection connection)
+    {
+        using var read = new NpgsqlCommand("SELECT insufficient_data, message FROM analysis_state WHERE server_id = $1", connection);
+        read.Parameters.AddWithValue(TestServerId);
+        using var reader = await read.ExecuteReaderAsync(TestContext.Current.CancellationToken);
+        Assert.True(await reader.ReadAsync(TestContext.Current.CancellationToken), "analysis_state row missing after write");
+        return (reader.GetBoolean(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
     private static async Task<bool> ReadObservedEnabledAsync(NpgsqlConnection connection)
     {
         using var read = new NpgsqlCommand("SELECT is_enabled FROM collect.servers WHERE server_id = $1", connection);
@@ -516,6 +603,7 @@ public sealed class DarlingObservabilityTests
     {
         using var cleanup = new NpgsqlCommand(
             $"DELETE FROM collection_log WHERE server_id = {TestServerId}; " +
+            $"DELETE FROM collect.analysis_state WHERE server_id = {TestServerId}; " +
             $"DELETE FROM collect.servers WHERE server_id = {TestServerId}; " +
             $"DELETE FROM config.config_monitored_servers WHERE server_id = {TestServerId};", connection);
         await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);

@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Npgsql;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Darling.Analysis;
 using PerformanceMonitor.Notifications;
@@ -56,11 +57,63 @@ public sealed class ViewerFindingRow
     public string MutedLabel => IsMuted ? "Muted" : "";
 }
 
+/// <summary>
+/// The per-server analysis-state marker (V19) the Darling service writes after each analysis pass:
+/// whether the pass hit the 24h data-span gate (<see cref="InsufficientData"/> true, with the engine's
+/// <see cref="Message"/>) or completed on enough data (false). The Recommendations tab reads it so a
+/// zero-finding young deployment shows "still collecting" instead of a false all-clear. A read yields
+/// <c>null</c> when no pass has run for the server yet (no row), which the tab treats as "not
+/// insufficient" — an explicit marker is required to show the collecting state.
+/// </summary>
+public sealed record AnalysisStateMarker(bool InsufficientData, string? Message, DateTime AnalysisTimeUtc);
+
 public sealed partial class ViewerDataService
 {
     private PgFindingStore? _findingStore;
 
     private static readonly JsonSerializerOptions s_indentedJson = new() { WriteIndented = true };
+
+    /// <summary>
+    /// The per-server analysis-state marker (V19). Bare <c>analysis_state</c> resolves through the
+    /// database-default search path to <c>collect.analysis_state</c> (the same schema the viewer reads
+    /// <c>analysis_findings</c> from).
+    /// </summary>
+    public const string GetAnalysisStateSql = @"
+SELECT insufficient_data, message, analysis_time
+FROM analysis_state
+WHERE server_id = $1";
+
+    /// <summary>
+    /// Reads the per-server analysis-state marker the Darling service writes after each analysis pass
+    /// (<c>DarlingObservability.WriteAnalysisStateAsync</c>). Returns <c>null</c> when no pass has run for
+    /// the server yet (no row) — the tab then treats a zero-finding read as a genuine all-clear. Degrades
+    /// to <c>null</c> on any read error (a store not yet migrated to V19, a transient failure), never
+    /// throwing, matching the finding read's read-degrades discipline so the tab never crashes on it.
+    /// </summary>
+    public async Task<AnalysisStateMarker?> GetAnalysisStateAsync(int serverId)
+    {
+        try
+        {
+            await using var command = _dataSource.CreateCommand(GetAnalysisStateSql);
+            command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+
+            await using var reader = await command.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+            {
+                return null;
+            }
+
+            var insufficient = !reader.IsDBNull(0) && reader.GetBoolean(0);
+            var message = reader.IsDBNull(1) ? null : reader.GetString(1);
+            /* Stored naive-UTC; tag Utc on read so the kind is explicit (the store-wide read discipline). */
+            var analysisTime = DateTime.SpecifyKind(reader.GetDateTime(2), DateTimeKind.Utc);
+            return new AnalysisStateMarker(insufficient, message, analysisTime);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// The latest analysis run's findings for one server, mapped to display rows. Reads

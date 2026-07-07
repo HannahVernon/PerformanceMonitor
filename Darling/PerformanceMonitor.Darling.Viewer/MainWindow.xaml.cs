@@ -683,11 +683,13 @@ public partial class MainWindow : Window
     // ── Recommendations tab (advise-only cards; own server selector, tab-activation refresh) ─────
 
     /// <summary>
-    /// Reads the latest analysis findings for the Recommendations tab's OWN selected server and renders
-    /// them as Lite's advise-only, incident-grouped cards. Advise-only: no Apply, and no mute (mute
-    /// lives on the Alert History surface per the re-skin). There is no "Generate now": the Darling
-    /// service runs analysis on its own 30-minute cadence (once 24h of history exists), so the viewer
-    /// cannot trigger it — the tab's status line surfaces the last analysis time instead.
+    /// Reads the latest analysis findings AND the per-server analysis-state marker (V19) for the
+    /// Recommendations tab's OWN selected server, and renders Lite's advise-only, incident-grouped cards.
+    /// Advise-only: no Apply, and no mute (mute lives on the Alert History surface per the re-skin). The
+    /// marker lets a zero-finding read on a young deployment show "still collecting" (the engine skipped
+    /// for its 24h data-span gate) instead of a false all-clear; a server with findings shows them, and a
+    /// server with enough data and zero findings shows the genuine all-clear. The tab's status line
+    /// surfaces the last analysis time; "Generate now" forces an immediate pass via the analyze_now command.
     /// </summary>
     private async Task LoadRecommendationsAsync()
     {
@@ -708,8 +710,17 @@ public partial class MainWindow : Window
 
         var rows = await _dataService.GetLatestFindingsAsync(server.ServerId);
 
+        /* Read the per-server analysis-state marker (V19) the Darling service persists after each pass, so
+           a zero-finding read on a young deployment renders "still collecting" (the engine skipped for its
+           24h data-span gate) instead of a false all-clear. The marker only decides the ZERO-finding case;
+           a server with findings shows them regardless. Null (no pass yet / pre-V19 store) = not insufficient. */
+        var analysisState = await _dataService.GetAnalysisStateAsync(server.ServerId);
+
         ApplyRecommendationsViewModel(
-            RecommendationsViewModel.FromFindings(rows, server.DisplayName, LocalUtcOffsetMinutes()));
+            RecommendationsViewModel.FromFindings(
+                rows, server.DisplayName, LocalUtcOffsetMinutes(),
+                insufficientData: analysisState?.InsufficientData == true,
+                insufficientDataMessage: analysisState?.Message));
 
         RecommendationsStatusText.Text = rows.Count > 0
             ? $"Last analyzed {rows[0].AnalysisTimeLocal:yyyy-MM-dd HH:mm:ss} (local)"
@@ -726,12 +737,23 @@ public partial class MainWindow : Window
                 RecommendationsLoadingText.Visibility = Visibility.Visible;
                 RecommendationsScroll.Visibility = Visibility.Collapsed;
                 RecommendationsEmptyText.Visibility = Visibility.Collapsed;
+                RecommendationsInsufficientText.Visibility = Visibility.Collapsed;
+                break;
+
+            case RecommendationsState.InsufficientData:
+                RecommendationsLoadingText.Visibility = Visibility.Collapsed;
+                RecommendationsSectionsList.ItemsSource = null;
+                RecommendationsScroll.Visibility = Visibility.Collapsed;
+                RecommendationsEmptyText.Visibility = Visibility.Collapsed;
+                RecommendationsInsufficientText.Text = vm.InsufficientDataMessage;
+                RecommendationsInsufficientText.Visibility = Visibility.Visible;
                 break;
 
             case RecommendationsState.Empty:
                 RecommendationsLoadingText.Visibility = Visibility.Collapsed;
                 RecommendationsSectionsList.ItemsSource = null;
                 RecommendationsScroll.Visibility = Visibility.Collapsed;
+                RecommendationsInsufficientText.Visibility = Visibility.Collapsed;
                 RecommendationsEmptyText.Visibility = Visibility.Visible;
                 break;
 
@@ -739,6 +761,7 @@ public partial class MainWindow : Window
             default:
                 RecommendationsLoadingText.Visibility = Visibility.Collapsed;
                 RecommendationsEmptyText.Visibility = Visibility.Collapsed;
+                RecommendationsInsufficientText.Visibility = Visibility.Collapsed;
                 RecommendationsSectionsList.ItemsSource = vm.Sections;
                 RecommendationsScroll.Visibility = Visibility.Visible;
                 break;

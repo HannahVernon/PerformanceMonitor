@@ -62,6 +62,7 @@ public static class PgMigrations
         new Migration(16, "server-utc-offset", V16Sql),
         new Migration(17, "config-control-plane", V17Sql),
         new Migration(18, "alert-delivery-mode", V18Sql),
+        new Migration(19, "analysis-state-marker", V19Sql),
     };
 
     /// <summary>
@@ -572,6 +573,37 @@ CREATE TRIGGER trg_service_self_bump
 ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS delivery_mode text NOT NULL DEFAULT 'Summary';
 ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS per_event_max integer NOT NULL DEFAULT 5;
 ALTER TABLE config.config_monitored_servers ADD COLUMN IF NOT EXISTS alert_delivery_mode_override text;";
+
+    /// <summary>
+    /// V19 — the per-server ANALYSIS-STATE marker: the analysis pass's insufficient-data determination,
+    /// persisted so the Viewer's Recommendations tab can tell a young deployment ("still collecting —
+    /// need ~24h of history") apart from a genuine all-clear. The engine ALREADY computes this
+    /// (<c>DarlingAnalysisService.InsufficientDataMessage</c>, surfaced as the AN3 pass's
+    /// <c>InsufficientData</c> status when total history is under the 24h data-span gate); the Viewer
+    /// makes no engine call, so without a persisted marker a zero-finding read collapses to "All clear"
+    /// even when the engine only skipped for want of data. One row per server (<c>server_id</c> PRIMARY
+    /// KEY), upserted by the service after each completed pass and read by the Viewer.
+    ///
+    /// <para><b>Schema — <c>collect</c>, qualified.</b> This is service-produced OBSERVED analysis output
+    /// the Viewer READS, so it belongs in <c>collect</c> beside <c>analysis_findings</c> /
+    /// <c>collection_log</c> / <c>servers</c> — NOT the <c>config</c> control plane (which is the opposite
+    /// direction: the Viewer writes DESIRED state the service reads). The service connects as the owner
+    /// and writes it; the managed <c>admin</c>/<c>viewer</c> roles auto-inherit SELECT via
+    /// <c>ALTER DEFAULT PRIVILEGES … IN SCHEMA collect</c> (<see cref="!:DarlingManagedRoles"/>), so no
+    /// per-table grant is needed. Qualifying <c>collect.</c> is belt-and-suspenders — the migrate
+    /// session's <c>search_path = collect, config, public</c> already resolves a bare name to
+    /// <c>collect</c> — but it makes the intent explicit (the mirror of V17/V18's <c>config.</c>
+    /// qualification). <c>message</c> is nullable (null when a real pass cleared the gate);
+    /// <c>analysis_time</c> stores naive-UTC like the store-wide convention. No <c>v_*</c> passthrough
+    /// view: no Lite SQL ports through this Darling-specific marker.
+    /// </summary>
+    private const string V19Sql = @"
+CREATE TABLE IF NOT EXISTS collect.analysis_state (
+    server_id integer NOT NULL PRIMARY KEY,
+    insufficient_data boolean NOT NULL DEFAULT FALSE,
+    message text,
+    analysis_time timestamp NOT NULL
+);";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

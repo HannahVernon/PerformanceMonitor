@@ -893,6 +893,13 @@
                                        Style="{StaticResource EmptyHint}"
                                        Text="All clear — no current recommendations."/>
 
+                            <!-- Insufficient data: the analysis pass has not cleared its 24h data-span
+                                 gate yet (the persisted V19 marker). Text is set from the view-model. -->
+                            <TextBlock x:Name="RecommendationsInsufficientText"
+                                       Style="{StaticResource EmptyHint}"
+                                       MaxWidth="520" TextWrapping="Wrap" TextAlignment="Center"
+                                       Visibility="Collapsed"/>
+
                             <TextBlock x:Name="RecommendationsLoadingText"
                                        Style="{StaticResource EmptyHint}"
                                        Text="Loading recommendations…"/>

@@ -63,6 +63,20 @@ WHERE s.server_id = c.server_id
 INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, duration_ms, status, error_message, rows_collected, sql_duration_ms, duckdb_duration_ms)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
 
+    /* The per-server analysis-state marker (V19): the analysis pass's insufficient-data determination,
+       persisted so the Viewer's Recommendations tab can tell "still collecting" (a young deployment under
+       the 24h data-span gate) apart from a genuine all-clear. One row per server, upserted after each
+       completed pass on the natural key (server_id). The bare name resolves through the collect/config
+       search path to collect.analysis_state — the observed-output schema, like servers/collection_log.
+       Internal so a pure test can pin the UPSERT shape. */
+    internal const string WriteAnalysisStateSql = @"
+INSERT INTO analysis_state (server_id, insufficient_data, message, analysis_time)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (server_id) DO UPDATE SET
+    insufficient_data = EXCLUDED.insufficient_data,
+    message = EXCLUDED.message,
+    analysis_time = EXCLUDED.analysis_time;";
+
     /// <summary>
     /// Registers (or refreshes) a connected server in the registry: created_date is written only on first
     /// insert, modified_date on every connect. is_enabled is set TRUE on first insert only and left
@@ -170,6 +184,43 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
             /* Failure-isolated by design — an observability write must never break the collection loop. */
             logger?.LogDebug("Observability: collection_log write for '{Server}' / {Collector} failed: {Message}",
                 server.Config.DisplayName, collectorName, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Upserts the per-server analysis-state marker (V19) after an analysis pass: <c>insufficient_data =
+    /// true</c> plus the engine's message when the pass hit the 24h data-span gate, or <c>false</c> + null
+    /// when a real pass completed on enough data. The engine ALREADY makes this determination
+    /// (<c>DarlingAnalysisService.InsufficientDataMessage</c>); this persists it so the Viewer's
+    /// Recommendations tab — which never calls the engine — shows "still collecting" instead of a false
+    /// all-clear on a young deployment's zero-finding read. One row per server, upserted on
+    /// <c>server_id</c>. Failure-isolated (Debug + no-op) like the other observability writes — an
+    /// analysis-state write must never break the collection loop.
+    /// </summary>
+    public static async Task WriteAnalysisStateAsync(
+        NpgsqlDataSource postgres,
+        int serverId,
+        bool insufficientData,
+        string? message,
+        ILogger? logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(WriteAnalysisStateSql, connection);
+            command.Parameters.AddWithValue(serverId);
+            command.Parameters.AddWithValue(insufficientData);
+            command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)message ?? DBNull.Value });
+            /* Naive-UTC storage: Npgsql 6+ rejects Kind=Utc against `timestamp` — see PgCollectorRowWriter. */
+            command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            /* Failure-isolated by design — an observability write must never break the collection loop. */
+            logger?.LogDebug("Observability: analysis-state write for server {ServerId} failed: {Message}",
+                serverId, ex.Message);
         }
     }
 }
