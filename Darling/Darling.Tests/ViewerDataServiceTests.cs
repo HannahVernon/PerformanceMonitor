@@ -409,3 +409,37 @@ public sealed class ViewerSchemaSkewTests
         Assert.Equal("42703", ex.InnerException?.Message);
     }
 }
+
+/// <summary>
+/// Distinguishing an unreachable store from a read-only seat (finding B3): a connection-level failure
+/// (service down, wrong host/port) is a <see cref="ViewerStoreUnreachableException"/> with its own message,
+/// NOT a false read-only verdict; a server error RESPONSE (a PostgresException) means the store is reachable.
+/// </summary>
+public sealed class ViewerStoreUnreachableTests
+{
+    [Fact]
+    public void ViewerStoreUnreachableException_AsksWhetherTheServiceIsRunning_AndNamesDarlingJson()
+    {
+        var ex = new ViewerStoreUnreachableException(new InvalidOperationException("connection refused"));
+
+        Assert.Contains("Darling service", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("darling.json", ex.Message, StringComparison.Ordinal);
+        Assert.Equal("connection refused", ex.InnerException?.Message);
+    }
+
+    [Fact]
+    public void IsConnectionFailure_TrueForConnectLevelFailures_FalseForServerResponses()
+    {
+        /* Connection-level failures — the server was never reached. */
+        Assert.True(ViewerDataService.IsConnectionFailure(new NpgsqlException("could not connect")));
+        Assert.True(ViewerDataService.IsConnectionFailure(new System.Net.Sockets.SocketException()));
+        Assert.True(ViewerDataService.IsConnectionFailure(new TimeoutException()));
+
+        /* A PostgresException is a server RESPONSE (carries a SQLSTATE) — the store IS reachable. */
+        var serverResponse = new PostgresException("permission denied", "ERROR", "ERROR", "42501");
+        Assert.False(ViewerDataService.IsConnectionFailure(serverResponse));
+
+        /* An unrelated exception is not a connection failure either. */
+        Assert.False(ViewerDataService.IsConnectionFailure(new InvalidOperationException()));
+    }
+}

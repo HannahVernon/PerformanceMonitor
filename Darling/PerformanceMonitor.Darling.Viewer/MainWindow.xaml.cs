@@ -111,25 +111,47 @@ public partial class MainWindow : Window
 
         _dataService = new ViewerDataService(settings.ConnectionString);
 
-        /* Finding B1: gate on schema skew BEFORE any control-plane write can hit a raw Postgres 42703/42P01
-           (e.g. Add/Edit Server against a store missing the V18 alert_delivery_mode_override column). Probe
-           the store's effective version via information_schema — the darling_schema_version table is
-           owner-only — and block if it is behind this build. NEVER migrate from the viewer: that is the
-           service's job. The probe fails open (null), so a healthy store is never falsely blocked. */
-        var storeVersion = await _dataService.GetStoreSchemaVersionAsync();
-        if (storeVersion is int version && version < ViewerDataService.RequiredStoreSchemaVersion)
+        try
         {
-            ShowMessage(
-                $"The Darling store is at schema v{version}, but this viewer needs v{ViewerDataService.RequiredStoreSchemaVersion}. " +
-                "Update or restart the Darling service so it migrates the store, then reopen the viewer.");
+            /* Finding B3: prove the store is reachable with one real connect, so an unreachable store (the
+               service down / wrong postgres section in darling.json) shows a dedicated message instead of
+               being misread as a read-only seat (DetectReadOnlyAsync used to collapse both to read-only). */
+            await _dataService.EnsureStoreReachableAsync();
+
+            /* Finding B1: gate on schema skew BEFORE any control-plane write can hit a raw Postgres
+               42703/42P01 (e.g. Add/Edit Server against a store missing the V18 alert_delivery_mode_override
+               column). Probe the store's effective version via information_schema — the darling_schema_version
+               table is owner-only — and block if it is behind this build. NEVER migrate from the viewer: that
+               is the service's job. The probe fails open (null), so a healthy store is never falsely blocked. */
+            var storeVersion = await _dataService.GetStoreSchemaVersionAsync();
+            if (storeVersion is int version && version < ViewerDataService.RequiredStoreSchemaVersion)
+            {
+                ShowMessage(
+                    $"The Darling store is at schema v{version}, but this viewer needs v{ViewerDataService.RequiredStoreSchemaVersion}. " +
+                    "Update or restart the Darling service so it migrates the store, then reopen the viewer.");
+                return;
+            }
+
+            /* V8 security hardening: probe whether this connection can write the operator-config tables
+               (admin/owner) or is the read-only viewer role, before showing any write affordance. The
+               probe fails safe to read-only; the write surfaces gate on ViewerDataService.IsReadOnly and
+               the write paths translate a live 42501 into a friendly message as a backstop. */
+            await _dataService.DetectReadOnlyAsync();
+        }
+        catch (ViewerStoreUnreachableException ex)
+        {
+            ViewerLogger.Error("App", "Darling store unreachable", ex);
+            ShowMessage(ex.Message);
             return;
         }
-
-        /* V8 security hardening: probe whether this connection can write the operator-config tables
-           (admin/owner) or is the read-only viewer role, before showing any write affordance. The
-           probe fails safe to read-only; the write surfaces gate on ViewerDataService.IsReadOnly and
-           the write paths translate a live 42501 into a friendly message as a backstop. */
-        await _dataService.DetectReadOnlyAsync();
+        catch (Exception ex)
+        {
+            /* Reachable but the first connection failed for another reason (e.g. authentication, or the
+               configured database does not exist) — show it rather than dead-ending on a blank window. */
+            ViewerLogger.Error("App", "Darling store connection failed", ex);
+            ShowMessage($"Couldn't connect to the Darling store: {ex.Message}");
+            return;
+        }
 
         /* A read-only seat cannot command the service, so "Generate now" (analyze_now) is disabled. */
         RecommendationsGenerateButton.IsEnabled = !_dataService.IsReadOnly;

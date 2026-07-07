@@ -195,13 +195,55 @@ public sealed partial class ViewerDataService : IAsyncDisposable
             var canInsert = await command.ExecuteScalarAsync(cancellationToken);
             IsReadOnly = canInsert is not true;
         }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            /* Finding B3: a failure to REACH the store is not a read-only seat — surface it as unreachable so
+               the shell shows the "is the service running?" message instead of hiding every write affordance
+               behind a false read-only verdict. */
+            throw new ViewerStoreUnreachableException(ex);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            /* A server RESPONSE we couldn't interpret (a permission quirk, a missing table on a
+               mis-provisioned store, a transient error) fails safe to read-only, so the UI hides writes
+               rather than dead-clicking into a permission error. */
             IsReadOnly = true;
         }
 
         return IsReadOnly;
     }
+
+    /// <summary>
+    /// Opens one real connection to prove the store is reachable, so the shell can tell an UNREACHABLE store
+    /// (the service down, or a wrong host/port/database in darling.json's postgres section) apart from a legit
+    /// read-only seat — the two the old connect path collapsed into a false "read-only" verdict (finding B3).
+    /// A connection-level failure is rethrown as <see cref="ViewerStoreUnreachableException"/>; a server that
+    /// RESPONDS (even to refuse authentication) is "reachable" and any such error propagates for the caller's
+    /// generic handling. The <see cref="NpgsqlDataSource"/> is lazy, so this is the first live connect.
+    /// </summary>
+    public async Task EnsureStoreReachableAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            throw new ViewerStoreUnreachableException(ex);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is a failure to TALK to Postgres (socket refused, host not found,
+    /// connect timeout) rather than a server error RESPONSE. Npgsql surfaces a server response as a
+    /// <see cref="PostgresException"/> (it carries a SQLSTATE); any other <see cref="NpgsqlException"/> — or a
+    /// bare socket / timeout — means the server was never reached. Drives the unreachable-vs-read-only split
+    /// (finding B3), so a down store shows "is the service running?" not a false read-only verdict.
+    /// </summary>
+    internal static bool IsConnectionFailure(Exception ex) =>
+        (ex is NpgsqlException and not PostgresException)
+        || ex is System.Net.Sockets.SocketException
+        || ex is TimeoutException;
 
     /// <summary>
     /// Probes the store's effective schema version through <c>information_schema</c> — the version the viewer
@@ -436,6 +478,24 @@ public sealed class ViewerReadOnlyException : Exception
             "This viewer is connected with a read-only role, so it can't change mute rules, dismiss alerts, " +
             "or mute findings. Set postgres.connectAs to \"admin\" in darling.json and restart the viewer to " +
             "enable these actions.",
+            innerException)
+    {
+    }
+}
+
+/// <summary>
+/// The Darling store could not be reached at connect — the service is down, or the postgres section of
+/// darling.json points at the wrong host/port/database (a connection-level failure, not a server error
+/// response). Thrown by <see cref="ViewerDataService.EnsureStoreReachableAsync"/> and, as a backstop, by
+/// <see cref="ViewerDataService.DetectReadOnlyAsync"/> so the shell shows a dedicated "is the service
+/// running?" message instead of misreading an unreachable store as a read-only seat (finding B3).
+/// </summary>
+public sealed class ViewerStoreUnreachableException : Exception
+{
+    public ViewerStoreUnreachableException(Exception innerException)
+        : base(
+            "Can't reach the Darling store — is the Darling service running? Check the postgres section of " +
+            "darling.json (the host, port, and database must point at the running service's store).",
             innerException)
     {
     }
