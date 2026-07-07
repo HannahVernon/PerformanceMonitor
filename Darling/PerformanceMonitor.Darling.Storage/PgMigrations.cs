@@ -457,8 +457,8 @@ CREATE TABLE IF NOT EXISTS config.config_notification (
 CREATE TABLE IF NOT EXISTS config.config_collector_schedules (
     server_id integer,
     collector_name text NOT NULL,
-    frequency_minutes integer,
-    retention_days integer,
+    frequency_minutes integer CHECK (frequency_minutes >= 0),
+    retention_days integer CHECK (retention_days >= 1),
     enabled boolean NOT NULL DEFAULT TRUE
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_config_collector_schedules_fleet

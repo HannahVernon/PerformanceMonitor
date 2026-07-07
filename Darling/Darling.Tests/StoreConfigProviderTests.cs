@@ -161,6 +161,31 @@ public sealed class StoreConfigProviderTests
         Assert.Equal(45, StoreConfigProvider.ResolveFleetRetentionDays("query_stats", fleet));
     }
 
+    [Fact]
+    public void Resolve_RejectsDestructiveRetention_AndNegativeFrequency_FallingBackToDefaults()
+    {
+        var def = CollectorScheduleDefaults.All["query_stats"];
+
+        /* Retention 0/negative would invert the purge cutoff and delete everything — it must NOT be
+           honored; the resolvers fall through to the safe code default. */
+        foreach (var bad in new[] { 0, -1, -3650 })
+        {
+            var fleet = new[] { new ScheduleOverride(null, "query_stats", null, bad, true) };
+            Assert.Equal(def.RetentionDays, StoreConfigProvider.ResolveFleetRetentionDays("query_stats", fleet));
+            Assert.Equal(def.RetentionDays, StoreConfigProvider.ResolveSchedule("query_stats", 1, fleet).RetentionDays);
+        }
+
+        /* A negative frequency must not be honored (would make the collector run every sweep). */
+        var badFreq = new[] { new ScheduleOverride(null, "query_stats", -5, null, true) };
+        Assert.Equal(def.FrequencyMinutes, StoreConfigProvider.ResolveSchedule("query_stats", 1, badFreq).FrequencyMinutes);
+
+        /* A valid retention (>= 1) and frequency 0 (on-load-only) are still honored. */
+        var ok = new[] { new ScheduleOverride(null, "query_stats", 0, 1, true) };
+        var eff = StoreConfigProvider.ResolveSchedule("query_stats", 1, ok);
+        Assert.Equal(0, eff.FrequencyMinutes);
+        Assert.Equal(1, eff.RetentionDays);
+    }
+
     /* ---------------- live (DARLING_TEST_PG): the V17 bump trigger, rolled back ---------------- */
 
     [Fact]

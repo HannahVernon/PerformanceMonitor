@@ -88,7 +88,10 @@ public static class DarlingRetention
                 continue;
             }
 
-            var retentionDays = retentionDaysFor?.Invoke(definition.Name) ?? schedule.RetentionDays;
+            /* Clamp at the destructive sink (belt-and-suspenders with the resolver + the V17 CHECK): a
+               retention of 0/negative would flip the cutoff into the present/future and drop_chunks /
+               DELETE the entire table. Never purge with a horizon under 1 day. */
+            var retentionDays = Math.Max(1, retentionDaysFor?.Invoke(definition.Name) ?? schedule.RetentionDays);
 
             if (timescaleAvailable)
             {

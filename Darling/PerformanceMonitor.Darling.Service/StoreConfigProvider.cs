@@ -419,8 +419,13 @@ ORDER BY name", connection);
 
     /// <summary>
     /// Reconstructs a <see cref="MonitoredServer"/> from a store row, backfilling the SQL-auth secret from
-    /// the in-memory bootstrap config (matched by <c>server_id</c>) when the store row carries no DPAPI blob
-    /// — this is how a darling.json plaintext dev password (never stored) still drives the connect path.
+    /// the in-memory bootstrap config when the store row carries no DPAPI blob — this is how a darling.json
+    /// plaintext dev password (never stored) still drives the connect path. The bootstrap match is on the
+    /// FULL identity (exact storage name + auth kind + username), NOT the derived <c>server_id</c> alone:
+    /// <see cref="ServerIdHelper.GetDeterministicHashCode"/> is a 32-bit hash whose collisions are craftable,
+    /// so matching on the id alone would let a config-write principal cross-wire another server's plaintext
+    /// secret onto an attacker-chosen host. The secret is copied only when EXACTLY ONE bootstrap server
+    /// matches the full identity.
     /// </summary>
     private static MonitoredServer BuildServerFromRow(NpgsqlDataReader reader, DarlingConfig bootstrap)
     {
@@ -442,13 +447,15 @@ ORDER BY name", connection);
 
         if (server.UsesSqlAuth && string.IsNullOrWhiteSpace(server.EncryptedPassword))
         {
-            var serverId = ServerIdHelper.GetDeterministicHashCode(server.StorageName);
-            var bootstrapMatch = bootstrap.Servers.FirstOrDefault(
-                s => ServerIdHelper.GetDeterministicHashCode(s.StorageName) == serverId);
-            if (bootstrapMatch is not null)
+            var matches = bootstrap.Servers.Where(s =>
+                s.UsesSqlAuth
+                && string.Equals(s.StorageName, server.StorageName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(s.Username, server.Username, StringComparison.Ordinal)).ToList();
+
+            if (matches.Count == 1)
             {
-                server.EncryptedPassword = bootstrapMatch.EncryptedPassword;
-                server.Password = bootstrapMatch.Password;
+                server.EncryptedPassword = matches[0].EncryptedPassword;
+                server.Password = matches[0].Password;
             }
         }
 
@@ -536,8 +543,12 @@ ORDER BY name", connection);
             }
         }
 
-        var frequency = perServer?.FrequencyMinutes ?? fleet?.FrequencyMinutes ?? def.FrequencyMinutes;
-        var retention = perServer?.RetentionDays ?? fleet?.RetentionDays ?? def.RetentionDays;
+        /* Sanitize operator-supplied overrides before they drive scheduling / a destructive purge: a
+           negative frequency or a retention < 1 (0 would invert the purge cutoff and wipe the table)
+           is treated as "no override" and falls through to the next level. Defense in depth with the
+           V17 CHECK constraints and the DarlingRetention sink clamp. */
+        var frequency = ValidFrequency(perServer?.FrequencyMinutes) ?? ValidFrequency(fleet?.FrequencyMinutes) ?? def.FrequencyMinutes;
+        var retention = ValidRetention(perServer?.RetentionDays) ?? ValidRetention(fleet?.RetentionDays) ?? def.RetentionDays;
         var enabled = perServer?.Enabled ?? fleet?.Enabled ?? true;
         return new EffectiveSchedule(frequency, retention, enabled);
     }
@@ -556,7 +567,7 @@ ORDER BY name", connection);
             {
                 if (o.ServerId is null
                     && string.Equals(o.CollectorName, collectorName, StringComparison.OrdinalIgnoreCase)
-                    && o.RetentionDays is int days)
+                    && ValidRetention(o.RetentionDays) is int days)
                 {
                     return days;
                 }
@@ -565,6 +576,14 @@ ORDER BY name", connection);
 
         return def.RetentionDays;
     }
+
+    /// <summary>A retention override is honored only when &gt;= 1 day; 0/negative would invert the purge
+    /// cutoff and delete everything, so it degrades to "no override" (fall through to the default).</summary>
+    private static int? ValidRetention(int? days) => days is int v && v >= 1 ? v : null;
+
+    /// <summary>A frequency override is honored only when &gt;= 0 (0 = on-load-only); negative degrades to
+    /// "no override" so a bad value can't make a collector run every sweep.</summary>
+    private static int? ValidFrequency(int? minutes) => minutes is int v && v >= 0 ? v : null;
 
     /* ---------------- helpers ---------------- */
 
@@ -599,7 +618,14 @@ public sealed record EffectiveSchedule(int FrequencyMinutes, int RetentionDays, 
 public sealed class StoreConfigView
 {
     public long ConfigVersion { get; init; }
+
+    /// <summary>
+    /// The service-pause flag. Surfaced from config_service for completeness but NOT enforced in Stage 1 —
+    /// gating the collection loop on it is Stage 2 (the command plane), where pause/resume becomes reachable.
+    /// Nothing writes it in Stage 1 (no viewer/command path), so there is no operator-facing dormant toggle.
+    /// </summary>
     public bool Paused { get; init; }
+
     public bool CapturePlans { get; init; }
     public bool McpEnabled { get; init; }
     public int McpPort { get; init; }
