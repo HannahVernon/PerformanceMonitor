@@ -34,12 +34,13 @@ namespace PerformanceMonitor.Common
     ///
     /// <para>Dispatch is by XE event name (<c>event_type</c>): the ring-buffer / error / wait feeders each map
     /// to exactly one category, while an <c>sp_server_diagnostics_component_result</c> event routes on its
-    /// component — RESOURCE → memory conditions, QUERY_PROCESSING → CPU tasks, IO_SUBSYSTEM → IO issues. Each
-    /// component parser gates on the presence of its own node (<c>&lt;resource&gt;</c> /
-    /// <c>&lt;queryProcessing&gt;</c> / <c>&lt;ioSubsystem&gt;</c>), so a single event yields a record for its
-    /// component alone and nothing for the others (sp_HealthParser's remaining SYSTEM/EVENTS components are out
-    /// of scope). IO issues is the one many-per-event category: sp_HealthParser fans an IO_SUBSYSTEM event out
-    /// to one row per pending-request file, so its parser returns a list.</para>
+    /// component — SYSTEM → system health (corruption + contention counters), RESOURCE → memory conditions,
+    /// QUERY_PROCESSING → CPU tasks, IO_SUBSYSTEM → IO issues. Each component parser gates on the presence of
+    /// its own node (<c>&lt;system&gt;</c> / <c>&lt;resource&gt;</c> / <c>&lt;queryProcessing&gt;</c> /
+    /// <c>&lt;ioSubsystem&gt;</c>), so a single event yields a record for its component alone and nothing for
+    /// the others (sp_HealthParser's remaining EVENTS component is out of scope). IO issues is the one
+    /// many-per-event category: sp_HealthParser fans an IO_SUBSYSTEM event out to one row per pending-request
+    /// file, so its parser returns a list.</para>
     /// </summary>
     public static class SystemHealthParser
     {
@@ -94,6 +95,7 @@ namespace PerformanceMonitor.Common
                     break;
                 case SpServerDiagnosticsEvent:
                     // One event carries one component; each parser is a no-op unless its component node is present.
+                    Add(result.SystemHealth, ParseSystemHealth(eventXml));
                     Add(result.MemoryConditions, ParseMemoryConditions(eventXml));
                     Add(result.CpuTasks, ParseCpuTasks(eventXml));
                     result.IoIssues.AddRange(ParseIoIssues(eventXml));
@@ -164,6 +166,42 @@ namespace PerformanceMonitor.Common
                 Message = DataValue(ev, "message"),
                 DatabaseName = null, // sp_HealthParser: DB_NAME(database_id) — needs a live connection.
                 DatabaseId = ParseInt(DataValue(ev, "database_id")),
+            };
+        }
+
+        /// <summary>
+        /// Shreds the SYSTEM component of an <c>sp_server_diagnostics_component_result</c> event into a
+        /// <see cref="SystemHealthRecord"/> — the corruption + contention counter set carried on the
+        /// <c>&lt;system&gt;</c> node's attributes. Returns null for null/blank or unparseable XML, or when the
+        /// event carries no <c>&lt;system&gt;</c> node (i.e. it is a non-SYSTEM component). Every counter is a
+        /// raw bigint off the node; the two spinlock-type strings are kept verbatim (sp_HealthParser's
+        /// <c>*_SystemHealth</c> column set).
+        /// </summary>
+        public static SystemHealthRecord? ParseSystemHealth(string? eventXml)
+        {
+            var ev = EventRoot(eventXml);
+            var system = ev?.Descendants("system").FirstOrDefault();
+            if (ev == null || system == null)
+                return null;
+
+            return new SystemHealthRecord
+            {
+                EventTime = ParseTimestamp(ev),
+                State = DataText(ev, "state"),
+                SpinlockBackoffs = ParseLong((string?)system.Attribute("spinlockBackoffs")),
+                SickSpinlockType = (string?)system.Attribute("sickSpinlockType"),
+                SickSpinlockTypeAfterAv = (string?)system.Attribute("sickSpinlockTypeAfterAv"),
+                LatchWarnings = ParseLong((string?)system.Attribute("latchWarnings")),
+                IsAccessViolationOccurred = ParseLong((string?)system.Attribute("isAccessViolationOccurred")),
+                WriteAccessViolationCount = ParseLong((string?)system.Attribute("writeAccessViolationCount")),
+                TotalDumpRequests = ParseLong((string?)system.Attribute("totalDumpRequests")),
+                IntervalDumpRequests = ParseLong((string?)system.Attribute("intervalDumpRequests")),
+                NonYieldingTasksReported = ParseLong((string?)system.Attribute("nonYieldingTasksReported")),
+                PageFaults = ParseLong((string?)system.Attribute("pageFaults")),
+                SystemCpuUtilization = ParseLong((string?)system.Attribute("systemCpuUtilization")),
+                SqlCpuUtilization = ParseLong((string?)system.Attribute("sqlCpuUtilization")),
+                BadPagesDetected = ParseLong((string?)system.Attribute("BadPagesDetected")),
+                BadPagesFixed = ParseLong((string?)system.Attribute("BadPagesFixed")),
             };
         }
 

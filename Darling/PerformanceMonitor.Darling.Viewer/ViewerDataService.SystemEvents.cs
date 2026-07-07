@@ -488,4 +488,35 @@ public sealed partial class ViewerDataService
             return rows;
         }, cancellationToken);
     }
+
+    // ── System Health (Corruption + Contention counter charts) ──
+
+    /// <summary>
+    /// Every SYSTEM-component health snapshot for the window, oldest first (time-series order for the
+    /// charts). Reads the same sp_server_diagnostics feed as Memory Conditions / CPU Tasks / I/O Issues;
+    /// only the SYSTEM component yields a record. Unlike the grid categories this applies NO significance
+    /// filter — the Dashboard's Corruption Events + Contention Events tabs plot every collected snapshot's
+    /// counters over time, so the viewer returns them all (records with no event time can't sit on a time
+    /// axis and are dropped). Both chart sub-tabs read this one list and select their own columns.
+    /// </summary>
+    public async Task<List<SystemHealthRecord>> GetSystemHealthAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var xmls = await ReadSystemHealthEventXmlAsync(
+            serverId, startUtc, endUtc, SystemHealthParser.SpServerDiagnosticsEvent, cancellationToken);
+
+        return await Task.Run(() =>
+        {
+            var records = new List<SystemHealthRecord>();
+            foreach (var xml in xmls)
+            {
+                // Only the SYSTEM component yields a record; other sp_server_diagnostics components parse to null.
+                var record = SystemHealthParser.ParseSystemHealth(xml);
+                if (record != null && record.EventTime.HasValue)
+                    records.Add(record);
+            }
+            records.Sort((a, b) => Nullable.Compare(a.EventTime, b.EventTime));
+            return records;
+        }, cancellationToken);
+    }
 }

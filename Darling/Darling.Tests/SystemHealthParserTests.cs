@@ -36,6 +36,7 @@ public class SystemHealthParserTests
     private static readonly DateTime IoTime = new(2026, 7, 5, 12, 5, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime CpuWarningTime = new(2026, 7, 5, 12, 6, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime CpuCleanTime = new(2026, 7, 5, 12, 1, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime SystemTime = new(2026, 7, 5, 12, 7, 0, 0, DateTimeKind.Utc);
 
     // ── SchedulerIssues (scheduler_monitor_system_health_ring_buffer_recorded) ──
 
@@ -341,6 +342,42 @@ public class SystemHealthParserTests
         Assert.Empty(SystemHealthParser.ParseIoIssues(xml));
     }
 
+    // ── SystemHealth (sp_server_diagnostics_component_result / SYSTEM) ──
+
+    [Fact]
+    public void SystemHealth_ShredsEveryColumn()
+    {
+        var r = SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_system.xml"));
+
+        Assert.NotNull(r);
+        Assert.Equal(SystemTime, r!.EventTime);
+        Assert.Equal("CLEAN", r.State);                       // data[@name="state"]/text
+        Assert.Equal(12345L, r.SpinlockBackoffs);             // <system> attributes
+        Assert.Equal("SOS_CACHESTORE", r.SickSpinlockType);
+        Assert.Equal("SOS_SUSPEND_QUEUE", r.SickSpinlockTypeAfterAv);
+        Assert.Equal(7L, r.LatchWarnings);
+        Assert.Equal(1L, r.IsAccessViolationOccurred);        // bigint, not bit — matches the *_SystemHealth column
+        Assert.Equal(3L, r.WriteAccessViolationCount);
+        Assert.Equal(9L, r.TotalDumpRequests);
+        Assert.Equal(2L, r.IntervalDumpRequests);
+        Assert.Equal(4L, r.NonYieldingTasksReported);
+        Assert.Equal(654321L, r.PageFaults);
+        Assert.Equal(65L, r.SystemCpuUtilization);
+        Assert.Equal(40L, r.SqlCpuUtilization);
+        Assert.Equal(6L, r.BadPagesDetected);
+        Assert.Equal(5L, r.BadPagesFixed);
+    }
+
+    [Fact]
+    public void SystemHealth_NonSystemComponent_YieldsNoRecord()
+    {
+        // RESOURCE / QUERY_PROCESSING / IO_SUBSYSTEM components carry no <system> node — no system-health
+        // counters to report (parity with the CROSS APPLY over /event/data/value/system returning nothing).
+        Assert.Null(SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_resource.xml")));
+        Assert.Null(SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_query_processing.xml")));
+        Assert.Null(SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_io_subsystem.xml")));
+    }
+
     // ── dispatch (ParseEvents / ParseInto) ──
 
     [Fact]
@@ -350,6 +387,7 @@ public class SystemHealthParserTests
         {
             (SystemHealthParser.SchedulerMonitorEvent, LoadFixture("scheduler_monitor.xml")),
             (SystemHealthParser.ErrorReportedEvent, LoadFixture("error_reported.xml")),
+            (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_system.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_resource.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_query_processing.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_io_subsystem.xml")),
@@ -365,13 +403,16 @@ public class SystemHealthParserTests
         Assert.Single(result.MemoryBroker);
         Assert.Single(result.MemoryNodeOom);
         Assert.Single(result.SignificantWaits);
-        // Three sp_server_diagnostics events route by component: RESOURCE -> memory conditions,
-        // QUERY_PROCESSING -> CPU tasks, IO_SUBSYSTEM -> I/O issues (two files -> two rows).
+        // Four sp_server_diagnostics events route by component: SYSTEM -> system health,
+        // RESOURCE -> memory conditions, QUERY_PROCESSING -> CPU tasks, IO_SUBSYSTEM -> I/O issues
+        // (two files -> two rows). Each component parser is a no-op on the other three components.
+        Assert.Single(result.SystemHealth);
         Assert.Single(result.MemoryConditions);
         Assert.Single(result.CpuTasks);
         Assert.Equal(2, result.IoIssues.Count);
         Assert.Equal(10, result.SchedulerIssues[0].SchedulerId);
         Assert.Equal(823, result.SevereErrors[0].ErrorNumber);
+        Assert.Equal(6, result.SystemHealth[0].BadPagesDetected);
     }
 
     [Fact]
@@ -422,6 +463,7 @@ public class SystemHealthParserTests
         Assert.Null(SystemHealthParser.ParseMemoryNodeOom(xml));
         Assert.Null(SystemHealthParser.ParseSignificantWait(xml));
         Assert.Null(SystemHealthParser.ParseCpuTasks(xml));
+        Assert.Null(SystemHealthParser.ParseSystemHealth(xml));
         Assert.Empty(SystemHealthParser.ParseIoIssues(xml));   // list-returning shred: empty, never throws
     }
 

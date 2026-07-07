@@ -294,6 +294,55 @@ public sealed class ViewerSystemEventsTests
         Assert.All(rows, r => Assert.True(SystemEventSignificance.IsSignificant(r)));
     }
 
+    // ── System Health (Corruption + Contention counter charts — NO significance filter) ──
+
+    [Fact]
+    public void SystemHealth_Fixture_ShredsBothCorruptionAndContentionCounters()
+    {
+        // The ONE SYSTEM-component record feeds BOTH chart sub-tabs: the Corruption Events charts read the
+        // bad-page / dump / access-violation columns; the Contention Events charts read the non-yielding /
+        // latch / spinlock / CPU columns. Pin that every column both tabs plot is present off one shred.
+        var r = SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_system.xml"))!;
+
+        // Corruption Events columns.
+        Assert.Equal(6L, r.BadPagesDetected);
+        Assert.Equal(2L, r.IntervalDumpRequests);
+        Assert.Equal(1L, r.IsAccessViolationOccurred);
+        Assert.Equal(3L, r.WriteAccessViolationCount);
+        // Contention Events columns.
+        Assert.Equal(4L, r.NonYieldingTasksReported);
+        Assert.Equal(7L, r.LatchWarnings);
+        Assert.Equal("SOS_CACHESTORE", r.SickSpinlockType);
+        Assert.Equal(12345L, r.SpinlockBackoffs);
+        Assert.Equal(65L, r.SystemCpuUtilization);
+        Assert.Equal(40L, r.SqlCpuUtilization);
+    }
+
+    [Fact]
+    public void SystemHealth_CleanSnapshot_IsStillKept_NoWarningsOnlyGate()
+    {
+        // Unlike the grid categories, the Corruption / Contention charts plot EVERY collected snapshot over
+        // time — there is no significance / warnings-only filter (GetSystemHealthAsync keeps every SYSTEM
+        // record with a timestamp). The representative fixture is a CLEAN snapshot, and it is a real record
+        // (not dropped), so the counter charts render it. This is the design contrast with the filtered grids.
+        var r = SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_system.xml"));
+
+        Assert.NotNull(r);
+        Assert.Equal("CLEAN", r!.State);
+        Assert.True(r.EventTime.HasValue);   // GetSystemHealthAsync requires a timestamp to sit on the time axis
+    }
+
+    [Fact]
+    public void SystemHealth_NonSystemComponent_YieldsNothing()
+    {
+        // The SYSTEM read shares the sp_server_diagnostics feed with Memory Conditions / CPU Tasks / I/O
+        // Issues; only the SYSTEM component contributes a record (the others parse to null, so the charts
+        // never plot a RESOURCE / QUERY_PROCESSING / IO_SUBSYSTEM snapshot).
+        Assert.Null(SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_resource.xml")));
+        Assert.Null(SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_query_processing.xml")));
+        Assert.Null(SystemHealthParser.ParseSystemHealth(LoadFixture("sp_server_diagnostics_io_subsystem.xml")));
+    }
+
     // ── End-to-end: shred the fixtures then apply the filters (the data-service path's logic) ──
 
     [Fact]
@@ -303,6 +352,7 @@ public sealed class ViewerSystemEventsTests
         {
             (SystemHealthParser.SchedulerMonitorEvent, LoadFixture("scheduler_monitor.xml")),
             (SystemHealthParser.ErrorReportedEvent, LoadFixture("error_reported.xml")),
+            (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_system.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_resource.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_query_processing.xml")),
             (SystemHealthParser.SpServerDiagnosticsEvent, LoadFixture("sp_server_diagnostics_query_processing_warning.xml")),
@@ -325,6 +375,9 @@ public sealed class ViewerSystemEventsTests
         // CPU: the WARNING+15-pending event passes; the CLEAN one is dropped. I/O: both WARNING file rows pass.
         Assert.Single(result.CpuTasks.Where(SystemEventSignificance.IsSignificant));
         Assert.Equal(2, result.IoIssues.Count(SystemEventSignificance.IsSignificant));
+        // System Health (Corruption + Contention charts) has NO significance filter — the CLEAN SYSTEM
+        // snapshot is kept, so the counter charts plot it (contrast with the dropped HIGH memory rows above).
+        Assert.Single(result.SystemHealth);
     }
 
     // ── Severe-Errors database_id resolution ──

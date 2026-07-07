@@ -2378,6 +2378,97 @@
                         ItemContainerStyle="{DynamicResource SubTabItemStyle}"
                         SelectionChanged="SystemEventsSubTabs_SelectionChanged">
 
+                <!-- Corruption Events Sub-Tab (sp_server_diagnostics SYSTEM component counter charts). Faithful
+                     reproduction of the Dashboard's Corruption Events 2x2 chart grid; every collected snapshot
+                     plotted over the settable window (no significance filter). -->
+                <TabItem Header="Corruption Events">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                            <TextBlock Text="Corruption Events (bad pages, dump requests, access violations)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                        </StackPanel>
+                        <Grid Grid.Row="1" Margin="8,0,8,8">
+                            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+
+                            <Border Grid.Row="0" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Bad Pages Detected" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="BadPagesChart"/>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Row="0" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Interval Dump Requests" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="DumpRequestsChart"/>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Access Violations Occurred" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="AccessViolationsChart"/>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Write Access Violation Count" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="WriteAccessViolationsChart"/>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+
+                <!-- Contention Events Sub-Tab (sp_server_diagnostics SYSTEM component counter charts). Faithful
+                     reproduction of the Dashboard's Contention Events 2x2 chart grid. -->
+                <TabItem Header="Contention Events">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+                            <TextBlock Text="Contention Events (non-yielding tasks, latches, spinlocks, CPU)" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                            <Button Content="Refresh" Click="SystemEventsRefresh_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+                        </StackPanel>
+                        <Grid Grid.Row="1" Margin="8,0,8,8">
+                            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+
+                            <Border Grid.Row="0" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Non-Yielding Tasks Reported" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="NonYieldingTasksChart"/>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Row="0" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Latch Warnings" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="LatchWarningsChart"/>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="Sick Spinlocks by Type" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="SickSpinlocksChart"/>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="2">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                    <TextBlock Text="SQL CPU vs System CPU" FontWeight="Bold" Margin="5,3" FontSize="11" Foreground="{DynamicResource ForegroundBrush}"/>
+                                    <scottplot:WpfPlot Grid.Row="1" x:Name="CpuComparisonChart"/>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+
                 <!-- Scheduler Issues Sub-Tab -->
                 <TabItem Header="Scheduler Issues">
                     <Grid>
