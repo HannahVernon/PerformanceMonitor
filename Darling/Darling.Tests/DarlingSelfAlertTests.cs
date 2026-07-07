@@ -1,0 +1,576 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Alerting;
+using PerformanceMonitor.Darling.Service;
+using PerformanceMonitor.Darling.Storage;
+using PerformanceMonitor.Notifications;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins Stage 4 of the Darling control plane — the SERVICE's self-alerts
+/// (<see cref="DarlingSelfAlertEvaluator"/>). The pure detection (<c>IsCollectionStopped</c>) and the
+/// EDGE behavior (fire once on the transition, not every sweep; write the resolution history row on
+/// recovery) are tested ungated against a recording deliverer + fake history store + a controllable
+/// clock; the two collection_log reads run against a real Postgres gated on <c>DARLING_TEST_PG</c>
+/// (skipped otherwise), mirroring <see cref="DarlingAlertingTests"/>.
+/// </summary>
+[Collection("live-postgres")]
+public sealed class DarlingSelfAlertTests
+{
+    private const int ServerId = 424242;
+    private const string Key = "424242";
+    private const string Name = "SELF-ALERT-SRV";
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    /* ---------------- fakes ---------------- */
+
+    private sealed class FakeSettings : IAlertEngineSettings
+    {
+        public bool AlertsEnabled { get; set; } = true;
+        public bool CpuEnabled { get; set; }
+        public bool BlockingEnabled { get; set; } = true;
+        public bool DeadlockEnabled { get; set; } = true;
+        public bool PoisonWaitEnabled { get; set; }
+        public bool LongRunningQueryEnabled { get; set; }
+        public bool TempDbSpaceEnabled { get; set; }
+        public bool LowDiskEnabled { get; set; }
+        public bool LongRunningJobEnabled { get; set; }
+        public bool FailedJobEnabled { get; set; }
+        public int CpuThresholdPercent { get; set; } = 80;
+        public int BlockingCountThreshold { get; set; } = 1;
+        public int DeadlockCountThreshold { get; set; } = 1;
+        public int PoisonWaitThresholdMs { get; set; } = 500;
+        public int LongRunningQueryThresholdMinutes { get; set; } = 30;
+        public int LongRunningQueryMaxResults { get; set; } = 5;
+        public bool LongRunningQueryExcludeSpServerDiagnostics { get; set; } = true;
+        public bool LongRunningQueryExcludeWaitFor { get; set; } = true;
+        public bool LongRunningQueryExcludeBackups { get; set; } = true;
+        public bool LongRunningQueryExcludeMiscWaits { get; set; } = true;
+        public bool LongRunningQueryExcludeCdc { get; set; } = true;
+        public int TempDbSpaceThresholdPercent { get; set; } = 80;
+        public int LowDiskThresholdPercent { get; set; } = 10;
+        public int LowDiskThresholdGb { get; set; } = 5;
+        public int LongRunningJobMultiplier { get; set; } = 3;
+        public int FailedJobLookbackMinutes { get; set; } = 60;
+        public int CooldownMinutes { get; set; } = 5;
+        public List<string> ExcludedDatabasesList { get; } = new();
+        public IReadOnlyList<string> ExcludedDatabases => ExcludedDatabasesList;
+        public CpuAlertMode CpuAlertMode { get; set; } = CpuAlertMode.TotalServer;
+    }
+
+    private sealed class RecordingDeliverer : IAlertDeliverer
+    {
+        public List<AlertOutcome> Outcomes { get; } = new();
+
+        public Task DeliverAsync(AlertOutcome outcome, CancellationToken cancellationToken = default)
+        {
+            Outcomes.Add(outcome);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeHistoryStore : IAlertHistoryStore
+    {
+        public List<AlertHistoryRecord> Records { get; } = new();
+
+        public Task RecordAlertAsync(AlertHistoryRecord record)
+        {
+            Records.Add(record);
+            return Task.CompletedTask;
+        }
+
+        public Task<DateTime?> GetLastEmailSentUtcAsync(string serverId, string metricName, string? dedupKey = null) =>
+            Task.FromResult<DateTime?>(null);
+
+        public Task<DateTime?> GetLastWebhookSentUtcAsync(string serverId, string metricName, string? dedupKey = null) =>
+            Task.FromResult<DateTime?>(null);
+
+        public Task<DateTime?> GetLastAlertTimeAsync(string serverId, string metricName) =>
+            Task.FromResult<DateTime?>(null);
+    }
+
+    /// <summary>One evaluator + fakes + a controllable clock per test.</summary>
+    private sealed class Harness
+    {
+        public FakeSettings Settings { get; } = new();
+        public RecordingDeliverer Deliverer { get; } = new();
+        public FakeHistoryStore History { get; } = new();
+        public bool Muted { get; set; }
+        public DateTime Now { get; set; } = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        public DarlingSelfAlertEvaluator Build() => new(
+            Settings, Deliverer, History, _ => Muted, logger: null, utcNow: () => Now);
+    }
+
+    /* ---------------- collection-stopped detection (pure) ---------------- */
+
+    [Fact]
+    public void IsCollectionStopped_FreshSuccess_NotStopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* Last success two minutes ago, recent runs all succeeded — healthy. */
+        Assert.False(DarlingSelfAlertEvaluator.IsCollectionStopped(now.AddMinutes(-2), 10, 10, now, out var reason));
+        Assert.Equal("", reason);
+    }
+
+    [Fact]
+    public void IsCollectionStopped_NoSuccessWithinStaleWindow_Stopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* Last success 45 minutes ago (>= the 30-minute window), recent runs mixed — stale => stopped. */
+        Assert.True(DarlingSelfAlertEvaluator.IsCollectionStopped(now.AddMinutes(-45), 5, 3, now, out var reason));
+        Assert.Contains("45 minutes", reason);
+    }
+
+    [Fact]
+    public void IsCollectionStopped_ExactlyAtStaleWindow_Stopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* Boundary: elapsed == StaleWindow counts as stale (>=). */
+        Assert.True(DarlingSelfAlertEvaluator.IsCollectionStopped(
+            now - DarlingSelfAlertEvaluator.StaleWindow, 5, 4, now, out _));
+    }
+
+    [Fact]
+    public void IsCollectionStopped_NeverRan_NotStopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* A freshly-added / never-connected server (no success ever, no runs) must NOT read as stopped —
+           the connection-lost alert covers that, and a warming-up server is not "broken". */
+        Assert.False(DarlingSelfAlertEvaluator.IsCollectionStopped(null, 0, 0, now, out _));
+    }
+
+    [Fact]
+    public void IsCollectionStopped_ConsecutiveFailuresNoSuccessEver_Stopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* Connected but every one of the last N runs failed (never a success) => stopped fast, before the
+           staleness backstop would trip. */
+        Assert.True(DarlingSelfAlertEvaluator.IsCollectionStopped(
+            null, DarlingSelfAlertEvaluator.ConsecutiveFailureThreshold, 0, now, out var reason));
+        Assert.Contains("failed", reason);
+    }
+
+    [Fact]
+    public void IsCollectionStopped_ConsecutiveFailuresButSomeSuccessInWindow_NotStopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* The last N runs include at least one success and the last success is recent — not stopped
+           (a single failing collector among healthy ones must not trip the server-level alert). */
+        Assert.False(DarlingSelfAlertEvaluator.IsCollectionStopped(
+            now.AddMinutes(-1), DarlingSelfAlertEvaluator.ConsecutiveFailureThreshold, 2, now, out _));
+    }
+
+    [Fact]
+    public void IsCollectionStopped_FewFailuresRecentSuccess_NotStopped()
+    {
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+        /* Fewer than the consecutive threshold and a recent success — a brief hiccup, not stopped. */
+        Assert.False(DarlingSelfAlertEvaluator.IsCollectionStopped(now.AddMinutes(-1), 3, 0, now, out _));
+    }
+
+    /* ---------------- collection-stopped edge ---------------- */
+
+    [Fact]
+    public async Task CollectionStopped_FiresOnce_ThenCooldownSuppresses_ThenReFires()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: true, "no recent collection", Ct);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Collection Stopped", fired.MetricName);
+        Assert.Equal("collecting", fired.ThresholdValue);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+        Assert.Equal(Key, fired.ServerKey);
+
+        /* Still stopped one minute later — inside the 5-minute cooldown, no re-fire (the EDGE: once,
+           not every sweep). */
+        h.Now = h.Now.AddMinutes(1);
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: true, "no recent collection", Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* After the cooldown the standing condition re-fires. */
+        h.Now = h.Now.AddMinutes(5);
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: true, "no recent collection", Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task CollectionStopped_Recovery_WritesOneResumedHistoryRow()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: true, "no recent collection", Ct);
+        Assert.Empty(h.History.Records);
+
+        /* Recovery: exactly one "Collection Resumed" audit row, no email/webhook (it went to the history
+           store, not the deliverer). */
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: false, "", Ct);
+        var resumed = Assert.Single(h.History.Records);
+        Assert.Equal("Collection Resumed", resumed.MetricName);
+        Assert.True(resumed.AlertSent);
+        Assert.Equal("tray", resumed.NotificationType);
+        Assert.Single(h.Deliverer.Outcomes); /* only the original fire went to the deliverer */
+
+        /* Still healthy on the next sweep — no duplicate resumed row (resolution is edge-triggered too). */
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: false, "", Ct);
+        Assert.Single(h.History.Records);
+    }
+
+    [Fact]
+    public async Task CollectionStopped_Muted_RecordedMutedNotSuppressed()
+    {
+        var h = new Harness { Muted = true };
+        var e = h.Build();
+
+        await e.ApplyCollectionStoppedAsync(ServerId, Name, stopped: true, "no recent collection", Ct);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.True(fired.Muted); /* the deliverer skips channels but still records — same as the engine */
+    }
+
+    /* ---------------- capture-down edge ---------------- */
+
+    [Fact]
+    public async Task CaptureDown_FiresOnce_ThenRestoredHistoryRow()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyCaptureDownAsync(ServerId, Name, new[] { "Blocking", "Deadlock" }, Ct);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Capture Down", fired.MetricName);
+        Assert.Equal("Blocking and Deadlock", fired.CurrentValue);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+
+        /* Still down inside the cooldown — no re-fire. */
+        h.Now = h.Now.AddMinutes(1);
+        await e.ApplyCaptureDownAsync(ServerId, Name, new[] { "Blocking", "Deadlock" }, Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* Sessions back — one "Capture Restored" audit row. */
+        await e.ApplyCaptureDownAsync(ServerId, Name, Array.Empty<string>(), Ct);
+        var restored = Assert.Single(h.History.Records);
+        Assert.Equal("Capture Restored", restored.MetricName);
+    }
+
+    [Fact]
+    public async Task CaptureDown_BlockingAndDeadlockDisabled_DoesNotFire()
+    {
+        var h = new Harness();
+        h.Settings.BlockingEnabled = false;
+        h.Settings.DeadlockEnabled = false;
+        var e = h.Build();
+
+        await e.ApplyCaptureDownAsync(ServerId, Name, new[] { "Blocking" }, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    /* ---------------- connection lost / restored edge ---------------- */
+
+    [Fact]
+    public async Task Connection_FirstConnect_IsSilentBaseline()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        /* Unknown -> Online on the first-ever connect: no "restored" (there was no prior loss),
+           mirroring the Dashboard's skip-first-check. */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Connection_DownAtStartup_StaysDown_NeverFires()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        /* Unknown -> Offline (baseline) then Offline -> Offline: a server simply down at startup never
+           pages; only a transition FROM a known-online state does. */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "no route", Ct);
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "no route", Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Connection_Lost_FiresOnce_RepeatedFailedReconnectDoesNotReFire()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        /* Establish an online baseline (silent). */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* Online -> Offline: fire "Server Unreachable" ONCE. */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "Login timeout expired", Ct);
+        var lost = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Server Unreachable", lost.MetricName);
+        Assert.Equal(AlertSeverityLevel.Critical, lost.Severity);
+        Assert.Equal("Login timeout expired", lost.CurrentValue);
+
+        /* Offline -> Offline (the 60s retry keeps failing): the EDGE — no re-fire. */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "Login timeout expired", Ct);
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "Login timeout expired", Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task Connection_Restored_FiresOnce_AfterALoss()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);   /* baseline */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "boom", Ct); /* lost */
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* Offline -> Online: fire "Server Restored" once (Severity null so the shared map renders it green). */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+        var restored = h.Deliverer.Outcomes[1];
+        Assert.Equal("Server Restored", restored.MetricName);
+        Assert.Null(restored.Severity);
+
+        /* Staying online does not re-fire. */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task Connection_Forget_ResetsToBaseline()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);  /* Online baseline */
+        e.Forget(ServerId);
+
+        /* After Forget the next offline is a fresh Unknown->Offline baseline again — no spurious "lost". */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "gone", Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    /* ---------------- master switch ---------------- */
+
+    [Fact]
+    public async Task AlertsDisabled_ConnectionEdge_TracksStateButDoesNotFire_AndReEnableResumes()
+    {
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        var e = h.Build();
+
+        /* Disabled: transitions are tracked (so re-enabling has a correct baseline) but nothing fires. */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "x", Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* Re-enable, then recover: the tracked Offline baseline makes this a real Offline->Online, so
+           "Server Restored" fires (state was not lost while disabled). */
+        h.Settings.AlertsEnabled = true;
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        var restored = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Server Restored", restored.MetricName);
+    }
+
+    [Fact]
+    public async Task AlertsDisabled_EvaluateStoreAlerts_ShortCircuitsBeforeAnyStoreRead()
+    {
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        var e = h.Build();
+
+        /* The master gate returns before touching the store, so a null data source is never dereferenced;
+           if the gate were ever moved after the read this NREs (i.e. still fails, flagging the regression). */
+        await e.EvaluateStoreAlertsAsync(null!, ServerId, Name, connected: true, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+        Assert.Empty(h.History.Records);
+    }
+
+    /* ---------------- resolution-record shape + engine wiring (finding #4) ---------------- */
+
+    [Fact]
+    public void BuildResolutionRecord_MirrorsDashboardClearedRowShape()
+    {
+        var record = DarlingSelfAlertEvaluator.BuildResolutionRecord(
+            new AlertResolution(Key, Name, "High CPU", "CPU Resolved", $"{Name}: Total CPU back to 12%"));
+
+        Assert.Equal(Key, record.ServerId);
+        Assert.Equal(Name, record.ServerName);
+        Assert.Equal("CPU Resolved", record.MetricName);           /* the "…Resolved/Cleared" title, Dashboard shape */
+        Assert.Equal($"{Name}: Total CPU back to 12%", record.DetailText);
+        Assert.True(record.AlertSent);
+        Assert.Equal("tray", record.NotificationType);
+        Assert.Null(record.SendError);
+        Assert.False(record.Muted);
+    }
+
+    [Fact]
+    public async Task EngineResolution_WritesResolvedHistoryRow_ThroughBuildResolutionRecord()
+    {
+        /* Replicates DarlingWorker.BuildAlertEngine's resolution wiring: the shared engine's resolution
+           callback writes a resolved-flavored history row (finding #4 — previously it only logged). */
+        var settings = new FakeSettings { CpuEnabled = true };
+        var history = new FakeHistoryStore();
+        var deliverer = new RecordingDeliverer();
+        var now = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        var engine = new AlertEngine(
+            settings, new StubReadAdapter(), new StubStateStore(), deliverer,
+            isAlertMuted: _ => false,
+            failedJobsFetcher: null,
+            resolutionCallback: async (resolution, _) =>
+                await history.RecordAlertAsync(DarlingSelfAlertEvaluator.BuildResolutionRecord(resolution)),
+            logger: null,
+            utcNow: () => now);
+
+        /* Fire: total CPU 90 >= 80. */
+        await engine.EvaluateServerAsync(new AlertServerSnapshot(Key, Name, IsOnline: true, 90, 90, false, false), Ct);
+        Assert.Single(deliverer.Outcomes);
+        Assert.Empty(history.Records); /* no resolution yet */
+
+        /* Clear: CPU back below threshold => the engine emits a resolution => a history row is written. */
+        now = now.AddMinutes(1);
+        await engine.EvaluateServerAsync(new AlertServerSnapshot(Key, Name, IsOnline: true, 10, 10, false, false), Ct);
+        var resolved = Assert.Single(history.Records);
+        Assert.Equal("CPU Resolved", resolved.MetricName);
+        Assert.Equal("tray", resolved.NotificationType);
+    }
+
+    private sealed class StubReadAdapter : IAlertReadAdapter
+    {
+        public Task<List<BlockedProcessAlertRow>> GetRecentBlockedProcessReportsAsync(string serverKey, int hoursBack, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<BlockedProcessAlertRow>());
+        public Task<List<DeadlockAlertRow>> GetRecentDeadlocksAsync(string serverKey, int hoursBack, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<DeadlockAlertRow>());
+        public Task<List<PoisonWaitDelta>> GetPoisonWaitDeltasAsync(string serverKey, double thresholdMs, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<PoisonWaitDelta>());
+        public Task<List<LongRunningQueryInfo>> GetLongRunningQueriesAsync(
+            string serverKey, int thresholdMinutes, int maxResults,
+            bool excludeSpServerDiagnostics, bool excludeWaitFor, bool excludeBackups, bool excludeMiscWaits, bool excludeCdc,
+            IReadOnlyList<string> excludedDatabases, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<LongRunningQueryInfo>());
+        public Task<List<VolumeFreeSpaceInfo>> GetVolumeFreeSpaceAsync(string serverKey, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<VolumeFreeSpaceInfo>());
+        public Task<TempDbSpaceInfo?> GetTempDbSpaceAsync(string serverKey, CancellationToken cancellationToken = default) =>
+            Task.FromResult<TempDbSpaceInfo?>(null);
+        public Task<List<AnomalousJobInfo>> GetAnomalousJobsAsync(string serverKey, int multiplier, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new List<AnomalousJobInfo>());
+    }
+
+    private sealed class StubStateStore : IAlertStateStore
+    {
+        public Task<int?> LoadEdgeTriggerWatermarkAsync(string serverKey, string metricName) => Task.FromResult<int?>(null);
+        public Task SaveEdgeTriggerWatermarkAsync(string serverKey, string metricName, int watermark) => Task.CompletedTask;
+        public Task<DateTime?> LoadFailedJobWatermarkAsync(string serverKey) => Task.FromResult<DateTime?>(null);
+        public Task SaveFailedJobWatermarkAsync(string serverKey, DateTime watermark) => Task.CompletedTask;
+    }
+
+    /* ---------------- live collection_log reads (gated on DARLING_TEST_PG) ---------------- */
+
+    private const int LiveServerId = -770077;
+
+    [Fact]
+    public async Task LiveStoreReads_ComputeCollectionStoppedAndCaptureDown()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live self-alert store reads.");
+
+        var ct = Ct;
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+        await DeleteLiveRowsAsync(connection, ct);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        try
+        {
+            var utcNow = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+
+            /* One old SUCCESS (45 min ago), then 12 recent ERRORs — the last 10 runs are all failures and
+               the last success is well past the staleness window. */
+            long logId = 9_000_000;
+            await InsertLogAsync(connection, ct, logId++, "wait_stats", utcNow.AddMinutes(-45), "SUCCESS");
+            for (int i = 0; i < 12; i++)
+            {
+                await InsertLogAsync(connection, ct, logId++, "wait_stats", utcNow.AddMinutes(-2), "ERROR");
+            }
+
+            var (lastSuccess, recentRuns, recentSuccess) = await DarlingSelfAlertEvaluator.ReadCollectionSignalsAsync(
+                postgres, LiveServerId, DarlingSelfAlertEvaluator.ConsecutiveFailureThreshold, ct);
+
+            Assert.NotNull(lastSuccess);
+            Assert.Equal(DarlingSelfAlertEvaluator.ConsecutiveFailureThreshold, recentRuns);
+            Assert.Equal(0, recentSuccess);
+            Assert.True(DarlingSelfAlertEvaluator.IsCollectionStopped(
+                lastSuccess, recentRuns, recentSuccess, DateTime.UtcNow, out _));
+
+            /* Full path: EvaluateStoreAlertsAsync must NOT fire collection-stopped until the server has been
+               online this run (the restart-staleness guard), then must fire once it has. Real-time clock so
+               the 45-minute-old success reads as stale against the seeded rows. */
+            var h = new Harness { Now = DateTime.UtcNow };
+            var evaluator = h.Build();
+
+            await evaluator.EvaluateStoreAlertsAsync(postgres, LiveServerId, Name, connected: true, ct);
+            Assert.DoesNotContain(h.Deliverer.Outcomes, o => o.MetricName == "Collection Stopped");
+
+            await evaluator.ApplyConnectionOutcomeAsync(LiveServerId, Name, online: true, error: null, ct); /* arm */
+            await evaluator.EvaluateStoreAlertsAsync(postgres, LiveServerId, Name, connected: true, ct);
+            Assert.Contains(h.Deliverer.Outcomes, o => o.MetricName == "Collection Stopped");
+
+            /* Capture-down: latest deadlocks run is SESSION_MISSING, latest blocked_process_report is fine. */
+            await InsertLogAsync(connection, ct, logId++, "blocked_process_report", utcNow.AddMinutes(-1), "SUCCESS");
+            await InsertLogAsync(connection, ct, logId++, "deadlocks", utcNow.AddMinutes(-1), "SESSION_MISSING");
+
+            var missing = await DarlingSelfAlertEvaluator.ReadMissingCaptureSessionsAsync(postgres, LiveServerId, ct);
+            Assert.Equal(new[] { "Deadlock" }, missing);
+
+            await evaluator.EvaluateStoreAlertsAsync(postgres, LiveServerId, Name, connected: true, ct);
+            Assert.Contains(h.Deliverer.Outcomes, o => o.MetricName == "Capture Down");
+        }
+        finally
+        {
+            await DeleteLiveRowsAsync(connection, ct);
+        }
+    }
+
+    private static async Task InsertLogAsync(
+        NpgsqlConnection connection, CancellationToken ct, long logId, string collector, DateTime time, string status)
+    {
+        using var command = new NpgsqlCommand(@"
+INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, duration_ms, status, error_message, rows_collected, sql_duration_ms, duckdb_duration_ms)
+VALUES ($1, $2, $3, $4, $5, 0, $6, NULL, 0, 0, 0)", connection);
+        command.Parameters.AddWithValue(logId);
+        command.Parameters.AddWithValue(LiveServerId);
+        command.Parameters.AddWithValue(Name);
+        command.Parameters.AddWithValue(collector);
+        command.Parameters.AddWithValue(time);
+        command.Parameters.AddWithValue(status);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task DeleteLiveRowsAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        using var cleanup = new NpgsqlCommand(
+            $"DELETE FROM collection_log WHERE server_id = {LiveServerId.ToString(CultureInfo.InvariantCulture)};", connection);
+        await cleanup.ExecuteNonQueryAsync(ct);
+    }
+}
