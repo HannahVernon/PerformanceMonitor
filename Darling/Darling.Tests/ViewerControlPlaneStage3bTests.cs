@@ -459,6 +459,29 @@ public sealed class ViewerControlPlaneMigrationTests
         Assert.True(new ViewerControlPlaneMigration(new ViewerAppSettings(), marker).AlreadyMigrated);
     }
 
+    [Fact]
+    public async Task MigrateAsync_UnseededOrUnreachableStore_IsANoOp_AndLeavesTheMarkerUnwritten()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The migrate-in path is Windows-only (DPAPI secret re-seal).");
+
+        using var dir = new TempDir();
+        var marker = Path.Combine(dir.Path, "cp.marker");
+
+        /* An unreachable store: IsConfigSeededAsync fails safe to false, so the migrate must import nothing AND
+           NOT burn the once-marker (a later, seeded run still carries the operator's settings across). This
+           pins the seeded-guard that prevents a partially-seeded store from stranding the import. Port 1 has no
+           listener -> a fast connection-refused; Timeout=1 caps it. */
+        await using var dataService = new ViewerDataService(
+            "Host=127.0.0.1;Port=1;Username=x;Password=x;Timeout=1;Command Timeout=1");
+        var migration = new ViewerControlPlaneMigration(new ViewerAppSettings(), marker);
+
+        var imported = await migration.MigrateAsync(dataService);
+
+        Assert.Equal(0, imported);
+        Assert.False(migration.AlreadyMigrated);
+        Assert.False(File.Exists(marker));
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; } = Directory.CreateTempSubdirectory("darling-cp3b-").FullName;

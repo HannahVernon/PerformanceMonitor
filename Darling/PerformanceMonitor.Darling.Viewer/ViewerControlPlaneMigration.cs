@@ -79,6 +79,16 @@ public sealed class ViewerControlPlaneMigration
             return 0;
         }
 
+        /* Wait for the service to finish seeding before importing. config_service is written LAST (its presence
+           marks the seed complete), so on a reachable-but-unseeded (or partially-seeded) store every section
+           read returns null: importing nothing AND burning the once-marker would strand the operator's pre-3b
+           settings forever, and a partial seed would drop the MCP section. Return WITHOUT the marker so a
+           later, fully-seeded run carries everything across. */
+        if (!await dataService.IsConfigSeededAsync(cancellationToken))
+        {
+            return 0;
+        }
+
         var imported = 0;
         try
         {

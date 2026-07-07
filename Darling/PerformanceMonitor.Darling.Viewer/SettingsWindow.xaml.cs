@@ -145,9 +145,13 @@ public partial class SettingsWindow : Window
                     _paused = service.Paused;
                 }
 
-                /* All reads completed — Save may now write the store sections without risk of clobbering
-                   tuned config with the on-screen defaults. */
-                _storeLoaded = true;
+                /* Save may write the store sections only when it is SEEDED — config_service is written LAST by
+                   the service (its presence marks the seed complete), so a non-null row here guarantees the
+                   alert/notification sections read real rows too. On a reachable-but-UNSEEDED store every read
+                   returns null and the controls hold on-screen defaults; upserting those would INSERT id=1
+                   defaults and make the service SKIP seeding those sections from darling.json (COUNT != 0),
+                   silently shadowing operator-tuned config. Leaving this false makes Save decline + say so. */
+                _storeLoaded = service is not null;
             }
             catch (Exception ex)
             {
@@ -961,8 +965,8 @@ public partial class SettingsWindow : Window
         {
             MessageBox.Show(
                 "Your viewer preferences were saved. The current monitoring settings could not be read from the " +
-                "Darling store, so they were left unchanged (to avoid overwriting them). Try again once the store " +
-                "is reachable.",
+                "Darling store (it may be unreachable, or the service hasn't finished initializing its settings " +
+                "yet), so they were left unchanged to avoid overwriting them. Try again in a moment.",
                 "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
