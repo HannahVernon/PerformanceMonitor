@@ -7,6 +7,8 @@
  */
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using PerformanceMonitor.Darling.Service;
 using Xunit;
 
@@ -85,6 +87,81 @@ public sealed class DarlingManagedRolesTests
 
         /* Fail-closed: a future serial/identity config column needs sequence USAGE for admin's INSERT. */
         Assert.Contains("GRANT USAGE, SELECT ON SEQUENCES TO admin;", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildProvisioningSql_CarvesViewerSecretColumns_FailClosed()
+    {
+        var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02");
+
+        /* The blanket config SELECT to viewer is still present (covers the non-secret config tables), but
+           the three credential-bearing tables are then carved to column-level for viewer. */
+        Assert.Contains("GRANT SELECT ON ALL TABLES IN SCHEMA config  TO admin, viewer;", sql, StringComparison.Ordinal);
+
+        foreach (var acl in DarlingManagedRoles.ViewerRestrictedConfigTables)
+        {
+            /* viewer's table-wide SELECT is dropped, then re-granted on ONLY the non-secret columns. */
+            Assert.Contains($"REVOKE SELECT ON config.{acl.Table} FROM viewer;", sql, StringComparison.Ordinal);
+            Assert.Contains($"GRANT SELECT ({string.Join(", ", acl.NonSecretColumns)}) ON config.{acl.Table} TO viewer;",
+                sql, StringComparison.Ordinal);
+
+            /* The carve is viewer-only — admin is never column-restricted (it writes these tables). */
+            Assert.DoesNotContain($"REVOKE SELECT ON config.{acl.Table} FROM admin", sql, StringComparison.Ordinal);
+        }
+
+        /* No secret column name appears anywhere in a GRANT ... TO viewer (belt over the per-table check). */
+        var viewerGrantLines = sql.Split('\n')
+            .Where(line => line.Contains("TO viewer", StringComparison.Ordinal) && line.Contains("GRANT SELECT (", StringComparison.Ordinal));
+        foreach (var secret in DarlingManagedRoles.ViewerRestrictedConfigTables.SelectMany(a => a.SecretColumns))
+        {
+            foreach (var line in viewerGrantLines)
+            {
+                Assert.DoesNotContain(secret, line, StringComparison.Ordinal);
+            }
+        }
+    }
+
+    [Fact]
+    public void ViewerRestrictedConfigTables_SecretAndNonSecretColumns_AreDisjointAndNonEmpty()
+    {
+        var expectedSecrets = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["config_monitored_servers"] = new[] { "encrypted_password" },
+            ["config_command"] = new[] { "args_json" },
+            ["config_notification"] = new[] { "smtp_encrypted_password", "smtp_username", "teams_url", "slack_url" },
+        };
+
+        /* Exactly the three known secret-bearing tables, with the expected secret columns. */
+        Assert.Equal(
+            expectedSecrets.Keys.OrderBy(k => k, StringComparer.Ordinal),
+            DarlingManagedRoles.ViewerRestrictedConfigTables.Select(a => a.Table).OrderBy(k => k, StringComparer.Ordinal));
+
+        foreach (var acl in DarlingManagedRoles.ViewerRestrictedConfigTables)
+        {
+            Assert.NotEmpty(acl.NonSecretColumns);
+            Assert.NotEmpty(acl.SecretColumns);
+
+            /* A column is never in both sets — a granted column can't also be a denied one. */
+            Assert.Empty(acl.NonSecretColumns.Intersect(acl.SecretColumns, StringComparer.Ordinal));
+
+            Assert.Equal(
+                expectedSecrets[acl.Table].OrderBy(c => c, StringComparer.Ordinal),
+                acl.SecretColumns.OrderBy(c => c, StringComparer.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void BuildViewerColumnAclSql_UsesTheGivenSchemaAndRole()
+    {
+        /* The same generator the live test applies to its throwaway roles — pin that it honors the passed
+           schema + role names (so the test and the real provisioning can never drift). */
+        var sql = DarlingManagedRoles.BuildViewerColumnAclSql("config", "sec_viewer_test");
+
+        Assert.Contains("REVOKE SELECT ON config.config_monitored_servers FROM sec_viewer_test;", sql, StringComparison.Ordinal);
+        Assert.Contains("ON config.config_monitored_servers TO sec_viewer_test;", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("encrypted_password", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("args_json", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("teams_url", sql, StringComparison.Ordinal);
     }
 
     [Fact]

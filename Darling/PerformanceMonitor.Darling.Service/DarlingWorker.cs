@@ -584,6 +584,14 @@ public sealed class DarlingWorker : BackgroundService
         {
             try
             {
+                /* Robustness (Stage 2 follow-up): before draining the queue, reclaim any command left
+                   in_progress by a crashed/restarted service instance so a Viewer polling it is not stranded
+                   forever. Cheap (an indexed UPDATE matching nothing in the normal case) and safe to run
+                   every tick — the 5-minute staleness margin can never catch a merely-slow live command. A
+                   reclaimed row is marked terminal 'failed' (not re-queued), so the drain below never re-runs
+                   a non-idempotent command; see DarlingCommandExecutor.ReclaimStaleCommandsSql. */
+                await executor.ReclaimStaleCommandsAsync(stoppingToken);
+
                 while (await executor.PollOnceAsync(stoppingToken))
                 {
                     if (stoppingToken.IsCancellationRequested)

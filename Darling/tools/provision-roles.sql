@@ -60,10 +60,37 @@ END $$;
 ALTER ROLE admin  LOGIN NOSUPERUSER PASSWORD 'CHANGE_ME_ADMIN_PASSWORD';
 ALTER ROLE viewer LOGIN NOSUPERUSER PASSWORD 'CHANGE_ME_VIEWER_PASSWORD';
 
--- 2. Schema usage + SELECT on everything that exists now (ALL TABLES covers tables AND views).
+-- 2. Schema usage + SELECT on everything that exists now (ALL TABLES covers tables AND views). collect
+--    holds no secrets, so admin+viewer read all of it. config: admin (the writer, and the Settings
+--    window's identity) reads every column; viewer reads all config tables too -- MINUS the secret columns
+--    carved in step 2b.
 GRANT USAGE ON SCHEMA collect, config TO admin, viewer;
 GRANT SELECT ON ALL TABLES IN SCHEMA collect TO admin, viewer;
 GRANT SELECT ON ALL TABLES IN SCHEMA config  TO admin, viewer;
+
+-- 2b. Credential-column fail-closed ACLs (#1262). The read-only viewer must NOT read the secret columns of
+--     the three credential-bearing config tables: config_monitored_servers.encrypted_password (a DPAPI
+--     password blob), config_command.args_json (the inline test_connect credential blob), and
+--     config_notification's SMTP password/username + Teams/Slack webhook URLs (a webhook URL is a bearer
+--     secret). Instead of GRANT-ALL-then-REVOKE-each-secret (fail-OPEN -- a future secret column leaks until
+--     someone revokes it), DROP viewer's table-wide SELECT on each and re-grant ONLY the non-secret columns
+--     (fail-CLOSED -- a column added later is invisible to viewer until you add it below). admin keeps its
+--     table-wide SELECT from step 2. Re-running this whole script re-asserts the carve idempotently. If a
+--     later schema upgrade ADDS a column to any of these three tables, add it to the matching GRANT list
+--     below (or, if it is itself secret, deliberately leave it out).
+REVOKE SELECT ON config.config_monitored_servers FROM viewer;
+GRANT SELECT (server_id, name, host, database, auth, username, encrypt_mode, trust_server_certificate,
+              read_only_intent, multi_subnet_failover, excluded_databases, monthly_cost_usd, capture_plans,
+              is_enabled, created_at, modified_at)
+    ON config.config_monitored_servers TO viewer;
+REVOKE SELECT ON config.config_command FROM viewer;
+GRANT SELECT (command_id, created_at, requested_by, command_type, target_server_id, status, claimed_at,
+              completed_at, result_status, result_json, service_instance)
+    ON config.config_command TO viewer;
+REVOKE SELECT ON config.config_notification FROM viewer;
+GRANT SELECT (id, smtp_host, smtp_port, smtp_use_ssl, smtp_from_address, smtp_recipients,
+              email_cooldown_minutes, teams_proxy, slack_proxy, modified_at)
+    ON config.config_notification TO viewer;
 
 -- 3. config writes -- admin only.
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO admin;

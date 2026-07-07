@@ -7,6 +7,8 @@
  */
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Darling.Service;
@@ -153,6 +155,60 @@ public sealed class DarlingSecuritySplitLiveTests
     }
 
     [Fact]
+    public async Task ViewerRole_DeniedSecretColumns_AllowedNonSecretColumns_OnAllThreeTables()
+    {
+        var connectionString = RequireLivePostgres();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var owner = new NpgsqlConnection(connectionString);
+        await owner.OpenAsync(ct);
+        /* Applies V17 (creates the three credential-bearing config tables) — the carve targets them. */
+        await PgMigrations.MigrateAsync(owner, ct);
+
+        await CreateTestRolesAndGrantsAsync(owner, ct);
+        try
+        {
+            await using var viewer = new NpgsqlConnection(RoleConnectionString(connectionString, ViewerRole));
+            await viewer.OpenAsync(ct);
+
+            foreach (var acl in DarlingManagedRoles.ViewerRestrictedConfigTables)
+            {
+                /* Drift guard (the safety net): the non-secret + secret sets must PARTITION the table's real
+                   columns. A migration that adds a column without classifying it here fails HERE — the new
+                   column is in neither set — forcing a deliberate secret/non-secret decision before it can
+                   ship, which is exactly what a future-secret-column ACL gap would need. */
+                var actual = await ColumnsOfConfigTableAsync(owner, acl.Table, ct);
+                var classified = acl.NonSecretColumns.Concat(acl.SecretColumns).ToHashSet(StringComparer.Ordinal);
+                Assert.True(actual.SetEquals(classified),
+                    $"config.{acl.Table}: unclassified column(s) [{string.Join(",", actual.Except(classified))}]; " +
+                    $"listed-but-absent [{string.Join(",", classified.Except(actual))}] — update DarlingManagedRoles.ViewerRestrictedConfigTables.");
+
+                /* viewer CAN read every non-secret column together (column privilege is enforced at parse
+                   time, so LIMIT 1 exercises it even against an empty table). */
+                await ExecAsync(viewer, $"SELECT {string.Join(", ", acl.NonSecretColumns)} FROM config.{acl.Table} LIMIT 1", ct);
+
+                /* viewer is DENIED each secret column — 42501 insufficient_privilege — proving the fail-closed
+                   carve actually took (the point of the whole deliverable). */
+                foreach (var secret in acl.SecretColumns)
+                {
+                    var denied = await Assert.ThrowsAsync<PostgresException>(async () =>
+                        await ExecAsync(viewer, $"SELECT {secret} FROM config.{acl.Table} LIMIT 1", ct));
+                    Assert.Equal("42501", denied.SqlState);
+                }
+
+                /* SELECT * is denied too (it touches the secret columns), so a naive read can't leak them. */
+                var star = await Assert.ThrowsAsync<PostgresException>(async () =>
+                    await ExecAsync(viewer, $"SELECT * FROM config.{acl.Table} LIMIT 1", ct));
+                Assert.Equal("42501", star.SqlState);
+            }
+        }
+        finally
+        {
+            await DropTestRolesAsync(owner, ct);
+        }
+    }
+
+    [Fact]
     public async Task CompressedHypertable_SetSchema_StaysReadableByLeastPrivilegeRole()
     {
         var connectionString = RequireLivePostgres();
@@ -268,6 +324,7 @@ GRANT USAGE ON SCHEMA collect, config TO {AdminRole}, {ViewerRole};
 GRANT SELECT ON ALL TABLES IN SCHEMA collect TO {AdminRole}, {ViewerRole};
 GRANT SELECT ON ALL TABLES IN SCHEMA config  TO {AdminRole}, {ViewerRole};
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO {AdminRole};
+{DarlingManagedRoles.BuildViewerColumnAclSql("config", ViewerRole)}
 ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect GRANT SELECT ON TABLES TO {AdminRole}, {ViewerRole};";
         await ExecAsync(owner, ddl, ct);
     }
@@ -278,22 +335,37 @@ ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect GRANT S
 
     private static async Task DropTestRolesAsync(NpgsqlConnection owner, System.Threading.CancellationToken ct)
     {
-        /* Revoke first so DROP ROLE doesn't fail on dependent grants; ignore cleanup errors. */
+        /* DROP OWNED BY revokes EVERY privilege granted to these roles — table, the new column-level secret
+           carve, schema-usage, and the owner's default privileges naming them — so the following DROP ROLE
+           has no dependent grants to trip on (a plain table-level REVOKE would leave the column grants and
+           block the drop). Best-effort: a leftover disposable role in a dev store is harmless. */
         try
         {
-            var db = owner.Database;
             await ExecAsync(owner, $@"
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA collect FROM {AdminRole}, {ViewerRole};
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA config  FROM {AdminRole}, {ViewerRole};
-REVOKE ALL PRIVILEGES ON SCHEMA collect, config FROM {AdminRole}, {ViewerRole};
-ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect REVOKE SELECT ON TABLES FROM {AdminRole}, {ViewerRole};
+DROP OWNED BY {AdminRole}, {ViewerRole};
 DROP ROLE IF EXISTS {AdminRole};
 DROP ROLE IF EXISTS {ViewerRole};", ct);
         }
         catch (PostgresException)
         {
-            /* Best-effort cleanup — a leftover disposable role in a dev store is harmless. */
         }
+    }
+
+    /// <summary>The actual column names of a <c>config</c>-schema table (for the ACL drift/partition guard).</summary>
+    private static async Task<HashSet<string>> ColumnsOfConfigTableAsync(
+        NpgsqlConnection connection, string table, System.Threading.CancellationToken ct)
+    {
+        var columns = new HashSet<string>(StringComparer.Ordinal);
+        using var command = new NpgsqlCommand(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'config' AND table_name = $1", connection);
+        command.Parameters.AddWithValue(table);
+        using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns;
     }
 
     private static string RoleConnectionString(string baseConnectionString, string role)
