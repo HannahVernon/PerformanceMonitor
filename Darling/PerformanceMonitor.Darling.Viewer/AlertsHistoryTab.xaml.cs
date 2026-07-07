@@ -32,6 +32,14 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public partial class AlertsHistoryTab : UserControl
 {
+    /// <summary>
+    /// Whether alert dismiss + mute actions are written to the viewer log (the "Log alert dismiss and mute
+    /// actions" Settings checkbox — <see cref="ViewerAppSettings.LogAlertDismissals"/>). Seeded from the app
+    /// settings by <see cref="MainWindow"/> at startup and after the Settings window saves; a process-wide static
+    /// because the viewer loads its app settings per-window (the twin of Lite's <c>App.LogAlertDismissals</c>).
+    /// </summary>
+    public static bool LogDismissals { get; set; } = true;
+
     private ViewerDataService? _dataService;
     private DataGridFilterManager<ViewerAlertRow>? _filterManager;
     private Popup? _filterPopup;
@@ -308,6 +316,14 @@ public partial class AlertsHistoryTab : UserControl
         try
         {
             var affected = await _dataService.DismissAlertsAsync(selected);
+            /* Log the dismiss action when the operator opted in (mirrors Lite's App.LogAlertDismissals gate,
+               including the partial-dismiss note when fewer rows updated than were selected). */
+            if (LogDismissals)
+            {
+                ViewerLogger.Info("AlertsHistory", affected < selected.Count
+                    ? $"Dismissed {affected} of {selected.Count} selected alert(s) (some were already dismissed)"
+                    : $"Dismissed {affected} selected alert(s)");
+            }
             await LoadAlertsAsync();
             StatusChanged?.Invoke($"dismissed {affected} alert(s) — {DateTime.Now:HH:mm:ss}");
         }
@@ -347,6 +363,11 @@ public partial class AlertsHistoryTab : UserControl
             int? serverId = GetSelectedServerId();
             var sinceUtc = DateTime.UtcNow.AddHours(-hoursBack);
             var affected = await _dataService.DismissAllVisibleAlertsAsync(sinceUtc, serverId);
+            if (LogDismissals)
+            {
+                var scope = serverId.HasValue ? $"server {serverId.Value}" : "all servers";
+                ViewerLogger.Info("AlertsHistory", $"Dismissed all {affected} visible alert(s) ({scope}, last {hoursBack}h)");
+            }
             await LoadAlertsAsync();
             StatusChanged?.Invoke($"dismissed {affected} alert(s) — {DateTime.Now:HH:mm:ss}");
         }
@@ -495,6 +516,15 @@ public partial class AlertsHistoryTab : UserControl
         try
         {
             await _dataService.InsertMuteRuleAsync(dialog.Rule);
+            /* The "Log alert dismiss and mute actions" opt-in covers mute creation too. */
+            if (LogDismissals)
+            {
+                var expiry = dialog.Rule.ExpiresAtUtc.HasValue
+                    ? dialog.Rule.ExpiresAtUtc.Value.ToString("u", System.Globalization.CultureInfo.InvariantCulture)
+                    : "never";
+                ViewerLogger.Info("AlertsHistory",
+                    $"Created mute rule (server={dialog.Rule.ServerName ?? "any"}, metric={dialog.Rule.MetricName ?? "any"}, expires={expiry})");
+            }
             await LoadAlertsAsync();
             StatusChanged?.Invoke($"mute rule created — {DateTime.Now:HH:mm:ss}");
         }

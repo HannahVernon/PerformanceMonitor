@@ -83,8 +83,10 @@ public partial class MainWindow : Window
            double-convert on hover/crosshair. */
         var appSettings = _appSettingsStore.Load();
         ViewerExportSettings.Apply(appSettings);
-        /* Seed the new-mute-rule default expiration preference so every MuteRuleEditDialog opens on it. */
+        /* Seed the new-mute-rule default expiration preference so every MuteRuleEditDialog opens on it, and the
+           dismiss/mute action-logging opt-in the Alerts tab honors. */
         MuteRuleEditDialog.DefaultExpiration = appSettings.MuteRuleDefaultExpiration;
+        AlertsHistoryTab.LogDismissals = appSettings.LogAlertDismissals;
         ApplyTimeDisplayMode(appSettings.TimeDisplayMode);
         Loaded += OnLoaded;
         Closed += OnClosed;
@@ -946,8 +948,9 @@ public partial class MainWindow : Window
            changed there, sync every open tab's picker and reload the visible tab so its timestamps re-render. */
         var reloaded = _appSettingsStore.Load();
         ViewerExportSettings.Apply(reloaded);
-        /* Re-seed the new-mute-rule default expiration in case the operator changed it in Settings. */
+        /* Re-seed the new-mute-rule default expiration + dismiss/mute logging opt-in in case the operator changed them. */
         MuteRuleEditDialog.DefaultExpiration = reloaded.MuteRuleDefaultExpiration;
+        AlertsHistoryTab.LogDismissals = reloaded.LogAlertDismissals;
         var previousMode = ViewerTimeHelper.CurrentDisplayMode;
         ApplyTimeDisplayMode(reloaded.TimeDisplayMode);
         if (ViewerTimeHelper.CurrentDisplayMode != previousMode)
