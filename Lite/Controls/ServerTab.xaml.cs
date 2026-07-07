@@ -105,7 +105,6 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<TraceFlagRow>? _traceFlagsFilterMgr;
     private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
-    private DateTime? _dailySummaryDate; // null = today
     private CancellationTokenSource? _actualPlanCts;
 
     public int UtcOffsetMinutes { get; }
@@ -445,41 +444,6 @@ public partial class ServerTab : UserControl
             : $"TabNav-tab{MainTabControl.SelectedIndex}";
         using var _navTimer = Helpers.MethodProfiler.StartTiming(navContext);
         await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
-    }
-
-    private void DailySummaryToday_Click(object sender, RoutedEventArgs e)
-    {
-        _dailySummaryDate = null;
-        DailySummaryDatePicker.SelectedDate = null;
-        DailySummaryTodayButton.FontWeight = FontWeights.Bold;
-        DailySummaryIndicator.Text = "Showing: Today (UTC)";
-        DailySummaryRefresh_Click(sender, e);
-    }
-
-    private void DailySummaryDate_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (DailySummaryDatePicker.SelectedDate.HasValue)
-        {
-            _dailySummaryDate = DailySummaryDatePicker.SelectedDate.Value.Date;
-            DailySummaryTodayButton.FontWeight = FontWeights.Normal;
-            DailySummaryIndicator.Text = $"Showing: {_dailySummaryDate.Value:MMM d, yyyy}";
-        }
-    }
-
-    private async void DailySummaryRefresh_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var result = await Task.Run(() => _dataService.GetDailySummaryAsync(_serverId, _dailySummaryDate));
-            DailySummaryGrid.ItemsSource = result != null
-                ? new List<DailySummaryRow> { result } : null;
-            DailySummaryNoData.Visibility = result == null
-                ? Visibility.Visible : Visibility.Collapsed;
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("DailySummary", $"Error refreshing: {ex.Message}");
-        }
     }
 
     private async void LiveSnapshot_Click(object sender, RoutedEventArgs e)

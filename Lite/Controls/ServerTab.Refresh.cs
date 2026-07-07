@@ -623,22 +623,10 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 11 — Daily Summary</summary>
+    /// <summary>Tab 11 — Daily Summary (Performance Calendar month heatmap).</summary>
     private async System.Threading.Tasks.Task RefreshDailySummaryAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
-        try
-        {
-            var dailySummaryTask = Task.Run(() => _dataService.GetDailySummaryAsync(_serverId, _dailySummaryDate));
-            var dailySummary = await dailySummaryTask;
-            DailySummaryGrid.ItemsSource = dailySummary != null
-                ? new List<DailySummaryRow> { dailySummary } : null;
-            DailySummaryNoData.Visibility = dailySummary == null
-                ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Info("ServerTab", $"[{_server.DisplayName}] RefreshDailySummaryAsync failed: {ex.Message}");
-        }
+        await LoadCalendarMonthAsync(DailyCalendar.DisplayMonth);
     }
 
     /// <summary>Tab 12 — Collection Health</summary>

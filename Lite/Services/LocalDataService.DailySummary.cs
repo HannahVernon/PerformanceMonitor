@@ -10,112 +10,190 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
 public partial class LocalDataService
 {
     /// <summary>
-    /// Gets daily summary for a specific date (or today if null).
+    /// The Performance Calendar / Daily Summary aggregate, grouped one row per day over a half-open
+    /// [fromDate, toDate) window. One row is returned for every day that had ANY collection (present in
+    /// the collection log or any source view); days with no collection are simply absent, which the
+    /// calendar renders as <see cref="DailyHealthBand.NoData"/>. Each row's composite band is computed by
+    /// the shared <see cref="DailyHealthBandCalculator"/> so it bands identically to the Darling viewer.
+    ///
+    /// This is the single source of truth for the daily aggregate; <see cref="GetDailySummaryAsync"/>
+    /// (single day) delegates here so the calendar cell and the drilled-in day can never disagree.
     /// </summary>
-    public async Task<DailySummaryRow?> GetDailySummaryAsync(int serverId, DateTime? summaryDate = null)
+    private const string DailySummaryRangeSql = @"
+WITH wait_per_type AS (
+    SELECT date_trunc('day', collection_time) AS d, wait_type, SUM(delta_wait_time_ms) AS ms
+    FROM v_wait_stats
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3 AND delta_wait_time_ms > 0
+    GROUP BY 1, 2
+),
+waits AS (
+    SELECT d, SUM(ms) / 1000.0 AS total_wait_sec, arg_max(wait_type, ms) AS top_wait_type
+    FROM wait_per_type
+    GROUP BY d
+),
+queries AS (
+    SELECT date_trunc('day', collection_time) AS d, COUNT(DISTINCT query_hash) AS c
+    FROM v_query_stats
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+deadlocks AS (
+    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c
+    FROM v_deadlocks
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+bpr AS (
+    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c
+    FROM v_blocked_process_reports
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+dmv AS (
+    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c
+    FROM v_dmv_blocking_snapshots
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+cpu AS (
+    /* Total host CPU = SQL + other-process (NULL on Linux -> 0), matching the alert engine and the
+       Overview headline; sustained >= 80 samples drive the day's band. */
+    SELECT date_trunc('day', collection_time) AS d,
+           COUNT(*) FILTER (WHERE (sqlserver_cpu_utilization + COALESCE(other_process_cpu_utilization, 0)) >= 80) AS c
+    FROM v_cpu_utilization_stats
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+coll AS (
+    /* Any run (all statuses) marks the day as collected -> it appears even if every metric is quiet
+       (a quiet monitored day is Healthy/green, not No-Data/grey). errs feeds the Critical band. */
+    SELECT date_trunc('day', collection_time) AS d,
+           COUNT(*) AS runs,
+           COUNT(*) FILTER (WHERE status = 'ERROR') AS errs
+    FROM v_collection_log
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+mem AS (
+    SELECT date_trunc('day', collection_time) AS d,
+           COUNT(*) FILTER (WHERE memory_indicators_process >= 2 OR memory_indicators_system >= 2) AS pressure,
+           COUNT(*) FILTER (WHERE memory_indicators_process >= 3) AS critical
+    FROM v_memory_pressure_events
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    GROUP BY 1
+),
+alerts AS (
+    /* Actionable alerts only: exclude dismissed rows and resolution/good-news notices (Cleared /
+       Resolved / Restored), mirroring AlertMetricClassifier.IsResolution. */
+    SELECT date_trunc('day', alert_time) AS d, COUNT(*) AS c
+    FROM v_config_alert_log
+    WHERE server_id = $1 AND alert_time >= $2 AND alert_time < $3
+      AND dismissed = false
+      AND metric_name NOT LIKE '%Cleared%'
+      AND metric_name NOT LIKE '%Resolved%'
+      AND metric_name NOT LIKE '%Restored%'
+    GROUP BY 1
+),
+day_spine AS (
+    SELECT d FROM waits
+    UNION SELECT d FROM queries
+    UNION SELECT d FROM deadlocks
+    UNION SELECT d FROM bpr
+    UNION SELECT d FROM dmv
+    UNION SELECT d FROM cpu
+    UNION SELECT d FROM coll
+    UNION SELECT d FROM mem
+    UNION SELECT d FROM alerts
+)
+SELECT
+    s.d AS day,
+    COALESCE(w.total_wait_sec, 0) AS total_wait_sec,
+    w.top_wait_type,
+    COALESCE(q.c, 0) AS unique_queries,
+    COALESCE(dl.c, 0) AS deadlock_count,
+    COALESCE(NULLIF(b.c, 0), dm.c, 0) AS blocking_events,
+    COALESCE(cp.c, 0) AS high_cpu_events,
+    COALESCE(cl.errs, 0) AS collection_errors,
+    COALESCE(m.pressure, 0) AS memory_pressure_events,
+    COALESCE(m.critical, 0) AS memory_critical_events,
+    COALESCE(al.c, 0) AS alert_count
+FROM day_spine s
+LEFT JOIN waits w ON w.d = s.d
+LEFT JOIN queries q ON q.d = s.d
+LEFT JOIN deadlocks dl ON dl.d = s.d
+LEFT JOIN bpr b ON b.d = s.d
+LEFT JOIN dmv dm ON dm.d = s.d
+LEFT JOIN cpu cp ON cp.d = s.d
+LEFT JOIN coll cl ON cl.d = s.d
+LEFT JOIN mem m ON m.d = s.d
+LEFT JOIN alerts al ON al.d = s.d
+ORDER BY s.d";
+
+    /// <summary>
+    /// Returns one <see cref="DailySummaryRow"/> per collected day in the half-open [fromDate, toDate)
+    /// window (dates normalized to their date component). Powers the Performance Calendar month grid.
+    /// </summary>
+    public async Task<List<DailySummaryRow>> GetDailySummaryRangeAsync(int serverId, DateTime fromDate, DateTime toDate)
     {
-        using var _q = TimeQuery("GetDailySummaryAsync", "daily summary aggregation");
+        using var _q = TimeQuery("GetDailySummaryRangeAsync", "daily summary range aggregation");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
-        var targetDate = summaryDate?.Date ?? DateTime.UtcNow.Date;
-        var dayStart = targetDate;
-        var dayEnd = targetDate.AddDays(1);
-
-        command.CommandText = @"
-SELECT
-    COALESCE(
-        (SELECT SUM(delta_wait_time_ms) / 1000.0
-         FROM v_wait_stats
-         WHERE server_id = $1
-         AND   collection_time >= $2 AND collection_time < $3
-         AND   delta_wait_time_ms > 0), 0
-    ) AS total_wait_sec,
-    (SELECT wait_type
-     FROM v_wait_stats
-     WHERE server_id = $1
-     AND   collection_time >= $2 AND collection_time < $3
-     AND   delta_wait_time_ms > 0
-     GROUP BY wait_type
-     ORDER BY SUM(delta_wait_time_ms) DESC
-     LIMIT 1
-    ) AS top_wait_type,
-    COALESCE(
-        (SELECT COUNT(DISTINCT query_hash)
-         FROM v_query_stats
-         WHERE server_id = $1
-         AND   collection_time >= $2 AND collection_time < $3), 0
-    ) AS unique_queries,
-    COALESCE(
-        (SELECT COUNT(*)
-         FROM v_deadlocks
-         WHERE server_id = $1
-         AND   collection_time >= $2 AND collection_time < $3), 0
-    ) AS deadlock_count,
-    COALESCE(
-        NULLIF((SELECT COUNT(*)
-         FROM v_blocked_process_reports
-         WHERE server_id = $1
-         AND   collection_time >= $2 AND collection_time < $3), 0),
-        (SELECT COUNT(*)
-         FROM v_dmv_blocking_snapshots
-         WHERE server_id = $1
-         AND   collection_time >= $2 AND collection_time < $3), 0
-    ) AS blocking_events,
-    COALESCE(
-        (SELECT COUNT(*)
-         FROM v_cpu_utilization_stats
-         WHERE server_id = $1
-         /* Total host CPU = SQL + other-process, matching the alert engine (CpuAlertMode.Total),
-            the Overview headline (TotalCpuPercent = sqlserver + (other_process ?? 0)), and
-            Dashboard's report.daily_summary (#1004). other_process_cpu_utilization is NULL on SQL
-            Server on Linux (host CPU not derivable, #1048), so COALESCE(.,0) collapses this to the
-            SQL-only figure there -- the same fallback as Dashboard's ISNULL(total, sqlserver). */
-         AND   (sqlserver_cpu_utilization + COALESCE(other_process_cpu_utilization, 0)) >= 80
-         AND   collection_time >= $2 AND collection_time < $3), 0
-    ) AS high_cpu_events,
-    COALESCE(
-        (SELECT COUNT(*)
-         FROM v_collection_log
-         WHERE server_id = $1
-         AND   status = 'ERROR'
-         AND   collection_time >= $2 AND collection_time < $3), 0
-    ) AS collection_errors";
-
+        command.CommandText = DailySummaryRangeSql;
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
-        command.Parameters.Add(new DuckDBParameter { Value = dayStart });
-        command.Parameters.Add(new DuckDBParameter { Value = dayEnd });
+        command.Parameters.Add(new DuckDBParameter { Value = fromDate.Date });
+        command.Parameters.Add(new DuckDBParameter { Value = toDate.Date });
 
+        var results = new List<DailySummaryRow>();
         using var reader = await command.ExecuteReaderAsync();
-        if (!await reader.ReadAsync()) return null;
-
-        var deadlocks = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3));
-        var blocking = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4));
-        var highCpu = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5));
-
-        var health = "NORMAL";
-        if (deadlocks > 0) health = "DEADLOCKS";
-        else if (highCpu > 5) health = "CPU_CRITICAL";
-        else if (blocking > 10) health = "BLOCKING";
-
-        return new DailySummaryRow
+        while (await reader.ReadAsync())
         {
-            SummaryDate = targetDate,
-            TotalWaitTimeSec = reader.IsDBNull(0) ? 0m : Convert.ToDecimal(reader.GetValue(0)),
-            TopWaitType = reader.IsDBNull(1) ? "" : reader.GetString(1),
-            UniqueQueries = reader.IsDBNull(2) ? 0L : Convert.ToInt64(reader.GetValue(2)),
-            DeadlockCount = deadlocks,
-            BlockingEvents = blocking,
-            HighCpuEvents = highCpu,
-            CollectionErrors = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
-            OverallHealth = health
+            results.Add(ReadDailySummaryRow(reader));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Gets the daily summary for a specific date (or today if null). Delegates to the range query for a
+    /// single day so the single-day contract shares the one aggregate; returns a No-Data row when the day
+    /// had no collection.
+    /// </summary>
+    public async Task<DailySummaryRow?> GetDailySummaryAsync(int serverId, DateTime? summaryDate = null)
+    {
+        var targetDate = summaryDate?.Date ?? DateTime.UtcNow.Date;
+        var rows = await GetDailySummaryRangeAsync(serverId, targetDate, targetDate.AddDays(1));
+        return rows.Count > 0
+            ? rows[0]
+            : new DailySummaryRow { SummaryDate = targetDate, HasData = false, HealthBand = DailyHealthBand.NoData };
+    }
+
+    private static DailySummaryRow ReadDailySummaryRow(System.Data.Common.DbDataReader reader)
+    {
+        var row = new DailySummaryRow
+        {
+            SummaryDate = reader.IsDBNull(0) ? DateTime.MinValue : Convert.ToDateTime(reader.GetValue(0)),
+            TotalWaitTimeSec = reader.IsDBNull(1) ? 0m : Convert.ToDecimal(reader.GetValue(1)),
+            TopWaitType = reader.IsDBNull(2) ? "" : reader.GetString(2),
+            UniqueQueries = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3)),
+            DeadlockCount = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4)),
+            BlockingEvents = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5)),
+            HighCpuEvents = reader.IsDBNull(6) ? 0L : Convert.ToInt64(reader.GetValue(6)),
+            CollectionErrors = reader.IsDBNull(7) ? 0L : Convert.ToInt64(reader.GetValue(7)),
+            MemoryPressureEvents = reader.IsDBNull(8) ? 0L : Convert.ToInt64(reader.GetValue(8)),
+            MemoryCriticalEvents = reader.IsDBNull(9) ? 0L : Convert.ToInt64(reader.GetValue(9)),
+            AlertCount = reader.IsDBNull(10) ? 0L : Convert.ToInt64(reader.GetValue(10)),
+            HasData = true,
         };
+        row.HealthBand = DailyHealthBandCalculator.Classify(row.ToSignals());
+        return row;
     }
 }
 
@@ -128,11 +206,38 @@ public class DailySummaryRow
     public long DeadlockCount { get; set; }
     public long BlockingEvents { get; set; }
     public long HighCpuEvents { get; set; }
+    public long MemoryPressureEvents { get; set; }
+    public long MemoryCriticalEvents { get; set; }
     public long CollectionErrors { get; set; }
-    public string OverallHealth { get; set; } = "";
+    public long AlertCount { get; set; }
+
+    /// <summary>True when the day had any collection. False renders the calendar cell as No-Data (grey).</summary>
+    public bool HasData { get; set; }
+
+    /// <summary>The composite health band that colors this day's calendar cell.</summary>
+    public DailyHealthBand HealthBand { get; set; } = DailyHealthBand.NoData;
+
+    /// <summary>Human label for the band ("Healthy" / "Warning" / "Critical" / "No Data"), shown in the day detail.</summary>
+    public string OverallHealth => DailyHealthBandCalculator.Label(HealthBand);
 
     public string SummaryDateFormatted => SummaryDate.ToString("yyyy-MM-dd");
     public string TotalWaitFormatted => TotalWaitTimeSec < 1000
         ? $"{TotalWaitTimeSec:N1} s"
         : $"{TotalWaitTimeSec / 60:N1} min";
+
+    /// <summary>Multi-line hover text summarizing the day's signals, for the calendar cell tooltip.</summary>
+    public string SignalsTooltip => DailyHealthBandCalculator.Describe(ToSignals());
+
+    /// <summary>Projects this row's counts into the shared banding input.</summary>
+    public DailyHealthSignals ToSignals() => new()
+    {
+        HasData = HasData,
+        Deadlocks = DeadlockCount,
+        CollectionErrors = CollectionErrors,
+        HighCpuEvents = HighCpuEvents,
+        BlockingEvents = BlockingEvents,
+        MemoryPressureEvents = MemoryPressureEvents,
+        MemoryCriticalEvents = MemoryCriticalEvents,
+        AlertCount = AlertCount,
+    };
 }
