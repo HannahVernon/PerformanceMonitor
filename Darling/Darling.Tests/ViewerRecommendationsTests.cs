@@ -196,6 +196,7 @@ public sealed class ViewerRecommendationCardTests
         Assert.Equal("ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;", item.CopyPasteSql);
         Assert.Equal("inc-1", item.IncidentId);
         Assert.Equal("SQL2022", item.ServerName);
+        Assert.Equal(1, item.ServerId);                                     // carried from the finding (drives the deep-link tab)
         Assert.Equal(DateTimeKind.Utc, item.WindowStartUtc!.Value.Kind);
         Assert.Equal(new DateTime(2026, 7, 1, 10, 0, 0), item.WindowStartUtc!.Value);
     }
@@ -228,6 +229,64 @@ public sealed class ViewerRecommendationCardTests
         Assert.False(noSql.ShowCopyFix);
         Assert.True(noSql.ShowAskAi);
     }
+
+    // ── "Open in Active Queries" deep-link affordance + window (Dashboard-parity port) ──────
+
+    [Fact]
+    public void Card_ShowOpenInActiveQueries_TrueOnlyWithBothATimeWindowAndAServerId()
+    {
+        var window = (new DateTime(2026, 7, 1, 10, 0, 0, DateTimeKind.Utc), new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc));
+
+        // Incident: has a time window AND a server id -> shown.
+        var incident = Card(serverId: 7, windowStart: window.Item1, windowEnd: window.Item2);
+        Assert.True(incident.ShowOpenInActiveQueries);
+        Assert.Equal(7, incident.ServerId);
+
+        // No time anchor (config-only finding read with no window) -> hidden.
+        var noWindow = Card(serverId: 7, windowStart: null, windowEnd: null);
+        Assert.False(noWindow.ShowOpenInActiveQueries);
+
+        // Half a window is not enough (defensive; the reader always maps both or neither) -> hidden.
+        Assert.False(Card(serverId: 7, windowStart: window.Item1, windowEnd: null).ShowOpenInActiveQueries);
+
+        // No server anchor (a real server id is never 0) -> hidden even with a window.
+        var noServer = Card(serverId: 0, windowStart: window.Item1, windowEnd: window.Item2);
+        Assert.False(noServer.ShowOpenInActiveQueries);
+    }
+
+    [Fact]
+    public void Card_DeepLinkWindowUtc_UsesTheFindingsOwnRangeWhenItCarriesOne()
+    {
+        var start = new DateTime(2026, 7, 1, 10, 0, 0, DateTimeKind.Utc);
+        var end = new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        var (from, to) = Card(serverId: 7, windowStart: start, windowEnd: end).DeepLinkWindowUtc();
+
+        Assert.Equal(start, from);
+        Assert.Equal(end, to);
+    }
+
+    [Fact]
+    public void Card_DeepLinkWindowUtc_WidensADegeneratePointByTheDrillHalfWindow()
+    {
+        // start == end (a point) -> widen to +/- #1409's DrillDownHalfWindowMinutes so the read isn't empty.
+        var point = new DateTime(2026, 7, 1, 11, 0, 0, DateTimeKind.Utc);
+
+        var (from, to) = Card(serverId: 7, windowStart: point, windowEnd: point).DeepLinkWindowUtc();
+
+        Assert.Equal(point.AddMinutes(-ViewerServerTab.DrillDownHalfWindowMinutes), from);
+        Assert.Equal(point.AddMinutes(ViewerServerTab.DrillDownHalfWindowMinutes), to);
+    }
+
+    private static RecommendationCardViewModel Card(int serverId, DateTime? windowStart, DateTime? windowEnd)
+        => new(new RecommendationItem
+        {
+            Severity = RecommendationSeverity.Warning,
+            Title = "CPU is on fire",
+            ServerId = serverId,
+            WindowStartUtc = windowStart,
+            WindowEndUtc = windowEnd,
+        });
 
     [Theory]
     [InlineData(RecommendationSeverity.Critical, "CRITICAL", "")]

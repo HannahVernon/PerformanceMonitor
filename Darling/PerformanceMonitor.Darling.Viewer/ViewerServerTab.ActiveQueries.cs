@@ -39,6 +39,17 @@ public partial class ViewerServerTab
        InnerTabs_SelectionChanged, QueriesSubTabs_SelectionChanged, and BlockingSubTabs_SelectionChanged
        (the Blocking/Deadlock chart drills target the Blocking tab). */
     private bool _suppressDrillDownAutoRefresh;
+
+    /* A one-shot Active Queries window "shield" for the aggregate-tab deep-link (the "Open in Active
+       Queries" button on a Recommendations card). Unlike the within-tab drills (heatmap / per-chart /
+       Overview lane), the deep-link opens/focuses THIS server tab from the aggregate Recommendations tab,
+       which triggers MainWindow's tab-activation refresh — and that path (RefreshActiveInnerTabAsync ->
+       LoadQueriesAsync -> LoadActiveQueriesAsync) is NOT gated by _suppressDrillDownAutoRefresh, so it
+       would reload the grid over the toolbar window and clobber the targeted read via an async race. While
+       this is set, the next Active Queries load (whichever path wins) uses THIS narrow window + indicator
+       instead; it is consumed once, so a later auto-refresh reverts to the toolbar window like the other
+       drills. Set by DeepLinkToActiveQueriesAsync, consumed by LoadActiveQueriesAsync. */
+    private (DateTime FromUtc, DateTime ToUtc, string Indicator)? _pendingActiveQueriesWindow;
     /* OpenPlanTab is implemented by the plan-host partial (ViewerServerTab.Plans.cs). */
 
     /// <summary>Wires the Active Queries slicer's RangeChanged (drag re-reads the grid). Called from
@@ -52,6 +63,21 @@ public partial class ViewerServerTab
     /// plus the hourly slicer. Mirrors Lite's Queries sub-tab-1 refresh.</summary>
     private async Task LoadActiveQueriesAsync(DateTime startUtc, DateTime endUtc)
     {
+        /* Deep-link shield (aggregate-tab "Open in Active Queries"): opening this server tab triggers the
+           tab-activation refresh, which lands here over the toolbar window and would clobber the targeted
+           read. Honor a pending deep-link window instead so a concurrent activation load uses the SAME
+           narrow window + indicator; consumed once (a later refresh reverts to the toolbar window, matching
+           the heatmap / per-chart drills). The ±1h slicer padding mirrors NavigateToActiveQueriesForWindowAsync. */
+        if (_pendingActiveQueriesWindow is { } pending)
+        {
+            _pendingActiveQueriesWindow = null;
+            var pendingSnapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, pending.FromUtc, pending.ToUtc);
+            _querySnapshotsFilterMgr!.UpdateData(pendingSnapshots);
+            LatestSnapshotIndicator.Text = pending.Indicator;
+            await LoadActiveQueriesSlicerAsync(pending.FromUtc.AddHours(-1), pending.ToUtc.AddHours(1));
+            return;
+        }
+
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, startUtc, endUtc);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LatestSnapshotIndicator.Text = "";
@@ -183,6 +209,30 @@ public partial class ViewerServerTab
         if (sender is not Button btn || btn.DataContext is not ViewerQuerySnapshotRow row) return;
         if (string.IsNullOrEmpty(row.LiveQueryPlan)) return;
         OpenPlanTab(row.LiveQueryPlan, $"Actual Plan — Session {row.SessionId}", row.QueryText);
+    }
+
+    /// <summary>
+    /// Deep-link entry from the aggregate Recommendations tab's "Open in Active Queries" button: navigate
+    /// this (possibly freshly-opened) server tab straight to Active Queries scoped to a finding's window.
+    /// The shell opens/focuses the tab first (its existing per-server-tab path); this then points the
+    /// process-wide time helper at THIS server's offset (so the grid/indicator render in the tab's own
+    /// time), sets a one-shot window <see cref="_pendingActiveQueriesWindow">shield</see> so the concurrent
+    /// tab-activation refresh loads the SAME narrow window (race-free — see the field comment), builds the
+    /// indicator, then reuses the shared <see cref="NavigateToActiveQueriesForWindowAsync"/> the within-tab
+    /// drills use. The raw UTC window comes from the card (the finding's own range, or #1409's ±30-minute
+    /// band around a degenerate point).
+    /// </summary>
+    internal async Task DeepLinkToActiveQueriesAsync(DateTime fromUtc, DateTime toUtc)
+    {
+        /* Load + apply this server's UTC offset before rendering (the tab may be freshly opened and not yet
+           refreshed). EnsureServerOffsetLoadedAsync caches its Task, so this shares the one load with any
+           concurrent activation refresh. */
+        await EnsureServerOffsetLoadedAsync();
+        ApplyServerOffsetToHelper();
+
+        var indicator = $"Finding window: {ViewerTimeHelper.ForDisplay(fromUtc):yyyy-MM-dd HH:mm} → {ViewerTimeHelper.ForDisplay(toUtc):HH:mm}";
+        _pendingActiveQueriesWindow = (fromUtc, toUtc, indicator);
+        await NavigateToActiveQueriesForWindowAsync(fromUtc, toUtc, indicator);
     }
 
     /// <summary>

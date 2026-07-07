@@ -106,6 +106,13 @@ public sealed class RecommendationItem
     /// <summary>The monitored server's display name (for the Ask-AI prompt).</summary>
     public string ServerName { get; init; } = string.Empty;
 
+    /// <summary>
+    /// The finding's monitored-server id (<see cref="AnalysisFinding.ServerId"/>) — drives which
+    /// per-server tab the "Open in Active Queries" deep-link opens. A real server id is never 0, so the
+    /// deep-link predicate treats 0 as "no server anchor".
+    /// </summary>
+    public int ServerId { get; init; }
+
     /// <summary>UTC start of the finding's time window (analysis TimeRangeStart), or null.</summary>
     public DateTime? WindowStartUtc { get; init; }
 
@@ -182,6 +189,48 @@ public sealed class RecommendationCardViewModel
     /// investigation tools the prompt references, so any finding can be handed to AI.
     /// </summary>
     public bool ShowAskAi => true;
+
+    // ---- "Open in Active Queries" deep-link (aggregate → per-server tab) ---------------
+
+    /// <summary>The finding's monitored-server id, so the shell opens the right per-server tab.</summary>
+    public int ServerId => Item.ServerId;
+
+    /// <summary>Raw UTC start of the finding window (drives the deep-link read), or null.</summary>
+    public DateTime? WindowStartUtc => Item.WindowStartUtc;
+
+    /// <summary>Raw UTC end of the finding window (drives the deep-link read), or null.</summary>
+    public DateTime? WindowEndUtc => Item.WindowEndUtc;
+
+    /// <summary>
+    /// Whether the "Open in Active Queries" deep-link is shown — an incident-type finding that carries
+    /// BOTH a time window (to scope the Active Queries read to when it fired) AND a server id (to open the
+    /// right per-server tab). This is the Dashboard's incident affordance (<c>ShowOpenInActiveQueries</c>)
+    /// ported to the viewer's advise-only model: the viewer has no RecommendationSetting/structured-fix
+    /// taxonomy, so the gate is simply "has a time anchor + a server" — a finding with no time window
+    /// (or no server id) hides it, because deep-linking to Active Queries needs both.
+    /// </summary>
+    public bool ShowOpenInActiveQueries =>
+        Item.ServerId != 0 && Item.WindowStartUtc.HasValue && Item.WindowEndUtc.HasValue;
+
+    /// <summary>
+    /// The UTC window the deep-link scopes Active Queries to: the finding's own window when it carries a
+    /// real range, widened to +/-<see cref="ViewerServerTab.DrillDownHalfWindowMinutes"/> around the point
+    /// for a degenerate (start &gt;= end) window so the read is never empty. Reuses #1409's drill
+    /// half-window for consistency with the chart/heatmap drills. Only meaningful when
+    /// <see cref="ShowOpenInActiveQueries"/> is true; falls back to a "now"-anchored band otherwise.
+    /// </summary>
+    public (DateTime FromUtc, DateTime ToUtc) DeepLinkWindowUtc()
+    {
+        var from = Item.WindowStartUtc ?? DateTime.UtcNow;
+        var to = Item.WindowEndUtc ?? from;
+        if (to <= from)
+        {
+            from = from.AddMinutes(-ViewerServerTab.DrillDownHalfWindowMinutes);
+            to = to.AddMinutes(ViewerServerTab.DrillDownHalfWindowMinutes);
+        }
+
+        return (from, to);
+    }
 
     /// <summary>
     /// The MCP investigation prompt copied to the clipboard by "Ask AI". The window is rendered in
@@ -330,6 +379,7 @@ public sealed class RecommendationsViewModel
             CopyPasteSql = BuildCopyPasteSql(finding.Remediation),
             IncidentId = finding.IncidentId,
             ServerName = serverName ?? string.Empty,
+            ServerId = finding.ServerId,
             WindowStartUtc = AsUtc(finding.TimeRangeStart),
             WindowEndUtc = AsUtc(finding.TimeRangeEnd)
         };

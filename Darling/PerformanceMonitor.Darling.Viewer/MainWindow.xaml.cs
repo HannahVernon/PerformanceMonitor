@@ -414,19 +414,21 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Opens the given server's per-server tab, or focuses it if already open (dedupe by server id).
-    /// The new tab's <see cref="ViewerServerTab"/> loads its active inner tab on first show.
+    /// The new tab's <see cref="ViewerServerTab"/> loads its active inner tab on first show. Returns the
+    /// tab's <see cref="ViewerServerTab"/> so a caller (the Recommendations deep-link) can navigate inside
+    /// it after opening; null only when the data service is not yet ready.
     /// </summary>
-    private void OpenServerTab(DarlingServer server)
+    private ViewerServerTab? OpenServerTab(DarlingServer server)
     {
         if (_dataService is null)
         {
-            return;
+            return null;
         }
 
         if (_openServerTabs.TryGet(server.ServerId, out var existing))
         {
             MainTabs.SelectedItem = existing;
-            return;
+            return existing.Content as ViewerServerTab;
         }
 
         var serverTab = new ViewerServerTab(_dataService, server, _preferences);
@@ -443,6 +445,7 @@ public partial class MainWindow : Window
         _openServerTabs.Add(server.ServerId, tabItem);
         MainTabs.Items.Add(tabItem);
         MainTabs.SelectedItem = tabItem;
+        return serverTab;
     }
 
     /// <summary>Removes a per-server tab and unwires it. WPF selects an adjacent tab when the closed one was active.</summary>
@@ -783,6 +786,57 @@ public partial class MainWindow : Window
         Clipboard.SetDataObject(card.AskAiPrompt, false);
         RecommendationsStatusText.Text = "AI prompt copied to clipboard.";
     }
+
+    /// <summary>
+    /// "Open in Active Queries" deep-link on an incident card (Dashboard-parity port): resolves the
+    /// finding's server (the aggregate Recommendations tab is cross-server, so the card carries its own
+    /// server id), opens/focuses that server's per-server tab via the shell's existing open-tab path, then
+    /// navigates it straight to Active Queries scoped to the finding's window. The whole hop is pure viewer
+    /// navigation over already-stored data — no live query, no control-plane write. Only incident cards
+    /// (a finding with a time window + server id) show the button, so the predicate is already satisfied.
+    /// </summary>
+    private async void OpenInActiveQueries_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not RecommendationCardViewModel card)
+        {
+            return;
+        }
+
+        if (!card.ShowOpenInActiveQueries)
+        {
+            return;
+        }
+
+        var server = FindManagedServerById(card.ServerId);
+        if (server is null)
+        {
+            RecommendationsStatusText.Text = "Cannot open Active Queries — the finding's server is no longer registered.";
+            return;
+        }
+
+        var (fromUtc, toUtc) = card.DeepLinkWindowUtc();
+        var serverTab = OpenServerTab(server);
+        if (serverTab is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await serverTab.DeepLinkToActiveQueriesAsync(fromUtc, toUtc);
+        }
+        catch (Exception ex)
+        {
+            RecommendationsStatusText.Text = $"Open in Active Queries failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>Finds a registered server by id in the Recommendations tab's own selector list (populated
+    /// from the same managed-server set as the sidebar); null when the server is no longer registered.</summary>
+    private DarlingServer? FindManagedServerById(int serverId)
+        => RecommendationsServerSelector.ItemsSource is IEnumerable<DarlingServer> servers
+            ? servers.FirstOrDefault(s => s.ServerId == serverId)
+            : null;
 
     // ── Settings ─────────────────────────────────────────────────────────────────────
 
