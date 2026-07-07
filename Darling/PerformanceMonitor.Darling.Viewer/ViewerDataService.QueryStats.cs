@@ -76,6 +76,10 @@ public sealed class ViewerQueryStatsRow
     /// <summary>True when the collector captured a query_plan_xml for this (database, query_hash) —
     /// gates the grid's Query Plan column (the full plan is fetched on demand, not carried here).</summary>
     public bool HasQueryPlan { get; set; }
+
+    /// <summary>True when this row carries a plan_handle — gates the grid's "Fetch Live Plan" context item (the
+    /// live-cache fetch is keyed on plan_handle, distinct from the stored query_plan_xml "View Plan" opens).</summary>
+    public bool HasLivePlanHandle => !string.IsNullOrEmpty(PlanHandle);
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public double AvgCpuMs => TotalExecutions > 0 ? TotalCpuMs / TotalExecutions : 0;

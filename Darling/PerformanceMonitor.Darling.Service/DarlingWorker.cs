@@ -1130,6 +1130,9 @@ LIMIT 1", connection);
 
         public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
             => _worker.RunAnalyzeNowAsync(_servers, _planFetcher, _notificationService, _config, serverId, cancellationToken);
+
+        public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
+            => _worker.RunFetchPlanAsync(_servers, _planFetcher, serverId, request, cancellationToken);
     }
 
     /// <summary>
@@ -1388,6 +1391,68 @@ LIMIT 1", connection);
         {
             server.CollectionGate.Release();
         }
+    }
+
+    /// <summary>
+    /// The <c>fetch_plan</c> command handler (headless-plan live-plan wave): reads an execution plan from one
+    /// monitored server's LIVE plan cache and returns the plan XML — the mechanism the viewer uses to fetch a
+    /// plan for ANY process in a deadlock graph / blocked-process report (by its sql_handle) or the
+    /// currently-cached plan for a query-grid row (by its plan_handle), neither of which the store holds. The
+    /// actual cache read is delegated to the SAME <see cref="PgPlanFetcher"/> the analysis pipeline already uses
+    /// (it resolves the serverId to the connected runtime's connection string) — the plan_handle path is its
+    /// existing <see cref="PgPlanFetcher.FetchPlanXmlAsync"/>, the sql_handle path its
+    /// <see cref="PgPlanFetcher.FetchPlanBySqlHandleAsync"/>. Unlike snapshot_now it takes NO collection gate: a
+    /// DMV plan read touches no collector state and writes nothing, so it can run concurrently with a scheduled
+    /// sweep. The up-front lookup gives a precise "not monitored" / "not connected" outcome (mirroring
+    /// RunSnapshotAsync); a plan that has aged out of the cache — or any fetch error the fetcher swallows to null
+    /// per its analysis-safe contract — is reported as a clean "not in cache" (the command itself succeeded).
+    /// </summary>
+    private async Task<CommandOutcome> RunFetchPlanAsync(
+        List<ServerLoopState> servers, PgPlanFetcher planFetcher, int serverId,
+        PlanFetchRequest request, CancellationToken cancellationToken)
+    {
+        /* Lookup under the lock (the command loop reconciles the list concurrently); the fetcher re-resolves the
+           serverId to the runtime connection string itself, so this only gates the precise not-monitored /
+           not-connected outcomes. Held only for the microsecond lookup. */
+        ServerLoopState? server;
+        bool connected;
+        string displayName;
+        lock (_serversLock)
+        {
+            server = servers.Find(s => ServerIdHelper.GetDeterministicHashCode(s.Config.StorageName) == serverId);
+            connected = server?.Runtime is not null;
+            displayName = server?.Config.DisplayName ?? serverId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (server is null)
+        {
+            return new CommandOutcome(false, "server not monitored", JsonError($"no monitored server with server_id {serverId}"));
+        }
+
+        if (!connected)
+        {
+            return new CommandOutcome(false, "server not connected",
+                JsonError($"server '{displayName}' is not currently connected — the live plan cache can only be read from a connected server"));
+        }
+
+        var planXml = request.UsePlanHandle
+            ? await planFetcher.FetchPlanXmlAsync(serverId, request.PlanHandle!)
+            : await planFetcher.FetchPlanBySqlHandleAsync(
+                serverId, request.DatabaseName, request.SqlHandle!,
+                request.StatementStartOffset, request.StatementEndOffset, cancellationToken);
+
+        if (string.IsNullOrEmpty(planXml))
+        {
+            _logger.LogInformation("[{Server}] fetch_plan: the requested plan is not in the cache", displayName);
+            /* Succeeded (the fetch ran) but the plan is gone — the viewer shows a "not in cache" info, distinct
+               from a failure. planXml is null so the viewer's parse hits the not-in-cache branch. */
+            return new CommandOutcome(true, "not in cache",
+                JsonSerializer.Serialize(new { success = true, planXml = (string?)null }));
+        }
+
+        _logger.LogInformation("[{Server}] fetch_plan returned a {Length}-char plan", displayName, planXml.Length);
+        return new CommandOutcome(true, "plan fetched",
+            JsonSerializer.Serialize(new { success = true, planXml }));
     }
 
     /// <summary>

@@ -38,6 +38,30 @@ public sealed class DarlingCommandExecutorTests
 
         public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
             => throw new InvalidOperationException("host should not be called for this command");
+
+        public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("host should not be called for this command");
+    }
+
+    /// <summary>A host that records the fetch_plan request it received and returns a canned plan — for the
+    /// fetch_plan claim/execute/report round-trip (the store path, without a live SQL Server).</summary>
+    private sealed class PlanReturningHost : IDarlingCommandHost
+    {
+        public PlanFetchRequest? Received { get; private set; }
+        public int ReceivedServerId { get; private set; }
+
+        public Task<CommandOutcome> SnapshotNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
+        {
+            Received = request;
+            ReceivedServerId = serverId;
+            return Task.FromResult(new CommandOutcome(true, "plan fetched", "{\"success\":true,\"planXml\":\"<ShowPlanXML/>\"}"));
+        }
     }
 
     private static ClaimedCommand Command(string type, int? target = null, string? args = null) =>
@@ -177,6 +201,34 @@ public sealed class DarlingCommandExecutorTests
         Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("analyze_now")).Kind);
         Assert.Equal(CommandKind.Snapshot, DarlingCommandExecutor.ResolvePlan(Command("snapshot_now", target: 3)).Kind);
         Assert.Equal(CommandKind.Analyze, DarlingCommandExecutor.ResolvePlan(Command("analyze_now", target: 3)).Kind);
+    }
+
+    [Fact]
+    public void ResolvePlan_FetchPlan_RequiresTargetAndAHandleInArgs()
+    {
+        /* No target -> fail (needs a server whose live cache to read). */
+        Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("fetch_plan")).Kind);
+        Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("fetch_plan", args: "{\"planHandle\":\"0x06\"}")).Kind);
+
+        /* Target but no args, or args without any handle -> fail (nothing to fetch). */
+        Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("fetch_plan", target: 7)).Kind);
+        Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("fetch_plan", target: 7, args: "{}")).Kind);
+        Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("fetch_plan", target: 7, args: "{\"databaseName\":\"tempdb\"}")).Kind);
+
+        /* Target + a plan_handle (query-grid path) -> FetchPlan. */
+        Assert.Equal(CommandKind.FetchPlan,
+            DarlingCommandExecutor.ResolvePlan(Command("fetch_plan", target: 7, args: "{\"planHandle\":\"0x06000100\"}")).Kind);
+
+        /* Target + a sql_handle (deadlock / blocked path) -> FetchPlan. */
+        Assert.Equal(CommandKind.FetchPlan,
+            DarlingCommandExecutor.ResolvePlan(Command("fetch_plan", target: 7, args: "{\"sqlHandle\":\"0x0200\",\"statementStartOffset\":0,\"statementEndOffset\":-1}")).Kind);
+    }
+
+    [Fact]
+    public void ResolvePlan_FetchPlan_IsCaseInsensitive()
+    {
+        Assert.Equal(CommandKind.FetchPlan,
+            DarlingCommandExecutor.ResolvePlan(Command("Fetch_Plan", target: 1, args: "{\"planHandle\":\"0x06\"}")).Kind);
     }
 
     [Theory]
@@ -439,6 +491,61 @@ public sealed class DarlingCommandExecutorTests
         }
 
         await tx.RollbackAsync(ct);
+    }
+
+    [Fact]
+    public async Task ExecuteAndReport_FetchPlan_RoundTrip_DispatchesToHost_ReportsPlanXml()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the fetch_plan command round-trip.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+        await CleanupSentinelAsync(connection, ct);
+
+        /* A real pending fetch_plan row carrying a plan_handle in args_json (the query-grid path). */
+        long commandId;
+        using (var insert = new NpgsqlCommand(
+            "INSERT INTO config.config_command (command_type, target_server_id, args_json, status) " +
+            "VALUES ('fetch_plan', $1, '{\"planHandle\":\"0x0600AB\",\"databaseName\":\"master\"}'::jsonb, 'pending') RETURNING command_id", connection))
+        {
+            insert.Parameters.AddWithValue(SentinelServerId);
+            commandId = Convert.ToInt64(await insert.ExecuteScalarAsync(ct));
+        }
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        var host = new PlanReturningHost();
+        var executor = new DarlingCommandExecutor(postgres, host, "test-instance", null);
+
+        var claimed = await executor.ClaimNextAsync(ct);
+        Assert.NotNull(claimed);
+        Assert.Equal("fetch_plan", claimed!.CommandType);
+        await executor.ExecuteAndReportAsync(claimed, ct);
+
+        /* The executor parsed args_json and dispatched the structured request to the host with the target id. */
+        Assert.Equal(SentinelServerId, host.ReceivedServerId);
+        Assert.NotNull(host.Received);
+        Assert.Equal("0x0600AB", host.Received!.PlanHandle);
+        Assert.Equal("master", host.Received.DatabaseName);
+        Assert.True(host.Received.UsePlanHandle);
+
+        /* The reported terminal outcome carries the plan XML; args_json is scrubbed on terminal state. */
+        using (var read = new NpgsqlCommand(
+            "SELECT status, result_status, result_json::text, args_json FROM config.config_command WHERE command_id = $1", connection))
+        {
+            read.Parameters.AddWithValue(commandId);
+            using var reader = await read.ExecuteReaderAsync(ct);
+            Assert.True(await reader.ReadAsync(ct));
+            Assert.Equal("succeeded", reader.GetString(0));
+            Assert.Equal("plan fetched", reader.GetString(1));
+            Assert.Contains("ShowPlanXML", reader.GetString(2), StringComparison.Ordinal);
+            Assert.True(reader.IsDBNull(3), "args_json must be nulled on terminal state");
+        }
+
+        await CleanupSentinelAsync(connection, ct);
     }
 
     [Fact]
