@@ -1190,16 +1190,30 @@ LIMIT 1", connection);
 
         try
         {
-            server.Runtime = await DarlingServerConnector.ConnectAsync(server.Config, _logger, cancellationToken);
+            var runtime = await DarlingServerConnector.ConnectAsync(server.Config, _logger, cancellationToken);
+            server.Runtime = runtime;
+            /* Capture the id once, while the connection is freshly established and non-null: an on-load
+               RunOneAsync below can drop server.Runtime on a mid-collection connection-level failure, so any
+               later read of server.Runtime.ServerId (the schedule resolve, the connection edge) would NRE. */
+            var serverId = runtime.ServerId;
             _logger.LogInformation("[{Server}] Connected (major {Major}, edition {Edition}, server_id {ServerId})",
                 server.Config.DisplayName,
-                server.Runtime.Target.SqlMajorVersion,
-                server.Runtime.Target.IsAzureSqlDb ? "AzureSqlDb" : server.Runtime.Target.IsAzureManagedInstance ? "ManagedInstance" : "Box",
-                server.Runtime.ServerId);
+                runtime.Target.SqlMajorVersion,
+                runtime.Target.IsAzureSqlDb ? "AzureSqlDb" : runtime.Target.IsAzureManagedInstance ? "ManagedInstance" : "Box",
+                serverId);
 
-            await DarlingObservability.UpsertServerAsync(_postgres!, server.Runtime, _logger, cancellationToken);
+            /* Stage 4: the offline->online connection edge (Server Restored) — fired HERE, right after the
+               connection is established and BEFORE the on-load collectors run, using the captured serverId.
+               The connect succeeded regardless of what the on-load collectors do next, so this is the correct
+               point to record "online" (and it can't NRE on a Runtime the on-load loop might drop). Fires only
+               if the server was previously seen offline; the first-ever connect is a silent baseline (the
+               state machine mirrors the Dashboard's skip-first-check). */
+            await _selfAlerts!.ApplyConnectionOutcomeAsync(
+                serverId, server.Config.DisplayName, online: true, error: null, cancellationToken);
 
-            await DarlingXeSessions.EnsureAllAsync(server.Runtime, _logger, cancellationToken);
+            await DarlingObservability.UpsertServerAsync(_postgres!, runtime, _logger, cancellationToken);
+
+            await DarlingXeSessions.EnsureAllAsync(runtime, _logger, cancellationToken);
 
             /* On-load config snapshots (effective FrequencyMinutes 0) run once per connect, then every
                scheduled collector becomes immediately due — mirrors Lite's server-open behavior. The
@@ -1213,7 +1227,9 @@ LIMIT 1", connection);
             var now = DateTime.UtcNow;
             foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
-                var effective = StoreConfigProvider.ResolveSchedule(name, server.Runtime.ServerId, _scheduleOverrides);
+                /* Captured serverId, not server.Runtime.ServerId: an earlier on-load RunOneAsync in this loop
+                   can null server.Runtime on a connection-level failure, which would otherwise NRE here. */
+                var effective = StoreConfigProvider.ResolveSchedule(name, serverId, _scheduleOverrides);
                 if (!effective.Enabled)
                 {
                     continue;
@@ -1228,12 +1244,6 @@ LIMIT 1", connection);
                     server.NextDue[name] = now;
                 }
             }
-
-            /* Stage 4: the offline->online connection edge (Server Restored) — fires only if this server
-               was previously seen offline (the state machine makes the first-ever connect a silent
-               baseline, mirroring the Dashboard's skip-first-check). */
-            await _selfAlerts!.ApplyConnectionOutcomeAsync(
-                server.Runtime.ServerId, server.Config.DisplayName, online: true, error: null, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1403,8 +1413,12 @@ LIMIT 1", connection);
         {
             /* The blocking/deadlock XE session is missing and couldn't be created — log a distinct
                SESSION_MISSING status the Stage 4 Capture Down self-alert reads. Non-fatal, like a
-               permissions skip: log it and continue the rest of the sweep. Must be caught BEFORE the
-               229/297/300 permissions filter (297 overlaps the missing-session numbers). */
+               permissions skip: log it and continue the rest of the sweep. RunXeTolerantAsync already
+               classified this (wrapping an XE 297/15151/'XE session' into the distinct type), so this
+               catch and the SqlException permissions filter below match disjoint types — their relative
+               order is not load-bearing; it only needs to precede the general Exception catch (which would
+               otherwise mislabel it ERROR). A non-XE 297 arrives as a plain SqlException and correctly
+               hits the permissions filter. */
             _logger.LogWarning("  [{Server}] {Collector} => XE session missing (capture down): {Message}",
                 server.Config.DisplayName, collectorName, ex.Message);
 
