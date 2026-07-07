@@ -923,7 +923,7 @@
                      Dismiss Selected / Dismiss All, column filters, copy/export, and Mute This / Mute
                      Similar + Manage Mute Rules (mute lives here per Erik's faithful-copy decision). It
                      owns its own load, so it isn't scoped by the sidebar selection. -->
-                <TabItem x:Name="AlertsTab" Header="Alerts">
+                <TabItem x:Name="AlertsTab" Header="Alert History">
                     <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
                 </TabItem>
 
