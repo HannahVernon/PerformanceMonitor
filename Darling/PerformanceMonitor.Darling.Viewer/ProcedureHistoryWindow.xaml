@@ -1,0 +1,145 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.ProcedureHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:scottplot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+        Title="Procedure Execution History" Width="1200" Height="800"
+        WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True"
+        Background="#22252b"
+        Foreground="#E4E6EB">
+    <!-- Ported from Lite's Windows/ProcedureHistoryWindow.xaml (the Top Procedures per-row double-click
+         history window): the selected procedure's metric trend chart + a filterable grid of its per-collection
+         snapshots. Data repointed to ViewerDataService Postgres reads; "View Plan" / the per-row Download
+         button surface the STORED plan (GetProcedureStatsPlanXmlAsync). Procedures were already View-Plan-only
+         in Lite (re-executing a proc without parameter values is unsafe), so nothing extra is dropped here. -->
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ViewerDarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <Style x:Key="NumericCell" TargetType="TextBlock">
+                <Setter Property="TextAlignment" Value="Right"/>
+            </Style>
+
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="View Plan" Click="ViewPlan_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+                </MenuItem>
+            </ContextMenu>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="250"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock x:Name="ProcIdentifierText" FontSize="16" FontWeight="Bold"/>
+            <TextBlock x:Name="SummaryText" FontSize="12" Margin="0,4,0,0" Foreground="#B8BCC4"/>
+        </StackPanel>
+
+        <!-- Chart -->
+        <Border Grid.Row="1" Background="#111217" BorderBrush="#2a2d35" BorderThickness="1" CornerRadius="3">
+            <Grid>
+                <ComboBox x:Name="MetricSelector" Width="180" Height="26"
+                          VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,6,10,0"
+                          SelectionChanged="MetricSelector_SelectionChanged">
+                    <ComboBoxItem Content="Avg CPU (ms)" Tag="AvgCpuMs" IsSelected="True"/>
+                    <ComboBoxItem Content="Avg Duration (ms)" Tag="AvgElapsedMs"/>
+                    <ComboBoxItem Content="Avg Logical Reads" Tag="AvgReads"/>
+                    <ComboBoxItem Content="Execution Count Delta" Tag="DeltaExecutions"/>
+                    <ComboBoxItem Content="CPU Delta (ms)" Tag="DeltaCpuMs"/>
+                    <ComboBoxItem Content="Logical Reads Delta" Tag="DeltaLogicalReads"/>
+                    <ComboBoxItem Content="Spills Delta" Tag="DeltaSpills"/>
+                </ComboBox>
+                <scottplot:WpfPlot x:Name="HistoryChart" Margin="0,0,0,0"/>
+            </Grid>
+        </Border>
+
+        <!-- Data Grid -->
+        <DataGrid Grid.Row="2" x:Name="HistoryDataGrid" Margin="0,10,0,0"
+                  Style="{StaticResource DarkGrid}"
+                  AutoGenerateColumns="False" IsReadOnly="True"
+                  CanUserSortColumns="True" CanUserReorderColumns="True"
+                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                  ContextMenu="{StaticResource DataGridContextMenu}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Cached Time" Binding="{Binding CachedTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Object Type" Binding="{Binding ObjectType}" Width="95"/>
+                <DataGridTextColumn Header="Exec Delta" Binding="{Binding DeltaExecutions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Executions" Binding="{Binding TotalExecutions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="CPU Delta (ms)" Binding="{Binding DeltaCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Duration Delta (ms)" Binding="{Binding DeltaElapsedMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgElapsedMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalElapsedMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                <DataGridTextColumn Header="Logical Reads" Binding="{Binding DeltaLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Logical Reads" Binding="{Binding TotalLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="125"/>
+                <DataGridTextColumn Header="Writes" Binding="{Binding DeltaLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                <DataGridTextColumn Header="Avg Writes" Binding="{Binding AvgWrites, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="95"/>
+                <DataGridTextColumn Header="Total Writes" Binding="{Binding TotalLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Physical Reads" Binding="{Binding DeltaPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg Phys Reads" Binding="{Binding AvgPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Total Phys Reads" Binding="{Binding TotalPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Spills" Binding="{Binding DeltaSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                <DataGridTextColumn Header="Avg Spills" Binding="{Binding AvgSpills, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Spills" Binding="{Binding TotalSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="95"/>
+                <DataGridTextColumn Header="Min CPU (ms)" Binding="{Binding MinCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max CPU (ms)" Binding="{Binding MaxCpuMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min Duration (ms)" Binding="{Binding MinElapsedMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Max Duration (ms)" Binding="{Binding MaxElapsedMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Min Reads" Binding="{Binding MinLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max Reads" Binding="{Binding MaxLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min Phys Reads" Binding="{Binding MinPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Max Phys Reads" Binding="{Binding MaxPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Min Writes" Binding="{Binding MinLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max Writes" Binding="{Binding MaxLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min Spills" Binding="{Binding MinSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Max Spills" Binding="{Binding MaxSpills, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Interval (sec)" Binding="{Binding SampleIntervalSeconds}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="SQL Handle" Binding="{Binding SqlHandle}" Width="140"/>
+                <DataGridTextColumn Header="Plan Handle" Binding="{Binding PlanHandle}" Width="140"/>
+                <DataGridTemplateColumn Header="Plan" Width="Auto" MinWidth="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="Download" Click="DownloadPlan_Click"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    Padding="6,2"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Close" Padding="20,6" Click="Close_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

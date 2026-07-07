@@ -27,9 +27,10 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// time-range slicer whose drag re-reads over the selection; sorting a grid re-labels the slicer's
 /// aggregate curve (Lite's *Grid_Sorting). The Performance Trends charts / Active Queries grid+slicer /
 /// Query Heatmap live in their own partials (<c>ViewerServerTab.QueryTrends.cs</c> /
-/// <c>.ActiveQueries.cs</c> / <c>.QueryHeatmap.cs</c>). Deferred on the grids (no plan host / no live
-/// server, matching W1e's Blocking tab): the per-row double-click history windows and the slicer
-/// overlay-on-select — only drag-to-narrow + sort-driven metric re-labeling are wired.
+/// <c>.ActiveQueries.cs</c> / <c>.QueryHeatmap.cs</c>). The grids also carry the slicer overlay-on-select
+/// (#1409, <c>ViewerServerTab.SlicerOverlay.cs</c>) and the per-row double-click history windows
+/// (<c>ViewerServerTab.History.cs</c>), so all four Lite interactions — drag-to-narrow, sort-driven metric
+/// re-labeling, overlay-on-select, and double-click-for-history — are wired.
 /// </summary>
 public partial class ViewerServerTab
 {
