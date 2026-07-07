@@ -44,6 +44,9 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<ViewerExpensiveQueryRow>? _expensiveQueriesFilterMgr;
     private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
+    private DataGridFilterManager<ServerConfigChangeRow>? _serverConfigChangesFilterMgr;
+    private DataGridFilterManager<DatabaseConfigChangeRow>? _databaseConfigChangesFilterMgr;
+    private DataGridFilterManager<TraceFlagChangeRow>? _traceFlagChangesFilterMgr;
 
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
@@ -67,6 +70,9 @@ public partial class ViewerServerTab : UserControl
         _expensiveQueriesFilterMgr = new DataGridFilterManager<ViewerExpensiveQueryRow>(ExpensiveQueriesGrid);
         _collectionHealthFilterMgr = new DataGridFilterManager<CollectorHealthRow>(CollectionHealthGrid);
         _collectionLogFilterMgr = new DataGridFilterManager<CollectionLogRow>(CollectionLogGrid);
+        _serverConfigChangesFilterMgr = new DataGridFilterManager<ServerConfigChangeRow>(ServerConfigChangesGrid);
+        _databaseConfigChangesFilterMgr = new DataGridFilterManager<DatabaseConfigChangeRow>(DatabaseConfigChangesGrid);
+        _traceFlagChangesFilterMgr = new DataGridFilterManager<TraceFlagChangeRow>(TraceFlagChangesGrid);
 
         _filterManagers[ServerConfigGrid] = _serverConfigFilterMgr;
         _filterManagers[DatabaseConfigGrid] = _databaseConfigFilterMgr;
@@ -82,6 +88,9 @@ public partial class ViewerServerTab : UserControl
         _filterManagers[ExpensiveQueriesGrid] = _expensiveQueriesFilterMgr;
         _filterManagers[CollectionHealthGrid] = _collectionHealthFilterMgr;
         _filterManagers[CollectionLogGrid] = _collectionLogFilterMgr;
+        _filterManagers[ServerConfigChangesGrid] = _serverConfigChangesFilterMgr;
+        _filterManagers[DatabaseConfigChangesGrid] = _databaseConfigChangesFilterMgr;
+        _filterManagers[TraceFlagChangesGrid] = _traceFlagChangesFilterMgr;
     }
 
     /// <summary>
