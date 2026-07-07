@@ -27,7 +27,8 @@
  *     collection_time lanes on any server timezone; a UTC server is unchanged.
  * Deliberately dropped for v1 (noted in the PR): Lite's comparison-range ghost-line overlay (the whole
  * comparisonRange block, AddGhostLine, ComparisonLabel). The "Show Active Queries at This Time"
- * drill-down event is KEPT but left unwired — the viewer has no Active Queries surface yet.
+ * drill-down event is wired by the host ServerTab — ViewerServerTab.xaml.cs subscribes
+ * ShowActiveQueriesRequested to OnActiveQueriesDrillDown, which navigates to the Active Queries surface.
  */
 
 using System;
@@ -89,8 +90,8 @@ public partial class CorrelatedTimelineLanesControl : UserControl
 
     /// <summary>
     /// Raised when the user picks "Show Active Queries at This Time" on a lane. The argument is the
-    /// clicked time in the lanes' (viewer-local) X-axis space. Kept from Lite but currently unwired —
-    /// the viewer has no Active Queries surface yet (deferred).
+    /// clicked time in the lanes' (viewer-local) X-axis space. The host ServerTab subscribes this
+    /// (ViewerServerTab.xaml.cs) to OnActiveQueriesDrillDown, which navigates to the Active Queries surface.
     /// </summary>
     public event Action<DateTime>? ShowActiveQueriesRequested;
 
