@@ -104,6 +104,27 @@ public partial class ViewerServerTab
         AddChartDrillDownMenuItem(FileIoWriteThroughputChart, BuildChartContextMenu(FileIoWriteThroughputChart, "File_IO_Write_Throughput"), () => _fileIoWriteThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         AddChartDrillDownMenuItem(CurrentWaitsDurationChart, BuildChartContextMenu(CurrentWaitsDurationChart, "Current_Waits_Duration"), () => _currentWaitsDurationHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
         AddChartDrillDownMenuItem(CurrentWaitsBlockedChart, BuildChartContextMenu(CurrentWaitsBlockedChart, "Current_Waits_Blocked"), () => _currentWaitsBlockedHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+
+        /* Darling-only time-series charts Lite lacks — CPU Scheduler, Latch/Spinlock contention, Plan Cache,
+           Session Counts, and the eight System Events (system_health XE) counter charts. All plot display-time
+           on X, so "Show Active Queries at This Time" navigates to the correlated +/-30-minute active-queries
+           window exactly like their sibling resource/trend charts. Peer-consistency (these previously had only
+           the copy/export menu); no per-latch/per-spinlock-type drill (no correlation data captured). Only
+           CollectorDuration stays menu-only, matching Lite's drill-less collector-duration chart. */
+        AddChartDrillDownMenuItem(CpuSchedulerChart, BuildChartContextMenu(CpuSchedulerChart, "CPU_Scheduler"), () => _cpuSchedulerHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(LatchStatsChart, BuildChartContextMenu(LatchStatsChart, "Latch_Stats"), () => _latchStatsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(SpinlockStatsChart, BuildChartContextMenu(SpinlockStatsChart, "Spinlock_Stats"), () => _spinlockStatsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(SessionStatsChart, BuildChartContextMenu(SessionStatsChart, "Session_Stats"), () => _sessionStatsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(PlanCacheChart, BuildChartContextMenu(PlanCacheChart, "Plan_Cache"), () => _planCacheHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+
+        AddChartDrillDownMenuItem(BadPagesChart, BuildChartContextMenu(BadPagesChart, "Bad_Pages"), () => _badPagesHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(DumpRequestsChart, BuildChartContextMenu(DumpRequestsChart, "Dump_Requests"), () => _dumpRequestsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(AccessViolationsChart, BuildChartContextMenu(AccessViolationsChart, "Access_Violations"), () => _accessViolationsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(WriteAccessViolationsChart, BuildChartContextMenu(WriteAccessViolationsChart, "Write_Access_Violations"), () => _writeAccessViolationsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(NonYieldingTasksChart, BuildChartContextMenu(NonYieldingTasksChart, "Non_Yielding_Tasks"), () => _nonYieldingTasksHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(LatchWarningsChart, BuildChartContextMenu(LatchWarningsChart, "Latch_Warnings"), () => _latchWarningsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(SickSpinlocksChart, BuildChartContextMenu(SickSpinlocksChart, "Sick_Spinlocks"), () => _sickSpinlocksHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        AddChartDrillDownMenuItem(CpuComparisonChart, BuildChartContextMenu(CpuComparisonChart, "CPU_Comparison"), () => _cpuComparisonHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
     }
 
     /// <summary>
