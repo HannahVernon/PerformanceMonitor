@@ -126,6 +126,12 @@ public sealed class DarlingWorker : BackgroundService
        branches the retention purge onto drop_chunks. */
     private bool _timescaleAvailable;
 
+    /* Stage 4 service self-alerts (collection-stopped, connection lost/restored, capture-down). Built
+       once in RunCollectionLoopAsync over the SAME deliverer/history the shared engine uses, so the
+       self-alerts inherit its delivery/cooldown/restart-replay. Held as a field because the connection
+       edge fires from TryConnectAsync and the reconcile drops per-server state through it. */
+    private DarlingSelfAlertEvaluator? _selfAlerts;
+
     public DarlingWorker(ILogger<DarlingWorker> logger, ILoggerFactory loggerFactory)
     {
         _logger = logger;
@@ -143,6 +149,12 @@ public sealed class DarlingWorker : BackgroundService
 
         /* MinValue = the first loop pass after connect evaluates alerts immediately. */
         public DateTime NextAlertSweep { get; set; } = DateTime.MinValue;
+
+        /* MinValue = the first loop pass evaluates the Stage 4 service self-alerts (collection-stopped,
+           capture-down) immediately. Separate from NextAlertSweep because the self-alert sweep runs for
+           a DISCONNECTED server too (collection-stopped is exactly the unreachable-server case), above
+           the Runtime-null connect gate. */
+        public DateTime NextSelfAlertSweep { get; set; } = DateTime.MinValue;
 
         /* MinValue = the first loop pass after connect runs analysis immediately; the
            pipeline's own 24h data-span gate no-ops it until the store has enough history
@@ -375,7 +387,18 @@ public sealed class DarlingWorker : BackgroundService
         var muteRuleService = new MuteRuleService(
             new PgMuteRuleStore(postgres, _logger), _loggerFactory.CreateLogger<MuteRuleService>());
         await muteRuleService.LoadAsync();
-        var engine = BuildAlertEngine(config, servers, alertSettings, historyStore, webhookAlertService, muteRuleService);
+
+        /* The shared record-and-send deliverer — hoisted so BOTH the shared alert engine and the Stage 4
+           service self-alerts (DarlingSelfAlertEvaluator) fire through the SAME instance: identical
+           email/webhook delivery, per-fingerprint delivery cooldown, and history-seeded restart replay. */
+        var deliverer = new DarlingAlertDeliverer(alertSettings, historyStore, webhookAlertService, _logger);
+        var engine = BuildAlertEngine(config, servers, alertSettings, historyStore, muteRuleService, deliverer);
+
+        /* Stage 4: the service self-alerts, over the SAME deliverer + history + mute check the engine uses.
+           collection-stopped / capture-down are polled from collection_log on the alert cadence below;
+           connection lost/restored fire on the connect edges in TryConnectAsync. */
+        _selfAlerts = new DarlingSelfAlertEvaluator(
+            alertSettings, deliverer, historyStore, muteRuleService.IsAlertMuted, _logger);
 
         /* Phase-5 analysis slice AN3: the analysis pipeline's shared pieces, constructed once.
            The plan fetcher resolves a finding's serverId to the CONNECTED runtime's connection
@@ -454,6 +477,23 @@ public sealed class DarlingWorker : BackgroundService
                 if (stoppingToken.IsCancellationRequested)
                 {
                     break;
+                }
+
+                /* Stage 4 service self-alerts (store-polled): collection-stopped is evaluated for EVERY
+                   server — connected or not — because an unreachable server has stopped collecting, which
+                   is exactly the case a headless service must page on. Capture-down is evaluated only for a
+                   connected server. Own 30s cadence; the master alerts gate + edge-trigger live inside the
+                   evaluator. Runs ABOVE the Runtime-null connect gate so a disconnected server is still
+                   checked. Connection lost/restored fire on the connect edges in TryConnectAsync. */
+                if (DateTime.UtcNow >= server.NextSelfAlertSweep)
+                {
+                    server.NextSelfAlertSweep = DateTime.UtcNow.Add(s_alertSweepInterval);
+                    await _selfAlerts!.EvaluateStoreAlertsAsync(
+                        postgres,
+                        ServerIdHelper.GetDeterministicHashCode(server.Config.StorageName),
+                        server.Config.DisplayName,
+                        connected: server.Runtime is not null,
+                        stoppingToken);
                 }
 
                 if (server.Runtime is null)
@@ -647,6 +687,9 @@ public sealed class DarlingWorker : BackgroundService
                     "[{Server}] Removed from the monitored set (disabled/deleted) — stopping collection",
                     state.Config.DisplayName);
                 state.Runtime = null;
+                /* Drop the Stage 4 self-alert edge state so a later re-add starts from the Unknown baseline
+                   (no stale "was online" / "was stopped" flag carried across a remove+re-add). */
+                _selfAlerts?.Forget(id);
                 servers.RemoveAt(i);
                 continue;
             }
@@ -777,20 +820,16 @@ public sealed class DarlingWorker : BackgroundService
     /// </summary>
     private AlertEngine BuildAlertEngine(
         DarlingConfig config, List<ServerLoopState> servers,
-        DarlingAlertSettings alertSettings, PgAlertHistoryStore historyStore, WebhookAlertService webhookAlertService,
-        MuteRuleService muteRuleService)
+        DarlingAlertSettings alertSettings, PgAlertHistoryStore historyStore,
+        MuteRuleService muteRuleService, DarlingAlertDeliverer deliverer)
     {
         var postgres = _postgres!;
         var stateStore = new PgAlertStateStore(postgres, _logger);
 
         /* The mute service is loaded + owned by the caller (RunCollectionLoopAsync) so a control-plane
            reload can re-LoadAsync() the SAME instance and mute the very next sweep (F16). The engine
-           binds its IsAlertMuted delegate, which reads the refreshed cache. */
-
-        /* The webhook service was constructed first and injected into the deliverer's send core
-           (Lite's MainWindow wiring); the shared history store seeds both channels' cooldowns
-           across a service restart (#1145). */
-        var deliverer = new DarlingAlertDeliverer(alertSettings, historyStore, webhookAlertService, _logger);
+           binds its IsAlertMuted delegate, which reads the refreshed cache. The deliverer is hoisted by
+           the caller and shared with the Stage 4 self-alerts (same delivery/cooldown/restart-replay). */
 
         return new AlertEngine(
             alertSettings,
@@ -800,11 +839,16 @@ public sealed class DarlingWorker : BackgroundService
             muteRuleService.IsAlertMuted,
             failedJobsFetcher: (serverKey, lookbackMinutes, ct) =>
                 FetchFailedJobsAsync(servers, serverKey, lookbackMinutes, ct),
-            resolutionCallback: (resolution, _) =>
+            resolutionCallback: async (resolution, _) =>
             {
                 _logger.LogInformation("[{Server}] {Title}: {Message}",
                     resolution.ServerName, resolution.Title, resolution.Message);
-                return Task.CompletedTask;
+                /* Stage 4 parity-gap fix: record a resolved-flavored history row so an operator reviewing
+                   alert history sees the paired "Detected" then "Cleared/Resolved" entries (the Dashboard
+                   records these explicitly; Darling previously only logged them). A resolution has no send
+                   channel, so this never emails/webhooks; RecordAlertAsync is failure-isolated so it can
+                   never break the sweep. */
+                await historyStore.RecordAlertAsync(DarlingSelfAlertEvaluator.BuildResolutionRecord(resolution));
             },
             logger: _logger);
     }
@@ -1146,16 +1190,30 @@ LIMIT 1", connection);
 
         try
         {
-            server.Runtime = await DarlingServerConnector.ConnectAsync(server.Config, _logger, cancellationToken);
+            var runtime = await DarlingServerConnector.ConnectAsync(server.Config, _logger, cancellationToken);
+            server.Runtime = runtime;
+            /* Capture the id once, while the connection is freshly established and non-null: an on-load
+               RunOneAsync below can drop server.Runtime on a mid-collection connection-level failure, so any
+               later read of server.Runtime.ServerId (the schedule resolve, the connection edge) would NRE. */
+            var serverId = runtime.ServerId;
             _logger.LogInformation("[{Server}] Connected (major {Major}, edition {Edition}, server_id {ServerId})",
                 server.Config.DisplayName,
-                server.Runtime.Target.SqlMajorVersion,
-                server.Runtime.Target.IsAzureSqlDb ? "AzureSqlDb" : server.Runtime.Target.IsAzureManagedInstance ? "ManagedInstance" : "Box",
-                server.Runtime.ServerId);
+                runtime.Target.SqlMajorVersion,
+                runtime.Target.IsAzureSqlDb ? "AzureSqlDb" : runtime.Target.IsAzureManagedInstance ? "ManagedInstance" : "Box",
+                serverId);
 
-            await DarlingObservability.UpsertServerAsync(_postgres!, server.Runtime, _logger, cancellationToken);
+            /* Stage 4: the offline->online connection edge (Server Restored) — fired HERE, right after the
+               connection is established and BEFORE the on-load collectors run, using the captured serverId.
+               The connect succeeded regardless of what the on-load collectors do next, so this is the correct
+               point to record "online" (and it can't NRE on a Runtime the on-load loop might drop). Fires only
+               if the server was previously seen offline; the first-ever connect is a silent baseline (the
+               state machine mirrors the Dashboard's skip-first-check). */
+            await _selfAlerts!.ApplyConnectionOutcomeAsync(
+                serverId, server.Config.DisplayName, online: true, error: null, cancellationToken);
 
-            await DarlingXeSessions.EnsureAllAsync(server.Runtime, _logger, cancellationToken);
+            await DarlingObservability.UpsertServerAsync(_postgres!, runtime, _logger, cancellationToken);
+
+            await DarlingXeSessions.EnsureAllAsync(runtime, _logger, cancellationToken);
 
             /* On-load config snapshots (effective FrequencyMinutes 0) run once per connect, then every
                scheduled collector becomes immediately due — mirrors Lite's server-open behavior. The
@@ -1169,7 +1227,9 @@ LIMIT 1", connection);
             var now = DateTime.UtcNow;
             foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
-                var effective = StoreConfigProvider.ResolveSchedule(name, server.Runtime.ServerId, _scheduleOverrides);
+                /* Captured serverId, not server.Runtime.ServerId: an earlier on-load RunOneAsync in this loop
+                   can null server.Runtime on a connection-level failure, which would otherwise NRE here. */
+                var effective = StoreConfigProvider.ResolveSchedule(name, serverId, _scheduleOverrides);
                 if (!effective.Enabled)
                 {
                     continue;
@@ -1190,6 +1250,13 @@ LIMIT 1", connection);
             server.Runtime = null;
             server.NextConnectAttempt = DateTime.UtcNow.AddSeconds(60);
             _logger.LogWarning("[{Server}] Connect failed, retrying in 60s: {Message}", server.Config.DisplayName, ex.Message);
+
+            /* Stage 4: the online->offline connection edge (Server Unreachable) — fires once when a
+               previously-connected server can no longer be reached; a repeated failed reconnect does NOT
+               re-fire (the state machine dedups). server_id is derived from the config since Runtime is null. */
+            await _selfAlerts!.ApplyConnectionOutcomeAsync(
+                ServerIdHelper.GetDeterministicHashCode(server.Config.StorageName),
+                server.Config.DisplayName, online: false, error: ex.Message, cancellationToken);
         }
     }
 
@@ -1342,6 +1409,23 @@ LIMIT 1", connection);
         {
             throw;
         }
+        catch (DarlingXeSessionMissingException ex)
+        {
+            /* The blocking/deadlock XE session is missing and couldn't be created — log a distinct
+               SESSION_MISSING status the Stage 4 Capture Down self-alert reads. Non-fatal, like a
+               permissions skip: log it and continue the rest of the sweep. RunXeTolerantAsync already
+               classified this (wrapping an XE 297/15151/'XE session' into the distinct type), so this
+               catch and the SqlException permissions filter below match disjoint types — their relative
+               order is not load-bearing; it only needs to precede the general Exception catch (which would
+               otherwise mislabel it ERROR). A non-XE 297 arrives as a plain SqlException and correctly
+               hits the permissions filter. */
+            _logger.LogWarning("  [{Server}] {Collector} => XE session missing (capture down): {Message}",
+                server.Config.DisplayName, collectorName, ex.Message);
+
+            await DarlingObservability.LogCollectionAsync(
+                _postgres!, runtime, collectorName, "SESSION_MISSING", 0, 0, 0, ex.Message, _logger, cancellationToken);
+            return 0;
+        }
         catch (SqlException ex) when (ex.Number is 229 or 297 or 300)
         {
             _logger.LogWarning("  [{Server}] {Collector} => insufficient permissions ({Number}): {Message}",
@@ -1417,6 +1501,18 @@ LIMIT 1", connection);
         ["system_health_events"] = (r, s, ct) => r.RunAsync(SystemHealthEventsCollector.Instance, s, ct),
     };
 
+    /// <summary>
+    /// Signals that a blocking/deadlock XE session is missing or inaccessible so the reader returned no
+    /// events. <see cref="RunXeTolerantAsync"/> throws it, <see cref="RunOneAsync"/> catches it and logs a
+    /// distinct <c>SESSION_MISSING</c> collection_log status. Before Stage 4 this case swallowed to zero
+    /// rows and logged SUCCESS — indistinguishable from a genuinely idle session, so the Capture Down
+    /// self-alert had no signal to read.
+    /// </summary>
+    private sealed class DarlingXeSessionMissingException : Exception
+    {
+        public DarlingXeSessionMissingException(string message, Exception inner) : base(message, inner) { }
+    }
+
     private static async Task<CollectorRunResult> RunXeTolerantAsync<TRow>(
         ICollectorDefinition<TRow> definition, DarlingCollectorRunner runner, ServerRuntime server, CancellationToken cancellationToken)
     {
@@ -1426,8 +1522,12 @@ LIMIT 1", connection);
         }
         catch (SqlException ex) when (ex.Number == 297 || ex.Number == 15151 || ex.Message.Contains("XE session"))
         {
-            /* XE session not found or not accessible — zero rows, mirrors Lite. */
-            return new CollectorRunResult(0, 0, 0);
+            /* XE session not found or not accessible. Lite swallows this to zero rows, but a headless
+               service (like the Dashboard) must surface it: raise it as a distinct SESSION_MISSING
+               collection_log status so the Stage 4 Capture Down self-alert can detect that blocking/
+               deadlock capture is non-functional. RunOneAsync catches this and continues the sweep, so
+               collection is still tolerant — only the logged status differs from a real zero-row success. */
+            throw new DarlingXeSessionMissingException(ex.Message, ex);
         }
     }
 
