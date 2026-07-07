@@ -591,6 +591,7 @@
                                                     <Ellipse Grid.Row="4" Grid.Column="0" Width="9" Height="9" Fill="{Binding DeadlockSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
                                                     <TextBlock Grid.Row="4" Grid.Column="1" Text="Deadlocks:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
                                                     <TextBlock Grid.Row="4" Grid.Column="2" Text="{Binding DeadlockDisplay}" FontSize="11" Foreground="{Binding DeadlockSeverityBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="3" Text="{Binding DeadlockDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
 
                                                     <!-- Collectors (enrichment) -->
                                                     <Ellipse Grid.Row="5" Grid.Column="0" Width="9" Height="9" Fill="{Binding CollectorSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>

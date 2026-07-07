@@ -103,26 +103,34 @@ ORDER BY collection_time DESC
 LIMIT 1";
 
     /// <summary>
-    /// Blocking events in the window with their worst wait — XE blocked-process reports preferred, the
-    /// always-on DMV blocking snapshot as fallback (AWS RDS has no XE), keeping Lite's XE→DMV fallback but
-    /// returning the COUNT and the MAX wait (ms) from the SAME source so the card's count and its
-    /// "max: Ns" duration can never come from different feeds. The caller applies the fallback in C#
-    /// (identical to Lite's <c>COALESCE(NULLIF(xe,0), dmv)</c>: use XE when it has any row, else DMV).
-    /// $1 server_id, $2 window start (naive UTC).
+    /// Blocking in the window with its worst wait, plus the newest blocking event ever — XE blocked-process
+    /// reports preferred, the always-on DMV blocking snapshot as fallback (AWS RDS has no XE), keeping
+    /// Lite's XE→DMV fallback but returning the COUNT and the MAX wait (ms) from the SAME source so the
+    /// card's count and its "max: Ns" duration can never come from different feeds. The last two columns are
+    /// each source's newest event_time (unbounded — the same <c>MAX(event_time) WHERE server_id</c> read the
+    /// collector runs every cycle for its watermark), for the Dashboard's "Last: N ago" detail when the
+    /// window is clear. The caller applies the fallback in C# (identical to Lite's
+    /// <c>COALESCE(NULLIF(xe,0), dmv)</c>: use XE when it has any row, else DMV). $1 server_id, $2 window
+    /// start (naive UTC).
     /// </summary>
     public const string ServerSummaryBlockingSql = @"
 SELECT
     (SELECT COUNT(*)          FROM v_blocked_process_reports WHERE server_id = $1 AND event_time >= $2),
     (SELECT MAX(wait_time_ms) FROM v_blocked_process_reports WHERE server_id = $1 AND event_time >= $2),
     (SELECT COUNT(*)          FROM v_dmv_blocking_snapshots   WHERE server_id = $1 AND event_time >= $2),
-    (SELECT MAX(wait_time_ms) FROM v_dmv_blocking_snapshots   WHERE server_id = $1 AND event_time >= $2)";
+    (SELECT MAX(wait_time_ms) FROM v_dmv_blocking_snapshots   WHERE server_id = $1 AND event_time >= $2),
+    (SELECT MAX(event_time)   FROM v_blocked_process_reports WHERE server_id = $1),
+    (SELECT MAX(event_time)   FROM v_dmv_blocking_snapshots   WHERE server_id = $1)";
 
-    /// <summary>Deadlock count in the window. $1 server_id, $2 window start (naive UTC).</summary>
+    /// <summary>
+    /// Deadlock count in the window plus the newest deadlock ever — the windowed count for the card value,
+    /// and the unbounded MAX(deadlock_time) for the Dashboard's "Last: N ago" detail. $1 server_id, $2
+    /// window start (naive UTC).
+    /// </summary>
     public const string ServerSummaryDeadlockSql = @"
-SELECT COUNT(*)
-FROM v_deadlocks
-WHERE server_id = $1
-AND   deadlock_time >= $2";
+SELECT
+    (SELECT COUNT(*)           FROM v_deadlocks WHERE server_id = $1 AND deadlock_time >= $2),
+    (SELECT MAX(deadlock_time) FROM v_deadlocks WHERE server_id = $1)";
 
     /// <summary>Newest collection time across all collectors for one server. $1 server_id.</summary>
     public const string ServerSummaryLastCollectionSql = @"
@@ -141,7 +149,8 @@ WHERE server_id = $1";
     /// </summary>
     public async Task<ServerSummaryItem> GetServerSummaryAsync(int serverId, string displayName, CancellationToken cancellationToken = default)
     {
-        var windowStart = DateTime.SpecifyKind(DateTime.UtcNow.AddHours(-1), DateTimeKind.Unspecified);
+        var nowUtc = DateTime.UtcNow;
+        var windowStart = DateTime.SpecifyKind(nowUtc.AddHours(-1), DateTimeKind.Unspecified);
 
         double? cpuPercent = null;
         double? otherProcessCpuPercent = null;
@@ -149,7 +158,9 @@ WHERE server_id = $1";
         double? bufferPoolMb = null;
         var blockingCount = 0;
         long maxBlockingWaitMs = 0;
+        int? lastBlockingMinutesAgo = null;
         var deadlockCount = 0;
+        int? lastDeadlockMinutesAgo = null;
         DateTime? lastCollection = null;
 
         int? totalThreads = null;
@@ -240,16 +251,30 @@ WHERE server_id = $1";
                     blockingCount = dmvCount;
                     maxBlockingWaitMs = dmvMaxWait;
                 }
+
+                /* Newest blocking event across both sources (unbounded) → "Last: N ago" when the window is
+                   clear. Stored times are naive UTC; the tick subtraction against UtcNow is a true elapsed. */
+                DateTime? lastBlocking = reader.IsDBNull(4) ? null : reader.GetDateTime(4);
+                var dmvLast = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5);
+                if (dmvLast.HasValue && (!lastBlocking.HasValue || dmvLast.Value > lastBlocking.Value))
+                {
+                    lastBlocking = dmvLast;
+                }
+                lastBlockingMinutesAgo = MinutesAgo(lastBlocking, nowUtc);
             }
         }
 
-        /* Deadlock count in the last hour. */
+        /* Deadlock count in the last hour + the newest deadlock ever (for "Last: N ago"). */
         await using (var command = _dataSource.CreateCommand(ServerSummaryDeadlockSql))
         {
             command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
             command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = windowStart });
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            deadlockCount = result is null || result == DBNull.Value ? 0 : Convert.ToInt32(result);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                deadlockCount = reader.IsDBNull(0) ? 0 : Convert.ToInt32(reader.GetValue(0));
+                lastDeadlockMinutesAgo = MinutesAgo(reader.IsDBNull(1) ? null : reader.GetDateTime(1), nowUtc);
+            }
         }
 
         /* Newest collection time across all collectors — drives the freshness status. */
@@ -282,7 +307,9 @@ WHERE server_id = $1";
             MemoryForcedCount = memoryForcedCount,
             BlockingCount = blockingCount,
             MaxBlockingWaitMs = maxBlockingWaitMs,
+            LastBlockingMinutesAgo = lastBlockingMinutesAgo,
             DeadlockCount = deadlockCount,
+            LastDeadlockMinutesAgo = lastDeadlockMinutesAgo,
             TotalThreads = totalThreads,
             CurrentWorkers = currentWorkers,
             ThreadsWaitingForCpu = threadsWaitingForCpu,
@@ -308,6 +335,12 @@ WHERE server_id = $1";
         var failing = rows.Count(r => r.HealthStatus == "FAILING");
         return (healthy, failing);
     }
+
+    /// <summary>Whole minutes elapsed from a stored naive-UTC instant to now (UTC), floored at 0, or null
+    /// when there is no instant. Both sides are UTC instants, so the tick subtraction is a true elapsed
+    /// regardless of Kind (the same reasoning the freshness classification documents).</summary>
+    private static int? MinutesAgo(DateTime? instantUtc, DateTime nowUtc) =>
+        instantUtc.HasValue ? Math.Max(0, (int)(nowUtc - instantUtc.Value).TotalMinutes) : null;
 }
 
 /// <summary>The three collection-freshness bands the viewer derives a card's status from.</summary>
@@ -417,7 +450,13 @@ public sealed class ServerSummaryItem
     /// <summary>The worst blocking wait (ms) observed in the window — the "max: Ns" detail + Critical band input.</summary>
     public long MaxBlockingWaitMs { get; set; }
 
+    /// <summary>Minutes since the most recent blocking event ever — the "Last: N ago" detail when the window is clear.</summary>
+    public int? LastBlockingMinutesAgo { get; set; }
+
     public int DeadlockCount { get; set; }
+
+    /// <summary>Minutes since the most recent deadlock ever — the "Last: N ago" deadlock detail.</summary>
+    public int? LastDeadlockMinutesAgo { get; set; }
 
     /// <summary>Worker-thread ceiling (max_workers_count). NULL = no scheduler snapshot (e.g. Azure SQL DB).</summary>
     public int? TotalThreads { get; set; }
@@ -489,13 +528,28 @@ public sealed class ServerSummaryItem
 
     public string BlockingDisplay => BlockingCount > 0 ? BlockingCount.ToString() : "0";
 
-    /// <summary>The worst blocking wait in the window, e.g. "max: 42s"; blank when the window is clear.</summary>
-    public string BlockingDetail => BlockingCount > 0 ? $"max: {MaxBlockedSeconds:F0}s" : "";
+    /// <summary>
+    /// The blocking detail (Dashboard's BlockingDetailText): the worst wait while blocking is present in
+    /// the window ("max: 42s"), else how long since the last blocking event ever ("Last: 3h ago"), else blank.
+    /// </summary>
+    public string BlockingDetail
+    {
+        get
+        {
+            if (BlockingCount > 0) return $"max: {MaxBlockedSeconds:F0}s";
+            if (LastBlockingMinutesAgo.HasValue) return $"Last: {FormatMinutesAgo(LastBlockingMinutesAgo.Value)}";
+            return "";
+        }
+    }
 
     /// <summary>The worst blocking wait in the window, in seconds.</summary>
     public double MaxBlockedSeconds => MaxBlockingWaitMs / 1000.0;
 
     public string DeadlockDisplay => DeadlockCount > 0 ? DeadlockCount.ToString() : "0";
+
+    /// <summary>The deadlock detail — how long since the last deadlock ever ("Last: N ago"), else blank.</summary>
+    public string DeadlockDetail =>
+        LastDeadlockMinutesAgo.HasValue ? $"Last: {FormatMinutesAgo(LastDeadlockMinutesAgo.Value)}" : "";
 
     /// <summary>Threads value — the pressure headline (Dashboard's ThreadsDisplayText), or "--" with no snapshot.</summary>
     public string ThreadsDisplay
@@ -701,6 +755,16 @@ public sealed class ServerSummaryItem
         HealthSeverity.Healthy => s_healthyBrush,
         _ => s_unknownBrush,
     };
+
+    /// <summary>Human "N ago" rendering of an elapsed minutes count — verbatim from ServerHealthStatus.</summary>
+    private static string FormatMinutesAgo(int minutes)
+    {
+        if (minutes < 1) return "just now";
+        if (minutes < 60) return $"{minutes}m ago";
+        if (minutes < 1440) return $"{minutes / 60}h ago";   // 24 hours
+        if (minutes < 10080) return $"{minutes / 1440}d ago"; // 7 days
+        return $"{minutes / 10080}w ago";
+    }
 
     private static SolidColorBrush MakeBrush(string hex)
     {

@@ -87,6 +87,8 @@ public sealed class ViewerOverviewSqlTests
         /* Count + worst wait from each source; the caller applies Lite's XE-preferred, DMV-fallback rule. */
         Assert.Contains("COUNT(*)", sql, StringComparison.Ordinal);
         Assert.Contains("MAX(wait_time_ms)", sql, StringComparison.Ordinal);
+        /* Newest event ever (unbounded) for the "Last: N ago" detail when the window is clear. */
+        Assert.Contains("MAX(event_time)", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_blocked_process_reports", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_dmv_blocking_snapshots", sql, StringComparison.Ordinal);
         Assert.Contains("event_time >= $2", sql, StringComparison.Ordinal);
@@ -94,12 +96,15 @@ public sealed class ViewerOverviewSqlTests
     }
 
     [Fact]
-    public void SummaryDeadlockSql_CountsOverTheWindow_OnDeadlockTime()
+    public void SummaryDeadlockSql_CountsOverTheWindow_AndNewestEver()
     {
         var sql = ViewerDataService.ServerSummaryDeadlockSql;
         Assert.Contains("FROM v_deadlocks", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("COUNT(*)", sql, StringComparison.Ordinal);
         Assert.Contains("deadlock_time >= $2", sql, StringComparison.Ordinal);
+        /* Newest deadlock ever (unbounded) for the "Last: N ago" detail. */
+        Assert.Contains("MAX(deadlock_time)", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -436,10 +441,22 @@ public sealed class ViewerServerSummaryDisplayTests
     }
 
     [Fact]
-    public void BlockingDetail_ShowsMaxDuration_WhenBlocked_BlankWhenClear()
+    public void BlockingDetail_MaxWhenBlocked_LastAgoWhenClear_BlankWhenNever()
     {
         Assert.Equal("max: 42s", new ServerSummaryItem { BlockingCount = 3, MaxBlockingWaitMs = 42000 }.BlockingDetail);
-        Assert.Equal("", new ServerSummaryItem { BlockingCount = 0, MaxBlockingWaitMs = 0 }.BlockingDetail);
+        /* Window clear but blocking happened earlier → the Dashboard's "Last: N ago". */
+        Assert.Equal("Last: 3h ago", new ServerSummaryItem { BlockingCount = 0, LastBlockingMinutesAgo = 180 }.BlockingDetail);
+        Assert.Equal("Last: 2d ago", new ServerSummaryItem { BlockingCount = 0, LastBlockingMinutesAgo = 2880 }.BlockingDetail);
+        /* Never any blocking → blank. */
+        Assert.Equal("", new ServerSummaryItem { BlockingCount = 0 }.BlockingDetail);
+    }
+
+    [Fact]
+    public void DeadlockDetail_ShowsLastAgo_WhenKnown_BlankWhenNever()
+    {
+        Assert.Equal("Last: 5m ago", new ServerSummaryItem { LastDeadlockMinutesAgo = 5 }.DeadlockDetail);
+        Assert.Equal("Last: just now", new ServerSummaryItem { LastDeadlockMinutesAgo = 0 }.DeadlockDetail);
+        Assert.Equal("", new ServerSummaryItem().DeadlockDetail);
     }
 
     [Fact]
@@ -741,11 +758,12 @@ public sealed class ViewerW2aLivePostgresTests
             Assert.True(summary.HasMemoryPressure);
             Assert.Equal(HealthSeverity.Critical, summary.MemorySeverity);
 
-            /* Blocking — count + worst wait, both from the XE source. */
+            /* Blocking — count + worst wait, both from the XE source; last-event read populated. */
             Assert.Equal(2, summary.BlockingCount);
             Assert.Equal(42000, summary.MaxBlockingWaitMs);
             Assert.Equal("max: 42s", summary.BlockingDetail);
             Assert.Equal(HealthSeverity.Warning, summary.BlockingSeverity);
+            Assert.NotNull(summary.LastBlockingMinutesAgo);
 
             /* Collectors — REUSE of the 7-day banding (one HEALTHY, one FAILING). */
             Assert.Equal(1, summary.HealthyCollectorCount);
