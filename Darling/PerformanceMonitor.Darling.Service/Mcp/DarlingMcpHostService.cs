@@ -170,7 +170,18 @@ public sealed class DarlingMcpHostService : BackgroundService
                    list_servers / get_collection_health / get_server_properties), the same names Lite
                    and the Dashboard expose, over Darling's Postgres store (STORED reads, no live hit).
                    These are the tools the analysis findings' next_tools recommendations point at. */
-                .WithGeminiCompatibleTools<DarlingMcpDataTools>();
+                .WithGeminiCompatibleTools<DarlingMcpDataTools>()
+                /* The diagnostic-depth data-read tools (blocking/deadlocks, sessions, config-history,
+                   index/object) — get_blocking / get_deadlocks / get_deadlock_detail /
+                   get_blocked_process_xml, get_session_stats / get_active_queries / get_waiting_tasks,
+                   get_server_config_changes / get_database_config_changes / get_trace_flag_changes /
+                   get_database_scoped_config, get_table_index_sizes / get_index_usage / get_object_locking /
+                   get_database_sizes — the same names Lite and the Dashboard expose, over Darling's Postgres
+                   store (STORED reads, no live hit). Result shapes follow Lite where the two SKUs diverge. */
+                .WithGeminiCompatibleTools<DarlingMcpBlockingTools>()
+                .WithGeminiCompatibleTools<DarlingMcpSessionTools>()
+                .WithGeminiCompatibleTools<DarlingMcpConfigHistoryTools>()
+                .WithGeminiCompatibleTools<DarlingMcpObjectStatsTools>();
 
             _app = builder.Build();
             _app.MapMcp();
