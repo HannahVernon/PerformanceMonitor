@@ -39,6 +39,13 @@ public partial class App : Application
            creates MainWindow. Dark is the default; naming it keeps the source of truth explicit. */
         ThemeManager.Apply("Dark");
 
+        /* #1050 (companion to the ported tray's WindowResumeGuard): WPF's GPU render thread can zombie its
+           surface across sleep/wake or RDP, leaving a live-but-blank window — now reachable in the viewer
+           because minimize-to-tray can hide it. Software rendering removes the GPU dependency entirely; charts
+           are unaffected (ScottPlot renders via SkiaSharp/CPU into a bitmap, not WPF's GPU path). Matches Lite. */
+        System.Windows.Media.RenderOptions.ProcessRenderMode =
+            System.Windows.Interop.RenderMode.SoftwareOnly;
+
         /* Minimal file logging (ported from Lite's AppLogger) so the sidebar's View Log / Open Log
            Folder buttons have a real target and operator bug reports carry viewer diagnostics. */
         ViewerLogger.Initialize();
@@ -85,7 +92,8 @@ public partial class App : Application
     /// <summary>
     /// Invoked on <see cref="SingleInstanceSignal"/>'s background thread when a second launch asks us to
     /// surface the window. Marshals to the UI thread and brings the existing window to the front via WPF's
-    /// own path (the viewer has no tray, so this simply restores/activates it).
+    /// own path — the shared <see cref="MainWindow.SurfaceWindow"/> the tray Restore also uses, so a
+    /// tray-hidden window is un-hidden consistently.
     /// </summary>
     private void OnSurfaceWindowRequested()
     {

@@ -38,7 +38,10 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// state survives a restart — making the running service honor a change is a separate wiring concern
 /// (the service reads darling.json, not this file). The controls that DO act inside the viewer today —
 /// Manage Mute Rules (writes Postgres), Send Test Email / Send Test Notification (the shared, connection-
-/// independent renderers), and the viewer preferences folded in — work immediately.
+/// independent renderers), the viewer preferences folded in, <see cref="MinimizeToTray"/> (hides the window
+/// to the system tray on minimize), and the in-app alert toasts (the MainWindow polls alert history and
+/// surfaces new rows through the ported tray, honoring the store-backed "Tray notification cooldown") —
+/// work immediately.
 /// </para>
 ///
 /// <para>
