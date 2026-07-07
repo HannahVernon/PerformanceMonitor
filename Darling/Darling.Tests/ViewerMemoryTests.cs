@@ -116,8 +116,9 @@ public sealed class ViewerMemorySqlTests
         /* pool_id is the integer group key, selected raw (GetInt32). */
         Assert.Contains("pool_id", sql, StringComparison.Ordinal);
 
-        /* The three sizing MB SUMs CAST to double precision. */
-        foreach (var col in new[] { "available_memory_mb", "granted_memory_mb", "used_memory_mb" })
+        /* The three sizing MB SUMs plus the workspace-memory ceiling (target / max target — item 2) all
+           CAST to double precision. */
+        foreach (var col in new[] { "available_memory_mb", "granted_memory_mb", "used_memory_mb", "target_memory_mb", "max_target_memory_mb" })
         {
             Assert.Contains($"CAST(SUM({col}) AS double precision)", sql, StringComparison.Ordinal);
         }
@@ -208,6 +209,8 @@ public sealed class ViewerMemorySqlTests
         {
             "pool_id", "available_memory_mb", "granted_memory_mb", "used_memory_mb",
             "grantee_count", "waiter_count", "timeout_error_count_delta", "forced_grant_count_delta",
+            /* Item 2 verification: the workspace-memory ceiling columns the viewer now surfaces are collected. */
+            "target_memory_mb", "max_target_memory_mb",
         })
         {
             Assert.Contains(col, grantDdl, StringComparison.Ordinal);

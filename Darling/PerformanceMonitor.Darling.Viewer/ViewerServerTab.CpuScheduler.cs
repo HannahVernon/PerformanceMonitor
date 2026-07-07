@@ -22,6 +22,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// presented as this metric/value list — the grid analog of the Dashboard's CPU-pressure summary strip.</summary>
 public sealed record CpuSchedulerMetricRow(string Metric, string Value, bool IsWarning);
 
+/// <summary>The rolled-up CPU-scheduler pressure classification for the metric grid's headline rows: the
+/// banded pressure level plus its paired recommendation, mirroring install/47's report.cpu_scheduler_pressure
+/// and the Dashboard's <c>CpuPressureItem.PressureLevel/Recommendation</c>.</summary>
+public sealed record CpuPressure(string Level, string Recommendation);
+
 /// <summary>
 /// The CPU Scheduler sub-tab (under the CPU tab, alongside CPU Utilization) — the Darling-viewer surface
 /// for the cpu_scheduler_stats collector (scheduler / worker-thread / runnable-task / NUMA / OS-memory
@@ -120,8 +125,15 @@ public partial class ViewerServerTab
             ? (double)s.TotalCurrentWorkersCount / s.MaxWorkersCount * 100.0
             : 0;
 
+        /* Rolled-up pressure badge + recommendation (install/47 report.cpu_scheduler_pressure parity): the
+           raw warning booleans are kept below, but these two headline rows give the one-glance severity +
+           next step the Dashboard surfaces. The level row highlights whenever it is not NORMAL. */
+        var pressure = ClassifyCpuPressure(s);
+
         var rows = new List<CpuSchedulerMetricRow>
         {
+            new("Pressure Level", pressure.Level, !pressure.Level.StartsWith("NORMAL", StringComparison.Ordinal)),
+            new("Recommendation", pressure.Recommendation, false),
             new("Schedulers", Int(s.SchedulerCount), false),
             new("Logical CPUs", Int(s.CpuCount), false),
             new("NUMA Nodes (online / total)", $"{s.NodesOnlineCount} / {s.TotalNodeCount}", false),
@@ -146,6 +158,39 @@ public partial class ViewerServerTab
         };
 
         return rows;
+    }
+
+    /// <summary>
+    /// The rolled-up CPU-scheduler pressure classification, a pure client-side derivation mirroring
+    /// install/47's <c>report.cpu_scheduler_pressure</c> (pressure_level + recommendation) and the
+    /// Dashboard's <c>CpuPressureItem</c>. The banding is the proc's own CASE, in the same order: runnable
+    /// task queue &gt; 50 CRITICAL / &gt; 20 HIGH / &gt; 10 MEDIUM, then worker-utilization &gt; 90% HIGH,
+    /// then the collector's worker-exhaustion / runnable-tasks / queued-requests warning flags. Static + pure
+    /// so it is unit-testable without Postgres.
+    /// </summary>
+    internal static CpuPressure ClassifyCpuPressure(CpuSchedulerSnapshot s)
+    {
+        double workerUtil = s.MaxWorkersCount > 0
+            ? (double)s.TotalCurrentWorkersCount / s.MaxWorkersCount * 100.0
+            : 0;
+
+        var level =
+            s.TotalRunnableTasksCount > 50 ? "CRITICAL - High runnable task queue" :
+            s.TotalRunnableTasksCount > 20 ? "HIGH - Moderate runnable task queue" :
+            s.TotalRunnableTasksCount > 10 ? "MEDIUM - Some runnable tasks queued" :
+            workerUtil > 90 ? "HIGH - Worker thread exhaustion" :
+            s.WorkerThreadExhaustionWarning ? "CRITICAL - Worker thread exhaustion warning" :
+            s.RunnableTasksWarning ? "HIGH - Runnable tasks warning" :
+            s.QueuedRequestsWarning ? "MEDIUM - Queued requests warning" :
+            "NORMAL";
+
+        var recommendation =
+            s.TotalRunnableTasksCount > 20 ? "CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores" :
+            s.WorkerThreadExhaustionWarning ? "Worker thread exhaustion - check max worker threads setting" :
+            s.TotalQueuedRequestCount > 0 ? "Requests queued for execution - CPU or worker thread pressure" :
+            "No CPU scheduler pressure detected";
+
+        return new CpuPressure(level, recommendation);
     }
 
     private static string Int(int value) => value.ToString("N0", CultureInfo.CurrentCulture);

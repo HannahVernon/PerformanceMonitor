@@ -191,6 +191,101 @@ public sealed class ViewerCpuSchedulerProjectionTests
         Assert.Equal("N/A", rows.Single(r => r.Metric == "Total Requests").Value);
         Assert.Equal("N/A", rows.Single(r => r.Metric == "Runnable %").Value);
     }
+
+    [Fact]
+    public void BuildMetrics_LeadsWithThePressureLevelAndRecommendationRows()
+    {
+        /* Item 4: the rolled-up pressure badge + recommendation are the first two headline rows, ahead of
+           the raw metrics. A calm snapshot is NORMAL and does not highlight. */
+        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot());
+
+        Assert.Equal("Pressure Level", rows[0].Metric);
+        Assert.Equal("Recommendation", rows[1].Metric);
+        Assert.Equal("NORMAL", rows[0].Value);
+        Assert.False(rows[0].IsWarning);
+    }
+
+    [Fact]
+    public void BuildMetrics_PressureLevelRow_HighlightsWhenNotNormal()
+    {
+        /* worker_thread_exhaustion_warning drives a CRITICAL pressure level, which must highlight. */
+        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot(workerExhaustion: true));
+
+        var pressure = rows.Single(r => r.Metric == "Pressure Level");
+        Assert.StartsWith("CRITICAL", pressure.Value, StringComparison.Ordinal);
+        Assert.True(pressure.IsWarning);
+    }
+}
+
+/// <summary>
+/// Pins the rolled-up CPU-scheduler pressure classification
+/// (<see cref="ViewerServerTab.ClassifyCpuPressure"/>) against install/47's report.cpu_scheduler_pressure
+/// CASE ordering: runnable task queue &gt; 50 / &gt; 20 / &gt; 10, then worker-utilization &gt; 90%, then the
+/// collector's warning flags; plus the paired recommendation.
+/// </summary>
+public sealed class ViewerCpuPressureTests
+{
+    private static CpuSchedulerSnapshot Snapshot(
+        int runnableTasks = 0, int maxWorkers = 512, int currentWorkers = 100,
+        int queuedRequests = 0, bool workerExhaustion = false, bool runnableWarn = false,
+        bool queuedWarn = false)
+        => new(
+            CollectionTime: new DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Unspecified),
+            MaxWorkersCount: maxWorkers, SchedulerCount: 8, CpuCount: 8,
+            TotalRunnableTasksCount: runnableTasks, TotalWorkQueueCount: 0,
+            TotalCurrentWorkersCount: currentWorkers, AvgRunnableTasksCount: 0m,
+            TotalActiveRequestCount: 0, TotalQueuedRequestCount: queuedRequests, TotalBlockedTaskCount: 0,
+            TotalActiveParallelThreadCount: 0, RunnableRequestCount: 0, TotalRequestCount: 0,
+            RunnablePercent: 0m, WorkerThreadExhaustionWarning: workerExhaustion,
+            RunnableTasksWarning: runnableWarn, BlockedTasksWarning: false, QueuedRequestsWarning: queuedWarn,
+            TotalPhysicalMemoryKb: 0, AvailablePhysicalMemoryKb: 0, SystemMemoryStateDesc: null,
+            PhysicalMemoryPressureWarning: false, TotalNodeCount: 1, NodesOnlineCount: 1,
+            OfflineCpuCount: 0, OfflineCpuWarning: false);
+
+    [Theory]
+    [InlineData(60, "CRITICAL - High runnable task queue")]
+    [InlineData(51, "CRITICAL - High runnable task queue")]
+    [InlineData(50, "HIGH - Moderate runnable task queue")]  // 50 is not > 50, but > 20
+    [InlineData(25, "HIGH - Moderate runnable task queue")]
+    [InlineData(21, "HIGH - Moderate runnable task queue")]
+    [InlineData(15, "MEDIUM - Some runnable tasks queued")]
+    [InlineData(11, "MEDIUM - Some runnable tasks queued")]
+    [InlineData(5, "NORMAL")]
+    public void ClassifyCpuPressure_BandsOnRunnableTaskQueue(int runnable, string expectedLevel)
+        => Assert.Equal(expectedLevel, ViewerServerTab.ClassifyCpuPressure(Snapshot(runnableTasks: runnable)).Level);
+
+    [Fact]
+    public void ClassifyCpuPressure_WorkerUtilizationOver90_IsHigh_WhenRunnableIsLow()
+    {
+        /* 95 / 100 = 95% > 90, runnable low → the worker-utilization branch. */
+        var pressure = ViewerServerTab.ClassifyCpuPressure(Snapshot(maxWorkers: 100, currentWorkers: 95));
+        Assert.Equal("HIGH - Worker thread exhaustion", pressure.Level);
+    }
+
+    [Fact]
+    public void ClassifyCpuPressure_FallsThroughToWarningFlags_InOrder()
+    {
+        Assert.Equal("CRITICAL - Worker thread exhaustion warning",
+            ViewerServerTab.ClassifyCpuPressure(Snapshot(workerExhaustion: true)).Level);
+        Assert.Equal("HIGH - Runnable tasks warning",
+            ViewerServerTab.ClassifyCpuPressure(Snapshot(runnableWarn: true)).Level);
+        Assert.Equal("MEDIUM - Queued requests warning",
+            ViewerServerTab.ClassifyCpuPressure(Snapshot(queuedWarn: true)).Level);
+    }
+
+    [Fact]
+    public void ClassifyCpuPressure_ZeroMaxWorkers_DoesNotDivideByZero_StaysNormal()
+        => Assert.Equal("NORMAL", ViewerServerTab.ClassifyCpuPressure(Snapshot(maxWorkers: 0, currentWorkers: 0)).Level);
+
+    [Theory]
+    [InlineData(25, false, 0, "CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores")]
+    [InlineData(0, true, 0, "Worker thread exhaustion - check max worker threads setting")]
+    [InlineData(0, false, 5, "Requests queued for execution - CPU or worker thread pressure")]
+    [InlineData(0, false, 0, "No CPU scheduler pressure detected")]
+    public void ClassifyCpuPressure_Recommendation_MirrorsTheProcCase(
+        int runnable, bool workerExhaustion, int queuedRequests, string expected)
+        => Assert.Equal(expected, ViewerServerTab.ClassifyCpuPressure(
+            Snapshot(runnableTasks: runnable, workerExhaustion: workerExhaustion, queuedRequests: queuedRequests)).Recommendation);
 }
 
 /// <summary>

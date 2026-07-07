@@ -17,7 +17,9 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// One Active-Queries snapshot row — the viewer copy of Lite's <c>QuerySnapshotRow</c>
-/// (LocalDataService.Blocking.cs) trimmed to the ~26 columns the viewer's grid binds. A captured
+/// (LocalDataService.Blocking.cs). Carries the full column set Lite's two grids bind: the Active Queries
+/// grid's columns plus the #1286 memory-grant / tempdb / transaction triage columns Lite's WaitDrillDownWindow
+/// adds (all verified present in the query_snapshots store). A captured
 /// running request from one collection cycle. <see cref="CollectionTime"/> is the collector's naive-UTC
 /// capture time, so <see cref="CollectionTimeLocal"/> converts through <see cref="ViewerTimeHelper.ForDisplay"/>
 /// (Lite's <c>ServerTimeHelper.FormatServerTime</c>). <see cref="QueryPlan"/> / <see cref="LiveQueryPlan"/>
@@ -54,6 +56,18 @@ public sealed class ViewerQuerySnapshotRow
     public decimal PercentComplete { get; set; }
     public string QueryHash { get; set; } = "";
 
+    /* #1286 memory-grant / tempdb / transaction triage columns — collected into query_snapshots (verified
+       present) and surfaced by Lite's WaitDrillDownWindow grid (not its leaner Active Queries grid). The
+       Darling WaitDrillDownWindow mirrors that grid, so these bind there. */
+    public double RequestedMemoryMb { get; set; }
+    public double UsedMemoryMb { get; set; }
+    public double MaxUsedMemoryMb { get; set; }
+    public double TempdbCurrentMb { get; set; }
+    public double TempdbAllocationsMb { get; set; }
+    public double TranLogUsedMb { get; set; }
+    public DateTime? TranStartTime { get; set; }
+    public int RequestId { get; set; }
+
     /* Chain-view metadata (Wait Stats "Show Queries With This Wait" drill-down, LCK_M_* chain branch):
        set only when WaitDrillDownWindow walks blocking chains — the transitive blocked-session count and
        the "Head SPID X blocking N session(s)" path. Default 0 / empty for every other read. Mirrors Lite's
@@ -65,6 +79,13 @@ public sealed class ViewerQuerySnapshotRow
     public bool HasLiveQueryPlan => !string.IsNullOrEmpty(LiveQueryPlan);
     public string CollectionTimeLocal =>
         CollectionTime == DateTime.MinValue ? "" : ViewerTimeHelper.ForDisplay(CollectionTime).ToString("yyyy-MM-dd HH:mm:ss");
+
+    /// <summary>The transaction begin time, empty when the request has no open transaction. Mirrors Lite's
+    /// <c>QuerySnapshotRow.TranStartTimeLocal</c> (raw server-clock <c>FormatServerTime</c>):
+    /// transaction_begin_time from sys.dm_tran_active_transactions is a SQL-server-local wall-clock time (NOT
+    /// naive UTC), so it renders raw via <see cref="ViewerDataService.FormatServerClock"/> like the other
+    /// dm_exec_* times (last_execution_time / cached_time), NOT through the UTC-converting ForDisplay.</summary>
+    public string TranStartTimeLocal => ViewerDataService.FormatServerClock(TranStartTime);
 }
 
 public sealed partial class ViewerDataService
@@ -98,7 +119,15 @@ public sealed partial class ViewerDataService
             program_name,
             open_transaction_count,
             percent_complete,
-            query_hash
+            query_hash,
+            requested_memory_mb,
+            used_memory_mb,
+            max_used_memory_mb,
+            tempdb_current_mb,
+            tempdb_allocations_mb,
+            tran_log_used_mb,
+            tran_start_time,
+            request_id
         """;
 
     /// <summary>
@@ -222,6 +251,14 @@ public sealed partial class ViewerDataService
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
                 PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
                 QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                RequestedMemoryMb = reader.IsDBNull(27) ? 0 : Convert.ToDouble(reader.GetValue(27)),
+                UsedMemoryMb = reader.IsDBNull(28) ? 0 : Convert.ToDouble(reader.GetValue(28)),
+                MaxUsedMemoryMb = reader.IsDBNull(29) ? 0 : Convert.ToDouble(reader.GetValue(29)),
+                TempdbCurrentMb = reader.IsDBNull(30) ? 0 : Convert.ToDouble(reader.GetValue(30)),
+                TempdbAllocationsMb = reader.IsDBNull(31) ? 0 : Convert.ToDouble(reader.GetValue(31)),
+                TranLogUsedMb = reader.IsDBNull(32) ? 0 : Convert.ToDouble(reader.GetValue(32)),
+                TranStartTime = reader.IsDBNull(33) ? null : reader.GetDateTime(33),
+                RequestId = reader.IsDBNull(34) ? 0 : reader.GetInt32(34),
             });
         }
 

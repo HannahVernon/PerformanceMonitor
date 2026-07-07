@@ -37,13 +37,17 @@ public partial class ViewerServerTab
 
         _runningJobsFilterMgr!.UpdateData(jobs);
 
-        /* msdb-access banner, derived from the store (the viewer has no live msdb probe): Lite shows
-           the banner when its login lacks msdb access; here the running_jobs collector's latest run
-           status stands in — a PERMISSIONS (or ERROR) outcome is the store-side signal that the
-           service could not read msdb. SUCCESS / null (never run) hides it. */
-        bool lacksMsdbAccess =
-            string.Equals(status, "PERMISSIONS", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(status, "ERROR", StringComparison.OrdinalIgnoreCase);
-        RunningJobsMsdbWarning.Visibility = lacksMsdbAccess ? Visibility.Visible : Visibility.Collapsed;
+        RunningJobsMsdbWarning.Visibility = ShouldShowMsdbBanner(status) ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    /// <summary>
+    /// The msdb-access banner rule, derived from the store (the viewer has no live msdb probe): Lite shows
+    /// the "grant the login msdb access" banner strictly from its real <c>_hasMsdbAccess</c> probe, so the
+    /// store-side stand-in is ONLY the running_jobs collector's <c>PERMISSIONS</c> outcome — the sole signal
+    /// that the service was denied msdb. A transient <c>ERROR</c> (timeout / network blip) is NOT a
+    /// permission problem and must not raise the misleading "grant access" guidance; <c>SUCCESS</c> / null
+    /// (never run) also hides it. Static + internal so the PERMISSIONS-only condition is unit-testable.
+    /// </summary>
+    internal static bool ShouldShowMsdbBanner(string? runningJobsCollectorStatus) =>
+        string.Equals(runningJobsCollectorStatus, "PERMISSIONS", StringComparison.OrdinalIgnoreCase);
 }

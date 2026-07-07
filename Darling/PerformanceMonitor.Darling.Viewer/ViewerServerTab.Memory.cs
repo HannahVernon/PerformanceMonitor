@@ -241,13 +241,18 @@ public partial class ViewerServerTab
         var poolIds = data.Select(d => d.PoolId).Distinct().OrderBy(p => p).ToList();
         int colorIndex = 0;
 
-        /* Chart 1: Memory Grant Sizing — Available, Granted, Used MB per pool */
+        /* Chart 1: Memory Grant Sizing — Available, Granted, Used MB per pool, plus the workspace-memory
+           ceiling (Target / Max Target MB) as dashed lines so the granted-vs-ceiling headroom is visible
+           (the resource-semaphore signal the Dashboard's get_resource_semaphore exposes). IsCeiling marks
+           the two dashed ceiling series. */
         double sizingMax = 0;
-        var sizingMetrics = new (string Name, Func<MemoryGrantChartPoint, double> Selector)[]
+        var sizingMetrics = new (string Name, Func<MemoryGrantChartPoint, double> Selector, bool IsCeiling)[]
         {
-            ("Available MB", d => d.AvailableMemoryMb),
-            ("Granted MB", d => d.GrantedMemoryMb),
-            ("Used MB", d => d.UsedMemoryMb)
+            ("Available MB", d => d.AvailableMemoryMb, false),
+            ("Granted MB", d => d.GrantedMemoryMb, false),
+            ("Used MB", d => d.UsedMemoryMb, false),
+            ("Target MB", d => d.TargetMemoryMb, true),
+            ("Max Target MB", d => d.MaxTargetMemoryMb, true)
         };
 
         foreach (var poolId in poolIds)
@@ -263,6 +268,9 @@ public partial class ViewerServerTab
                 plot.LegendText = label;
                 plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIndex % SeriesColors.Length]);
                 ChartStyle.StyleScatter(plot);
+                /* Ceiling lines dashed so they read as a limit, not another measured series (mirrors the
+                   Memory Overview chart's dashed Target Memory line). */
+                if (metric.IsCeiling) plot.LineStyle.Pattern = ScottPlot.LinePattern.Dashed;
                 _memoryGrantSizingHover?.Add(plot, label);
                 if (values.Length > 0) sizingMax = Math.Max(sizingMax, values.Max());
                 colorIndex++;

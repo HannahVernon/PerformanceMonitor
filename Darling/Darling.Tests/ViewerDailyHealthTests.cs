@@ -56,8 +56,23 @@ public sealed class ViewerDailySummarySqlTests
         Assert.Contains("status = 'ERROR'", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_collection_log", sql, StringComparison.Ordinal);
 
+        /* Memory pressure: the displayed count (process OR system indicator >= 2) and the MEMORY_CRITICAL
+           escalation source (process indicator >= 3), both off v_memory_pressure_events (Dashboard parity). */
+        Assert.Contains("FROM v_memory_pressure_events", sql, StringComparison.Ordinal);
+        Assert.Contains("(memory_indicators_process >= 2 OR memory_indicators_system >= 2)", sql, StringComparison.Ordinal);
+        Assert.Contains("memory_indicators_process >= 3", sql, StringComparison.Ordinal);
+
         /* Every subquery windows on the half-open [dayStart, dayEnd) range. */
         Assert.Contains("collection_time >= $2 AND collection_time < $3", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DailySummarySql_MemoryPressureColumns_ExistInTheGeneratedSourceTable()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(MemoryPressureEventsCollector.Instance);
+        Assert.Contains("memory_indicators_process", ddl, StringComparison.Ordinal);
+        Assert.Contains("memory_indicators_system", ddl, StringComparison.Ordinal);
+        Assert.Contains("v_memory_pressure_events", PgSchemaGenerator.AllPassthroughViews);
     }
 
     [Fact]
@@ -214,6 +229,43 @@ public sealed class ViewerDailyHealthRowTests
         var row = new DailySummaryRow { SummaryDate = new DateTime(2026, 7, 3, 14, 0, 0, DateTimeKind.Utc) };
         Assert.Equal("2026-07-03", row.SummaryDateFormatted);
     }
+
+    [Fact]
+    public void ClassifyDailyHealth_Normal_WhenNothingBreaches()
+        => Assert.Equal("NORMAL", ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 0, memoryCriticalEvents: 0, blockingEvents: 0));
+
+    [Fact]
+    public void ClassifyDailyHealth_Deadlocks_WinAllOtherBands()
+        => Assert.Equal("DEADLOCKS", ViewerDataService.ClassifyDailyHealth(deadlocks: 1, highCpuEvents: 99, memoryCriticalEvents: 99, blockingEvents: 99));
+
+    [Fact]
+    public void ClassifyDailyHealth_CpuCritical_WhenMoreThanFiveHighCpuAndNoDeadlocks()
+        => Assert.Equal("CPU_CRITICAL", ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 6, memoryCriticalEvents: 99, blockingEvents: 99));
+
+    [Fact]
+    public void ClassifyDailyHealth_MemoryCritical_WhenSevereMemoryPressure_AndNoDeadlockOrCpu()
+    {
+        /* Item 5: the escalation the viewer dropped — a severe memory-pressure day (process indicator >= 3,
+           memoryCriticalEvents > 0) bands MEMORY_CRITICAL, ranking ahead of BLOCKING. */
+        Assert.Equal("MEMORY_CRITICAL",
+            ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 5, memoryCriticalEvents: 1, blockingEvents: 99));
+    }
+
+    [Fact]
+    public void ClassifyDailyHealth_Blocking_WhenOverTenBlockingAndNoHigherBand()
+        => Assert.Equal("BLOCKING", ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 0, memoryCriticalEvents: 0, blockingEvents: 11));
+
+    [Theory]
+    [InlineData(5, "NORMAL")]     // exactly 5 is NOT > 5
+    [InlineData(6, "CPU_CRITICAL")]
+    public void ClassifyDailyHealth_HighCpuThreshold_IsStrictlyGreaterThanFive(long highCpu, string expected)
+        => Assert.Equal(expected, ViewerDataService.ClassifyDailyHealth(0, highCpu, 0, 0));
+
+    [Theory]
+    [InlineData(10, "NORMAL")]    // exactly 10 is NOT > 10
+    [InlineData(11, "BLOCKING")]
+    public void ClassifyDailyHealth_BlockingThreshold_IsStrictlyGreaterThanTen(long blocking, string expected)
+        => Assert.Equal(expected, ViewerDataService.ClassifyDailyHealth(0, 0, 0, blocking));
 
     [Fact]
     public void CollectorHealthRow_NeverRun_WhenNoRuns()

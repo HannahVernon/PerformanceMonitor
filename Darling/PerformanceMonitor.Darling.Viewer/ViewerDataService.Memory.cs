@@ -49,10 +49,13 @@ public sealed record MemoryClerkTrendPoint(
     double MemoryMb);
 
 /// <summary>One aggregated Memory Grants chart point (per collection_time + resource pool): the three
-/// sizing MB metrics and the four activity counts, a mirror of Lite's <c>MemoryGrantChartPoint</c>. MB
-/// SUMs CAST to double precision; the count SUMs CAST to bigint (Postgres <c>SUM(integer)</c> widens to
-/// bigint and <c>SUM(bigint)</c> to numeric — the CAST keeps the typed GetInt64 reader happy either way,
-/// the same reason the perfmon trend CASTs its aggregates).</summary>
+/// sizing MB metrics, the workspace-memory ceiling (<see cref="TargetMemoryMb"/> = the semaphore's current
+/// grant target, <see cref="MaxTargetMemoryMb"/> = its hard maximum — the granted-vs-ceiling headroom
+/// signal the Dashboard's get_resource_semaphore surfaces), and the four activity counts. A mirror of Lite's
+/// <c>MemoryGrantChartPoint</c> plus the ceiling columns. MB SUMs CAST to double precision; the count SUMs
+/// CAST to bigint (Postgres <c>SUM(integer)</c> widens to bigint and <c>SUM(bigint)</c> to numeric — the CAST
+/// keeps the typed GetInt64 reader happy either way, the same reason the perfmon trend CASTs its
+/// aggregates).</summary>
 public sealed record MemoryGrantChartPoint(
     DateTime CollectionTime,
     int PoolId,
@@ -62,7 +65,9 @@ public sealed record MemoryGrantChartPoint(
     int GranteeCount,
     int WaiterCount,
     long TimeoutErrorCountDelta,
-    long ForcedGrantCountDelta);
+    long ForcedGrantCountDelta,
+    double TargetMemoryMb,
+    double MaxTargetMemoryMb);
 
 /// <summary>One RING_BUFFER_RESOURCE_MONITOR sample for the Memory Pressure Events chart, a mirror of
 /// Lite's <c>MemoryPressureEventRow</c>: the sample time plus SQL Server (process) and OS (system)
@@ -189,7 +194,9 @@ public sealed partial class ViewerDataService
             CAST(SUM(grantee_count) AS bigint) AS grantee_count,
             CAST(SUM(waiter_count) AS bigint) AS waiter_count,
             CAST(SUM(timeout_error_count_delta) AS bigint) AS timeout_error_count_delta,
-            CAST(SUM(forced_grant_count_delta) AS bigint) AS forced_grant_count_delta
+            CAST(SUM(forced_grant_count_delta) AS bigint) AS forced_grant_count_delta,
+            CAST(SUM(target_memory_mb) AS double precision) AS target_memory_mb,
+            CAST(SUM(max_target_memory_mb) AS double precision) AS max_target_memory_mb
         FROM v_memory_grant_stats
         WHERE server_id = $1
         AND   collection_time >= $2
@@ -375,7 +382,9 @@ public sealed partial class ViewerDataService
                 reader.IsDBNull(5) ? 0 : (int)reader.GetInt64(5),
                 reader.IsDBNull(6) ? 0 : (int)reader.GetInt64(6),
                 reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
-                reader.IsDBNull(8) ? 0 : reader.GetInt64(8)));
+                reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                reader.IsDBNull(9) ? 0 : reader.GetDouble(9),
+                reader.IsDBNull(10) ? 0 : reader.GetDouble(10)));
         }
 
         return items;
