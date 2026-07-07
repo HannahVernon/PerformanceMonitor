@@ -24,9 +24,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <summary>
 /// The Darling viewer shell (headless plan M3 + viewer waves 2-4, W0 IA inversion): the server list
 /// from the central store on the left, and — mirroring Lite's navigation shape — ONE top tab strip on
-/// the right holding the fixed aggregate tabs (Recommendations and Alerts, server-scoped via the
-/// sidebar selection) plus dynamically-added, closable per-server tabs. Single-clicking a server
-/// drives the aggregate tabs; double-clicking opens (or focuses) that server's <see cref="ViewerServerTab"/>,
+/// the right holding the fixed aggregate tabs (Overview and the all-servers Alert History span every
+/// server; Recommendations and FinOps are server-scoped, their own pickers synced to the sidebar
+/// selection) plus dynamically-added, closable per-server tabs. Single-clicking a server drives the
+/// server-scoped aggregate tabs to it; double-clicking opens (or focuses) that server's
+/// <see cref="ViewerServerTab"/>,
 /// whose inner tabs (Overview charts, Queries, Blocking, Collection Health) hold the per-server surfaces.
 /// All reads go straight to Postgres via <see cref="ViewerDataService"/>. Loads are lazy per visible
 /// tab (Lite's visible-only rule): the 60-second timer refreshes only the visible tab — an aggregate
@@ -111,11 +113,47 @@ public partial class MainWindow : Window
 
         _dataService = new ViewerDataService(settings.ConnectionString);
 
-        /* V8 security hardening: probe whether this connection can write the operator-config tables
-           (admin/owner) or is the read-only viewer role, before showing any write affordance. The
-           probe fails safe to read-only; the write surfaces gate on ViewerDataService.IsReadOnly and
-           the write paths translate a live 42501 into a friendly message as a backstop. */
-        await _dataService.DetectReadOnlyAsync();
+        try
+        {
+            /* Finding B3: prove the store is reachable with one real connect, so an unreachable store (the
+               service down / wrong postgres section in darling.json) shows a dedicated message instead of
+               being misread as a read-only seat (DetectReadOnlyAsync used to collapse both to read-only). */
+            await _dataService.EnsureStoreReachableAsync();
+
+            /* Finding B1: gate on schema skew BEFORE any control-plane write can hit a raw Postgres
+               42703/42P01 (e.g. Add/Edit Server against a store missing the V18 alert_delivery_mode_override
+               column). Probe the store's effective version via information_schema — the darling_schema_version
+               table is owner-only — and block if it is behind this build. NEVER migrate from the viewer: that
+               is the service's job. The probe fails open (null), so a healthy store is never falsely blocked. */
+            var storeVersion = await _dataService.GetStoreSchemaVersionAsync();
+            if (storeVersion is int version && version < ViewerDataService.RequiredStoreSchemaVersion)
+            {
+                ShowMessage(
+                    $"The Darling store is at schema v{version}, but this viewer needs v{ViewerDataService.RequiredStoreSchemaVersion}. " +
+                    "Update or restart the Darling service so it migrates the store, then reopen the viewer.");
+                return;
+            }
+
+            /* V8 security hardening: probe whether this connection can write the operator-config tables
+               (admin/owner) or is the read-only viewer role, before showing any write affordance. The
+               probe fails safe to read-only; the write surfaces gate on ViewerDataService.IsReadOnly and
+               the write paths translate a live 42501 into a friendly message as a backstop. */
+            await _dataService.DetectReadOnlyAsync();
+        }
+        catch (ViewerStoreUnreachableException ex)
+        {
+            ViewerLogger.Error("App", "Darling store unreachable", ex);
+            ShowMessage(ex.Message);
+            return;
+        }
+        catch (Exception ex)
+        {
+            /* Reachable but the first connection failed for another reason (e.g. authentication, or the
+               configured database does not exist) — show it rather than dead-ending on a blank window. */
+            ViewerLogger.Error("App", "Darling store connection failed", ex);
+            ShowMessage($"Couldn't connect to the Darling store: {ex.Message}");
+            return;
+        }
 
         /* A read-only seat cannot command the service, so "Generate now" (analyze_now) is disabled. */
         RecommendationsGenerateButton.IsEnabled = !_dataService.IsReadOnly;
@@ -244,9 +282,46 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Single-click drives the aggregate tabs (Recommendations/Alerts) for the selected server.</summary>
+    /// <summary>
+    /// Single-clicking a sidebar server drives the server-scoped aggregate tabs to it: it syncs the
+    /// Recommendations and FinOps server pickers to the selected server (each remains independently
+    /// changeable) so the tabs show the sidebar server instead of whatever the dropdowns last held, then
+    /// reloads the visible tab. The two syncs suppress their own SelectionChanged, so the visible tab is
+    /// loaded exactly once here by <see cref="RefreshVisibleAsync"/>.
+    /// </summary>
     private async void ServerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        => await RefreshVisibleAsync();
+    {
+        if (ServerList.SelectedItem is DarlingServer server)
+        {
+            SyncAggregateServerSelectors(server);
+        }
+
+        await RefreshVisibleAsync();
+    }
+
+    /// <summary>
+    /// Points the Recommendations and FinOps tabs' own server pickers at the sidebar-selected server so the
+    /// two server-scoped aggregate tabs track the sidebar. Both selections are set under a suppression guard
+    /// (the Recommendations combo via <see cref="_populatingRecoServers"/>, FinOps inside
+    /// <see cref="FinOpsTab.SelectServer"/>), so neither fires a redundant refresh — the caller reloads the
+    /// visible tab once. The lists are populated from the same managed-server set as the sidebar, so a
+    /// selected server is present in both (matched by id).
+    /// </summary>
+    private void SyncAggregateServerSelectors(DarlingServer server)
+    {
+        if (RecommendationsServerSelector.ItemsSource is IEnumerable<DarlingServer> recoServers)
+        {
+            var match = recoServers.FirstOrDefault(s => s.ServerId == server.ServerId);
+            if (match is not null && !ReferenceEquals(RecommendationsServerSelector.SelectedItem, match))
+            {
+                _populatingRecoServers = true;
+                RecommendationsServerSelector.SelectedItem = match;
+                _populatingRecoServers = false;
+            }
+        }
+
+        FinOpsContent.SelectServer(server.ServerId);
+    }
 
     /// <summary>Double-click opens (or focuses) the selected server's per-server tab (Lite's rule).</summary>
     private void ServerList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -290,10 +365,11 @@ public partial class MainWindow : Window
             ServerList.ItemsSource = servers;
             ServerCountText.Text = $"Servers: {servers.Count}";
 
-            /* The Recommendations tab has its OWN server selector (independent of the sidebar, matching
-               Lite). Populate it from the same list; the guard suppresses its SelectionChanged during
-               this initial population so the first load comes from the sidebar-driven RefreshVisibleAsync
-               below (which reads the now-populated combo). */
+            /* The Recommendations tab has its OWN server selector, synced to the sidebar selection on a
+               single-click (SyncAggregateServerSelectors) yet independently changeable while the tab is open.
+               Populate it from the same list; the guard suppresses its SelectionChanged during this initial
+               population so the first load comes from the sidebar-driven RefreshVisibleAsync below (which
+               reads the now-populated combo). */
             _populatingRecoServers = true;
             RecommendationsServerSelector.ItemsSource = servers;
             if (servers.Count > 0)
@@ -824,6 +900,10 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         catch (Exception ex)
         {
             RecommendationsStatusText.Text = $"Generate now failed: {ex.Message}";
@@ -960,6 +1040,26 @@ public partial class MainWindow : Window
     {
         var about = new AboutWindow { Owner = this };
         about.ShowDialog();
+    }
+
+    /// <summary>
+    /// Brings the viewer window to the foreground when a second launch is folded into this instance (the
+    /// shared single-instance surface path). Restores a minimized window to Maximized — the viewer's startup
+    /// state — and activates it through WPF's own Show()/Activate() path. The viewer has no tray, so there is
+    /// no hidden-Visibility state to reconcile.
+    /// </summary>
+    public void SurfaceWindow()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Maximized;
+        }
+
+        Show();
+        Activate();
+        /* Nudge to the top without pinning topmost. */
+        Topmost = true;
+        Topmost = false;
     }
 
     private void ShowMessage(string message)

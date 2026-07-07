@@ -427,6 +427,11 @@ public partial class AddServerDialog : Window
             StatusText.Text = ex.Message;
             SaveButton.IsEnabled = true;
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            StatusText.Text = ex.Message;
+            SaveButton.IsEnabled = true;
+        }
         catch (Exception ex)
         {
             StatusText.Text = $"Error saving server: {ex.Message}";
@@ -480,6 +485,10 @@ public partial class AddServerDialog : Window
             StatusText.Text = DescribeTestResult(result);
         }
         catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (ViewerSchemaSkewException ex)
         {
             StatusText.Text = ex.Message;
         }

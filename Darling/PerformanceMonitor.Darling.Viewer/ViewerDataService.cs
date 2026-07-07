@@ -12,6 +12,7 @@ using System.ComponentModel;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
+using PerformanceMonitor.Darling.Storage;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -194,12 +195,130 @@ public sealed partial class ViewerDataService : IAsyncDisposable
             var canInsert = await command.ExecuteScalarAsync(cancellationToken);
             IsReadOnly = canInsert is not true;
         }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            /* Finding B3: a failure to REACH the store is not a read-only seat — surface it as unreachable so
+               the shell shows the "is the service running?" message instead of hiding every write affordance
+               behind a false read-only verdict. */
+            throw new ViewerStoreUnreachableException(ex);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            /* A server RESPONSE we couldn't interpret (a permission quirk, a missing table on a
+               mis-provisioned store, a transient error) fails safe to read-only, so the UI hides writes
+               rather than dead-clicking into a permission error. */
             IsReadOnly = true;
         }
 
         return IsReadOnly;
+    }
+
+    /// <summary>
+    /// Opens one real connection to prove the store is reachable, so the shell can tell an UNREACHABLE store
+    /// (the service down, or a wrong host/port/database in darling.json's postgres section) apart from a legit
+    /// read-only seat — the two the old connect path collapsed into a false "read-only" verdict (finding B3).
+    /// A connection-level failure is rethrown as <see cref="ViewerStoreUnreachableException"/>; a server that
+    /// RESPONDS (even to refuse authentication) is "reachable" and any such error propagates for the caller's
+    /// generic handling. The <see cref="NpgsqlDataSource"/> is lazy, so this is the first live connect.
+    /// </summary>
+    public async Task EnsureStoreReachableAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            throw new ViewerStoreUnreachableException(ex);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is a failure to TALK to Postgres (socket refused, host not found,
+    /// connect timeout) rather than a server error RESPONSE. Npgsql surfaces a server response as a
+    /// <see cref="PostgresException"/> (it carries a SQLSTATE); any other <see cref="NpgsqlException"/> — or a
+    /// bare socket / timeout — means the server was never reached. Drives the unreachable-vs-read-only split
+    /// (finding B3), so a down store shows "is the service running?" not a false read-only verdict.
+    /// </summary>
+    internal static bool IsConnectionFailure(Exception ex) =>
+        (ex is NpgsqlException and not PostgresException)
+        || ex is System.Net.Sockets.SocketException
+        || ex is TimeoutException;
+
+    /// <summary>
+    /// Probes the store's effective schema version through <c>information_schema</c> — the version the viewer
+    /// gates on at connect (finding B1). The authoritative <c>darling_schema_version</c> table is owner-only
+    /// (a viewer/admin role can't read it, and even <c>MAX(version)</c> can itself throw 42501), so rather
+    /// than read the version number this checks whether the store carries the schema OBJECTS the recent
+    /// migrations added — objects any role can see in <c>information_schema</c>. Three sentinels, newest
+    /// first: V19's <c>analysis_state</c> table, V18's <c>alert_delivery_mode_override</c> column (the very
+    /// column whose absence throws the raw 42703 the finding reproduces on Add/Edit Server), and V17's
+    /// <c>config_monitored_servers</c> table (the config control plane). <see cref="MapProbedSchemaVersion"/>
+    /// reduces the three flags to the highest satisfied version.
+    /// </summary>
+    public const string StoreSchemaProbeSql = @"
+SELECT
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'config_monitored_servers'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_monitored_servers' AND column_name = 'alert_delivery_mode_override'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'analysis_state')";
+
+    /// <summary>The store schema version this viewer build requires — the highest migration it knows
+    /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
+    public static int RequiredStoreSchemaVersion => StorageVersion.SchemaVersion;
+
+    /// <summary>
+    /// Reads the store's effective schema version via <see cref="StoreSchemaProbeSql"/>. Returns null when it
+    /// can't be determined (any non-cancellation error — an unreachable store, an <c>information_schema</c>
+    /// quirk) so the connect-time gate FAILS OPEN: a possibly-healthy store is never blocked by a probe
+    /// hiccup. A truly-down store is caught first by <see cref="EnsureStoreReachableAsync"/> (finding B3), and
+    /// the executor 42703/42P01 translation (finding B2) is the write-path backstop.
+    /// </summary>
+    public async Task<int?> GetStoreSchemaVersionAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var command = _dataSource.CreateCommand(StoreSchemaProbeSql);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2));
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Maps the three <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest
+    /// present wins: <paramref name="hasAnalysisState"/> (V19) → 19, else
+    /// <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else <paramref name="hasConfigControlPlane"/>
+    /// (V17) → 17, else 16 — the "older than the V17 config control plane" floor (the exact pre-17 version
+    /// isn't probed, but it is below what the viewer needs). Pure, so it is unit-tested without a live store;
+    /// a schema bump past 19 trips the pinning test that keeps this in step with
+    /// <see cref="StorageVersion.SchemaVersion"/>.
+    /// </summary>
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState)
+    {
+        if (hasAnalysisState)
+        {
+            return 19;
+        }
+
+        if (hasAlertDeliveryOverride)
+        {
+            return 18;
+        }
+
+        if (hasConfigControlPlane)
+        {
+            return 17;
+        }
+
+        return 16;
     }
 
     /// <summary>All registered servers, ordered as the server list displays them.</summary>
@@ -290,6 +409,14 @@ LIMIT 1";
     /// <summary>Postgres SQLSTATE 42501 (insufficient_privilege) — a write refused on a read-only connection.</summary>
     internal const string InsufficientPrivilegeSqlState = "42501";
 
+    /// <summary>Postgres SQLSTATE 42703 (undefined_column) — a write referenced a column a lagging store
+    /// has not migrated in yet (schema skew).</summary>
+    internal const string UndefinedColumnSqlState = "42703";
+
+    /// <summary>Postgres SQLSTATE 42P01 (undefined_table) — a write referenced a table a lagging store has
+    /// not migrated in yet (schema skew).</summary>
+    internal const string UndefinedTableSqlState = "42P01";
+
     /// <summary>
     /// Executes a write command, translating a permission-denied failure — a write attempted on the
     /// read-only viewer role, or after grants changed under a running app — into a
@@ -307,6 +434,10 @@ LIMIT 1";
         {
             throw new ViewerReadOnlyException(ex);
         }
+        catch (PostgresException ex) when (ex.SqlState is UndefinedColumnSqlState or UndefinedTableSqlState)
+        {
+            throw new ViewerSchemaSkewException(ex);
+        }
     }
 
     /// <summary>
@@ -323,6 +454,10 @@ LIMIT 1";
         catch (PostgresException ex) when (ex.SqlState == InsufficientPrivilegeSqlState)
         {
             throw new ViewerReadOnlyException(ex);
+        }
+        catch (PostgresException ex) when (ex.SqlState is UndefinedColumnSqlState or UndefinedTableSqlState)
+        {
+            throw new ViewerSchemaSkewException(ex);
         }
     }
 
@@ -343,6 +478,44 @@ public sealed class ViewerReadOnlyException : Exception
             "This viewer is connected with a read-only role, so it can't change mute rules, dismiss alerts, " +
             "or mute findings. Set postgres.connectAs to \"admin\" in darling.json and restart the viewer to " +
             "enable these actions.",
+            innerException)
+    {
+    }
+}
+
+/// <summary>
+/// The Darling store could not be reached at connect — the service is down, or the postgres section of
+/// darling.json points at the wrong host/port/database (a connection-level failure, not a server error
+/// response). Thrown by <see cref="ViewerDataService.EnsureStoreReachableAsync"/> and, as a backstop, by
+/// <see cref="ViewerDataService.DetectReadOnlyAsync"/> so the shell shows a dedicated "is the service
+/// running?" message instead of misreading an unreachable store as a read-only seat (finding B3).
+/// </summary>
+public sealed class ViewerStoreUnreachableException : Exception
+{
+    public ViewerStoreUnreachableException(Exception innerException)
+        : base(
+            "Can't reach the Darling store — is the Darling service running? Check the postgres section of " +
+            "darling.json (the host, port, and database must point at the running service's store).",
+            innerException)
+    {
+    }
+}
+
+/// <summary>
+/// A control-plane write referenced a column or table the connected store has not migrated in yet — the
+/// store's schema is BEHIND the version this viewer build needs (Postgres 42703 undefined_column / 42P01
+/// undefined_table). Thrown by the write executors so the UI shows a clear "update the service" message
+/// instead of a raw "column ... does not exist" error (finding B2). The connect-time gate
+/// (<see cref="ViewerDataService.GetStoreSchemaVersionAsync"/>, finding B1) normally blocks a skewed store
+/// before any write; this is the write-path backstop for a column referenced ahead of a lagging store.
+/// </summary>
+public sealed class ViewerSchemaSkewException : Exception
+{
+    public ViewerSchemaSkewException(Exception innerException)
+        : base(
+            $"This viewer needs Darling store schema v{ViewerDataService.RequiredStoreSchemaVersion}, but the " +
+            "store is missing an expected column or table. Update or restart the Darling service so it " +
+            "migrates the store, then reopen the viewer.",
             innerException)
     {
     }

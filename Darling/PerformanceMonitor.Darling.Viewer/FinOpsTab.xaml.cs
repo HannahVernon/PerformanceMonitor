@@ -86,7 +86,34 @@ public partial class FinOpsTab : UserControl
         _populatingServers = false;
     }
 
-    /// <summary>The tab's own server selector drives it (independent of the sidebar); a new server resets any open drill, then reloads the active sub-tab.</summary>
+    /// <summary>
+    /// Syncs the server selector to the shell's sidebar selection WITHOUT triggering a load — it suppresses
+    /// SelectionChanged like <see cref="SetServers"/>, so the tab reloads with the synced server on its next
+    /// activation / refresh rather than loading FinOps data while it isn't the visible tab. Keeps this tab's
+    /// picker in step with the sidebar (the selector remains independently changeable while FinOps is open).
+    /// No-op when the id isn't in the list or is already selected.
+    /// </summary>
+    public void SelectServer(int serverId)
+    {
+        if (ServerSelector.ItemsSource is not IEnumerable<DarlingServer> servers)
+        {
+            return;
+        }
+
+        var match = servers.FirstOrDefault(s => s.ServerId == serverId);
+        if (match is null || ReferenceEquals(ServerSelector.SelectedItem, match))
+        {
+            return;
+        }
+
+        _populatingServers = true;
+        ServerSelector.SelectedItem = match;
+        _populatingServers = false;
+    }
+
+    /// <summary>The tab's own server selector drives it; single-clicking a sidebar server syncs it here (and
+    /// on Recommendations) via the shell, and it stays independently changeable. A new server resets any open
+    /// drill, then reloads the active sub-tab.</summary>
     private async void ServerSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_populatingServers)

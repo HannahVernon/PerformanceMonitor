@@ -12,6 +12,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows.Media;
 using Npgsql;
+using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
 
@@ -329,5 +330,116 @@ public sealed class ViewerReadOnlyTests
         Assert.Contains("read-only", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("connectAs", ex.Message, StringComparison.Ordinal);
         Assert.Equal("42501", ex.InnerException?.Message);
+    }
+}
+
+/// <summary>
+/// The connect-time schema-skew gate (finding B1): the viewer probes the store's effective version via
+/// <c>information_schema</c> (the owner-only <c>darling_schema_version</c> table can't be read) and blocks a
+/// store behind the version this build needs, instead of letting a control-plane write throw a raw 42703.
+/// </summary>
+public sealed class ViewerSchemaVersionGateTests
+{
+    [Fact]
+    public void StoreSchemaProbeSql_ProbesInformationSchema_ForTheV17ToV19Sentinels()
+    {
+        var sql = ViewerDataService.StoreSchemaProbeSql;
+
+        /* Reads information_schema (visible to every role) — not the owner-only darling_schema_version. */
+        Assert.Contains("information_schema.tables", sql, StringComparison.Ordinal);
+        Assert.Contains("information_schema.columns", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("darling_schema_version", sql, StringComparison.Ordinal);
+
+        /* The three version sentinels: V17 config control plane, V18 delivery-override column, V19 marker. */
+        Assert.Contains("config_monitored_servers", sql, StringComparison.Ordinal);
+        Assert.Contains("alert_delivery_mode_override", sql, StringComparison.Ordinal);
+        Assert.Contains("analysis_state", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true, true, true, 19)]   // fully migrated
+    [InlineData(true, true, false, 18)]  // pre-V19: no analysis_state
+    [InlineData(true, false, false, 17)] // pre-V18: no delivery-override column
+    [InlineData(false, false, false, 16)] // pre-V17: no config control plane at all
+    public void MapProbedSchemaVersion_TakesTheHighestSatisfiedSentinel(
+        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, int expected)
+    {
+        Assert.Equal(expected, ViewerDataService.MapProbedSchemaVersion(
+            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState));
+    }
+
+    [Fact]
+    public void RequiredStoreSchemaVersion_TracksTheBuildSchemaVersion_AndTheProbeCoversIt()
+    {
+        /* The gate compares against the build's known schema version. */
+        Assert.Equal(StorageVersion.SchemaVersion, ViewerDataService.RequiredStoreSchemaVersion);
+
+        /* Pin: a fully-migrated store (all sentinels present) must map to exactly the required version. If a
+           future migration bumps StorageVersion past 19, this fails until a matching sentinel + map arm is
+           added — the guard against the probe silently under-reporting a newer store as skewed. */
+        Assert.Equal(
+            ViewerDataService.RequiredStoreSchemaVersion,
+            ViewerDataService.MapProbedSchemaVersion(true, true, true));
+    }
+}
+
+/// <summary>
+/// The write-executor schema-skew translation (finding B2): a control-plane write against a lagging store
+/// throws Postgres 42703 (undefined_column) / 42P01 (undefined_table); the executors translate both into a
+/// <see cref="ViewerSchemaSkewException"/> the callers surface like the read-only exception, instead of a raw
+/// "column ... does not exist" error.
+/// </summary>
+public sealed class ViewerSchemaSkewTests
+{
+    [Fact]
+    public void SchemaSkewSqlStates_AreTheUndefinedColumnAndTableStates()
+    {
+        Assert.Equal("42703", ViewerDataService.UndefinedColumnSqlState);
+        Assert.Equal("42P01", ViewerDataService.UndefinedTableSqlState);
+    }
+
+    [Fact]
+    public void ViewerSchemaSkewException_NamesTheRequiredVersion_AndTheServiceRemedy()
+    {
+        var ex = new ViewerSchemaSkewException(new InvalidOperationException("42703"));
+
+        Assert.Contains($"v{ViewerDataService.RequiredStoreSchemaVersion}", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Darling service", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("migrate", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("42703", ex.InnerException?.Message);
+    }
+}
+
+/// <summary>
+/// Distinguishing an unreachable store from a read-only seat (finding B3): a connection-level failure
+/// (service down, wrong host/port) is a <see cref="ViewerStoreUnreachableException"/> with its own message,
+/// NOT a false read-only verdict; a server error RESPONSE (a PostgresException) means the store is reachable.
+/// </summary>
+public sealed class ViewerStoreUnreachableTests
+{
+    [Fact]
+    public void ViewerStoreUnreachableException_AsksWhetherTheServiceIsRunning_AndNamesDarlingJson()
+    {
+        var ex = new ViewerStoreUnreachableException(new InvalidOperationException("connection refused"));
+
+        Assert.Contains("Darling service", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("darling.json", ex.Message, StringComparison.Ordinal);
+        Assert.Equal("connection refused", ex.InnerException?.Message);
+    }
+
+    [Fact]
+    public void IsConnectionFailure_TrueForConnectLevelFailures_FalseForServerResponses()
+    {
+        /* Connection-level failures — the server was never reached. */
+        Assert.True(ViewerDataService.IsConnectionFailure(new NpgsqlException("could not connect")));
+        Assert.True(ViewerDataService.IsConnectionFailure(new System.Net.Sockets.SocketException()));
+        Assert.True(ViewerDataService.IsConnectionFailure(new TimeoutException()));
+
+        /* A PostgresException is a server RESPONSE (carries a SQLSTATE) — the store IS reachable. */
+        var serverResponse = new PostgresException("permission denied", "ERROR", "ERROR", "42501");
+        Assert.False(ViewerDataService.IsConnectionFailure(serverResponse));
+
+        /* An unrelated exception is not a connection failure either. */
+        Assert.False(ViewerDataService.IsConnectionFailure(new InvalidOperationException()));
     }
 }
