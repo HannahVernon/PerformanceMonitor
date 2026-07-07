@@ -399,7 +399,7 @@ public sealed class ServerSummaryItem
 
     /* Per-severity dot / value brushes, frozen once (the viewer's dark-theme palette). */
     private static readonly SolidColorBrush s_criticalBrush = MakeBrush("#E57373");
-    private static readonly SolidColorBrush s_warningBrush = MakeBrush("#FFB74D");
+    private static readonly SolidColorBrush s_warningBrush = MakeBrush("#FFD54F");
     private static readonly SolidColorBrush s_healthyBrush = MakeBrush("#81C784");
     private static readonly SolidColorBrush s_unknownBrush = MakeBrush("#888888");
 
