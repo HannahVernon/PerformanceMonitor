@@ -295,6 +295,16 @@ The embedded MCP server, over Streamable HTTP bound to `localhost` only. It expo
 
   The Dashboard's per-class latch `severity` / `description` / `recommendation`, spinlock `description`, plan-cache `bloat_level`, and CPU-scheduler `pressure_level` / `recommendation` are the Dashboard / reporting-view CASE derivations (not collected columns), reproduced service-side so the full result shape is served. Darling's delta collectors store no `sample_interval_seconds`, so per-second latch/spinlock rates are derived from the collection interval, and the Dashboard's `get_resource_semaphore` `sample_interval_seconds` is not emitted for the same reason (`max_target_memory_mb`, the workspace-memory ceiling, is added since the store carries it).
 
+- **Five trend data-read tools** — windowed time-series siblings of the core reads, each a stored read of the collected series over the window (BOTH-sides, naive-UTC):
+  - `get_memory_trend` (total / target server memory, buffer pool, plan cache over time), `get_perfmon_trend` (a single counter's value + delta, `counter_name` required), `get_file_io_trend` (per-database read/write latency, top-10 busiest files), `get_query_trend` (one query's per-collection history by `query_hash` + `database_name`), `get_query_duration_trend` (overall elapsed-ms/sec + executions/sec).
+
+  Each mirrors the viewer's proven chart read (byte-identical Postgres SQL); the shape follows Lite where the SKUs diverge. `get_perfmon_trend` reproduces Lite's miss vocabulary (Page Life Expectancy is intentionally not collected; an unknown counter hands back the collected names). `get_memory_trend` carries a `total_granted_mb` field for field-for-field parity with Lite, where its memory_stats-only read leaves it 0 (the grant overlay is a separate chart series).
+
+- **Eight system-health parse-on-read tools** — the Dashboard's `get_health_parser_*` family, over Darling's raw `system_health_events`:
+  - `get_health_parser_system_health` (corruption + contention counters), `get_health_parser_severe_errors` (severity ≥ 19, with `database_id` resolved to a name), `get_health_parser_scheduler_issues`, `get_health_parser_memory_conditions`, `get_health_parser_memory_broker`, `get_health_parser_memory_node_oom`, `get_health_parser_cpu_tasks`, `get_health_parser_io_issues`.
+
+  Where the Dashboard reads its server-side-parsed `collect.HealthParser_*` tables, these shred the raw extended-event XML **on read** with the shared `SystemHealthParser` (the same parser the viewer's System Events tab uses) and gate with the service-side twin of the viewer's `SystemEventSignificance` — returning the same SIGNIFICANT warning set the Dashboard surfaces (sp_HealthParser at `@warnings_only = 1`). `get_health_parser_system_health` is the one UNGATED category (its counter series plots every snapshot). Each row carries the full sp_HealthParser column set keyed on the event's `event_time`; the tools window on `event_time` (the event's real time), so "last 24 hours" means events that happened in the last 24 hours.
+
 | Key | Default | Notes |
 |---|---|---|
 | `enabled` | `false` | **Off by default** — a headless service does not open a local port unless you ask |
