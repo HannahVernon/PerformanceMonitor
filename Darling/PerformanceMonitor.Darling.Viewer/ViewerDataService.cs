@@ -12,6 +12,7 @@ using System.ComponentModel;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
+using PerformanceMonitor.Darling.Storage;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -200,6 +201,82 @@ public sealed partial class ViewerDataService : IAsyncDisposable
         }
 
         return IsReadOnly;
+    }
+
+    /// <summary>
+    /// Probes the store's effective schema version through <c>information_schema</c> — the version the viewer
+    /// gates on at connect (finding B1). The authoritative <c>darling_schema_version</c> table is owner-only
+    /// (a viewer/admin role can't read it, and even <c>MAX(version)</c> can itself throw 42501), so rather
+    /// than read the version number this checks whether the store carries the schema OBJECTS the recent
+    /// migrations added — objects any role can see in <c>information_schema</c>. Three sentinels, newest
+    /// first: V19's <c>analysis_state</c> table, V18's <c>alert_delivery_mode_override</c> column (the very
+    /// column whose absence throws the raw 42703 the finding reproduces on Add/Edit Server), and V17's
+    /// <c>config_monitored_servers</c> table (the config control plane). <see cref="MapProbedSchemaVersion"/>
+    /// reduces the three flags to the highest satisfied version.
+    /// </summary>
+    public const string StoreSchemaProbeSql = @"
+SELECT
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'config_monitored_servers'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_monitored_servers' AND column_name = 'alert_delivery_mode_override'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'analysis_state')";
+
+    /// <summary>The store schema version this viewer build requires — the highest migration it knows
+    /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
+    public static int RequiredStoreSchemaVersion => StorageVersion.SchemaVersion;
+
+    /// <summary>
+    /// Reads the store's effective schema version via <see cref="StoreSchemaProbeSql"/>. Returns null when it
+    /// can't be determined (any non-cancellation error — an unreachable store, an <c>information_schema</c>
+    /// quirk) so the connect-time gate FAILS OPEN: a possibly-healthy store is never blocked by a probe
+    /// hiccup. A truly-down store is caught first by <see cref="EnsureStoreReachableAsync"/> (finding B3), and
+    /// the executor 42703/42P01 translation (finding B2) is the write-path backstop.
+    /// </summary>
+    public async Task<int?> GetStoreSchemaVersionAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var command = _dataSource.CreateCommand(StoreSchemaProbeSql);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2));
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Maps the three <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest
+    /// present wins: <paramref name="hasAnalysisState"/> (V19) → 19, else
+    /// <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else <paramref name="hasConfigControlPlane"/>
+    /// (V17) → 17, else 16 — the "older than the V17 config control plane" floor (the exact pre-17 version
+    /// isn't probed, but it is below what the viewer needs). Pure, so it is unit-tested without a live store;
+    /// a schema bump past 19 trips the pinning test that keeps this in step with
+    /// <see cref="StorageVersion.SchemaVersion"/>.
+    /// </summary>
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState)
+    {
+        if (hasAnalysisState)
+        {
+            return 19;
+        }
+
+        if (hasAlertDeliveryOverride)
+        {
+            return 18;
+        }
+
+        if (hasConfigControlPlane)
+        {
+            return 17;
+        }
+
+        return 16;
     }
 
     /// <summary>All registered servers, ordered as the server list displays them.</summary>
