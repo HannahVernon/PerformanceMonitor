@@ -1002,6 +1002,26 @@ public partial class MainWindow : Window
         about.ShowDialog();
     }
 
+    /// <summary>
+    /// Brings the viewer window to the foreground when a second launch is folded into this instance (the
+    /// shared single-instance surface path). Restores a minimized window to Maximized — the viewer's startup
+    /// state — and activates it through WPF's own Show()/Activate() path. The viewer has no tray, so there is
+    /// no hidden-Visibility state to reconcile.
+    /// </summary>
+    public void SurfaceWindow()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Maximized;
+        }
+
+        Show();
+        Activate();
+        /* Nudge to the top without pinning topmost. */
+        Topmost = true;
+        Topmost = false;
+    }
+
     private void ShowMessage(string message)
     {
         MessageText.Text = message;
