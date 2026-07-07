@@ -317,6 +317,10 @@ public partial class CollectorScheduleEditorWindow : Window
         {
             MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         catch (Exception ex)
         {
             MessageBox.Show($"Could not save the collector schedules:\n\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);

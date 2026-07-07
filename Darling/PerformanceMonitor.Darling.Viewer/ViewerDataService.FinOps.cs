@@ -126,12 +126,26 @@ public sealed class DatabaseResourceUsageRow
     public decimal PctIoShare { get; set; }
 }
 
-/// <summary>Per-application connection counts (Application Connections sub-tab). Timestamps are localized in the read.</summary>
+/// <summary>Per-application connection counts plus collected per-app resource + session-status metrics (Application Connections sub-tab). Timestamps are localized in the read.</summary>
 public sealed class ApplicationConnectionRow
 {
     public string ApplicationName { get; set; } = "";
     public int AvgConnections { get; set; }
     public int MaxConnections { get; set; }
+    public int AvgRunning { get; set; }
+    public int MaxRunning { get; set; }
+    public int AvgSleeping { get; set; }
+    public int MaxSleeping { get; set; }
+    public int AvgDormant { get; set; }
+    public int MaxDormant { get; set; }
+    public long AvgCpuTimeMs { get; set; }
+    public long MaxCpuTimeMs { get; set; }
+    public long AvgReads { get; set; }
+    public long MaxReads { get; set; }
+    public long AvgWrites { get; set; }
+    public long MaxWrites { get; set; }
+    public long AvgLogicalReads { get; set; }
+    public long MaxLogicalReads { get; set; }
     public long SampleCount { get; set; }
     public DateTime FirstSeenLocal { get; set; }
     public DateTime LastSeenLocal { get; set; }

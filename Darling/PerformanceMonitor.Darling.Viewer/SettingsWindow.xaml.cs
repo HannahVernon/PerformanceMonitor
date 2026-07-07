@@ -271,6 +271,10 @@ public partial class SettingsWindow : Window
         {
             MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         catch (Exception ex)
         {
             MessageBox.Show($"Could not reach the service: {ex.Message}", "Data Collection", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -1011,6 +1015,11 @@ public partial class SettingsWindow : Window
             catch (ViewerReadOnlyException ex)
             {
                 MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            catch (ViewerSchemaSkewException ex)
+            {
+                MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
             catch (Exception ex)

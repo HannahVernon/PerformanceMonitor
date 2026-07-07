@@ -112,6 +112,20 @@ public class ApplicationConnectionRow
     public string ApplicationName { get; set; } = "";
     public int AvgConnections { get; set; }
     public int MaxConnections { get; set; }
+    public int AvgRunning { get; set; }
+    public int MaxRunning { get; set; }
+    public int AvgSleeping { get; set; }
+    public int MaxSleeping { get; set; }
+    public int AvgDormant { get; set; }
+    public int MaxDormant { get; set; }
+    public long AvgCpuTimeMs { get; set; }
+    public long MaxCpuTimeMs { get; set; }
+    public long AvgReads { get; set; }
+    public long MaxReads { get; set; }
+    public long AvgWrites { get; set; }
+    public long MaxWrites { get; set; }
+    public long AvgLogicalReads { get; set; }
+    public long MaxLogicalReads { get; set; }
     public long SampleCount { get; set; }
     public DateTime FirstSeen { get; set; }
     public DateTime LastSeen { get; set; }

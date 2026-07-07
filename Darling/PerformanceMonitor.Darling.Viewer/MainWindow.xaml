@@ -5,6 +5,9 @@
         Title="Performance Monitor Darling"
         Width="1280"
         Height="800"
+        MinWidth="900"
+        MinHeight="600"
+        WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Icon="EDD.ico"
         Background="#22252b"
@@ -17,14 +20,15 @@
         StaticResource styles + inline hex, so they render exactly as before.
 
         Navigation mirrors Lite's shape (headless-plan W0 IA inversion): a left sidebar server list,
-        and ONE top tab strip holding the fixed aggregate tabs (Overview, Recommendations, Alerts) plus
-        dynamically-added closable per-server tabs. Overview and Alerts are top-level aggregates over
-        ALL servers (Overview is the server-cards grid; Alerts is the all-servers history, filterable by
-        server); Recommendations is server-scoped via the sidebar selection. Single-click a server drives
-        the server-scoped aggregate tabs; double-click a server row (or an Overview card) opens (or
-        focuses) that server's ViewerServerTab. The 60-second timer refreshes the visible tab (an
-        aggregate tab or the visible server tab's active inner tab); the Overview has its own faster
-        30-second timer (Lite's Overview cadence).
+        and ONE top tab strip holding the fixed aggregate tabs (Overview, Alert History, FinOps,
+        Recommendations — matching Lite's order — plus the hidden-until-used Plan Viewer) and the
+        dynamically-added closable per-server tabs. Overview and Alert History are aggregates over ALL
+        servers (Overview is the server-cards grid; Alert History is the all-servers history, filterable
+        by server); FinOps and Recommendations are server-scoped, their own pickers synced to the sidebar
+        selection. Single-click a server drives the server-scoped aggregate tabs to it; double-click a
+        server row (or an Overview card) opens (or focuses) that server's ViewerServerTab. The 60-second
+        timer refreshes the visible tab (an aggregate tab or the visible server tab's active inner tab);
+        the Overview has its own faster 30-second timer (Lite's Overview cadence).
     -->
     <Window.Resources>
         <local:StatusToBrushConverter x:Key="StatusToBrush"/>
@@ -757,16 +761,39 @@
                     </DockPanel>
                 </TabItem>
 
+                <!-- Alerts: the full all-servers Alert History surface (W2a), a copy of Lite's
+                     AlertsHistoryTab hosted as a control. All-servers by default with a Server filter,
+                     Dismiss Selected / Dismiss All, column filters, copy/export, and Mute This / Mute
+                     Similar + Manage Mute Rules (mute lives here per Erik's faithful-copy decision). It
+                     owns its own load, so it isn't scoped by the sidebar selection. Ordered right after
+                     Overview to match Lite (Overview -> Alert History -> FinOps -> Recommendations). -->
+                <TabItem x:Name="AlertsTab" Header="Alert History">
+                    <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
+                </TabItem>
+
+                <!-- FinOps: the top-level cross-server aggregate tab (restored to Lite's shape from the earlier
+                     per-server inner tab, which had duplicated the fleet-wide Server Inventory inside every
+                     server's tab). Its OWN server selector (synced to the sidebar selection on a single-click,
+                     mirroring the Recommendations tab, and independently changeable while the tab is open)
+                     drives the eleven per-server sub-tabs; Server Inventory stays cross-server and now lives
+                     ONCE here. The control owns its own load (server selector + sub-tab activation + the
+                     shell's 60-second timer). "View Plan" on its query grids raises PlanRequested, which the
+                     shell routes into the standalone Plan Viewer surface. -->
+                <TabItem x:Name="FinOpsTab" Header="FinOps">
+                    <local:FinOpsTab x:Name="FinOpsContent" Margin="0,8,0,0"/>
+                </TabItem>
+
                 <!-- Recommendations: re-skinned to Lite's advise-only card design (W2b). Its OWN server
-                     selector (independent of the sidebar), a Refresh button, and a status line that
+                     selector (synced to the sidebar selection on a single-click, independently changeable), a Refresh button, and a status line that
                      shows the last analysis time; then a scrollable list of collapsible Expander
                      sections grouped by incident, each holding severity-banded cards (badge + [db] +
                      title + advice + Open in Active Queries + Copy fix + Ask AI). Advise-only: no Apply, and (per the re-skin
                      brief) no mute — mute lives on the Alert History surface. Card templates copy Lite's
                      RecommendationsTab.xaml and resolve their {DynamicResource} theme keys from the
-                     app-merged Dark theme. NO "Generate now": the Darling service runs analysis on its
-                     30-minute cadence, so the viewer cannot trigger it — the status line surfaces the
-                     last analysis time instead. NOT on the 60-second timer (tab-activation refresh only,
+                     app-merged Dark theme. "Generate now" asks the Darling service to run an immediate
+                     analysis pass for the selected server (analyze_now) and then refreshes; the status line
+                     also surfaces the last analysis time. A read-only seat can't command the service, so the
+                     button is disabled. NOT on the 60-second timer (tab-activation refresh only,
                      matching Lite). -->
                 <TabItem x:Name="RecommendationsTab" Header="Recommendations">
                     <TabItem.Resources>
@@ -915,27 +942,6 @@
                                        Text="Loading recommendations…"/>
                         </Grid>
                     </Grid>
-                </TabItem>
-
-                <!-- Alerts: the full all-servers Alert History surface (W2a), a copy of Lite's
-                     AlertsHistoryTab hosted as a control. All-servers by default with a Server filter,
-                     Dismiss Selected / Dismiss All, column filters, copy/export, and Mute This / Mute
-                     Similar + Manage Mute Rules (mute lives here per Erik's faithful-copy decision). It
-                     owns its own load, so it isn't scoped by the sidebar selection. -->
-                <TabItem x:Name="AlertsTab" Header="Alerts">
-                    <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
-                </TabItem>
-
-                <!-- FinOps: the top-level cross-server aggregate tab (restored to Lite's shape from the earlier
-                     per-server inner tab, which had duplicated the fleet-wide Server Inventory inside every
-                     server's tab). Its OWN server selector (independent of the sidebar, mirroring the
-                     Recommendations tab) drives the eleven per-server sub-tabs; Server Inventory stays
-                     cross-server and now lives ONCE here. The control owns its own load (server selector +
-                     sub-tab activation + the shell's 60-second timer), so it isn't scoped by the sidebar
-                     selection. "View Plan" on its query grids raises PlanRequested, which the shell routes into
-                     the standalone Plan Viewer surface. -->
-                <TabItem x:Name="FinOpsTab" Header="FinOps">
-                    <local:FinOpsTab x:Name="FinOpsContent" Margin="0,8,0,0"/>
                 </TabItem>
 
                 <!-- Plan Viewer: a standalone, hidden-until-used aggregate tab (mirrors Lite's

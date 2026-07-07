@@ -90,11 +90,35 @@ public sealed class ViewerFinOpsSqlTests
         Assert.Contains("FROM v_session_stats", sql, StringComparison.Ordinal);
         Assert.Contains("GROUP BY program_name", sql, StringComparison.Ordinal);
 
+        /* The read surfaces the collected per-app resource + session-status metrics (DC-F1), not just
+           connection counts. Every source column it aggregates must exist in the generated session table. */
+        var sourceColumns = new[]
+        {
+            "program_name", "connection_count", "running_count", "sleeping_count", "dormant_count",
+            "total_cpu_time_ms", "total_reads", "total_writes", "total_logical_reads"
+        };
+
         var ddl = PgSchemaGenerator.CreateTable(SessionStatsCollector.Instance);
         Assert.Equal("session_stats", SessionStatsCollector.Instance.TargetTable);
-        foreach (var col in new[] { "program_name", "connection_count" })
+        foreach (var col in sourceColumns)
         {
+            Assert.Contains(col, sql, StringComparison.Ordinal);
             Assert.Contains(col, ddl, StringComparison.Ordinal);
+        }
+
+        /* AVG + MAX aggregates for each metric family are all present. */
+        foreach (var agg in new[]
+                 {
+                     "AVG(running_count)", "MAX(running_count)",
+                     "AVG(sleeping_count)", "MAX(sleeping_count)",
+                     "AVG(dormant_count)", "MAX(dormant_count)",
+                     "AVG(total_cpu_time_ms)", "MAX(total_cpu_time_ms)",
+                     "AVG(total_reads)", "MAX(total_reads)",
+                     "AVG(total_writes)", "MAX(total_writes)",
+                     "AVG(total_logical_reads)", "MAX(total_logical_reads)"
+                 })
+        {
+            Assert.Contains(agg, sql, StringComparison.Ordinal);
         }
     }
 
