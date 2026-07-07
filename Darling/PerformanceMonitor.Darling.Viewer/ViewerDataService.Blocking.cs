@@ -83,6 +83,11 @@ public sealed class ViewerBlockedProcessRow : BlockedProcessAlertRow
     public string? BlockingQueryPlanXml { get; set; }
     public bool HasBlockedQueryPlan => !string.IsNullOrEmpty(BlockedQueryPlanXml);
     public bool HasBlockingQueryPlan => !string.IsNullOrEmpty(BlockingQueryPlanXml);
+
+    /// <summary>True when this row carries the blocked-process-report XML (the XE rows; the DMV-snapshot fallback
+    /// rows have none). The report XML's executionStack frames carry the sql_handle the "Fetch Live Plan" items
+    /// key on, so those items are gated on this — a DMV-snapshot row shows them disabled.</summary>
+    public bool HasReportXml => !string.IsNullOrEmpty(BlockedProcessReportXml);
 }
 
 public sealed partial class ViewerDataService

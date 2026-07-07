@@ -272,6 +272,19 @@ WHERE status = 'in_progress'
             case CommandKind.Analyze:
                 return await _host.AnalyzeNowAsync(command.TargetServerId!.Value, cancellationToken);
 
+            case CommandKind.FetchPlan:
+            {
+                /* Re-parse args_json here (the pure dispatch already validated it parses) so the host receives
+                   the structured request — mirrors the Probe branch re-deriving its MonitoredServer. */
+                if (!PlanFetchRequest.TryParse(command.ArgsJson, out var fetchRequest))
+                {
+                    return new CommandOutcome(false, "invalid args_json",
+                        ErrorJson("fetch_plan args_json did not carry a plan_handle or sql_handle"));
+                }
+
+                return await _host.FetchPlanAsync(command.TargetServerId!.Value, fetchRequest, cancellationToken);
+            }
+
             default:
                 return new CommandOutcome(false, "unknown command_type", ErrorJson("unknown command_type"));
         }
@@ -332,6 +345,18 @@ WHERE status = 'in_progress'
                 return command.TargetServerId is int
                     ? new CommandPlan(CommandKind.Analyze, null, null, "analysis complete", null)
                     : Fail("analyze_now requires target_server_id");
+
+            case "fetch_plan":
+                /* Worker-delegated like snapshot_now (needs the target's LIVE runtime connection to read its
+                   plan cache). Requires a target server AND args_json carrying a plan_handle or sql_handle. */
+                if (command.TargetServerId is null)
+                {
+                    return Fail("fetch_plan requires target_server_id");
+                }
+
+                return PlanFetchRequest.TryParse(command.ArgsJson, out _)
+                    ? new CommandPlan(CommandKind.FetchPlan, null, null, "plan fetched", null)
+                    : Fail("fetch_plan requires args_json with a plan_handle or sql_handle");
 
             default:
                 return Fail("unknown command_type");
@@ -521,6 +546,9 @@ public enum CommandKind
     /// <summary><c>analyze_now</c>: force an immediate analysis pass for a server now (via the host).</summary>
     Analyze,
 
+    /// <summary><c>fetch_plan</c>: read a plan from a server's LIVE plan cache by plan_handle or sql_handle (via the host).</summary>
+    FetchPlan,
+
     /// <summary>Bad arguments or an unknown command_type — report failed without touching the store.</summary>
     Fail,
 }
@@ -539,4 +567,12 @@ public interface IDarlingCommandHost
     Task<CommandOutcome> SnapshotNowAsync(int serverId, CancellationToken cancellationToken);
 
     Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <c>fetch_plan</c>: read an execution plan from the target server's LIVE plan cache (by plan_handle or by
+    /// sql_handle + offsets — see <see cref="PlanFetchRequest"/>) on the server's runtime connection, and return
+    /// the plan XML (or a "not in cache" / "not connected" outcome). Read-only, like the other worker-delegated
+    /// commands but reaching the target SQL Server rather than the store.
+    /// </summary>
+    Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken);
 }

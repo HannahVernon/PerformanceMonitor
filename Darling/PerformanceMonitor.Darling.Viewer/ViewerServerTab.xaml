@@ -147,6 +147,17 @@
                       IsEnabled="{Binding PlacementTarget.DataContext.HasBlockingQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
             </MenuItem>
+            <!-- Live plan fetch (headless-plan live-plan wave): asks the service to read the process's plan from
+                 the target's LIVE cache by the sql_handle in its report XML — works for a process whose plan the
+                 collector never stashed. Gated on HasReportXml so a DMV-snapshot fallback row (no XML) disables it. -->
+            <MenuItem Header="Fetch Blocked Live Plan" Click="FetchBlockedSideLivePlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasReportXml, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Fetch Blocking Live Plan" Click="FetchBlockingSideLivePlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasReportXml, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
+            </MenuItem>
             <MenuItem Header="View Block Chain" Click="ViewBlockChain_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F517;"/></MenuItem.Icon>
             </MenuItem>
@@ -173,6 +184,12 @@
             <MenuItem Header="View Victim Plan" Click="ViewVictimQueryPlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasVictimQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
+            <!-- Live plan fetch for ANY process in the graph (headless-plan live-plan wave): asks the service to
+                 read the right-clicked process's plan from the target's LIVE cache by the sql_handle in the
+                 deadlock graph — not limited to the single best-effort victim plan the collector stashed. -->
+            <MenuItem Header="Fetch Live Plan (This Process)" Click="FetchDeadlockProcessLivePlan_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
             <MenuItem Header="View Deadlock Graph" Click="ViewDeadlockGraph_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F578;"/></MenuItem.Icon>
@@ -251,6 +268,13 @@
             <Separator/>
             <MenuItem Header="View Plan" Click="ViewPlan_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
+            <!-- Live plan fetch (headless-plan live-plan wave): asks the service to read the plan CURRENTLY in
+                 the target's cache by this row's plan_handle — distinct from the stored plan "View Plan" opens.
+                 Gated on HasLivePlanHandle so rows without a plan_handle (Query Store / Expensive Queries) disable it. -->
+            <MenuItem Header="Fetch Live Plan" Click="FetchLiveQueryPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.HasLivePlanHandle, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
         </ContextMenu>
 

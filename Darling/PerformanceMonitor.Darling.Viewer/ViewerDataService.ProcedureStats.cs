@@ -56,6 +56,9 @@ public sealed class ViewerProcedureStatsRow
     /// <summary>Whether the collector stored an execution plan for this object in the window — gates the
     /// grid's per-row "Query Plan" Download button (mirrors Lite's Top Procedures HasQueryPlan gating).</summary>
     public bool HasQueryPlan { get; set; }
+
+    /// <summary>True when this row carries a plan_handle — gates the grid's "Fetch Live Plan" context item.</summary>
+    public bool HasLivePlanHandle => !string.IsNullOrEmpty(PlanHandle);
     public string FullName => string.IsNullOrEmpty(SchemaName) ? ObjectName : $"{SchemaName}.{ObjectName}";
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;

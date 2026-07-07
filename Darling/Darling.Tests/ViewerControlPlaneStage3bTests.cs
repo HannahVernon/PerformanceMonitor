@@ -376,6 +376,21 @@ public sealed class ViewerControlCommandParityTests
         Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command(ViewerDataService.CommandSnapshotNow)).Kind);
         Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command(ViewerDataService.CommandAnalyzeNow)).Kind);
     }
+
+    [Fact]
+    public void FetchPlan_IsRecognized_WithATargetAndAViewerBuiltHandleArgs()
+    {
+        Assert.Equal("fetch_plan", ViewerDataService.CommandFetchPlan);
+
+        /* The viewer builds the args; the executor must recognize them as a live-plan fetch. */
+        var args = ViewerDataService.BuildPlanFetchArgsByPlanHandle("0x0600AA", "master");
+        var command = new ClaimedCommand(1, ViewerDataService.CommandFetchPlan, 5, args, "viewer");
+        Assert.Equal(CommandKind.FetchPlan, DarlingCommandExecutor.ResolvePlan(command).Kind);
+
+        /* Without a target it fails — the viewer only ever sends it with a server id. */
+        Assert.Equal(CommandKind.Fail,
+            DarlingCommandExecutor.ResolvePlan(new ClaimedCommand(1, ViewerDataService.CommandFetchPlan, null, args, "viewer")).Kind);
+    }
 }
 
 /// <summary>The one-time operational migrate-in: the defaults-only import decision + the projection, with no
