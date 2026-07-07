@@ -341,7 +341,7 @@ public sealed class ViewerReadOnlyTests
 public sealed class ViewerSchemaVersionGateTests
 {
     [Fact]
-    public void StoreSchemaProbeSql_ProbesInformationSchema_ForTheV17ToV19Sentinels()
+    public void StoreSchemaProbeSql_ProbesInformationSchema_ForTheV17ToV20Sentinels()
     {
         var sql = ViewerDataService.StoreSchemaProbeSql;
 
@@ -350,22 +350,25 @@ public sealed class ViewerSchemaVersionGateTests
         Assert.Contains("information_schema.columns", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("darling_schema_version", sql, StringComparison.Ordinal);
 
-        /* The three version sentinels: V17 config control plane, V18 delivery-override column, V19 marker. */
+        /* The four version sentinels: V17 config control plane, V18 delivery-override column, V19 marker, V20 tuning knobs. */
         Assert.Contains("config_monitored_servers", sql, StringComparison.Ordinal);
         Assert.Contains("alert_delivery_mode_override", sql, StringComparison.Ordinal);
         Assert.Contains("analysis_state", sql, StringComparison.Ordinal);
+        Assert.Contains("config_alert_settings", sql, StringComparison.Ordinal);
+        Assert.Contains("notify_connection_changes", sql, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(true, true, true, 19)]   // fully migrated
-    [InlineData(true, true, false, 18)]  // pre-V19: no analysis_state
-    [InlineData(true, false, false, 17)] // pre-V18: no delivery-override column
-    [InlineData(false, false, false, 16)] // pre-V17: no config control plane at all
+    [InlineData(true, true, true, true, 20)]    // fully migrated (V20 alert-tuning knobs)
+    [InlineData(true, true, true, false, 19)]   // pre-V20: no alert-tuning knobs
+    [InlineData(true, true, false, false, 18)]  // pre-V19: no analysis_state
+    [InlineData(true, false, false, false, 17)] // pre-V18: no delivery-override column
+    [InlineData(false, false, false, false, 16)] // pre-V17: no config control plane at all
     public void MapProbedSchemaVersion_TakesTheHighestSatisfiedSentinel(
-        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, int expected)
+        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, int expected)
     {
         Assert.Equal(expected, ViewerDataService.MapProbedSchemaVersion(
-            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState));
+            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState, hasAlertTuningKnobs));
     }
 
     [Fact]
@@ -375,11 +378,11 @@ public sealed class ViewerSchemaVersionGateTests
         Assert.Equal(StorageVersion.SchemaVersion, ViewerDataService.RequiredStoreSchemaVersion);
 
         /* Pin: a fully-migrated store (all sentinels present) must map to exactly the required version. If a
-           future migration bumps StorageVersion past 19, this fails until a matching sentinel + map arm is
+           future migration bumps StorageVersion past 20, this fails until a matching sentinel + map arm is
            added — the guard against the probe silently under-reporting a newer store as skewed. */
         Assert.Equal(
             ViewerDataService.RequiredStoreSchemaVersion,
-            ViewerDataService.MapProbedSchemaVersion(true, true, true));
+            ViewerDataService.MapProbedSchemaVersion(true, true, true, true));
     }
 }
 
