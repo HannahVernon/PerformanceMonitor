@@ -764,9 +764,10 @@
                      title + advice + Open in Active Queries + Copy fix + Ask AI). Advise-only: no Apply, and (per the re-skin
                      brief) no mute — mute lives on the Alert History surface. Card templates copy Lite's
                      RecommendationsTab.xaml and resolve their {DynamicResource} theme keys from the
-                     app-merged Dark theme. NO "Generate now": the Darling service runs analysis on its
-                     30-minute cadence, so the viewer cannot trigger it — the status line surfaces the
-                     last analysis time instead. NOT on the 60-second timer (tab-activation refresh only,
+                     app-merged Dark theme. "Generate now" asks the Darling service to run an immediate
+                     analysis pass for the selected server (analyze_now) and then refreshes; the status line
+                     also surfaces the last analysis time. A read-only seat can't command the service, so the
+                     button is disabled. NOT on the 60-second timer (tab-activation refresh only,
                      matching Lite). -->
                 <TabItem x:Name="RecommendationsTab" Header="Recommendations">
                     <TabItem.Resources>
@@ -928,12 +929,12 @@
 
                 <!-- FinOps: the top-level cross-server aggregate tab (restored to Lite's shape from the earlier
                      per-server inner tab, which had duplicated the fleet-wide Server Inventory inside every
-                     server's tab). Its OWN server selector (independent of the sidebar, mirroring the
-                     Recommendations tab) drives the eleven per-server sub-tabs; Server Inventory stays
-                     cross-server and now lives ONCE here. The control owns its own load (server selector +
-                     sub-tab activation + the shell's 60-second timer), so it isn't scoped by the sidebar
-                     selection. "View Plan" on its query grids raises PlanRequested, which the shell routes into
-                     the standalone Plan Viewer surface. -->
+                     server's tab). Its OWN server selector (synced to the sidebar selection on a single-click,
+                     mirroring the Recommendations tab, and independently changeable while the tab is open)
+                     drives the eleven per-server sub-tabs; Server Inventory stays cross-server and now lives
+                     ONCE here. The control owns its own load (server selector + sub-tab activation + the
+                     shell's 60-second timer). "View Plan" on its query grids raises PlanRequested, which the
+                     shell routes into the standalone Plan Viewer surface. -->
                 <TabItem x:Name="FinOpsTab" Header="FinOps">
                     <local:FinOpsTab x:Name="FinOpsContent" Margin="0,8,0,0"/>
                 </TabItem>

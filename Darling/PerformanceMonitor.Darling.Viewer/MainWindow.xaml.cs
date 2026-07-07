@@ -24,9 +24,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <summary>
 /// The Darling viewer shell (headless plan M3 + viewer waves 2-4, W0 IA inversion): the server list
 /// from the central store on the left, and — mirroring Lite's navigation shape — ONE top tab strip on
-/// the right holding the fixed aggregate tabs (Recommendations and Alerts, server-scoped via the
-/// sidebar selection) plus dynamically-added, closable per-server tabs. Single-clicking a server
-/// drives the aggregate tabs; double-clicking opens (or focuses) that server's <see cref="ViewerServerTab"/>,
+/// the right holding the fixed aggregate tabs (Overview and the all-servers Alert History span every
+/// server; Recommendations and FinOps are server-scoped, their own pickers synced to the sidebar
+/// selection) plus dynamically-added, closable per-server tabs. Single-clicking a server drives the
+/// server-scoped aggregate tabs to it; double-clicking opens (or focuses) that server's
+/// <see cref="ViewerServerTab"/>,
 /// whose inner tabs (Overview charts, Queries, Blocking, Collection Health) hold the per-server surfaces.
 /// All reads go straight to Postgres via <see cref="ViewerDataService"/>. Loads are lazy per visible
 /// tab (Lite's visible-only rule): the 60-second timer refreshes only the visible tab — an aggregate
@@ -280,9 +282,46 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Single-click drives the aggregate tabs (Recommendations/Alerts) for the selected server.</summary>
+    /// <summary>
+    /// Single-clicking a sidebar server drives the server-scoped aggregate tabs to it: it syncs the
+    /// Recommendations and FinOps server pickers to the selected server (each remains independently
+    /// changeable) so the tabs show the sidebar server instead of whatever the dropdowns last held, then
+    /// reloads the visible tab. The two syncs suppress their own SelectionChanged, so the visible tab is
+    /// loaded exactly once here by <see cref="RefreshVisibleAsync"/>.
+    /// </summary>
     private async void ServerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        => await RefreshVisibleAsync();
+    {
+        if (ServerList.SelectedItem is DarlingServer server)
+        {
+            SyncAggregateServerSelectors(server);
+        }
+
+        await RefreshVisibleAsync();
+    }
+
+    /// <summary>
+    /// Points the Recommendations and FinOps tabs' own server pickers at the sidebar-selected server so the
+    /// two server-scoped aggregate tabs track the sidebar. Both selections are set under a suppression guard
+    /// (the Recommendations combo via <see cref="_populatingRecoServers"/>, FinOps inside
+    /// <see cref="FinOpsTab.SelectServer"/>), so neither fires a redundant refresh — the caller reloads the
+    /// visible tab once. The lists are populated from the same managed-server set as the sidebar, so a
+    /// selected server is present in both (matched by id).
+    /// </summary>
+    private void SyncAggregateServerSelectors(DarlingServer server)
+    {
+        if (RecommendationsServerSelector.ItemsSource is IEnumerable<DarlingServer> recoServers)
+        {
+            var match = recoServers.FirstOrDefault(s => s.ServerId == server.ServerId);
+            if (match is not null && !ReferenceEquals(RecommendationsServerSelector.SelectedItem, match))
+            {
+                _populatingRecoServers = true;
+                RecommendationsServerSelector.SelectedItem = match;
+                _populatingRecoServers = false;
+            }
+        }
+
+        FinOpsContent.SelectServer(server.ServerId);
+    }
 
     /// <summary>Double-click opens (or focuses) the selected server's per-server tab (Lite's rule).</summary>
     private void ServerList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -326,10 +365,11 @@ public partial class MainWindow : Window
             ServerList.ItemsSource = servers;
             ServerCountText.Text = $"Servers: {servers.Count}";
 
-            /* The Recommendations tab has its OWN server selector (independent of the sidebar, matching
-               Lite). Populate it from the same list; the guard suppresses its SelectionChanged during
-               this initial population so the first load comes from the sidebar-driven RefreshVisibleAsync
-               below (which reads the now-populated combo). */
+            /* The Recommendations tab has its OWN server selector, synced to the sidebar selection on a
+               single-click (SyncAggregateServerSelectors) yet independently changeable while the tab is open.
+               Populate it from the same list; the guard suppresses its SelectionChanged during this initial
+               population so the first load comes from the sidebar-driven RefreshVisibleAsync below (which
+               reads the now-populated combo). */
             _populatingRecoServers = true;
             RecommendationsServerSelector.ItemsSource = servers;
             if (servers.Count > 0)
