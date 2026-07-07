@@ -626,7 +626,7 @@
                      selector (independent of the sidebar), a Refresh button, and a status line that
                      shows the last analysis time; then a scrollable list of collapsible Expander
                      sections grouped by incident, each holding severity-banded cards (badge + [db] +
-                     title + advice + Copy fix + Ask AI). Advise-only: no Apply, and (per the re-skin
+                     title + advice + Open in Active Queries + Copy fix + Ask AI). Advise-only: no Apply, and (per the re-skin
                      brief) no mute — mute lives on the Alert History surface. Card templates copy Lite's
                      RecommendationsTab.xaml and resolve their {DynamicResource} theme keys from the
                      app-merged Dark theme. NO "Generate now": the Darling service runs analysis on its
@@ -638,8 +638,9 @@
                         <BooleanToVisibilityConverter x:Key="RecoBoolToVis"/>
 
                         <!-- One card: severity badge + [database] + title + advice, then advise-only
-                             affordances (Copy fix when derivable + Ask AI). Copied from Lite's
-                             LiteRecommendationCardTemplate. -->
+                             affordances (Open in Active Queries for incidents + Copy fix when derivable +
+                             Ask AI). Copied from Lite's LiteRecommendationCardTemplate; the Open-in-Active-
+                             Queries deep-link is the Dashboard incident affordance ported to the viewer. -->
                         <DataTemplate x:Key="RecoCardTemplate">
                             <Border Background="{DynamicResource BackgroundLightBrush}"
                                     BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
@@ -677,8 +678,13 @@
                                                Visibility="{Binding HasAdvice, Converter={StaticResource RecoBoolToVis}}"
                                                Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
 
-                                    <!-- Affordances (advise-only): Copy fix (when derivable) + Ask AI. -->
+                                    <!-- Affordances (advise-only): Open in Active Queries (incidents), Copy
+                                         fix (when derivable), Ask AI. -->
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                        <Button Content="Open in Active Queries" Padding="10,3" Margin="0,0,8,0"
+                                                Visibility="{Binding ShowOpenInActiveQueries, Converter={StaticResource RecoBoolToVis}}"
+                                                Click="OpenInActiveQueries_Click"
+                                                ToolTip="Open this server's Active Queries scoped to the finding's time window"/>
                                         <Button Content="Copy fix" Padding="10,3" Margin="0,0,8,0"
                                                 Visibility="{Binding ShowCopyFix, Converter={StaticResource RecoBoolToVis}}"
                                                 Click="CopyFix_Click"
