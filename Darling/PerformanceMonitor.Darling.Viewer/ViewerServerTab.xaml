@@ -2616,7 +2616,21 @@
              log file, which the viewer has no equivalent of). -->
         <TabItem Header="Collection Health">
             <Grid Margin="8">
-                <TabControl Background="Transparent" BorderThickness="0" ItemContainerStyle="{DynamicResource SubTabItemStyle}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <!-- Fleet-wide "Purge Now": runs the daily retention purge on demand via the purge_now
+                     control command. Placed on Collection Health (the store-health tab) rather than a
+                     per-server toolbar because the purge is fleet-wide over the shared store tables. A
+                     read-only viewer seat can't enqueue commands, so the handler shows an explanation. -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                    <Button x:Name="PurgeNowButton" Content="Purge Now..." Click="PurgeNow_Click"
+                            Padding="12,4" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="PurgeNowIndicator" Text="" FontSize="12"
+                               Foreground="DarkGoldenrod" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                </StackPanel>
+                <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0" ItemContainerStyle="{DynamicResource SubTabItemStyle}">
                     <TabItem Header="Health Summary">
                         <DataGrid x:Name="CollectionHealthGrid" Style="{StaticResource DarkGrid}"
                                   MouseDoubleClick="CollectionHealthGrid_MouseDoubleClick">

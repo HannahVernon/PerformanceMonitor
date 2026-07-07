@@ -36,6 +36,15 @@ public sealed class DarlingRetentionTests
     private const int TestServerId = -616161;
 
     [Fact]
+    public void PurgeSummary_TotalPurged_SumsDeletedRowsAndDroppedChunks()
+    {
+        /* The single headline count the daily log + the purge_now result_json ("rowsPurged") report. */
+        var summary = new PurgeSummary(TablesPurged: 31, RowsDeleted: 1200, ChunksDropped: 42);
+        Assert.Equal(1242, summary.TotalPurged);
+        Assert.Equal(0, new PurgeSummary(0, 0, 0).TotalPurged);
+    }
+
+    [Fact]
     public void EveryCatalogCollector_HasAPositiveSharedRetention()
     {
         foreach (var definition in CollectorCatalog.All)
@@ -141,8 +150,8 @@ public sealed class DarlingRetentionTests
                extension-free DELETE path on purpose (timescaleAvailable: false) — it must keep
                working even on a store whose tables ARE hypertables (DELETE is
                hypertable-agnostic); the drop_chunks branch is TimescaleSupportTests' job. */
-            var deleted = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
-            Assert.True(deleted >= 2, $"expected the purge to delete at least the two expired test rows, got {deleted}");
+            var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
+            Assert.True(summary.TotalPurged >= 2, $"expected the purge to delete at least the two expired test rows, got {summary.TotalPurged}");
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))

@@ -194,8 +194,8 @@ public sealed class TimescaleSupportTests
             /* The Timescale purge: at least the old wait_stats chunk drops and the old
                collection_log row DELETEs (the return mixes rows + chunks — a coarse activity
                count, see PurgeAsync remarks). */
-            var purged = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, null, ct);
-            Assert.True(purged >= 2, $"expected at least one dropped chunk and one deleted log row, got {purged}");
+            var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, null, ct);
+            Assert.True(summary.TotalPurged >= 2, $"expected at least one dropped chunk and one deleted log row, got {summary.TotalPurged}");
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))

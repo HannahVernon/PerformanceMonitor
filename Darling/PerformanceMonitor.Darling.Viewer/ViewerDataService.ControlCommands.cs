@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,7 +17,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// The viewer's typed wrappers over the Stage-2 command plane (<see cref="EnqueueCommandAsync"/> /
 /// <see cref="RunCommandAsync"/>) for the operator's imperative actions: <c>pause</c>/<c>resume</c> the whole
 /// service (the Settings window's Data Collection toggle), <c>snapshot_now</c> for one server (the "Latest
-/// Snapshot" button), and <c>analyze_now</c> for one server (the Recommendations "Generate now" button). The
+/// Snapshot" button), <c>analyze_now</c> for one server (the Recommendations "Generate now" button), and
+/// <c>purge_now</c> fleet-wide (the Collection Health "Purge Now" button). The
 /// command TYPES match <c>DarlingCommandExecutor.ResolvePlan</c> exactly so the two ends agree; Darling.Tests
 /// pin the constants against the executor's cases.
 ///
@@ -30,11 +32,12 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public sealed partial class ViewerDataService
 {
-    /// <summary>The four control-command types the viewer enqueues (must match the service executor's cases).</summary>
+    /// <summary>The control-command types the viewer enqueues (must match the service executor's cases).</summary>
     public const string CommandPause = "pause";
     public const string CommandResume = "resume";
     public const string CommandSnapshotNow = "snapshot_now";
     public const string CommandAnalyzeNow = "analyze_now";
+    public const string CommandPurgeNow = "purge_now";
 
     /// <summary>A full-server snapshot or analysis pass can take longer than a config write's <see
     /// cref="DefaultCommandTimeout"/>, so the imperative per-server commands wait up to three minutes for the
@@ -59,6 +62,24 @@ public sealed partial class ViewerDataService
     /// terminal result. Returns null on timeout.</summary>
     public Task<CommandResult?> RequestAnalyzeNowAsync(int serverId, CancellationToken cancellationToken = default) =>
         RunCommandAsync(CommandAnalyzeNow, serverId, argsJson: null, RequestedBy(), ImperativeCommandTimeout, cancellationToken);
+
+    /// <summary>Enqueues a <c>purge_now</c> (run the retention purge over the shared store now) and waits for
+    /// the terminal result. Fleet-wide over the shared tables, so NO server id. <paramref
+    /// name="customRetentionDays"/> (when set) purges every collector to that horizon instead of the configured
+    /// fleet retention; null = the configured horizons. Returns null on timeout. Read-only seats throw
+    /// <see cref="ViewerReadOnlyException"/> (a purge is a config-write command, like Pause).</summary>
+    public Task<CommandResult?> RequestPurgeNowAsync(int? customRetentionDays = null, CancellationToken cancellationToken = default)
+    {
+        var argsJson = customRetentionDays is int days ? BuildPurgeNowArgs(days) : null;
+        return RunCommandAsync(CommandPurgeNow, targetServerId: null, argsJson, RequestedBy(), ImperativeCommandTimeout, cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds the <c>purge_now</c> <c>args_json</c> carrying a custom retention horizon; the service executor
+    /// reads the <c>retention_days</c> key, so the two ends must agree on it. Pure; pinned by Darling.Tests.
+    /// </summary>
+    public static string BuildPurgeNowArgs(int customRetentionDays) =>
+        JsonSerializer.Serialize(new { retention_days = customRetentionDays });
 
     /// <summary>The audit label stamped on <c>config_command.requested_by</c> — the interactive user + a viewer tag.</summary>
     private static string RequestedBy()

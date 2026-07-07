@@ -378,6 +378,17 @@ public sealed class ViewerControlCommandParityTests
     }
 
     [Fact]
+    public void PurgeNow_IsRecognizedFleetWide_WithNoTargetRequired()
+    {
+        Assert.Equal("purge_now", ViewerDataService.CommandPurgeNow);
+
+        /* Fleet-wide over the shared tables — resolves to Purge with NO target (unlike snapshot_now/analyze_now,
+           which the viewer only ever sends with a server id). */
+        Assert.Equal(CommandKind.Purge, DarlingCommandExecutor.ResolvePlan(Command(ViewerDataService.CommandPurgeNow)).Kind);
+        Assert.Equal(CommandKind.Purge, DarlingCommandExecutor.ResolvePlan(Command(ViewerDataService.CommandPurgeNow, target: 1)).Kind);
+    }
+
+    [Fact]
     public void FetchPlan_IsRecognized_WithATargetAndAViewerBuiltHandleArgs()
     {
         Assert.Equal("fetch_plan", ViewerDataService.CommandFetchPlan);

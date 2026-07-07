@@ -272,6 +272,27 @@ public sealed class DarlingObservabilityTests
             v2, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Win 1: the reload sync mirrors BOTH the enable flag and the FinOps cost from the desired config onto the
+    /// observed registry, and fires when EITHER drifts — so a cost-only edit reaches collect.servers (which
+    /// FinOps reads) without a disconnect+reconnect. Pure SQL-shape pin (no store).
+    /// </summary>
+    [Fact]
+    public void SyncEnabledStatesSql_MirrorsEnabledAndCost_FiringOnEitherDelta()
+    {
+        var sql = DarlingObservability.SyncEnabledStatesSql;
+
+        /* Both the enable flag and the FinOps cost are mirrored desired -> observed. */
+        Assert.Contains("is_enabled = c.is_enabled", sql, StringComparison.Ordinal);
+        Assert.Contains("monthly_cost_usd = c.monthly_cost_usd", sql, StringComparison.Ordinal);
+
+        /* The WHERE fires when EITHER field drifts (so a cost-only edit is carried too), each via a NULL-safe
+           IS DISTINCT FROM (a pre-cost observed row still takes the config value). */
+        Assert.Contains("s.is_enabled IS DISTINCT FROM c.is_enabled", sql, StringComparison.Ordinal);
+        Assert.Contains("s.monthly_cost_usd IS DISTINCT FROM c.monthly_cost_usd", sql, StringComparison.Ordinal);
+        Assert.Contains(" OR ", sql, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task EndToEnd_UpsertServerAndLogCollection_AgainstDevPostgres()
     {
@@ -390,6 +411,39 @@ public sealed class DarlingObservabilityTests
     }
 
     [Fact]
+    public async Task SyncServerEnabledStates_MirrorsCostOnlyDelta_OntoObservedRegistry_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the cost-sync test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteTestRowsAsync(connection);
+
+        /* Desired cost 500, SAME enable state (TRUE) as observed — a COST-ONLY delta (the case Win 1 fixes:
+           before, the sync's WHERE only fired on an is_enabled delta, so a cost-only edit never reached the
+           observed row unless the server reconnected). Observed starts at 0. */
+        await ExecAsync(connection,
+            "INSERT INTO config.config_monitored_servers (server_id, name, host, is_enabled, monthly_cost_usd) VALUES ($1, 'cost-test', 'cost-host', TRUE, 500)");
+        await ExecAsync(connection,
+            "INSERT INTO collect.servers (server_id, server_name, is_enabled, monthly_cost_usd, created_date, modified_date) VALUES ($1, 'cost-host', TRUE, 0, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')");
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+
+        await DarlingObservability.SyncServerEnabledStatesAsync(postgres, null, TestContext.Current.CancellationToken);
+        Assert.Equal(500m, await ReadObservedCostAsync(connection));
+
+        /* A later cost-only edit is carried too. */
+        await ExecAsync(connection, "UPDATE config.config_monitored_servers SET monthly_cost_usd = 750 WHERE server_id = $1");
+        await DarlingObservability.SyncServerEnabledStatesAsync(postgres, null, TestContext.Current.CancellationToken);
+        Assert.Equal(750m, await ReadObservedCostAsync(connection));
+
+        await DeleteTestRowsAsync(connection);
+    }
+
+    [Fact]
     public async Task UpsertServer_ReconnectDoesNotReEnableADisabledObservedRow_AgainstDevPostgres()
     {
         var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
@@ -429,6 +483,13 @@ public sealed class DarlingObservabilityTests
         using var read = new NpgsqlCommand("SELECT is_enabled FROM collect.servers WHERE server_id = $1", connection);
         read.Parameters.AddWithValue(TestServerId);
         return (bool)(await read.ExecuteScalarAsync(TestContext.Current.CancellationToken))!;
+    }
+
+    private static async Task<decimal> ReadObservedCostAsync(NpgsqlConnection connection)
+    {
+        using var read = new NpgsqlCommand("SELECT monthly_cost_usd FROM collect.servers WHERE server_id = $1", connection);
+        read.Parameters.AddWithValue(TestServerId);
+        return (decimal)(await read.ExecuteScalarAsync(TestContext.Current.CancellationToken))!;
     }
 
     private static async Task ExecAsync(NpgsqlConnection connection, string sql)

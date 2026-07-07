@@ -272,6 +272,15 @@ WHERE status = 'in_progress'
             case CommandKind.Analyze:
                 return await _host.AnalyzeNowAsync(command.TargetServerId!.Value, cancellationToken);
 
+            case CommandKind.Purge:
+            {
+                /* Fleet-wide over the shared tables (no target server). The optional custom retention comes
+                   from args_json (default = the configured fleet horizons); parse it here like the other
+                   host-delegated branches re-derive their args. */
+                var customRetentionDays = TryReadInt(command.ArgsJson, "retention_days", "retentionDays");
+                return await _host.PurgeNowAsync(customRetentionDays, cancellationToken);
+            }
+
             case CommandKind.FetchPlan:
             {
                 /* Re-parse args_json here (the pure dispatch already validated it parses) so the host receives
@@ -345,6 +354,13 @@ WHERE status = 'in_progress'
                 return command.TargetServerId is int
                     ? new CommandPlan(CommandKind.Analyze, null, null, "analysis complete", null)
                     : Fail("analyze_now requires target_server_id");
+
+            case "purge_now":
+                /* The daily retention purge on demand. Fleet-wide over the SHARED store tables, so — unlike
+                   snapshot_now/analyze_now — it needs NO target_server_id. An optional custom retention
+                   (args_json.retention_days) is read at execution time; absent = the configured fleet horizons.
+                   Always resolvable: there are no required arguments. */
+                return new CommandPlan(CommandKind.Purge, null, null, "purge complete", null);
 
             case "fetch_plan":
                 /* Worker-delegated like snapshot_now (needs the target's LIVE runtime connection to read its
@@ -546,6 +562,9 @@ public enum CommandKind
     /// <summary><c>analyze_now</c>: force an immediate analysis pass for a server now (via the host).</summary>
     Analyze,
 
+    /// <summary><c>purge_now</c>: run the retention purge across the shared store now (fleet-wide, via the host).</summary>
+    Purge,
+
     /// <summary><c>fetch_plan</c>: read a plan from a server's LIVE plan cache by plan_handle or sql_handle (via the host).</summary>
     FetchPlan,
 
@@ -567,6 +586,14 @@ public interface IDarlingCommandHost
     Task<CommandOutcome> SnapshotNowAsync(int serverId, CancellationToken cancellationToken);
 
     Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <c>purge_now</c>: run the retention purge over the shared store immediately (the daily
+    /// <see cref="DarlingRetention.PurgeAsync"/> on demand). Fleet-wide over shared tables, so no target
+    /// server; <paramref name="customRetentionDays"/> (from args_json) purges every collector to that horizon
+    /// when set, else the configured fleet horizons apply.
+    /// </summary>
+    Task<CommandOutcome> PurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken);
 
     /// <summary>
     /// <c>fetch_plan</c>: read an execution plan from the target server's LIVE plan cache (by plan_handle or by

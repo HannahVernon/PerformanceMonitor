@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Npgsql;
 using PerformanceMonitor.Collectors;
@@ -95,4 +96,60 @@ public sealed class DarlingWorkerTests
         var result = DarlingWorker.EnsureStoreSearchPath(custom);
         Assert.Equal("collect,config,reporting,public", new NpgsqlConnectionStringBuilder(result).SearchPath);
     }
+
+    /// <summary>
+    /// Win 1: a cost-only edit must NOT count as a server-definition change, so ReconcileServers does not tear
+    /// down and re-establish the connection for it. The reload's
+    /// <see cref="DarlingObservability.SyncServerEnabledStatesAsync"/> mirrors the new MonthlyCostUsd straight
+    /// onto collect.servers (which the FinOps display reads) with no connection churn.
+    /// </summary>
+    [Fact]
+    public void ServerDefinitionEquals_CostOnlyDelta_IsEqual_SoNoReconnect()
+    {
+        var original = SampleServer();
+        var costChanged = SampleServer();
+        costChanged.MonthlyCostUsd = original.MonthlyCostUsd + 250m;
+
+        Assert.True(DarlingWorker.ServerDefinitionEquals(original, costChanged),
+            "a cost-only change must compare equal (no reconnect) — cost is synced onto collect.servers without connection churn");
+    }
+
+    /// <summary>
+    /// The flip side: a genuine connection- or collection-affecting change (host, excluded databases) still
+    /// compares NOT equal, so ReconcileServers reconnects the server with the new definition.
+    /// </summary>
+    [Fact]
+    public void ServerDefinitionEquals_ConnectionOrDbDelta_IsNotEqual_SoReconnects()
+    {
+        var original = SampleServer();
+
+        var hostChanged = SampleServer();
+        hostChanged.Host = "other-host";
+        Assert.False(DarlingWorker.ServerDefinitionEquals(original, hostChanged), "a host change must reconnect");
+
+        var excludedChanged = SampleServer();
+        excludedChanged.ExcludedDatabases = new List<string> { "tempdb", "reporting" };
+        Assert.False(DarlingWorker.ServerDefinitionEquals(original, excludedChanged), "an excluded-databases change must reconnect");
+
+        /* Sanity: two identical definitions compare equal. */
+        Assert.True(DarlingWorker.ServerDefinitionEquals(original, SampleServer()));
+    }
+
+    /// <summary>A fully-populated server definition the equality tests perturb a single field of.</summary>
+    private static MonitoredServer SampleServer() => new()
+    {
+        Name = "prod-01",
+        Host = "prod-host",
+        Database = "AppDb",
+        Auth = "sql",
+        Username = "monitor",
+        EncryptedPassword = "AQAAblob==",
+        Password = null,
+        EncryptMode = "Mandatory",
+        TrustServerCertificate = true,
+        ReadOnlyIntent = false,
+        MultiSubnetFailover = false,
+        MonthlyCostUsd = 500m,
+        ExcludedDatabases = new List<string> { "tempdb" },
+    };
 }
