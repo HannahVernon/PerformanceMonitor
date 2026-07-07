@@ -10,6 +10,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
+using NpgsqlTypes;
 using PerformanceMonitor.Darling.Service;
 using PerformanceMonitor.Darling.Storage;
 using Xunit;
@@ -60,6 +61,37 @@ public sealed class DarlingCommandExecutorTests
         Assert.Contains("RETURNING", sql, StringComparison.Ordinal);
         /* Records which instance claimed it. */
         Assert.Contains("service_instance = $1", sql, StringComparison.Ordinal);
+    }
+
+    /* ---------------- pure: reaper + terminal secret-scrub SQL shape (pin) ---------------- */
+
+    [Fact]
+    public void ReclaimStaleCommandsSql_MarksFailed_NullsArgs_FiltersStaleInProgress()
+    {
+        var sql = DarlingCommandExecutor.ReclaimStaleCommandsSql;
+
+        /* Reclaim = terminal failed with a clear reason (so the Viewer's poll completes) — NOT re-queued to
+           pending (which would re-run a non-idempotent snapshot_now or loop on a poison command). */
+        Assert.Contains("status = 'failed'", sql, StringComparison.Ordinal);
+        Assert.Contains("result_status = 'reclaimed", sql, StringComparison.Ordinal);
+        /* Terminal secret scrub: a reclaimed test_connect's credential args are nulled too. */
+        Assert.Contains("args_json = NULL", sql, StringComparison.Ordinal);
+        /* Only genuinely-abandoned rows: in_progress AND claimed before the parameterized threshold. */
+        Assert.Contains("WHERE status = 'in_progress'", sql, StringComparison.Ordinal);
+        Assert.Contains("claimed_at <", sql, StringComparison.Ordinal);
+        Assert.Contains("$1", sql, StringComparison.Ordinal);
+
+        /* A generous margin over the slowest command (test_connect ~15-30s, analyze_now caps 120s), so the
+           reaper can never catch a command that is merely slow. */
+        Assert.Equal(TimeSpan.FromMinutes(5), DarlingCommandExecutor.StaleCommandTimeout);
+    }
+
+    [Fact]
+    public void ReportCommandSql_NullsArgsJson_OnTerminalState()
+    {
+        /* The terminal report scrubs the credential-carrying args_json (#1262 Low retention follow-up); the
+           Viewer reads result_status/result_json on completion, never args, so this is transparent. */
+        Assert.Contains("args_json = NULL", DarlingCommandExecutor.ReportCommandSql, StringComparison.Ordinal);
     }
 
     /* ---------------- pure: dispatch (one plan per command_type) ---------------- */
@@ -324,20 +356,89 @@ public sealed class DarlingCommandExecutorTests
             Assert.Equal(true, await read.ExecuteScalarAsync(ct));
         }
 
-        /* The reported terminal outcome on the command row. */
+        /* The reported terminal outcome on the command row, including the args_json secret scrub. */
         using (var read = new NpgsqlCommand(
-            "SELECT status, result_status, result_json::text, completed_at FROM config.config_command WHERE command_id = $1", connection))
+            "SELECT status, result_status, result_json::text, completed_at, args_json FROM config.config_command WHERE command_id = $1", connection))
         {
             read.Parameters.AddWithValue(commandId);
             using var reader = await read.ExecuteReaderAsync(ct);
             Assert.True(await reader.ReadAsync(ct));
             Assert.Equal("succeeded", reader.GetString(0));
             Assert.Equal("collector enabled", reader.GetString(1));
-            Assert.Contains("\"success\":true", reader.GetString(2), StringComparison.Ordinal);
+            /* result_json is jsonb, so its ::text is normalized with a space after the colon (key order is
+               jsonb's, not the serializer's) — assert on the stored/normalized form, not the raw serializer output. */
+            Assert.Contains("\"success\": true", reader.GetString(2), StringComparison.Ordinal);
             Assert.False(reader.IsDBNull(3), "completed_at must be stamped");
+            Assert.True(reader.IsDBNull(4), "args_json must be nulled on terminal state (#1262 secret retention)");
         }
 
         await CleanupSentinelAsync(connection, ct);
+    }
+
+    [Fact]
+    public async Task ReclaimStaleCommands_FailsStaleInProgress_LeavesFreshUntouched_RolledBack()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the stale-command reaper test.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+
+        await using var tx = await connection.BeginTransactionAsync(ct);
+
+        /* One command claimed 10 minutes ago (past the 5-minute stale timeout) and still carrying a
+           test_connect credential blob, plus one claimed just now (a command legitimately in flight). */
+        long staleId, freshId;
+        using (var insert = new NpgsqlCommand(
+            "INSERT INTO config.config_command (command_type, args_json, status, claimed_at, service_instance) " +
+            "VALUES ('test_connect', '{\"password\":\"secret\"}'::jsonb, 'in_progress', (now() AT TIME ZONE 'UTC') - interval '10 minutes', 'crashed-instance') RETURNING command_id", connection, tx))
+        {
+            staleId = Convert.ToInt64(await insert.ExecuteScalarAsync(ct));
+        }
+
+        using (var insert = new NpgsqlCommand(
+            "INSERT INTO config.config_command (command_type, args_json, status, claimed_at, service_instance) " +
+            "VALUES ('test_connect', '{\"password\":\"secret\"}'::jsonb, 'in_progress', (now() AT TIME ZONE 'UTC'), 'live-instance') RETURNING command_id", connection, tx))
+        {
+            freshId = Convert.ToInt64(await insert.ExecuteScalarAsync(ct));
+        }
+
+        /* Drive the executor's ACTUAL reaper SQL, with the real 5-minute timeout bound as a PG interval. */
+        using (var reap = new NpgsqlCommand(DarlingCommandExecutor.ReclaimStaleCommandsSql, connection, tx))
+        {
+            reap.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Interval, Value = DarlingCommandExecutor.StaleCommandTimeout });
+            await reap.ExecuteNonQueryAsync(ct);
+        }
+
+        /* The stale row is reclaimed: terminal failed, a clear result_status, credential args scrubbed,
+           completed_at stamped. */
+        using (var read = new NpgsqlCommand(
+            "SELECT status, result_status, args_json IS NULL, completed_at IS NOT NULL FROM config.config_command WHERE command_id = $1", connection, tx))
+        {
+            read.Parameters.AddWithValue(staleId);
+            using var reader = await read.ExecuteReaderAsync(ct);
+            Assert.True(await reader.ReadAsync(ct));
+            Assert.Equal("failed", reader.GetString(0));
+            Assert.Contains("reclaimed", reader.GetString(1), StringComparison.Ordinal);
+            Assert.True(reader.GetBoolean(2), "stale row's args_json must be nulled");
+            Assert.True(reader.GetBoolean(3), "stale row's completed_at must be stamped");
+        }
+
+        /* The fresh row (a command still legitimately running) is untouched — still in_progress, args kept. */
+        using (var read = new NpgsqlCommand(
+            "SELECT status, args_json IS NULL FROM config.config_command WHERE command_id = $1", connection, tx))
+        {
+            read.Parameters.AddWithValue(freshId);
+            using var reader = await read.ExecuteReaderAsync(ct);
+            Assert.True(await reader.ReadAsync(ct));
+            Assert.Equal("in_progress", reader.GetString(0));
+            Assert.False(reader.GetBoolean(1), "fresh row's args_json must be preserved (still executing)");
+        }
+
+        await tx.RollbackAsync(ct);
     }
 
     [Fact]

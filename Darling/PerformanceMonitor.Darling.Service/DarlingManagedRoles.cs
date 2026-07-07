@@ -7,7 +7,9 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -56,6 +58,75 @@ public static class DarlingManagedRoles
     /// makes provisioning fail loud rather than reset its password/privileges.
     /// </summary>
     public const string RoleMarker = "darling-managed";
+
+    /// <summary>
+    /// The <c>config</c> tables that carry SECRET columns the read-only <c>viewer</c> role must never read,
+    /// each paired with the EXACT non-secret columns it may (#1262 Medium credential-column follow-up). The
+    /// <c>admin</c> role — which writes and therefore owns these secrets, and which the Settings window
+    /// connects as — keeps its full table-wide SELECT; only <c>viewer</c> is column-restricted.
+    /// <list type="bullet">
+    /// <item><c>config_monitored_servers.encrypted_password</c> — a DPAPI-LocalMachine password blob.</item>
+    /// <item><c>config_command.args_json</c> — carries the inline test_connect credential blob (also nulled
+    /// on terminal state; see <see cref="DarlingCommandExecutor.ReportCommandSql"/>).</item>
+    /// <item><c>config_notification</c> — the SMTP password blob + username, and the Teams/Slack webhook
+    /// URLs (a webhook URL is a bearer secret).</item>
+    /// </list>
+    ///
+    /// <para><b>Fail-CLOSED by construction:</b> <see cref="BuildViewerColumnAclSql"/> grants <c>viewer</c>
+    /// column-level SELECT on ONLY the enumerated <see cref="ViewerSecretTableAcl.NonSecretColumns"/>, so a
+    /// column added to one of these tables in a future migration is INVISIBLE to <c>viewer</c> until it is
+    /// deliberately added here — the opposite of GRANT-ALL-then-REVOKE-each-secret, which would silently
+    /// expose a new secret column. The live <c>DarlingSecuritySplitLiveTests</c> asserts the union of the
+    /// two column sets equals the table's actual columns, so a migration that adds a column without updating
+    /// this list FAILS the build's live gate. A NEW secret-bearing <c>config</c> table added later must also
+    /// be added here (its <c>ALTER DEFAULT PRIVILEGES</c> table-grant to <c>viewer</c> would otherwise
+    /// expose every column).</para>
+    /// </summary>
+    public static readonly IReadOnlyList<ViewerSecretTableAcl> ViewerRestrictedConfigTables = new[]
+    {
+        new ViewerSecretTableAcl(
+            "config_monitored_servers",
+            NonSecretColumns: new[]
+            {
+                "server_id", "name", "host", "database", "auth", "username", "encrypt_mode",
+                "trust_server_certificate", "read_only_intent", "multi_subnet_failover",
+                "excluded_databases", "monthly_cost_usd", "capture_plans", "is_enabled",
+                "created_at", "modified_at",
+            },
+            SecretColumns: new[] { "encrypted_password" }),
+
+        new ViewerSecretTableAcl(
+            "config_command",
+            NonSecretColumns: new[]
+            {
+                "command_id", "created_at", "requested_by", "command_type", "target_server_id",
+                "status", "claimed_at", "completed_at", "result_status", "result_json", "service_instance",
+            },
+            SecretColumns: new[] { "args_json" }),
+
+        new ViewerSecretTableAcl(
+            "config_notification",
+            NonSecretColumns: new[]
+            {
+                "id", "smtp_host", "smtp_port", "smtp_use_ssl", "smtp_from_address", "smtp_recipients",
+                "email_cooldown_minutes", "teams_proxy", "slack_proxy", "modified_at",
+            },
+            SecretColumns: new[] { "smtp_encrypted_password", "smtp_username", "teams_url", "slack_url" }),
+    };
+
+    /// <summary>
+    /// The fail-closed viewer column-ACL block for one <c>config</c> schema + <c>viewer</c> role: for each
+    /// <see cref="ViewerRestrictedConfigTables"/> entry, REVOKE the table-wide SELECT (undoing the blanket
+    /// <c>GRANT SELECT ON ALL TABLES</c> and the V17 <c>ALTER DEFAULT PRIVILEGES</c> grant that already
+    /// landed on it) and re-GRANT SELECT on ONLY the non-secret columns. Shared verbatim by
+    /// <see cref="BuildProvisioningSql"/> and the live security test so the two can never drift. The table
+    /// and column names are compile-time constants from this file (never user input), so interpolation is
+    /// safe — the same reasoning the password-injection guard relies on.
+    /// </summary>
+    public static string BuildViewerColumnAclSql(string configSchema, string viewerRole) =>
+        string.Join("\n", ViewerRestrictedConfigTables.Select(acl =>
+            $"REVOKE SELECT ON {configSchema}.{acl.Table} FROM {viewerRole};\n" +
+            $"GRANT SELECT ({string.Join(", ", acl.NonSecretColumns)}) ON {configSchema}.{acl.Table} TO {viewerRole};"));
 
     /// <summary>
     /// Ensures the <c>admin</c>/<c>viewer</c> roles, their DPAPI credentials, and the collect/config
@@ -177,6 +248,11 @@ public static class DarlingManagedRoles
         const string config = PgSchemaGenerator.ConfigSchema;
         const string marker = RoleMarker;
 
+        /* The fail-closed viewer column-ACL carve for the secret-bearing config tables (see
+           ViewerRestrictedConfigTables). Runs AFTER the blanket config GRANT below, so it strips
+           viewer's table-wide SELECT on those tables and re-grants only the non-secret columns. */
+        var viewerColumnAcl = BuildViewerColumnAclSql(config, viewer);
+
         return $@"
 /* Least-privilege roles for the Darling security split (#1262). Idempotent + self-healing:
    re-run every managed start, converging role state to the DPAPI credential files. */
@@ -206,10 +282,23 @@ END $do$;
 ALTER ROLE {admin}  LOGIN NOSUPERUSER PASSWORD '{adminPassword}';
 ALTER ROLE {viewer} LOGIN NOSUPERUSER PASSWORD '{viewerPassword}';
 
--- 2. Schema usage + SELECT everywhere (ALL TABLES covers tables AND views).
+-- 2. Schema usage + SELECT everywhere (ALL TABLES covers tables AND views). collect holds no secrets,
+--    so admin+viewer read all of it. config: admin (the writer, and the Settings window's identity) reads
+--    every column; viewer reads all config tables too — MINUS the secret columns carved below.
 GRANT USAGE ON SCHEMA {collect}, {config} TO {admin}, {viewer};
 GRANT SELECT ON ALL TABLES IN SCHEMA {collect} TO {admin}, {viewer};
 GRANT SELECT ON ALL TABLES IN SCHEMA {config}  TO {admin}, {viewer};
+
+-- 2b. Credential-column fail-closed ACLs (#1262 Medium follow-up). The read-only viewer must NOT read the
+--     secret columns in config_monitored_servers / config_command / config_notification (a DPAPI password
+--     blob, the test_connect credential args, the SMTP password + username, the Teams/Slack webhook URLs).
+--     Instead of GRANT-ALL-then-REVOKE-each-secret (fail-OPEN — a future secret column leaks until someone
+--     remembers to revoke it), DROP viewer's table-wide SELECT on each and re-grant ONLY the non-secret
+--     columns (fail-CLOSED — any column added later is invisible to viewer until explicitly listed in
+--     DarlingManagedRoles.ViewerRestrictedConfigTables). admin keeps its table-wide SELECT (granted above),
+--     so the Settings window is unaffected. This also undoes the table-level grant the V17 ALTER DEFAULT
+--     PRIVILEGES already landed on these tables when they were created.
+{viewerColumnAcl}
 
 -- 3. config writes -- admin only.
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {config} TO {admin};
@@ -258,3 +347,14 @@ GRANT CONNECT ON DATABASE {database} TO {admin}, {viewer};
         }
     }
 }
+
+/// <summary>
+/// One secret-bearing <c>config</c> table's viewer ACL split: the <paramref name="NonSecretColumns"/> the
+/// read-only <c>viewer</c> role is granted column-level SELECT on, and the <paramref name="SecretColumns"/>
+/// it is denied (credential blobs / bearer secrets). The two sets must PARTITION the table's real columns —
+/// the live security test asserts their union equals the table's actual column set, so a migration that adds
+/// a column without classifying it here fails that gate. See
+/// <see cref="DarlingManagedRoles.ViewerRestrictedConfigTables"/>.
+/// </summary>
+public sealed record ViewerSecretTableAcl(
+    string Table, IReadOnlyList<string> NonSecretColumns, IReadOnlyList<string> SecretColumns);

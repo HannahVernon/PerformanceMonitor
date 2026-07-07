@@ -241,7 +241,10 @@ public sealed class DarlingAnalysisStoreTests
 
         using (var versions = new NpgsqlCommand("SELECT COUNT(*) FROM darling_schema_version", connection))
         {
-            Assert.Equal(15L, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+            /* One row per applied migration, so the count tracks the current schema version. Reference the
+               constant rather than a literal — this was hardcoded to a since-superseded number (15) and, as a
+               live-only assertion CI skips, silently rotted until the schema reached V17. */
+            Assert.Equal((long)StorageVersion.SchemaVersion, await versions.ExecuteScalarAsync(TestContext.Current.CancellationToken));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */

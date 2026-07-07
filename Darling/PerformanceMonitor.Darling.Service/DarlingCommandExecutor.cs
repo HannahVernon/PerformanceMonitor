@@ -60,14 +60,59 @@ RETURNING command_id, command_type, target_server_id, args_json, requested_by";
     /// <summary>
     /// Writes the terminal outcome back on the claimed row (succeeded/failed + result_status/json). Internal
     /// so the round-trip test can pin + exercise it; $1 command_id, $2 status, $3 result_status, $4 result_json.
+    ///
+    /// <para><b>Secret retention (#1262 Low follow-up):</b> nulls <c>args_json</c> as the row reaches a
+    /// terminal state — a <c>test_connect</c> command's <c>args_json</c> carries an inline credential blob,
+    /// and there is no reason to retain it once the probe has run. The claim already captured args_json into
+    /// the in-memory <see cref="ClaimedCommand"/> before execution, and the Viewer's terminal-result poll
+    /// reads <c>result_status</c>/<c>result_json</c> (never args), so scrubbing it here is transparent. The
+    /// stale-command reaper scrubs it the same way (<see cref="ReclaimStaleCommandsSql"/>) for a row that
+    /// never reported. result_json holds only probe facts / an error string, never a secret, so it stays.</para>
     /// </summary>
     internal const string ReportCommandSql = @"
 UPDATE config.config_command
 SET status = $2,
     completed_at = now() AT TIME ZONE 'UTC',
     result_status = $3,
-    result_json = $4
+    result_json = $4,
+    args_json = NULL
 WHERE command_id = $1";
+
+    /// <summary>
+    /// The stale-command reaper (#1262 Stage 2 robustness follow-up): reclaims a command abandoned
+    /// <c>in_progress</c> because the claiming service crashed or restarted between the claim and the report.
+    /// Without this the row stays <c>in_progress</c> forever and a Viewer polling it for a terminal result
+    /// waits indefinitely. A row whose <c>claimed_at</c> is older than the stale timeout ($1, a PG interval)
+    /// is marked terminal <c>failed</c> with a clear <c>result_status</c> so the poll completes, and its
+    /// <c>args_json</c> is nulled at the same time (the same terminal secret scrub the report path does).
+    /// Public const so a test can pin the shape.
+    ///
+    /// <para><b>Why fail-terminal, not re-queue to <c>pending</c>:</b> re-running a reclaimed command is the
+    /// UNSAFE choice — the imperative commands are not all idempotent (a half-run <c>snapshot_now</c> already
+    /// wrote its collector rows, so a re-run double-writes them and races the shared delta baselines), and a
+    /// command that CRASHED the service would crash it again on every reclaim (a poison-message loop that
+    /// never drains). Marking it <c>failed</c> always unblocks the Viewer (the actual bug) and leaves the
+    /// idempotent commands (pause/resume/test_connect/toggles) for an operator to re-issue by hand. The
+    /// <see cref="StaleCommandTimeout"/> is wide enough that a merely-slow live command is never reaped.</para>
+    /// </summary>
+    public const string ReclaimStaleCommandsSql = @"
+UPDATE config.config_command
+SET status = 'failed',
+    completed_at = now() AT TIME ZONE 'UTC',
+    result_status = 'reclaimed (service restart or timeout)',
+    result_json = '{""success"": false, ""error"": ""command reclaimed: the claiming service did not report a result within the stale-command timeout (a service restart or a crash mid-command)""}'::jsonb,
+    args_json = NULL
+WHERE status = 'in_progress'
+  AND claimed_at < (now() AT TIME ZONE 'UTC') - $1";
+
+    /// <summary>
+    /// The stale-command reaper timeout: an <c>in_progress</c> command whose <c>claimed_at</c> is older than
+    /// this is reclaimed as <c>failed</c>. Five minutes is a wide margin over the slowest command — a
+    /// <c>test_connect</c> is bounded by the SQL connect timeout (~15-30s) and <c>analyze_now</c> self-caps
+    /// at 120s — so the reaper can never catch a command that is merely slow, only one genuinely abandoned.
+    /// A hardcoded default (not a config knob) per the "defaults over speculative config" rule.
+    /// </summary>
+    public static readonly TimeSpan StaleCommandTimeout = TimeSpan.FromMinutes(5);
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
@@ -114,6 +159,38 @@ WHERE command_id = $1";
 
         await ExecuteAndReportAsync(claimed, cancellationToken);
         return true;
+    }
+
+    /// <summary>
+    /// Runs one stale-command reaper sweep (<see cref="ReclaimStaleCommandsSql"/>) and returns the number of
+    /// commands reclaimed. Failure-isolated like the rest of the poller — a store blip logs and returns 0
+    /// rather than killing the command loop. Cheap enough to run every tick: the WHERE is served by the
+    /// status index and matches nothing in the normal case (commands are claimed and reported within
+    /// seconds), and an UPDATE that changes no rows writes no WAL.
+    /// </summary>
+    public async Task<int> ReclaimStaleCommandsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(ReclaimStaleCommandsSql, connection);
+            command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Interval, Value = StaleCommandTimeout });
+
+            var reclaimed = await command.ExecuteNonQueryAsync(cancellationToken);
+            if (reclaimed > 0)
+            {
+                _logger?.LogWarning(
+                    "Reclaimed {Count} stale in_progress command(s) claimed over {Timeout} ago with no result reported (a service restart or a crash mid-command) — marked failed so the Viewer's poll completes",
+                    reclaimed, StaleCommandTimeout);
+            }
+
+            return reclaimed;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning("Could not run the stale-command reaper — will retry next tick: {Message}", ex.Message);
+            return 0;
+        }
     }
 
     /// <summary>Atomically claims the oldest pending command (or null when the queue is empty).</summary>
