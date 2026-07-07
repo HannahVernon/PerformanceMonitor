@@ -244,6 +244,68 @@ public partial class ProcedureHistoryWindow : Window
         window.Closed += (_, _) => viewer.Cleanup();
     }
 
+    /// <summary>"Fetch Live Plan" — asks the service to read the RIGHT-CLICKED snapshot's plan from the target's
+    /// LIVE cache by its plan_handle (headless-safe: a cached read via the fetch_plan command, no re-execution),
+    /// mirroring the parent grid's FetchLiveQueryPlan_Click. Distinct from "View Plan" (the stored plan XML).
+    /// Gated per row on HasLivePlanHandle; the same plan_handle-bearing row gets it on the parent Top Procedures grid.</summary>
+    private async void FetchLivePlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (HistoryDataGrid.CurrentItem is not ViewerProcedureStatsHistoryRow row || string.IsNullOrEmpty(row.PlanHandle))
+            return;
+
+        var fullName = string.IsNullOrEmpty(_schemaName) ? _objectName : $"{_schemaName}.{_objectName}";
+        var label = $"Live Plan - {fullName}";
+        var argsJson = ViewerDataService.BuildPlanFetchArgsByPlanHandle(row.PlanHandle, _databaseName);
+        await FetchAndShowLivePlanAsync(argsJson, label, queryText: null);
+    }
+
+    /// <summary>Runs a fetch_plan round-trip and shows the plan in a shared PlanViewerControl floated above this
+    /// window (a read-only seat / not-in-cache / failure surfaces the service's message). Mirrors
+    /// ViewerServerTab.FetchAndOpenLivePlanAsync, adapted to this window's GraphViewerWindow plan host.</summary>
+    private async Task FetchAndShowLivePlanAsync(string argsJson, string label, string? queryText)
+    {
+        LivePlanFetchResult result;
+        try
+        {
+            result = await _dataService.FetchLivePlanAsync(_serverId, argsJson);
+        }
+        catch (ViewerReadOnlyException)
+        {
+            MessageBox.Show(this, "This is a read-only viewer seat, which cannot ask the service to fetch a live plan.",
+                "Read-Only", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to fetch the live plan: {ex.Message}", "Live Plan Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (result.Status != LivePlanFetchStatus.Fetched || string.IsNullOrEmpty(result.PlanXml))
+        {
+            MessageBox.Show(this, result.Message ?? "The live plan could not be fetched.",
+                "Live Plan", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var viewer = new PlanViewerControl();
+        try
+        {
+            await viewer.LoadPlan(result.PlanXml, label, queryText);
+        }
+        catch (Exception ex)
+        {
+            viewer.Cleanup();
+            MessageBox.Show(this, $"Failed to load the execution plan:\n\n{ex.Message}",
+                "Plan Load Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var window = GraphViewerWindow.ShowGraph(this, viewer, label);
+        window.Closed += (_, _) => viewer.Cleanup();
+    }
+
     // ── Column Filter Popup (mirrors WaitDrillDownWindow / ViewerServerTab.Filters.cs) ──
 
     private void EnsureFilterPopup()
