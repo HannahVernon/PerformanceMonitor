@@ -526,7 +526,7 @@
                                             BorderBrush="{Binding CardBorderBrush}"
                                             BorderThickness="2" CornerRadius="6"
                                             Margin="6"
-                                            Width="260" MinHeight="160"
+                                            Width="300" MinHeight="210"
                                             Cursor="Hand"
                                             MouseLeftButtonDown="OverviewCard_MouseLeftButtonDown">
                                         <Grid>
@@ -539,8 +539,17 @@
                                                 </DockPanel>
                                                 <TextBlock Text="{Binding StatusDisplay}" Foreground="{Binding StatusBrush}"
                                                            FontSize="11" Margin="0,0,0,10"/>
+                                                <!-- Metric rows: [severity dot] [label] [value] [detail],
+                                                     mirroring the Dashboard's ServerHealthCard. Each dot +
+                                                     value is coloured by the metric's band (ServerSummaryItem
+                                                     reproduces ServerHealthStatus's CASE logic). Threads +
+                                                     Collectors are the enrichment rows; Memory / Blocking gain
+                                                     resource-semaphore + duration detail. Last Collect keeps
+                                                     its neutral footer row (no dot). -->
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                         <ColumnDefinition Width="*"/>
                                                     </Grid.ColumnDefinitions>
@@ -550,17 +559,49 @@
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
                                                     </Grid.RowDefinitions>
-                                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="CPU:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
-                                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CpuDisplay}" Foreground="{Binding CpuBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
-                                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Memory:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
-                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding MemoryDisplay}" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
-                                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Blocking:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
-                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding BlockingDisplay}" Foreground="{Binding BlockingBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
-                                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Deadlocks:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
-                                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding DeadlockDisplay}" Foreground="{Binding DeadlockBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
-                                                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Last Collect:" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2"/>
-                                                    <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding LastCollectionDisplay}" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="8,2" HorizontalAlignment="Right"/>
+
+                                                    <!-- CPU -->
+                                                    <Ellipse Grid.Row="0" Grid.Column="0" Width="9" Height="9" Fill="{Binding CpuSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
+                                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="CPU:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="0" Grid.Column="2" Text="{Binding CpuDisplay}" FontSize="11" Foreground="{Binding CpuSeverityBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="0" Grid.Column="3" Text="{Binding CpuDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
+
+                                                    <!-- Threads (enrichment) -->
+                                                    <Ellipse Grid.Row="1" Grid.Column="0" Width="9" Height="9" Fill="{Binding ThreadsSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="Threads:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding ThreadsDisplay}" FontSize="11" Foreground="{Binding ThreadsSeverityBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding ThreadsDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
+
+                                                    <!-- Memory (richer: total value + resource-semaphore detail) -->
+                                                    <Ellipse Grid.Row="2" Grid.Column="0" Width="9" Height="9" Fill="{Binding MemorySeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="Memory:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="2" Text="{Binding MemoryDisplay}" FontSize="11" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="3" Text="{Binding MemoryDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
+
+                                                    <!-- Blocking (richer: count value + max-duration detail) -->
+                                                    <Ellipse Grid.Row="3" Grid.Column="0" Width="9" Height="9" Fill="{Binding BlockingSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="Blocking:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding BlockingDisplay}" FontSize="11" Foreground="{Binding BlockingSeverityBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="3" Text="{Binding BlockingDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
+
+                                                    <!-- Deadlocks -->
+                                                    <Ellipse Grid.Row="4" Grid.Column="0" Width="9" Height="9" Fill="{Binding DeadlockSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="1" Text="Deadlocks:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="2" Text="{Binding DeadlockDisplay}" FontSize="11" Foreground="{Binding DeadlockSeverityBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="4" Grid.Column="3" Text="{Binding DeadlockDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
+
+                                                    <!-- Collectors (enrichment) -->
+                                                    <Ellipse Grid.Row="5" Grid.Column="0" Width="9" Height="9" Fill="{Binding CollectorSeverityBrush}" VerticalAlignment="Center" Margin="0,2,6,2"/>
+                                                    <TextBlock Grid.Row="5" Grid.Column="1" Text="Collectors:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="5" Grid.Column="2" Text="{Binding CollectorDisplay}" FontSize="11" Foreground="{Binding CollectorSeverityBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="5" Grid.Column="3" Text="{Binding CollectorDetail}" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2"/>
+
+                                                    <!-- Last Collect (footer row, no severity dot) -->
+                                                    <TextBlock Grid.Row="6" Grid.Column="1" Text="Last Collect:" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,2,8,2"/>
+                                                    <TextBlock Grid.Row="6" Grid.Column="2" Text="{Binding LastCollectionDisplay}" FontSize="11" Foreground="{DynamicResource ForegroundBrush}" FontWeight="SemiBold" Margin="0,2,8,2"/>
                                                 </Grid>
                                             </StackPanel>
                                             <!-- Offline overlay -->
