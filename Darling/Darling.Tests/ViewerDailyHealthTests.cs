@@ -18,24 +18,29 @@ using Xunit;
 namespace Darling.Tests;
 
 /// <summary>
-/// Pins the Daily Summary tab's single-row aggregate (W1i, copied from Lite's
-/// LocalDataService.DailySummary.cs) against the Darling store contract — no live Postgres. The SQL is
-/// byte-portable between DuckDB and Postgres, so the pins are the load-bearing clauses: the per-source
-/// subqueries, the top-wait ranking, the blocking XE→DMV fallback, and the total-host-CPU ≥ 80 rule.
+/// Pins the Performance Calendar / Daily Summary per-day-range aggregate (<c>DailySummaryRangeSql</c>)
+/// against the Darling store contract — no live Postgres. The pins are the load-bearing clauses: per-day
+/// bucketing, the day spine, the per-source CTEs, the top-wait ranking, the blocking XE→DMV fallback, the
+/// total-host-CPU ≥ 80 rule, the memory tiers, and the actionable-alert filter.
 /// </summary>
 public sealed class ViewerDailySummarySqlTests
 {
     [Fact]
-    public void DailySummarySql_RollsUpEverySource_OverTheHalfOpenDayWindow()
+    public void DailySummaryRangeSql_RollsUpEverySource_GroupedPerDay()
     {
-        var sql = ViewerDataService.DailySummarySql;
+        var sql = ViewerDataService.DailySummaryRangeSql;
 
-        /* Total wait seconds + top wait type off v_wait_stats, positive deltas only. */
+        /* Per-day bucketing + a day spine so a quiet-but-collected day still appears. */
+        Assert.Contains("date_trunc('day', collection_time)", sql, StringComparison.Ordinal);
+        Assert.Contains("day_spine AS (", sql, StringComparison.Ordinal);
+        Assert.Contains("UNION SELECT d FROM", sql, StringComparison.Ordinal);
+
+        /* Total wait seconds + per-day top wait type off v_wait_stats, positive deltas only. */
         Assert.Contains("FROM v_wait_stats", sql, StringComparison.Ordinal);
-        Assert.Contains("SUM(delta_wait_time_ms) / 1000.0", sql, StringComparison.Ordinal);
+        Assert.Contains("SUM(ms) / 1000.0", sql, StringComparison.Ordinal);
         Assert.Contains("delta_wait_time_ms > 0", sql, StringComparison.Ordinal);
-        Assert.Contains("ORDER BY SUM(delta_wait_time_ms) DESC", sql, StringComparison.Ordinal);
-        Assert.Contains("LIMIT 1", sql, StringComparison.Ordinal);
+        Assert.Contains("DISTINCT ON (d)", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY d, ms DESC", sql, StringComparison.Ordinal);
 
         /* Distinct query count, deadlock count. */
         Assert.Contains("COUNT(DISTINCT query_hash)", sql, StringComparison.Ordinal);
@@ -44,30 +49,36 @@ public sealed class ViewerDailySummarySqlTests
 
         /* Blocking events: XE blocked-process reports, falling back to the DMV snapshot count when the
            XE count is zero (NULLIF → COALESCE). */
-        Assert.Contains("NULLIF(", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(NULLIF(b.c, 0), dm.c, 0)", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_blocked_process_reports", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_dmv_blocking_snapshots", sql, StringComparison.Ordinal);
 
-        /* High-CPU count uses total host CPU = SQL + other-process (Linux NULL → 0), threshold 80. */
+        /* High-CPU count uses total host CPU = SQL + other-process (Linux NULL → 0), threshold 80, via FILTER. */
         Assert.Contains("(sqlserver_cpu_utilization + COALESCE(other_process_cpu_utilization, 0)) >= 80", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_cpu_utilization_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("FILTER (WHERE", sql, StringComparison.Ordinal);
 
-        /* Collect errors off the collection_log ERROR rows. */
+        /* Collect errors off the collection_log ERROR rows; all-status runs mark the day collected. */
         Assert.Contains("status = 'ERROR'", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_collection_log", sql, StringComparison.Ordinal);
 
-        /* Memory pressure: the displayed count (process OR system indicator >= 2) and the MEMORY_CRITICAL
-           escalation source (process indicator >= 3), both off v_memory_pressure_events (Dashboard parity). */
+        /* Memory pressure (process OR system indicator >= 2) and the severe escalation (process >= 3). */
         Assert.Contains("FROM v_memory_pressure_events", sql, StringComparison.Ordinal);
-        Assert.Contains("(memory_indicators_process >= 2 OR memory_indicators_system >= 2)", sql, StringComparison.Ordinal);
+        Assert.Contains("memory_indicators_process >= 2 OR memory_indicators_system >= 2", sql, StringComparison.Ordinal);
         Assert.Contains("memory_indicators_process >= 3", sql, StringComparison.Ordinal);
 
-        /* Every subquery windows on the half-open [dayStart, dayEnd) range. */
+        /* Actionable alerts: non-dismissed, excluding resolution notices, off config_alert_log. */
+        Assert.Contains("FROM config_alert_log", sql, StringComparison.Ordinal);
+        Assert.Contains("dismissed = FALSE", sql, StringComparison.Ordinal);
+        Assert.Contains("NOT LIKE '%Cleared%'", sql, StringComparison.Ordinal);
+
+        /* Every subquery windows on the half-open [rangeStart, rangeEnd) range. */
         Assert.Contains("collection_time >= $2 AND collection_time < $3", sql, StringComparison.Ordinal);
+        Assert.Contains("alert_time >= $2 AND alert_time < $3", sql, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void DailySummarySql_MemoryPressureColumns_ExistInTheGeneratedSourceTable()
+    public void DailySummaryRangeSql_MemoryPressureColumns_ExistInTheGeneratedSourceTable()
     {
         var ddl = PgSchemaGenerator.CreateTable(MemoryPressureEventsCollector.Instance);
         Assert.Contains("memory_indicators_process", ddl, StringComparison.Ordinal);
@@ -76,9 +87,9 @@ public sealed class ViewerDailySummarySqlTests
     }
 
     [Fact]
-    public void DailySummarySql_IsPgDialect_PositionalParams_NoBareNow_NoNLiterals()
+    public void DailySummaryRangeSql_IsPgDialect_PositionalParams_NoBareNow_NoNLiterals()
     {
-        var sql = ViewerDataService.DailySummarySql;
+        var sql = ViewerDataService.DailySummaryRangeSql;
         Assert.DoesNotContain("now(", sql.ToLowerInvariant());
         Assert.DoesNotContain("N'", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
@@ -88,7 +99,7 @@ public sealed class ViewerDailySummarySqlTests
     }
 
     [Fact]
-    public void DailySummarySql_ReadsColumnsThatExistInTheGeneratedSourceTables()
+    public void DailySummaryRangeSql_ReadsColumnsThatExistInTheGeneratedSourceTables()
     {
         Assert.Contains("delta_wait_time_ms", PgSchemaGenerator.CreateTable(WaitStatsCollector.Instance), StringComparison.Ordinal);
         Assert.Contains("wait_type", PgSchemaGenerator.CreateTable(WaitStatsCollector.Instance), StringComparison.Ordinal);
@@ -103,12 +114,13 @@ public sealed class ViewerDailySummarySqlTests
     public void PassthroughViews_ForEverySource_ExistInTheMigrations()
     {
         /* The daily-summary sources read the v_* passthrough views; they are created across the
-           migration set (the aggregate sources in one, v_collection_log in another). */
+           migration set. The alert signal reads the config_alert_log base table directly. */
         var allMigrationSql = string.Concat(PgMigrations.Scripts.Select(m => m.Sql));
         foreach (var view in new[]
         {
             "v_wait_stats", "v_query_stats", "v_deadlocks", "v_blocked_process_reports",
             "v_dmv_blocking_snapshots", "v_cpu_utilization_stats", "v_collection_log",
+            "v_memory_pressure_events", "config_alert_log",
         })
         {
             Assert.Contains(view, allMigrationSql, StringComparison.Ordinal);
@@ -230,42 +242,9 @@ public sealed class ViewerDailyHealthRowTests
         Assert.Equal("2026-07-03", row.SummaryDateFormatted);
     }
 
-    [Fact]
-    public void ClassifyDailyHealth_Normal_WhenNothingBreaches()
-        => Assert.Equal("NORMAL", ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 0, memoryCriticalEvents: 0, blockingEvents: 0));
-
-    [Fact]
-    public void ClassifyDailyHealth_Deadlocks_WinAllOtherBands()
-        => Assert.Equal("DEADLOCKS", ViewerDataService.ClassifyDailyHealth(deadlocks: 1, highCpuEvents: 99, memoryCriticalEvents: 99, blockingEvents: 99));
-
-    [Fact]
-    public void ClassifyDailyHealth_CpuCritical_WhenMoreThanFiveHighCpuAndNoDeadlocks()
-        => Assert.Equal("CPU_CRITICAL", ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 6, memoryCriticalEvents: 99, blockingEvents: 99));
-
-    [Fact]
-    public void ClassifyDailyHealth_MemoryCritical_WhenSevereMemoryPressure_AndNoDeadlockOrCpu()
-    {
-        /* Item 5: the escalation the viewer dropped — a severe memory-pressure day (process indicator >= 3,
-           memoryCriticalEvents > 0) bands MEMORY_CRITICAL, ranking ahead of BLOCKING. */
-        Assert.Equal("MEMORY_CRITICAL",
-            ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 5, memoryCriticalEvents: 1, blockingEvents: 99));
-    }
-
-    [Fact]
-    public void ClassifyDailyHealth_Blocking_WhenOverTenBlockingAndNoHigherBand()
-        => Assert.Equal("BLOCKING", ViewerDataService.ClassifyDailyHealth(deadlocks: 0, highCpuEvents: 0, memoryCriticalEvents: 0, blockingEvents: 11));
-
-    [Theory]
-    [InlineData(5, "NORMAL")]     // exactly 5 is NOT > 5
-    [InlineData(6, "CPU_CRITICAL")]
-    public void ClassifyDailyHealth_HighCpuThreshold_IsStrictlyGreaterThanFive(long highCpu, string expected)
-        => Assert.Equal(expected, ViewerDataService.ClassifyDailyHealth(0, highCpu, 0, 0));
-
-    [Theory]
-    [InlineData(10, "NORMAL")]    // exactly 10 is NOT > 10
-    [InlineData(11, "BLOCKING")]
-    public void ClassifyDailyHealth_BlockingThreshold_IsStrictlyGreaterThanTen(long blocking, string expected)
-        => Assert.Equal(expected, ViewerDataService.ClassifyDailyHealth(0, 0, 0, blocking));
+    // The Daily Summary health banding moved to the shared, app-agnostic DailyHealthBandCalculator
+    // (composite No-Data / Healthy / Warning / Critical for the Performance Calendar) and is pinned by
+    // DailyHealthBandTests here in Darling.Tests and, identically, in Lite.Tests.
 
     [Fact]
     public void CollectorHealthRow_NeverRun_WhenNoRuns()
@@ -486,7 +465,7 @@ public sealed class ViewerDailyHealthLivePostgresTests
             Assert.Equal(1, summary.BlockingEvents);               // XE report count (fallback not used)
             Assert.Equal(1, summary.HighCpuEvents);                // only the 90% sample
             Assert.Equal(1, summary.CollectionErrors);
-            Assert.Equal("DEADLOCKS", summary.OverallHealth);      // deadlocks > 0 wins the banding
+            Assert.Equal("Critical", summary.OverallHealth);       // deadlocks -> Critical composite band
         }
         finally
         {
@@ -514,7 +493,8 @@ public sealed class ViewerDailyHealthLivePostgresTests
             var inDay = day.AddHours(9);
 
             /* No XE blocked-process reports; two DMV snapshots → the COALESCE(NULLIF(...)) falls back to
-               the DMV count. No deadlocks / high CPU / >10 blocking → NORMAL. */
+               the DMV count. No deadlocks / sustained CPU / heavy blocking, but 2 blocking events is
+               "some blocking" → the composite band is Warning. */
             await InsertDmvBlockingAsync(connection, SummaryServerId, inDay);
             await InsertDmvBlockingAsync(connection, SummaryServerId, inDay);
 
@@ -523,7 +503,7 @@ public sealed class ViewerDailyHealthLivePostgresTests
             Assert.NotNull(summary);
             Assert.Equal(2, summary!.BlockingEvents);
             Assert.Equal(0, summary.DeadlockCount);
-            Assert.Equal("NORMAL", summary.OverallHealth);
+            Assert.Equal("Warning", summary.OverallHealth);
         }
         finally
         {
