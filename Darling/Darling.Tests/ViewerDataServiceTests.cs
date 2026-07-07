@@ -382,3 +382,30 @@ public sealed class ViewerSchemaVersionGateTests
             ViewerDataService.MapProbedSchemaVersion(true, true, true));
     }
 }
+
+/// <summary>
+/// The write-executor schema-skew translation (finding B2): a control-plane write against a lagging store
+/// throws Postgres 42703 (undefined_column) / 42P01 (undefined_table); the executors translate both into a
+/// <see cref="ViewerSchemaSkewException"/> the callers surface like the read-only exception, instead of a raw
+/// "column ... does not exist" error.
+/// </summary>
+public sealed class ViewerSchemaSkewTests
+{
+    [Fact]
+    public void SchemaSkewSqlStates_AreTheUndefinedColumnAndTableStates()
+    {
+        Assert.Equal("42703", ViewerDataService.UndefinedColumnSqlState);
+        Assert.Equal("42P01", ViewerDataService.UndefinedTableSqlState);
+    }
+
+    [Fact]
+    public void ViewerSchemaSkewException_NamesTheRequiredVersion_AndTheServiceRemedy()
+    {
+        var ex = new ViewerSchemaSkewException(new InvalidOperationException("42703"));
+
+        Assert.Contains($"v{ViewerDataService.RequiredStoreSchemaVersion}", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Darling service", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("migrate", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("42703", ex.InnerException?.Message);
+    }
+}

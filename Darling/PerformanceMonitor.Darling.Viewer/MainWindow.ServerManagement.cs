@@ -288,6 +288,10 @@ public partial class MainWindow
         {
             StatusText.Text = ex.Message;
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
         catch (Exception ex)
         {
             ViewerLogger.Error("ServerManagement", "Failed to remove server", ex);

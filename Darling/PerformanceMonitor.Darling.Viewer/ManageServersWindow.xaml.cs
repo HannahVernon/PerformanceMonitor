@@ -188,6 +188,10 @@ public partial class ManageServersWindow : Window
         {
             MessageBox.Show(ex.Message, "Manage Servers", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         catch (Exception ex)
         {
             ViewerLogger.Error("ManageServersWindow", "Failed to toggle collection", ex);
@@ -253,6 +257,10 @@ public partial class ManageServersWindow : Window
         catch (ViewerReadOnlyException ex)
         {
             MessageBox.Show(ex.Message, "Delete Server", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {

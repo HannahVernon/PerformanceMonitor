@@ -190,6 +190,10 @@ public partial class ExcludedDatabasesDialog : Window
         {
             StatusText.Text = ex.Message;
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
         catch (Exception ex)
         {
             StatusText.Text = $"Failed to save: {ex.Message}";

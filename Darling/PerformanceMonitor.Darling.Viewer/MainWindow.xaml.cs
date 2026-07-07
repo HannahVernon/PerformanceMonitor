@@ -838,6 +838,10 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         catch (Exception ex)
         {
             RecommendationsStatusText.Text = $"Generate now failed: {ex.Message}";

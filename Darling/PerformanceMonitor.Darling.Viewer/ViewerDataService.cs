@@ -367,6 +367,14 @@ LIMIT 1";
     /// <summary>Postgres SQLSTATE 42501 (insufficient_privilege) — a write refused on a read-only connection.</summary>
     internal const string InsufficientPrivilegeSqlState = "42501";
 
+    /// <summary>Postgres SQLSTATE 42703 (undefined_column) — a write referenced a column a lagging store
+    /// has not migrated in yet (schema skew).</summary>
+    internal const string UndefinedColumnSqlState = "42703";
+
+    /// <summary>Postgres SQLSTATE 42P01 (undefined_table) — a write referenced a table a lagging store has
+    /// not migrated in yet (schema skew).</summary>
+    internal const string UndefinedTableSqlState = "42P01";
+
     /// <summary>
     /// Executes a write command, translating a permission-denied failure — a write attempted on the
     /// read-only viewer role, or after grants changed under a running app — into a
@@ -384,6 +392,10 @@ LIMIT 1";
         {
             throw new ViewerReadOnlyException(ex);
         }
+        catch (PostgresException ex) when (ex.SqlState is UndefinedColumnSqlState or UndefinedTableSqlState)
+        {
+            throw new ViewerSchemaSkewException(ex);
+        }
     }
 
     /// <summary>
@@ -400,6 +412,10 @@ LIMIT 1";
         catch (PostgresException ex) when (ex.SqlState == InsufficientPrivilegeSqlState)
         {
             throw new ViewerReadOnlyException(ex);
+        }
+        catch (PostgresException ex) when (ex.SqlState is UndefinedColumnSqlState or UndefinedTableSqlState)
+        {
+            throw new ViewerSchemaSkewException(ex);
         }
     }
 
@@ -420,6 +436,26 @@ public sealed class ViewerReadOnlyException : Exception
             "This viewer is connected with a read-only role, so it can't change mute rules, dismiss alerts, " +
             "or mute findings. Set postgres.connectAs to \"admin\" in darling.json and restart the viewer to " +
             "enable these actions.",
+            innerException)
+    {
+    }
+}
+
+/// <summary>
+/// A control-plane write referenced a column or table the connected store has not migrated in yet — the
+/// store's schema is BEHIND the version this viewer build needs (Postgres 42703 undefined_column / 42P01
+/// undefined_table). Thrown by the write executors so the UI shows a clear "update the service" message
+/// instead of a raw "column ... does not exist" error (finding B2). The connect-time gate
+/// (<see cref="ViewerDataService.GetStoreSchemaVersionAsync"/>, finding B1) normally blocks a skewed store
+/// before any write; this is the write-path backstop for a column referenced ahead of a lagging store.
+/// </summary>
+public sealed class ViewerSchemaSkewException : Exception
+{
+    public ViewerSchemaSkewException(Exception innerException)
+        : base(
+            $"This viewer needs Darling store schema v{ViewerDataService.RequiredStoreSchemaVersion}, but the " +
+            "store is missing an expected column or table. Update or restart the Darling service so it " +
+            "migrates the store, then reopen the viewer.",
             innerException)
     {
     }
