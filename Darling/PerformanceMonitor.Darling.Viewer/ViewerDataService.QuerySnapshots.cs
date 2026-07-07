@@ -54,6 +54,13 @@ public sealed class ViewerQuerySnapshotRow
     public decimal PercentComplete { get; set; }
     public string QueryHash { get; set; } = "";
 
+    /* Chain-view metadata (Wait Stats "Show Queries With This Wait" drill-down, LCK_M_* chain branch):
+       set only when WaitDrillDownWindow walks blocking chains — the transitive blocked-session count and
+       the "Head SPID X blocking N session(s)" path. Default 0 / empty for every other read. Mirrors Lite's
+       QuerySnapshotRow.BlockedSessionCount / ChainBlockingPath. */
+    public int BlockedSessionCount { get; set; }
+    public string ChainBlockingPath { get; set; } = "";
+
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
     public bool HasLiveQueryPlan => !string.IsNullOrEmpty(LiveQueryPlan);
     public string CollectionTimeLocal =>
@@ -132,6 +139,34 @@ public sealed partial class ViewerDataService
     {
         await using var command = _dataSource.CreateCommand(LatestQuerySnapshotsSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        return await ReadQuerySnapshotsAsync(command, cancellationToken);
+    }
+
+    /// <summary>
+    /// The "Show Queries With This Wait" drill-down read (Wait Stats chart right-click) — Lite's
+    /// <c>GetQuerySnapshotsByWaitTypeAsync</c>: the captured running-query snapshots whose <c>wait_type</c>
+    /// exactly matches, over the drill window. Same row shape / column list as the Active Queries grid.
+    /// $1 server_id, $2 window start, $3 window end (naive UTC), $4 wait_type.
+    /// </summary>
+    public static readonly string QuerySnapshotsByWaitTypeSql = $"""
+        SELECT
+        {QuerySnapshotColumns}
+        FROM query_snapshots
+        WHERE server_id = $1
+        AND   collection_time >= $2
+        AND   collection_time <= $3
+        AND   wait_type = $4
+        AND   query_text NOT LIKE 'WAITFOR%'
+        ORDER BY collection_time DESC, cpu_time_ms DESC
+        """;
+
+    /// <summary>Active-Queries snapshot rows filtered to one <paramref name="waitType"/> over the window.</summary>
+    public async Task<List<ViewerQuerySnapshotRow>> GetQuerySnapshotsByWaitTypeAsync(
+        int serverId, string waitType, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        await using var command = _dataSource.CreateCommand(QuerySnapshotsByWaitTypeSql);
+        AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = waitType });
         return await ReadQuerySnapshotsAsync(command, cancellationToken);
     }
 

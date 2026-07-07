@@ -40,6 +40,14 @@ public partial class ViewerServerTab
     private ChartHoverHelper? _currentWaitsDurationHover;
     private ChartHoverHelper? _currentWaitsBlockedHover;
 
+    /* Blocking sub-tab order (mirrors LoadBlockingAsync's switch + Lite's BlockingSubTabControl): Trends,
+       Current Waits, Blocked Process Reports, Deadlocks. Named so the chart drill-downs
+       (OnBlockingDrillDown / OnDeadlockDrillDown) target the right sub-tab without a magic literal. */
+    private const int BlockingTrendsSubTabIndex = 0;
+    private const int BlockingCurrentWaitsSubTabIndex = 1;
+    private const int BlockedProcessReportsSubTabIndex = 2;
+    private const int DeadlocksSubTabIndex = 3;
+
     /// <summary>
     /// Applies the shared chrome to the five Blocking trend charts and wires their hover tooltips
     /// (Lite's per-chart units). Called from the constructor after <c>InitializeComponent</c> so the
@@ -84,6 +92,13 @@ public partial class ViewerServerTab
             return;
         }
 
+        /* A chart drill-down (Blocking / Deadlocks trend charts) switches this sub-tab programmatically and
+           runs its own targeted read; skip the generic loader so it doesn't race that. */
+        if (_suppressDrillDownAutoRefresh)
+        {
+            return;
+        }
+
         await RefreshActiveInnerTabAsync();
     }
 
@@ -99,7 +114,7 @@ public partial class ViewerServerTab
 
         switch (BlockingSubTabs.SelectedIndex)
         {
-            case 0: // Trends
+            case BlockingTrendsSubTabIndex:
                 var lockWaitTask = _dataService.GetLockWaitTrendAsync(_server.ServerId, startUtc, endUtc);
                 var blockingTask = _dataService.GetBlockingTrendAsync(_server.ServerId, startUtc, endUtc);
                 var deadlockTask = _dataService.GetDeadlockTrendAsync(_server.ServerId, startUtc, endUtc);
@@ -110,7 +125,7 @@ public partial class ViewerServerTab
                 RenderBlockingTrendChart(blocking);
                 RenderDeadlockTrendChart(deadlocks);
                 break;
-            case 1: // Current Waits
+            case BlockingCurrentWaitsSubTabIndex:
                 var durationTask = _dataService.GetWaitingTaskTrendAsync(_server.ServerId, startUtc, endUtc);
                 var blockedTask = _dataService.GetBlockedSessionTrendAsync(_server.ServerId, startUtc, endUtc);
                 var duration = await durationTask;
@@ -118,10 +133,10 @@ public partial class ViewerServerTab
                 RenderCurrentWaitsDurationChart(duration);
                 RenderCurrentWaitsBlockedChart(blocked);
                 break;
-            case 2: // Blocked Process Reports
+            case BlockedProcessReportsSubTabIndex:
                 await LoadBlockedProcessReportsAsync(startUtc, endUtc);
                 break;
-            case 3: // Deadlocks
+            case DeadlocksSubTabIndex:
             default:
                 await LoadDeadlocksAsync(startUtc, endUtc);
                 break;

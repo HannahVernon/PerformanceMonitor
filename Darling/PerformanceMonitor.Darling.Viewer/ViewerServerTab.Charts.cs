@@ -22,9 +22,10 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// where Lite shifts by its per-server <c>UtcOffsetMinutes</c> (CPU plots the raw server-local
 /// sample_time directly), the viewer has no server-offset concept, so every point runs through
 /// <see cref="ViewerTimeHelper.ForDisplay"/> — the naive-UTC-to-viewer-local convention the shell's
-/// Overview charts already use. Lite's per-chart context menu and "Show Active Queries at This Time"
-/// drill-down are intentionally NOT ported (the viewer has no drill-down surfaces yet); the hover
-/// tooltips are kept. Chart chrome/legend/line polish flow through the shared <see cref="ChartStyle"/>
+/// Overview charts already use. The hover tooltips are kept, and Lite's per-chart "Show Active Queries at
+/// This Time" drill-down IS now ported (the right-click menu is wired in <c>ViewerServerTab.DrillDown.cs</c>;
+/// Lite's ContextMenuHelper save/export chrome remains Lite-only). Chart chrome/legend/line polish flow
+/// through the shared <see cref="ChartStyle"/>
 /// / <see cref="ChartPalette"/> and the <c>ViewerServerTab.ChartHelpers.cs</c> bridge, exactly as in
 /// Lite.
 /// </summary>

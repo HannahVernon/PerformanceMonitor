@@ -93,11 +93,14 @@ public partial class ViewerServerTab : UserControl
         InitializeFilterManagers();
 
         /* Overview lanes (copied from Lite): init the data service + server up front so the lanes theme
-           their chrome and wire the correlated crosshair before the first load. The lanes' own
-           "Show Active Queries at This Time" drill-down event is deliberately NOT wired — the viewer has
-           no Active Queries surface yet (deferred). ThemeManager is fixed to Dark, so the shared chart
-           chrome applies without any per-control theme plumbing. */
+           their chrome and wire the correlated crosshair before the first load. Wire the lanes' own
+           right-click "Show Active Queries at This Time" drill-down (every lane: CPU / Wait Stats /
+           Blocking / Buffer Pool / I/O Latency) to the Active Queries loader — the lanes plot X through
+           ViewerTimeHelper.ForDisplay, so the event's argument is display-time, exactly what
+           OnActiveQueriesDrillDown converts back to naive UTC. ThemeManager is fixed to Dark, so the shared
+           chart chrome applies without any per-control theme plumbing. */
         OverviewLanes.Initialize(_dataService, _server.ServerId);
+        OverviewLanes.ShowActiveQueriesRequested += OnActiveQueriesDrillDown;
 
         /* CPU + tempdb inner-tab charts (copied from Lite): theme up front + wire hover. */
         InitializeCpuTempDbCharts();
@@ -155,6 +158,12 @@ public partial class ViewerServerTab : UserControl
            ViewerTimeHelper.CurrentDisplayMode from ViewerAppSettings on startup). Suppressed inside
            SetDisplayModeSelection, and the handler no-ops before IsLoaded anyway, so this drives no reload. */
         SetDisplayModeSelection(ViewerTimeHelper.CurrentDisplayMode);
+
+        /* Right-click chart drill-downs (ViewerServerTab.DrillDown.cs) + slicer overlay-on-select
+           (ViewerServerTab.SlicerOverlay.cs). Wired LAST — after every Initialize*Charts has created its
+           hover helpers, which the drill-down menus read for the nearest-series time. */
+        WireChartDrillDowns();
+        WireSlicerOverlays();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
@@ -174,6 +183,13 @@ public partial class ViewerServerTab : UserControl
     private async void InnerTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, InnerTabs) || !IsLoaded)
+        {
+            return;
+        }
+
+        /* A drill-down navigation switches the inner tab programmatically and runs its own targeted read;
+           skip the generic loader so it doesn't race that (mirrors the sub-tab handlers' guard). */
+        if (_suppressDrillDownAutoRefresh)
         {
             return;
         }
