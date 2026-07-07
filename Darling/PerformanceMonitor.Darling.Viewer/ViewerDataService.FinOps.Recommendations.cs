@@ -32,9 +32,12 @@ namespace PerformanceMonitor.Darling.Viewer;
  *     Dev/test detection matches the collected database name list.
  *   - Lite's sp_IndexCleanup-existence check (check 4) is DROPPED — Darling has native monitor-side Index Analysis
  *     (the FinOps Index Analysis sub-tab, #1387), so the "install sp_IndexCleanup" recommendation is obsolete.
- *   - AG-topology nuance (secondary-replica branch, advanced-AG downgrade caveat) is NOT reproduced: Darling does
- *     not collect Availability Group state, so the audit proceeds as "Standalone" (Lite's own fallback) and notes
- *     the limitation in the finding Detail. No AG data is invented.
+ *   - AG-topology nuance (secondary-replica branch, advanced-AG downgrade caveat, AG-driven confidence downgrades)
+ *     IS reproduced from the collected server_properties.ag_replica_role + is_hadr_enabled (ServerPropertiesCollector
+ *     resolves the role live from sys.dm_hadr_availability_replica_states; is_hadr_enabled is SERVERPROPERTY). The one
+ *     Lite input Darling does not collect is the non-basic AG COUNT (sys.availability_groups.basic_features); on an
+ *     Enterprise instance a hosted AG (role = Primary) is effectively always advanced — Basic AGs are Standard-only —
+ *     so the collected primary role stands in for Lite's advanced-AG count. No AG data is invented.
  * The per-check threshold/severity/confidence logic and wording are ported VERBATIM from Lite (not re-tuned). Each
  * check is independently try/caught (Lite's structure) so one failing read never suppresses the others. SQL kept
  * in public const so tests pin it.
@@ -47,20 +50,16 @@ public sealed partial class ViewerDataService
         new(StringComparer.OrdinalIgnoreCase) { "master", "model", "msdb", "tempdb" };
 
     /// <summary>
-    /// The note appended to the edition-downgrade guidance recs, since Darling collects no Availability Group
-    /// state: the headless audit can't tell a secondary replica or an advanced (non-Basic) AG from a standalone.
+    /// The server's latest collected edition / product version / logical CPU count for the license audit, plus the
+    /// collected AG replica role + Always On master switch that drive the AG-aware branches. $1 server_id.
     /// </summary>
-    private const string AvailabilityGroupNotEvaluatedNote =
-        " Note: Availability Group topology isn't evaluated in headless collection — every replica in an AG must " +
-        "run the same edition, so confirm this instance is standalone (or evaluate the whole group on its primary) " +
-        "before any edition change.";
-
-    /// <summary>The server's latest collected edition / product version / logical CPU count for the license audit. $1 server_id.</summary>
     public const string RecommendationsEditionFactsSql = @"
 SELECT
     edition,
     product_version,
-    cpu_count
+    cpu_count,
+    ag_replica_role,
+    is_hadr_enabled
 FROM server_properties
 WHERE server_id = $1
 ORDER BY collection_time DESC
@@ -126,10 +125,15 @@ WHERE server_id = $1
 AND   collection_time >= $2
 HAVING COUNT(*) >= 24";
 
-    /// <summary>The server's latest collected edition facts for the license audit (null when nothing collected yet).</summary>
-    public readonly record struct EditionFacts(string Edition, int MajorVersion, int CpuCount);
+    /// <summary>
+    /// The server's latest collected edition facts for the license audit (null when nothing collected yet), including
+    /// the collected Availability Group replica role (<c>Primary</c> / <c>Secondary</c> / <c>Standalone</c>) and the
+    /// Always On master switch (<c>is_hadr_enabled</c>) that drive the AG-aware edition/license branches.
+    /// </summary>
+    public readonly record struct EditionFacts(
+        string Edition, int MajorVersion, int CpuCount, string AgReplicaRole, bool IsHadrEnabled);
 
-    /// <summary>Reads the server's latest collected edition / product-version-major / CPU count, or null when no server_properties row exists yet.</summary>
+    /// <summary>Reads the server's latest collected edition / product-version-major / CPU count + AG role / HADR flag, or null when no server_properties row exists yet.</summary>
     public async Task<EditionFacts?> GetEditionFactsAsync(int serverId, CancellationToken cancellationToken = default)
     {
         await using var command = _dataSource.CreateCommand(RecommendationsEditionFactsSql);
@@ -144,7 +148,13 @@ HAVING COUNT(*) >= 24";
         var edition = reader.IsDBNull(0) ? "" : reader.GetString(0);
         var productVersion = reader.IsDBNull(1) ? null : reader.GetString(1);
         var cpuCount = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2), CultureInfo.InvariantCulture);
-        return new EditionFacts(edition, ParseMajorVersion(productVersion), cpuCount);
+        /* The collected AG state: ServerPropertiesCollector resolves ag_replica_role live from
+           sys.dm_hadr_availability_replica_states, and is_hadr_enabled is SERVERPROPERTY('IsHadrEnabled').
+           Absent/NULL (non-AG platforms, Azure SQL DB, nothing collected yet) => the Standalone / feature-off
+           fallback — exactly Lite's own behaviour where the AG DMVs are unavailable. */
+        var agReplicaRole = reader.IsDBNull(3) ? "Standalone" : reader.GetString(3);
+        var isHadrEnabled = !reader.IsDBNull(4) && reader.GetBoolean(4);
+        return new EditionFacts(edition, ParseMajorVersion(productVersion), cpuCount, agReplicaRole, isHadrEnabled);
     }
 
     /// <summary>
@@ -185,17 +195,23 @@ HAVING COUNT(*) >= 24";
     /// license-cost math). Returns an empty list for non-Enterprise editions. The full Enterprise branching is
     /// ported verbatim from Lite — 2019+ (TDE moved to Standard) vs pre-2019 (TDE is the last Enterprise-only
     /// blocker, read from <paramref name="tdeDbNames"/>), the 40%-of-budget downgrade estimate, and the
-    /// $5,000/core/year list-price core math — MINUS the AG-role nuance (Darling collects no AG state): the
-    /// secondary-replica branch and advanced-AG downgrade caveat are omitted, the downgrade-guidance recs carry
-    /// the <see cref="AvailabilityGroupNotEvaluatedNote"/>, and the AG-driven confidence downgrades collapse to
-    /// their standalone values (Lite's own fallback for AG-less platforms).
+    /// $5,000/core/year list-price core math — INCLUDING the AG-aware branches driven by the collected
+    /// <paramref name="agReplicaRole"/> + <paramref name="isHadrEnabled"/>: the Availability-Group secondary-replica
+    /// branch (a downgrade decision belongs to the whole group, evaluated on the primary — no savings estimate), the
+    /// advanced-AG Basic-AG-limitation downgrade caveat, and the AG-driven confidence downgrades. Lite gates the
+    /// caveat/confidence on <c>GetAdvancedAgCountAsync() &gt; 0</c> (the non-basic <c>sys.availability_groups</c>
+    /// count, which Darling does not collect); on an Enterprise instance a hosted AG (role = <c>Primary</c>) is
+    /// effectively always advanced — Basic AGs are Standard-only — so the collected primary role + HADR flag is the
+    /// faithful stand-in. Standalone / feature-off keeps the standalone confidence and adds no caveat.
     /// </summary>
     public static List<RecommendationRow> BuildEditionAuditRecommendations(
         string edition,
         int majorVersion,
         int cpuCount,
         IReadOnlyList<string> tdeDbNames,
-        decimal monthlyCost)
+        decimal monthlyCost,
+        string agReplicaRole,
+        bool isHadrEnabled)
     {
         var recommendations = new List<RecommendationRow>();
 
@@ -204,21 +220,63 @@ HAVING COUNT(*) >= 24";
             return recommendations;
         }
 
+        var agRole = string.IsNullOrWhiteSpace(agReplicaRole) ? "Standalone" : agReplicaRole.Trim();
+        var isSecondary = string.Equals(agRole, "Secondary", StringComparison.OrdinalIgnoreCase);
+
+        /* Lite computes advancedAgCount = GetAdvancedAgCountAsync() (COUNT of sys.availability_groups WHERE
+           basic_features = 0) and skips the probe on a secondary. Darling's collected stand-in: an Enterprise
+           instance acting as an AG PRIMARY with Always On enabled — a Basic AG is a Standard-Edition-only feature,
+           so an Enterprise-hosted AG is effectively always advanced. Secondary gets its own branch below (Lite
+           forces advancedAgCount = 0 there); Standalone / feature-off => no caveat, no confidence downgrade. */
+        var hasAdvancedAg = !isSecondary
+            && string.Equals(agRole, "Primary", StringComparison.OrdinalIgnoreCase)
+            && isHadrEnabled;
+
+        /* Standard Edition offers only Basic Availability Groups, so caveat any edition-downgrade guidance when this
+           instance hosts an (advanced) AG: a downgrade would force the workload onto Basic AG limitations (#1085).
+           Lite names the advanced-AG count; Darling has only the collected role, so it names the primary replica. */
+        var agDowngradeCaveat = hasAdvancedAg
+            ? " Note: this instance is the primary replica of an Always On Availability Group. Standard Edition " +
+              "supports only Basic Availability Groups, which are limited to two replicas, a single database per " +
+              "group, and provide no readable secondary or backups on the secondary " +
+              "(see https://learn.microsoft.com/en-us/sql/database-engine/availability-groups/windows/basic-availability-groups-always-on-availability-groups#limitations). " +
+              "Factor this into any downgrade decision."
+            : "";
+
+        if (isSecondary)
+        {
+            /* On an Availability Group secondary, a "downgrade to Standard to save money" recommendation is
+               misleading: every replica in an AG must run the same SQL Server edition, so the decision belongs to
+               the AG as a whole and must be evaluated on the primary. Emit an informational note instead and skip
+               the savings estimates (#980). */
+            recommendations.Add(new RecommendationRow
+            {
+                Category = "Licensing",
+                Severity = "Low",
+                Confidence = "High",
+                Finding = "Enterprise Edition — Availability Group secondary replica",
+                Detail = "This instance is currently a secondary replica in an Availability Group. " +
+                         "Every replica in an AG must run the same SQL Server edition, so edition and " +
+                         "licensing decisions apply to the whole group and should be evaluated on the " +
+                         "primary replica. A secondary used only for failover may also be covered by " +
+                         "Software Assurance rather than separately licensed."
+            });
+        }
         // SQL Server 2019 (major version 15) moved TDE to Standard Edition, so on 2019+ we give
         // version-appropriate guidance rather than a TDE-specific check.
-        if (majorVersion >= 15)
+        else if (majorVersion >= 15)
         {
             recommendations.Add(new RecommendationRow
             {
                 Category = "Licensing",
                 Severity = "High",
-                Confidence = "Medium",
+                Confidence = hasAdvancedAg ? "Low" : "Medium",
                 Finding = "Enterprise Edition may not be required",
                 Detail = "Starting with SQL Server 2019, most previously Enterprise-only features " +
                          "(including TDE, compression, partitioning, and columnstore) are available " +
                          "in Standard Edition. Review whether remaining Enterprise-only features " +
                          "(such as Always On availability groups with multiple secondaries) are in use " +
-                         "before considering a downgrade to Standard Edition." + AvailabilityGroupNotEvaluatedNote,
+                         "before considering a downgrade to Standard Edition." + agDowngradeCaveat,
                 EstMonthlySavings = monthlyCost > 0 ? monthlyCost * 0.40m : null
             });
         }
@@ -229,12 +287,14 @@ HAVING COUNT(*) >= 24";
             {
                 Category = "Licensing",
                 Severity = "High",
-                Confidence = "High",
-                Finding = "Enterprise Edition with no Enterprise-only features detected",
+                Confidence = hasAdvancedAg ? "Medium" : "High",
+                Finding = hasAdvancedAg
+                    ? "Enterprise Edition — review Availability Group requirements before downgrading"
+                    : "Enterprise Edition with no Enterprise-only features detected",
                 Detail = "No databases use Transparent Data Encryption (TDE), the only feature " +
                          "still restricted to Enterprise Edition since SQL Server 2016 SP1. " +
                          "Review whether Standard Edition would meet workload requirements for potential license savings." +
-                         AvailabilityGroupNotEvaluatedNote,
+                         agDowngradeCaveat,
                 EstMonthlySavings = monthlyCost > 0 ? monthlyCost * 0.40m : null
             });
         }
@@ -336,7 +396,8 @@ HAVING COUNT(*) >= 24";
                 }
 
                 recommendations.AddRange(
-                    BuildEditionAuditRecommendations(f.Edition, f.MajorVersion, f.CpuCount, tdeDbNames, monthlyCost));
+                    BuildEditionAuditRecommendations(
+                        f.Edition, f.MajorVersion, f.CpuCount, tdeDbNames, monthlyCost, f.AgReplicaRole, f.IsHadrEnabled));
             }
         }
         catch (Exception ex)

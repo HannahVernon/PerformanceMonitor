@@ -33,35 +33,37 @@ public sealed class ViewerFinOpsRecommendationsTests
     public void EditionAudit_NonEnterprise_ReturnsNoRecommendations()
     {
         var recs = ViewerDataService.BuildEditionAuditRecommendations(
-            "Standard Edition (64-bit)", majorVersion: 16, cpuCount: 8, Array.Empty<string>(), monthlyCost: 1000m);
+            "Standard Edition (64-bit)", majorVersion: 16, cpuCount: 8, Array.Empty<string>(), monthlyCost: 1000m,
+            agReplicaRole: "Standalone", isHadrEnabled: false);
 
         Assert.Empty(recs);
     }
 
     [Fact]
-    public void EditionAudit_Enterprise2019Plus_SuggestsDowngrade_WithBudgetSavings_AndAgNote()
+    public void EditionAudit_Enterprise2019Plus_Standalone_SuggestsDowngrade_WithBudgetSavings_NoAgCaveat()
     {
         var recs = ViewerDataService.BuildEditionAuditRecommendations(
-            "Enterprise Edition (64-bit)", majorVersion: 16, cpuCount: 16, Array.Empty<string>(), monthlyCost: 1000m);
+            "Enterprise Edition (64-bit)", majorVersion: 16, cpuCount: 16, Array.Empty<string>(), monthlyCost: 1000m,
+            agReplicaRole: "Standalone", isHadrEnabled: false);
 
         var rec = Assert.Single(recs);
         Assert.Equal("Licensing", rec.Category);
         Assert.Equal("High", rec.Severity);
-        /* AG state isn't collected, so the AG-driven confidence downgrade collapses to the standalone value. */
+        /* Standalone (no AG) => the AG-driven confidence downgrade does not apply; standalone confidence stands. */
         Assert.Equal("Medium", rec.Confidence);
         Assert.Equal("Enterprise Edition may not be required", rec.Finding);
         Assert.Equal(400m, rec.EstMonthlySavings); // 1000 * 0.40
-        /* The AG-nuance deferral note is present; the AG-secondary / advanced-AG caveats are NOT invented. */
-        Assert.Contains("Availability Group topology isn't evaluated", rec.Detail, StringComparison.Ordinal);
+        /* No AG present => no secondary branch, no Basic-AG caveat. */
         Assert.DoesNotContain("secondary replica", rec.Detail, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Basic Availability Groups", rec.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void EditionAudit_EnterprisePre2019_NoTde_SuggestsDowngrade_HighConfidence()
+    public void EditionAudit_EnterprisePre2019_NoTde_Standalone_SuggestsDowngrade_HighConfidence()
     {
         var recs = ViewerDataService.BuildEditionAuditRecommendations(
-            "Enterprise Edition (64-bit)", majorVersion: 13, cpuCount: 8, Array.Empty<string>(), monthlyCost: 1000m);
+            "Enterprise Edition (64-bit)", majorVersion: 13, cpuCount: 8, Array.Empty<string>(), monthlyCost: 1000m,
+            agReplicaRole: "Standalone", isHadrEnabled: false);
 
         var rec = Assert.Single(recs);
         Assert.Equal("High", rec.Severity);
@@ -69,7 +71,7 @@ public sealed class ViewerFinOpsRecommendationsTests
         Assert.Equal("Enterprise Edition with no Enterprise-only features detected", rec.Finding);
         Assert.Equal(400m, rec.EstMonthlySavings);
         Assert.Contains("Transparent Data Encryption", rec.Detail, StringComparison.Ordinal);
-        Assert.Contains("Availability Group topology isn't evaluated", rec.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("Basic Availability Groups", rec.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -77,7 +79,8 @@ public sealed class ViewerFinOpsRecommendationsTests
     {
         var tdeDbs = new[] { "Sales", "Payroll" };
         var recs = ViewerDataService.BuildEditionAuditRecommendations(
-            "Enterprise Edition (64-bit)", majorVersion: 14, cpuCount: 8, tdeDbs, monthlyCost: 1000m);
+            "Enterprise Edition (64-bit)", majorVersion: 14, cpuCount: 8, tdeDbs, monthlyCost: 1000m,
+            agReplicaRole: "Standalone", isHadrEnabled: false);
 
         Assert.Equal(2, recs.Count);
 
@@ -102,11 +105,100 @@ public sealed class ViewerFinOpsRecommendationsTests
     public void EditionAudit_ZeroBudget_OmitsSavingsEstimate()
     {
         var recs = ViewerDataService.BuildEditionAuditRecommendations(
-            "Enterprise Edition (64-bit)", majorVersion: 15, cpuCount: 8, Array.Empty<string>(), monthlyCost: 0m);
+            "Enterprise Edition (64-bit)", majorVersion: 15, cpuCount: 8, Array.Empty<string>(), monthlyCost: 0m,
+            agReplicaRole: "Standalone", isHadrEnabled: false);
 
         var rec = Assert.Single(recs);
         Assert.Null(rec.EstMonthlySavings);
         Assert.Equal("", rec.EstMonthlySavingsDisplay);
+    }
+
+    // ── Check 1: the AG-aware branches restored from the collected ag_replica_role + is_hadr_enabled ──
+    // (Lite's LocalDataService.FinOps.Recommendations.cs GetAgReplicaRoleAsync / GetAdvancedAgCountAsync branches.)
+
+    [Fact]
+    public void EditionAudit_Enterprise2019Plus_PrimaryReplica_DowngradesConfidenceToLow_AndAddsBasicAgCaveat()
+    {
+        // AG primary on Enterprise => Lite's advancedAgCount > 0 stand-in: confidence Low + Basic-AG caveat.
+        var recs = ViewerDataService.BuildEditionAuditRecommendations(
+            "Enterprise Edition (64-bit)", majorVersion: 16, cpuCount: 16, Array.Empty<string>(), monthlyCost: 1000m,
+            agReplicaRole: "Primary", isHadrEnabled: true);
+
+        var rec = Assert.Single(recs);
+        Assert.Equal("Enterprise Edition may not be required", rec.Finding);
+        Assert.Equal("High", rec.Severity);
+        Assert.Equal("Low", rec.Confidence);                 // downgraded from Medium by the AG signal
+        Assert.Equal(400m, rec.EstMonthlySavings);           // savings still emitted for a primary/standalone
+        Assert.Contains("Basic Availability Groups", rec.Detail, StringComparison.Ordinal);
+        Assert.Contains("primary replica of an Always On Availability Group", rec.Detail, StringComparison.Ordinal);
+        Assert.Contains("basic-availability-groups", rec.Detail, StringComparison.Ordinal); // the MS Learn link
+    }
+
+    [Fact]
+    public void EditionAudit_EnterprisePre2019_NoTde_PrimaryReplica_ConfidenceMedium_AndReviewFinding()
+    {
+        var recs = ViewerDataService.BuildEditionAuditRecommendations(
+            "Enterprise Edition (64-bit)", majorVersion: 13, cpuCount: 8, Array.Empty<string>(), monthlyCost: 1000m,
+            agReplicaRole: "Primary", isHadrEnabled: true);
+
+        var rec = Assert.Single(recs);
+        Assert.Equal("High", rec.Severity);
+        Assert.Equal("Medium", rec.Confidence);              // downgraded from High by the AG signal
+        Assert.Equal("Enterprise Edition — review Availability Group requirements before downgrading", rec.Finding);
+        Assert.Equal(400m, rec.EstMonthlySavings);
+        Assert.Contains("Basic Availability Groups", rec.Detail, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(16)] // 2019+
+    [InlineData(13)] // pre-2019
+    public void EditionAudit_SecondaryReplica_EmitsSecondaryNote_NoSavings_RegardlessOfVersion(int majorVersion)
+    {
+        // A secondary replica short-circuits every version/TDE branch: one informational note, no savings.
+        var recs = ViewerDataService.BuildEditionAuditRecommendations(
+            "Enterprise Edition (64-bit)", majorVersion, cpuCount: 16, new[] { "Sales" }, monthlyCost: 1000m,
+            agReplicaRole: "Secondary", isHadrEnabled: true);
+
+        var rec = Assert.Single(recs);
+        Assert.Equal("Licensing", rec.Category);
+        Assert.Equal("Low", rec.Severity);
+        Assert.Equal("High", rec.Confidence);
+        Assert.Equal("Enterprise Edition — Availability Group secondary replica", rec.Finding);
+        Assert.Null(rec.EstMonthlySavings);                  // decision belongs to the AG on the primary
+        Assert.Contains("secondary replica", rec.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("same SQL Server edition", rec.Detail, StringComparison.Ordinal);
+        // The secondary branch never carries the primary Basic-AG caveat.
+        Assert.DoesNotContain("primary replica of an Always On", rec.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EditionAudit_PrimaryRole_ButHadrDisabled_NoCaveat_ConfidenceStaysStandalone()
+    {
+        // is_hadr_enabled is load-bearing: a "Primary" role with the Always On master switch off does not
+        // trigger the AG caveat/confidence downgrade (defensive — the two collected columns should agree).
+        var recs = ViewerDataService.BuildEditionAuditRecommendations(
+            "Enterprise Edition (64-bit)", majorVersion: 16, cpuCount: 16, Array.Empty<string>(), monthlyCost: 1000m,
+            agReplicaRole: "Primary", isHadrEnabled: false);
+
+        var rec = Assert.Single(recs);
+        Assert.Equal("Medium", rec.Confidence);              // standalone confidence, not the AG-downgraded Low
+        Assert.DoesNotContain("Basic Availability Groups", rec.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EditionAudit_NullOrBlankAgRole_TreatedAsStandalone()
+    {
+        // A missing collected role (older store / non-AG platform) falls back to Standalone — no caveat, no throw.
+        foreach (var role in new[] { "", "   " })
+        {
+            var recs = ViewerDataService.BuildEditionAuditRecommendations(
+                "Enterprise Edition (64-bit)", majorVersion: 16, cpuCount: 16, Array.Empty<string>(), monthlyCost: 1000m,
+                agReplicaRole: role, isHadrEnabled: false);
+
+            var rec = Assert.Single(recs);
+            Assert.Equal("Medium", rec.Confidence);
+            Assert.DoesNotContain("Basic Availability Groups", rec.Detail, StringComparison.Ordinal);
+        }
     }
 
     // ── Check 1 data: TDE detection from collected database_config.is_encrypted ──
@@ -222,6 +314,28 @@ public sealed class ViewerFinOpsRecommendationsTests
         Assert.Contains("edition", sql, StringComparison.Ordinal);
         Assert.Contains("product_version", sql, StringComparison.Ordinal);
         Assert.Contains("cpu_count", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EditionFactsSql_SelectsCollectedAgRoleAndHadrFlag()
+    {
+        // Read-path pin: the AG-aware edition branches need the collected ag_replica_role + is_hadr_enabled, so the
+        // edition-facts projection must SELECT them (ServerPropertiesCollector writes both; the base table exposes
+        // them — the FinOps Server Inventory read already reads the same two columns).
+        var sql = ViewerDataService.RecommendationsEditionFactsSql;
+        Assert.Contains("ag_replica_role", sql, StringComparison.Ordinal);
+        Assert.Contains("is_hadr_enabled", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ServerPropertiesCollector_WritesAgRoleAndHadrColumns()
+    {
+        // The collected columns the AG branches depend on exist in the generated server_properties DDL — proving the
+        // "Darling collects no AG state" premise false (ServerPropertiesCollector resolves ag_replica_role live from
+        // sys.dm_hadr_availability_replica_states and writes is_hadr_enabled from SERVERPROPERTY).
+        var serverProps = PgSchemaGenerator.CreateTable(ServerPropertiesCollector.Instance);
+        Assert.Contains("ag_replica_role", serverProps, StringComparison.Ordinal);
+        Assert.Contains("is_hadr_enabled", serverProps, StringComparison.Ordinal);
     }
 
     [Fact]
