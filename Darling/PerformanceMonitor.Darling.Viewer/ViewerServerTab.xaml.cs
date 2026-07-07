@@ -56,16 +56,22 @@ public partial class ViewerServerTab : UserControl
     private const int TempDbInnerTabIndex = 8;
     private const int BlockingInnerTabIndex = 9;
     private const int PerfmonInnerTabIndex = 10;
-    private const int RunningJobsInnerTabIndex = 11;
-    private const int ConfigurationInnerTabIndex = 12;
-    private const int DailySummaryInnerTabIndex = 13;
-    private const int HealthInnerTabIndex = 14;
+
+    /* Session Stats sits BETWEEN Perfmon and Running Jobs — the Dashboard-parity port of
+       ResourceMetricsContent's Session Stats sub-tab (which the Dashboard places right after Perfmon). Not a
+       Lite ServerTab tab (it is Dashboard-only), so it has no Lite position to mirror; a new top-level tab,
+       and everything after it renumbers by one. */
+    private const int SessionStatsInnerTabIndex = 11;
+    private const int RunningJobsInnerTabIndex = 12;
+    private const int ConfigurationInnerTabIndex = 13;
+    private const int DailySummaryInnerTabIndex = 14;
+    private const int HealthInnerTabIndex = 15;
 
     /* System Events is appended AFTER Collection Health (system_health parity, Stage 2b): six parse-on-read
        sub-tabs, one per unique system_health warning category. FinOps used to sit between them as a per-server
        inner tab, but it was promoted to a top-level cross-server aggregate tab (FinOpsTab, in MainWindow's
        MainTabs), so System Events now takes Collection Health's next slot. */
-    private const int SystemEventsInnerTabIndex = 15;
+    private const int SystemEventsInnerTabIndex = 16;
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
@@ -118,6 +124,10 @@ public partial class ViewerServerTab : UserControl
         /* Latches & Spinlocks inner-tab charts (latch_stats/spinlock_stats parity): the two per-second
            contention trend charts, themed up front + hover. */
         InitializeLatchSpinlockCharts();
+
+        /* Session Stats inner-tab chart (session_summary_stats parity): the server-wide session-count trend,
+           themed up front + hover. */
+        InitializeSessionStatsChart();
 
         /* File I/O + Blocking-trend inner-tab charts (copied from Lite): same up-front theme + hover. */
         InitializeFileIoCharts();
@@ -272,6 +282,9 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case PerfmonInnerTabIndex:
                     await LoadPerfmonAsync();
+                    break;
+                case SessionStatsInnerTabIndex:
+                    await LoadSessionStatsAsync();
                     break;
                 case RunningJobsInnerTabIndex:
                     await LoadRunningJobsAsync();
