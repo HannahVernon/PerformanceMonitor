@@ -33,10 +33,12 @@ public partial class ViewerServerTab
     private string _activeQueriesSlicerMetric = "Sessions";
     private List<TimeSliceBucket>? _activeQueriesSlicerData;
 
-    /* Set around a programmatic switch to the Active Queries sub-tab (a heatmap drill-down) so the
-       sub-tab SelectionChanged auto-refresh doesn't clobber the drill-down's own filtered snapshot via
-       an async race — Lite's _suppressActiveQueriesAutoRefresh. */
-    private bool _suppressActiveQueriesAutoRefresh;
+    /* Set around a programmatic drill-down navigation (heatmap / per-chart "Show Active Queries at This
+       Time" / Overview lane) so the inner-tab AND sub-tab SelectionChanged auto-refreshes don't clobber the
+       drill-down's own filtered read via an async race — Lite's _suppressActiveQueriesAutoRefresh. Gated in
+       InnerTabs_SelectionChanged, QueriesSubTabs_SelectionChanged, and BlockingSubTabs_SelectionChanged
+       (the Blocking/Deadlock chart drills target the Blocking tab). */
+    private bool _suppressDrillDownAutoRefresh;
     /* OpenPlanTab is implemented by the plan-host partial (ViewerServerTab.Plans.cs). */
 
     /// <summary>Wires the Active Queries slicer's RangeChanged (drag re-reads the grid). Called from
@@ -167,14 +169,19 @@ public partial class ViewerServerTab
     /// </summary>
     private async Task NavigateToActiveQueriesForWindowAsync(DateTime fromUtc, DateTime toUtc, string indicator)
     {
-        _suppressActiveQueriesAutoRefresh = true;
+        _suppressDrillDownAutoRefresh = true;
         try
         {
+            /* Switch to the Queries inner tab first (a no-op when the caller is already there — the heatmap
+               sub-tab lives ON the Queries tab; a CPU/Memory/tempdb/Perfmon chart or an Overview lane does
+               not), then to the Active Queries sub-tab. Both switches are suppressed so the shell's generic
+               inner-tab loader and the sub-tab loader don't race this targeted read. */
+            InnerTabs.SelectedIndex = QueriesInnerTabIndex;
             QueriesSubTabControl.SelectedIndex = ActiveQueriesSubTabIndex;
         }
         finally
         {
-            _suppressActiveQueriesAutoRefresh = false;
+            _suppressDrillDownAutoRefresh = false;
         }
 
         var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, fromUtc, toUtc);

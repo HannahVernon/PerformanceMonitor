@@ -23,10 +23,11 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <see cref="ViewerDataService.GetQueryHeatmapAsync"/> Postgres. The only render-body change is the
 /// time axis (Lite's per-server <c>UtcOffsetMinutes</c> shift → <see cref="ViewerTimeHelper.ForDisplay"/>).
 /// The right-click "Show Active Queries at This Time" drill-down IS wired here (the task calls for it, and
-/// Active Queries is a sibling sub-tab of this one) — it's the one viewer chart with a context menu, built
-/// inline (Lite's <c>ContextMenuHelper</c> is Lite-only and can't be referenced): ScottPlot's default
-/// right-click responses are removed and a single-item WPF menu takes over, dropping Lite's save/export
-/// items (the viewer never ported chart save/export).
+/// Active Queries is a sibling sub-tab of this one), built inline (Lite's <c>ContextMenuHelper</c> is
+/// Lite-only and can't be referenced): ScottPlot's default right-click responses are removed
+/// (<see cref="RemoveScottPlotContextMenuResponses"/>) and a single-item WPF menu takes over, dropping Lite's
+/// save/export items (the viewer never ported chart save/export). The other charts' drill-downs share this
+/// path — see <c>ViewerServerTab.DrillDown.cs</c>.
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -113,11 +114,9 @@ public partial class ViewerServerTab
                 _ = OnHeatmapDrillDown(bucketTime);
         };
 
-        /* Take over right-click from ScottPlot's default menu/pan so our WPF menu shows (Lite's approach). */
-        QueryHeatmapChart.UserInputProcessor.UserActionResponses.RemoveAll(r =>
-            r.GetType().Name.Contains("Context", StringComparison.Ordinal) ||
-            r.GetType().Name.Contains("RightClick", StringComparison.Ordinal) ||
-            r.GetType().Name.Contains("Menu", StringComparison.Ordinal));
+        /* Take over right-click from ScottPlot's default menu/pan so our WPF menu shows (shared with the
+           per-chart drill-downs in ViewerServerTab.DrillDown.cs). */
+        RemoveScottPlotContextMenuResponses(QueryHeatmapChart);
         QueryHeatmapChart.PreviewMouseRightButtonDown += (_, e) =>
         {
             e.Handled = true;

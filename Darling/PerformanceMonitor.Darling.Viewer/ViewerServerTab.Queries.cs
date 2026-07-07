@@ -95,10 +95,10 @@ public partial class ViewerServerTab
         /* Comparison applies only to the three grid sub-tabs; disable the Compare combo elsewhere. */
         UpdateCompareDropdownState();
 
-        /* A heatmap drill-down switches to Active Queries programmatically and loads its own filtered
-           snapshot; skip the auto-refresh so it doesn't clobber that via an async race (Lite's guard,
-           set/cleared around the tab switch in NavigateToActiveQueriesForWindowAsync). */
-        if (_suppressActiveQueriesAutoRefresh)
+        /* A drill-down (heatmap / per-chart / Overview lane) switches to Active Queries programmatically and
+           loads its own filtered snapshot; skip the auto-refresh so it doesn't clobber that via an async race
+           (the guard is set/cleared around the tab switches in NavigateToActiveQueriesForWindowAsync). */
+        if (_suppressDrillDownAutoRefresh)
         {
             return;
         }
