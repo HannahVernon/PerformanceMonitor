@@ -41,22 +41,52 @@ public sealed class ViewerOverviewSqlTests
     }
 
     [Fact]
-    public void SummaryMemorySql_ReadsLatestTotalServerMemory_CastToDouble()
+    public void SummaryMemorySql_ReadsLatestTotalServerMemoryAndBufferPool_CastToDouble()
     {
         var sql = ViewerDataService.ServerSummaryMemorySql;
         Assert.Contains("FROM v_memory_stats", sql, StringComparison.Ordinal);
         Assert.Contains("CAST(total_server_memory_mb AS double precision)", sql, StringComparison.Ordinal);
+        Assert.Contains("CAST(buffer_pool_mb AS double precision)", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY collection_time DESC", sql, StringComparison.Ordinal);
         Assert.Contains("LIMIT 1", sql, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void SummaryBlockingSql_XeCount_FallsBackToDmvSnapshot_OverTheWindow()
+    public void SummaryMemoryPressureSql_SumsSemaphoreColumns_AtTheLatestCollection()
+    {
+        var sql = ViewerDataService.ServerSummaryMemoryPressureSql;
+        Assert.Contains("FROM v_memory_grant_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("SUM(waiter_count)", sql, StringComparison.Ordinal);
+        Assert.Contains("SUM(timeout_error_count_delta)", sql, StringComparison.Ordinal);
+        Assert.Contains("SUM(forced_grant_count_delta)", sql, StringComparison.Ordinal);
+        Assert.Contains("SUM(granted_memory_mb)", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        /* Latest collection instant = MAX(collection_time), summed across every pool at that instant. */
+        Assert.Contains("collection_time = (SELECT MAX(collection_time) FROM v_memory_grant_stats WHERE server_id = $1)", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SummaryThreadsSql_ReadsLatestSchedulerSnapshot_WorkerPressureColumns()
+    {
+        var sql = ViewerDataService.ServerSummaryThreadsSql;
+        Assert.Contains("FROM v_cpu_scheduler_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("max_workers_count", sql, StringComparison.Ordinal);
+        Assert.Contains("total_current_workers_count", sql, StringComparison.Ordinal);
+        Assert.Contains("total_runnable_tasks_count", sql, StringComparison.Ordinal);
+        Assert.Contains("total_work_queue_count", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY collection_time DESC", sql, StringComparison.Ordinal);
+        Assert.Contains("LIMIT 1", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SummaryBlockingSql_CountAndMaxWait_FromBothSources_OverTheWindow()
     {
         var sql = ViewerDataService.ServerSummaryBlockingSql;
-        /* COALESCE(NULLIF(xe,0), dmv) — Lite's fallback shape. */
-        Assert.Contains("COALESCE(NULLIF(", sql, StringComparison.Ordinal);
+        /* Count + worst wait from each source; the caller applies Lite's XE-preferred, DMV-fallback rule. */
+        Assert.Contains("COUNT(*)", sql, StringComparison.Ordinal);
+        Assert.Contains("MAX(wait_time_ms)", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_blocked_process_reports", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_dmv_blocking_snapshots", sql, StringComparison.Ordinal);
         Assert.Contains("event_time >= $2", sql, StringComparison.Ordinal);
@@ -88,6 +118,8 @@ public sealed class ViewerOverviewSqlTests
         {
             ViewerDataService.ServerSummaryCpuSql,
             ViewerDataService.ServerSummaryMemorySql,
+            ViewerDataService.ServerSummaryMemoryPressureSql,
+            ViewerDataService.ServerSummaryThreadsSql,
             ViewerDataService.ServerSummaryBlockingSql,
             ViewerDataService.ServerSummaryDeadlockSql,
             ViewerDataService.ServerSummaryLastCollectionSql,
@@ -108,7 +140,27 @@ public sealed class ViewerOverviewSqlTests
         Assert.Contains("other_process_cpu_utilization", cpu, StringComparison.Ordinal);
         Assert.Contains("sample_time", cpu, StringComparison.Ordinal);
 
-        Assert.Contains("total_server_memory_mb", PgSchemaGenerator.CreateTable(MemoryStatsCollector.Instance), StringComparison.Ordinal);
+        var memory = PgSchemaGenerator.CreateTable(MemoryStatsCollector.Instance);
+        Assert.Contains("total_server_memory_mb", memory, StringComparison.Ordinal);
+        Assert.Contains("buffer_pool_mb", memory, StringComparison.Ordinal);
+
+        /* Enrichment: the Threads row's four scheduler columns + the Memory row's semaphore columns. */
+        var scheduler = PgSchemaGenerator.CreateTable(CpuSchedulerStatsCollector.Instance);
+        Assert.Contains("max_workers_count", scheduler, StringComparison.Ordinal);
+        Assert.Contains("total_current_workers_count", scheduler, StringComparison.Ordinal);
+        Assert.Contains("total_runnable_tasks_count", scheduler, StringComparison.Ordinal);
+        Assert.Contains("total_work_queue_count", scheduler, StringComparison.Ordinal);
+
+        var grants = PgSchemaGenerator.CreateTable(MemoryGrantsCollector.Instance);
+        Assert.Contains("waiter_count", grants, StringComparison.Ordinal);
+        Assert.Contains("timeout_error_count_delta", grants, StringComparison.Ordinal);
+        Assert.Contains("forced_grant_count_delta", grants, StringComparison.Ordinal);
+        Assert.Contains("granted_memory_mb", grants, StringComparison.Ordinal);
+
+        /* Blocking duration comes from wait_time_ms on both blocking sources. */
+        Assert.Contains("wait_time_ms", PgSchemaGenerator.CreateTable(BlockedProcessReportCollector.Instance), StringComparison.Ordinal);
+        Assert.Contains("wait_time_ms", PgSchemaGenerator.CreateTable(DmvBlockingSnapshotCollector.Instance), StringComparison.Ordinal);
+
         Assert.Contains("event_time", PgSchemaGenerator.CreateTable(BlockedProcessReportCollector.Instance), StringComparison.Ordinal);
         Assert.Contains("event_time", PgSchemaGenerator.CreateTable(DmvBlockingSnapshotCollector.Instance), StringComparison.Ordinal);
         Assert.Contains("deadlock_time", PgSchemaGenerator.CreateTable(DeadlocksCollector.Instance), StringComparison.Ordinal);
@@ -120,7 +172,8 @@ public sealed class ViewerOverviewSqlTests
         var allMigrationSql = string.Concat(PgMigrations.Scripts.Select(m => m.Sql));
         foreach (var view in new[]
         {
-            "v_cpu_utilization_stats", "v_memory_stats", "v_blocked_process_reports",
+            "v_cpu_utilization_stats", "v_memory_stats", "v_memory_grant_stats",
+            "v_cpu_scheduler_stats", "v_blocked_process_reports",
             "v_dmv_blocking_snapshots", "v_deadlocks", "v_collection_log",
         })
         {
@@ -269,6 +322,181 @@ public sealed class ViewerServerSummaryDisplayTests
         calm.ApplyFreshness(Now);
         Assert.Equal("#FF2A2D35", calm.CardBorderBrush.Color.ToString());
     }
+
+    // ── Enrichment: per-metric severity bands (verbatim mirrors of ServerHealthStatus) ──────────────
+
+    [Theory]
+    [InlineData(40.0, HealthSeverity.Healthy)]
+    [InlineData(79.0, HealthSeverity.Healthy)]
+    [InlineData(80.0, HealthSeverity.Warning)]   // ServerHealthStatus.CpuSeverity: >=80 Warning
+    [InlineData(94.0, HealthSeverity.Warning)]
+    [InlineData(95.0, HealthSeverity.Critical)]  // >=95 Critical
+    [InlineData(100.0, HealthSeverity.Critical)]
+    public void CpuSeverity_BandsOnTotalCpu(double sqlCpu, HealthSeverity expected)
+    {
+        Assert.Equal(expected, new ServerSummaryItem { CpuPercent = sqlCpu }.CpuSeverity);
+    }
+
+    [Fact]
+    public void CpuSeverity_NoData_IsUnknown()
+    {
+        Assert.Equal(HealthSeverity.Unknown, new ServerSummaryItem().CpuSeverity);
+    }
+
+    [Fact]
+    public void CpuSeverity_UsesTotalNotSqlOnly()
+    {
+        // SQL 60 + other 40 = 100 total → Critical, though SQL alone is only Warning.
+        Assert.Equal(HealthSeverity.Critical,
+            new ServerSummaryItem { CpuPercent = 60, OtherProcessCpuPercent = 40 }.CpuSeverity);
+    }
+
+    [Fact]
+    public void ThreadsSeverity_NoSnapshot_IsUnknown_DisplayDashes()
+    {
+        var item = new ServerSummaryItem();  // TotalThreads null (e.g. Azure SQL DB — collector n/a)
+        Assert.Equal(HealthSeverity.Unknown, item.ThreadsSeverity);
+        Assert.Equal("--", item.ThreadsDisplay);
+        Assert.Equal("", item.ThreadsDetail);
+        Assert.Null(item.AvailableThreads);
+    }
+
+    [Fact]
+    public void ThreadsSeverity_WorkQueueStarvation_IsCritical()
+    {
+        // ServerHealthStatus.ThreadsSeverity: requests_waiting_for_threads (work queue) > 0 → Critical
+        var item = new ServerSummaryItem { TotalThreads = 512, CurrentWorkers = 100, RequestsWaitingForThreads = 3 };
+        Assert.Equal(HealthSeverity.Critical, item.ThreadsSeverity);
+        Assert.Equal("3 starved", item.ThreadsDisplay);
+    }
+
+    [Fact]
+    public void ThreadsSeverity_ManyRunnableWaitingForCpu_IsWarning()
+    {
+        // >=20 runnable tasks waiting for CPU → Warning
+        var item = new ServerSummaryItem { TotalThreads = 512, CurrentWorkers = 100, ThreadsWaitingForCpu = 20 };
+        Assert.Equal(HealthSeverity.Warning, item.ThreadsSeverity);
+        Assert.Equal("20 runnable", item.ThreadsDisplay);
+    }
+
+    [Fact]
+    public void ThreadsSeverity_LessThanTenPercentAvailable_IsWarning()
+    {
+        // available = 512 - 470 = 42 < 51.2 (10% of 512) → Warning, "Low"
+        var item = new ServerSummaryItem { TotalThreads = 512, CurrentWorkers = 470 };
+        Assert.Equal(HealthSeverity.Warning, item.ThreadsSeverity);
+        Assert.Equal("Low", item.ThreadsDisplay);
+        Assert.Equal(42, item.AvailableThreads);
+    }
+
+    [Fact]
+    public void ThreadsSeverity_HealthyShowsAvailableDetail()
+    {
+        var item = new ServerSummaryItem { TotalThreads = 512, CurrentWorkers = 100 };
+        Assert.Equal(HealthSeverity.Healthy, item.ThreadsSeverity);
+        Assert.Equal("OK", item.ThreadsDisplay);
+        Assert.Equal(412, item.AvailableThreads);
+        Assert.Equal("Available: 412/512", item.ThreadsDetail);
+    }
+
+    [Fact]
+    public void MemorySeverity_NoPressure_IsHealthy_DetailShowsSizes()
+    {
+        var item = new ServerSummaryItem { MemoryMb = 8192, BufferPoolMb = 6144, GrantedMemoryMb = 1024 };
+        Assert.Equal(HealthSeverity.Healthy, item.MemorySeverity);
+        Assert.False(item.HasMemoryPressure);
+        Assert.Equal("BP 6.0, QMG 1.0 GB", item.MemoryDetail);
+    }
+
+    [Theory]
+    [InlineData(3, 0, 0, "3 grant waiters")]                          // ServerHealthStatus: waiter_count > 0 → Critical
+    [InlineData(1, 0, 0, "1 grant waiter")]
+    [InlineData(0, 2, 0, "2 timeouts")]                               // viewer extends to timeouts (collected delta)
+    [InlineData(0, 0, 1, "1 forced")]                                 // and forced grants
+    [InlineData(2, 1, 1, "2 grant waiters, 1 timeout, 1 forced")]
+    public void MemorySeverity_AnyPressure_IsCritical_DetailNamesIt(long waiters, long timeouts, long forced, string expectedDetail)
+    {
+        var item = new ServerSummaryItem { MemoryWaiterCount = waiters, MemoryTimeoutCount = timeouts, MemoryForcedCount = forced };
+        Assert.Equal(HealthSeverity.Critical, item.MemorySeverity);
+        Assert.True(item.HasMemoryPressure);
+        Assert.Equal(expectedDetail, item.MemoryDetail);
+    }
+
+    [Theory]
+    [InlineData(0, 0, HealthSeverity.Healthy)]
+    [InlineData(1, 0, HealthSeverity.Warning)]        // any blocking at all → Warning
+    [InlineData(2, 0, HealthSeverity.Warning)]        // >=2 events → Warning
+    [InlineData(5, 0, HealthSeverity.Critical)]       // >=5 events → Critical
+    [InlineData(1, 10000, HealthSeverity.Warning)]    // 10s max wait → Warning
+    [InlineData(1, 59000, HealthSeverity.Warning)]
+    [InlineData(1, 60000, HealthSeverity.Critical)]   // 60s max wait → Critical
+    public void BlockingSeverity_BandsOnCountAndDuration(int count, long maxWaitMs, HealthSeverity expected)
+    {
+        Assert.Equal(expected, new ServerSummaryItem { BlockingCount = count, MaxBlockingWaitMs = maxWaitMs }.BlockingSeverity);
+    }
+
+    [Fact]
+    public void BlockingDetail_ShowsMaxDuration_WhenBlocked_BlankWhenClear()
+    {
+        Assert.Equal("max: 42s", new ServerSummaryItem { BlockingCount = 3, MaxBlockingWaitMs = 42000 }.BlockingDetail);
+        Assert.Equal("", new ServerSummaryItem { BlockingCount = 0, MaxBlockingWaitMs = 0 }.BlockingDetail);
+    }
+
+    [Fact]
+    public void CollectorSeverity_FailingIsWarning_HealthyOtherwise()
+    {
+        Assert.Equal(HealthSeverity.Healthy, new ServerSummaryItem { HealthyCollectorCount = 30 }.CollectorSeverity);
+        var failing = new ServerSummaryItem { HealthyCollectorCount = 28, FailedCollectorCount = 2 };
+        Assert.Equal(HealthSeverity.Warning, failing.CollectorSeverity);
+        Assert.Equal("2 failed", failing.CollectorDisplay);
+        Assert.Equal("Healthy: 28, Failing: 2", failing.CollectorDetail);
+        Assert.Equal("OK", new ServerSummaryItem { HealthyCollectorCount = 30 }.CollectorDisplay);
+    }
+
+    [Fact]
+    public void DeadlockSeverity_AnyInWindow_IsCritical()
+    {
+        Assert.Equal(HealthSeverity.Healthy, new ServerSummaryItem { DeadlockCount = 0 }.DeadlockSeverity);
+        Assert.Equal(HealthSeverity.Critical, new ServerSummaryItem { DeadlockCount = 1 }.DeadlockSeverity);
+    }
+
+    [Fact]
+    public void OverallMetricSeverity_TakesTheWorstBand_UnknownDoesNotEscalate()
+    {
+        // Threads Critical dominates even when every other metric is calm/unknown.
+        var item = new ServerSummaryItem { TotalThreads = 512, CurrentWorkers = 100, RequestsWaitingForThreads = 1 };
+        Assert.Equal(HealthSeverity.Critical, item.OverallMetricSeverity);
+
+        // A pure Warning (collectors) with no Critical → Warning.
+        Assert.Equal(HealthSeverity.Warning, new ServerSummaryItem { FailedCollectorCount = 1 }.OverallMetricSeverity);
+
+        // No data anywhere (CPU Unknown, rest Healthy) → Healthy baseline (Unknown never escalates).
+        Assert.Equal(HealthSeverity.Healthy, new ServerSummaryItem().OverallMetricSeverity);
+    }
+
+    [Fact]
+    public void CardBorderBrush_EnrichedBands_ThreadsCriticalRed_CollectorsWarningOrange()
+    {
+        var threadsCritical = new ServerSummaryItem
+        {
+            TotalThreads = 512, CurrentWorkers = 100, RequestsWaitingForThreads = 1, LastCollectionTime = Now,
+        };
+        threadsCritical.ApplyFreshness(Now);
+        Assert.Equal("#FFE57373", threadsCritical.CardBorderBrush.Color.ToString());
+
+        var collectorsWarning = new ServerSummaryItem { FailedCollectorCount = 1, LastCollectionTime = Now };
+        collectorsWarning.ApplyFreshness(Now);
+        Assert.Equal("#FFFFB74D", collectorsWarning.CardBorderBrush.Color.ToString());
+    }
+
+    [Fact]
+    public void SeverityBrushes_MapBandsToDarkPalette()
+    {
+        Assert.Equal("#FF81C784", new ServerSummaryItem { CpuPercent = 10 }.CpuSeverityBrush.Color.ToString());  // Healthy green
+        Assert.Equal("#FFFFB74D", new ServerSummaryItem { CpuPercent = 85 }.CpuSeverityBrush.Color.ToString());  // Warning amber
+        Assert.Equal("#FFE57373", new ServerSummaryItem { CpuPercent = 96 }.CpuSeverityBrush.Color.ToString());  // Critical red
+        Assert.Equal("#FF888888", new ServerSummaryItem().ThreadsSeverityBrush.Color.ToString());                // Unknown gray
+    }
 }
 
 /// <summary>
@@ -364,6 +592,7 @@ public sealed class ViewerW2aLivePostgresTests
     private const int FallbackServerId = -929202;
     private const int DismissServerA = -929203;
     private const int DismissServerB = -929204;
+    private const int EnrichServerId = -929205;
     private const string ServerName = "viewer-w2a-e2e";
 
     [Fact]
@@ -451,6 +680,81 @@ public sealed class ViewerW2aLivePostgresTests
         finally
         {
             await DeleteSummaryRowsAsync(connection, FallbackServerId);
+        }
+    }
+
+    [Fact]
+    public async Task ServerSummary_ReadsEnrichedThreadsMemoryBlockingCollectors_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live enrichment test.");
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteEnrichmentRowsAsync(connection, EnrichServerId);
+
+        await using var viewer = new ViewerDataService(connectionString!);
+
+        try
+        {
+            var now = TruncateToSeconds(DateTime.UtcNow);
+            var latest = now.AddMinutes(-1);
+            var older = now.AddMinutes(-2);
+            var withinHour = now.AddMinutes(-20);
+
+            /* Memory: total + buffer pool. */
+            await InsertMemoryWithBufferPoolAsync(connection, EnrichServerId, now, totalServerMemoryMb: 8192.00m, bufferPoolMb: 6144.00m);
+
+            /* Resource semaphore: an older heavy sample (must be IGNORED) + the latest two-pool sample (summed). */
+            await InsertGrantAsync(connection, EnrichServerId, older, poolId: 1, grantedMb: 4096m, waiter: 99, timeoutDelta: 0, forcedDelta: 0);
+            await InsertGrantAsync(connection, EnrichServerId, latest, poolId: 1, grantedMb: 512m, waiter: 1, timeoutDelta: 0, forcedDelta: 0);
+            await InsertGrantAsync(connection, EnrichServerId, latest, poolId: 2, grantedMb: 512m, waiter: 2, timeoutDelta: 0, forcedDelta: 0);
+
+            /* Scheduler snapshot: 512 ceiling, 128 in use → 384 available; 5 runnable, no work-queue starvation. */
+            await InsertSchedulerAsync(connection, EnrichServerId, now, runnable: 5);
+
+            /* Two XE blocked-process reports in the window; the worst wait is 42s. */
+            await InsertBlockedProcessWithWaitAsync(connection, EnrichServerId, withinHour, waitTimeMs: 5000);
+            await InsertBlockedProcessWithWaitAsync(connection, EnrichServerId, withinHour, waitTimeMs: 42000);
+
+            /* Collection health: one HEALTHY collector (recent success) + one FAILING (error, never succeeded). */
+            await InsertCollectionLogAsync(connection, EnrichServerId, "cpu_utilization", now, "SUCCESS");
+            await InsertCollectionLogAsync(connection, EnrichServerId, "memory_stats", now, "ERROR");
+
+            var summary = await viewer.GetServerSummaryAsync(EnrichServerId, "Enrich E2E");
+
+            /* Threads — the latest scheduler snapshot (available = ceiling − in-use). */
+            Assert.Equal(512, summary.TotalThreads);
+            Assert.Equal(384, summary.AvailableThreads);
+            Assert.Equal(5, summary.ThreadsWaitingForCpu);
+            Assert.Equal(0, summary.RequestsWaitingForThreads);
+            Assert.Equal(HealthSeverity.Healthy, summary.ThreadsSeverity);
+            Assert.Equal("Available: 384/512", summary.ThreadsDetail);
+
+            /* Memory — total + buffer pool + resource-semaphore pressure summed at the LATEST collection only. */
+            Assert.Equal(8192.0, summary.MemoryMb!.Value, precision: 1);
+            Assert.Equal(6144.0, summary.BufferPoolMb!.Value, precision: 1);
+            Assert.Equal(3, summary.MemoryWaiterCount);            // 1 + 2 at latest; the older 99 is ignored
+            Assert.Equal(1024.0, summary.GrantedMemoryMb!.Value, precision: 1);
+            Assert.True(summary.HasMemoryPressure);
+            Assert.Equal(HealthSeverity.Critical, summary.MemorySeverity);
+
+            /* Blocking — count + worst wait, both from the XE source. */
+            Assert.Equal(2, summary.BlockingCount);
+            Assert.Equal(42000, summary.MaxBlockingWaitMs);
+            Assert.Equal("max: 42s", summary.BlockingDetail);
+            Assert.Equal(HealthSeverity.Warning, summary.BlockingSeverity);
+
+            /* Collectors — REUSE of the 7-day banding (one HEALTHY, one FAILING). */
+            Assert.Equal(1, summary.HealthyCollectorCount);
+            Assert.Equal(1, summary.FailedCollectorCount);
+            Assert.Equal(HealthSeverity.Warning, summary.CollectorSeverity);
+        }
+        finally
+        {
+            await DeleteEnrichmentRowsAsync(connection, EnrichServerId);
         }
     }
 
@@ -602,6 +906,85 @@ public sealed class ViewerW2aLivePostgresTests
         await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
+    private static async Task InsertMemoryWithBufferPoolAsync(
+        NpgsqlConnection connection, int serverId, DateTime collectionTime, decimal totalServerMemoryMb, decimal bufferPoolMb)
+    {
+        using var command = new NpgsqlCommand(
+            "INSERT INTO memory_stats (collection_id, collection_time, server_id, server_name, total_server_memory_mb, buffer_pool_mb) VALUES ($1, $2, $3, $4, $5, $6)",
+            connection);
+        command.Parameters.AddWithValue(1L);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTime, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue(ServerName);
+        command.Parameters.AddWithValue(totalServerMemoryMb);
+        command.Parameters.AddWithValue(bufferPoolMb);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static async Task InsertGrantAsync(
+        NpgsqlConnection connection, int serverId, DateTime collectionTime, int poolId, decimal grantedMb, int waiter, long timeoutDelta, long forcedDelta)
+    {
+        using var command = new NpgsqlCommand(@"
+INSERT INTO memory_grant_stats
+    (collection_id, collection_time, server_id, server_name, pool_id,
+     available_memory_mb, granted_memory_mb, used_memory_mb,
+     grantee_count, waiter_count, timeout_error_count_delta, forced_grant_count_delta)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)", connection);
+        command.Parameters.AddWithValue(CollectionIdGenerator.Next());
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTime, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue(ServerName);
+        command.Parameters.AddWithValue(poolId);
+        command.Parameters.AddWithValue(1000m);        // available_memory_mb
+        command.Parameters.AddWithValue(grantedMb);
+        command.Parameters.AddWithValue(500m);         // used_memory_mb
+        command.Parameters.AddWithValue(1);            // grantee_count
+        command.Parameters.AddWithValue(waiter);
+        command.Parameters.AddWithValue(timeoutDelta);
+        command.Parameters.AddWithValue(forcedDelta);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static async Task InsertSchedulerAsync(
+        NpgsqlConnection connection, int serverId, DateTime collectionTime, int runnable)
+    {
+        using var command = new NpgsqlCommand(@"
+INSERT INTO cpu_scheduler_stats
+    (collection_id, collection_time, server_id, server_name,
+     max_workers_count, scheduler_count, cpu_count,
+     total_runnable_tasks_count, total_work_queue_count, total_current_workers_count,
+     avg_runnable_tasks_count, total_active_request_count, total_queued_request_count,
+     total_blocked_task_count, total_active_parallel_thread_count,
+     runnable_request_count, total_request_count, runnable_percent,
+     worker_thread_exhaustion_warning, runnable_tasks_warning, blocked_tasks_warning,
+     queued_requests_warning, total_physical_memory_kb, available_physical_memory_kb,
+     system_memory_state_desc, physical_memory_pressure_warning,
+     total_node_count, nodes_online_count, offline_cpu_count, offline_cpu_warning)
+VALUES ($1, $2, $3, $4, 512, 8, 8, $5, 0, 128, 0.5, 2, 0, 0, 0, 3, 20, 12.5,
+        false, false, false, false, 67108864, 8388608, 'ok', false, 2, 2, 0, false)", connection);
+        command.Parameters.AddWithValue(CollectionIdGenerator.Next());
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTime, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue(ServerName);
+        command.Parameters.AddWithValue(runnable);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static async Task InsertBlockedProcessWithWaitAsync(
+        NpgsqlConnection connection, int serverId, DateTime eventTime, long waitTimeMs)
+    {
+        using var command = new NpgsqlCommand(
+            "INSERT INTO blocked_process_reports (blocked_report_id, collection_time, server_id, server_name, event_time, wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6)",
+            connection);
+        command.Parameters.AddWithValue(CollectionIdGenerator.Next());
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(eventTime, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue(ServerName);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(eventTime, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(waitTimeMs);
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
     private static async Task InsertAlertAsync(
         NpgsqlConnection connection, DateTime alertTimeUtc, int serverId, string serverName, string metric)
     {
@@ -635,6 +1018,19 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)", connection);
         {
             "cpu_utilization_stats", "memory_stats", "blocked_process_reports",
             "dmv_blocking_snapshots", "deadlocks", "collection_log",
+        })
+        {
+            using var cleanup = new NpgsqlCommand($"DELETE FROM {table} WHERE server_id = {serverId};", connection);
+            await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+    }
+
+    private static async Task DeleteEnrichmentRowsAsync(NpgsqlConnection connection, int serverId)
+    {
+        foreach (var table in new[]
+        {
+            "memory_stats", "memory_grant_stats", "cpu_scheduler_stats",
+            "blocked_process_reports", "collection_log",
         })
         {
             using var cleanup = new NpgsqlCommand($"DELETE FROM {table} WHERE server_id = {serverId};", connection);

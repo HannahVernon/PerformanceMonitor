@@ -7,6 +7,8 @@
  */
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
@@ -17,19 +19,29 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <summary>
 /// The Overview server-cards read (W2a viewer copy-parity), copied from Lite's
 /// <c>LocalDataService.Overview.cs</c> (GetServerSummaryAsync + ServerSummaryItem) and rewired to the
-/// Darling Postgres store. The five per-server reads mirror Lite's exactly — latest CPU (SQL + other),
-/// latest total server memory, blocking count in the last hour (XE blocked-process reports, falling
-/// back to the always-on DMV snapshot when the XE count is zero), deadlock count in the last hour, and
-/// the last collection time — over the same <c>v_*</c> passthrough views the other viewer tabs read.
-/// The SQL lives in public constants so tests can pin the load-bearing clauses without a live Postgres.
+/// Darling Postgres store, then ENRICHED toward the Dashboard's richer <c>ServerHealthCard</c>
+/// (Dashboard/Controls/ServerHealthCard.xaml + Dashboard/Models/ServerHealthStatus.cs). Alongside Lite's
+/// original five per-server reads — latest CPU (SQL + other), latest total server memory, blocking count
+/// in the last hour (XE blocked-process reports, falling back to the always-on DMV snapshot when the XE
+/// count is zero), deadlock count in the last hour, and the last collection time — the card now also
+/// surfaces the Dashboard's <b>Threads</b> row (worker-thread pressure from the latest
+/// <c>cpu_scheduler_stats</c> snapshot), <b>Collectors</b> row (healthy / failing counts reusing the
+/// viewer's own <see cref="CollectorHealthRow.HealthStatus"/> banding), a richer <b>Memory</b> signal
+/// (resource-semaphore waiters / timeouts / forced grants from <c>memory_grant_stats</c>, not just total
+/// MB), and a <b>Blocking</b> duration (max wait in the window). Every metric drives a per-row severity
+/// band that mirrors <c>ServerHealthStatus</c>'s deterministic CASE logic. All reads run over the same
+/// <c>v_*</c> passthrough views the other viewer tabs read; the SQL lives in public constants so tests can
+/// pin the load-bearing clauses without a live Postgres.
 ///
-/// <para><b>The one semantic change (#1262 headless plan).</b> Lite's <c>IsOnline</c> comes from a live
+/// <para><b>The viewer adaptations (#1262 headless plan).</b> (1) Lite's <c>IsOnline</c> comes from a live
 /// per-server connection ping; the viewer has no live connection to the monitored servers, so it derives
 /// the card's status from COLLECTION FRESHNESS instead — how old the newest <c>v_collection_log</c> row
 /// is (see <see cref="ServerSummaryItem.ClassifyFreshness"/>): fresh → Online (green), stale (older than
 /// twice the fastest collector's cadence) → Warning (amber), and no collection / long-dead → Offline
-/// (the red overlay). The freshness result is mapped onto Lite's own (IsOnline, HasCollectorErrors)
-/// inputs so the card view-model is otherwise a verbatim copy of Lite's.</para>
+/// (the red overlay). (2) The Dashboard's health card live-queries currently-blocked sessions / current
+/// scheduler state; the viewer reads the newest COLLECTED snapshot instead (the freshness band already
+/// answers "is this server reporting"). The severity BANDS themselves are reproduced verbatim from
+/// <c>ServerHealthStatus</c> so a viewer card colours a metric exactly as the Dashboard would.</para>
 /// </summary>
 public sealed partial class ViewerDataService
 {
@@ -41,23 +53,69 @@ WHERE server_id = $1
 ORDER BY sample_time DESC
 LIMIT 1";
 
-    /// <summary>Latest total server memory (MB) for one server. $1 server_id.</summary>
+    /// <summary>Latest total server memory + buffer pool (MB) for one server. $1 server_id.</summary>
     public const string ServerSummaryMemorySql = @"
-SELECT CAST(total_server_memory_mb AS double precision)
+SELECT
+    CAST(total_server_memory_mb AS double precision),
+    CAST(buffer_pool_mb AS double precision)
 FROM v_memory_stats
 WHERE server_id = $1
 ORDER BY collection_time DESC
 LIMIT 1";
 
     /// <summary>
-    /// Blocking events in the window: XE blocked-process reports, falling back to the always-on DMV
-    /// blocking snapshot count when the XE count is zero (AWS RDS has no XE) — Lite's
-    /// <c>COALESCE(NULLIF(...))</c> shape. $1 server_id, $2 window start (naive UTC).
+    /// The latest resource-semaphore pressure for one server — the workspace-memory signal the Dashboard's
+    /// <c>get_resource_semaphore</c> / <c>ServerHealthStatus.MemorySeverity</c> reads: grant waiters,
+    /// timeout-error and forced-grant deltas, and total granted MB, summed across every pool at the newest
+    /// collection instant. The Dashboard live-sums <c>sys.dm_exec_query_resource_semaphores.waiter_count</c>
+    /// (WHERE max_target_memory_kb IS NOT NULL, which the <c>memory_grant_stats</c> collector already
+    /// applies at capture); the viewer sums the collected per-pool rows at MAX(collection_time). $1 server_id.
+    /// </summary>
+    public const string ServerSummaryMemoryPressureSql = @"
+SELECT
+    CAST(COALESCE(SUM(waiter_count), 0) AS bigint),
+    CAST(COALESCE(SUM(timeout_error_count_delta), 0) AS bigint),
+    CAST(COALESCE(SUM(forced_grant_count_delta), 0) AS bigint),
+    CAST(COALESCE(SUM(granted_memory_mb), 0) AS double precision)
+FROM v_memory_grant_stats
+WHERE server_id = $1
+AND   collection_time = (SELECT MAX(collection_time) FROM v_memory_grant_stats WHERE server_id = $1)";
+
+    /// <summary>
+    /// The latest worker-thread pressure for one server — the Dashboard's Threads row inputs
+    /// (<c>ServerHealthStatus.ThreadsSeverity</c>) from the newest <c>cpu_scheduler_stats</c> snapshot:
+    /// total worker ceiling (<c>max_workers_count</c>), workers in use (<c>total_current_workers_count</c> —
+    /// available = ceiling − in-use, the same figure the collector's own worker-thread-exhaustion warning
+    /// bands on at 90%), runnable tasks waiting for CPU (<c>total_runnable_tasks_count</c>), and requests
+    /// starved of a worker (<c>total_work_queue_count</c>). A point-in-time snapshot collector, so the
+    /// newest row is the current state. NULL/absent on Azure SQL DB (the collector does not apply there),
+    /// which the card renders as "--". $1 server_id.
+    /// </summary>
+    public const string ServerSummaryThreadsSql = @"
+SELECT
+    max_workers_count,
+    total_current_workers_count,
+    total_runnable_tasks_count,
+    total_work_queue_count
+FROM v_cpu_scheduler_stats
+WHERE server_id = $1
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    /// <summary>
+    /// Blocking events in the window with their worst wait — XE blocked-process reports preferred, the
+    /// always-on DMV blocking snapshot as fallback (AWS RDS has no XE), keeping Lite's XE→DMV fallback but
+    /// returning the COUNT and the MAX wait (ms) from the SAME source so the card's count and its
+    /// "max: Ns" duration can never come from different feeds. The caller applies the fallback in C#
+    /// (identical to Lite's <c>COALESCE(NULLIF(xe,0), dmv)</c>: use XE when it has any row, else DMV).
+    /// $1 server_id, $2 window start (naive UTC).
     /// </summary>
     public const string ServerSummaryBlockingSql = @"
-SELECT COALESCE(NULLIF(
-    (SELECT COUNT(*) FROM v_blocked_process_reports WHERE server_id = $1 AND event_time >= $2), 0),
-    (SELECT COUNT(*) FROM v_dmv_blocking_snapshots WHERE server_id = $1 AND event_time >= $2))";
+SELECT
+    (SELECT COUNT(*)          FROM v_blocked_process_reports WHERE server_id = $1 AND event_time >= $2),
+    (SELECT MAX(wait_time_ms) FROM v_blocked_process_reports WHERE server_id = $1 AND event_time >= $2),
+    (SELECT COUNT(*)          FROM v_dmv_blocking_snapshots   WHERE server_id = $1 AND event_time >= $2),
+    (SELECT MAX(wait_time_ms) FROM v_dmv_blocking_snapshots   WHERE server_id = $1 AND event_time >= $2)";
 
     /// <summary>Deadlock count in the window. $1 server_id, $2 window start (naive UTC).</summary>
     public const string ServerSummaryDeadlockSql = @"
@@ -73,10 +131,13 @@ FROM v_collection_log
 WHERE server_id = $1";
 
     /// <summary>
-    /// One server's Overview-card summary — Lite's <c>GetServerSummaryAsync</c> ported to Postgres. The
-    /// caller sets <see cref="ServerSummaryItem.ServerName"/> and applies the freshness-derived status
+    /// One server's Overview-card summary — Lite's <c>GetServerSummaryAsync</c> ported to Postgres and
+    /// enriched toward the Dashboard's <c>ServerHealthCard</c>. The caller sets
+    /// <see cref="ServerSummaryItem.ServerName"/> and applies the freshness-derived status
     /// (<see cref="ServerSummaryItem.ApplyFreshness"/>) after the read, exactly where Lite set IsOnline
-    /// from the live ping. Blocking / deadlock counts use a one-hour window (Lite's window).
+    /// from the live ping. Blocking / deadlock counts use a one-hour window (Lite's window); the Threads /
+    /// Memory-pressure reads take the newest snapshot; the Collectors row REUSES the viewer's 7-day
+    /// <see cref="GetCollectionHealthAsync"/> banding.
     /// </summary>
     public async Task<ServerSummaryItem> GetServerSummaryAsync(int serverId, string displayName, CancellationToken cancellationToken = default)
     {
@@ -85,9 +146,21 @@ WHERE server_id = $1";
         double? cpuPercent = null;
         double? otherProcessCpuPercent = null;
         double? memoryMb = null;
+        double? bufferPoolMb = null;
         var blockingCount = 0;
+        long maxBlockingWaitMs = 0;
         var deadlockCount = 0;
         DateTime? lastCollection = null;
+
+        int? totalThreads = null;
+        int? currentWorkers = null;
+        var threadsWaitingForCpu = 0;
+        long requestsWaitingForThreads = 0;
+
+        long memoryWaiterCount = 0;
+        long memoryTimeoutCount = 0;
+        long memoryForcedCount = 0;
+        double? grantedMemoryMb = null;
 
         /* Latest CPU — SQL and other-process, so the card can show total non-idle CPU with the SQL-only
            number alongside (Lite's headline). */
@@ -102,24 +175,72 @@ WHERE server_id = $1";
             }
         }
 
-        /* Latest total server memory. */
+        /* Latest total server memory + buffer pool. */
         await using (var command = _dataSource.CreateCommand(ServerSummaryMemorySql))
         {
             command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            if (result is not null && result != DBNull.Value)
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
             {
-                memoryMb = Convert.ToDouble(result);
+                memoryMb = reader.IsDBNull(0) ? null : Convert.ToDouble(reader.GetValue(0));
+                bufferPoolMb = reader.IsDBNull(1) ? null : Convert.ToDouble(reader.GetValue(1));
             }
         }
 
-        /* Blocking count in the last hour (XE, DMV fallback). */
+        /* Latest resource-semaphore pressure (grant waiters / timeouts / forced grants + granted MB). */
+        await using (var command = _dataSource.CreateCommand(ServerSummaryMemoryPressureSql))
+        {
+            command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                memoryWaiterCount = reader.IsDBNull(0) ? 0 : Convert.ToInt64(reader.GetValue(0));
+                memoryTimeoutCount = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1));
+                memoryForcedCount = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2));
+                grantedMemoryMb = reader.IsDBNull(3) ? null : Convert.ToDouble(reader.GetValue(3));
+            }
+        }
+
+        /* Latest worker-thread pressure (max / in-use / runnable-waiting / work-queue). Absent on Azure. */
+        await using (var command = _dataSource.CreateCommand(ServerSummaryThreadsSql))
+        {
+            command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                totalThreads = reader.IsDBNull(0) ? null : Convert.ToInt32(reader.GetValue(0));
+                currentWorkers = reader.IsDBNull(1) ? null : Convert.ToInt32(reader.GetValue(1));
+                threadsWaitingForCpu = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2));
+                requestsWaitingForThreads = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3));
+            }
+        }
+
+        /* Blocking count + worst wait in the last hour (XE preferred, DMV fallback — same source for both). */
         await using (var command = _dataSource.CreateCommand(ServerSummaryBlockingSql))
         {
             command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
             command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = windowStart });
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            blockingCount = result is null || result == DBNull.Value ? 0 : Convert.ToInt32(result);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var xeCount = reader.IsDBNull(0) ? 0 : Convert.ToInt32(reader.GetValue(0));
+                var xeMaxWait = reader.IsDBNull(1) ? 0L : Convert.ToInt64(reader.GetValue(1));
+                var dmvCount = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2));
+                var dmvMaxWait = reader.IsDBNull(3) ? 0L : Convert.ToInt64(reader.GetValue(3));
+
+                /* Lite's fallback: use XE when it has any row this window, else the DMV snapshot. Both the
+                   count and the max wait come from whichever source wins, so they never disagree. */
+                if (xeCount > 0)
+                {
+                    blockingCount = xeCount;
+                    maxBlockingWaitMs = xeMaxWait;
+                }
+                else
+                {
+                    blockingCount = dmvCount;
+                    maxBlockingWaitMs = dmvMaxWait;
+                }
+            }
         }
 
         /* Deadlock count in the last hour. */
@@ -142,6 +263,11 @@ WHERE server_id = $1";
             }
         }
 
+        /* Collectors row — REUSE the viewer's own 7-day per-collector health banding (the same STALE /
+           FAILING / NEVER_RUN / HEALTHY logic the Collection Health tab renders), mirroring the Dashboard's
+           SUM(CASE health_status = 'HEALTHY' / 'FAILING') over report.collection_health. */
+        var (healthyCollectors, failingCollectors) = await GetCollectorHealthCountsAsync(serverId, cancellationToken);
+
         return new ServerSummaryItem
         {
             DisplayName = displayName,
@@ -149,10 +275,38 @@ WHERE server_id = $1";
             CpuPercent = cpuPercent,
             OtherProcessCpuPercent = otherProcessCpuPercent,
             MemoryMb = memoryMb,
+            BufferPoolMb = bufferPoolMb,
+            GrantedMemoryMb = grantedMemoryMb,
+            MemoryWaiterCount = memoryWaiterCount,
+            MemoryTimeoutCount = memoryTimeoutCount,
+            MemoryForcedCount = memoryForcedCount,
             BlockingCount = blockingCount,
+            MaxBlockingWaitMs = maxBlockingWaitMs,
             DeadlockCount = deadlockCount,
+            TotalThreads = totalThreads,
+            CurrentWorkers = currentWorkers,
+            ThreadsWaitingForCpu = threadsWaitingForCpu,
+            RequestsWaitingForThreads = requestsWaitingForThreads,
+            HealthyCollectorCount = healthyCollectors,
+            FailedCollectorCount = failingCollectors,
             LastCollectionTime = lastCollection,
         };
+    }
+
+    /// <summary>
+    /// Healthy / failing collector counts for one server, derived from the viewer's own 7-day collection
+    /// health banding (<see cref="GetCollectionHealthAsync"/> → <see cref="CollectorHealthRow.HealthStatus"/>).
+    /// Mirrors the Dashboard's <c>GetCollectorStatusAsync</c> (SUM of HEALTHY / FAILING over
+    /// <c>report.collection_health</c>) — HEALTHY and FAILING are the two bands the card surfaces; the
+    /// STALE / WARNING / NO_PERMISSIONS / NEVER_RUN rows count as neither (a failing collector is one the
+    /// banding calls FAILING: no success in over 24h).
+    /// </summary>
+    private async Task<(int Healthy, int Failing)> GetCollectorHealthCountsAsync(int serverId, CancellationToken cancellationToken)
+    {
+        var rows = await GetCollectionHealthAsync(serverId, cancellationToken);
+        var healthy = rows.Count(r => r.HealthStatus == "HEALTHY");
+        var failing = rows.Count(r => r.HealthStatus == "FAILING");
+        return (healthy, failing);
     }
 }
 
@@ -170,14 +324,30 @@ public enum ServerFreshness
 }
 
 /// <summary>
+/// Per-metric health bands for the Overview card's severity dots, a verbatim mirror of the Dashboard's
+/// <c>PerformanceMonitorDashboard.Models.HealthSeverity</c>. <see cref="Unknown"/> is a metric with no
+/// collected data (e.g. Threads on Azure SQL DB) — a grey dot, and it never escalates the card's overall
+/// band.
+/// </summary>
+public enum HealthSeverity
+{
+    Unknown,
+    Healthy,
+    Warning,
+    Critical,
+}
+
+/// <summary>
 /// One Overview server card's view-model — copied from Lite's <c>ServerSummaryItem</c>
-/// (Lite/Services/LocalDataService.Overview.cs) with two viewer adaptations, both from the headless
-/// plan (#1262): <see cref="CpuPercentForAlert"/> is always total non-idle CPU (the viewer has no
-/// per-app <c>CpuAlertMode</c> preference — total is what the alert engine evaluates by default), and
-/// the status is derived from collection freshness rather than a live ping (see
-/// <see cref="ClassifyFreshness"/> / <see cref="ApplyFreshness"/>, which set Lite's own
-/// (<see cref="IsOnline"/>, <see cref="HasCollectorErrors"/>) inputs). Every display property and brush
-/// is otherwise Lite's verbatim.
+/// (Lite/Services/LocalDataService.Overview.cs) and enriched toward the Dashboard's
+/// <c>ServerHealthStatus</c> (Threads / Collectors rows, the resource-semaphore Memory signal, blocking
+/// duration, and a per-metric severity band for each row's dot). Two viewer adaptations carry over from
+/// the headless plan (#1262): <see cref="CpuPercentForAlert"/> is always total non-idle CPU (the viewer
+/// has no per-app <c>CpuAlertMode</c> preference — total is what the alert engine evaluates by default),
+/// and the connection status is derived from collection freshness rather than a live ping (see
+/// <see cref="ClassifyFreshness"/> / <see cref="ApplyFreshness"/>). Every severity BAND reproduces
+/// <c>ServerHealthStatus</c>'s deterministic CASE logic so a viewer card colours a metric exactly as the
+/// Dashboard would; every display / brush is otherwise a pure format of the stored values.
 /// </summary>
 public sealed class ServerSummaryItem
 {
@@ -193,6 +363,12 @@ public sealed class ServerSummaryItem
 
     /// <summary>Older than this (or no collection at all) = the server is treated as Offline.</summary>
     public static readonly TimeSpan OfflineThreshold = TimeSpan.FromMinutes(15);
+
+    /* Per-severity dot / value brushes, frozen once (the viewer's dark-theme palette). */
+    private static readonly SolidColorBrush s_criticalBrush = MakeBrush("#E57373");
+    private static readonly SolidColorBrush s_warningBrush = MakeBrush("#FFB74D");
+    private static readonly SolidColorBrush s_healthyBrush = MakeBrush("#81C784");
+    private static readonly SolidColorBrush s_unknownBrush = MakeBrush("#888888");
 
     public string DisplayName { get; set; } = "";
     public string ServerName { get; set; } = "";
@@ -220,8 +396,51 @@ public sealed class ServerSummaryItem
     public double? CpuPercentForAlert => TotalCpuPercent ?? CpuPercent;
 
     public double? MemoryMb { get; set; }
+
+    /// <summary>Latest buffer-pool MB (v_memory_stats.buffer_pool_mb) — the "BP" figure in the Memory detail.</summary>
+    public double? BufferPoolMb { get; set; }
+
+    /// <summary>Total granted query-memory MB across all pools at the newest grant snapshot — the "QMG" figure.</summary>
+    public double? GrantedMemoryMb { get; set; }
+
+    /// <summary>Grant waiters at the newest snapshot — the primary resource-semaphore pressure signal.</summary>
+    public long MemoryWaiterCount { get; set; }
+
+    /// <summary>Grant timeout-error delta at the newest snapshot (a query gave up waiting for memory).</summary>
+    public long MemoryTimeoutCount { get; set; }
+
+    /// <summary>Forced-grant delta at the newest snapshot (a grant was forced through under pressure).</summary>
+    public long MemoryForcedCount { get; set; }
+
     public int BlockingCount { get; set; }
+
+    /// <summary>The worst blocking wait (ms) observed in the window — the "max: Ns" detail + Critical band input.</summary>
+    public long MaxBlockingWaitMs { get; set; }
+
     public int DeadlockCount { get; set; }
+
+    /// <summary>Worker-thread ceiling (max_workers_count). NULL = no scheduler snapshot (e.g. Azure SQL DB).</summary>
+    public int? TotalThreads { get; set; }
+
+    /// <summary>Workers in use (total_current_workers_count); available = ceiling − in-use.</summary>
+    public int? CurrentWorkers { get; set; }
+
+    /// <summary>Runnable tasks waiting for a CPU (total_runnable_tasks_count).</summary>
+    public int ThreadsWaitingForCpu { get; set; }
+
+    /// <summary>Requests starved of a worker thread (total_work_queue_count) — thread-pool starvation.</summary>
+    public long RequestsWaitingForThreads { get; set; }
+
+    /// <summary>Available worker threads = ceiling − in-use, or NULL when there is no scheduler snapshot.</summary>
+    public int? AvailableThreads =>
+        TotalThreads.HasValue ? TotalThreads.Value - (CurrentWorkers ?? 0) : null;
+
+    /// <summary>Collectors whose 7-day band is HEALTHY (mirrors report.collection_health).</summary>
+    public int HealthyCollectorCount { get; set; }
+
+    /// <summary>Collectors whose 7-day band is FAILING (no success in over 24h).</summary>
+    public int FailedCollectorCount { get; set; }
+
     public DateTime? LastCollectionTime { get; set; }
 
     /// <summary>
@@ -238,9 +457,68 @@ public sealed class ServerSummaryItem
         }
     }
 
+    /// <summary>The non-SQL host CPU alongside the headline (the Dashboard's CPU detail), when known.</summary>
+    public string CpuDetail => OtherProcessCpuPercent.HasValue ? $"Other: {OtherProcessCpuPercent:F0}%" : "";
+
     public string MemoryDisplay => MemoryMb.HasValue ? $"{MemoryMb / 1024.0:F1} GB" : "--";
+
+    /// <summary>
+    /// The Memory detail: under resource-semaphore pressure it names the pressure (grant waiters, then
+    /// timeouts / forced grants when present) — mirroring the Dashboard's "N waiting"; when calm it shows
+    /// the buffer-pool and query-memory-grant sizes (the Dashboard's "BP: x, QMG: y").
+    /// </summary>
+    public string MemoryDetail
+    {
+        get
+        {
+            if (HasMemoryPressure)
+            {
+                var parts = new List<string>();
+                if (MemoryWaiterCount > 0) parts.Add($"{MemoryWaiterCount} grant waiter{(MemoryWaiterCount == 1 ? "" : "s")}");
+                if (MemoryTimeoutCount > 0) parts.Add($"{MemoryTimeoutCount} timeout{(MemoryTimeoutCount == 1 ? "" : "s")}");
+                if (MemoryForcedCount > 0) parts.Add($"{MemoryForcedCount} forced");
+                return string.Join(", ", parts);
+            }
+
+            var sizes = new List<string>();
+            if (BufferPoolMb.HasValue) sizes.Add($"BP {BufferPoolMb.Value / 1024.0:F1}");
+            if (GrantedMemoryMb is > 0) sizes.Add($"QMG {GrantedMemoryMb.Value / 1024.0:F1}");
+            return sizes.Count > 0 ? string.Join(", ", sizes) + " GB" : "";
+        }
+    }
+
     public string BlockingDisplay => BlockingCount > 0 ? BlockingCount.ToString() : "0";
+
+    /// <summary>The worst blocking wait in the window, e.g. "max: 42s"; blank when the window is clear.</summary>
+    public string BlockingDetail => BlockingCount > 0 ? $"max: {MaxBlockedSeconds:F0}s" : "";
+
+    /// <summary>The worst blocking wait in the window, in seconds.</summary>
+    public double MaxBlockedSeconds => MaxBlockingWaitMs / 1000.0;
+
     public string DeadlockDisplay => DeadlockCount > 0 ? DeadlockCount.ToString() : "0";
+
+    /// <summary>Threads value — the pressure headline (Dashboard's ThreadsDisplayText), or "--" with no snapshot.</summary>
+    public string ThreadsDisplay
+    {
+        get
+        {
+            if (!TotalThreads.HasValue) return "--";
+            if (RequestsWaitingForThreads > 0) return $"{RequestsWaitingForThreads} starved";
+            if (ThreadsWaitingForCpu >= 20) return $"{ThreadsWaitingForCpu} runnable";
+            if (TotalThreads.Value > 0 && AvailableThreads < TotalThreads.Value * 0.10) return "Low";
+            return "OK";
+        }
+    }
+
+    /// <summary>Threads detail — "Available: in/ceiling" (Dashboard's ThreadsDetailText); blank with no snapshot.</summary>
+    public string ThreadsDetail =>
+        TotalThreads is > 0 ? $"Available: {AvailableThreads}/{TotalThreads}" : "";
+
+    /// <summary>Collectors value — "N failed" or "OK" (Dashboard's CollectorDisplayText).</summary>
+    public string CollectorDisplay => FailedCollectorCount > 0 ? $"{FailedCollectorCount} failed" : "OK";
+
+    /// <summary>Collectors detail — "Healthy: N, Failing: M" (Dashboard's CollectorDetailText).</summary>
+    public string CollectorDetail => $"Healthy: {HealthyCollectorCount}, Failing: {FailedCollectorCount}";
 
     /// <summary>
     /// The stored collection_time is naive UTC; the viewer shows it in the viewer machine's local time
@@ -269,27 +547,125 @@ public sealed class ServerSummaryItem
 
     public bool IsOffline => IsOnline == false;
 
-    /* Color coding — verbatim from Lite. */
-    public SolidColorBrush CpuBrush
+    // ── Per-metric severity bands (verbatim mirrors of ServerHealthStatus's CASE logic) ──────────────
+
+    /// <summary>CPU band — total non-idle CPU: ≥95% Critical, ≥80% Warning (ServerHealthStatus.CpuSeverity).</summary>
+    public HealthSeverity CpuSeverity
     {
         get
         {
-            var v = CpuPercentForAlert;
-            return MakeBrush(v >= 80 ? "#E57373" : v >= 50 ? "#FFB74D" : "#81C784");
+            var total = CpuPercentForAlert;
+            if (!total.HasValue) return HealthSeverity.Unknown;
+            if (total >= 95) return HealthSeverity.Critical;
+            if (total >= 80) return HealthSeverity.Warning;
+            return HealthSeverity.Healthy;
         }
     }
 
-    public SolidColorBrush BlockingBrush => MakeBrush(BlockingCount > 0 ? "#FFB74D" : "#81C784");
-    public SolidColorBrush DeadlockBrush => MakeBrush(DeadlockCount > 0 ? "#E57373" : "#81C784");
-    public SolidColorBrush CardBorderBrush => MakeBrush(
-        IsOnline == false ? "#E57373" :
-        DeadlockCount > 0 ? "#E57373" :
-        BlockingCount > 0 ? "#FFB74D" :
-        CpuPercentForAlert >= 80 ? "#FFB74D" :
-        HasCollectorErrors ? "#FFD54F" :   // amber border when the collection is stale
-        "#2a2d35");
+    /// <summary>True when the resource semaphore shows grant waiters, timeouts, or forced grants.</summary>
+    public bool HasMemoryPressure => MemoryWaiterCount > 0 || MemoryTimeoutCount > 0 || MemoryForcedCount > 0;
+
+    /// <summary>
+    /// Memory band — Critical on resource-semaphore pressure, else Healthy. The Dashboard's
+    /// <c>MemorySeverity</c> flags Critical on <c>waiter_count &gt; 0</c>; the viewer additionally treats
+    /// recent grant timeouts / forced grants (collected as deltas) as the same workspace-memory pressure.
+    /// </summary>
+    public HealthSeverity MemorySeverity =>
+        HasMemoryPressure ? HealthSeverity.Critical : HealthSeverity.Healthy;
+
+    /// <summary>
+    /// Blocking band — mirrors <c>ServerHealthStatus.BlockingSeverity</c>: ≥60s max wait or ≥5 events
+    /// Critical; ≥10s max wait, ≥2 events, or any blocking at all Warning.
+    /// </summary>
+    public HealthSeverity BlockingSeverity
+    {
+        get
+        {
+            if (MaxBlockedSeconds >= 60) return HealthSeverity.Critical;
+            if (BlockingCount >= 5) return HealthSeverity.Critical;
+            if (MaxBlockedSeconds >= 10) return HealthSeverity.Warning;
+            if (BlockingCount >= 2) return HealthSeverity.Warning;
+            if (BlockingCount > 0) return HealthSeverity.Warning;
+            return HealthSeverity.Healthy;
+        }
+    }
+
+    /// <summary>
+    /// Deadlock band — any deadlock in the window is Critical. The Dashboard bands on a cumulative-counter
+    /// delta + minutes-since; the viewer has a windowed count (one-hour window), so a deadlock this window
+    /// is the viewer's Critical, matching Lite's red-when-&gt;0 emphasis.
+    /// </summary>
+    public HealthSeverity DeadlockSeverity =>
+        DeadlockCount > 0 ? HealthSeverity.Critical : HealthSeverity.Healthy;
+
+    /// <summary>
+    /// Threads band — mirrors <c>ServerHealthStatus.ThreadsSeverity</c>: work-queue starvation Critical;
+    /// ≥20 runnable-waiting or under 10% workers available Warning. Unknown when there is no snapshot.
+    /// </summary>
+    public HealthSeverity ThreadsSeverity
+    {
+        get
+        {
+            if (!TotalThreads.HasValue) return HealthSeverity.Unknown;
+            if (RequestsWaitingForThreads > 0) return HealthSeverity.Critical;
+            if (ThreadsWaitingForCpu >= 20) return HealthSeverity.Warning;
+            if (TotalThreads.Value > 0 && AvailableThreads < TotalThreads.Value * 0.10) return HealthSeverity.Warning;
+            return HealthSeverity.Healthy;
+        }
+    }
+
+    /// <summary>Collectors band — any FAILING collector is Warning (ServerHealthStatus.CollectorSeverity).</summary>
+    public HealthSeverity CollectorSeverity =>
+        FailedCollectorCount > 0 ? HealthSeverity.Warning : HealthSeverity.Healthy;
+
+    /// <summary>
+    /// The card's worst metric band (offline handled separately by the border / overlay). Unknown and
+    /// Healthy never escalate — matching <c>ServerHealthStatus.OverallSeverity</c>'s reduce.
+    /// </summary>
+    public HealthSeverity OverallMetricSeverity
+    {
+        get
+        {
+            var worst = HealthSeverity.Healthy;
+            foreach (var s in new[] { CpuSeverity, MemorySeverity, BlockingSeverity, ThreadsSeverity, DeadlockSeverity, CollectorSeverity })
+            {
+                if (s == HealthSeverity.Critical) return HealthSeverity.Critical;
+                if (s == HealthSeverity.Warning) worst = HealthSeverity.Warning;
+            }
+            return worst;
+        }
+    }
+
+    // ── Per-metric dot / value brushes ───────────────────────────────────────────────────────────────
+
+    public SolidColorBrush CpuSeverityBrush => SeverityBrush(CpuSeverity);
+    public SolidColorBrush MemorySeverityBrush => SeverityBrush(MemorySeverity);
+    public SolidColorBrush BlockingSeverityBrush => SeverityBrush(BlockingSeverity);
+    public SolidColorBrush DeadlockSeverityBrush => SeverityBrush(DeadlockSeverity);
+    public SolidColorBrush ThreadsSeverityBrush => SeverityBrush(ThreadsSeverity);
+    public SolidColorBrush CollectorSeverityBrush => SeverityBrush(CollectorSeverity);
 
     public bool HasAlerts => BlockingCount > 0 || DeadlockCount > 0;
+
+    /// <summary>
+    /// The card border reflects the worst signal: offline (red) &gt; a Critical metric (red) &gt; a Warning
+    /// metric (amber-orange) &gt; a stale collection (amber) &gt; calm (dark). Enriches Lite's border (which
+    /// only knew CPU / blocking / deadlock) with the added Threads / Memory / Collectors bands via
+    /// <see cref="OverallMetricSeverity"/>.
+    /// </summary>
+    public SolidColorBrush CardBorderBrush
+    {
+        get
+        {
+            if (IsOnline == false) return s_criticalBrush;
+            return OverallMetricSeverity switch
+            {
+                HealthSeverity.Critical => s_criticalBrush,
+                HealthSeverity.Warning => s_warningBrush,
+                _ => HasCollectorErrors ? MakeBrush("#FFD54F") : MakeBrush("#2a2d35"),
+            };
+        }
+    }
 
     /// <summary>
     /// The viewer's status derivation (#1262): classify how fresh the newest collection is. Pure over
@@ -317,6 +693,14 @@ public sealed class ServerSummaryItem
         IsOnline = freshness != ServerFreshness.Offline;
         HasCollectorErrors = freshness == ServerFreshness.Stale;
     }
+
+    private static SolidColorBrush SeverityBrush(HealthSeverity severity) => severity switch
+    {
+        HealthSeverity.Critical => s_criticalBrush,
+        HealthSeverity.Warning => s_warningBrush,
+        HealthSeverity.Healthy => s_healthyBrush,
+        _ => s_unknownBrush,
+    };
 
     private static SolidColorBrush MakeBrush(string hex)
     {
