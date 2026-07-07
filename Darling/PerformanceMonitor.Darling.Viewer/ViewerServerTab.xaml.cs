@@ -164,6 +164,10 @@ public partial class ViewerServerTab : UserControl
            hover helpers, which the drill-down menus read for the nearest-series time. */
         WireChartDrillDowns();
         WireSlicerOverlays();
+
+        /* Per-row double-click history windows (ViewerServerTab.History.cs) on the three query grids — a
+           different event from the SelectionChanged slicer overlay wired just above; both coexist. */
+        WireHistoryDrillDowns();
     }
 
     /// <summary>The server this tab is bound to; MainWindow keys open tabs by this for dedupe/close.</summary>
