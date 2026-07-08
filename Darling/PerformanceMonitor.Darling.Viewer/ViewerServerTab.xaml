@@ -20,7 +20,7 @@
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
             <Setter Property="Margin" Value="0,0,0,6"/>
         </Style>
 
@@ -38,9 +38,9 @@
         <!-- Dark grid chrome shared by the per-server grids (relocated from MainWindow's
              Window.Resources — same setters, zero visual change). -->
         <Style x:Key="DarkGridHeader" TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#262932"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
-            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="Background" Value="{DynamicResource ViewerGridHeaderBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="0,0,1,1"/>
             <Setter Property="Padding" Value="8,5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -74,7 +74,7 @@
             <Setter Property="ContextMenu" Value="{StaticResource DataGridContextMenu}"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#1f232b"/>
+                    <Setter Property="Background" Value="{DynamicResource ViewerHoverBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -82,11 +82,11 @@
         <Style x:Key="DarkGridCell" TargetType="DataGridCell">
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#2f3542"/>
-                    <Setter Property="Foreground" Value="#E4E6EB"/>
+                    <Setter Property="Background" Value="{DynamicResource ViewerSelectionBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -99,13 +99,13 @@
             <Setter Property="SelectionMode" Value="Single"/>
             <Setter Property="SelectionUnit" Value="FullRow"/>
             <Setter Property="GridLinesVisibility" Value="Horizontal"/>
-            <Setter Property="HorizontalGridLinesBrush" Value="#2a2d35"/>
-            <Setter Property="Background" Value="#111217"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
-            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource BackgroundDarkBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="RowBackground" Value="#111217"/>
-            <Setter Property="AlternatingRowBackground" Value="#16181d"/>
+            <Setter Property="RowBackground" Value="{DynamicResource BackgroundDarkBrush}"/>
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource ViewerAltRowBrush}"/>
             <Setter Property="ColumnHeaderStyle" Value="{StaticResource DarkGridHeader}"/>
             <Setter Property="RowStyle" Value="{StaticResource DarkGridRow}"/>
             <Setter Property="CellStyle" Value="{StaticResource DarkGridCell}"/>
@@ -2583,7 +2583,7 @@
 
                 <!-- Toolbar -->
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                    <Button Content="Refresh" Click="DailySummaryRefresh_Click" Margin="0,0,10,0" Padding="8,4" MinWidth="60" Style="{StaticResource SuccessButton}"/>
+                    <Button Content="Refresh" Click="DailySummaryRefresh_Click" Margin="0,0,10,0" Padding="8,4" MinWidth="60"/>
                     <TextBlock x:Name="DailySummaryIndicator" Text="Composite daily health - click a day for detail (times in UTC)" VerticalAlignment="Center"
                                FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
                 </StackPanel>

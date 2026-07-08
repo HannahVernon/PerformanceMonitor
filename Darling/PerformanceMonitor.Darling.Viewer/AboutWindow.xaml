@@ -6,8 +6,8 @@
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Icon="EDD.ico"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Mirrors Lite's AboutWindow (Lite/Windows/AboutWindow.xaml), dark-styled via the shared
          ViewerDarkTheme resource dictionary like the viewer's other dialogs (Manage Mute Rules).
          The viewer ships inside the Darling service release and is not independently Velopack-managed,
@@ -35,23 +35,23 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="SQL Server Performance Monitor Darling"
-                   FontSize="18" FontWeight="Bold" Foreground="#E4E6EB"
+                   FontSize="18" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}"
                    TextWrapping="Wrap" Margin="0,0,0,8"/>
 
         <TextBlock Grid.Row="1" x:Name="VersionText" Text="Version 3.1.0"
-                   Foreground="#8B93A1" Margin="0,0,0,16"/>
+                   Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,16"/>
 
-        <TextBlock Grid.Row="2" TextWrapping="Wrap" Foreground="#E4E6EB" Margin="0,0,0,8">
+        <TextBlock Grid.Row="2" TextWrapping="Wrap" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,8">
             The desktop viewer for the Performance Monitor Darling service. Connects to the central
             Postgres store to show per-server dashboards, recommendations, and alerts across every
             monitored SQL Server.
         </TextBlock>
 
         <StackPanel Grid.Row="3" Margin="0,0,0,8">
-            <TextBlock Foreground="#E4E6EB" FontSize="12">
+            <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12">
                 © 2026 Erik Darling, Darling Data LLC
             </TextBlock>
-            <TextBlock Foreground="#8B93A1" FontSize="12">
+            <TextBlock Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="12">
                 Licensed under the MIT License
             </TextBlock>
         </StackPanel>

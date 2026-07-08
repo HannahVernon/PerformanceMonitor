@@ -4,8 +4,8 @@
         Title="Collection History" Height="600" Width="1100"
         WindowStartupLocation="CenterOwner"
         Icon="EDD.ico"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Copied from Lite's Windows/CollectionLogWindow.xaml for the W1i copy-parity port: the
          per-collector collection-history drill the Collection Health "Health Summary" grid opens on
          double-click. Purely data-driven; the one behavioral change is the data call is repointed to
@@ -49,7 +49,7 @@
         </Grid.RowDefinitions>
 
         <!-- Header -->
-        <Border Grid.Row="0" Background="#111217" Padding="10" Margin="10,10,10,0" CornerRadius="4">
+        <Border Grid.Row="0" Background="{DynamicResource BackgroundDarkBrush}" Padding="10" Margin="10,10,10,0" CornerRadius="4">
             <StackPanel>
                 <TextBlock x:Name="CollectorNameText" FontSize="16" FontWeight="Bold"/>
                 <TextBlock x:Name="SummaryText" Margin="0,5,0,0"/>
@@ -104,7 +104,7 @@
         </DataGrid>
 
         <!-- Footer -->
-        <Border Grid.Row="2" Background="#111217" Padding="10" Margin="10,0,10,10" CornerRadius="4">
+        <Border Grid.Row="2" Background="{DynamicResource BackgroundDarkBrush}" Padding="10" Margin="10,0,10,10" CornerRadius="4">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="Close" Width="100" Height="30" Click="Close_Click"/>
             </StackPanel>

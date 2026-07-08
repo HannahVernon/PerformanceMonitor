@@ -7,8 +7,8 @@
         WindowStartupLocation="CenterOwner"
         Icon="EDD.ico"
         ResizeMode="CanResizeWithGrip"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- The Darling viewer's collector-schedule editor: a faithful port of Lite's CollectorScheduleEditorWindow,
          rewired to write the control-plane config.config_collector_schedules the running service honors (scope =
          All servers / a specific server; presets change frequencies only). Dark-styled via the shared
@@ -36,7 +36,7 @@
             <TextBlock x:Name="HeaderText" Text="Collector Schedules" FontSize="18" FontWeight="Bold"/>
             <TextBlock x:Name="SubHeaderText" FontSize="12" Foreground="{StaticResource DimTextBrush}" Margin="0,4,0,0" TextWrapping="Wrap"
                        Text="Override how often the Darling service collects each metric, and how long it keeps it. Blank overrides fall back to the built-in defaults."/>
-            <TextBlock x:Name="ReadOnlyBanner" FontSize="12" Foreground="#E0A030" Margin="0,6,0,0" TextWrapping="Wrap"
+            <TextBlock x:Name="ReadOnlyBanner" FontSize="12" Foreground="{DynamicResource WarningTextBrush}" Margin="0,6,0,0" TextWrapping="Wrap"
                        Visibility="Collapsed"
                        Text="This viewer is connected with a read-only role, so collector schedules can't be changed here."/>
         </StackPanel>
