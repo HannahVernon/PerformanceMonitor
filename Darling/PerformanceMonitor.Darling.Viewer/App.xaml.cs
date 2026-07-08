@@ -17,9 +17,10 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <summary>
 /// The Darling viewer — a Postgres client of the central store. MainWindow owns data startup:
 /// it loads the viewer's sliver of darling.json (<see cref="ViewerSettings"/>) and connects
-/// on first render. App startup applies the shared Dark theme through <see cref="ThemeManager"/>
-/// so copied Lite XAML resolves its theme keys; the theme is fixed to Dark for v1 (no picker), and
-/// <see cref="ThemeManager.CurrentTheme"/> stays "Dark" so <c>ChartStyle</c> draws dark chrome.
+/// on first render. App startup applies the operator's saved color theme (Dark / Light / CoolBreeze)
+/// through <see cref="ThemeManager"/> so copied Lite XAML resolves its theme keys; the Settings window's
+/// theme selector live-previews and persists the choice to <see cref="ViewerAppSettings"/>, and
+/// <see cref="ThemeManager.CurrentTheme"/> drives whether <c>ChartStyle</c> draws dark or light chrome.
 /// Single-instance enforcement uses the shared <see cref="SingleInstanceCoordinator"/> (as Lite /
 /// Dashboard) so a second launch surfaces the existing window instead of opening a duplicate viewer,
 /// and a newer Velopack build launched over an older one takes over.
@@ -34,10 +35,19 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        /* Re-apply through ThemeManager (App.xaml already merges the same dictionary) so
-           ThemeManager owns the app-level merged dictionary at runtime, before StartupUri
-           creates MainWindow. Dark is the default; naming it keeps the source of truth explicit. */
-        ThemeManager.Apply("Dark");
+        /* Apply the saved color theme through ThemeManager (App.xaml merges Dark as the design-time
+           default) so ThemeManager owns the app-level merged dictionary at runtime, before StartupUri
+           creates MainWindow. Reads the viewer-local settings directly (cheap JSON read) so the very
+           first paint is already in the operator's chosen theme — no flash of Dark. Falls back to Dark
+           on any error. Light / CoolBreeze are honored via the Settings window's theme selector. */
+        try
+        {
+            ThemeManager.Apply(new ViewerAppSettingsStore().Load().ColorTheme);
+        }
+        catch
+        {
+            ThemeManager.Apply("Dark");
+        }
 
         /* #1050 (companion to the ported tray's WindowResumeGuard): WPF's GPU render thread can zombie its
            surface across sleep/wake or RDP, leaving a live-but-blank window — now reachable in the viewer

@@ -73,7 +73,7 @@
                 <TextBlock Text="Store query and Query Store execution-plan XML across the fleet. Disable to shave storage on a very large fleet; a per-server override lives on each server's dialog."
                            FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
                            Margin="0,4,0,0" TextWrapping="Wrap"/>
-                <TextBlock x:Name="SettingsReadOnlyBanner" FontSize="12" Foreground="#E0A030" Margin="0,8,0,0" TextWrapping="Wrap"
+                <TextBlock x:Name="SettingsReadOnlyBanner" FontSize="12" Foreground="{DynamicResource WarningTextBrush}" Margin="0,8,0,0" TextWrapping="Wrap"
                            Visibility="Collapsed"
                            Text="This viewer is connected with a read-only role. Monitoring settings below are shown for reference but can't be changed from here."/>
             </StackPanel>
@@ -168,12 +168,12 @@
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                     <TextBlock Text="Color theme:" VerticalAlignment="Center"
                                Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,0"/>
-                    <ComboBox x:Name="ColorThemeCombo" Width="140" VerticalAlignment="Center" IsEnabled="False">
-                        <ComboBoxItem Content="Dark" IsSelected="True"/>
+                    <ComboBox x:Name="ColorThemeCombo" Width="140" VerticalAlignment="Center"
+                              SelectionChanged="ColorThemeCombo_SelectionChanged">
+                        <ComboBoxItem Content="Dark" Tag="Dark"/>
+                        <ComboBoxItem Content="Light" Tag="Light"/>
+                        <ComboBoxItem Content="Cool Breeze" Tag="CoolBreeze"/>
                     </ComboBox>
-                    <TextBlock Text="the Darling viewer is dark-only"
-                               FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
-                               VerticalAlignment="Center" Margin="6,0,0,0"/>
                 </StackPanel>
             </StackPanel>
         </Border>
@@ -537,7 +537,7 @@
                     <Run Foreground="#16A34A" FontWeight="Bold" Text="&#x25A0; Green" /> — Resolved (Server Restored)
                 </TextBlock>
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}">
-                    <Run Foreground="#2eaef1" FontWeight="Bold" Text="&#x25A0; Blue" /> — Info
+                    <Run Foreground="{DynamicResource InfoBrush}" FontWeight="Bold" Text="&#x25A0; Blue" /> — Info
                 </TextBlock>
             </StackPanel>
         </Border>

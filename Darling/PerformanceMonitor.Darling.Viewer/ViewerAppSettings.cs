@@ -72,6 +72,10 @@ public sealed class ViewerAppSettings
     /// <summary>Timestamp display mode: "ServerTime", "LocalTime", or "UTC".</summary>
     public string TimeDisplayMode { get; set; } = "ServerTime";
 
+    /// <summary>Color theme: "Dark" (default), "Light", or "CoolBreeze". Mirrors Lite's <c>App.ColorTheme</c>;
+    /// applied at startup and live-previewed from the Settings window via the shared <c>ThemeManager</c>.</summary>
+    public string ColorTheme { get; set; } = "Dark";
+
     /* ---------------- Notifications / alert thresholds (mirrors Lite App.*) ---------------- */
 
     public bool MinimizeToTray { get; set; } = true;
@@ -177,6 +181,7 @@ public sealed class ViewerAppSettings
         ConnectionTimeoutSeconds = Clamp(ConnectionTimeoutSeconds, 5, 60, 5);
         CsvSeparator = (CsvSeparator == "," || CsvSeparator == ";" || CsvSeparator == "\t") ? CsvSeparator : DefaultCsvSeparator();
         TimeDisplayMode = (TimeDisplayMode is "ServerTime" or "LocalTime" or "UTC") ? TimeDisplayMode : "ServerTime";
+        ColorTheme = (ColorTheme is "Dark" or "Light" or "CoolBreeze") ? ColorTheme : "Dark";
 
         AlertCpuThreshold = Clamp(AlertCpuThreshold, 1, 100, 80);
         AlertCpuMode = (AlertCpuMode is "Total" or "SqlOnly") ? AlertCpuMode : "Total";
