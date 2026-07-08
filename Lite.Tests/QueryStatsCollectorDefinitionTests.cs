@@ -150,6 +150,29 @@ public sealed class QueryStatsCollectorDefinitionTests
         };
 
     [Fact]
+    public void BuildQuery_HandlesConvertToVarchar130_HashesStayVarchar64()
+    {
+        /* plan_handle/sql_handle are varbinary(64); style-1 hex is '0x' + 128 = 130 chars. The old
+           CONVERT(varchar(64), ...) truncated the handle to ~31 bytes, so dm_exec_query_plan rejected the
+           stored value and Fetch Live Plan failed for every query-grid row (and the by-sql_handle path).
+           query_hash/query_plan_hash are binary(8) (18 chars) and correctly stay varchar(64). Both the
+           on-prem and Azure builds share SelectColumnsText, so this guards both. */
+        foreach (var text in new[]
+        {
+            Collapse(QueryStatsCollector.Instance.BuildQuery(MakeContext()).Text),
+            Collapse(QueryStatsCollector.Instance.BuildQuery(MakeContext(isAzureSqlDb: true)).Text),
+        })
+        {
+            Assert.Contains("sql_handle=CONVERT(varchar(130),qs.sql_handle,1)", text, StringComparison.Ordinal);
+            Assert.Contains("plan_handle=CONVERT(varchar(130),qs.plan_handle,1)", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("CONVERT(varchar(64),qs.sql_handle,1)", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("CONVERT(varchar(64),qs.plan_handle,1)", text, StringComparison.Ordinal);
+            Assert.Contains("query_hash=CONVERT(varchar(64),qs.query_hash,1)", text, StringComparison.Ordinal);
+            Assert.Contains("query_plan_hash=CONVERT(varchar(64),qs.query_plan_hash,1)", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void PayloadColumns_MatchSchemaOrder_50Columns()
     {
         var names = QueryStatsCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray();

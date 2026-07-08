@@ -77,6 +77,26 @@ public sealed class ProcedureStatsCollectorDefinitionTests
     }
 
     [Fact]
+    public void BuildQuery_HandlesConvertToVarchar130_NeverTruncated()
+    {
+        /* plan_handle/sql_handle are varbinary(64); style-1 hex is '0x' + 128 = 130 chars. The old
+           CONVERT(varchar(64), ...) truncated the handle to ~31 bytes, so dm_exec_query_plan rejected the
+           stored value and Fetch Live Plan failed for every procedure/trigger/function row. Guards every
+           UNION branch in the standard body and the single-proc Azure variant. */
+        foreach (var text in new[]
+        {
+            Collapse(ProcedureStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(s_deltas)).Text),
+            Collapse(ProcedureStatsCollector.Instance.BuildQuery(CollectorTestContext.Make(s_deltas, isAzureSqlDb: true)).Text),
+        })
+        {
+            Assert.Contains("sql_handle=CONVERT(varchar(130),s.sql_handle,1)", text, StringComparison.Ordinal);
+            Assert.Contains("plan_handle=CONVERT(varchar(130),s.plan_handle,1)", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("CONVERT(varchar(64),s.sql_handle,1)", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("CONVERT(varchar(64),s.plan_handle,1)", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void PayloadColumns_MatchSchema_35Columns()
     {
         var names = ProcedureStatsCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray();

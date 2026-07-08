@@ -95,8 +95,8 @@ SELECT
     min_logical_writes = s.min_logical_writes,
     max_logical_writes = s.max_logical_writes,
     ' AS nvarchar(max)) + @spills_cols + N'
-    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+    sql_handle = CONVERT(varchar(130), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(130), s.plan_handle, 1)/*PLAN_SELECT*/
 FROM sys.dm_exec_procedure_stats AS s/*PLAN_APPLY*/
 CROSS APPLY
 (
@@ -150,8 +150,8 @@ SELECT
     min_logical_writes = s.min_logical_writes,
     max_logical_writes = s.max_logical_writes,
     ' + @spills_cols + CAST(N'
-    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+    sql_handle = CONVERT(varchar(130), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(130), s.plan_handle, 1)/*PLAN_SELECT*/
 FROM sys.dm_exec_trigger_stats AS s/*PLAN_APPLY*/
 CROSS APPLY sys.dm_exec_sql_text(s.sql_handle) AS st
 CROSS APPLY
@@ -194,8 +194,8 @@ SELECT
     min_logical_writes = s.min_logical_writes,
     max_logical_writes = s.max_logical_writes,
     ' AS nvarchar(max)) + @fn_spills_cols + CAST(N'
-    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+    sql_handle = CONVERT(varchar(130), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(130), s.plan_handle, 1)/*PLAN_SELECT*/
 FROM sys.dm_exec_function_stats AS s/*PLAN_APPLY*/
 CROSS APPLY
 (
@@ -245,8 +245,8 @@ SELECT /* PerformanceMonitorLite */ TOP (150)
     total_spills = ISNULL(s.total_spills, 0),
     min_spills = ISNULL(s.min_spills, 0),
     max_spills = ISNULL(s.max_spills, 0),
-    sql_handle = CONVERT(varchar(64), s.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), s.plan_handle, 1)/*PLAN_SELECT*/
+    sql_handle = CONVERT(varchar(130), s.sql_handle, 1),
+    plan_handle = CONVERT(varchar(130), s.plan_handle, 1)/*PLAN_SELECT*/
 FROM sys.dm_exec_procedure_stats AS s/*PLAN_APPLY*/
 WHERE s.database_id = DB_ID()
 AND   s.last_execution_time >= DATEADD(MINUTE, -10, GETDATE())
