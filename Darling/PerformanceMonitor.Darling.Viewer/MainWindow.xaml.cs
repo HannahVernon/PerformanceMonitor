@@ -574,6 +574,10 @@ public partial class MainWindow : Window
         }
 
         await RefreshVisibleAsync();
+        /* The status bar's collector-health scope flips with the active tab (a per-server tab shows that
+           server; an aggregate tab shows the fleet-cumulative total), so refresh it now rather than waiting
+           up to 60s for the status timer. */
+        await UpdateCollectorHealthTextAsync();
     }
 
     private async Task LoadServersAsync(bool preserveSelection = false)

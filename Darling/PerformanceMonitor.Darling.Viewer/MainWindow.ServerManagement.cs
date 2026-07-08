@@ -110,9 +110,6 @@ public partial class MainWindow
         var nowUtc = DateTime.UtcNow;
         var servers = (ServerList.ItemsSource as IEnumerable<DarlingServer>)?.ToList() ?? new List<DarlingServer>();
 
-        var online = 0;
-        var warning = 0;
-        var offline = 0;
         DateTime? newest = null;
 
         foreach (var s in servers)
@@ -120,31 +117,15 @@ public partial class MainWindow
             DateTime? last = freshness.TryGetValue(s.ServerId, out var t) ? t : null;
             s.ApplyFreshness(last, nowUtc);
 
-            switch (s.DotStatus)
-            {
-                case "Online": online++; break;
-                case "Warning": warning++; break;
-                default: offline++; break;
-            }
-
             if (last.HasValue && (newest is null || last.Value > newest.Value))
             {
                 newest = last.Value;
             }
         }
 
-        if (servers.Count == 0)
-        {
-            CollectorHealthText.Text = "";
-        }
-        else if (warning + offline == 0)
-        {
-            CollectorHealthText.Text = $"Collectors: {online} OK";
-        }
-        else
-        {
-            CollectorHealthText.Text = $"Collectors: {warning} stale, {offline} offline";
-        }
+        /* The status bar's collector-health field is the SELECTED server's REAL per-collector health —
+           the server COUNT is a separate field (ServerCountText). Mirrors Lite's UpdateCollectorHealth. */
+        await UpdateCollectorHealthTextAsync();
 
         if (newest is null)
         {
@@ -156,6 +137,70 @@ public partial class MainWindow
             CollectionStatusText.Text = age.TotalSeconds < 90
                 ? "Collection: Active"
                 : $"Collection: {FormatAge(age)} ago";
+        }
+    }
+
+    /// <summary>
+    /// Sets the status bar's collector-health field from the ACTIVE TAB's scope, mirroring Lite's
+    /// <c>UpdateCollectorHealth</c>: a per-server tab shows THAT server's collectors; an aggregate tab
+    /// (Overview / Alert History / FinOps / Recommendations) shows the FLEET-CUMULATIVE total across all
+    /// enabled servers (Lite's <c>GetHealthSummary(null)</c> on a non-server view). "Collectors: N OK" when
+    /// all healthy, or "Collectors: N erroring" (with the failing names) when any collector is FAILING. Reuses
+    /// the Collection Health tab's <see cref="ViewerDataService.GetCollectionHealthAsync"/> /
+    /// <see cref="ViewerDataService.GetFleetCollectionHealthAsync"/> aggregates and the
+    /// <see cref="CollectorHealthRow.HealthStatus"/> banding, so the status bar and that tab always agree.
+    /// FAILING is the only "erroring" band — NO_PERMISSIONS (e.g. an RDS login lacking msdb rights) and
+    /// SKIPPED-as-healthy (e.g. running_jobs on Azure SQL DB) surface in the Collection Health tab, not here,
+    /// exactly like Lite. The server COUNT is a separate field (ServerCountText); this one is collectors,
+    /// which is why the pre-fix "Collectors: {online-servers} OK" read wrong.
+    /// </summary>
+    private async Task UpdateCollectorHealthTextAsync()
+    {
+        if (_dataService is null)
+        {
+            CollectorHealthText.Text = "";
+            CollectorHealthText.ToolTip = null;
+            return;
+        }
+
+        /* Per-server tab -> that server's collectors; an aggregate tab -> the fleet-cumulative total across all
+           enabled servers (mirrors Lite's cumulative count on a non-server view). */
+        int? serverId = MainTabs.SelectedItem is System.Windows.Controls.TabItem { Content: ViewerServerTab serverTab }
+            ? serverTab.ServerId
+            : null;
+
+        List<CollectorHealthRow> health;
+        try
+        {
+            health = serverId.HasValue
+                ? await _dataService.GetCollectionHealthAsync(serverId.Value)
+                : await _dataService.GetFleetCollectionHealthAsync();
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Warn("ServerStatus", $"collector health read failed: {ex.Message}");
+            return;
+        }
+
+        if (health.Count == 0)
+        {
+            CollectorHealthText.Text = "";
+            CollectorHealthText.ToolTip = null;
+            return;
+        }
+
+        var failing = health.Where(h => h.HealthStatus == "FAILING").ToList();
+        if (failing.Count > 0)
+        {
+            CollectorHealthText.Text = $"Collectors: {failing.Count} erroring";
+            CollectorHealthText.Foreground = System.Windows.Media.Brushes.OrangeRed;
+            CollectorHealthText.ToolTip = "Failing: " + string.Join(", ", failing.Select(h => h.CollectorName).Distinct());
+        }
+        else
+        {
+            CollectorHealthText.Text = $"Collectors: {health.Count} OK";
+            CollectorHealthText.Foreground = (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush");
+            CollectorHealthText.ToolTip = null;
         }
     }
 

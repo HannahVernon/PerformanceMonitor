@@ -65,6 +65,31 @@ public sealed partial class ViewerDataService
         """;
 
     /// <summary>
+    /// The fleet-cumulative variant of <see cref="CollectionHealthSql"/>: the same 10-column per-collector
+    /// aggregate but across ALL enabled monitored servers (GROUP BY server_id, collector_name — one row per
+    /// server/collector pair), for the status bar's aggregate-view total (mirrors Lite's cumulative
+    /// GetHealthSummary(null)). Scoped to enabled servers so a removed server's aged-out rows don't read as
+    /// erroring. $1 window start (naive UTC).
+    /// </summary>
+    public const string FleetCollectionHealthSql = """
+        SELECT
+            collector_name,
+            COUNT(*) AS total_runs,
+            SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN status = 'ERROR' THEN 1 ELSE 0 END) AS error_count,
+            AVG(duration_ms) AS avg_duration_ms,
+            MAX(CASE WHEN status IN ('SUCCESS', 'SKIPPED') THEN collection_time END) AS last_success_time,
+            MAX(collection_time) AS last_run_time,
+            MAX(CASE WHEN status IN ('ERROR', 'PERMISSIONS') THEN error_message END) AS last_error,
+            MAX(CASE WHEN status IN ('ERROR', 'PERMISSIONS') THEN collection_time END) AS last_error_time,
+            SUM(CASE WHEN status = 'PERMISSIONS' THEN 1 ELSE 0 END) AS permission_denied_count
+        FROM v_collection_log
+        WHERE collection_time >= $1
+        AND   server_id IN (SELECT server_id FROM config_monitored_servers WHERE is_enabled)
+        GROUP BY server_id, collector_name
+        """;
+
+    /// <summary>
     /// The Collection Log sub-tab's recent-log read, adapted from Lite's <c>GetRecentCollectionLogAsync</c>
     /// to honor the per-server toolbar's settable window EXACTLY: the collection_log rows for one server
     /// between the window's start and end bounds, newest first, capped. Where Lite (and the shell's first
@@ -134,23 +159,52 @@ public sealed partial class ViewerDataService
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            items.Add(new CollectorHealthRow
-            {
-                CollectorName = reader.GetString(0),
-                TotalRuns = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
-                SuccessCount = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
-                ErrorCount = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
-                AvgDurationMs = reader.IsDBNull(4) ? 0 : Convert.ToDouble(reader.GetValue(4)),
-                LastSuccessTime = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
-                LastRunTime = reader.IsDBNull(6) ? null : reader.GetDateTime(6),
-                LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
-                LastErrorTime = reader.IsDBNull(8) ? null : reader.GetDateTime(8),
-                PermissionDeniedCount = reader.IsDBNull(9) ? 0 : Convert.ToInt64(reader.GetValue(9)),
-            });
+            items.Add(MapHealthRow(reader));
         }
 
         return items;
     }
+
+    /// <summary>
+    /// Fleet-cumulative per-collector health across ALL enabled monitored servers over the trailing 7 days —
+    /// the status bar's aggregate-view total (Overview / Alert History / FinOps / Recommendations), where Lite
+    /// shows a cumulative count rather than one server's. ONE query (<see cref="FleetCollectionHealthSql"/>)
+    /// regardless of fleet size; each row is a (server, collector) pair carrying its own
+    /// <see cref="CollectorHealthRow.HealthStatus"/>, so the caller counts total + FAILING exactly as per-server.
+    /// </summary>
+    public async Task<List<CollectorHealthRow>> GetFleetCollectionHealthAsync(CancellationToken cancellationToken = default)
+    {
+        var items = new List<CollectorHealthRow>();
+
+        await using var command = _dataSource.CreateCommand(FleetCollectionHealthSql);
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
+        {
+            TypedValue = DateTime.SpecifyKind(DateTime.UtcNow.AddDays(-7), DateTimeKind.Unspecified),
+        });
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(MapHealthRow(reader));
+        }
+
+        return items;
+    }
+
+    /// <summary>Maps one row of the shared 10-column health projection (per-server or fleet) to a <see cref="CollectorHealthRow"/>.</summary>
+    private static CollectorHealthRow MapHealthRow(NpgsqlDataReader reader) => new()
+    {
+        CollectorName = reader.GetString(0),
+        TotalRuns = reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
+        SuccessCount = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+        ErrorCount = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
+        AvgDurationMs = reader.IsDBNull(4) ? 0 : Convert.ToDouble(reader.GetValue(4)),
+        LastSuccessTime = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+        LastRunTime = reader.IsDBNull(6) ? null : reader.GetDateTime(6),
+        LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+        LastErrorTime = reader.IsDBNull(8) ? null : reader.GetDateTime(8),
+        PermissionDeniedCount = reader.IsDBNull(9) ? 0 : Convert.ToInt64(reader.GetValue(9)),
+    };
 
     /// <summary>
     /// Collection_log entries for one server between the window's naive-UTC start/end bounds, most recent
