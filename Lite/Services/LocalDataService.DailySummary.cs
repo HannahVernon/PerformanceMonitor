@@ -51,13 +51,13 @@ deadlocks AS (
     GROUP BY 1
 ),
 bpr AS (
-    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c
+    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c, MAX(wait_time_ms) AS max_wait_ms
     FROM v_blocked_process_reports
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
     GROUP BY 1
 ),
 dmv AS (
-    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c
+    SELECT date_trunc('day', collection_time) AS d, COUNT(*) AS c, MAX(wait_time_ms) AS max_wait_ms
     FROM v_dmv_blocking_snapshots
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
     GROUP BY 1
@@ -123,7 +123,11 @@ SELECT
     COALESCE(cl.errs, 0) AS collection_errors,
     COALESCE(m.pressure, 0) AS memory_pressure_events,
     COALESCE(m.critical, 0) AS memory_critical_events,
-    COALESCE(al.c, 0) AS alert_count
+    COALESCE(al.c, 0) AS alert_count,
+    /* Peak block wait (ms) from the SAME source the blocking count came from (BPR preferred, DMV-snapshot
+       fallback), so the day-detail blocking reason ('N blocking events (peak block X)') reconciles with the
+       count. 0 when the blocking came from a source without a wait time. */
+    COALESCE(CASE WHEN COALESCE(b.c, 0) > 0 THEN b.max_wait_ms ELSE dm.max_wait_ms END, 0) AS peak_block_wait_ms
 FROM day_spine s
 LEFT JOIN waits w ON w.d = s.d
 LEFT JOIN queries q ON q.d = s.d
@@ -190,6 +194,7 @@ ORDER BY s.d";
             MemoryPressureEvents = reader.IsDBNull(8) ? 0L : Convert.ToInt64(reader.GetValue(8)),
             MemoryCriticalEvents = reader.IsDBNull(9) ? 0L : Convert.ToInt64(reader.GetValue(9)),
             AlertCount = reader.IsDBNull(10) ? 0L : Convert.ToInt64(reader.GetValue(10)),
+            MaxBlockDurationMs = reader.IsDBNull(11) ? 0L : Convert.ToInt64(reader.GetValue(11)),
             HasData = true,
         };
         row.HealthBand = DailyHealthBandCalculator.Classify(row.ToSignals());
@@ -210,6 +215,10 @@ public class DailySummaryRow
     public long MemoryCriticalEvents { get; set; }
     public long CollectionErrors { get; set; }
     public long AlertCount { get; set; }
+
+    /// <summary>The day's peak/max block wait in ms (0 when no blocking, or blocking from a source without a
+    /// wait time). Surfaced on the day-detail panel's blocking reason.</summary>
+    public long MaxBlockDurationMs { get; set; }
 
     /// <summary>True when the day had any collection. False renders the calendar cell as No-Data (grey).</summary>
     public bool HasData { get; set; }

@@ -53,6 +53,11 @@ public sealed class ViewerDailySummarySqlTests
         Assert.Contains("FROM v_blocked_process_reports", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_dmv_blocking_snapshots", sql, StringComparison.Ordinal);
 
+        /* Peak block wait (ms) for the day-detail blocking reason: MAX(wait_time_ms) per source, taken from
+           the SAME source the count came from (BPR preferred, DMV fallback) so it reconciles with the count. */
+        Assert.Contains("MAX(wait_time_ms) AS max_wait_ms", sql, StringComparison.Ordinal);
+        Assert.Contains("CASE WHEN COALESCE(b.c, 0) > 0 THEN b.max_wait_ms ELSE dm.max_wait_ms END", sql, StringComparison.Ordinal);
+
         /* High-CPU count uses total host CPU = SQL + other-process (Linux NULL → 0), threshold 80, via FILTER. */
         Assert.Contains("(sqlserver_cpu_utilization + COALESCE(other_process_cpu_utilization, 0)) >= 80", sql, StringComparison.Ordinal);
         Assert.Contains("FROM v_cpu_utilization_stats", sql, StringComparison.Ordinal);
