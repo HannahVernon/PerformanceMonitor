@@ -6,6 +6,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
 using PerformanceMonitor.Common;
 using Xunit;
 
@@ -131,5 +132,99 @@ public class DailyHealthBandTests
         Assert.Contains("1 severe memory-pressure event", described);
         Assert.Contains("2 memory-pressure events", described);
         Assert.DoesNotContain("3 memory-pressure events", described);
+    }
+
+    // ── Day-detail panel logic (the click-a-day panel's reasons / drills / window / metrics line) ──
+
+    [Fact]
+    public void BuildReasons_TerminalMessages_ForNoData_AndQuietDay()
+    {
+        // No-Data uses the day-detail phrasing (distinct from the tooltip's "No data collected.").
+        Assert.Equal(new[] { "No collection this day." }, DailyHealthBandCalculator.BuildReasons(Signals(hasData: false)));
+        Assert.Equal(new[] { "No issues detected." }, DailyHealthBandCalculator.BuildReasons(Signals()));
+    }
+
+    [Fact]
+    public void BuildReasons_ListsEachNonZeroSignal()
+    {
+        var reasons = DailyHealthBandCalculator.BuildReasons(
+            Signals(deadlocks: 2, collectionErrors: 1, highCpu: 4, blocking: 3, memPressure: 5, memCritical: 2, alerts: 1));
+        Assert.Contains("2 deadlocks", reasons);
+        Assert.Contains("1 collection error", reasons);
+        Assert.Contains("4 high-CPU samples", reasons);
+        Assert.Contains("3 blocking events", reasons);
+        Assert.Contains("2 severe memory-pressure events", reasons);
+        Assert.Contains("3 memory-pressure events", reasons); // 5 total - 2 severe, not double-counted
+        Assert.Contains("1 alert", reasons);
+    }
+
+    [Theory]
+    [InlineData(800, "4 blocking events (peak block 800 ms)")]
+    [InlineData(12500, "4 blocking events (peak block 12.5 s)")]
+    [InlineData(150000, "4 blocking events (peak block 2.5 min)")]
+    public void BuildReasons_BlockingLine_CarriesPeakBlock_WhenProvided(long peakMs, string expected)
+    {
+        Assert.Contains(expected, DailyHealthBandCalculator.BuildReasons(Signals(blocking: 4), peakMs));
+    }
+
+    [Fact]
+    public void BuildReasons_BlockingLine_OmitsPeak_WhenZero()
+    {
+        var reasons = DailyHealthBandCalculator.BuildReasons(Signals(blocking: 4), peakBlockMs: 0);
+        Assert.Contains("4 blocking events", reasons);
+        Assert.DoesNotContain(reasons, r => r.Contains("peak block", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AvailableDrills_NoData_OffersNothing()
+    {
+        Assert.Empty(DailyHealthBandCalculator.AvailableDrills(Signals(hasData: false)));
+    }
+
+    [Fact]
+    public void AvailableDrills_CollectedDay_AlwaysOffersExpensiveQueries()
+    {
+        Assert.Equal(new[] { DayDrillTarget.ExpensiveQueries }, DailyHealthBandCalculator.AvailableDrills(Signals()));
+    }
+
+    [Fact]
+    public void AvailableDrills_AddsDeadlocks_And_Blocking_OnlyWhenPresent_InPanelOrder()
+    {
+        Assert.Equal(
+            new[] { DayDrillTarget.Deadlocks, DayDrillTarget.Blocking, DayDrillTarget.ExpensiveQueries },
+            DailyHealthBandCalculator.AvailableDrills(Signals(deadlocks: 1, blocking: 2)));
+        Assert.Equal(
+            new[] { DayDrillTarget.Deadlocks, DayDrillTarget.ExpensiveQueries },
+            DailyHealthBandCalculator.AvailableDrills(Signals(deadlocks: 3)));
+        Assert.Equal(
+            new[] { DayDrillTarget.Blocking, DayDrillTarget.ExpensiveQueries },
+            DailyHealthBandCalculator.AvailableDrills(Signals(blocking: 7)));
+    }
+
+    [Fact]
+    public void DayWindowUtc_IsClickedDay_MidnightToNextMidnight()
+    {
+        var (start, end) = DailyHealthBandCalculator.DayWindowUtc(new DateTime(2026, 7, 8, 14, 37, 12));
+        Assert.Equal(new DateTime(2026, 7, 8), start); // time component dropped
+        Assert.Equal(new DateTime(2026, 7, 9), end);
+        Assert.Equal(TimeSpan.FromDays(1), end - start);
+    }
+
+    [Fact]
+    public void BuildKeyMetricsLine_RendersRollup()
+    {
+        var line = DailyHealthBandCalculator.BuildKeyMetricsLine("CXPACKET", 4, 150m, 87);
+        Assert.Contains("Top wait: CXPACKET", line);
+        Assert.Contains("High-CPU samples: 4", line);
+        Assert.Contains("Total wait: 150.0 s", line);
+        Assert.Contains("Unique queries: 87", line);
+    }
+
+    [Fact]
+    public void BuildKeyMetricsLine_NoWait_ShowsNone_And_LargeWaitInMinutes()
+    {
+        var line = DailyHealthBandCalculator.BuildKeyMetricsLine(null, 0, 1200m, 0);
+        Assert.Contains("Top wait: none", line);
+        Assert.Contains("Total wait: 20.0 min", line); // 1200s / 60
     }
 }
