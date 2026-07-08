@@ -32,7 +32,11 @@ SELECT
     spins = ss.spins,
     spins_per_collision = ss.spins_per_collision,
     sleep_time = ss.sleep_time,
-    backoffs = ss.backoffs
+    /* backoffs is int in sys.dm_os_spinlock_stats on SQL 2016/2017 and was widened to bigint on
+       2019+. CONVERT so the wire type is always bigint and ReadAsync's GetInt64 doesn't throw an
+       Int32->Int64 InvalidCast on the older versions (collisions/spins/sleep_time are bigint on
+       every supported version, so they need no cast). */
+    backoffs = CONVERT(bigint, ss.backoffs)
 FROM sys.dm_os_spinlock_stats AS ss
 WHERE ss.collisions > 0
 OR    ss.spins > 0
