@@ -23,8 +23,8 @@ namespace PerformanceMonitor.Ui
     /// the Performance Calendar can't drift between them. The host supplies <see cref="Days"/> (one banded
     /// <see cref="PerformanceCalendarDay"/> per collected day) and the displayed month; the control lays out
     /// a 6x7 grid, washes each in-month cell with its band color, and raises <see cref="MonthChanged"/> when
-    /// the user navigates (so the host can fetch that month) and <see cref="DayClicked"/> when a day is
-    /// clicked (so the host can drill into that day's detail).
+    /// the user navigates (so the host can fetch that month). Clicking a day opens the built-in day-detail
+    /// panel; its drill buttons raise <see cref="DayDrillRequested"/> so the host can scope + navigate.
     /// </summary>
     public partial class PerformanceCalendar : UserControl
     {
@@ -68,9 +68,6 @@ namespace PerformanceMonitor.Ui
             get => (DateTime?)GetValue(SelectedDateProperty);
             set => SetValue(SelectedDateProperty, value);
         }
-
-        /// <summary>Raised when a user clicks an in-month day cell.</summary>
-        public event EventHandler<PerformanceCalendarDayEventArgs>? DayClicked;
 
         /// <summary>Raised when the user navigates to a different month (prev / next / Today), carrying the new month's first day.</summary>
         public event EventHandler<PerformanceCalendarMonthEventArgs>? MonthChanged;
@@ -192,7 +189,6 @@ namespace PerformanceMonitor.Ui
                 // Setting SelectedDate reframes the accent ring and (via the DP callback -> RebuildCells ->
                 // UpdateDayDetailPanel) shows the day-detail panel for this day.
                 SelectedDate = cell.Date;
-                DayClicked?.Invoke(this, new PerformanceCalendarDayEventArgs(cell.Date));
             }
         }
 

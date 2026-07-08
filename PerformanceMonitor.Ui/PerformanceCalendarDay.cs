@@ -47,18 +47,6 @@ namespace PerformanceMonitor.Ui
         public long PeakBlockMs { get; init; }
     }
 
-    /// <summary>Event args carrying the day a user clicked on the calendar.</summary>
-    public sealed class PerformanceCalendarDayEventArgs : EventArgs
-    {
-        public PerformanceCalendarDayEventArgs(DateTime date)
-        {
-            Date = date;
-        }
-
-        /// <summary>The clicked date (date component only).</summary>
-        public DateTime Date { get; }
-    }
-
     /// <summary>Event args carrying a day-detail drill request: the clicked day plus which grid to jump to.
     /// The shared panel raises this; each host scopes its toolbar to the day and switches to the target tab.</summary>
     public sealed class PerformanceCalendarDrillEventArgs : EventArgs

@@ -5,9 +5,10 @@
     <!--
       A navigable month heatmap: 6 weeks x 7 days of cells, each washed with its composite daily
       health band (green / amber / red / muted-grey for no-data). Prev/next/Today navigate months
-      (raising MonthChanged so the host can fetch that month's data); clicking an in-month day raises
-      DayClicked so the host can drill into that day's detail. All colors are theme DynamicResources
-      resolved from the host app — this control ships no theme of its own.
+      (raising MonthChanged so the host can fetch that month's data); clicking an in-month day opens
+      the built-in day-detail panel, whose drill buttons raise DayDrillRequested so the host can scope
+      and navigate. All colors are theme DynamicResources resolved from the host app — this control
+      ships no theme of its own.
     -->
     <Grid Margin="4">
         <Grid.RowDefinitions>
