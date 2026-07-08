@@ -144,6 +144,16 @@ OPTION(RECOMPILE);";
     /// <summary>running_jobs is keyed by (collection_time, server) alone — no collection_id.</summary>
     public override bool IncludesCollectionId => false;
 
+    /// <summary>
+    /// Azure SQL Database has no SQL Agent — <c>msdb.dbo.sysjobactivity</c> is unreachable there
+    /// (the three-part msdb reference raises "not supported in this version of SQL Server"), so skip
+    /// the collector rather than log a per-cycle ERROR. Managed Instance (edition 8) DOES have Agent,
+    /// so it collects there; RDS/on-prem collect too (a login lacking msdb rights surfaces as a soft
+    /// PERMISSIONS status, not a skip). Mirrors the failed-jobs alert path, which already skips Azure
+    /// SQL DB before querying msdb (AppliesTo = !IsAzureSqlDb).
+    /// </summary>
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
