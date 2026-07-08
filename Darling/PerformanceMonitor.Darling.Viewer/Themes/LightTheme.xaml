@@ -1282,6 +1282,16 @@
     </Style>
 
 
+    <!-- Viewer secondary-window surfaces (write-back windows that merge ViewerDarkTheme.xaml). Light values. -->
+    <SolidColorBrush x:Key="CardBorderBrush" Color="{StaticResource BorderLightColor}"/>
+    <SolidColorBrush x:Key="ViewerSelectionBrush" Color="#D6E4F5"/>
+    <SolidColorBrush x:Key="ViewerHoverBrush" Color="{StaticResource BackgroundLighterColor}"/>
+    <SolidColorBrush x:Key="ViewerGridHeaderBrush" Color="{StaticResource BackgroundLighterColor}"/>
+    <SolidColorBrush x:Key="ViewerAltRowBrush" Color="{StaticResource AlternatingRowColor}"/>
+    <SolidColorBrush x:Key="ViewerButtonBorderBrush" Color="{StaticResource BorderLightColor}"/>
+    <SolidColorBrush x:Key="ViewerDisabledBgBrush" Color="{StaticResource BackgroundLighterColor}"/>
+    <SolidColorBrush x:Key="ViewerDisabledTextBrush" Color="#A0A8B4"/>
+
     <!-- Time Range Slicer (light values; #1441 completeness — these 10 keys existed only in Dark) -->
     <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="{StaticResource BackgroundDarkColor}"/>
     <SolidColorBrush x:Key="SlicerChartLineBrush" Color="{StaticResource AccentColor}"/>
