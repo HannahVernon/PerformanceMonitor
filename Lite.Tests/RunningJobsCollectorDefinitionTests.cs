@@ -34,6 +34,16 @@ public sealed class RunningJobsCollectorDefinitionTests
     }
 
     [Fact]
+    public void AppliesTo_SkipsAzureSqlDb_ButCollectsOnPremManagedInstanceAndRds()
+    {
+        /* Azure SQL DB has no SQL Agent (msdb unreachable) — skip rather than log a per-cycle ERROR. */
+        Assert.False(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true }));
+        /* Managed Instance has Agent; on-prem and RDS (a non-Azure edition) collect too. */
+        Assert.True(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true }));
+        Assert.True(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo()));
+    }
+
+    [Fact]
     public void NamesColumnsAndQuery_MatchSchema()
     {
         Assert.Equal("running_jobs", RunningJobsCollector.Instance.Name);
