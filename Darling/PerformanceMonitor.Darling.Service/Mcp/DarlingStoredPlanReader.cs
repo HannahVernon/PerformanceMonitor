@@ -61,7 +61,7 @@ internal static class DarlingStoredPlanReader
     /// <summary>
     /// The latest captured procedure_stats plan for a procedure, keyed by (server, sql_handle) — the
     /// Dashboard's GetProcedurePlanXmlBySqlHandleAsync key. procedure_stats carries sql_handle as the
-    /// '0x...' hex string the collector stamps (CONVERT(varchar(64), ..., 1)), so the match is a direct
+    /// '0x...' hex string the collector stamps (CONVERT(varchar(130), ..., 1)), so the match is a direct
     /// text compare (no varbinary CONVERT the SQL-Server side needs). $1 server_id, $2 sql_handle.
     /// </summary>
     public const string ProcedurePlanXmlBySqlHandleSql = """

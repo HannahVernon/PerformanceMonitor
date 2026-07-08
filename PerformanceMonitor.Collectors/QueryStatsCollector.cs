@@ -117,8 +117,8 @@ public sealed class QueryStatsCollector : CollectorDefinitionBase<QueryStatsColl
     max_used_threads = qs.max_used_threads,
     min_spills = qs.min_spills,
     max_spills = qs.max_spills,
-    sql_handle = CONVERT(varchar(64), qs.sql_handle, 1),
-    plan_handle = CONVERT(varchar(64), qs.plan_handle, 1),
+    sql_handle = CONVERT(varchar(130), qs.sql_handle, 1),
+    plan_handle = CONVERT(varchar(130), qs.plan_handle, 1),
     query_text =
         CASE
             WHEN qs.statement_start_offset = 0
