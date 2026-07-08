@@ -5,15 +5,17 @@
     <!--
       A navigable month heatmap: 6 weeks x 7 days of cells, each washed with its composite daily
       health band (green / amber / red / muted-grey for no-data). Prev/next/Today navigate months
-      (raising MonthChanged so the host can fetch that month's data); clicking an in-month day raises
-      DayClicked so the host can drill into that day's detail. All colors are theme DynamicResources
-      resolved from the host app — this control ships no theme of its own.
+      (raising MonthChanged so the host can fetch that month's data); clicking an in-month day opens
+      the built-in day-detail panel, whose drill buttons raise DayDrillRequested so the host can scope
+      and navigate. All colors are theme DynamicResources resolved from the host app — this control
+      ships no theme of its own.
     -->
     <Grid Margin="4">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Row 0: month navigation + legend -->
@@ -157,5 +159,49 @@
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
         </ItemsControl>
+
+        <!--
+          Row 3: the day-detail panel. Shown when a day is clicked (replacing the old one-row Daily Summary
+          popup): a band-colored header, the "why this day is <band>" reasons that drove the band, a
+          key-metrics line, and drill buttons that jump to that day's Deadlocks / Blocking / Expensive Queries.
+          The reasons / metrics / which buttons appear are all computed by the shared DailyHealthBandCalculator;
+          clicking a drill button raises DayDrillRequested for the host to scope + navigate. All colors are
+          theme DynamicResources so the panel themes with its host.
+        -->
+        <Border Grid.Row="3" x:Name="DayDetailPanel" Visibility="Collapsed" Margin="2,10,2,2"
+                CornerRadius="6" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}"
+                Background="{DynamicResource BackgroundLighterBrush}">
+            <StackPanel Margin="14,10">
+                <!-- Header: "<Weekday, Mon D> — <BAND>" (band-colored via SetResourceReference in code-behind). -->
+                <TextBlock x:Name="DayDetailHeader" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+
+                <!-- Why this day is <band> -->
+                <TextBlock x:Name="DayDetailWhyLabel" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,3"
+                           Foreground="{DynamicResource ForegroundDimBrush}"/>
+                <ItemsControl x:Name="DayDetailReasons" Margin="0,0,0,10">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" Margin="8,1,0,1" FontSize="12" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource ForegroundBrush}"/>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- Key metrics line -->
+                <TextBlock x:Name="DayDetailMetrics" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap"
+                           Foreground="{DynamicResource ForegroundDimBrush}"/>
+
+                <!-- Drill buttons (each shown only when it makes sense for the day). -->
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="DeadlocksDrillButton" Content="View Deadlocks" Margin="0,0,8,0" Padding="12,4"
+                            Visibility="Collapsed" Click="DeadlocksDrillButton_Click"/>
+                    <Button x:Name="BlockingDrillButton" Content="View Blocking" Margin="0,0,8,0" Padding="12,4"
+                            Visibility="Collapsed" Click="BlockingDrillButton_Click"/>
+                    <Button x:Name="ExpensiveQueriesDrillButton" Content="View Expensive Queries" Margin="0,0,8,0" Padding="12,4"
+                            Visibility="Collapsed" Click="ExpensiveQueriesDrillButton_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
     </Grid>
 </UserControl>

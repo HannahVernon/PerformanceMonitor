@@ -88,6 +88,11 @@ public class PerformanceCalendarDataTests : IDisposable
             "INSERT INTO dmv_blocking_snapshots (collection_id, collection_time, server_id, server_name, monitor_loop) VALUES ($1,$2,$3,$4,1)",
             _nextId--, day.AddHours(1), ServerId, ServerName);
 
+    private Task SeedBprAsync(DateTime day, long waitTimeMs) =>
+        ExecAsync(
+            "INSERT INTO blocked_process_reports (blocked_report_id, collection_time, server_id, server_name, wait_time_ms) VALUES ($1,$2,$3,$4,$5)",
+            _nextId--, day.AddHours(1), ServerId, ServerName, waitTimeMs);
+
     private Task SeedMemoryAsync(DateTime day, int process, int system) =>
         ExecAsync(
             "INSERT INTO memory_pressure_events (collection_id, collection_time, server_id, server_name, sample_time, memory_notification, memory_indicators_process, memory_indicators_system) VALUES ($1,$2,$3,$4,$2,'RESOURCE_MEMPHYSICAL_LOW',$5,$6)",
@@ -179,6 +184,25 @@ public class PerformanceCalendarDataTests : IDisposable
         Assert.Equal(DailyHealthBand.Critical, byDate[Day(18)].HealthBand);
         Assert.Equal(1, byDate[Day(18)].MemoryCriticalEvents);
         Assert.Equal(1, byDate[Day(18)].MemoryPressureEvents);
+    }
+
+    [Fact]
+    public async Task GetDailySummaryRange_CarriesPeakBlockDuration_FromBlockedProcessReports()
+    {
+        await _duckDb.InitializeAsync();
+
+        // Two blocked-process reports on 07-14 with different wait times; the day's peak is the max, and the
+        // BPR-sourced count wins over any DMV fallback (there is none here). Feeds the day-detail blocking
+        // reason ("N blocking events (peak block X)").
+        await SeedCollectionRunAsync(Day(14));
+        await SeedBprAsync(Day(14), 4_200);
+        await SeedBprAsync(Day(14), 12_500);
+
+        var rows = await _dataService.GetDailySummaryRangeAsync(ServerId, MonthStart, MonthEnd);
+        var row = rows.Single(r => r.SummaryDate.Date == Day(14));
+
+        Assert.Equal(2, row.BlockingEvents);          // BPR-sourced count (preferred over DMV)
+        Assert.Equal(12_500, row.MaxBlockDurationMs); // peak = MAX(wait_time_ms)
     }
 
     [Fact]

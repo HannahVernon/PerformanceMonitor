@@ -7,26 +7,25 @@
  */
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Controls;
 
 public partial class ServerTab : UserControl
 {
-    /// <summary>The currently loaded month's rows, keyed by date, for O(1) day-click drill-in.</summary>
-    private Dictionary<DateTime, DailySummaryRow> _calendarRowsByDate = new();
-
     /// <summary>
     /// Loads a month's daily summaries into the Performance Calendar. One banded cell per collected day;
-    /// days with no collection are simply absent (the calendar renders them No-Data grey). The heavy DuckDB
-    /// read runs off the UI thread.
+    /// days with no collection are simply absent (the calendar renders them No-Data grey). Each day carries
+    /// its signals + key metrics so the shared day-detail panel can explain the day and offer the right
+    /// drills. The heavy DuckDB read runs off the UI thread; the calendar re-shows its day-detail panel for
+    /// the selected day itself when it stays in view.
     /// </summary>
     private async Task LoadCalendarMonthAsync(DateTime month)
     {
@@ -37,19 +36,17 @@ public partial class ServerTab : UserControl
 
             var rows = await Task.Run(() => _dataService.GetDailySummaryRangeAsync(_serverId, start, end));
 
-            _calendarRowsByDate = rows.ToDictionary(r => r.SummaryDate.Date);
             DailyCalendar.Days = rows.Select(r => new PerformanceCalendarDay
             {
                 Date = r.SummaryDate.Date,
                 Band = r.HealthBand,
                 Tooltip = $"{r.SummaryDate:MMM d, yyyy} - {r.OverallHealth}{Environment.NewLine}{r.SignalsTooltip}",
+                Signals = r.ToSignals(),
+                TopWaitType = r.TopWaitType,
+                TotalWaitSeconds = r.TotalWaitTimeSec,
+                UniqueQueries = r.UniqueQueries,
+                PeakBlockMs = r.MaxBlockDurationMs,
             }).ToList();
-
-            // Preserve the drilled-in day if it's still in view; otherwise clear the detail pane.
-            if (DailyCalendar.SelectedDate is DateTime sel && sel.Year == start.Year && sel.Month == start.Month)
-                ShowDayDetail(sel);
-            else
-                HideDayDetail();
         }
         catch (Exception ex)
         {
@@ -60,37 +57,60 @@ public partial class ServerTab : UserControl
     private async void DailyCalendar_MonthChanged(object? sender, PerformanceCalendarMonthEventArgs e)
         => await LoadCalendarMonthAsync(e.Month);
 
-    private void DailyCalendar_DayClicked(object? sender, PerformanceCalendarDayEventArgs e)
-        => ShowDayDetail(e.Date);
-
     private async void DailySummaryRefresh_Click(object sender, RoutedEventArgs e)
         => await LoadCalendarMonthAsync(DailyCalendar.DisplayMonth);
 
-    /// <summary>Shows the single-day roll-up for the clicked date (reusing the existing detail grid).</summary>
-    private void ShowDayDetail(DateTime date)
+    /// <summary>
+    /// A day-detail drill button (View Deadlocks / Blocking / Expensive Queries): scope the toolbar to the
+    /// clicked day's [00:00, next-day 00:00) window and jump to the target tab, then load it over the day.
+    /// This reuses the exact mechanism the per-chart drills use — <see cref="SetDrillDownTimeRange"/> sets the
+    /// toolbar's custom window, the tab switches run under <see cref="_suppressActiveQueriesAutoRefresh"/> (so
+    /// the tab-switch auto-refresh doesn't race the targeted read), then the standard per-sub-tab refresh
+    /// loads that grid over the window. The calendar buckets days in UTC; the reads take server time, so the
+    /// UTC day is shifted by the server offset (mirroring <see cref="GetTimeRange"/>'s inverse).
+    /// </summary>
+    private async void DailyCalendar_DayDrillRequested(object? sender, PerformanceCalendarDrillEventArgs e)
     {
-        DailyCalendar.SelectedDate = date.Date;
-
-        if (_calendarRowsByDate.TryGetValue(date.Date, out var row))
+        try
         {
-            DailySummaryGrid.ItemsSource = new List<DailySummaryRow> { row };
-            DailySummaryDetailHeader.Text = $"Detail for {date:dddd, MMMM d, yyyy} (UTC)";
-            DailySummaryDetailPanel.Visibility = Visibility.Visible;
-            DailySummaryNoData.Visibility = Visibility.Collapsed;
-        }
-        else
-        {
-            DailySummaryGrid.ItemsSource = null;
-            DailySummaryDetailPanel.Visibility = Visibility.Collapsed;
-            DailySummaryNoData.Text = $"No data collected for {date:MMMM d, yyyy}.";
-            DailySummaryNoData.Visibility = Visibility.Visible;
-        }
-    }
+            var (startUtc, endUtc) = DailyHealthBandCalculator.DayWindowUtc(e.Date);
+            var fromServer = startUtc.AddMinutes(ServerTimeHelper.UtcOffsetMinutes);
+            var toServer = endUtc.AddMinutes(ServerTimeHelper.UtcOffsetMinutes);
 
-    private void HideDayDetail()
-    {
-        DailySummaryDetailPanel.Visibility = Visibility.Collapsed;
-        DailySummaryNoData.Visibility = Visibility.Collapsed;
-        DailySummaryGrid.ItemsSource = null;
+            // Scope the toolbar to the whole day so the grid the user lands on — and anywhere they navigate
+            // next — stays on that day (SetDrillDownTimeRange switches to Custom without triggering a reload).
+            SetDrillDownTimeRange(fromServer, toServer);
+
+            _suppressActiveQueriesAutoRefresh = true;
+            try
+            {
+                switch (e.Target)
+                {
+                    case DayDrillTarget.Deadlocks:
+                        MainTabControl.SelectedIndex = 8;        // Blocking
+                        BlockingSubTabControl.SelectedIndex = 3; // Deadlocks
+                        break;
+                    case DayDrillTarget.Blocking:
+                        MainTabControl.SelectedIndex = 8;        // Blocking
+                        BlockingSubTabControl.SelectedIndex = 2; // Blocked Process Reports
+                        break;
+                    case DayDrillTarget.ExpensiveQueries:
+                        MainTabControl.SelectedIndex = 2;        // Queries
+                        QueriesSubTabControl.SelectedIndex = 2;  // Top Queries by Duration
+                        break;
+                }
+            }
+            finally
+            {
+                _suppressActiveQueriesAutoRefresh = false;
+            }
+
+            // One targeted load of the tab we just switched to, over the day window (grid + slicer + comparison).
+            await RefreshVisibleTabAsync(GetHoursBack(), fromServer, toServer, subTabOnly: true);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Info("ServerTab", $"[{_server.DisplayName}] DailyCalendar_DayDrillRequested failed: {ex.Message}");
+        }
     }
 }

@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -22,8 +23,8 @@ namespace PerformanceMonitor.Ui
     /// the Performance Calendar can't drift between them. The host supplies <see cref="Days"/> (one banded
     /// <see cref="PerformanceCalendarDay"/> per collected day) and the displayed month; the control lays out
     /// a 6x7 grid, washes each in-month cell with its band color, and raises <see cref="MonthChanged"/> when
-    /// the user navigates (so the host can fetch that month) and <see cref="DayClicked"/> when a day is
-    /// clicked (so the host can drill into that day's detail).
+    /// the user navigates (so the host can fetch that month). Clicking a day opens the built-in day-detail
+    /// panel; its drill buttons raise <see cref="DayDrillRequested"/> so the host can scope + navigate.
     /// </summary>
     public partial class PerformanceCalendar : UserControl
     {
@@ -68,17 +69,26 @@ namespace PerformanceMonitor.Ui
             set => SetValue(SelectedDateProperty, value);
         }
 
-        /// <summary>Raised when a user clicks an in-month day cell.</summary>
-        public event EventHandler<PerformanceCalendarDayEventArgs>? DayClicked;
-
         /// <summary>Raised when the user navigates to a different month (prev / next / Today), carrying the new month's first day.</summary>
         public event EventHandler<PerformanceCalendarMonthEventArgs>? MonthChanged;
+
+        /// <summary>Raised when the user clicks a drill button in the day-detail panel (View Deadlocks /
+        /// Blocking / Expensive Queries), carrying the day + which grid to jump to. The host scopes its
+        /// toolbar to that day's window and switches to the target tab.</summary>
+        public event EventHandler<PerformanceCalendarDrillEventArgs>? DayDrillRequested;
 
         /// <summary>The weekday column headers in the current culture's week order.</summary>
         public ObservableCollection<string> WeekdayHeaders { get; } = new();
 
         /// <summary>The 42 rendered day cells (6 weeks x 7 days).</summary>
         public ObservableCollection<PerformanceCalendarCell> Cells { get; } = new();
+
+        /// <summary>The supplied days indexed by date, for O(1) day-detail-panel lookup on click. Rebuilt
+        /// alongside the cells whenever <see cref="Days"/> changes.</summary>
+        private Dictionary<DateTime, PerformanceCalendarDay> _daysByDate = new();
+
+        /// <summary>The date the day-detail panel is currently showing (drives the drill buttons). Null when hidden.</summary>
+        private DateTime? _detailDate;
 
         private static DateTime FirstOfMonth(DateTime value) => new(value.Year, value.Month, 1);
 
@@ -108,7 +118,7 @@ namespace PerformanceMonitor.Ui
                 MonthLabel.Text = month.ToString("MMMM yyyy", CultureInfo.CurrentCulture);
             }
 
-            // Index the supplied days by date for O(1) lookup.
+            // Index the supplied days by date for O(1) lookup (cells + day-detail panel).
             var byDate = new Dictionary<DateTime, PerformanceCalendarDay>();
             if (Days != null)
             {
@@ -117,6 +127,7 @@ namespace PerformanceMonitor.Ui
                     byDate[day.Date.Date] = day;
                 }
             }
+            _daysByDate = byDate;
 
             var today = DateTime.UtcNow.Date; // calendar days are UTC-bucketed; highlight the UTC "today"
             var selected = SelectedDate?.Date;
@@ -152,6 +163,8 @@ namespace PerformanceMonitor.Ui
                     band,
                     tooltip));
             }
+
+            UpdateDayDetailPanel();
         }
 
         private void PrevMonthButton_Click(object sender, RoutedEventArgs e) =>
@@ -173,7 +186,82 @@ namespace PerformanceMonitor.Ui
         {
             if (sender is FrameworkElement { DataContext: PerformanceCalendarCell cell } && cell.IsInDisplayMonth)
             {
-                DayClicked?.Invoke(this, new PerformanceCalendarDayEventArgs(cell.Date));
+                // Setting SelectedDate reframes the accent ring and (via the DP callback -> RebuildCells ->
+                // UpdateDayDetailPanel) shows the day-detail panel for this day.
+                SelectedDate = cell.Date;
+            }
+        }
+
+        /// <summary>
+        /// (Re)populates the day-detail panel for <see cref="SelectedDate"/>: a band-colored header, the
+        /// "why this day is &lt;band&gt;" reasons, a key-metrics line, and the drill buttons that make sense for
+        /// the day — all from the shared <see cref="DailyHealthBandCalculator"/>. Hidden when no day is selected
+        /// or the selection isn't in the displayed month (e.g. after navigating to another month). A selected
+        /// day that had no collection (absent from <see cref="Days"/>) still shows a No-Data panel.
+        /// </summary>
+        private void UpdateDayDetailPanel()
+        {
+            if (DayDetailPanel == null)
+            {
+                return; // template not applied yet (early construction)
+            }
+
+            var selected = SelectedDate?.Date;
+            var month = FirstOfMonth(DisplayMonth);
+            var inMonth = selected.HasValue && selected.Value.Year == month.Year && selected.Value.Month == month.Month;
+            if (!inMonth)
+            {
+                DayDetailPanel.Visibility = Visibility.Collapsed;
+                _detailDate = null;
+                return;
+            }
+
+            _detailDate = selected!.Value;
+
+            // A day absent from the supplied set had no collection -> render it as a No-Data day.
+            _daysByDate.TryGetValue(selected.Value, out var day);
+            var band = day?.Band ?? DailyHealthBand.NoData;
+            var signals = day?.Signals ?? default; // default => HasData == false
+            var hasData = signals.HasData;
+            var bandLabel = DailyHealthBandCalculator.Label(band);
+
+            DayDetailHeader.Text = $"{selected.Value:dddd, MMM d} — {bandLabel}";
+            DayDetailHeader.SetResourceReference(TextBlock.ForegroundProperty, DailyHealthBandCalculator.BrushKey(band));
+
+            DayDetailWhyLabel.Text = $"Why this day is {bandLabel}:";
+            DayDetailReasons.ItemsSource = DailyHealthBandCalculator.BuildReasons(signals, day?.PeakBlockMs ?? 0);
+
+            // Key metrics only make sense for a collected day.
+            if (hasData)
+            {
+                DayDetailMetrics.Text = DailyHealthBandCalculator.BuildKeyMetricsLine(
+                    day!.TopWaitType, signals.HighCpuEvents, day.TotalWaitSeconds, day.UniqueQueries);
+                DayDetailMetrics.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                DayDetailMetrics.Visibility = Visibility.Collapsed;
+            }
+
+            var drills = DailyHealthBandCalculator.AvailableDrills(signals);
+            DeadlocksDrillButton.Visibility = drills.Contains(DayDrillTarget.Deadlocks) ? Visibility.Visible : Visibility.Collapsed;
+            BlockingDrillButton.Visibility = drills.Contains(DayDrillTarget.Blocking) ? Visibility.Visible : Visibility.Collapsed;
+            ExpensiveQueriesDrillButton.Visibility = drills.Contains(DayDrillTarget.ExpensiveQueries) ? Visibility.Visible : Visibility.Collapsed;
+
+            DayDetailPanel.Visibility = Visibility.Visible;
+        }
+
+        private void DeadlocksDrillButton_Click(object sender, RoutedEventArgs e) => RaiseDrill(DayDrillTarget.Deadlocks);
+
+        private void BlockingDrillButton_Click(object sender, RoutedEventArgs e) => RaiseDrill(DayDrillTarget.Blocking);
+
+        private void ExpensiveQueriesDrillButton_Click(object sender, RoutedEventArgs e) => RaiseDrill(DayDrillTarget.ExpensiveQueries);
+
+        private void RaiseDrill(DayDrillTarget target)
+        {
+            if (_detailDate is DateTime date)
+            {
+                DayDrillRequested?.Invoke(this, new PerformanceCalendarDrillEventArgs(date, target));
             }
         }
     }
