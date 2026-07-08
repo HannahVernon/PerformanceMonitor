@@ -107,7 +107,7 @@ The same executable serves interactive debugging and service installation; the W
 Darling\PerformanceMonitor.Darling.Service\bin\Release\net10.0\PerformanceMonitor.Darling.Service.exe
 ```
 
-Watch the log output: you should see the config load (`Loaded configuration from ...`), the store migrate (`Postgres store ready (schema v15, ...)`), the TimescaleDB detection result, per-server connects, and then per-collector run lines with row counts.
+Watch the log output: you should see the config load (`Loaded configuration from ...`), the store migrate (`Postgres store ready (schema v20, ...)`), the TimescaleDB detection result, per-server connects, and then per-collector run lines with row counts.
 
 ### Install as a Windows Service
 
@@ -328,7 +328,7 @@ There are deliberately **no collection-schedule or retention settings** in `darl
 
 ### The Store
 
-The service migrates the store itself at startup — plain versioned SQL scripts, each applied once inside its own transaction, tracked in `darling_schema_version`, safe under concurrent starters (advisory-locked). Current schema is **v15**:
+The service migrates the store itself at startup — plain versioned SQL scripts, each applied once inside its own transaction, tracked in `darling_schema_version`, safe under concurrent starters (advisory-locked). Current schema is **v20**:
 
 | Version | Contents |
 |---|---|
@@ -347,6 +347,11 @@ The service migrates the store itself at startup — plain versioned SQL scripts
 | **V13** — system health events collector | `system_health_events` (raw `system_health` Extended Events capture) table plus its `v_*` view |
 | **V14** — refresh passthrough views | `CREATE OR REPLACE` on every `v_*` view so a store upgraded across a column-adding migration picks up the new columns (Postgres freezes a view's `SELECT *` expansion at create time) |
 | **V15** — index metadata columns | Per-index definition columns on `index_object_stats` (ordered key/included column lists, filter, uniqueness/constraint/FK flags, `is_disabled`, and the reconstruct-a-CREATE options — compression, fill factor, page/row locks, etc.) for monitor-side UNUSED/DUPLICATE index analysis, and refreshes `v_index_object_stats` |
+| **V16** — server UTC offset | Nullable UTC-offset column on `server_properties` so the viewer can render timestamps in the monitored server's own local time (the Server-time display mode ported from Lite; Server-time = stored naive-UTC + this offset) |
+| **V17** — config control plane | The viewer-writable DESIRED-state tables (`config_service`, `config_monitored_servers`, `config_alert_settings`, `config_collector_schedules`) plus a `config_version` reload beacon — statement-level bump triggers increment it on any write, and the service polls that one integer each sweep and reloads only when it changes. Server secrets are DPAPI blobs, never plaintext |
+| **V18** — alert delivery mode | Global `delivery_mode` (Summary / PerEvent) + `per_event_max` on `config_alert_settings`, plus a nullable per-server `alert_delivery_mode_override` on `config_monitored_servers` (null = inherit the global), resolved through the shared `AlertDeliveryModeResolver` (#1236 / #1141) |
+| **V19** — analysis state marker | `collect.analysis_state` — the service-produced per-server "insufficient data" marker (with message + time) the viewer reads, so a not-enough-history analysis pass surfaces a reason instead of a blank |
+| **V20** — alert tuning knobs | The previously-hardcoded alert tuning the viewer now customizes on `config_alert_settings`: the long-running-query read shape (`long_running_query_max_results` + five noise-filter opt-outs the shared `AlertEngine` forwards) and `notify_connection_changes` (the Server-Unreachable / Restored connect-edge gate) |
 
 All timestamps in the store are **naive-UTC** `timestamp` columns — the product-wide cross-store contract (Lite's DuckDB does the same).
 
