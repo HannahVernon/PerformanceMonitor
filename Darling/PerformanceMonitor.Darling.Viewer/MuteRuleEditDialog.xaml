@@ -6,8 +6,8 @@
         WindowStartupLocation="CenterOwner"
         Icon="EDD.ico"
         ResizeMode="NoResize"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Mirrors Lite's MuteRuleDialog (Lite/Windows/MuteRuleDialog.xaml) field-for-field, dark-styled
          via the shared ViewerDarkTheme resource dictionary. -->
     <Window.Resources>
@@ -40,7 +40,7 @@
         <TextBlock Grid.Row="0" x:Name="HeaderText" Text="Create Mute Rule" FontSize="18" FontWeight="Bold"
                    HorizontalAlignment="Left" Margin="0,0,0,5"/>
         <TextBlock Grid.Row="1" Text="Alerts matching all specified fields will be suppressed from notifications."
-                   Foreground="#8B93A1" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,0,15"/>
+                   Foreground="{DynamicResource ForegroundMutedBrush}" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,0,15"/>
 
         <TextBlock Grid.Row="2" Text="Reason (optional)" FontWeight="Bold" HorizontalAlignment="Left" Margin="0,0,0,4"/>
         <TextBox Grid.Row="3" x:Name="ReasonBox" Margin="0,0,0,12"/>
@@ -53,11 +53,11 @@
             <ComboBoxItem Content="Never (permanent)"/>
         </ComboBox>
 
-        <Border Grid.Row="6" BorderThickness="0,0,0,1" BorderBrush="#2a2d35" Margin="0,0,0,12"/>
+        <Border Grid.Row="6" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource BorderBrush}" Margin="0,0,0,12"/>
 
         <TextBlock Grid.Row="7" Text="Match Criteria" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" Margin="0,0,0,4"/>
         <TextBlock Grid.Row="8" Text="Leave fields blank to match any value. All filled fields must match (AND logic)."
-                   Foreground="#8B93A1" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                   Foreground="{DynamicResource ForegroundMutedBrush}" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,0,12"/>
 
         <TextBlock Grid.Row="9" Text="Server Name (exact match)" HorizontalAlignment="Left" Margin="0,0,0,4"/>
         <TextBox Grid.Row="10" x:Name="ServerNameBox" Margin="0,0,0,8"/>

@@ -18,6 +18,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Navigation;
 using PerformanceMonitor.Notifications;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -55,6 +56,16 @@ public partial class SettingsWindow : Window
 
     /// <summary>The service's paused state as last read from <c>config_service</c>, reflected on the button.</summary>
     private bool _paused;
+
+    /// <summary>Guards the theme combo's SelectionChanged from firing an Apply while <see cref="LoadColorTheme"/>
+    /// is seeding the selection.</summary>
+    private bool _isLoadingTheme;
+
+    /// <summary>The theme active when the window opened, so a Cancel/close-without-save reverts the live preview.</summary>
+    private readonly string _originalTheme = ThemeManager.CurrentTheme;
+
+    /// <summary>Set once the operator saves, so the close handlers do not revert the (now persisted) theme.</summary>
+    private bool _themeSaved;
 
     /// <summary>
     /// True once the operator config was READ from the store without error. Save writes the store sections only
@@ -97,6 +108,7 @@ public partial class SettingsWindow : Window
         LoadConnectionTimeout();
         LoadCsvSeparator();
         LoadTimeDisplayMode();
+        LoadColorTheme();
         LoadViewerLocalAlertFields();
         SeedAlertControlsFrom(AlertSettingsRow.Defaults());
         SeedNotificationControlsFrom(NotificationRow.Defaults());
@@ -435,6 +447,51 @@ public partial class SettingsWindow : Window
         {
             _appSettings.TimeDisplayMode = mode;
         }
+    }
+
+    // ── Color theme (viewer-local; live-previewed via the shared ThemeManager, mirrors Lite) ──
+
+    /// <summary>Live-applies the picked theme so the operator sees Dark / Light / CoolBreeze immediately.
+    /// A Cancel/close-without-save reverts to <see cref="_originalTheme"/>; Save persists it.</summary>
+    private void ColorThemeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isLoadingTheme)
+        {
+            return;
+        }
+
+        if (ColorThemeCombo.SelectedItem is ComboBoxItem { Tag: string theme })
+        {
+            ThemeManager.Apply(theme);
+        }
+    }
+
+    private void LoadColorTheme()
+    {
+        _isLoadingTheme = true;
+        foreach (ComboBoxItem item in ColorThemeCombo.Items)
+        {
+            if (item.Tag?.ToString() == _appSettings.ColorTheme)
+            {
+                ColorThemeCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (ColorThemeCombo.SelectedItem == null)
+        {
+            ColorThemeCombo.SelectedIndex = 0;
+        }
+        _isLoadingTheme = false;
+    }
+
+    private void SaveColorTheme()
+    {
+        if (ColorThemeCombo.SelectedItem is ComboBoxItem { Tag: string theme })
+        {
+            _appSettings.ColorTheme = theme;
+            ThemeManager.Apply(theme);
+        }
+        _themeSaved = true;
     }
 
     // ── Notifications / alert thresholds ──
@@ -973,6 +1030,7 @@ public partial class SettingsWindow : Window
         SaveConnectionTimeout();
         SaveCsvSeparator();
         SaveTimeDisplayMode();
+        SaveColorTheme();
         _appSettingsStore.Save(_appSettings);
         Result = BuildViewerPreferences();
 
@@ -1035,7 +1093,25 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        /* Revert the live theme preview when closing without saving (the X button is handled in OnClosing). */
+        if (!_themeSaved)
+        {
+            ThemeManager.Apply(_originalTheme);
+        }
+        Close();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        /* Catches the title-bar X / Esc: an unsaved theme preview reverts to what was active on open. */
+        if (!_themeSaved)
+        {
+            ThemeManager.Apply(_originalTheme);
+        }
+        base.OnClosing(e);
+    }
 
     /// <summary>
     /// A throwaway <see cref="IAlertSettings"/> built from the live SMTP/webhook controls, so "Send Test

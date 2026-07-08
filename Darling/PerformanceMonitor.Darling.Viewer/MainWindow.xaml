@@ -10,14 +10,16 @@
         WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Icon="EDD.ico"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!--
-        Dark-only shell (headless plan). The window keeps its hardcoded Dark palette (#22252b chrome,
-        #111217 wells, #2a2d35 borders, #E4E6EB text); the shared theme dictionary is now merged
-        app-wide (App.xaml) so copied Lite XAML — the per-server ViewerServerTab and the later tab
-        ports — resolve their {DynamicResource} keys. This window's own controls keep their explicit
-        StaticResource styles + inline hex, so they render exactly as before.
+        Theme-aware shell (headless plan). The window's chrome colors now resolve from the shared
+        theme dictionary via {DynamicResource} (merged app-wide in App.xaml) — the same keys the
+        copied Lite XAML (the per-server ViewerServerTab and the later tab ports) already use — so
+        this window follows the active Dark/Light/CoolBreeze theme. Each token's Dark value equals
+        the hex it replaced (#22252b chrome, #111217 wells, #2a2d35 borders, #E4E6EB text), so Dark
+        renders exactly as before; only a few semantic/keep colors (offline grey, badge text, modal
+        scrim, favorite-star gold) stay inline.
 
         Navigation mirrors Lite's shape (headless-plan W0 IA inversion): a left sidebar server list,
         and ONE top tab strip holding the fixed aggregate tabs (Overview, Alert History, FinOps,
@@ -37,7 +39,7 @@
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
             <Setter Property="Margin" Value="0,0,0,6"/>
         </Style>
 
@@ -55,9 +57,9 @@
         <!-- One dark grid chrome shared by the aggregate-tab data grids (hoisted from the wave-1
              HealthGrid inline styles — same setters, zero visual change). -->
         <Style x:Key="DarkGridHeader" TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#262932"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
-            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="Background" Value="{DynamicResource ViewerGridHeaderBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="0,0,1,1"/>
             <Setter Property="Padding" Value="8,5"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -67,7 +69,7 @@
             <Setter Property="Background" Value="Transparent"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#1f232b"/>
+                    <Setter Property="Background" Value="{DynamicResource ViewerHoverBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -75,11 +77,11 @@
         <Style x:Key="DarkGridCell" TargetType="DataGridCell">
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#2f3542"/>
-                    <Setter Property="Foreground" Value="#E4E6EB"/>
+                    <Setter Property="Background" Value="{DynamicResource ViewerSelectionBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -92,20 +94,20 @@
             <Setter Property="SelectionMode" Value="Single"/>
             <Setter Property="SelectionUnit" Value="FullRow"/>
             <Setter Property="GridLinesVisibility" Value="Horizontal"/>
-            <Setter Property="HorizontalGridLinesBrush" Value="#2a2d35"/>
-            <Setter Property="Background" Value="#111217"/>
-            <Setter Property="Foreground" Value="#E4E6EB"/>
-            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource BackgroundDarkBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="RowBackground" Value="#111217"/>
-            <Setter Property="AlternatingRowBackground" Value="#16181d"/>
+            <Setter Property="RowBackground" Value="{DynamicResource BackgroundDarkBrush}"/>
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource ViewerAltRowBrush}"/>
             <Setter Property="ColumnHeaderStyle" Value="{StaticResource DarkGridHeader}"/>
             <Setter Property="RowStyle" Value="{StaticResource DarkGridRow}"/>
             <Setter Property="CellStyle" Value="{StaticResource DarkGridCell}"/>
         </Style>
 
         <Style x:Key="DarkTabItem" TargetType="TabItem">
-            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
@@ -120,10 +122,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#1f232b"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerHoverBrush}"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#2f3542"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerSelectionBrush}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -134,7 +136,7 @@
         <!-- Dark ComboBox / Button used by the Recommendations tab's own server selector + Refresh
              button (they match the hardcoded Dark palette instead of the default light WPF chrome). -->
         <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
-            <Setter Property="Foreground" Value="#E4E6EB"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="Template">
@@ -145,10 +147,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#1f232b"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerHoverBrush}"/>
                             </Trigger>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#2f3542"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerSelectionBrush}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -157,9 +159,9 @@
         </Style>
 
         <Style x:Key="DarkButton" TargetType="Button">
-            <Setter Property="Foreground" Value="#E4E6EB"/>
-            <Setter Property="Background" Value="#2f3542"/>
-            <Setter Property="BorderBrush" Value="#3a4150"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource ViewerSelectionBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ViewerButtonBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
@@ -172,11 +174,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#3a4150"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerButtonBorderBrush}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Background" Value="#1b1e24"/>
-                                <Setter Property="Foreground" Value="#5c6472"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerDisabledBgBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ViewerDisabledTextBrush}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -185,9 +187,9 @@
         </Style>
 
         <Style x:Key="DarkCombo" TargetType="ComboBox">
-            <Setter Property="Foreground" Value="#E4E6EB"/>
-            <Setter Property="Background" Value="#111217"/>
-            <Setter Property="BorderBrush" Value="#2a2d35"/>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource BackgroundDarkBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboItem}"/>
@@ -200,14 +202,14 @@
                                           ClickMode="Press">
                                 <ToggleButton.Template>
                                     <ControlTemplate TargetType="ToggleButton">
-                                        <Border Background="#111217" BorderBrush="#2a2d35" BorderThickness="1" CornerRadius="3">
+                                        <Border Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="3">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="20"/>
                                                 </Grid.ColumnDefinitions>
                                                 <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                      Data="M 0 0 L 4 4 L 8 0 Z" Fill="#8B93A1"/>
+                                                      Data="M 0 0 L 4 4 L 8 0 Z" Fill="{DynamicResource ForegroundMutedBrush}"/>
                                             </Grid>
                                         </Border>
                                     </ControlTemplate>
@@ -220,7 +222,7 @@
                                               VerticalAlignment="Center" HorizontalAlignment="Left"/>
                             <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}"
                                    AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
-                                <Border Background="#16181d" BorderBrush="#2a2d35" BorderThickness="1"
+                                <Border Background="{DynamicResource ViewerAltRowBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                                         MinWidth="{TemplateBinding ActualWidth}" MaxHeight="240">
                                     <ScrollViewer>
                                         <StackPanel IsItemsHost="True"/>
@@ -257,7 +259,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" x:Name="SidebarHeaderText">
                         <TextBlock Text="Servers" Style="{StaticResource SectionHeader}" Margin="0,0,0,2"/>
-                        <TextBlock Text="Double-click to open a server tab" Foreground="#8B93A1" FontSize="11" Margin="0,0,0,6"/>
+                        <TextBlock Text="Double-click to open a server tab" Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="11" Margin="0,0,0,6"/>
                     </StackPanel>
                     <Button Grid.Column="1" x:Name="SidebarToggleButton" Content="«" Click="ToggleSidebar_Click"
                             Style="{StaticResource DarkButton}"
@@ -271,7 +273,7 @@
                      (Lite's DuckDB import) is omitted — it has no viewer meaning. Declared as the first
                      Bottom-docked child so it sits at the very bottom, below the no-servers hint. -->
                 <Border x:Name="SidebarFooter" DockPanel.Dock="Bottom"
-                        BorderBrush="#2a2d35" BorderThickness="0,1,0,0"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
                         Margin="0,8,0,0" Padding="0,8,0,0">
                     <StackPanel>
                         <Button Click="AddServerButton_Click"
@@ -367,21 +369,21 @@
                 <TextBlock x:Name="ServersHintText"
                            DockPanel.Dock="Bottom"
                            Text="no servers registered — is the Darling service running?"
-                           Foreground="#8B93A1"
+                           Foreground="{DynamicResource ForegroundMutedBrush}"
                            TextWrapping="Wrap"
                            Margin="2,8,2,0"
                            Visibility="Collapsed"/>
                 <ListBox x:Name="ServerList"
-                         Background="#111217"
-                         BorderBrush="#2a2d35"
+                         Background="{DynamicResource BackgroundDarkBrush}"
+                         BorderBrush="{DynamicResource BorderBrush}"
                          BorderThickness="1"
-                         Foreground="#E4E6EB"
+                         Foreground="{DynamicResource ForegroundBrush}"
                          SelectionChanged="ServerList_SelectionChanged"
                          MouseDoubleClick="ServerList_MouseDoubleClick">
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">
                             <Setter Property="Background" Value="Transparent"/>
-                            <Setter Property="Foreground" Value="#E4E6EB"/>
+                            <Setter Property="Foreground" Value="{DynamicResource ForegroundBrush}"/>
                             <Setter Property="Padding" Value="8,5"/>
                             <Setter Property="Template">
                                 <Setter.Value>
@@ -395,10 +397,10 @@
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="Bd" Property="Background" Value="#1f232b"/>
+                                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerHoverBrush}"/>
                                             </Trigger>
                                             <Trigger Property="IsSelected" Value="True">
-                                                <Setter TargetName="Bd" Property="Background" Value="#2f3542"/>
+                                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ViewerSelectionBrush}"/>
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -545,7 +547,7 @@
                                 <!-- (1) Health-band summary tiles: total + counts by band. Tile colours are
                                      the card severity palette (green / amber / red / grey-for-offline). -->
                                 <WrapPanel Margin="0,0,0,12">
-                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#3a3d45"
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="{DynamicResource CardBorderBrush}"
                                             BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
                                         <StackPanel>
                                             <TextBlock Text="{Binding TotalServers}" FontSize="22" FontWeight="Bold"
@@ -554,29 +556,29 @@
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
-                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#81C784"
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="{DynamicResource SuccessBrush}"
                                             BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
                                         <StackPanel>
                                             <TextBlock Text="{Binding HealthyCount}" FontSize="22" FontWeight="Bold"
-                                                       Foreground="#81C784" HorizontalAlignment="Center"/>
+                                                       Foreground="{DynamicResource SuccessBrush}" HorizontalAlignment="Center"/>
                                             <TextBlock Text="Healthy" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
-                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#FFD54F"
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="{DynamicResource WarningBrush}"
                                             BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
                                         <StackPanel>
                                             <TextBlock Text="{Binding WarningCount}" FontSize="22" FontWeight="Bold"
-                                                       Foreground="#FFD54F" HorizontalAlignment="Center"/>
+                                                       Foreground="{DynamicResource WarningBrush}" HorizontalAlignment="Center"/>
                                             <TextBlock Text="Warning" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
-                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="#E57373"
+                                    <Border Background="{DynamicResource BackgroundBrush}" BorderBrush="{DynamicResource ErrorBrush}"
                                             BorderThickness="1" CornerRadius="5" MinWidth="86" Margin="0,0,8,0" Padding="12,6">
                                         <StackPanel>
                                             <TextBlock Text="{Binding CriticalCount}" FontSize="22" FontWeight="Bold"
-                                                       Foreground="#E57373" HorizontalAlignment="Center"/>
+                                                       Foreground="{DynamicResource ErrorBrush}" HorizontalAlignment="Center"/>
                                             <TextBlock Text="Critical" FontSize="10" Foreground="{DynamicResource ForegroundMutedBrush}"
                                                        HorizontalAlignment="Center"/>
                                         </StackPanel>
@@ -622,7 +624,7 @@
                                                         <Setter Property="Background" Value="Transparent"/>
                                                         <Style.Triggers>
                                                             <Trigger Property="IsMouseOver" Value="True">
-                                                                <Setter Property="Background" Value="#1f232b"/>
+                                                                <Setter Property="Background" Value="{DynamicResource ViewerHoverBrush}"/>
                                                             </Trigger>
                                                         </Style.Triggers>
                                                     </Style>
@@ -647,7 +649,7 @@
                                            FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"
                                            Margin="17,2,0,0" Visibility="Collapsed"/>
                                 <TextBlock x:Name="FleetAllHealthyText" Text="{Binding AllHealthyText}"
-                                           FontSize="12" Foreground="#81C784" Margin="0,0,0,2" Visibility="Collapsed"/>
+                                           FontSize="12" Foreground="{DynamicResource SuccessBrush}" Margin="0,0,0,2" Visibility="Collapsed"/>
                             </StackPanel>
                         </Border>
 
@@ -746,9 +748,9 @@
                                             <Border Background="#80000000" CornerRadius="6"
                                                     Visibility="{Binding IsOffline, Converter={StaticResource BoolToVisibility}}">
                                                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                    <TextBlock Text="&#x2717;" FontSize="28" Foreground="#E57373"
+                                                    <TextBlock Text="&#x2717;" FontSize="28" Foreground="{DynamicResource ErrorBrush}"
                                                                HorizontalAlignment="Center"/>
-                                                    <TextBlock Text="Offline" FontSize="13" Foreground="#E57373"
+                                                    <TextBlock Text="Offline" FontSize="13" Foreground="{DynamicResource ErrorBrush}"
                                                                FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
                                                 </StackPanel>
                                             </Border>
@@ -897,7 +899,7 @@
 
                         <!-- Header bar: own server selector + Refresh + status (last-analysis time). -->
                         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                            <TextBlock Text="Server:" VerticalAlignment="Center" Foreground="#8B93A1" Margin="0,0,6,0"/>
+                            <TextBlock Text="Server:" VerticalAlignment="Center" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,6,0"/>
                             <ComboBox x:Name="RecommendationsServerSelector" Width="260" VerticalAlignment="Center"
                                       Style="{StaticResource DarkCombo}"
                                       SelectionChanged="RecommendationsServerSelector_SelectionChanged">
@@ -907,7 +909,7 @@
                                     </DataTemplate>
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
-                            <Button Content="Refresh" Margin="10,0,0,0" Padding="12,4" Style="{StaticResource DarkButton}"
+                            <Button Content="Refresh" Margin="10,0,0,0" Padding="12,4"
                                     Click="RecommendationsRefresh_Click"
                                     ToolTip="Re-read recommendations for the selected server"/>
                             <Button x:Name="RecommendationsGenerateButton" Content="Generate now" Margin="8,0,0,0" Padding="12,4"
@@ -915,7 +917,7 @@
                                     Click="RecommendationsGenerateNow_Click"
                                     ToolTip="Ask the Darling service to run analysis for this server now, then refresh"/>
                             <TextBlock x:Name="RecommendationsStatusText" Margin="12,0,0,0" VerticalAlignment="Center"
-                                       FontStyle="Italic" Foreground="#8B93A1"/>
+                                       FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"/>
                         </StackPanel>
 
                         <!-- Content: exactly one region is visible per state. -->
@@ -982,9 +984,9 @@
                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                     <TextBlock Text="No Servers Registered"
                                FontSize="24" FontWeight="Light"
-                               Foreground="#8B93A1" HorizontalAlignment="Center"/>
+                               Foreground="{DynamicResource ForegroundMutedBrush}" HorizontalAlignment="Center"/>
                     <TextBlock Text="Start the Darling service to populate the store, then double-click a server to open its dashboard."
-                               FontSize="14" Foreground="#8B93A1"
+                               FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}"
                                Margin="0,8,0,0" HorizontalAlignment="Center"
                                TextAlignment="Center" MaxWidth="480" TextWrapping="Wrap"/>
                 </StackPanel>
@@ -994,7 +996,7 @@
         <!-- Full-window message state: missing config / unreachable store -->
         <Border x:Name="MessageOverlay"
                 Grid.Row="0"
-                Background="#22252b"
+                Background="{DynamicResource BackgroundLightBrush}"
                 Visibility="Collapsed">
             <TextBlock x:Name="MessageText"
                        HorizontalAlignment="Center"
@@ -1003,7 +1005,7 @@
                        TextAlignment="Center"
                        MaxWidth="640"
                        FontSize="14"
-                       Foreground="#E4E6EB"/>
+                       Foreground="{DynamicResource ForegroundBrush}"/>
         </Border>
 
         <!-- Multi-field status bar (ported from Lite, adapted to what the viewer knows): general status,
@@ -1017,11 +1019,11 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" x:Name="StatusText" FontSize="12" Foreground="#8B93A1" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="1" x:Name="CollectorHealthText" FontSize="12" Foreground="#8B93A1" Margin="16,0" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="2" x:Name="DatabaseSizeText" Text="Database: --" FontSize="12" Foreground="#8B93A1" Margin="16,0" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="3" x:Name="CollectionStatusText" Text="Collection: --" FontSize="12" Foreground="#8B93A1" Margin="16,0" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="4" x:Name="ServerCountText" Text="Servers: 0" FontSize="12" Foreground="#8B93A1" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="0" x:Name="StatusText" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="1" x:Name="CollectorHealthText" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="16,0" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="2" x:Name="DatabaseSizeText" Text="Database: --" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="16,0" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="3" x:Name="CollectionStatusText" Text="Collection: --" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="16,0" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="4" x:Name="ServerCountText" Text="Servers: 0" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center"/>
         </Grid>
     </Grid>
 </Window>

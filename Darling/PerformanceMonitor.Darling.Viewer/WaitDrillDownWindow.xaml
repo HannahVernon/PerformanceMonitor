@@ -4,8 +4,8 @@
         Title="Wait Drill-Down" Width="1400" Height="700"
         WindowStartupLocation="CenterOwner"
         Icon="EDD.ico"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Ported from Lite's Windows/WaitDrillDownWindow.xaml (the Wait Stats "Show Queries With <wait>"
          drill-down). Same three classified views (correlated / uncapturable / chain / filtered) driving the
          shared PerformanceMonitor.Ui WaitDrillDownHelper + blocking-chain walker; the read is repointed to
@@ -57,7 +57,7 @@
         <!-- Header -->
         <StackPanel Grid.Row="0" Margin="0,0,0,6">
             <TextBlock x:Name="HeaderText" FontSize="16" FontWeight="Bold"/>
-            <TextBlock x:Name="SummaryText" FontSize="12" Margin="0,4,0,0" Foreground="#B8BCC4"/>
+            <TextBlock x:Name="SummaryText" FontSize="12" Margin="0,4,0,0" Foreground="{DynamicResource ForegroundDimBrush}"/>
         </StackPanel>
 
         <!-- Warning banner (hidden by default) -->

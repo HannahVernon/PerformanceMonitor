@@ -4,39 +4,39 @@
                     xmlns:helpers="clr-namespace:PerformanceMonitor.Ui;assembly=PerformanceMonitor.Ui">
 
     <!-- ============================================ -->
-    <!-- Darling Data Light Theme                      -->
+    <!-- Darling Data Cool Breeze Theme                      -->
     <!-- Flat/Minimal Design                          -->
     <!-- ============================================ -->
 
     <!-- Brand Colors -->
-    <Color x:Key="AccentColor">#2eaef1</Color>
-    <Color x:Key="AccentHoverColor">#5bc4f5</Color>
-    <Color x:Key="AccentPressedColor">#1a9ae0</Color>
+    <Color x:Key="AccentColor">#1E6FA8</Color>
+    <Color x:Key="AccentHoverColor">#2B87C8</Color>
+    <Color x:Key="AccentPressedColor">#155A8A</Color>
 
     <!-- Background Colors -->
-    <Color x:Key="BackgroundDarkColor">#F0F2F5</Color>
-    <Color x:Key="AlternatingRowColor">#EDF1F7</Color>
-    <Color x:Key="BackgroundColor">#F5F7FA</Color>
-    <Color x:Key="BackgroundLightColor">#FFFFFF</Color>
-    <Color x:Key="BackgroundLighterColor">#E8ECF0</Color>
+    <Color x:Key="BackgroundDarkColor">#CFDDE9</Color>
+    <Color x:Key="AlternatingRowColor">#C5D5E4</Color>
+    <Color x:Key="BackgroundColor">#DAE6F0</Color>
+    <Color x:Key="BackgroundLightColor">#EEF4FA</Color>
+    <Color x:Key="BackgroundLighterColor">#BDD0E1</Color>
 
     <!-- Text Colors (dark on light backgrounds) -->
-    <Color x:Key="ForegroundColor">#1A1D23</Color>
-    <Color x:Key="ForegroundDimColor">#1A1D23</Color>
-    <!-- Muted (tertiary) text. #1441: the old #718096 was only 3.38:1 on the light wells and
-         failed WCAG AA. #5A6472 is ~6:1 on #FFFFFF / ~5.6:1 on #F5F7FA — a readable secondary
-         tone that still reads quieter than primary, mirroring the Dark muted tier. -->
-    <Color x:Key="ForegroundMutedColor">#5A6472</Color>
+    <Color x:Key="ForegroundColor">#1A2A3A</Color>
+    <Color x:Key="ForegroundDimColor">#1A2A3A</Color>
+    <!-- Muted (tertiary) text. #1441: the old #5B7A90 was only 2.87:1 on the light-blue wells and
+         failed WCAG AA. #4A5D72 is ~6.5:1 on #EEF4FA — a readable secondary tone that keeps the
+         cool blue character while reading quieter than primary, mirroring the Dark muted tier. -->
+    <Color x:Key="ForegroundMutedColor">#4A5D72</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
-    <Color x:Key="BorderColor">#DEE2E6</Color>
-    <Color x:Key="BorderLightColor">#CED4DA</Color>
+    <Color x:Key="BorderColor">#A8BDD0</Color>
+    <Color x:Key="BorderLightColor">#8AACC4</Color>
 
     <!-- Status Colors (Material Design 700 — visible against light backgrounds) -->
     <Color x:Key="SuccessColor">#2E7D32</Color>
     <Color x:Key="WarningColor">#F57F17</Color>
     <Color x:Key="ErrorColor">#C62828</Color>
-    <Color x:Key="InfoColor">#2eaef1</Color>
+    <Color x:Key="InfoColor">#1E6FA8</Color>
 
     <!-- Spacing Scale -->
     <sys:Double x:Key="SpacingXS">2</sys:Double>
@@ -63,7 +63,7 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <!-- #1441: use the (now readable) muted color so Light has a real 3-tier text hierarchy
+    <!-- #1441: use the (now readable) muted color so CoolBreeze has a real 3-tier text hierarchy
          like Dark, instead of collapsing muted onto the primary foreground. -->
     <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
@@ -82,7 +82,7 @@
     <!-- Deadlock victim node border + VICTIM badge fill, and the "waits for" edge/arrow. Tuned per theme
          so the victim red clears >=3:1 as a border on the light node card and the edge reads on the canvas. -->
     <SolidColorBrush x:Key="DeadlockVictimBrush" Color="#C62828"/>
-    <SolidColorBrush x:Key="DeadlockEdgeBrush" Color="#5A6270"/>
+    <SolidColorBrush x:Key="DeadlockEdgeBrush" Color="#455A6E"/>
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource InfoColor}"/>
 
@@ -113,7 +113,7 @@
     <!-- ============================================ -->
     <Style TargetType="Button">
         <Setter Property="Background" Value="{StaticResource BackgroundLightBrush}"/>
-        <Setter Property="Foreground" Value="#1A1D23"/>
+        <Setter Property="Foreground" Value="#1A2A3A"/>
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Padding" Value="12,6"/>
@@ -220,7 +220,7 @@
     <!-- ToggleButton Style (respects Background in all states) -->
     <Style TargetType="ToggleButton">
         <Setter Property="Background" Value="#E8ECF0"/>
-        <Setter Property="Foreground" Value="#1A1D23"/>
+        <Setter Property="Foreground" Value="#1A2A3A"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Padding" Value="12,5"/>
         <Setter Property="Template">
@@ -295,7 +295,7 @@
     <!-- Success Button Style (for Refresh) -->
     <Style x:Key="SuccessButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
         <Setter Property="Background" Value="{StaticResource SuccessBrush}"/>
-        <Setter Property="Foreground" Value="#E4E6EB"/>
+        <Setter Property="Foreground" Value="#EEF4FA"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -331,11 +331,11 @@
     <!-- Named style for filter TextBoxes in DataGrid column headers -->
     <Style x:Key="FilterTextBoxStyle" TargetType="TextBox">
         <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
-        <Setter Property="Foreground" Value="#1A1D23"/>
+        <Setter Property="Foreground" Value="#1A2A3A"/>
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Padding" Value="4,2"/>
-        <Setter Property="CaretBrush" Value="#1A1D23"/>
+        <Setter Property="CaretBrush" Value="#1A2A3A"/>
         <Setter Property="SelectionBrush" Value="{StaticResource AccentBrush}"/>
     </Style>
 
@@ -593,7 +593,7 @@
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsSelected" Value="True">
                             <Setter TargetName="border" Property="Background" Value="{StaticResource AccentBrush}"/>
-                            <Setter Property="Foreground" Value="#E4E6EB"/>
+                            <Setter Property="Foreground" Value="#EEF4FA"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="border" Property="Background" Value="{StaticResource BackgroundLighterBrush}"/>
@@ -749,18 +749,18 @@
     <!-- Column header style when filter is active - subtle blue highlight -->
     <Style x:Key="FilteredColumnHeaderStyle" TargetType="DataGridColumnHeader"
            BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
-        <Setter Property="Background" Value="#BBDEFB"/>
+        <Setter Property="Background" Value="#9DBFD9"/>
     </Style>
 
-    <!-- Foreground to use on selected rows (dark text on the light accent background) -->
-    <SolidColorBrush x:Key="GridSelectionForegroundBrush" Color="#1A1D23"/>
+    <!-- Foreground to use on selected rows (white text on the cool-breeze accent background) -->
+    <SolidColorBrush x:Key="GridSelectionForegroundBrush" Color="#FFFFFF"/>
 
     <!-- Override WPF system selection brushes so all controls (DataGrid, ListBox, etc.)
          use the theme accent and the matching readable text color. -->
     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}"                    Color="{StaticResource AccentColor}"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}"                Color="#1A1D23"/>
+    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}"                Color="#FFFFFF"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}"   Color="{StaticResource AccentColor}"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#1A1D23"/>
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#FFFFFF"/>
 
     <!-- Named base style for DataGridTextColumn ElementStyles that must set an explicit
          Foreground.  BasedOn this style; keep the unselected Foreground setter in the
@@ -797,7 +797,7 @@
         <Style.Triggers>
             <Trigger Property="IsSelected" Value="True">
                 <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                <Setter Property="Foreground" Value="#1A1D23"/>
+                <Setter Property="Foreground" Value="#FFFFFF"/>
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -1282,12 +1282,22 @@
     </Style>
 
 
-    <!-- Time Range Slicer (light values; #1441 completeness — these 10 keys existed only in Dark) -->
+    <!-- Viewer secondary-window surfaces (write-back windows that merge ViewerDarkTheme.xaml). Cool-breeze values. -->
+    <SolidColorBrush x:Key="CardBorderBrush" Color="{StaticResource BorderLightColor}"/>
+    <SolidColorBrush x:Key="ViewerSelectionBrush" Color="#B7CEE2"/>
+    <SolidColorBrush x:Key="ViewerHoverBrush" Color="{StaticResource BackgroundLighterColor}"/>
+    <SolidColorBrush x:Key="ViewerGridHeaderBrush" Color="{StaticResource BackgroundLighterColor}"/>
+    <SolidColorBrush x:Key="ViewerAltRowBrush" Color="{StaticResource AlternatingRowColor}"/>
+    <SolidColorBrush x:Key="ViewerButtonBorderBrush" Color="{StaticResource BorderLightColor}"/>
+    <SolidColorBrush x:Key="ViewerDisabledBgBrush" Color="{StaticResource BackgroundLighterColor}"/>
+    <SolidColorBrush x:Key="ViewerDisabledTextBrush" Color="#8CA0B2"/>
+
+    <!-- Time Range Slicer (cool-breeze values; #1441 completeness — these 10 keys existed only in Dark) -->
     <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="{StaticResource BackgroundDarkColor}"/>
     <SolidColorBrush x:Key="SlicerChartLineBrush" Color="{StaticResource AccentColor}"/>
-    <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#332EAEF1"/>
+    <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#331E6FA8"/>
     <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#40000000"/>
-    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#222EAEF1"/>
+    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#221E6FA8"/>
     <SolidColorBrush x:Key="SlicerHandleBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="{StaticResource AccentColor}"/>
     <SolidColorBrush x:Key="SlicerBorderBrush" Color="{StaticResource BorderColor}"/>
@@ -1297,16 +1307,18 @@
     <!-- ============================================ -->
     <!-- Plan Viewer Resources                        -->
     <!-- ============================================ -->
-    <SolidColorBrush x:Key="PlanTooltipBgBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="PlanTooltipBgBrush" Color="{StaticResource BackgroundLightColor}"/>
     <SolidColorBrush x:Key="PlanTooltipBorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="PlanPanelTextBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="PlanPanelMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
     <SolidColorBrush x:Key="PlanSectionHeaderBrush" Color="{StaticResource AccentPressedColor}"/>
     <SolidColorBrush x:Key="PlanPropSeparatorBrush" Color="{StaticResource BorderColor}"/>
-    <SolidColorBrush x:Key="PlanMissingIndexBgBrush" Color="#FFF8E1"/>
-    <SolidColorBrush x:Key="PlanMissingIndexBorderBrush" Color="#FFD54F"/>
-    <SolidColorBrush x:Key="PlanMissingIndexHeaderBrush" Color="#E65100"/>
-    <SolidColorBrush x:Key="PlanWaitStatsBgBrush" Color="#E3F2FD"/>
-    <SolidColorBrush x:Key="PlanWaitStatsHeaderBrush" Color="#1565C0"/>
+    <SolidColorBrush x:Key="PlanMissingIndexBgBrush" Color="#FFF3C8"/>
+    <SolidColorBrush x:Key="PlanMissingIndexBorderBrush" Color="#EEB800"/>
+    <SolidColorBrush x:Key="PlanMissingIndexHeaderBrush" Color="#BF4700"/>
+    <SolidColorBrush x:Key="PlanWaitStatsBgBrush" Color="#D5E9F5"/>
+    <SolidColorBrush x:Key="PlanWaitStatsHeaderBrush" Color="#0D47A1"/>
 
 </ResourceDictionary>
+
+

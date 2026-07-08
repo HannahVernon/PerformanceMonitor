@@ -6,8 +6,8 @@
         WindowStartupLocation="CenterOwner"
         Icon="EDD.ico"
         ResizeMode="NoResize"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Copied from Lite's AlertDetailWindow (Lite/Windows/AlertDetailWindow.xaml) for the W2a Alert
          History parity: the modal alert detail the grid opens on double-click / View Details, replacing
          the shell's inline detail pane (Lite has no inline pane, only this window). Dark-styled via the
@@ -32,7 +32,7 @@
 
         <!-- Header -->
         <TextBlock Grid.Row="0" Text="Alert Details" FontSize="16" FontWeight="SemiBold"
-                   Foreground="#E4E6EB" Margin="0,0,0,16"/>
+                   Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,16"/>
 
         <!-- Detail fields -->
         <Grid Grid.Row="1">
@@ -51,39 +51,39 @@
             </Grid.RowDefinitions>
 
             <TextBlock Grid.Row="0" Grid.Column="0" Text="Time:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="0" Grid.Column="1" x:Name="TimeText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
 
             <TextBlock Grid.Row="1" Grid.Column="0" Text="Server:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="1" Grid.Column="1" x:Name="ServerText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
 
             <TextBlock Grid.Row="2" Grid.Column="0" Text="Metric:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="2" Grid.Column="1" x:Name="MetricText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
 
             <TextBlock Grid.Row="3" Grid.Column="0" Text="Current Value:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="3" Grid.Column="1" x:Name="CurrentValueText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
 
             <TextBlock Grid.Row="4" Grid.Column="0" Text="Threshold:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="4" Grid.Column="1" x:Name="ThresholdText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
 
             <TextBlock Grid.Row="5" Grid.Column="0" Text="Notification:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="5" Grid.Column="1" x:Name="NotificationText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
 
             <TextBlock Grid.Row="6" Grid.Column="0" Text="Status:" FontWeight="SemiBold"
-                       Foreground="#E4E6EB" Margin="0,4"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4"/>
             <TextBlock Grid.Row="6" Grid.Column="1" x:Name="StatusValueText"
-                       Foreground="#E4E6EB" Margin="0,4" TextWrapping="Wrap"/>
+                       Foreground="{DynamicResource ForegroundBrush}" Margin="0,4" TextWrapping="Wrap"/>
         </Grid>
 
         <!-- Muted indicator -->
@@ -91,16 +91,16 @@
                 Background="#33FFD54F"
                 CornerRadius="4" Padding="8" Margin="0,12,0,0">
             <TextBlock Text="&#x1F507; This alert was muted by a mute rule"
-                       Foreground="#E4E6EB" FontStyle="Italic"/>
+                       Foreground="{DynamicResource ForegroundBrush}" FontStyle="Italic"/>
         </Border>
 
         <!-- Context-specific details -->
         <Border Grid.Row="3" x:Name="DetailPanel" Visibility="Collapsed"
-                Background="#111217" BorderBrush="#2a2d35"
+                Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,12,0,0">
             <StackPanel>
                 <TextBlock Text="Details" FontWeight="SemiBold" FontSize="13"
-                           Foreground="#E4E6EB" Margin="0,0,0,6"/>
+                           Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,6"/>
 
                 <!-- Structured detail items (advice prose, remediation T-SQL, drill-down).
                      Shown when the persisted context_json deserializes. -->
@@ -111,7 +111,7 @@
                             <DataTemplate>
                                 <StackPanel Margin="0,0,0,10">
                                     <TextBlock Text="{Binding Heading}" FontWeight="SemiBold"
-                                               Foreground="#E4E6EB" Margin="0,0,0,4"/>
+                                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
 
                                     <!-- Remediation T-SQL: monospace, read-only, with Copy. -->
                                     <StackPanel Visibility="{Binding IsCodeBlock, Converter={StaticResource BoolToVis}}">
@@ -124,14 +124,14 @@
                                                  VerticalScrollBarVisibility="Auto"
                                                  HorizontalScrollBarVisibility="Auto"
                                                  Background="Transparent"
-                                                 Foreground="#E4E6EB"
-                                                 BorderBrush="#2a2d35" BorderThickness="1"/>
+                                                 Foreground="{DynamicResource ForegroundBrush}"
+                                                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"/>
                                     </StackPanel>
 
                                     <!-- Advice prose. -->
                                     <TextBlock Text="{Binding Body}" TextWrapping="Wrap"
                                                Visibility="{Binding IsProse, Converter={StaticResource BoolToVis}}"
-                                               Foreground="#E4E6EB"/>
+                                               Foreground="{DynamicResource ForegroundBrush}"/>
 
                                     <!-- Label/value field rows. -->
                                     <ItemsControl ItemsSource="{Binding Fields}"
@@ -144,10 +144,10 @@
                                                         <ColumnDefinition Width="*"/>
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Grid.Column="0" Text="{Binding Label}"
-                                                               Foreground="#E4E6EB"
+                                                               Foreground="{DynamicResource ForegroundBrush}"
                                                                TextWrapping="Wrap"/>
                                                     <TextBlock Grid.Column="1" Text="{Binding Value}"
-                                                               Foreground="#E4E6EB"
+                                                               Foreground="{DynamicResource ForegroundBrush}"
                                                                FontFamily="Consolas" FontSize="12"
                                                                TextWrapping="Wrap"/>
                                                 </Grid>
@@ -164,7 +164,7 @@
                 <TextBox x:Name="DetailTextBox" IsReadOnly="True" TextWrapping="Wrap"
                          Visibility="Collapsed"
                          Background="Transparent" BorderThickness="0"
-                         Foreground="#E4E6EB" FontFamily="Consolas"
+                         Foreground="{DynamicResource ForegroundBrush}" FontFamily="Consolas"
                          FontSize="12" MaxHeight="300"
                          VerticalScrollBarVisibility="Auto"/>
             </StackPanel>

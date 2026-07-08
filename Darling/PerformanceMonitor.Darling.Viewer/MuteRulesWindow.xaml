@@ -6,8 +6,8 @@
         WindowStartupLocation="CenterOwner"
         Icon="EDD.ico"
         ResizeMode="CanResizeWithGrip"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Mirrors Lite's ManageMuteRulesWindow (Lite/Windows/ManageMuteRulesWindow.xaml), dark-styled
          via the shared ViewerDarkTheme resource dictionary. Persists straight to Postgres via
          ViewerDataService (no in-memory MuteRuleService cache — the running service re-reads). -->
@@ -29,7 +29,7 @@
 
         <TextBlock Grid.Row="0" Text="Mute Rules" FontSize="18" FontWeight="Bold" HorizontalAlignment="Left" Margin="0,0,0,4"/>
         <TextBlock Grid.Row="1" Text="Muted alerts are still collected and logged, but suppressed from alert delivery (email and webhooks). Changes are written to the shared store and take effect on the service's next mute-rule load."
-                   Foreground="#8B93A1" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                   Foreground="{DynamicResource ForegroundMutedBrush}" TextWrapping="Wrap" HorizontalAlignment="Left" Margin="0,0,0,12"/>
 
         <Grid Grid.Row="2">
             <DataGrid x:Name="RulesGrid"
@@ -55,7 +55,7 @@
             </DataGrid>
             <TextBlock x:Name="NoRulesMessage"
                        Text="No mute rules yet. Add one, or create one from an alert in the Alerts tab."
-                       Foreground="#8B93A1"
+                       Foreground="{DynamicResource ForegroundMutedBrush}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"
                        Visibility="Collapsed"/>
@@ -69,7 +69,7 @@
             <Button Content="Purge Expired" Width="110" Height="28" Click="PurgeExpired_Click"/>
         </StackPanel>
         <TextBlock x:Name="ReadOnlyBanner" Grid.Row="3" HorizontalAlignment="Left" VerticalAlignment="Center"
-                   Margin="0,12,0,0" Foreground="#E0A030" TextWrapping="Wrap" MaxWidth="560" Visibility="Collapsed"
+                   Margin="0,12,0,0" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" MaxWidth="560" Visibility="Collapsed"
                    Text="Read-only connection (postgres.connectAs = &quot;viewer&quot;): mute rules can be viewed but not changed here. Set connectAs to &quot;admin&quot; and restart the viewer to edit them."/>
         <Button Grid.Row="3" Content="Close" Width="80" Height="28" Margin="0,12,0,0"
                 HorizontalAlignment="Right" Click="Close_Click" IsCancel="True"/>

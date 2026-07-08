@@ -7,8 +7,8 @@
         Icon="EDD.ico"
         TextOptions.TextFormattingMode="Display"
         UseLayoutRounding="True"
-        Background="#22252b"
-        Foreground="#E4E6EB">
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
     <!-- Ported from Lite's Windows/QueryStatsHistoryWindow.xaml (the Top Queries per-row double-click
          history window): the selected query's metric trend chart + a filterable grid of its per-collection
          snapshots, delta columns and all. Data repointed to ViewerDataService Postgres reads; the one viewer
@@ -66,11 +66,11 @@
         <!-- Header -->
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock x:Name="QueryIdentifierText" FontSize="16" FontWeight="Bold"/>
-            <TextBlock x:Name="SummaryText" FontSize="12" Margin="0,4,0,0" Foreground="#B8BCC4"/>
+            <TextBlock x:Name="SummaryText" FontSize="12" Margin="0,4,0,0" Foreground="{DynamicResource ForegroundDimBrush}"/>
         </StackPanel>
 
         <!-- Chart -->
-        <Border Grid.Row="1" Background="#111217" BorderBrush="#2a2d35" BorderThickness="1" CornerRadius="3">
+        <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="3">
             <Grid>
                 <ComboBox x:Name="MetricSelector" Width="180" Height="26"
                           VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,6,10,0"
