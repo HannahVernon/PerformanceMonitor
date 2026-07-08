@@ -16,31 +16,31 @@
   <a href="https://erikdarling.com"><img src="https://img.shields.io/badge/Blog-erikdarling.com-FF6B35?style=for-the-badge&logo=wordpress&logoColor=white" alt="Blog"></a>
 </p>
 
-**Free, open-source monitoring that replaces the tools charging you thousands per server per year.** 30+ collectors, real-time alerts, built-in MCP server for AI analysis. Nothing phones home. Your data stays on your server and your machine.
+**Free, open-source monitoring that replaces the tools charging you thousands per server per year.** Specialized collectors, real-time alerts, and a built-in MCP server for AI analysis. Nothing phones home. Your data stays on your server and your machine.
 
-**Supported:** SQL Server 2016–2025 | Azure SQL Managed Instance | AWS RDS for SQL Server | Azure SQL Database (Lite only)
+**Supported:** SQL Server 2016–2025 | Azure SQL Managed Instance | AWS RDS for SQL Server | Azure SQL Database (Lite and Darling)
 
-![Dashboard landing page with server health cards](Screenshots/Screenshot%20Dashboard%20landing%20page%20with%20server%20health%20cards.jpg)
-
-
-![Full Dashboard — Resource Overview](Screenshots/Full%20Dashboard%20%E2%80%94%20Resource%20Overview.jpg)
+![Landing page with server health cards](Screenshots/Screenshot%20Dashboard%20landing%20page%20with%20server%20health%20cards.jpg)
 
 ---
 
-## Download
+## Editions
 
-**👉 Not sure which edition to pick? [Start with Lite.](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** One download, nothing installed on your server, data flowing in under 5 minutes.
+Pick by how you want collection to run — the monitoring brain (collectors, alert engine, plan analysis, MCP tools) is shared across all three at the library level.
 
-| | **[Full Edition](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** | **[Lite Edition](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** |
-|---|---|---|
-| **What it does** | Installs a `PerformanceMonitor` database with 34 T-SQL collectors running via SQL Agent. Separate dashboard app connects to view everything. | Single desktop app that monitors remotely. Stores data locally in DuckDB + Parquet. Nothing touches your server. |
-| **Best for** | Production 24/7 monitoring, long-term baselining | Quick triage, Azure SQL DB, locked-down servers, consultants, firefighting |
-| **Requires** | SQL Agent running ([see permissions](#permissions)) | `VIEW SERVER STATE` ([see permissions](#permissions)) |
-| **Get started** | Run the installer, open the dashboard | Download, run, add a server, done |
+| | **[Lite](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** — flagship | **[Darling](Darling/README.md)** — headless | **[Dashboard](Dashboard/README.md)** — *deprecated* |
+|---|---|---|---|
+| **How it runs** | Single desktop app monitors remotely, on demand | Windows service collects 24/7 into a central store; detached viewer reads it from any seat | SQL-Server-installed database + Agent collectors, separate viewer app |
+| **Installs on your server?** | No | No | Yes (a `PerformanceMonitor` database) |
+| **Stores data** | Local DuckDB + Parquet | Bundled PostgreSQL + TimescaleDB | In the target SQL Server |
+| **Best for** | Quick triage, Azure SQL DB, locked-down servers, consultants, firefighting | Always-on monitoring of many servers from one service | *Existing installs only — new deployments should use Lite or Darling* |
+| **Requires** | `VIEW SERVER STATE` ([permissions](#permissions)) | `VIEW SERVER STATE` + a place to run the service | SQL Agent ([Dashboard docs](Dashboard/README.md)) |
 
-Both editions include real-time alerts (system tray + email + webhooks), charts and graphs, dark and light themes, CSV export, and a built-in MCP server for AI-powered analysis with tools like Claude.
+> **⚠️ The "Full" Dashboard edition is deprecated.** It still ships and is supported for existing users, but it is no longer the recommended path. New deployments should use **Lite** or **Darling**. Its docs now live with the code: **[Dashboard/README.md](Dashboard/README.md)** (the app, tabs, permissions) and **[Installer/README.md](Installer/README.md)** (the CLI database installer). The Dashboard installer remains in the release assets.
 
-All release binaries are digitally signed via [SignPath](https://signpath.io) — no more Windows SmartScreen warnings.
+**👉 Not sure? [Start with Lite.](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** One download, nothing installed on your server, data flowing in under 5 minutes.
+
+All editions include real-time alerts (system tray + email + webhooks), charts and graphs, dark and light themes, CSV export, and a built-in MCP server for AI-powered analysis with tools like Claude. All release binaries are digitally signed via [SignPath](https://signpath.io) — no more Windows SmartScreen warnings.
 
 ---
 
@@ -50,23 +50,23 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 > *"replaced SentryOne and had it running in 10 minutes"*
 
-> *"I've had enough time to gather data and converse with Claude on this. It helped a lot to zone in on CPU starvation from the hypervisor on which the VM runs. IT team currently investigating the host configuration."* 
+> *"I've had enough time to gather data and converse with Claude on this. It helped a lot to zone in on CPU starvation from the hypervisor on which the VM runs. IT team currently investigating the host configuration."*
 
 ---
 
 ## What You Get
 
-🔍 **34 specialized T-SQL collectors** running on configurable schedules with named presets (Off, Aggressive, Balanced, Low-Impact) — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments. Switch presets with a pair of SQL Agent jobs to get quiet-hours / overnight windows without writing any code.
+🔍 **Specialized collectors** on configurable schedules — wait stats, query performance, blocking chains, deadlock graphs, memory grants, file I/O, tempdb, perfmon counters, FinOps/capacity, and more. Query text and execution plan collection can be disabled per-collector for sensitive environments.
 
 🚨 **Real-time alerts** for blocking, deadlocks, and high CPU — system tray notifications, styled HTML emails with full XML attachments, and webhook notifications for external integrations
 
-📊 **NOC-style dashboard** with green/yellow/red health cards, auto-refresh, configurable time ranges, and dark/light themes
+📊 **NOC-style overview** with green/yellow/red health cards, auto-refresh, configurable time ranges, and dark/light themes
 
 📋 **Graphical plan viewer** with native ShowPlan rendering, 30-rule PlanAnalyzer, operator-level cost breakdown, and a standalone mode for opening `.sqlplan` files without a server connection
 
 💡 **Recommendations engine (advise-and-act)** — a dedicated Recommendations tab surfaces prioritized findings from your own monitoring data with the reasoning behind each one, and can apply selected fixes directly. Destructive changes (like enabling Read Committed Snapshot Isolation) are gated behind an informed-consent dialog that spells out both the risk of acting and the risk of doing nothing.
 
-🤖 **Built-in MCP server** with 55-66 read-only tools for AI analysis — ask Claude Code or Cursor "what are the top wait types on my server?" and get answers from your actual monitoring data
+🤖 **Built-in MCP server** with read-only tools for AI analysis — ask Claude Code or Cursor "what are the top wait types on my server?" and get answers from your actual monitoring data
 
 🧰 **Community tools installed automatically** — sp_WhoIsActive, sp_BlitzLock, sp_HealthParser, sp_HumanEventsBlockViewer
 
@@ -90,7 +90,7 @@ All release binaries are digitally signed via [SignPath](https://signpath.io) �
 
 ---
 
-## Quick Start — Lite Edition
+## Quick Start — Lite
 
 1. Download **[`PerformanceMonitorLite-win-Setup.exe`](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** (requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0))
 2. Run the installer — it installs to `%LocalAppData%\PerformanceMonitorLite`, adds **Start Menu** and **Desktop** shortcuts, and registers the app under **Apps & Features** so it shows up in Windows search and can be uninstalled normally. Auto-update is wired in.
@@ -137,6 +137,8 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | database_scoped_config | On connect | Database-scoped configurations |
 | trace_flags | On connect | `DBCC TRACESTATUS` |
 
+Darling runs these same collectors plus additional server-scoped ones (latch stats, spinlock stats, CPU scheduler, plan cache, resource semaphore, and system_health parsing) — see the [Darling collector reference](Darling/README.md).
+
 ### Lite Data Storage
 
 All data is stored in `%LOCALAPPDATA%\PerformanceMonitorLite\` — separate from the executable, so auto-updates don't affect your data.
@@ -159,222 +161,41 @@ When a second Windows user on the same machine launches Lite, they see the share
 
 ---
 
-## Quick Start — Full Edition
+## Quick Start — Darling (headless)
 
-### Install
+**Darling** is the always-on edition for teams that want 24/7 collection without a desktop app driving it: a Windows service collects from your servers around the clock into a central PostgreSQL store (TimescaleDB is detected and adopted automatically for compression and chunk-based retention), and a detached WPF viewer reads that store from any seat. It runs the same monitoring brain as Lite — collectors, alert engine, and analysis pipeline shared at the library level — with alerts over email and Teams/Slack webhooks and the same MCP tool surface available on request.
 
-Windows Authentication:
+1. Download **`PerformanceMonitorDarling-<version>.zip`** from the [latest release](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest) — the signed service and viewer with the bundled PostgreSQL + TimescaleDB runtime beside the service exe, so a from-zero install needs no database provisioning.
+2. Copy `darling.sample.json` to `darling.json` and add your servers (and optional SMTP / webhook delivery). In managed mode the service unpacks and runs its own PostgreSQL — no external database to set up.
+3. Run the service (console for a trial, or install it as a Windows service). It seeds the store and begins collecting on the same default cadences and retention horizons as a fresh Lite install.
+4. Open the viewer and point it at the store to browse the fleet.
 
-```
-PerformanceMonitorInstaller.exe YourServerName
-```
-
-SQL Authentication:
-
-```
-PerformanceMonitorInstaller.exe YourServerName sa YourPassword
-```
-
-Entra ID (MFA) Authentication:
-
-```
-PerformanceMonitorInstaller.exe YourServerName --entra user@domain.com
-```
-
-Entra managed identity / service principal (non-interactive, for Azure SQL Managed Instance or other AAD-enabled targets):
-
-```
-PerformanceMonitorInstaller.exe YourMI.database.windows.net --managed-identity
-PerformanceMonitorInstaller.exe YourMI.database.windows.net --managed-identity=MI_CLIENT_ID
-PerformanceMonitorInstaller.exe YourMI.database.windows.net --service-principal APP_CLIENT_ID
-```
-
-Bare `--managed-identity` uses the system-assigned identity; pass a client id (`--managed-identity=ID` or `--managed-identity ID`) for a user-assigned one. `--service-principal` reads the client secret from the `PM_AZURE_CLIENT_SECRET` environment variable (never the command line).
-
-Clean reinstall (drops existing database and all collected data):
-
-```
-PerformanceMonitorInstaller.exe YourServerName --reinstall
-PerformanceMonitorInstaller.exe YourServerName sa YourPassword --reinstall
-```
-
-Custom data/log file locations (applied only when the database is first created):
-
-```
-PerformanceMonitorInstaller.exe YourServerName --data-path D:\SQLData --log-path E:\SQLLogs
-```
-
-Uninstall (removes database, Agent jobs, and XE sessions):
-
-```
-PerformanceMonitorInstaller.exe YourServerName --uninstall
-PerformanceMonitorInstaller.exe YourServerName sa YourPassword --uninstall
-```
-
-The installer automatically tests the connection, checks the SQL Server version (2016+ required), executes SQL scripts, downloads community dependencies, creates SQL Agent jobs, and runs initial data collection. You can also install directly from the Dashboard's Add Server dialog.
-
-**Air-gapped environments?** Place pre-downloaded community scripts (`sp_WhoIsActive.sql`, `DarlingData.sql`, `Install-All-Scripts.sql`) in a `community/` directory next to the installer. The installer uses local files when present and falls back to GitHub downloads otherwise.
-
-### CLI Installer Options
-
-| Option | Description |
-|---|---|
-| `SERVER` | SQL Server instance name (positional, required) |
-| `USERNAME PASSWORD` | SQL Authentication credentials (positional, optional) |
-| `--entra EMAIL` | Microsoft Entra ID interactive authentication (MFA) |
-| `--managed-identity[=CLIENT_ID]` | Microsoft Entra managed identity (system-assigned, or user-assigned via `CLIENT_ID`) |
-| `--service-principal CLIENT_ID` | Microsoft Entra service principal (client secret via `PM_AZURE_CLIENT_SECRET`) |
-| `--reinstall` | Drop existing database and perform clean install |
-| `--uninstall` | Remove database, Agent jobs, and XE sessions |
-| `--reset-schedule` | Reset collection schedule to recommended defaults |
-| `--preserve-jobs` | Keep existing SQL Agent job schedules during upgrade |
-| `--encrypt=optional\|mandatory\|strict` | Connection encryption level (default: mandatory) |
-| `--trust-cert` | Trust server certificate without validation (default: require valid cert) |
-| `--data-path DIR` | Server-side directory for the data (`.mdf`) file (used only on first install) |
-| `--log-path DIR` | Server-side directory for the log (`.ldf`) file (used only on first install) |
-| `--help` | Show usage information and exit |
-
-> **Custom file locations:** `--data-path` / `--log-path` set where SQL Server places the PerformanceMonitor data and log files. They take effect **only when the database is first created** — if the database already exists they are ignored. Either flag may be supplied independently; an omitted one falls back to the instance default (`SERVERPROPERTY('InstanceDefaultDataPath')` / `InstanceDefaultLogPath`). The directory is a path **on the SQL Server host** and must already exist, with the SQL Server service account holding write permission. Both `--data-path D:\SQLData` and `--data-path=D:\SQLData` forms are accepted; quote paths containing spaces. Not applicable to Azure SQL Managed Instance, which always uses its managed file layout.
-
-**Environment variables:** Set `PM_SQL_PASSWORD` to avoid passing the SQL Auth password on the command line, and `PM_AZURE_CLIENT_SECRET` to supply the `--service-principal` client secret.
-
-### Exit Codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Success |
-| `1` | Invalid arguments |
-| `2` | Connection failed |
-| `3` | Critical file failed (scripts 01–03) |
-| `4` | Partial installation (non-critical failures) |
-| `5` | Version check failed (SQL Server 2014 or earlier) |
-| `6` | SQL files not found |
-| `7` | Uninstall failed |
-| `8` | Upgrade script failed |
-
-### Post-Installation
-
-1. Ensure SQL Server Agent is running — the collection job executes every minute
-2. Verify installation:
-
-```sql
-SELECT * FROM PerformanceMonitor.config.current_version;
-
-SELECT TOP (20) *
-FROM PerformanceMonitor.config.collection_log
-ORDER BY collection_time DESC;
-```
-
-3. Install the Dashboard. Download **[`PerformanceMonitorDashboard-win-Setup.exe`](https://github.com/erikdarlingdata/PerformanceMonitor/releases/latest)** (requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)). Setup.exe installs to `%LocalAppData%\PerformanceMonitorDashboard`, adds **Start Menu** and **Desktop** shortcuts, registers the app under **Apps & Features**, and wires up auto-update. Launch from the Start Menu, add your server, enter credentials, and data appears immediately.
-
-### What Gets Installed
-
-- **PerformanceMonitor database** with collection tables and reporting views
-- **33 collector stored procedures** for gathering metrics (including SQL Agent job monitoring)
-- **Configurable collection** — query text and execution plan capture can be disabled per-collector via `config.collection_schedule` (`collect_query`, `collect_plan` columns) for sensitive or high-volume environments
-- **Delta framework** for calculating per-second rates from cumulative DMVs
-- **Community dependencies:** sp_WhoIsActive, sp_HealthParser, sp_HumanEventsBlockViewer, sp_BlitzLock
-- **SQL Agent jobs:** Collection (every 1 minute), Data Retention (daily at 2:00 AM), and Hung Job Monitor (collection job watchdog, every 5 minutes)
-- **Version tracking** in `config.installation_history`
-
-### Data Retention
-
-Default: 30 days (configurable per collector via the `retention_days` column in `config.collection_schedule`).
-
-Storage estimates: 5–10 GB per week, 20–40 GB per month.
-
-### Managed Platform Support
-
-The Full Edition supports Azure SQL Managed Instance and AWS RDS for SQL Server with some limitations:
-
-| Feature | On-Premises | Azure SQL MI | AWS RDS |
-|---|---|---|---|
-| All core collectors | Yes | Yes | Yes |
-| Default trace collectors | Yes | Disabled automatically | Yes |
-| System health XE (file target) | Yes | Disabled automatically | Yes |
-| SQL Trace collectors | Yes | Disabled automatically | Yes |
-| SQL Agent jobs | Yes | Yes | Yes |
-| Running jobs collector | Yes | Yes | Disabled automatically |
-| Blocked process threshold | Auto-configured | Auto-configured | Configure via RDS parameter group |
-| sp_configure | Yes | Yes | Not available |
-
-**Azure SQL MI:** The installer automatically detects Engine Edition 8 and disables 4 collectors that require file system access or SQL Trace (default_trace, trace_management, trace_analysis, system_health). All other collectors work normally.
-
-**AWS RDS:** The installer automatically detects the `rdsadmin` database and disables the `running_jobs_collector` (requires `msdb.dbo.syssessions` which is restricted on RDS). It also gracefully handles restricted `sp_configure` and limited `msdb` permissions. SQL Agent jobs are created and owned by the installing login. The RDS master user is automatically enrolled in `SQLAgentUserRole`; for other logins, add them to `SQLAgentUserRole` in msdb before running the installer.
-
-### AWS RDS Parameter Group Configuration
-
-`sp_configure` is not available on AWS RDS for SQL Server. Features that depend on server-level configuration must be set through **AWS RDS Parameter Groups** instead.
-
-**Blocked process threshold** — Enables blocked-process-report collection (the richer XE-sourced blocking detail). Without it the blocked-process-report XE will not fire on RDS, but blocking is still captured by the always-on `dmv_blocking_snapshot` collector, so the blocking grid and block-chain viewer stay populated regardless. Set the threshold for the fuller report-sourced detail.
-
-1. Open the [AWS RDS Console](https://console.aws.amazon.com/rds/) and navigate to **Parameter groups**
-2. Create a new parameter group (or modify the one attached to your instance):
-   - Family: `sqlserver-ee-16.0` (or your edition/version)
-   - Type: DB Parameter Group
-3. Search for `blocked process threshold (s)` and set it to `5` (seconds)
-4. Apply the parameter group to your RDS instance (may require a reboot if the parameter is static)
-5. Verify it took effect:
-
-   ```sql
-   SELECT
-       c.name,
-       c.value_in_use
-   FROM sys.configurations AS c
-   WHERE c.name = N'blocked process threshold (s)';
-   ```
-
-**Deadlocks** — No parameter group configuration is required. The SQL Server deadlock monitor runs automatically on all platforms, and the `xml_deadlock_report` Extended Event fires without any threshold setting.
-
-**Azure SQL Database** — The blocked process threshold is fixed at 20 seconds and cannot be changed. The `blocked_process_report` event fires automatically when blocking exceeds this duration.
+Configuration is a single JSON file with no schedule knobs. See the **[Darling operator guide](Darling/README.md)** for the full quick start, configuration reference, permissions, and operations.
 
 ---
 
 ## Edition Comparison
 
-| Capability | Full | Lite |
-|---|---|---|
-| Target server installation | Required | None |
-| SQL Server Agent | Required | Not needed |
-| Azure SQL Managed Instance | Supported | Supported |
-| AWS RDS for SQL Server | Supported | Supported |
-| Azure SQL Database | Not supported | Supported |
-| Multi-server from one seat | Per-server install | Built-in |
-| Collectors | 33 | 25 |
-| Agent job monitoring | Duration vs historical avg/p95 | Duration vs historical avg/p95 |
-| Data storage | SQL Server (on target) | DuckDB + Parquet (local) |
-| Execution plans | Collected and stored (can be disabled per-collector) | Download on demand |
-| Graphical plan viewer | Built-in with 30-rule PlanAnalyzer | Built-in with 30-rule PlanAnalyzer |
-| Standalone plan viewer | Open/paste/drag `.sqlplan` files | Open/paste/drag `.sqlplan` files |
-| Community tools (sp_WhoIsActive, sp_BlitzLock) | Installed automatically | Not needed |
-| Alerts (tray + email + webhooks) | Blocking, deadlocks, CPU | Blocking, deadlocks, CPU |
-| Dashboard | Separate app | Built-in |
-| Themes | Dark and light | Dark and light |
-| Portability | Server-bound | Single executable |
-| MCP server (LLM integration) | Built into Dashboard (66 tools) | Built-in (55 tools) |
-
-### Darling Edition (In Development) — Headless 24/7 Collection
-
-**Darling** is the in-progress headless edition for teams that want always-on monitoring without a desktop app driving collection: a Windows service collects from your servers around the clock into a central PostgreSQL store (TimescaleDB is detected and adopted automatically for compression and chunk-based retention), and a detached viewer reads that store from any seat. It runs the same monitoring brain as Lite — the same 26 collectors, alert engine, and analysis pipeline, shared at the library level — with alerts delivered by email and Teams/Slack webhooks, and the same MCP tool surface available on request (the diagnostic-analysis, plan-analysis, core data-read, and diagnostic-depth tools — resource metrics, query performance, discovery/health, blocking/deadlocks, sessions, config history, index/object stats, resource contention (latch/spinlock, memory grants, plan cache, CPU scheduler), SQL Agent jobs, windowed metric trends, and system_health parsing). Configuration is a single JSON file with no schedule knobs: it collects on the same default cadences and retention horizons as a fresh Lite install. Release builds package it as a portable `PerformanceMonitorDarling-<version>.zip` — the signed service and viewer with the bundled PostgreSQL + TimescaleDB runtime beside the service exe, so a from-zero install needs no database provisioning — and it builds and runs from source too. See the [Darling operator guide](Darling/README.md) for the quick start, configuration reference, permissions, and operations.
+| Capability | Lite | Darling | Dashboard *(deprecated)* |
+|---|---|---|---|
+| Target server installation | None | None | Required |
+| Runs collection | On-demand desktop app | 24/7 Windows service | SQL Agent on the target |
+| Multi-server from one seat | Built-in | Built-in (central store) | Per-server install |
+| Data storage | DuckDB + Parquet (local) | PostgreSQL + TimescaleDB (bundled) | SQL Server (on target) |
+| Azure SQL Database | Supported | Supported | Not supported |
+| Azure SQL MI / AWS RDS | Supported | Supported | Supported |
+| Graphical plan viewer | Built-in, 30-rule PlanAnalyzer | Built-in, 30-rule PlanAnalyzer | Built-in, 30-rule PlanAnalyzer |
+| Standalone plan viewer | Open/paste/drag `.sqlplan` | Open/paste/drag `.sqlplan` | Open/paste/drag `.sqlplan` |
+| Alerts (tray + email + webhooks) | Yes | Email + webhooks (headless) | Yes |
+| Themes | Dark and light | Dark and light | Dark and light |
+| Portability | Single executable | Portable service + viewer zip | Server-bound |
+| MCP server (LLM integration) | Built-in (55 tools) | On request | Built into Dashboard (66 tools) |
 
 ---
 
-## Dashboard Tabs
+## Tabs
 
-### Full Edition Dashboard
-
-| Tab | Contents |
-|---|---|
-| **Overview** | Resource overview, daily summary, critical issues, recommendations, server config changes, database config changes, trace flag changes, collection health |
-| **Performance** | Performance trends, expensive queries, active queries, query stats, procedure stats, Query Store, Query Store regressions, query trace patterns, query heatmap |
-| **Resource Metrics** | Server trends, wait stats, TempDB, file I/O latency, perfmon counters, default trace events, trace analysis, session stats, latch stats, spinlock stats |
-| **Memory** | Memory overview, grants, clerks, plan cache, memory pressure events |
-| **Locking** | Blocking chains, deadlocks, blocking/deadlock trends, visual block-chain & deadlock-graph viewers |
-| **System Events** | Corruption events, contention, errors, I/O issues, scheduler issues, memory conditions |
-
-Plus a NOC-style landing page with server health cards (green/yellow/red severity indicators).
-
-### Lite Edition Dashboard
+The **Lite** app and the **Darling** viewer share the same tab layout (the viewer is Lite's front end reading a Postgres store instead of local DuckDB):
 
 | Tab | Contents |
 |---|---|
@@ -389,32 +210,32 @@ Plus a NOC-style landing page with server health cards (green/yellow/red severit
 | **Blocking** | Blocking/deadlock trends, blocked process reports, deadlock history, visual block-chain & deadlock-graph viewers |
 | **Perfmon** | Selectable SQL Server performance counters over time |
 | **Configuration** | Server configuration, database configuration, scoped configuration, trace flags |
-| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, per-object table/index size, growth, usage, and locking/contention analysis, application connections, server inventory, cost optimization recommendations (enterprise feature audit, CPU/memory right-sizing, compression savings, dormant databases, dev/test detection), column-level filtering on all grids |
+| **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, per-object table/index size, growth, usage, and locking/contention analysis, application connections, server inventory, cost optimization recommendations, column-level filtering on all grids |
 | **Recommendations** | Prioritized findings drawn from collected metrics, grouped into incidents, each card showing the affected database, the recommendation, the reasoning behind it, and a copyable MCP investigation prompt |
 
-Both editions feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC).
+Both feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC). The Darling viewer adds a fleet sidebar and per-server tabs plus latches/spinlocks and system-events tabs; see [Darling/README.md](Darling/README.md). The deprecated Dashboard's six-tab-group layout is documented in [Dashboard/README.md](Dashboard/README.md).
 
 ---
 
 ## Alerts & Notifications
 
-Both editions include a real-time alert engine that monitors for performance issues and sends notifications via system tray balloons and email.
+Every edition includes a real-time alert engine that monitors for performance issues and sends notifications via system tray balloons (Lite/Dashboard), email, and webhooks.
 
 ### Alert Types
 
 | Metric | Default Threshold | Description |
 |---|---|---|
-| **Blocking** | 30 seconds (Full), 5 seconds (Lite) | Fires when the longest blocked session exceeds the threshold |
+| **Blocking** | 5 seconds | Fires when the longest blocked session exceeds the threshold |
 | **Deadlocks** | 1 | Fires when new deadlocks are detected since the last check |
 | **Poison waits** | 100 ms avg | Fires when any poison wait type exceeds the average-ms-per-wait threshold |
 | **Long-running queries** | 5 minutes | Fires when any query exceeds the elapsed-time threshold |
 | **TempDB space** | 80% | Fires when TempDB usage exceeds the percentage threshold |
 | **Long-running agent jobs** | 3× average | Fires when a job's current duration exceeds a multiple of its historical average |
-| **High CPU** | 90% (Full), 80% (Lite) | Fires when total CPU (SQL + other) exceeds the threshold |
+| **High CPU** | 80% | Fires when total CPU (SQL + other) exceeds the threshold |
 | **Volume free space** | 10% or 5 GB free | Fires when a monitored volume's free space drops below the percentage or absolute threshold (either check can be disabled). Never fires on Azure SQL Database. |
 | **Failed agent job** | 60-minute lookback | Fires when a SQL Agent job run fails within the lookback window. Skipped on Azure SQL Database. |
-| **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online (tray + email) |
-| **Collection stopped** | Jobs disabled, or no run in 30 min | Fires when the PerformanceMonitor collector Agent jobs are disabled, or no collection has run for 30+ minutes (Agent service stopped or collectors erroring). App-computed, so it survives the collector being off; clears with a "Collection Resumed" notice. Full edition only (Lite runs its own scheduler); never fires on Azure SQL Database; degrades gracefully where msdb is restricted (e.g. AWS RDS). |
+| **Server unreachable** | N/A | Fires when a monitored server goes offline or comes back online |
+| **Collection stopped** | No run in 30 min | Fires when collection stalls (Agent/service stopped or collectors erroring). App-computed, so it survives the collector being off; clears with a "Collection Resumed" notice. Never fires on Azure SQL Database; degrades gracefully where msdb is restricted (e.g. AWS RDS). |
 
 All thresholds are configurable in Settings.
 
@@ -439,17 +260,17 @@ Alert emails include:
 ### Alert Behavior
 
 - **Resolved notifications** — when a condition clears (e.g., blocking ends), a "Cleared" notification fires
-- **Server silencing** — right-click a server tab to acknowledge alerts, silence all alerts, or unsilence
-- **Always-on** — the Dashboard alert engine runs independently of which tab is active, including when minimized to the system tray. The Lite edition's alert engine also runs regardless of tab visibility.
-- **Alert history** — Dashboard keeps an in-memory alert log (accessible via MCP). Lite logs alerts to DuckDB (`config_alert_log`).
-- **Alert muting** — create rules to suppress specific recurring alerts while still logging them. Rules match on server name, metric type, database, query text, wait type, or job name (AND logic across fields). Access via Settings → Manage Mute Rules, or right-click an alert in the Alert History tab. The context menu offers two muting options: **Mute This Alert** (pre-fills server + metric for a targeted rule) and **Mute Similar Alerts** (pre-fills metric only, matching across all servers). Muted alerts appear grayed out in alert history and are still recorded for auditability. Rules support optional expiration (1h, 24h, 7 days, or permanent).
-- **Alert details** — right-click any alert in the Alert History tab and choose **View Details** to open a detail window. The window shows core alert fields (time, server, metric, value, threshold, notification type, status) plus context-sensitive details that vary by metric: query text and session info for long-running queries, job name and duration stats for anomalous agent jobs, per-wait-type breakdowns for poison waits, space usage by category for TempDB, and blocking/deadlock session counts.
+- **Server silencing** — right-click a server to acknowledge alerts, silence all alerts, or unsilence
+- **Always-on** — the alert engine runs independently of which tab is active, including when minimized to the system tray
+- **Alert history** — Lite logs alerts to DuckDB (`config_alert_log`); Darling logs to its Postgres store; both are accessible via MCP
+- **Alert muting** — create rules to suppress specific recurring alerts while still logging them. Rules match on server name, metric type, database, query text, wait type, or job name (AND logic across fields). Access via Settings → Manage Mute Rules, or right-click an alert in the Alert History tab. The context menu offers **Mute This Alert** (pre-fills server + metric) and **Mute Similar Alerts** (pre-fills metric only, matching across all servers). Muted alerts appear grayed out and are still recorded for auditability. Rules support optional expiration (1h, 24h, 7 days, or permanent).
+- **Alert details** — right-click any alert in the Alert History tab and choose **View Details** for core fields (time, server, metric, value, threshold, notification type, status) plus context-sensitive details that vary by metric.
 
 ---
 
 ## Agent Job Monitoring
 
-Both editions monitor currently running SQL Agent jobs and flag jobs that are running longer than expected.
+Every edition monitors currently running SQL Agent jobs and flags jobs running longer than expected.
 
 | Metric | How It Works |
 |---|---|
@@ -458,15 +279,13 @@ Both editions monitor currently running SQL Agent jobs and flag jobs that are ru
 | **p95 duration** | 95th percentile from historical completions |
 | **Running long flag** | Set when current duration exceeds the p95 threshold |
 
-The Full Edition collects this data via the `collect.running_jobs_collector` stored procedure (every 5 minutes). The Lite Edition queries `msdb` directly on each collection cycle. Both editions expose this data through the MCP `get_running_jobs` tool.
-
-Gracefully skipped on Azure SQL Database, AWS RDS for SQL Server, and environments without SQL Server Agent.
+Lite and Darling query `msdb` directly on each collection cycle; all editions expose this data through the MCP `get_running_jobs` tool. Gracefully skipped on Azure SQL Database, AWS RDS for SQL Server, and environments without SQL Server Agent.
 
 ---
 
 ## MCP Server (LLM Integration)
 
-Both editions include an embedded [Model Context Protocol](https://modelcontextprotocol.io) server that exposes monitoring data to LLM clients like Claude Code and Cursor.
+Every edition includes an embedded [Model Context Protocol](https://modelcontextprotocol.io) server that exposes monitoring data to LLM clients like Claude Code and Cursor.
 
 ### Setup
 
@@ -489,41 +308,32 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 
 ### Available Tools
 
-Full Edition exposes 66 tools, Lite Edition exposes 55. Core tools are shared across both editions.
+**Lite** exposes 55 tools; **Darling** exposes the analysis + data-read surface on request; the deprecated **Dashboard** exposes 66 (see [Dashboard/README.md](Dashboard/README.md)). Core tools are shared.
 
 | Category | Tools |
 |---|---|
 | Discovery | `list_servers` |
-| Health | `get_server_summary`\*, `get_daily_summary`\*\*, `get_collection_health` |
+| Health | `get_server_summary`, `get_collection_health` |
 | Alerts | `get_alert_history`, `get_alert_settings`, `get_mute_rules` |
-| Waits | `get_wait_stats`, `get_wait_types`\*, `get_wait_trend`, `get_waiting_tasks`\* |
-| Queries | `get_top_queries_by_cpu`, `get_top_procedures_by_cpu`, `get_query_store_top`, `get_expensive_queries`\*\*, `get_query_duration_trend`\*, `get_query_trend` |
+| Waits | `get_wait_stats`, `get_wait_types`, `get_wait_trend`, `get_waiting_tasks` |
+| Queries | `get_top_queries_by_cpu`, `get_top_procedures_by_cpu`, `get_query_store_top`, `get_query_duration_trend`, `get_query_trend` |
 | Active Queries | `get_active_queries` |
 | CPU | `get_cpu_utilization` |
 | Memory | `get_memory_stats`, `get_memory_trend`, `get_memory_clerks`, `get_memory_grants` |
-| Blocking | `get_blocking`\*\*, `get_deadlocks`, `get_deadlock_detail`, `get_blocked_process_reports`\*, `get_blocked_process_xml`, `get_blocking_deadlock_stats`\*\*, `get_blocking_trend`\*, `get_deadlock_trend`\* |
+| Blocking | `get_deadlocks`, `get_deadlock_detail`, `get_blocked_process_reports`, `get_blocked_process_xml` |
 | I/O | `get_file_io_stats`, `get_file_io_trend` |
 | TempDB | `get_tempdb_trend` |
 | Perfmon | `get_perfmon_stats`, `get_perfmon_trend` |
 | Jobs | `get_running_jobs` |
-| Configuration | `get_server_config`\*, `get_database_config`\*, `get_database_scoped_config`\*, `get_trace_flags`\* |
-| Config History | `get_server_config_changes`\*\*, `get_database_config_changes`\*\*, `get_trace_flag_changes`\*\* |
+| Configuration | `get_server_config`, `get_database_config`, `get_database_scoped_config`, `get_trace_flags` |
 | Server Info | `get_server_properties`, `get_database_sizes` |
 | Object/Index Stats | `get_table_index_sizes`, `get_index_usage`, `get_object_locking` |
 | Sessions | `get_session_stats` |
-| Scheduler | `get_cpu_scheduler_pressure`\*\* |
-| Latch/Spinlock | `get_latch_stats`\*\*, `get_spinlock_stats`\*\* |
-| Diagnostics | `get_plan_cache_bloat`\*\*, `get_critical_issues`\*\* |
-| System Events | `get_default_trace_events`\*\*, `get_trace_analysis`\*\*, `get_memory_pressure_events` |
-| Health Parser | `get_health_parser_system_health`\*\*, `get_health_parser_severe_errors`\*\*, `get_health_parser_io_issues`\*\*, `get_health_parser_scheduler_issues`\*\*, `get_health_parser_memory_conditions`\*\*, `get_health_parser_cpu_tasks`\*\*, `get_health_parser_memory_broker`\*\*, `get_health_parser_memory_node_oom`\*\* |
+| System Events | `get_memory_pressure_events` |
 | Plan Analysis | `analyze_query_plan`, `analyze_procedure_plan`, `analyze_query_store_plan`, `analyze_plan_xml`, `get_plan_xml` |
 | Diagnostic Analysis | `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding` |
 
-\* Lite only | \*\* Full only
-
-Most tools accept optional `server_name` and `hours_back` parameters. If only one server is configured, `server_name` is auto-resolved.
-
-The MCP server binds to `localhost` only and does not accept remote connections.
+Most tools accept optional `server_name` and `hours_back` parameters. If only one server is configured, `server_name` is auto-resolved. The MCP server binds to `localhost` only and does not accept remote connections. (Darling adds latch/spinlock, plan-cache, CPU-scheduler, health-parser, and windowed-trend tools — see [Darling/README.md](Darling/README.md).)
 
 ---
 
@@ -533,8 +343,8 @@ The MCP server binds to `localhost` only and does not accept remote connections.
 
 - All queries use `READ UNCOMMITTED` isolation
 - Configurable collection intervals
-- Full Edition: typical overhead <1% CPU, <100 MB memory
-- Lite Edition: max 7 concurrent SQL connections, 30-second command timeout
+- Lite: max 7 concurrent SQL connections, 30-second command timeout
+- Darling: the service collects on the shared default cadences; TimescaleDB compresses the store
 
 ### Local Resources (Lite)
 
@@ -546,35 +356,7 @@ The MCP server binds to `localhost` only and does not accept remote connections.
 
 ## Troubleshooting
 
-### Full Edition
-
-Two diagnostic scripts in the `install/` folder:
-
-| Script | Purpose |
-|---|---|
-| `99_installer_troubleshooting.sql` | Quick health checks: collection log errors, schedule status, Agent job status, table row counts |
-| `99_user_troubleshooting.sql` | Comprehensive diagnostics: runs collectors with `@debug = 1`, detailed timing and row counts |
-
-```sql
-SELECT
-    collection_time,
-    collector_name,
-    error_message
-FROM PerformanceMonitor.config.collection_log
-WHERE collection_status = 'ERROR'
-ORDER BY collection_time DESC;
-```
-
-**Orphaned `Monitor_LongQueries_*.trc` files (issue #972)** — versions through 2.11.0 accumulated stale SQL Trace files in the SQL Server error log directory. Newer versions bound the long-query trace with a rollover file-count cap, so SQL Server prunes its own files going forward — but trace files already on disk are not removed automatically (`xp_delete_file` cannot delete `.trc` files). Sweep them once with `tools/Remove-OrphanedTraceFiles.ps1`, run **on the SQL Server host** as a local Administrator or the SQL Server service account:
-
-```powershell
-.\Remove-OrphanedTraceFiles.ps1 -WhatIf    # preview what would be deleted
-.\Remove-OrphanedTraceFiles.ps1            # delete
-```
-
-It skips files belonging to a running trace and files that are in use.
-
-### Lite Edition
+### Lite
 
 Application logs are written to the `logs/` folder. Collection success/failure is also logged to the `collection_log` table in DuckDB.
 
@@ -582,15 +364,17 @@ Common issues:
 
 1. **No data after connecting** — Wait for the first collection cycle (1–5 minutes). Check logs for connection errors.
 2. **Query Store tab empty** — Query Store must be enabled on the target database (`ALTER DATABASE [YourDB] SET QUERY_STORE = ON`).
-3. **Blocked process reports empty** — Both editions attempt to auto-configure the blocked process threshold to 5 seconds via `sp_configure`. On **AWS RDS**, `sp_configure` is not available — you must set `blocked process threshold (s)` through an RDS Parameter Group (see "AWS RDS Parameter Group Configuration" above). On **Azure SQL Database**, the threshold is fixed at 20 seconds and cannot be changed. If you still see no data on other platforms, verify the login has `ALTER SETTINGS` permission.
+3. **Blocked process reports empty** — Lite attempts to auto-configure the blocked process threshold to 5 seconds via `sp_configure`. On **AWS RDS**, `sp_configure` is not available — set `blocked process threshold (s)` through an RDS Parameter Group (see [Platform Notes](#platform-notes) below). On **Azure SQL Database**, the threshold is fixed at 20 seconds and cannot be changed. If you still see no data on other platforms, verify the login has `ALTER SETTINGS` permission.
 4. **Connection failures** — Verify network connectivity, firewall rules, and that the login has the required [permissions](#permissions). For Azure SQL Database, use a contained database user with `VIEW DATABASE STATE`.
-5. **FinOps Index Analysis hangs, times out, or returns `Msg 229` on `sql_expression_dependencies`** — `sp_IndexCleanup` runs against each user database under your dashboard/Lite login. If that login has no user mapping in a target database, the procedure can hang at 100% CPU instead of erroring; if it is mapped but missing `SELECT` on `sys.sql_expression_dependencies`, it errors immediately on databases that have UDF-bound computed columns or check constraints. See [FinOps Index Analysis](#finops-index-analysis-per-database-grants) below for the full per-database grant set that fixes both.
+5. **FinOps Index Analysis hangs, times out, or returns `Msg 229` on `sql_expression_dependencies`** — see [FinOps Index Analysis](#finops-index-analysis-per-database-grants) below for the full per-database grant set that fixes both failure modes.
+
+**Darling** troubleshooting (service logs, store connectivity, permissions) is in the [Darling operator guide](Darling/README.md). **Dashboard** (Full edition) troubleshooting is in [Dashboard/README.md](Dashboard/README.md).
 
 ---
 
 ## Authentication
 
-Both editions support five authentication types, defined once in `PerformanceMonitor.Common.AuthenticationTypes` and shared by Dashboard, Lite, and the CLI installer:
+Every edition supports five authentication types, defined once in `PerformanceMonitor.Common.AuthenticationTypes` and shared by Lite, Darling, the Dashboard, and the CLI installer:
 
 | Type | Interactive? | Credential stored? | Where |
 |---|---|---|---|
@@ -602,55 +386,18 @@ Both editions support five authentication types, defined once in `PerformanceMon
 
 **Managed Identity and Service Principal** are non-interactive Azure AD (Entra ID) authentication modes, added for fleet onboarding of Azure SQL Database / Managed Instance without a per-server interactive MFA prompt (see [#1038](https://github.com/erikdarlingdata/PerformanceMonitor/issues/1038)). Both map directly to `Microsoft.Data.SqlClient`'s native `SqlAuthenticationMethod` (`ActiveDirectoryServicePrincipal` / `ActiveDirectoryManagedIdentity`) — PerformanceMonitor never acquires, caches, or stores a token itself; the official Microsoft driver handles that internally.
 
-- **Managed Identity** requires the machine running Dashboard/Lite to itself be an Azure resource (VM, App Service, etc.) with a system- or user-assigned managed identity. That identity is then provisioned as a user directly on each target database (see [Permissions](#permissions) below). Nothing is stored locally — not a secret, not a token.
-- **Service Principal** uses an Entra app registration's client id + secret. The client id is non-secret and stored in `servers.json` / `profiles.json`; the secret is stored only in Windows Credential Manager, same as a SQL auth password.
+- **Managed Identity** requires the machine running the app/service to itself be an Azure resource (VM, App Service, etc.) with a system- or user-assigned managed identity. That identity is then provisioned as a user directly on each target database (see [Permissions](#permissions) below). Nothing is stored locally.
+- **Service Principal** uses an Entra app registration's client id + secret. The client id is non-secret and stored in config; the secret is stored only in Windows Credential Manager, same as a SQL auth password.
 
-Configure either from the Add Server dialog's Authentication Type selector, or by hand-editing `servers.json` with `"AuthenticationType": "ManagedIdentity"` and optionally `"ManagedIdentityClientId"` (blank uses the system-assigned identity; set it to target a specific user-assigned identity).
+### Credential Profiles (Lite, fleet onboarding)
 
-### Credential Profiles (Lite only, fleet onboarding)
-
-For a fleet of servers sharing one identity — one managed identity or one service principal used across many Azure SQL databases — Lite has **Credential Profiles**: a named, reusable credential that any number of server entries can reference instead of each one carrying its own inline auth. Create one under **Manage Servers → Credential Profiles…**, then point server entries at it (the "use a shared credential profile" option in Add Server, or `"CredentialProfileId"` in `servers.json`). The profile supplies the authentication type and credential; each server entry keeps only its own connection facts (server name, database, encryption mode).
-
-Profiles live in `profiles.json` alongside `servers.json` (`%ProgramData%\PerformanceMonitorLite\config\`). As with server entries, a Managed Identity profile stores no secret at all — Service Principal and SQL Server profiles are the only kind with a secret, and it lives in Windows Credential Manager under `PerformanceMonitorLite_profile_{id}`, never in the JSON file.
-
-This is the recommended setup for onboarding a large number of Azure SQL databases under one managed identity: one Credential Profile, however many server entries pointing at it, pre-built and bulk-loaded via **Import Settings**.
+For a fleet of servers sharing one identity — one managed identity or one service principal used across many Azure SQL databases — Lite has **Credential Profiles**: a named, reusable credential that any number of server entries can reference instead of each one carrying its own inline auth. Create one under **Manage Servers → Credential Profiles…**, then point server entries at it. Profiles live in `profiles.json` alongside `servers.json`; a Managed Identity profile stores no secret, and Service Principal / SQL Server profile secrets live in Windows Credential Manager, never in the JSON file.
 
 ---
 
 ## Permissions
 
-### Full Edition (On-Premises)
-
-The installer needs `sysadmin` to create the database, Agent jobs, and configure `sp_configure` settings. After installation, the collection jobs can run under a **least-privilege login** with these grants:
-
-```sql
-USE [master];
-CREATE LOGIN [SQLServerPerfMon] WITH PASSWORD = N'YourStrongPassword';
-GRANT VIEW SERVER STATE TO [SQLServerPerfMon];
-
-USE [PerformanceMonitor];
-CREATE USER [SQLServerPerfMon] FOR LOGIN [SQLServerPerfMon];
-ALTER ROLE [db_owner] ADD MEMBER [SQLServerPerfMon];
-
-USE [msdb];
-CREATE USER [SQLServerPerfMon] FOR LOGIN [SQLServerPerfMon];
-ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [SQLServerPerfMon];
-```
-
-| Grant | Why |
-|---|---|
-| `VIEW SERVER STATE` | All DMV access (wait stats, query stats, memory, CPU, file I/O, etc.) |
-| `db_owner` on PerformanceMonitor | Collectors insert data, create/alter tables, execute procedures. Scoped to just this database — not sysadmin. |
-| `SQLAgentReaderRole` on msdb | Read `sysjobs`, `sysjobactivity`, `sysjobhistory` for the running jobs collector |
-
-**Optional** (gracefully skipped if missing):
-- `ALTER SETTINGS` — installer sets `blocked process threshold` via `sp_configure`. Skipped with a warning if unavailable.
-- `ALTER TRACE` — default trace collector. Skipped if denied.
-- `DBCC TRACESTATUS` — server config collector skips trace flag detection if denied.
-
-Change the SQL Agent job owner to the new login after installation if you want to run under least privilege end-to-end.
-
-### Lite Edition (On-Premises)
+### Lite / Darling (On-Premises)
 
 Nothing is installed on the target server. The login only needs:
 
@@ -664,9 +411,11 @@ CREATE USER [YourLogin] FOR LOGIN [YourLogin];
 ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [YourLogin];
 ```
 
+Darling uses the same target-server grants; its bundled PostgreSQL store and service account are covered in the [Darling operator guide](Darling/README.md). The deprecated Full edition's install/least-privilege grants are in [Dashboard/README.md](Dashboard/README.md).
+
 ### FinOps Index Analysis (per-database grants)
 
-Applies to **both editions**. The FinOps Index Analysis tab runs `sp_IndexCleanup` against each user database you ask it to inspect, executing as your dashboard/Lite login. The grants above (`VIEW SERVER STATE`, `db_owner` on `PerformanceMonitor`, `SQLAgentReaderRole` on `msdb`) are *not* sufficient on their own — the login also needs a user mapping in every user database it will analyze, plus `VIEW DATABASE STATE`, `VIEW DEFINITION`, and `SELECT` on `sys.sql_expression_dependencies` in each.
+Applies to **all editions**. The FinOps Index Analysis tab runs `sp_IndexCleanup` against each user database you ask it to inspect, executing as your app login. The grants above (`VIEW SERVER STATE`, plus optional `SQLAgentReaderRole` on `msdb`) are *not* sufficient on their own — the login also needs a user mapping in every user database it will analyze, plus `VIEW DATABASE STATE`, `VIEW DEFINITION`, and `SELECT` on `sys.sql_expression_dependencies` in each.
 
 The third grant is the easy one to miss: by default only members of `db_owner` have `SELECT` on `sys.sql_expression_dependencies`, and `VIEW DEFINITION` does not include it. `sp_IndexCleanup` queries that catalog view (via three-part name to the target database) when checking for computed columns and check constraints that reference UDFs, so the failure only surfaces on databases that actually have those — which is why a smoke-test database may pass and a real workload database fails with `Msg 229`.
 
@@ -695,14 +444,14 @@ BEGIN
 END';
 ```
 
-**Symptoms if missing.** There are two distinct failure modes depending on which grant is absent:
+**Symptoms if missing.** Two distinct failure modes depending on which grant is absent:
 
-- *No user mapping in the target database* — `sp_IndexCleanup` can hang at 100% CPU with no waits and never return, instead of failing fast with `Msg 916` like every other catalog DMV. The hang isn't a deadlock or a long-running scan; it's a SQL Server engine bug where a permission check at execute time gets misclassified as "this plan needs to be recompiled," producing an infinite recompile loop. Reproduces on SQL Server 2016 SP3 through 2025 CU4.
-- *User is mapped with `VIEW DATABASE STATE` + `VIEW DEFINITION` but no `SELECT` on `sys.sql_expression_dependencies`* — fails fast with `Msg 229, Level 14, State 5: The SELECT permission was denied on the object 'sql_expression_dependencies', database 'mssqlsystemresource', schema 'sys'` the moment a database with a UDF-bound computed column or check constraint is reached.
+- *No user mapping in the target database* — `sp_IndexCleanup` can hang at 100% CPU with no waits and never return, instead of failing fast with `Msg 916`. It's a SQL Server engine bug where a permission check at execute time is misclassified as "this plan needs to be recompiled," producing an infinite recompile loop. Reproduces on SQL Server 2016 SP3 through 2025 CU4.
+- *User is mapped with `VIEW DATABASE STATE` + `VIEW DEFINITION` but no `SELECT` on `sys.sql_expression_dependencies`* — fails fast with `Msg 229, Level 14, State 5: The SELECT permission was denied on the object 'sql_expression_dependencies'` the moment a database with a UDF-bound computed column or check constraint is reached.
 
-Adding all three grants above eliminates both. See issue [#915](https://github.com/erikdarlingdata/PerformanceMonitor/issues/915) for the full diagnosis.
+Adding all three grants eliminates both. See issue [#915](https://github.com/erikdarlingdata/PerformanceMonitor/issues/915) for the full diagnosis.
 
-### Azure SQL Database (Lite Only)
+### Azure SQL Database (Lite / Darling)
 
 Azure SQL Database doesn't support server-level logins. Create a **contained database user** directly on the target database:
 
@@ -720,9 +469,7 @@ CREATE USER [your-managed-identity-or-app-registration-name] FROM EXTERNAL PROVI
 GRANT VIEW DATABASE STATE TO [your-managed-identity-or-app-registration-name];
 ```
 
-For a large fleet, grant an Entra **group** instead of provisioning each identity individually where your architecture allows it, so you aren't hand-creating a user in every database.
-
-When connecting in Lite, specify the database name in the connection. SQL Agent and msdb are not available on Azure SQL Database — those collectors are skipped automatically.
+For a large fleet, grant an Entra **group** instead of provisioning each identity individually where your architecture allows it. SQL Agent and msdb are not available on Azure SQL Database — those collectors are skipped automatically.
 
 ### Azure SQL Managed Instance
 
@@ -730,27 +477,52 @@ Works like on-premises. Use server-level logins with `VIEW SERVER STATE`. SQL Ag
 
 ### AWS RDS for SQL Server
 
-Use the RDS master user for installation. The master user has the necessary permissions. For ongoing collection, `VIEW SERVER STATE` and msdb access work the same as on-premises, but `sp_configure` is not available (use RDS Parameter Groups instead — see above).
+For ongoing collection, `VIEW SERVER STATE` and msdb access work the same as on-premises, but `sp_configure` is not available (use RDS Parameter Groups instead — see [Platform Notes](#platform-notes)).
+
+---
+
+## Platform Notes
+
+### AWS RDS Parameter Group Configuration
+
+`sp_configure` is not available on AWS RDS for SQL Server. Features that depend on server-level configuration must be set through **AWS RDS Parameter Groups** instead.
+
+**Blocked process threshold** — Enables blocked-process-report collection (the richer XE-sourced blocking detail). Without it the blocked-process-report XE will not fire on RDS, but blocking is still captured by the always-on `dmv_blocking_snapshot` collector, so the blocking grid and block-chain viewer stay populated regardless.
+
+1. Open the [AWS RDS Console](https://console.aws.amazon.com/rds/) and navigate to **Parameter groups**
+2. Create a new parameter group (or modify the one attached to your instance) — Family `sqlserver-ee-16.0` (or your edition/version), Type DB Parameter Group
+3. Search for `blocked process threshold (s)` and set it to `5` (seconds)
+4. Apply the parameter group to your RDS instance (may require a reboot if the parameter is static)
+5. Verify: `SELECT c.name, c.value_in_use FROM sys.configurations AS c WHERE c.name = N'blocked process threshold (s)';`
+
+**Deadlocks** — No parameter group configuration is required. The SQL Server deadlock monitor runs automatically on all platforms, and the `xml_deadlock_report` Extended Event fires without any threshold setting.
+
+**Azure SQL Database** — The blocked process threshold is fixed at 20 seconds and cannot be changed. The `blocked_process_report` event fires automatically when blocking exceeds this duration.
 
 ---
 
 ## Folder Structure
 
 ```
-Monitor/
+PerformanceMonitor/
 │
-│   Full Edition (server-installed collectors + separate dashboard)
-├── install/          # 59 SQL installation scripts
-├── upgrades/         # Version-specific upgrade scripts
-├── Installer/        # CLI installer for Full Edition database (C#)
-├── Installer.Core/   # Shared installation library (CLI + Dashboard)
-├── Dashboard/        # Full Edition dashboard application (WPF, includes installer)
+│   Lite Edition — standalone desktop app, nothing installed on server
+├── Lite/                  # Lite desktop application (WPF)
 │
-│   Lite Edition (standalone desktop app, nothing installed on server)
-├── Lite/             # Lite Edition desktop application (WPF)
+│   Darling Edition — headless service + bundled Postgres + viewer
+├── Darling/               # Service, storage, analysis, viewer (see Darling/README.md)
 │
-│   Shared
-└── README.md         # This file
+│   Shared monitoring brain (collectors, alerting, analysis, MCP, UI)
+├── PerformanceMonitor.*/  # Shared libraries used by every edition
+│
+│   Full Edition (deprecated) — server-installed collectors + separate dashboard
+├── install/               # SQL installation scripts (Full edition)
+├── upgrades/              # Version-specific upgrade scripts (Full edition)
+├── Installer/             # CLI installer for the Full edition database (see Installer/README.md)
+├── Installer.Core/        # Shared installation library (CLI + Dashboard)
+├── Dashboard/             # Full edition dashboard app (see Dashboard/README.md)
+│
+└── README.md              # This file
 ```
 
 ---
@@ -760,13 +532,15 @@ Monitor/
 All projects target .NET 10.0.
 
 ```
-# Full Edition Dashboard
-dotnet build Dashboard/Dashboard.csproj
-
 # Lite Edition
 dotnet build Lite/PerformanceMonitorLite.csproj
 
-# CLI Installer (self-contained)
+# Darling Edition (service + viewer)
+dotnet build Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj
+dotnet build Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj
+
+# Full Edition (deprecated) — Dashboard app + CLI installer
+dotnet build Dashboard/Dashboard.csproj
 dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
 ```
 
@@ -792,7 +566,7 @@ If you find the project valuable, you can also support continued development:
 | | |
 |---|---|
 | **Sponsor on GitHub** | [Become a sponsor](https://github.com/sponsors/erikdarlingdata) to fund new features, ongoing maintenance, and SQL Server version support. |
-| **Consulting Services** | [Hire me](https://training.erikdarling.com/sqlconsulting) for hands-on consulting if you need help analyzing the data this tool collects? Want expert assistance fixing the issues it uncovers?  |
+| **Consulting Services** | [Hire me](https://training.erikdarling.com/sqlconsulting) for hands-on consulting if you need help analyzing the data this tool collects, or expert assistance fixing the issues it uncovers. |
 
 Neither sponsorship nor consulting is required — use the tool freely.
 
