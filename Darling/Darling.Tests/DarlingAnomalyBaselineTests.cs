@@ -96,6 +96,17 @@ public sealed class DarlingAnomalyBaselineTests
     private static IEnumerable<string> AllAnalysisSql =>
         AllDetectorSql.Concat(AllMetricNames.Select(m => PgBaselineProvider.GetBaselineQuery(m)!));
 
+    [Fact]
+    public void IoLatencyBaseline_CastsRatioToDoublePrecision_NotNumeric()
+    {
+        /* The stall/reads ratio must be DOUBLE PRECISION, not numeric (`* 1.0`): STDDEV_SAMP of a
+           spurious-large ratio yields a numeric that overflows System.Decimal when Npgsql materializes
+           the aggregate, silently failing the io_latency baseline (found live via the error monitor). */
+        var sql = PgBaselineProvider.GetBaselineQuery(MetricNames.IoLatency)!;
+        Assert.Contains("delta_stall_read_ms::DOUBLE PRECISION", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("delta_stall_read_ms * 1.0", sql, StringComparison.Ordinal);
+    }
+
     /* ---------------- ungated: method-surface pins vs Lite ---------------- */
 
     [Fact]

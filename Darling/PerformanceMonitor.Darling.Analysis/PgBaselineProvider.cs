@@ -394,12 +394,15 @@ FROM with_lag
 WHERE NOT (total_elapsed = 0 AND prior_total_elapsed > 100000)
 GROUP BY hour_of_day, day_of_week",
 
-            // Point-in-time metric — no restart exclusion needed
+            // Point-in-time metric — no restart exclusion needed. The stall/reads ratio is cast to
+            // DOUBLE PRECISION (as the memory / wait-rate metrics are) so a spurious large delta can't
+            // make STDDEV_SAMP produce a numeric that overflows System.Decimal when Npgsql materializes
+            // the aggregate (it does with `* 1.0`, which yields numeric, not float8).
             MetricNames.IoLatency => @"
 SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
-       AVG(delta_stall_read_ms * 1.0 / NULLIF(delta_reads, 0)) AS mean_val,
-       STDDEV_SAMP(delta_stall_read_ms * 1.0 / NULLIF(delta_reads, 0)) AS stddev_val,
+       AVG(delta_stall_read_ms::DOUBLE PRECISION / NULLIF(delta_reads, 0)) AS mean_val,
+       STDDEV_SAMP(delta_stall_read_ms::DOUBLE PRECISION / NULLIF(delta_reads, 0)) AS stddev_val,
        COUNT(*) AS sample_count
 FROM v_file_io_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
