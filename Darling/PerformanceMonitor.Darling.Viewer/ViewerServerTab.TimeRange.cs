@@ -517,6 +517,49 @@ public partial class ViewerServerTab
         _ = RefreshActiveInnerTabAsync();
     }
 
+    /// <summary>
+    /// Scopes the toolbar to an explicit naive-UTC <c>[from, to)</c> window — the Performance Calendar day
+    /// drill's "set the time window to that day" step. Selects "Custom Range", reveals the pickers, and writes
+    /// them in the active display mode (<see cref="ViewerTimeHelper.ForDisplay(System.DateTime)"/> inverts the
+    /// naive-UTC bounds to the picker wall-clock, so <see cref="GetWindowUtc"/> round-trips back to the same
+    /// window). Runs under <see cref="_suppressRangeEvents"/> so it drives no reload of its own — the caller
+    /// (the day drill) loads the target inner tab itself. Mirrors <see cref="ApplyExternalTimeRange"/>'s picker
+    /// manipulation, but from UTC and without the reload.
+    /// </summary>
+    internal void SetToolbarWindowUtc(DateTime fromUtc, DateTime toUtc)
+    {
+        var fromDisplay = ViewerTimeHelper.ForDisplay(fromUtc);
+        var toDisplay = ViewerTimeHelper.ForDisplay(toUtc);
+
+        _suppressRangeEvents = true;
+        try
+        {
+            if (FromDatePicker != null)
+            {
+                FromDatePicker.Visibility = Visibility.Visible;
+                FromHourCombo.Visibility = Visibility.Visible;
+                FromMinuteCombo.Visibility = Visibility.Visible;
+                ToLabel.Visibility = Visibility.Visible;
+                ToDatePicker.Visibility = Visibility.Visible;
+                ToHourCombo.Visibility = Visibility.Visible;
+                ToMinuteCombo.Visibility = Visibility.Visible;
+
+                FromDatePicker.SelectedDate = fromDisplay.Date;
+                FromHourCombo.SelectedIndex = fromDisplay.Hour;
+                FromMinuteCombo.SelectedIndex = fromDisplay.Minute / 15;
+                ToDatePicker.SelectedDate = toDisplay.Date;
+                ToHourCombo.SelectedIndex = toDisplay.Hour;
+                ToMinuteCombo.SelectedIndex = toDisplay.Minute / 15;
+            }
+
+            TimeRangeCombo.SelectedIndex = CustomRangeIndex;
+        }
+        finally
+        {
+            _suppressRangeEvents = false;
+        }
+    }
+
     // ── Custom-range DatePicker calendar theming (viewer is fixed Dark) ───────────────
 
     private void DatePicker_CalendarOpened(object sender, RoutedEventArgs e)
