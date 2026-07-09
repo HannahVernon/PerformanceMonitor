@@ -102,18 +102,35 @@ public sealed class DarlingNetworkTests
         Assert.Contains("listen_addresses=127.0.0.1,192.168.1.205", opts, StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData("0.0.0.0")]
-    [InlineData("::")]
-    public void BuildServerRuntimeOptions_Wildcard_EmittedAlone_NoLoopbackPrefix(string wildcard)
+    [Fact]
+    public void BuildServerRuntimeOptions_Ipv4Wildcard_EmittedAlone_NoLoopbackPrefix()
     {
-        /* A wildcard binds every interface; on Windows PG cannot ALSO bind 127.0.0.1 on the same port
-           (WSAEADDRINUSE), so it must be emitted ALONE — never "127.0.0.1,<wildcard>". */
-        var opts = DarlingManagedPostgres.BuildServerRuntimeOptions(5641, wildcard, null, null);
-
-        Assert.Equal($"-p 5641 -c listen_addresses={wildcard}", opts);
-        Assert.DoesNotContain($"127.0.0.1,{wildcard}", opts, StringComparison.Ordinal);
+        /* 0.0.0.0 already covers 127.0.0.1 for the owner connection, and Windows PG cannot ALSO bind an
+           explicit 127.0.0.1 on the same port (overlapping IPv4 -> WSAEADDRINUSE), so it goes ALONE. */
+        var opts = DarlingManagedPostgres.BuildServerRuntimeOptions(5641, "0.0.0.0", null, null);
+        Assert.Equal("-p 5641 -c listen_addresses=0.0.0.0", opts);
+        Assert.DoesNotContain("127.0.0.1,0.0.0.0", opts, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void BuildServerRuntimeOptions_Ipv6Wildcard_KeepsLoopbackPrefix()
+    {
+        /* :: binds IPv6-ONLY on Windows, so it must KEEP the 127.0.0.1, prefix or the hardcoded-IPv4 owner
+           is stranded (different families -> no WSAEADDRINUSE). */
+        var opts = DarlingManagedPostgres.BuildServerRuntimeOptions(5641, "::", null, null);
+        Assert.Equal("-p 5641 -c listen_addresses=127.0.0.1,::", opts);
+    }
+
+    [Theory]
+    [InlineData(null, "127.0.0.1")]
+    [InlineData("", "127.0.0.1")]
+    [InlineData("   ", "127.0.0.1")]
+    [InlineData("0.0.0.0", "0.0.0.0")]                                  // IPv4 wildcard: alone
+    [InlineData("192.168.1.205", "127.0.0.1,192.168.1.205")]           // specific IPv4: prefixed
+    [InlineData("::", "127.0.0.1,::")]                                  // IPv6 wildcard: prefixed (IPv6-only bind)
+    [InlineData("2001:db8::5", "127.0.0.1,2001:db8::5")]               // specific IPv6: prefixed
+    public void BuildListenAddresses_Ipv4WildcardAlone_EverythingElseKeepsLoopback(string? listen, string expected)
+        => Assert.Equal(expected, DarlingManagedPostgres.BuildListenAddresses(listen));
 
     /* ---- pg_hba reconcile (DarlingManagedPostgres.ReconcilePgHba / BuildNetworkPgHbaLine) ---- */
 

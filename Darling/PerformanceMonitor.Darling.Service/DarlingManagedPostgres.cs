@@ -604,7 +604,7 @@ public sealed class DarlingManagedPostgres
 
         _logger.LogInformation(
             "Starting managed Postgres (listen_addresses={Listen}, ssl={Ssl}, port {Port}, log: {Log})",
-            exposed ? $"127.0.0.1,{networkPlan.ListenIp}" : "127.0.0.1",
+            BuildListenAddresses(exposed ? networkPlan.ListenIp : null),
             exposed ? "on" : "off",
             _config.Port, _serverLogPath);
 
@@ -1004,26 +1004,7 @@ public sealed class DarlingManagedPostgres
     {
         var builder = new StringBuilder();
         builder.Append("-p ").Append(port);
-
-        var listen = networkListenIp?.Trim();
-        if (string.IsNullOrEmpty(listen))
-        {
-            /* Disabled / none: loopback only. */
-            builder.Append(" -c listen_addresses=127.0.0.1");
-        }
-        else if (string.Equals(listen, "0.0.0.0", StringComparison.Ordinal) || string.Equals(listen, "::", StringComparison.Ordinal))
-        {
-            /* A wildcard binds EVERY interface; on Windows PG cannot ALSO bind 127.0.0.1 on the same port
-               (no SO_REUSEADDR -> WSAEADDRINUSE, then it silently falls back to loopback-only while we log
-               "exposed"). Emit the wildcard ALONE — 0.0.0.0 already covers IPv4 loopback for the service's
-               own connection. */
-            builder.Append(" -c listen_addresses=").Append(listen);
-        }
-        else
-        {
-            /* A specific IP: bind loopback (the service's own connection) FIRST, then the network IP. */
-            builder.Append(" -c listen_addresses=127.0.0.1,").Append(listen);
-        }
+        builder.Append(" -c listen_addresses=").Append(BuildListenAddresses(networkListenIp));
 
         if (!string.IsNullOrWhiteSpace(sslCertFile) && !string.IsNullOrWhiteSpace(sslKeyFile))
         {
@@ -1033,6 +1014,32 @@ public sealed class DarlingManagedPostgres
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// The effective <c>listen_addresses</c> value for a given network bind — the SINGLE source of truth so
+    /// the <c>-o</c> override and the start-log can never drift. Null/empty ⇒ <c>127.0.0.1</c> (loopback
+    /// only). Exactly <c>0.0.0.0</c> ⇒ <c>0.0.0.0</c> ALONE: the IPv4 wildcard already covers 127.0.0.1 for
+    /// the service's own owner connection, and Windows PG cannot ALSO bind an explicit 127.0.0.1 on the same
+    /// port (overlapping IPv4 -> WSAEADDRINUSE). Everything else — a specific IPv4, a specific IPv6, OR the
+    /// IPv6 wildcard <c>::</c> — keeps the <c>127.0.0.1,</c> prefix so the hardcoded-IPv4 owner ALWAYS
+    /// connects (different families / non-overlapping IPv4 = no WSAEADDRINUSE; <c>::</c> binds IPv6-only on
+    /// Windows and would otherwise strand the owner). Pure + testable.
+    /// </summary>
+    internal static string BuildListenAddresses(string? networkListenIp)
+    {
+        var listen = networkListenIp?.Trim();
+        if (string.IsNullOrEmpty(listen))
+        {
+            return "127.0.0.1";
+        }
+
+        if (string.Equals(listen, "0.0.0.0", StringComparison.Ordinal))
+        {
+            return "0.0.0.0";
+        }
+
+        return $"127.0.0.1,{listen}";
     }
 
     private static string ToForwardSlashes(string path) => path.Replace('\\', '/');
