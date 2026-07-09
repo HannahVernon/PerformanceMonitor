@@ -10,8 +10,9 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 
 /// <summary>
 /// Server instructions sent to MCP clients during initialization — Lite's McpInstructions
-/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the six
-/// diagnostic-analysis tools this headless service exposes.
+/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~60
+/// analysis + plan-analysis + data-read tools this headless service exposes (the <see cref="Text"/>
+/// body enumerates them).
 /// </summary>
 internal static class DarlingMcpInstructions
 {
@@ -27,7 +28,7 @@ internal static class DarlingMcpInstructions
         - Modify, insert, or delete any collected data
         - Run any ad-hoc diagnostics beyond what the collectors have already captured
 
-        The only write this server performs is mute_analysis_finding, which records a mute rule in the MONITORING store — it never touches a monitored SQL Server.
+        The only writes this server performs are to the MONITORING store: mute_analysis_finding records a mute rule, and analyze_server persists its findings. Neither ever touches a monitored SQL Server.
 
         ## How Data Is Collected
 

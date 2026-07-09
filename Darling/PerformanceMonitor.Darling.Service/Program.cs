@@ -45,6 +45,21 @@ if (args.Length > 0 && DarlingCliCommands.IsValidateConfigVerb(args[0]))
     return await DarlingCliCommands.ValidateConfigAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
 }
 
+/* CLI verb: print a paste-ready remote-viewer connection string + the server TLS cert for the opt-in store
+   network endpoint (darling-network-endpoints D8). It DPAPI-decrypts the network role's credential, so it is
+   Windows-only (same guard shape as --encrypt-password). Optional second arg = an explicit config path. */
+if (args.Length > 0 && DarlingCliCommands.IsPrintViewerConnectionVerb(args[0]))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--print-viewer-connection requires Windows (DPAPI).");
+        return 1;
+    }
+
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.PrintViewerConnectionAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 /* Windows-service lifetime is a no-op when run from a console, so the same exe

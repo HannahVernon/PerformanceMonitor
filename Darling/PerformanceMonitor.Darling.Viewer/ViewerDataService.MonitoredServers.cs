@@ -109,9 +109,23 @@ SELECT server_id, name, host, database, auth, username, encrypt_mode,
 FROM config_monitored_servers
 ORDER BY name";
 
-    /// <summary>One configured server by id (the Edit prefill, incl. the DPAPI blob for the password box). $1 server_id.</summary>
+    /// <summary>One configured server by id (the Edit prefill, incl. the DPAPI blob for the password box). $1 server_id.
+    /// An <c>admin</c>-role action — the read-only <c>viewer</c> role is column-denied <c>encrypted_password</c>
+    /// (#1416), so a viewer seat uses <see cref="MonitoredServerByIdNoSecretSql"/> instead.</summary>
     public const string MonitoredServerByIdSql = @"
 SELECT server_id, name, host, database, auth, username, encrypted_password, encrypt_mode,
+       trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases,
+       monthly_cost_usd, capture_plans, is_enabled, created_at, alert_delivery_mode_override
+FROM config_monitored_servers
+WHERE server_id = $1";
+
+    /// <summary>One configured server by id WITHOUT the <c>encrypted_password</c> secret — the read-only
+    /// <c>viewer</c> Edit prefill (D7). The viewer role lost SELECT on that column (#1416), so the full
+    /// <see cref="MonitoredServerByIdSql"/> would 42501 for a read-only seat; this projection matches the
+    /// secret-free LIST columns (so <see cref="ReadMonitoredServerRowNoSecret"/> reads it), leaving the
+    /// password box empty (the read-only seat can't save an edit anyway). $1 server_id.</summary>
+    public const string MonitoredServerByIdNoSecretSql = @"
+SELECT server_id, name, host, database, auth, username, encrypt_mode,
        trust_server_certificate, read_only_intent, multi_subnet_failover, excluded_databases,
        monthly_cost_usd, capture_plans, is_enabled, created_at, alert_delivery_mode_override
 FROM config_monitored_servers
@@ -228,9 +242,20 @@ ORDER BY COALESCE(s.display_name, c.name)";
         return servers;
     }
 
-    /// <summary>One configured server by id, or null when it is not in the store (the Edit prefill).</summary>
+    /// <summary>One configured server by id, or null when it is not in the store (the Edit prefill). A read-only
+    /// <c>viewer</c> seat is column-denied <c>encrypted_password</c> (#1416), so it degrades to the secret-free
+    /// <see cref="MonitoredServerByIdNoSecretSql"/> projection (D7) — leaving the password box empty — instead
+    /// of failing the prefill with 42501.</summary>
     public async Task<MonitoredServerRow?> GetMonitoredServerAsync(int serverId, CancellationToken cancellationToken = default)
     {
+        if (IsReadOnly)
+        {
+            await using var noSecretCommand = _dataSource.CreateCommand(MonitoredServerByIdNoSecretSql);
+            noSecretCommand.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+            await using var noSecretReader = await noSecretCommand.ExecuteReaderAsync(cancellationToken);
+            return await noSecretReader.ReadAsync(cancellationToken) ? ReadMonitoredServerRowNoSecret(noSecretReader) : null;
+        }
+
         await using var command = _dataSource.CreateCommand(MonitoredServerByIdSql);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

@@ -16,7 +16,8 @@
   //    PostgreSQL 17 + TimescaleDB — on first run it unpacks pg-runtime.zip (shipped beside
   //    the binary), initializes a cluster with scram-sha-256 auth and a generated password
   //    (DPAPI-protected in pg-credential.dpapi beside the data directory; never trust auth,
-  //    even on localhost), preloads TimescaleDB, and starts the server on 127.0.0.1 only.
+  //    even on localhost), preloads TimescaleDB, and starts the server on 127.0.0.1 by default
+  //    (see the opt-in "network" block below to reach the store from the LAN over TLS).
   //    The connection string is DERIVED — do NOT also set connectionString (validation error).
   //    "port" 5641 is deliberately uncommon so the bundled instance coexists with any
   //    PostgreSQL (5432) already on the machine. "dataDirectory" null means
@@ -45,10 +46,32 @@
     "managed": true,
     "port": 5641,
     "dataDirectory": null,
-    // Which least-privilege role the Viewer connects as (managed mode): "admin" (default —
-    // can dismiss alerts and manage mute rules) or "viewer" (read-only; those actions are
-    // hidden/disabled). Ignored in bring-your-own mode (the connectionString picks the role).
-    "connectAs": "admin"
+    // Which least-privilege role the Viewer connects as OVER LOOPBACK (managed mode): "admin"
+    // (default — can dismiss alerts and manage mute rules) or "viewer" (read-only; those actions
+    // are hidden/disabled). Ignored in bring-your-own mode (the connectionString picks the role).
+    // This is the LOCAL VM viewer's role; it is INDEPENDENT of network.role below (the REMOTE
+    // pg_hba role, default "viewer") — note the opposite defaults.
+    "connectAs": "admin",
+
+    // OPT-IN NETWORK EXPOSURE for the store (managed mode only) — omit this whole block for the
+    // secure default (loopback-only, byte-for-byte today's behavior: no pg_hba network rule, no
+    // firewall rule, ssl=off). When present with a non-loopback "listen", the service reconciles it
+    // on every start: it adds the bind IP to listen_addresses, generates a self-signed TLS cert for
+    // verify-full, writes a marked `hostssl darling <role> <allowFrom> scram-sha-256` pg_hba rule +
+    // reloads, and best-effort adds a firewall rule (also add the exact scoped rule yourself; see
+    // Darling/README.md). Reconciliation is symmetric (delete the block to close the box) and
+    // fail-closed: any invalid/incomplete field degrades the store to loopback + a critical log line,
+    // never exposed. Get the remote viewer's paste-ready connection string + the server cert with:
+    //   PerformanceMonitor.Darling.Service.exe --print-viewer-connection
+    // Uncomment (a comma already follows connectAs above):
+    // "network": {
+    //   "listen": "192.168.1.205",      // the specific bind IP (preferred; = the cert's iPAddress SAN).
+    //                                    // "0.0.0.0" = all interfaces (then connect by a cert SAN name).
+    //   "allowFrom": "192.168.1.0/24",  // pg_hba + firewall CIDR (its address family must match "listen").
+    //   "role": "viewer"                // "viewer" (default, read-only remote — the secure default) or
+    //                                    // "admin" (full remote WRITES; the service warns, because admin
+    //                                    // holds the config-table service-credential pivot). Never the superuser.
+    // }
   },
   "servers": [
     {
@@ -148,13 +171,32 @@
     "slackUrl": ""
   },
 
-  // Embedded MCP server (optional): the six analysis tools (analyze_server, get_analysis_facts,
-  // compare_analysis, audit_config, get_analysis_findings, mute_analysis_finding) — the same
-  // analysis surface Lite and the Dashboard expose — over Streamable HTTP at
-  // http://localhost:{port}. Default OFF; port 5152 avoids the Dashboard (5150) and Lite (5151)
-  // defaults so all three can run on one machine.
+  // Embedded MCP server (optional): the SAME ~60-tool surface Lite and the Dashboard expose — the
+  // six analysis tools (analyze_server, get_analysis_facts, compare_analysis, audit_config,
+  // get_analysis_findings, mute_analysis_finding) PLUS the plan-analysis tools and the ~60 STORED
+  // data-read tools (every read is served from the collected store, never a live query against a
+  // monitored server). Over Streamable HTTP at http://localhost:{port}; see Darling/README.md for the
+  // full tool list. Default OFF; port 5152 avoids the Dashboard (5150) and Lite (5151) defaults so all
+  // three can run on one machine.
+  //
+  // OPT-IN NETWORK EXPOSURE for MCP (managed mode only) — omit "network" for the secure default
+  // (loopback-only, tokenless HTTP, today's behavior). When present with a non-loopback "listen", the
+  // MCP host binds the LAN interface behind a REQUIRED bearer token + an in-app CIDR check, fail-closed
+  // (any missing precondition — token / valid allowFrom / managed mode — keeps it loopback-only).
+  // THREAT MODEL: the token gates the whole read surface AND analyze_server, which opens LIVE outbound
+  // connections to your monitored SQL Servers — so this is a trusted-LAN opt-in, NEVER internet-exposed.
+  // There is deliberately NO TLS on MCP (a self-signed cert breaks real MCP clients), so the token
+  // travels cleartext on-segment: the MITM control is a TLS REVERSE PROXY in front of the endpoint
+  // (the in-app CIDR only bounds WHO can route to it, not the wire).
   "mcp": {
     "enabled": false,
-    "port": 5152
+    "port": 5152,
+
+    // Uncomment to expose MCP on the LAN (a comma already follows "port" above):
+    // "network": {
+    //   "listen": "192.168.1.205",                     // specific bind IP preferred; "0.0.0.0" = all interfaces.
+    //   "allowFrom": "192.168.1.0/24",                 // in-app RemoteIpAddress check + firewall CIDR (loopback always allowed).
+    //   "encryptedToken": "<output of --encrypt-password>"  // REQUIRED to expose; or a plaintext "token" (dev only, warned).
+    // }
   }
 }

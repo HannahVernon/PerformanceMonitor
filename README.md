@@ -333,7 +333,7 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 | Plan Analysis | `analyze_query_plan`, `analyze_procedure_plan`, `analyze_query_store_plan`, `analyze_plan_xml`, `get_plan_xml` |
 | Diagnostic Analysis | `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding` |
 
-Most tools accept optional `server_name` and `hours_back` parameters. If only one server is configured, `server_name` is auto-resolved. The MCP server binds to `localhost` only and does not accept remote connections. (Darling adds latch/spinlock, plan-cache, CPU-scheduler, health-parser, and windowed-trend tools — see [Darling/README.md](Darling/README.md).)
+Most tools accept optional `server_name` and `hours_back` parameters. If only one server is configured, `server_name` is auto-resolved. The MCP server binds to `localhost` only and does not accept remote connections. (Darling adds latch/spinlock, plan-cache, CPU-scheduler, health-parser, and windowed-trend tools, and supports an opt-in LAN endpoint — see [Darling/README.md](Darling/README.md).)
 
 ---
 

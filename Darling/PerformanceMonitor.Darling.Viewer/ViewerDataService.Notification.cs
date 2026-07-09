@@ -47,6 +47,21 @@ public sealed partial class ViewerDataService
     public const string NotificationSelectSql =
         "SELECT " + NotificationColumns + " FROM config_notification WHERE id = 1";
 
+    /* The non-secret subset of NotificationColumns a read-only viewer role CAN read. The four secret
+       columns (smtp_encrypted_password, smtp_username, teams_url, slack_url — a webhook URL is a bearer
+       secret) are column-REVOKEd from the viewer role (#1262 /
+       DarlingManagedRoles.ViewerRestrictedConfigTables), so selecting them raises SQLSTATE 42501 for a
+       read-only seat and — in the Settings load — one such throw would blank every later section. */
+    private const string NotificationNonSecretColumns =
+        "smtp_host, smtp_port, smtp_use_ssl, smtp_from_address, smtp_recipients, " +
+        "email_cooldown_minutes, teams_proxy, slack_proxy";
+
+    /// <summary>The secret-free notification projection a read-only <c>viewer</c> seat reads (D7 degradation):
+    /// the four carved secret columns are omitted, so it never 42501s for a viewer. The secret fields come back
+    /// null/empty (the viewer can't author them anyway); the non-secret fields prefill the Settings window.</summary>
+    public const string NotificationSelectNoSecretSql =
+        "SELECT " + NotificationNonSecretColumns + " FROM config_notification WHERE id = 1";
+
     /// <summary>Upserts the single global notification row (Settings window Save). ON CONFLICT rewrites every
     /// column and bumps <c>config_version</c> via the V17 trigger. $1..$12 in <see cref="NotificationColumns"/> order.</summary>
     public const string NotificationUpsertSql = @"
@@ -67,9 +82,19 @@ ON CONFLICT (id) DO UPDATE SET
     slack_proxy = EXCLUDED.slack_proxy,
     modified_at = (now() AT TIME ZONE 'UTC')";
 
-    /// <summary>Reads the single global notification row, or null when the store has not seeded it yet.</summary>
+    /// <summary>Reads the single global notification row, or null when the store has not seeded it yet. A
+    /// read-only <c>viewer</c> seat is column-denied the four secret columns, so it degrades to the secret-free
+    /// <see cref="NotificationSelectNoSecretSql"/> projection (D7) instead of failing the read with 42501 —
+    /// which, in the Settings load, would otherwise blank the later sections.</summary>
     public async Task<NotificationRow?> GetNotificationAsync(CancellationToken cancellationToken = default)
     {
+        if (IsReadOnly)
+        {
+            await using var noSecretCommand = _dataSource.CreateCommand(NotificationSelectNoSecretSql);
+            await using var noSecretReader = await noSecretCommand.ExecuteReaderAsync(cancellationToken);
+            return await noSecretReader.ReadAsync(cancellationToken) ? ReadNotificationRowNoSecret(noSecretReader) : null;
+        }
+
         await using var command = _dataSource.CreateCommand(NotificationSelectSql);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken) ? ReadNotificationRow(reader) : null;
@@ -111,6 +136,30 @@ ON CONFLICT (id) DO UPDATE SET
         TeamsProxy = reader.GetString(9),
         SlackUrl = reader.GetString(10),
         SlackProxy = reader.GetString(11),
+    };
+
+    /// <summary>
+    /// Reads a <see cref="NotificationRow"/> from the secret-free projection
+    /// (<see cref="NotificationSelectNoSecretSql"/>) a read-only <c>viewer</c> seat uses (D7): identical to
+    /// <see cref="ReadNotificationRow"/> but the four carved secret columns (<c>smtp_username</c>,
+    /// <c>smtp_encrypted_password</c>, <c>teams_url</c>, <c>slack_url</c>) are not selected, so they stay
+    /// null/empty and every column after each shifts ordinal. The viewer can't author those secrets on a
+    /// read-only seat anyway, so the empty values are harmless — the non-secret fields still prefill.
+    /// </summary>
+    private static NotificationRow ReadNotificationRowNoSecret(NpgsqlDataReader reader) => new()
+    {
+        SmtpHost = reader.GetString(0),
+        SmtpPort = reader.GetInt32(1),
+        SmtpUseSsl = reader.GetBoolean(2),
+        SmtpUsername = null,          /* carved — not selected for a read-only viewer (#1262) */
+        SmtpEncryptedPassword = null, /* carved */
+        SmtpFromAddress = reader.GetString(3),
+        SmtpRecipients = reader.GetString(4),
+        EmailCooldownMinutes = reader.GetInt32(5),
+        TeamsUrl = "",                /* carved */
+        TeamsProxy = reader.GetString(6),
+        SlackUrl = "",                /* carved */
+        SlackProxy = reader.GetString(7),
     };
 }
 

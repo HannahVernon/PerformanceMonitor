@@ -269,7 +269,7 @@ A channel is enabled by a non-empty URL.
 
 ### mcp
 
-The embedded MCP server, over Streamable HTTP bound to `localhost` only. It exposes the same tool names Lite and the Dashboard expose:
+The embedded MCP server, over Streamable HTTP bound to `localhost` by default (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan) to reach it — and the store — from the LAN). It exposes the same tool names Lite and the Dashboard expose:
 
 - **Six diagnostic-analysis tools** — `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding`.
 - **Five plan-analysis tools** — `analyze_query_plan` (by `query_hash`), `analyze_procedure_plan` (by `sql_handle`), `analyze_query_store_plan` (by `database_name` + `query_id`), `analyze_plan_xml` (raw showplan XML, no fetch), and `get_plan_xml` (raw stored plan XML by `query_hash`). These run the shared execution-plan analyzer over the plan XML the collectors already captured into the store — a stored-plan read, never a live query against the monitored server. `analyze_query_plan`/`get_plan_xml` accept an optional `database_name`, and `analyze_query_store_plan` an optional `plan_id`, to pin the exact stored plan when the caller knows it.
@@ -454,7 +454,7 @@ A monitored server that is down is retried every 60 seconds forever; a collector
 
 **"TimescaleDB setup failed — continuing in plain-PostgreSQL mode"** (warning) — the extension exists but conversion hit a problem. Everything still works (DELETE-based retention, plain tables); conversion is retried on the next service start.
 
-**MCP client cannot connect** — `mcp.enabled` defaults to `false`; set it to `true` and restart. If the log says `Port 5152 is already in use — MCP server not started`, change `mcp.port`. The MCP server binds to `localhost` only and does not accept remote connections.
+**MCP client cannot connect** — `mcp.enabled` defaults to `false`; set it to `true` and restart. If the log says `Port 5152 is already in use — MCP server not started`, change `mcp.port`. The MCP server binds to `localhost` only unless you opt into a LAN endpoint (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan)); a remote client that gets 401 is missing or mismatching the required bearer token, and one that is refused before any response is outside the configured `allowFrom` CIDR.
 
 **Recommendations tab says no findings** — analysis runs every 30 minutes per server but only once the store holds at least 24 hours of collected data for that server; a fresh install simply has not earned findings yet.
 
@@ -490,7 +490,7 @@ With `postgres.managed = true` (the sample's default), the service runs its own 
 
 **What first run does.** The service looks for `pg-runtime\pgsql\` beside its binary, extracting it from `pg-runtime.zip` when only the zip is present (deleting the extracted directory is therefore always safe — it self-heals). If the data directory has no cluster, it generates a 32-character random password, protects it with DPAPI LocalMachine into `pg-credential.dpapi` beside the data directory (credential first, so a crash mid-initdb never strands a cluster nobody can log into), then runs `initdb` with `scram-sha-256` auth, data checksums, and UTF8/C locale. A marker-guarded block appended to `postgresql.conf` preloads TimescaleDB, sets the port, and restricts listening to `127.0.0.1`; a second versioned block sizes background workers up for the per-hypertable compression jobs (`timescaledb.max_background_workers = 28`, `max_worker_processes = 40` — PostgreSQL's default of 8 workers cannot launch them). Both appends are re-checked on every start, so a crash between initdb and the append heals itself instead of silently degrading — and clusters initialized before the worker sizing existed gain it on their next start (effective at the next PostgreSQL restart). Then `pg_ctl start`, `CREATE DATABASE darling`, and the normal startup path (migrations, TimescaleDB adoption — you should see `32/32 collector table(s) are hypertables`) continues exactly as in bring-your-own mode. The connection string is derived from the stored credential; the Viewer and the MCP host on the same machine derive it the same way, so nothing needs configuring there either.
 
-**Why scram and not trust, even loopback-only.** Trust auth would hand superuser to any local code that can open a loopback socket — every other local user, and network-capable-but-not-filesystem-capable attack primitives like SSRF from a co-hosted app. With scram the credential travels on the wire, failed attempts are auditable, and access is confined to what can read the DPAPI-protected credential file. `listen_addresses = '127.0.0.1'` keeps the server unreachable off the machine on top.
+**Why scram and not trust, even loopback-only.** Trust auth would hand superuser to any local code that can open a loopback socket — every other local user, and network-capable-but-not-filesystem-capable attack primitives like SSRF from a co-hosted app. With scram the credential travels on the wire, failed attempts are auditable, and access is confined to what can read the DPAPI-protected credential file. `listen_addresses = '127.0.0.1'` keeps the server unreachable off the machine on top — unless you deliberately opt into a LAN endpoint (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan)), which reconciles `listen_addresses`, a `hostssl` pg_hba rule, and TLS on every start and is otherwise off.
 
 **Lifecycle.** On shutdown the service stops the server (`pg_ctl stop -m fast`) **only when it started it**. A server that was already running — an operator's own `pg_ctl`, or a postmaster that survived a service crash — is adopted for connections but never stopped: you'll see `already running … will not stop it` in the log, and the service keeps collecting into it.
 
@@ -507,33 +507,112 @@ The store is split into two schemas so that no consumer connects with more privi
 
 Table names are unchanged — only their schema moved — and the shared SQL keeps using the bare, unqualified names, resolved through `search_path = collect, config, public` (set as the database default and carried on the managed connection strings). This is deliberate: Darling's SQL is byte-identical to Lite's DuckDB SQL, and re-qualifying it would fork that twin.
 
-**Three roles.** The service still owns the store as the `darling` superuser (it does the DDL — migrations, hypertable conversion, retention). On top of that it provisions two least-privilege **login** roles the Viewer connects as instead:
+**The roles.** The service still owns the store as the `darling` superuser (it does the DDL — migrations, hypertable conversion, retention). On top of that, **managed mode provisions three least-privilege login roles** (BYO provisions two — see below):
 
 | Role | Privileges | Used by |
 |---|---|---|
 | `darling` | superuser / owner | the service (collection, migration, provisioning) |
 | `admin` | SELECT on both schemas + INSERT/UPDATE/DELETE on `config` only | the Viewer, by default (`connectAs: "admin"`) |
 | `viewer` | SELECT on both schemas, no writes | a locked-down Viewer (`connectAs: "viewer"`) |
+| `mcp` | `viewer`'s exact read surface + INSERT on `collect.analysis_findings` / `config.analysis_muted` only | the store identity the opt-in MCP **network** endpoint connects as (managed only); dormant until MCP is exposed on the LAN |
 
-`admin` cannot `DROP`, alter schema, touch `collect` data, or create objects — it can only do what the Viewer's mute-rule / alert-dismiss surfaces need. `ALTER DEFAULT PRIVILEGES` means new collector tables auto-inherit SELECT, so the model never drifts as collectors are added.
+`admin` cannot `DROP`, alter schema, touch `collect` data, or create objects — it can only do what the Viewer's mute-rule / alert-dismiss surfaces need. The `mcp` role is narrower still: it reads exactly what `viewer` reads (the secret config columns are carved out identically) and its only writes are the two analysis tables `analyze_server` + `mute_analysis_finding` persist — so a token-holder on the network MCP endpoint can never reach the `config`-table service-credential pivot or the secret columns. `ALTER DEFAULT PRIVILEGES` means new collector tables auto-inherit SELECT for `admin`/`viewer`, so the model never drifts as collectors are added (the `mcp` role's two INSERTs are explicit single-table grants, deliberately not schema-wide).
 
-**Managed mode** provisions all of this automatically on every start (idempotent and self-healing), generating a per-role DPAPI-LocalMachine credential — `pg-admin-credential.dpapi` and `pg-viewer-credential.dpapi` beside the data directory, same posture as the owner's `pg-credential.dpapi`. Nothing to configure beyond `connectAs`.
+**Managed mode** provisions all of this automatically on every start (idempotent and self-healing), generating a per-role DPAPI-LocalMachine credential — `pg-admin-credential.dpapi`, `pg-viewer-credential.dpapi`, and `pg-mcp-credential.dpapi` beside the data directory, same posture as the owner's `pg-credential.dpapi`. Nothing to configure beyond `connectAs`.
 
 **Credential file protection.** DPAPI LocalMachine scope is deliberate (the service writes the credential, a *different* interactive user's Viewer reads it), which means the machine-bound blob is decryptable by anything that can *read* the file. So the credential files are locked down with an NTFS ACL that strips the inherited world-read `%ProgramData%` would give them:
 
 | File(s) | Readable by |
 |---|---|
-| `pg-credential.dpapi` (superuser) + the transient init pwfile | SYSTEM, Administrators, the service account — **not** interactive users |
+| `pg-credential.dpapi` (superuser), `pg-mcp-credential.dpapi` (the network MCP role) + the transient init pwfile | SYSTEM, Administrators, the service account — **not** interactive users |
 | `pg-admin-credential.dpapi`, `pg-viewer-credential.dpapi` | the above **+ `NT AUTHORITY\INTERACTIVE`** (the operator's Viewer) |
+
+`pg-mcp-credential.dpapi` sits with the superuser (non-interactive) rather than with the Viewer's credentials because only the in-service MCP host reads it — never an interactive Viewer.
 
 The principal model assumes the **single-operator VM** this edition targets: `INTERACTIVE` == the operator, so the admin/viewer credentials are readable by the Viewer with zero configuration, while non-interactive local code (other services, sandboxed/SSRF socket primitives, scheduled tasks) and the superuser credential are excluded outright. On a shared machine where untrusted users log on interactively, tighten those two files to the specific operator account by hand. The service also refuses to trust a credential file that isn't owned by SYSTEM/Administrators/itself (closing a pre-plant attack), and regenerates an untrusted role credential.
 
 **A read-only (`viewer`) Viewer degrades gracefully.** It probes its own privileges on connect (`has_table_privilege`), so the mute-rule Add/Edit/Toggle/Delete/Purge buttons and the alert Dismiss / Dismiss All buttons are hidden or disabled, and any write that still slips through returns a clear "read-only connection" message instead of an error.
 
-**Bring-your-own PostgreSQL.** The schema split runs everywhere (it's a migration — the service applies it on startup and best-effort sets the database `search_path`; if your collection login can't `ALTER DATABASE`, run that one statement yourself as the owner). Role provisioning is managed-only, so for BYO you create the two roles yourself, once, with the shipped script:
+**Bring-your-own PostgreSQL.** The schema split runs everywhere (it's a migration — the service applies it on startup and best-effort sets the database `search_path`; if your collection login can't `ALTER DATABASE`, run that one statement yourself as the owner). Role provisioning is managed-only, so for BYO you create the roles yourself, once, with the shipped script:
 
 ```
 psql -h <host> -U <owner> -d darling -f Darling/tools/provision-roles.sql
 ```
 
-Edit the two password placeholders (and the database/owner names if yours differ) first. Then point a read-only Viewer's `connectionString` at the `viewer` role.
+Edit the two password placeholders (and the database/owner names if yours differ) first. Then point a read-only Viewer's `connectionString` at the `viewer` role. **`provision-roles.sql` creates two login roles — `admin` and `viewer`** — the two the Viewer connects as. Managed mode creates a third, `mcp`, but BYO deliberately does not: the MCP **network** endpoint (the only consumer of the `mcp` role) is managed-mode-only, and a BYO operator governs their own PostgreSQL's network exposure. If you expose MCP through your own reverse proxy against a BYO store, point it at whichever least-privilege role you choose (the `viewer` role covers the read tools; `analyze_server`'s finding persistence and `mute_analysis_finding` need INSERT on `collect.analysis_findings` / `config.analysis_muted`).
+
+## Opt-in Network Endpoints (LAN)
+
+By default both network surfaces bind **loopback only** — the store to `127.0.0.1`, the MCP server to `localhost` — exactly as they always have. Two optional, independent opt-ins let a remote viewer or MCP client on your **trusted LAN** reach them. This is a home-lab / trusted-subnet feature: **never expose either endpoint to the internet.** Both are **managed-mode only** (in bring-your-own mode your own PostgreSQL / reverse proxy governs exposure, and the config is ignored with a warning), and both are **fail-closed** — any invalid or incomplete field degrades that endpoint back to loopback and logs a critical line rather than exposing it. Removing the config on the next restart closes the box again.
+
+### Store endpoint (viewer over the LAN)
+
+Add a `network` block to `postgres` (managed mode):
+
+```json
+"postgres": {
+  "managed": true,
+  "port": 5641,
+  "network": {
+    "listen": "192.168.1.205",
+    "allowFrom": "192.168.1.0/24",
+    "role": "viewer"
+  }
+}
+```
+
+On every start the service reconciles this against the live cluster: it adds the bind IP to `listen_addresses`, generates a self-signed TLS certificate (`server.crt` / `server.key` beside the data directory, with both an IP SAN for `listen` and a DNS SAN for the machine hostname), writes a marked `hostssl darling <role> <allowFrom> scram-sha-256` rule into `pg_hba.conf` and reloads, and best-effort adds a firewall rule.
+
+- **`role`** — the pg_hba login role the rule names: `"viewer"` (default, **read-only** — the secure default, covering a laptop reading every dashboard, chart, and finding) or `"admin"` (full remote **writes**; the service logs a warning because `admin` holds the `config_command` / `config_monitored_servers` / `config_notification` service-credential pivot). Never the superuser. This is **distinct from `postgres.connectAs`** (the *local* VM viewer's loopback role, default `admin`): `network.role` is the *remote* role and defaults to `viewer`, so the two have opposite defaults — the local seat is writable, the remote seat is read-only, unless you say otherwise.
+- **TLS is verify-full, not `require`.** Because Darling generates the cert, the client can pin it, so the connection string below uses `SSL Mode=VerifyFull` — which actually defends against an on-path MITM (`require` verifies nothing). The store's network pg_hba line is `hostssl`, so a non-TLS network client is refused.
+- **The firewall is defense-in-depth, and you should set the scoped rule yourself** (the service's best-effort rule is a convenience). The store's real boundary is pg_hba + TLS:
+
+  ```
+  New-NetFirewallRule -DisplayName "Darling store (Postgres)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5641 -RemoteAddress 192.168.1.0/24
+  ```
+
+**Remote-viewer handoff.** On the **service host**, run:
+
+```
+PerformanceMonitor.Darling.Service.exe --print-viewer-connection
+```
+
+It decrypts the `network.role` credential and prints a paste-ready connection string plus the server certificate PEM. It prints a **live database password to STDOUT** — redirect it to an ACL'd file or pipe it to the clipboard (`... --print-viewer-connection | clip`); do not leave it in shell scrollback, CI logs, or a screenshare. On the **viewer machine**, set a minimal `darling.json` to bring-your-own mode and paste the string in verbatim (no viewer code path changes — the string is consumed as-is), then save the emitted PEM where `Root Certificate` points:
+
+```json
+{
+  "postgres": {
+    "managed": false,
+    "connectionString": "Host=192.168.1.205;Port=5641;Username=viewer;Password=...;Database=darling;Search Path=collect,config,public;SSL Mode=VerifyFull;Root Certificate=server.crt"
+  }
+}
+```
+
+- **Certificate placement + rotation.** Save the emitted PEM at the `Root Certificate` path on the viewer machine (a bare `server.crt` resolves beside the viewer's working directory; an absolute path also works). The cert **auto-regenerates if the bind IP changes** (so verify-full keeps working after a `listen` change) — when that happens, clients must re-run `--print-viewer-connection` and replace their saved cert. To rotate on demand, **delete `server.crt` and `server.key`** beside the data directory; the service regenerates the pair on its next start.
+- **Plaintext at rest on the viewer machine.** The pasted connection string holds the role password in cleartext in the laptop's `darling.json` (there is no client-side secret store yet). That is acceptable for the read-only `viewer` credential on a single-operator, ACL'd profile; if you use `role: "admin"`, treat that file as a secret and NTFS-ACL it to your account. DPAPI-encrypting the viewer's BYO connection string is future hardening, out of scope today.
+
+### MCP endpoint (assistant over the LAN)
+
+Add a `network` block to `mcp` (managed mode; `mcp.enabled` must be `true`):
+
+```json
+"mcp": {
+  "enabled": true,
+  "port": 5152,
+  "network": {
+    "listen": "192.168.1.205",
+    "allowFrom": "192.168.1.0/24",
+    "encryptedToken": "<output of --encrypt-password>"
+  }
+}
+```
+
+When `listen` is a network address **and** a token is present **and** `allowFrom` is a valid CIDR, the MCP host binds that interface behind two gates: a **required bearer token** (checked first, constant-time, no loopback exemption) and an **in-app CIDR check** on the remote address (loopback is always allowed, so local clients keep working). Any missing precondition keeps MCP loopback-only. Prefer `encryptedToken` (a DPAPI blob from `--encrypt-password`); a plaintext `token` works for dev but is warned. Set the same scoped firewall rule for the MCP port:
+
+```
+New-NetFirewallRule -DisplayName "Darling MCP" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5152 -RemoteAddress 192.168.1.0/24
+```
+
+**Blast radius, stated honestly.** The token gates the entire ~60-tool read surface *and* `analyze_server`, which opens **live outbound connections to your monitored SQL Servers** (the plan-fetcher). Treat the token as a high-value secret. The store-side identity is the least-privilege `mcp` role (read + only the two analysis-table INSERTs), so a token-holder can never reach the config pivot or the secret columns — but they can read everything collected and trigger analysis.
+
+**MCP has no TLS — the MITM control is a TLS reverse proxy.** A self-signed cert breaks real MCP clients, so the MCP endpoint is plain HTTP and the bearer token travels **cleartext on the segment**; an active on-path attacker (ARP spoof, rogue DHCP, compromised switch) could capture and replay it. The in-app CIDR bounds *who can route to* the port; it does **not** protect the wire. If your segment is not fully trusted, put a **TLS-terminating reverse proxy** in front of the MCP port and point clients at that — the named MITM control for this endpoint. (The store endpoint needs no such proxy: it has verify-full TLS built in.)
