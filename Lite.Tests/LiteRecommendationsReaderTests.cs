@@ -111,20 +111,53 @@ public class LiteRecommendationsReaderTests
     }
 
     [Fact]
-    public void MapFinding_ReadBackFinding_HasNoDrillDown_SoCopyPasteSqlIsNull()
+    public void MapFinding_ReadBackFinding_NoActionAndNoDrillDown_CopyPasteSqlIsNull()
     {
-        // The store read path does not populate DrillDown; the SQL generators need it, so a
-        // read-back DB_CONFIG finding (which WOULD produce ALTERs from a drill-down) yields no SQL.
+        // A read-back finding that carries neither a persisted RemediationAction NOR a drill-down
+        // (e.g. a pure incident) yields no command; the card renders advise-only.
         var item = LiteRecommendationsReader.MapFinding(Finding("DB_CONFIG", 1.0, database: "MyDb"), ServerName);
         Assert.Null(item.CopyPasteSql);
         Assert.Equal("MyDb", item.Database);
     }
 
     [Fact]
+    public void MapFinding_ReadBackFinding_WithPersistedAction_RendersTheCopyPasteCommand()
+    {
+        // The read-back path (no drill-down) now carries the BUILT action deserialized from
+        // remediation_action_json; MapFinding renders it via the SHARED renderer — the drift this fix
+        // kills. A safe DB_CONFIG action renders the bare ALTER, byte-identical to the Darling viewer.
+        var finding = Finding("DB_CONFIG", 1.0, database: "StackOverflow");
+        finding.Remediation = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff) });
+
+        var item = LiteRecommendationsReader.MapFinding(finding, ServerName);
+
+        Assert.Equal("ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;", item.CopyPasteSql);
+    }
+
+    [Fact]
+    public void MapFinding_PersistedActionWins_OverTheLiveDrillDownFallback()
+    {
+        // When BOTH a persisted action and a drill-down are present, the persisted-action render is the
+        // PRIMARY source (the read-back path) and the drill-down generator is only the fallback.
+        var finding = Finding("DB_CONFIG", 1.0, database: "StackOverflow");
+        finding.Remediation = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff) });
+        finding.DrillDown = new Dictionary<string, object>(); // present but empty
+
+        var item = LiteRecommendationsReader.MapFinding(finding, ServerName);
+
+        Assert.Equal("ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;", item.CopyPasteSql);
+    }
+
+    [Fact]
     public void MapFinding_WithDrillDown_PopulatesCopyPasteSqlFromSharedHelper()
     {
-        // Generate-now path: an enriched finding carries drill-down, so the SHARED FactRemediation
-        // helper produces the same copy-paste statement the Dashboard would.
+        // Generate-now fallback path: an enriched finding carries drill-down but NO persisted action,
+        // so the SHARED FactRemediation generator produces the same copy-paste statement the Dashboard
+        // would. (When an action IS persisted it wins; see MapFinding_PersistedActionWins.)
         var finding = Finding("PLAN_REGRESSION", 1.6, database: "MyDb");
         finding.DrillDown = new Dictionary<string, object>
         {
@@ -145,6 +178,185 @@ public class LiteRecommendationsReaderTests
 
         var item = LiteRecommendationsReader.MapFinding(finding, ServerName);
         Assert.Equal(expectedSql, item.CopyPasteSql);
+    }
+
+    // ── BuildCopyPasteSql: the persisted-action renderer for all seven remediation shapes ──────────
+    // Lite delegates to the SAME shared FactRemediation.RenderCopyPasteCommand the Darling viewer uses,
+    // so these mirror Darling's ViewerRecommendationsTests and prove Lite produces byte-identical
+    // commands (ZERO drift). Lite renders a COPYABLE command only — there is no in-app executor.
+
+    [Fact]
+    public void BuildCopyPasteSql_NullOrEmptyAction_ReturnsNull()
+    {
+        Assert.Null(LiteRecommendationsReader.BuildCopyPasteSql(null));
+
+        // An action with no renderable target (an empty force-plan list) yields null — nothing to run.
+        var empty = new RemediationAction("PLAN_REGRESSION", "force", Array.Empty<ForcePlanTarget>());
+        Assert.Null(LiteRecommendationsReader.BuildCopyPasteSql(empty));
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_ForcePlanTargets_RenderUseThenForcePlanPerDatabase()
+    {
+        // sp_query_store_force_plan is DATABASE-scoped, so each target is a standalone USE + EXEC block.
+        var action = new RemediationAction(
+            "PLAN_REGRESSION", "force",
+            new[]
+            {
+                new ForcePlanTarget("StackOverflow", QueryId: 42, PlanId: 7),
+                new ForcePlanTarget("Crazy]Name", QueryId: 100, PlanId: 200),
+            });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.Equal(
+            "USE [StackOverflow];" + Environment.NewLine +
+            "EXEC sys.sp_query_store_force_plan @query_id = 42, @plan_id = 7;" + Environment.NewLine +
+            Environment.NewLine +
+            "USE [Crazy]]Name];" + Environment.NewLine +
+            "EXEC sys.sp_query_store_force_plan @query_id = 100, @plan_id = 200;",
+            sql);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_ServerConfigTargets_RenderSpConfigureViaTheSharedBuilder()
+    {
+        var action = new RemediationAction(
+            "SERVER_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            ServerConfigTargets: new[]
+            {
+                new ServerConfigTarget(ServerConfigSetting.Maxdop, 0, 8),
+                new ServerConfigTarget(ServerConfigSetting.MaxServerMemory, 2147483647, 2147483647),
+            });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.Equal(
+            FactRemediation.BuildSpConfigureStatement(ServerConfigSetting.Maxdop, 8) +
+            Environment.NewLine + Environment.NewLine +
+            FactRemediation.BuildSpConfigureStatement(ServerConfigSetting.MaxServerMemory, 2147483647),
+            sql);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_RcsiTargets_RenderAlterWithTwoSidedDisclosureHeader()
+    {
+        // RCSI rides a DB_CONFIG action as a per-database RcsiTarget. It is DESTRUCTIVE, so the
+        // copy-paste prepends the two-sided risk disclosure as a comment header.
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            RcsiTargets: new[] { new RcsiTarget("StackOverflow", new RcsiInactionFigures(50, 3, 70)) });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.NotNull(sql);
+        Assert.StartsWith("/*", sql, StringComparison.Ordinal);
+        Assert.Contains("Risks of MAKING this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("Risks of NOT making this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("50 blocked-process events", sql!, StringComparison.Ordinal);
+        Assert.Contains("ALTER DATABASE [StackOverflow] SET READ_COMMITTED_SNAPSHOT ON;", sql!, StringComparison.Ordinal);
+        Assert.True(
+            sql!.IndexOf("*/", StringComparison.Ordinal) <
+            sql.IndexOf("ALTER DATABASE", StringComparison.Ordinal),
+            "the disclosure comment header must precede the ALTER statement");
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_ClearPlanTargets_RenderResolveAndFreeScriptWithDisclosureHeader()
+    {
+        // Clear-plan is DESTRUCTIVE: live-resolve the currently-cached plan handle(s) for the abnormal
+        // query hash and free each — with the two-sided disclosure header.
+        var action = new RemediationAction(
+            "CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>(),
+            ClearPlanTargets: new[]
+            {
+                new ClearPlanTarget(
+                    "StackOverflow", "0xABCDEF0123456789",
+                    CurrentCpuPerExecMs: 45.0, BaselineCpuPerExecMs: 9.0, AnomalyRatio: 5.0),
+            },
+            ClearPlanFigures: new ClearPlanFigures(45.0, 9.0, 5.0, 62, false, false));
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.NotNull(sql);
+        Assert.StartsWith("/*", sql, StringComparison.Ordinal);
+        Assert.Contains("Risks of MAKING this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("Risks of NOT making this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("sys.dm_exec_query_stats", sql!, StringComparison.Ordinal);
+        Assert.Contains("0xABCDEF0123456789", sql!, StringComparison.Ordinal);
+        Assert.Contains("DBCC FREEPROCCACHE(@plan_handle);", sql!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_DbConfigWithRcsi_RendersSafeBareThenRcsiWithHeader()
+    {
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff) },
+            RcsiTargets: new[] { new RcsiTarget("StackOverflow", new RcsiInactionFigures(50, 3, 70)) });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.NotNull(sql);
+        Assert.StartsWith("ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;", sql, StringComparison.Ordinal);
+        Assert.Contains("Risks of MAKING this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("ALTER DATABASE [StackOverflow] SET READ_COMMITTED_SNAPSHOT ON;", sql!, StringComparison.Ordinal);
+        Assert.True(
+            sql!.IndexOf("AUTO_SHRINK OFF", StringComparison.Ordinal) <
+            sql.IndexOf("/*", StringComparison.Ordinal),
+            "the bare safe fix must precede the RCSI disclosure header");
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_DbConfigTargets_RenderAlterDatabaseSetPerTarget()
+    {
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[]
+            {
+                new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff),
+                new DbConfigTarget("Crazy]Name", DbConfigSetting.PageVerifyChecksum),
+            });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.Equal(
+            "ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;" + Environment.NewLine +
+            "ALTER DATABASE [Crazy]]Name] SET PAGE_VERIFY CHECKSUM;",
+            sql);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_MissingIndexTargets_RenderTheSuggestedCreateVerbatim()
+    {
+        var action = new RemediationAction(
+            "MISSING_INDEX", "advise", Array.Empty<ForcePlanTarget>(),
+            MissingIndexTargets: new[]
+            {
+                new MissingIndexTarget("dbo.Posts", 92.5, "CREATE INDEX IX_Posts_1 ON dbo.Posts (OwnerUserId);"),
+                new MissingIndexTarget("dbo.Users", 80.0, "CREATE INDEX IX_Users_1 ON dbo.Users (Reputation);"),
+            });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        Assert.Equal(
+            "CREATE INDEX IX_Posts_1 ON dbo.Posts (OwnerUserId);" + Environment.NewLine +
+            "CREATE INDEX IX_Users_1 ON dbo.Users (Reputation);",
+            sql);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_FileGrowthTargets_RenderModifyFileViaTheSharedBuilder()
+    {
+        var target = new FileGrowthTarget("StackOverflow", "SO_data", CurrentSizeMb: 90000, CurrentGrowthPercent: 10, RecommendedGrowthMb: 1024);
+        var action = new RemediationAction(
+            "FILE_AUTOGROWTH_PERCENT", "set", Array.Empty<ForcePlanTarget>(),
+            FileGrowthTargets: new[] { target });
+
+        var sql = LiteRecommendationsReader.BuildCopyPasteSql(action);
+
+        // Byte-identical to the shared renderer the drill-down / Dashboard / Darling reader use.
+        Assert.Equal(FactRemediation.BuildModifyFileStatement("StackOverflow", "SO_data", 1024), sql);
     }
 
     [Fact]

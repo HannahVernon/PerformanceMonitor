@@ -17,19 +17,23 @@ namespace PerformanceMonitorLite.Analysis.Recommendations;
 /// <summary>
 /// The data layer for the Lite Recommendations surface (WS1c). Reads the engine findings a
 /// server persisted to DuckDB (via the existing <see cref="FindingStore.GetRecentFindingsAsync"/>
-/// read path — no new schema, no new SQL) and maps each to an advise-only
-/// <see cref="LiteRecommendationItem"/>. This mirrors the Dashboard's
+/// read path) and maps each to a <see cref="LiteRecommendationItem"/>. This mirrors the Dashboard's
 /// <c>RecommendationsReader</c> logic — engine severity banding and latest-batch-only — but is
-/// Lite-contained and ADVISE-ONLY: there is no legacy critical_issues store in Lite, no de-dupe
-/// across producers, and no <c>RemediationAction</c> / Apply path.
+/// Lite-contained: there is no legacy critical_issues store in Lite and no de-dupe across producers.
+/// Lite produces a COPYABLE remediation command (no in-app Apply/execute path) — the operator runs it
+/// against their own direct SQL Server connection.
 ///
 /// <para>
 /// Advice prose comes from the SHARED <see cref="FactAdvice"/> table (keyed on the finding's root
-/// fact key, which IS read back), and copy-paste T-SQL from the SHARED
-/// <see cref="FactRemediation"/> helpers — the same sources the Dashboard cards use, so Lite and
-/// Dashboard advice stay consistent. Note Lite does not persist a finding's ephemeral drill-down
-/// detail, and the SQL generators read that detail, so on the read-back path
-/// <see cref="LiteRecommendationItem.CopyPasteSql"/> is typically null and cards render advise-only.
+/// fact key, which IS read back). The copy-paste T-SQL comes from the finding's PERSISTED
+/// <see cref="PerformanceMonitor.Analysis.RemediationAction"/> (built at analysis time from the
+/// drill-down, serialized into <c>remediation_action_json</c>, deserialized on read) rendered by the
+/// SHARED <see cref="FactRemediation.RenderCopyPasteCommand"/> — the SAME source the Darling viewer's
+/// Copy-fix delegates to, so Lite and Darling produce byte-identical commands for all seven remediation
+/// shapes (the two destructive ones carry a two-sided risk-disclosure header). The live
+/// <see cref="FactRemediation.GenerateForFinding"/> path is kept only as a fallback for a finding still
+/// carrying its ephemeral drill-down (no persisted action). Findings with no execution shape carry a
+/// null action and render advise-only.
 /// </para>
 ///
 /// <para>
@@ -130,10 +134,13 @@ public sealed class LiteRecommendationsReader
     }
 
     /// <summary>
-    /// Maps one engine <see cref="AnalysisFinding"/> to a single advise-only
-    /// <see cref="LiteRecommendationItem"/>. Advice comes from <see cref="FactAdvice"/> for the
-    /// root fact key; the copy-paste SQL comes from <see cref="FactRemediation.GenerateForFinding"/>
-    /// (null on Lite's read-back path, where the finding has no drill-down — see the class remarks).
+    /// Maps one engine <see cref="AnalysisFinding"/> to a single <see cref="LiteRecommendationItem"/>.
+    /// Advice comes from <see cref="FactAdvice"/> for the root fact key; the copy-paste command comes
+    /// PRIMARILY from the finding's persisted <see cref="AnalysisFinding.Remediation"/> rendered by the
+    /// shared <see cref="BuildCopyPasteSql"/> (the read-back path — the finding has no drill-down but
+    /// carries the built action), falling back to the live <see cref="FactRemediation.GenerateForFinding"/>
+    /// for a finding still carrying its ephemeral drill-down. Null when neither applies — the card then
+    /// renders advise-only.
     /// </summary>
     internal static LiteRecommendationItem MapFinding(AnalysisFinding finding, string serverName)
     {
@@ -149,13 +156,30 @@ public sealed class LiteRecommendationsReader
             Database = string.IsNullOrEmpty(finding.DatabaseName) ? null : finding.DatabaseName,
             Title = !string.IsNullOrEmpty(advice?.Headline) ? advice!.Headline : finding.RootFactKey,
             AdviceText = ComposeAdvice(advice),
-            CopyPasteSql = NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
+            // Persisted-action render is the PRIMARY source (mirrors the Darling viewer); the live
+            // drill-down generator is only a fallback when no action was persisted (see class remarks).
+            CopyPasteSql = NullIfEmpty(BuildCopyPasteSql(finding.Remediation))
+                        ?? NullIfEmpty(FactRemediation.GenerateForFinding(finding)),
             IncidentId = finding.IncidentId,
             ServerName = serverName ?? string.Empty,
             WindowStartUtc = AsUtc(finding.TimeRangeStart),
             WindowEndUtc = AsUtc(finding.TimeRangeEnd)
         };
     }
+
+    /// <summary>
+    /// Rebuilds the copy-paste T-SQL for a card from the finding's PERSISTED
+    /// <see cref="RemediationAction"/> by delegating to the shared
+    /// <see cref="FactRemediation.RenderCopyPasteCommand"/> — the SAME renderer the Darling viewer's
+    /// Copy-fix uses, so a Lite card and a Darling card produce byte-identical commands for all seven
+    /// remediation shapes (force-plan, clear-plan, server-config, RCSI, safe DB-config, file-growth,
+    /// missing-index; the two destructive shapes carry a two-sided risk-disclosure comment header).
+    /// Lite has NO in-app executor — this is a copyable command only. A thin <c>internal</c> seam over
+    /// the shared renderer so the reader can be unit-tested directly and cannot drift from the viewer.
+    /// Null when the action is null or carries no renderable target.
+    /// </summary>
+    internal static string? BuildCopyPasteSql(RemediationAction? action) =>
+        FactRemediation.RenderCopyPasteCommand(action);
 
     /// <summary>
     /// Maps an engine finding's <c>double</c> severity (0–~2.0) onto the canonical band. Cutoffs

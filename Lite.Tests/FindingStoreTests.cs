@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
+using PerformanceMonitorLite.Analysis.Recommendations;
 using PerformanceMonitorLite.Database;
 using Xunit;
 
@@ -348,6 +350,202 @@ public class FindingStoreTests : IDisposable
 
         // Both stories survive here — the other server's mute must not reach this server.
         Assert.Equal(2, saved.Count);
+    }
+
+    // ── Persisted RemediationAction round-trip (the Lite copy-paste command parity fix) ──────────
+
+    [Fact]
+    public async Task TwoPhaseWrite_PersistsRemediationAction_AndRendersCommandOnReadBack()
+    {
+        // Mirrors the AnalysisService pipeline: FilterMutedFindingsAsync -> attach the BUILT action ->
+        // InsertFindingsAsync persists remediation_action_json. The read-back deserializes it via the
+        // shared serializer, and the shared renderer turns it into the copy-paste command — proving the
+        // typed action survives the DuckDB round-trip and Lite produces a runnable command from storage.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var context = TestDataSeeder.CreateTestContext();
+
+        var stories = new List<AnalysisStory>
+        {
+            new AnalysisStory
+            {
+                RootFactKey = "DB_CONFIG",
+                RootFactValue = 1.2,
+                Severity = 1.2,
+                Confidence = 0.9,
+                Category = "config",
+                Path = ["DB_CONFIG"],
+                StoryPath = "DB_CONFIG",
+                StoryPathHash = "reco_action_hash",
+                StoryText = "auto-shrink is on",
+                DatabaseName = "StackOverflow",
+                FactCount = 1
+            }
+        };
+
+        // Phase 1: filter (no insert yet).
+        var survivors = await store.FilterMutedFindingsAsync(stories, context);
+        var survivor = Assert.Single(survivors);
+        Assert.Null(survivor.Remediation); // not built yet
+
+        // Attach the BUILT action between the phases, then insert.
+        survivor.Remediation = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff) });
+        await store.InsertFindingsAsync(survivors, context);
+
+        // Read back: the action is hydrated and renders the byte-identical command.
+        var readBack = await store.GetLatestFindingsAsync(context.ServerId);
+        var finding = Assert.Single(readBack);
+        Assert.NotNull(finding.Remediation);
+        Assert.Equal("DB_CONFIG", finding.Remediation!.FactKey);
+        Assert.Equal(
+            "ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;",
+            LiteRecommendationsReader.BuildCopyPasteSql(finding.Remediation));
+    }
+
+    [Fact]
+    public async Task SaveFindings_WithNoAction_PersistsNullRemediation_ReadsBackNull()
+    {
+        // The single-pass SaveFindingsAsync wrapper attaches no action; the column persists NULL and
+        // reads back as a null Remediation (no command) — the pre-fix behaviour for action-less rows.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var context = TestDataSeeder.CreateTestContext();
+
+        await store.SaveFindingsAsync(CreateTestStories(), context);
+
+        var readBack = await store.GetLatestFindingsAsync(context.ServerId);
+        Assert.Equal(2, readBack.Count);
+        Assert.All(readBack, f => Assert.Null(f.Remediation));
+        Assert.All(readBack, f => Assert.Null(LiteRecommendationsReader.BuildCopyPasteSql(f.Remediation)));
+    }
+
+    // ── Analysis-schema upgrade path (v3 -> v4 adds remediation_action_json without data loss) ──────
+
+    [Fact]
+    public async Task AnalysisSchemaUpgrade_FromV3_AddsRemediationColumn_PreservingExistingRows()
+    {
+        // Simulate an EXISTING Lite DB at analysis-schema v3 (the incident_id era, no
+        // remediation_action_json). InitializeAnalysisSchemaAsync must ALTER the column in via the
+        // v4 migration WITHOUT dropping the pre-existing finding row, then a fresh finding with an
+        // action persists + reads back — the real upgrade path an existing user hits.
+        await CreateLegacyV3AnalysisSchemaAsync(legacyFindingId: 4242);
+
+        // Run the upgrade.
+        await _duckDb.InitializeAnalysisSchemaAsync();
+
+        // The column now exists.
+        Assert.True(await ColumnExistsAsync("analysis_findings", "remediation_action_json"),
+            "v4 migration should add remediation_action_json");
+        // The schema version advanced to v4.
+        Assert.Equal(AnalysisSchema.CurrentVersion, await ReadAnalysisSchemaVersionAsync());
+        // The legacy row survived (no data loss) and reads back with a null action.
+        var store = new FindingStore(_duckDb);
+        var afterUpgrade = await store.GetLatestFindingsAsync(TestDataSeeder.TestServerId);
+        var legacy = Assert.Single(afterUpgrade);
+        Assert.Equal(4242, legacy.FindingId);
+        Assert.Null(legacy.Remediation);
+
+        // Idempotent: running the init again does not throw or regress the version.
+        await _duckDb.InitializeAnalysisSchemaAsync();
+        Assert.Equal(AnalysisSchema.CurrentVersion, await ReadAnalysisSchemaVersionAsync());
+    }
+
+    /// <summary>
+    /// Builds an analysis_findings table in the OLD (v3) shape — no remediation_action_json — with
+    /// analysis_schema_version = 3 and one pre-existing finding row, exactly what an un-upgraded Lite
+    /// DB looks like before this change.
+    /// </summary>
+    private async Task CreateLegacyV3AnalysisSchemaAsync(long legacyFindingId)
+    {
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        // v3 DDL: every column through incident_id, but WITHOUT remediation_action_json.
+        await ExecAsync(connection, @"
+CREATE TABLE analysis_findings (
+    finding_id BIGINT PRIMARY KEY,
+    analysis_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    database_name VARCHAR,
+    time_range_start TIMESTAMP,
+    time_range_end TIMESTAMP,
+    severity DOUBLE PRECISION NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    category VARCHAR NOT NULL,
+    story_path VARCHAR NOT NULL,
+    story_path_hash VARCHAR NOT NULL,
+    story_text VARCHAR NOT NULL,
+    root_fact_key VARCHAR NOT NULL,
+    root_fact_value DOUBLE PRECISION,
+    leaf_fact_key VARCHAR,
+    leaf_fact_value DOUBLE PRECISION,
+    fact_count INTEGER NOT NULL,
+    incident_id VARCHAR
+)");
+        await ExecAsync(connection, "CREATE TABLE analysis_schema_version (version INTEGER NOT NULL)");
+        await ExecAsync(connection, "INSERT INTO analysis_schema_version (version) VALUES (3)");
+
+        using var insert = connection.CreateCommand();
+        insert.CommandText = @"
+INSERT INTO analysis_findings
+    (finding_id, analysis_time, server_id, server_name, database_name,
+     time_range_start, time_range_end, severity, confidence, category,
+     story_path, story_path_hash, story_text,
+     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)";
+        insert.Parameters.Add(new DuckDBParameter { Value = legacyFindingId });
+        insert.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow });
+        insert.Parameters.Add(new DuckDBParameter { Value = TestDataSeeder.TestServerId });
+        insert.Parameters.Add(new DuckDBParameter { Value = "SQL2022" });
+        insert.Parameters.Add(new DuckDBParameter { Value = "StackOverflow" });
+        insert.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow.AddHours(-4) });
+        insert.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow });
+        insert.Parameters.Add(new DuckDBParameter { Value = 1.0 });
+        insert.Parameters.Add(new DuckDBParameter { Value = 0.9 });
+        insert.Parameters.Add(new DuckDBParameter { Value = "waits" });
+        insert.Parameters.Add(new DuckDBParameter { Value = "LEGACY" });
+        insert.Parameters.Add(new DuckDBParameter { Value = "legacy_v3_hash" });
+        insert.Parameters.Add(new DuckDBParameter { Value = "legacy story" });
+        insert.Parameters.Add(new DuckDBParameter { Value = "LEGACY" });
+        insert.Parameters.Add(new DuckDBParameter { Value = 1.0 });
+        insert.Parameters.Add(new DuckDBParameter { Value = DBNull.Value });
+        insert.Parameters.Add(new DuckDBParameter { Value = DBNull.Value });
+        insert.Parameters.Add(new DuckDBParameter { Value = 1 });
+        insert.Parameters.Add(new DuckDBParameter { Value = "legacy_incident" });
+        await insert.ExecuteNonQueryAsync();
+    }
+
+    private async Task<bool> ColumnExistsAsync(string table, string column)
+    {
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2";
+        cmd.Parameters.Add(new DuckDBParameter { Value = table });
+        cmd.Parameters.Add(new DuckDBParameter { Value = column });
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync()) == 1;
+    }
+
+    private async Task<int> ReadAnalysisSchemaVersionAsync()
+    {
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(MAX(version), 0) FROM analysis_schema_version";
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
+    }
+
+    private static async Task ExecAsync(DuckDBConnection connection, string sql)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync();
     }
 
     /// <summary>Reads the stored server_id for a muted story hash (null when persisted as NULL).</summary>
