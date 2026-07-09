@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds pg-runtime.zip - the bundled PostgreSQL 17 + TimescaleDB runtime that the Darling
+  Builds pg-runtime.zip - the bundled PostgreSQL 18 + TimescaleDB runtime that the Darling
   service unpacks, initializes, and manages on first run (see DarlingManagedPostgres).
 
 .DESCRIPTION
@@ -28,10 +28,10 @@
   are cheap and a corrupted cache self-heals. Extract/assemble directories are rebuilt from
   scratch every run.
 
-  HASH PROVENANCE: the SHA256 pins below were computed 2026-07-02 from artifacts downloaded
-  from the exact URLs pinned here (EDB zip 333,925,750 bytes; TimescaleDB zip 7,792,491 bytes) -
-  the same artifacts that built this repo's live managed-Postgres dev fixture. Bumping a version
-  means updating URL + hash TOGETHER, from a fresh download you hashed yourself.
+  HASH PROVENANCE: the SHA256 pins below were computed 2026-07-08 from artifacts downloaded
+  from the exact URLs pinned here (EDB PG18.4 zip 337,444,127 bytes; TimescaleDB 2.28.1-for-PG18
+  zip 7,794,443 bytes) - the same artifacts that built the DARLING01 managed-Postgres deployment.
+  Bumping a version means updating URL + hash TOGETHER, from a fresh download you hashed yourself.
 
 .PARAMETER OutputDirectory
   Where pg-runtime.zip lands. Defaults to Darling\artifacts (gitignored). Packaging copies or
@@ -72,13 +72,13 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 
 # ---- Pinned artifacts (update URL + SHA256 together; see HASH PROVENANCE above) -------------
-$pgVersion = '17.10'
-$pgUrl = 'https://get.enterprisedb.com/postgresql/postgresql-17.10-1-windows-x64-binaries.zip'
-$pgSha256 = 'F9AAFCA58E7026A1EF2CAEEE711ACF761671E57904D430ADC85F468374F5A821'
+$pgVersion = '18.4'
+$pgUrl = 'https://get.enterprisedb.com/postgresql/postgresql-18.4-1-windows-x64-binaries.zip'
+$pgSha256 = '7EFFE34C0BF89027B3F171447D351CBC460F4566C8D0F643DAEC67F140787858'
 
 $tsVersion = '2.28.1'
-$tsUrl = 'https://github.com/timescale/timescaledb/releases/download/2.28.1/timescaledb-postgresql-17-windows-amd64.zip'
-$tsSha256 = '0B3C31A4A45B2F623E58D25F73A5980093BB920960077B369284D0B9049CF26A'
+$tsUrl = 'https://github.com/timescale/timescaledb/releases/download/2.28.1/timescaledb-postgresql-18-windows-amd64.zip'
+$tsSha256 = '533D1554F3EDFF1E0E86087E8A76A9EEFF253A9FEE17392FC17FAC1C85F7CF0F'
 # ----------------------------------------------------------------------------------------------
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -143,8 +143,8 @@ Write-Host "PostgreSQL $pgVersion binaries:"
 $pgZip = Join-Path $downloadDirectory "postgresql-$pgVersion-windows-x64-binaries.zip"
 Get-VerifiedDownload -Url $pgUrl -ExpectedSha256 $pgSha256 -Destination $pgZip
 
-Write-Host "TimescaleDB $tsVersion (PG17, Windows x64):"
-$tsZip = Join-Path $downloadDirectory "timescaledb-$tsVersion-postgresql-17-windows-amd64.zip"
+Write-Host "TimescaleDB $tsVersion (PG18, Windows x64):"
+$tsZip = Join-Path $downloadDirectory "timescaledb-$tsVersion-postgresql-18-windows-amd64.zip"
 Get-VerifiedDownload -Url $tsUrl -ExpectedSha256 $tsSha256 -Destination $tsZip
 
 Write-Host "Extracting..."
@@ -171,6 +171,23 @@ foreach ($keep in @('bin', 'lib', 'share')) {
     Copy-Item -Recurse -Path (Join-Path $pgSource $keep) -Destination (Join-Path $pgsqlTarget $keep)
 }
 
+# Bundle the Microsoft Visual C++ runtime beside the PG binaries. EDB's PostgreSQL build links the
+# MSVC runtime, which a clean Windows Server does NOT ship - without these, postgres.exe/initdb.exe
+# fail to launch with 0xC0000135 (STATUS_DLL_NOT_FOUND) and managed mode never starts (verified on a
+# fresh Windows Server 2022). App-local deployment (DLLs next to postgres.exe) keeps pg-runtime.zip
+# self-sufficient on a bare OS, matching Darling's zero-download deploy model. Sourced from the build
+# machine's System32 (the redistributable runtime; CI runners and dev boxes both have it) - fail hard
+# if absent so a broken bundle never ships.
+$vcRuntimeDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+$binTarget = Join-Path $pgsqlTarget 'bin'
+foreach ($dll in $vcRuntimeDlls) {
+    $vcSource = Join-Path $env:SystemRoot "System32\$dll"
+    if (-not (Test-Path $vcSource)) {
+        throw "MSVC runtime $dll not found at $vcSource - install the Visual C++ Redistributable on the build machine; pg-runtime.zip needs it beside postgres.exe."
+    }
+    Copy-Item -Path $vcSource -Destination $binTarget
+}
+
 $extensionTarget = Join-Path $pgsqlTarget 'share\extension'
 New-Item -ItemType Directory -Force -Path $extensionTarget | Out-Null
 Copy-Item -Path (Join-Path $tsSource 'timescaledb*.dll') -Destination (Join-Path $pgsqlTarget 'lib')
@@ -183,6 +200,9 @@ $requiredFiles = @(
     'bin\pg_ctl.exe',
     'bin\postgres.exe',
     'bin\libpq.dll',
+    'bin\vcruntime140.dll',
+    'bin\vcruntime140_1.dll',
+    'bin\msvcp140.dll',
     'lib\timescaledb.dll',
     "lib\timescaledb-$tsVersion.dll",
     "lib\timescaledb-tsl-$tsVersion.dll",
