@@ -144,6 +144,37 @@ public sealed class DarlingMcpDataTools
         }
     }
 
+    [McpServerTool(Name = "get_wait_types"), Description("Lists the distinct wait types observed on a server in the given time period, heaviest first. Useful for discovering which exact wait type to drill into with get_wait_trend.")]
+    public static async Task<string> GetWaitTypes(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history. Default 24.")] int hours_back = 24)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var types = await DarlingDataReader.GetDistinctWaitTypesAsync(
+                postgres, resolved.Value.ServerId, now.AddHours(-hours_back), now);
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                wait_types = types
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_wait_types", ex);
+        }
+    }
+
     [McpServerTool(Name = "get_wait_trend"), Description("Gets a time-series trend for a specific wait type, showing how wait time changes over time. Use get_wait_stats first to discover the dominant wait types.")]
     public static async Task<string> GetWaitTrend(
         NpgsqlDataSource postgres,

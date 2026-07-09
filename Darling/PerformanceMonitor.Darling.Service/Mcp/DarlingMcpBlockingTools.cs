@@ -257,4 +257,66 @@ public sealed class DarlingMcpBlockingTools
             return McpHelpers.FormatError("get_blocked_process_xml", ex);
         }
     }
+
+    [McpServerTool(Name = "get_blocking_trend"), Description("Gets a time-series of blocking event counts per minute over time (blocked process reports, falling back to the always-on DMV blocking snapshot). Useful for identifying patterns (e.g., blocking spikes during batch jobs) or confirming whether blocking is a new, worsening, or resolved issue.")]
+    public static async Task<string> GetBlockingTrend(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history. Default 24.")] int hours_back = 24)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var points = await DarlingBlockingTrendReader.GetBlockingTrendAsync(
+                postgres, resolved.Value.ServerId, now.AddHours(-hours_back), now);
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                trend = points.Select(p => new { time = p.Time.ToString("o"), count = p.Count })
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_blocking_trend", ex);
+        }
+    }
+
+    [McpServerTool(Name = "get_deadlock_trend"), Description("Gets a time-series of deadlock event counts per minute over time. Useful for identifying patterns or confirming whether deadlock issues are new, worsening, or resolved.")]
+    public static async Task<string> GetDeadlockTrend(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history. Default 24.")] int hours_back = 24)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var points = await DarlingBlockingTrendReader.GetDeadlockTrendAsync(
+                postgres, resolved.Value.ServerId, now.AddHours(-hours_back), now);
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                trend = points.Select(p => new { time = p.Time.ToString("o"), count = p.Count })
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_deadlock_trend", ex);
+        }
+    }
 }
