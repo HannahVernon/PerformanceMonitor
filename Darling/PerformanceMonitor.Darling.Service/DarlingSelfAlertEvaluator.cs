@@ -22,10 +22,11 @@ namespace PerformanceMonitor.Darling.Service;
 /// <summary>
 /// Stage 4 of the Darling control plane — the SERVICE's self-alerts: the "is my collection actually
 /// working" conditions that matter most for an unattended 24/7 headless service where nobody is
-/// watching a dashboard. Three conditions, each a reframe of a Dashboard health check onto Darling's
-/// own signals, all routed through the SAME <see cref="IAlertDeliverer"/> the shared alert engine
-/// uses (so they inherit its email/webhook delivery, per-fingerprint delivery cooldown, and restart
-/// replay) and the SAME <c>config_alert_log</c> history store:
+/// watching a dashboard. Four conditions — the first three reframe a Dashboard health check onto Darling's
+/// own signals; the fourth (Store Disk Pressure) is net-new and guards the service's OWN store — all routed
+/// through the SAME <see cref="IAlertDeliverer"/> the shared alert engine uses (so they inherit its
+/// email/webhook delivery, per-fingerprint delivery cooldown, and restart replay) and the SAME
+/// <c>config_alert_log</c> history store:
 /// <list type="number">
 /// <item><b>Collection Stopped / collector failure</b> — the server's <c>collection_log</c> shows no
 ///   SUCCESS within a staleness window OR the last N runs all failed (reframes the Dashboard's
@@ -39,15 +40,22 @@ namespace PerformanceMonitor.Darling.Service;
 /// <item><b>Capture Down</b> — a missing/denied blocking-deadlock XE session, surfaced from the
 ///   <c>SESSION_MISSING</c> collection_log status the tolerant XE readers now write (reframes the
 ///   Dashboard's #1086 "Capture Down", <c>NocHealth.GetMissingCaptureSessionsAsync</c>).</item>
+/// <item><b>Store Disk Pressure</b> — the volume hosting the Darling store is nearly full. Unlike the
+///   other three (per monitored server), this is a FLEET-level condition polled once per sweep from the
+///   store itself (<c>pg_database_size</c> for context) and the store volume's free space: when a headless
+///   service's disk fills, collection and every write stop for the WHOLE fleet, and nobody is watching. The
+///   flagship-appropriate maintenance backstop the daily time-based purge otherwise lacks — deliberately
+///   NOT Lite's 512MB archive-then-reset (Postgres has no single-file INSERT cliff, and a blanket reset
+///   would nuke every tenant of the shared store).</item>
 /// </list>
 /// Each condition is EDGE-TRIGGERED (in-memory active flag + the shared alert cooldown for the polled
 /// conditions; a per-server connection state machine for the connect edge) so it fires once on the
 /// transition, not every sweep — exactly the Dashboard's <c>_activeXAlert</c>/<c>_lastXAlert</c> shape.
-/// On recovery a "…Resumed"/"…Restored" row is written to alert history (closing the audit loop the
-/// same way the engine's resolution callback now does — see <see cref="BuildResolutionRecord"/>).
+/// On recovery a "…Resumed"/"…Restored"/"…Resolved" row is written to alert history (closing the audit loop
+/// the same way the engine's resolution callback now does — see <see cref="BuildResolutionRecord"/>).
 /// Gated on the master <c>alerts.enabled</c> switch — plus, for the connect edge, the V20
 /// <c>notify_connection_changes</c> toggle (Lite's <c>App.NotifyConnectionChanges</c> twin); the
-/// collection-stopped / capture-down thresholds stay sensible hardcoded defaults.
+/// collection-stopped / capture-down / disk-pressure thresholds stay sensible hardcoded defaults.
 /// </summary>
 internal sealed class DarlingSelfAlertEvaluator
 {
@@ -62,6 +70,15 @@ internal sealed class DarlingSelfAlertEvaluator
        faster than the staleness backstop when a connected server's collectors are erroring on every
        cycle. 10 spans a couple of minutes of total failure across the frequently-scheduled collectors. */
     internal const int ConsecutiveFailureThreshold = 10;
+
+    /* Store Disk Pressure fires when the store volume drops below this percent free — a percentage (not an
+       absolute floor) so it scales from a small managed box to a large fleet disk; 10% is the universal DBA
+       "act now" threshold for a database volume, and mirrors the shared engine's target-server low-disk
+       percent (LowDiskThresholdPercent). Percent-only by design (defaults over speculative config — a GB
+       floor is a trivial follow-up if an operator ever wants one). The condition no-ops when free space is
+       undeterminable (a remote BYO store), so it never false-alarms; the managed store's own volume is the
+       case it exists to protect. */
+    internal const double DiskFreeWarnPercent = 10.0;
 
     private readonly IAlertEngineSettings _settings;
     private readonly IAlertDeliverer _deliverer;
@@ -86,6 +103,16 @@ internal sealed class DarlingSelfAlertEvaluator
     private readonly ConcurrentDictionary<string, bool> _activeCaptureDown = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
     private readonly ConcurrentDictionary<string, ConnectionState> _connectionState = new();
+
+    /* Store Disk Pressure edge state. FLEET-level (one shared store, not per server), so it is keyed by a
+       single fixed sentinel (DiskKey) rather than a serverId — never dropped by Forget (that is per-server).
+       Dictionaries (not a plain bool) purely to reuse the same TryRemove-recovery + CooldownElapsed helpers
+       the per-server conditions use. */
+    private readonly ConcurrentDictionary<string, bool> _activeDiskPressure = new();
+    private readonly ConcurrentDictionary<string, DateTime> _lastDiskPressureAlert = new();
+
+    /// <summary>The fixed key for the fleet-level Store Disk Pressure edge (not a real server).</summary>
+    private const string DiskKey = "store";
 
     /* Whether the service has successfully connected to this server at least once THIS process-run. Guards
        collection-stopped: unlike the Dashboard (whose target-side collection_log keeps filling regardless of
@@ -346,6 +373,113 @@ internal sealed class DarlingSelfAlertEvaluator
         /* previous == Unknown → baseline only (no fire). */
     }
 
+    /* ---------------- store disk pressure (fleet-level, polled) ---------------- */
+
+    /// <summary>
+    /// Pure disk-pressure decision: the store volume is under pressure when its FREE space is below
+    /// <see cref="DiskFreeWarnPercent"/> of the volume total. No I/O, so it pins directly. A non-positive
+    /// total is treated as "can't tell" (false — the caller also guards this). The percentage scales across
+    /// disk sizes; see the constant for why it is percent-only.
+    /// </summary>
+    internal static bool IsDiskPressure(long freeBytes, long totalBytes, out string reason)
+    {
+        if (totalBytes <= 0)
+        {
+            reason = "";
+            return false;
+        }
+
+        double percentFree = (double)freeBytes / totalBytes * 100.0;
+        if (percentFree < DiskFreeWarnPercent)
+        {
+            reason = $"The monitor store's disk volume has only {percentFree.ToString("0.#", CultureInfo.InvariantCulture)}% free ({FormatGb(freeBytes)} of {FormatGb(totalBytes)}).";
+            return true;
+        }
+
+        reason = "";
+        return false;
+    }
+
+    /// <summary>
+    /// The isolating entry point the worker's disk-pressure sweep calls — the fleet-level twin of
+    /// <see cref="EvaluateStoreAlertsAsync"/> for the store-polled conditions. Wraps
+    /// <see cref="ApplyDiskPressureAsync"/> in the SAME failure isolation the sibling store-alerts use, so a
+    /// throwing seam — most notably the pre-deliver mute check (<c>_isAlertMuted</c> → a mute rule's
+    /// <c>Matches</c>), which unlike Deliver/RecordResolution is NOT internally isolated — can never propagate
+    /// out of the (otherwise un-guarded) collection sweep loop and stop collection for the whole fleet.
+    /// Cancellation still propagates.
+    /// </summary>
+    public async Task EvaluateDiskPressureAsync(
+        long? freeBytes, long? totalBytes, long? storeSizeBytes, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ApplyDiskPressureAsync(freeBytes, totalBytes, storeSizeBytes, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Store disk-pressure self-alert failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Edge-applies the fleet-level Store Disk Pressure condition from a store-volume sample: fire once on
+    /// entry, re-fire only after the alert cooldown while it persists, and write ONE "Store Disk Pressure
+    /// Resolved" history row on recovery (mirrors the per-server conditions' edge shape). Gated on the master
+    /// alerts switch. NO-OPS when free/total are null — a remote BYO store whose volume the service can't see —
+    /// so it never false-alarms; the managed store's own volume is what it exists to protect.
+    /// <paramref name="storeSizeBytes"/> (pg_database_size) is context for the alert text only, never the
+    /// trigger. Internal (tested directly, like the sibling Apply methods); the worker calls the isolating
+    /// <see cref="EvaluateDiskPressureAsync"/>. Testable directly with a recording deliverer + a controllable clock.
+    /// </summary>
+    internal async Task ApplyDiskPressureAsync(
+        long? freeBytes, long? totalBytes, long? storeSizeBytes, CancellationToken cancellationToken)
+    {
+        if (!_settings.AlertsEnabled)
+        {
+            return;
+        }
+
+        /* Can't determine the store volume's free space (remote BYO store, or the drive was not ready) — no
+           signal, so neither fire nor clear a standing alert. */
+        if (freeBytes is not long free || totalBytes is not long total || total <= 0)
+        {
+            return;
+        }
+
+        var now = _utcNow();
+        bool pressure = IsDiskPressure(free, total, out var reason);
+
+        if (pressure)
+        {
+            _activeDiskPressure[DiskKey] = true;
+            if (CooldownElapsed(_lastDiskPressureAlert, DiskKey, now))
+            {
+                _lastDiskPressureAlert[DiskKey] = now;
+                var storeText = storeSizeBytes is long size ? $" The store currently holds {FormatGb(size)}." : "";
+                await FireAsync(
+                    DiskKey, "Monitor Store", "Store Disk Pressure", reason,
+                    $"{DiskFreeWarnPercent.ToString("0.#", CultureInfo.InvariantCulture)}% free",
+                    detail: reason + storeText + " When the store volume fills, collection and every write stop " +
+                        "for the WHOLE fleet, and a headless service has no dashboard to warn you. Free space on the " +
+                        "store volume, shorten retention (config_collector_schedules), enable TimescaleDB compression, " +
+                        "or move the store to a larger disk.",
+                    severity: AlertSeverityLevel.Critical,
+                    shortMessage: reason, cancellationToken);
+            }
+        }
+        else if (_activeDiskPressure.TryRemove(DiskKey, out var was) && was)
+        {
+            await RecordResolutionAsync(new AlertResolution(
+                DiskKey, "Monitor Store", "Store Disk Pressure",
+                "Store Disk Pressure Resolved", "Monitor store volume free space recovered"), cancellationToken);
+        }
+    }
+
     /// <summary>Drops all edge state for a server removed from the monitored set (reconcile), so a later
     /// re-add starts fresh at the Unknown baseline rather than inheriting a stale connection/active flag.</summary>
     public void Forget(int serverId)
@@ -496,4 +630,8 @@ ORDER BY x.collector_name", connection);
         || now - last >= TimeSpan.FromMinutes(_settings.CooldownMinutes);
 
     private static string Key(int serverId) => serverId.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Human-readable GiB for disk-pressure alert text (binary GiB, 2 dp).</summary>
+    private static string FormatGb(long bytes) =>
+        (bytes / 1024.0 / 1024.0 / 1024.0).ToString("0.##", CultureInfo.InvariantCulture) + " GB";
 }

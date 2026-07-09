@@ -7,7 +7,9 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Collectors;
@@ -57,14 +59,120 @@ public sealed class DarlingRetentionTests
     }
 
     [Fact]
-    public void DeleteSql_TargetsEachDefinitionsOwnTimeColumn()
+    public void DeleteSql_BatchesOnEachDefinitionsOwnTimeColumn()
     {
         var byName = CollectorCatalog.All.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
 
-        Assert.Equal("DELETE FROM wait_stats WHERE collection_time < $1",
+        /* The Postgres twin of the Dashboard's DELETE TOP(10000): batched via ctid IN (SELECT ... LIMIT
+           10000), with the time predicate REPEATED in the outer delete so a TimescaleDB hypertable's
+           per-chunk ctid can never delete a fresh row in another chunk. $1 is bound once and referenced by
+           both positions. */
+        Assert.Equal(
+            "DELETE FROM wait_stats WHERE collection_time < $1 AND ctid IN (SELECT ctid FROM wait_stats WHERE collection_time < $1 LIMIT 10000)",
             DarlingRetention.DeleteSqlFor(byName["wait_stats"]));
-        Assert.Equal("DELETE FROM trace_flags WHERE capture_time < $1",
+
+        /* The config snapshots batch on their capture_time, not collection_time. */
+        Assert.Equal(
+            "DELETE FROM trace_flags WHERE capture_time < $1 AND ctid IN (SELECT ctid FROM trace_flags WHERE capture_time < $1 LIMIT 10000)",
             DarlingRetention.DeleteSqlFor(byName["trace_flags"]));
+
+        /* collection_log runs through the same batched builder (never a hypertable, but one uniform path). */
+        Assert.Equal(
+            "DELETE FROM collection_log WHERE collection_time < $1 AND ctid IN (SELECT ctid FROM collection_log WHERE collection_time < $1 LIMIT 10000)",
+            DarlingRetention.BatchedDeleteSql("collection_log", "collection_time"));
+    }
+
+    [Fact]
+    public void CollectionLogRetention_IsTwiceTheBaseWindow()
+    {
+        /* collection_log is kept 2x the base data-retention window (the Dashboard's retention_date x2) so a
+           run-record outlives the metric rows it explains: 60 days vs the dominant 30-day collector horizon. */
+        Assert.Equal(30, DarlingRetention.DataRetentionBaseDays);
+        Assert.Equal(60, DarlingRetention.CollectionLogRetentionDays);
+        Assert.Equal(DarlingRetention.DataRetentionBaseDays * 2, DarlingRetention.CollectionLogRetentionDays);
+
+        /* The base mirrors the dominant collector horizon it is derived from. */
+        Assert.Equal(DarlingRetention.DataRetentionBaseDays, CollectorScheduleDefaults.All["wait_stats"].RetentionDays);
+    }
+
+    /* ---------------- batched-drain loop (pure, injected executor) ---------------- */
+
+    [Fact]
+    public async Task DrainBatches_LoopsUntilBatchBelowCap_ThenStops()
+    {
+        /* [cap, cap, partial] -> 3 executions, summed; the partial batch (< cap) terminates the drain. */
+        var batches = new Queue<int>(new[] { 10000, 10000, 3 });
+        var calls = 0;
+        var total = await DarlingRetention.DrainBatchesAsync(
+            _ => { calls++; return Task.FromResult(batches.Dequeue()); }, batchSize: 10000, CancellationToken.None);
+
+        Assert.Equal(20003, total);
+        Assert.Equal(3, calls);
+    }
+
+    [Fact]
+    public async Task DrainBatches_SingleUnderCapBatch_StopsAfterOne()
+    {
+        var calls = 0;
+        var total = await DarlingRetention.DrainBatchesAsync(
+            _ => { calls++; return Task.FromResult(5); }, batchSize: 10000, CancellationToken.None);
+
+        Assert.Equal(5, total);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task DrainBatches_ExactMultipleOfCap_TerminatesOnTheEmptyBatch()
+    {
+        /* Exactly cap, then 0: the full-cap batch forces another round; the empty batch terminates it. */
+        var batches = new Queue<int>(new[] { 10000, 0 });
+        var calls = 0;
+        var total = await DarlingRetention.DrainBatchesAsync(
+            _ => { calls++; return Task.FromResult(batches.Dequeue()); }, batchSize: 10000, CancellationToken.None);
+
+        Assert.Equal(10000, total);
+        Assert.Equal(2, calls);
+    }
+
+    /* ---------------- run-record status/message (pure) ---------------- */
+
+    [Fact]
+    public void BuildRunRecordSummary_AllTablesClean_IsSuccess()
+    {
+        var (status, message) = DarlingRetention.BuildRunRecordSummary(
+            tablesPurged: 33, totalRowsDeleted: 1200, totalChunksDropped: 42, tablesFailed: 0);
+
+        Assert.Equal("SUCCESS", status);
+        Assert.Contains("33 table(s)", message);
+        Assert.Contains("1200 row(s) deleted", message);
+        Assert.Contains("42 chunk(s) dropped", message);
+        Assert.DoesNotContain("failed", message);
+    }
+
+    [Fact]
+    public void BuildRunRecordSummary_SomeTablesFailed_IsWarning()
+    {
+        var (status, message) = DarlingRetention.BuildRunRecordSummary(
+            tablesPurged: 30, totalRowsDeleted: 500, totalChunksDropped: 0, tablesFailed: 3);
+
+        Assert.Equal("WARNING", status);
+        Assert.Contains("3 failed", message);
+    }
+
+    [Fact]
+    public async Task Purge_UnexpectedThrowInSweep_DoesNotPropagate_ReturnsPartialSummary()
+    {
+        /* The daily caller does NOT wrap PurgeAsync, so an unexpected throw inside the sweep would kill the
+           collection loop. Here a caller resolver throws on the first collector, driving the outer catch (the
+           ERROR path): PurgeAsync must swallow it and return a partial summary. The null data source is never
+           dereferenced before the throw, and the ERROR run-record write is itself failure-isolated, so this
+           stays a DB-free test. */
+        var summary = await DarlingRetention.PurgeAsync(
+            postgres: null!, timescaleAvailable: false, logger: null, TestContext.Current.CancellationToken,
+            retentionDaysFor: _ => throw new InvalidOperationException("resolver boom"));
+
+        Assert.Equal(0, summary.TablesPurged);
+        Assert.Equal(0, summary.TotalPurged);
     }
 
     /// <summary>
@@ -133,7 +241,9 @@ public sealed class DarlingRetentionTests
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* collection_log purges on its own 30-day horizon. */
+            /* collection_log purges on its own 2x horizon (60 days) so a run-record outlives the metric rows
+               it explains: a 70-day row is past the horizon and goes, a 45-day row is inside the 60-day
+               window (but past the 30-day data window) and SURVIVES — proving the 2x extension. */
             using (var insert = new NpgsqlCommand(
                 "INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, status) VALUES ($1, $2, $3, $4, $5, $6)", connection))
             {
@@ -141,7 +251,19 @@ public sealed class DarlingRetentionTests
                 insert.Parameters.AddWithValue(TestServerId);
                 insert.Parameters.AddWithValue("retention-e2e");
                 insert.Parameters.AddWithValue("wait_stats");
-                insert.Parameters.AddWithValue(utcNow.AddDays(-40));
+                insert.Parameters.AddWithValue(utcNow.AddDays(-70));
+                insert.Parameters.AddWithValue("SUCCESS");
+                await insert.ExecuteNonQueryAsync(ct);
+            }
+
+            using (var insert = new NpgsqlCommand(
+                "INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, status) VALUES ($1, $2, $3, $4, $5, $6)", connection))
+            {
+                insert.Parameters.AddWithValue(2L);
+                insert.Parameters.AddWithValue(TestServerId);
+                insert.Parameters.AddWithValue("retention-e2e");
+                insert.Parameters.AddWithValue("wait_stats");
+                insert.Parameters.AddWithValue(utcNow.AddDays(-45));
                 insert.Parameters.AddWithValue("SUCCESS");
                 await insert.ExecuteNonQueryAsync(ct);
             }
@@ -165,11 +287,60 @@ public sealed class DarlingRetentionTests
             }
 
             using (var read = new NpgsqlCommand(
-                "SELECT COUNT(*) FROM collection_log WHERE server_id = $1", connection))
+                "SELECT collection_time FROM collection_log WHERE server_id = $1 ORDER BY collection_time DESC", connection))
             {
                 read.Parameters.AddWithValue(TestServerId);
-                Assert.Equal(0L, await read.ExecuteScalarAsync(ct));
+                using var reader = await read.ExecuteReaderAsync(ct);
+                Assert.True(await reader.ReadAsync(ct), "the 45-day collection_log row (inside the 60-day 2x horizon) did not survive the purge");
+                var survivor = reader.GetDateTime(0);
+                Assert.True(survivor < utcNow.AddDays(-44) && survivor > utcNow.AddDays(-46),
+                    $"the surviving log row should be the 45-day one, got {survivor:O}");
+                Assert.False(await reader.ReadAsync(ct), "the 70-day collection_log row survived past the 60-day horizon");
             }
+
+            /* The purge writes ONE auditable run-record under the fleet sentinel server_id — SUCCESS here
+               (every table purged cleanly on this store). Never attributed to a real monitored server. */
+            using (var read = new NpgsqlCommand(
+                "SELECT status FROM collection_log WHERE server_id = $1 AND collector_name = 'data_retention' ORDER BY collection_time DESC LIMIT 1", connection))
+            {
+                read.Parameters.AddWithValue(DarlingObservability.FleetServerId);
+                Assert.Equal("SUCCESS", await read.ExecuteScalarAsync(ct));
+            }
+        }
+        finally
+        {
+            await DeleteTestRowsAsync(connection);
+        }
+    }
+
+    [Fact]
+    public async Task EndToEnd_PurgeResolverThrows_WritesErrorRunRecord_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live ERROR run-record test.");
+
+        var ct = TestContext.Current.CancellationToken;
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+        await DeleteTestRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        try
+        {
+            /* A resolver that throws drives PurgeAsync into its outer catch, which writes an ERROR run-record
+               to the store under the fleet sentinel — the failure is auditable, not a crashed loop. */
+            var summary = await DarlingRetention.PurgeAsync(
+                postgres, timescaleAvailable: false, null, ct,
+                retentionDaysFor: _ => throw new InvalidOperationException("resolver boom"));
+            Assert.Equal(0, summary.TablesPurged);
+
+            using var read = new NpgsqlCommand(
+                "SELECT status FROM collection_log WHERE server_id = $1 AND collector_name = 'data_retention' ORDER BY collection_time DESC LIMIT 1", connection);
+            read.Parameters.AddWithValue(DarlingObservability.FleetServerId);
+            Assert.Equal("ERROR", await read.ExecuteScalarAsync(ct));
         }
         finally
         {
@@ -179,8 +350,13 @@ public sealed class DarlingRetentionTests
 
     private static async Task DeleteTestRowsAsync(NpgsqlConnection connection)
     {
+        /* Also clears the fleet-sentinel data_retention run-record the purge writes, so the shared dev store
+           doesn't accumulate them and the run-record assertion always reads THIS run's row. */
         using var cleanup = new NpgsqlCommand(
-            $"DELETE FROM wait_stats WHERE server_id = {TestServerId}; DELETE FROM collection_log WHERE server_id = {TestServerId};", connection);
+            $"DELETE FROM wait_stats WHERE server_id = {TestServerId}; " +
+            $"DELETE FROM collection_log WHERE server_id = {TestServerId}; " +
+            $"DELETE FROM collection_log WHERE server_id = {DarlingObservability.FleetServerId} AND collector_name = 'data_retention';",
+            connection);
         await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 }

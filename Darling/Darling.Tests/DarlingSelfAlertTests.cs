@@ -112,13 +112,19 @@ public sealed class DarlingSelfAlertTests
         public FakeHistoryStore History { get; } = new();
         public bool Muted { get; set; }
 
+        /// <summary>When set, the mute check throws — simulates a broken mute rule's Matches() to prove the
+        /// evaluation isolates it (a throw here must never propagate out and stop collection).</summary>
+        public bool MuteThrows { get; set; }
+
         /// <summary>The V20 connection-change notify gate, read live by the evaluator's connect edge (default on).</summary>
         public bool NotifyConnectionChanges { get; set; } = true;
 
         public DateTime Now { get; set; } = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
 
         public DarlingSelfAlertEvaluator Build() => new(
-            Settings, Deliverer, History, _ => Muted, logger: null, utcNow: () => Now,
+            Settings, Deliverer, History,
+            _ => MuteThrows ? throw new InvalidOperationException("mute check boom") : Muted,
+            logger: null, utcNow: () => Now,
             notifyConnectionChanges: () => NotifyConnectionChanges);
     }
 
@@ -405,6 +411,138 @@ public sealed class DarlingSelfAlertTests
         /* After Forget the next offline is a fresh Unknown->Offline baseline again — no spurious "lost". */
         await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "gone", Ct);
         Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    /* ---------------- store disk pressure (fleet-level, pure decision) ---------------- */
+
+    private const long Gib = 1024L * 1024 * 1024;
+
+    [Fact]
+    public void IsDiskPressure_BelowThreshold_Pressure()
+    {
+        /* 5% free (< the 10% warn threshold) reads as pressure; the reason names the percentage. */
+        Assert.True(DarlingSelfAlertEvaluator.IsDiskPressure(5 * Gib, 100 * Gib, out var reason));
+        Assert.Contains("5", reason);
+        Assert.Contains("%", reason);
+    }
+
+    [Fact]
+    public void IsDiskPressure_ExactlyAtThreshold_NotPressure()
+    {
+        /* Boundary: exactly 10% free is NOT pressure (strictly-less-than the threshold). */
+        Assert.False(DarlingSelfAlertEvaluator.IsDiskPressure(10 * Gib, 100 * Gib, out _));
+    }
+
+    [Fact]
+    public void IsDiskPressure_JustBelowThreshold_Pressure()
+    {
+        /* 9.9% free trips it — the threshold is a real edge, not a wide band. */
+        Assert.True(DarlingSelfAlertEvaluator.IsDiskPressure(99 * Gib, 1000 * Gib, out _));
+    }
+
+    [Fact]
+    public void IsDiskPressure_PlentyFree_NotPressure()
+    {
+        Assert.False(DarlingSelfAlertEvaluator.IsDiskPressure(50 * Gib, 100 * Gib, out _));
+    }
+
+    [Fact]
+    public void IsDiskPressure_NonPositiveTotal_NotPressure()
+    {
+        /* An undeterminable total ("can't tell") never reads as pressure. */
+        Assert.False(DarlingSelfAlertEvaluator.IsDiskPressure(0, 0, out _));
+    }
+
+    /* ---------------- store disk pressure edge ---------------- */
+
+    [Fact]
+    public async Task DiskPressure_FiresOnce_ThenCooldownSuppresses_ThenReFires()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, storeSizeBytes: 20 * Gib, Ct);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Store Disk Pressure", fired.MetricName);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+        Assert.Equal("store", fired.ServerKey);   /* the fleet sentinel key, not a real server_id */
+
+        /* Still low one minute later — inside the 5-minute cooldown, no re-fire (the EDGE: once, not every sweep). */
+        h.Now = h.Now.AddMinutes(1);
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* After the cooldown the standing condition re-fires. */
+        h.Now = h.Now.AddMinutes(5);
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task DiskPressure_Recovery_WritesOneResolvedHistoryRow()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct);   /* pressure */
+        Assert.Empty(h.History.Records);
+
+        /* Free space recovered: exactly one "Store Disk Pressure Resolved" audit row, no email/webhook. */
+        await e.ApplyDiskPressureAsync(50 * Gib, 100 * Gib, null, Ct);
+        var resolved = Assert.Single(h.History.Records);
+        Assert.Equal("Store Disk Pressure Resolved", resolved.MetricName);
+        Assert.True(resolved.AlertSent);
+        Assert.Equal("tray", resolved.NotificationType);
+        Assert.Single(h.Deliverer.Outcomes);   /* only the original fire went to the deliverer */
+
+        /* Still healthy on the next sweep — no duplicate resolved row (resolution is edge-triggered too). */
+        await e.ApplyDiskPressureAsync(50 * Gib, 100 * Gib, null, Ct);
+        Assert.Single(h.History.Records);
+    }
+
+    [Fact]
+    public async Task DiskPressure_UndeterminableFreeSpace_DoesNotFire()
+    {
+        /* A remote BYO store whose volume the service cannot see (null free/total) never alarms — even though
+           a store size is known, it is context only and never the trigger. */
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(null, null, storeSizeBytes: 999 * Gib, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task DiskPressure_AlertsDisabled_DoesNotFire()
+    {
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(1 * Gib, 100 * Gib, null, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task DiskPressure_ThrowingMuteCheck_IsIsolated_DoesNotPropagate()
+    {
+        /* MAJOR: the disk-pressure sweep-loop body has no catch-all of its own, and the pre-deliver mute check
+           (_isAlertMuted -> a mute rule's Matches()) is NOT internally isolated. EvaluateDiskPressureAsync must
+           swallow a throw there — otherwise a single broken mute rule stops collection for the whole fleet. */
+        var h = new Harness { MuteThrows = true };
+        var e = h.Build();
+
+        /* Must NOT throw (would propagate out of the un-guarded worker loop). */
+        await e.EvaluateDiskPressureAsync(5 * Gib, 100 * Gib, storeSizeBytes: 20 * Gib, Ct);
+
+        /* The throw happened in the mute check, before delivery — nothing was delivered, and we're still alive. */
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* The isolation lives in the Evaluate wrapper (the worker's entry point), not the sibling-style
+           un-isolated Apply: a fresh evaluator's Apply lets the same throw propagate. */
+        var e2 = new Harness { MuteThrows = true }.Build();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => e2.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct));
     }
 
     /* ---------------- master switch ---------------- */
