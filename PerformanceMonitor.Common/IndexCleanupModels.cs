@@ -111,6 +111,30 @@ namespace PerformanceMonitor.Common
         /// <summary>Cumulative <c>user_updates</c> (write maintenance cost).</summary>
         public long UserUpdates { get; init; }
 
+        /// <summary>Cumulative <c>row_lock_wait_count</c> (dm_db_index_operational_stats). Summed with <see cref="PageLockWaitCount"/> for the per-scope Lock Waits rollup.</summary>
+        public long RowLockWaitCount { get; init; }
+
+        /// <summary>Cumulative <c>row_lock_wait_in_ms</c>. With <see cref="PageLockWaitInMs"/> drives the average lock wait (ms/wait).</summary>
+        public long RowLockWaitInMs { get; init; }
+
+        /// <summary>Cumulative <c>page_lock_wait_count</c>.</summary>
+        public long PageLockWaitCount { get; init; }
+
+        /// <summary>Cumulative <c>page_lock_wait_in_ms</c>.</summary>
+        public long PageLockWaitInMs { get; init; }
+
+        /// <summary>Cumulative <c>page_latch_wait_count</c>. Summed with <see cref="PageIoLatchWaitCount"/> for the per-scope Latch Waits rollup.</summary>
+        public long PageLatchWaitCount { get; init; }
+
+        /// <summary>Cumulative <c>page_latch_wait_in_ms</c>. With <see cref="PageIoLatchWaitInMs"/> drives the average latch wait (ms/wait).</summary>
+        public long PageLatchWaitInMs { get; init; }
+
+        /// <summary>Cumulative <c>page_io_latch_wait_count</c>.</summary>
+        public long PageIoLatchWaitCount { get; init; }
+
+        /// <summary>Cumulative <c>page_io_latch_wait_in_ms</c>.</summary>
+        public long PageIoLatchWaitInMs { get; init; }
+
         /// <summary>Reserved footprint in MB (summed across partitions). Divided by 1024 for the GB figures.</summary>
         public decimal? ReservedMb { get; init; }
 
@@ -393,6 +417,38 @@ namespace PerformanceMonitor.Common
 
         /// <summary>Combined high-band reclaim (disabled full size + compression max).</summary>
         public decimal TotalMaxSavingsGb { get; init; }
+
+        /*
+         * Workload-impact aggregates — straight SUMs over EVERY analyzed index in the scope (mirroring
+         * sp_IndexCleanup's #index_reporting_stats DATABASE roll-up of its analyzed_indexes rows). These feed
+         * the reporting summary's Reads / Writes / Lock Waits / Latch Waits columns. sp_IndexCleanup only
+         * surfaces them at its DATABASE (and TABLE) levels — its SUMMARY row shows them as 'N/A' — so the
+         * viewer's rollup-row projection renders 'N/A' for the overall (all-databases) row to match Lite.
+         */
+
+        /// <summary>Sum of <c>user_seeks</c> across analyzed indexes (the "seeks" part of the Reads breakdown).</summary>
+        public long UserSeeks { get; init; }
+
+        /// <summary>Sum of <c>user_scans</c> across analyzed indexes.</summary>
+        public long UserScans { get; init; }
+
+        /// <summary>Sum of <c>user_lookups</c> across analyzed indexes.</summary>
+        public long UserLookups { get; init; }
+
+        /// <summary>Sum of <c>user_updates</c> across analyzed indexes (the Writes column).</summary>
+        public long TotalWrites { get; init; }
+
+        /// <summary>Sum of <c>row_lock_wait_count + page_lock_wait_count</c> across analyzed indexes (the Lock Waits column).</summary>
+        public long LockWaitCount { get; init; }
+
+        /// <summary>Sum of <c>row_lock_wait_in_ms + page_lock_wait_in_ms</c> across analyzed indexes (numerator of Avg Lock Wait ms).</summary>
+        public long LockWaitInMs { get; init; }
+
+        /// <summary>Sum of <c>page_latch_wait_count + page_io_latch_wait_count</c> across analyzed indexes (the Latch Waits column).</summary>
+        public long LatchWaitCount { get; init; }
+
+        /// <summary>Sum of <c>page_latch_wait_in_ms + page_io_latch_wait_in_ms</c> across analyzed indexes (numerator of Avg Latch Wait ms).</summary>
+        public long LatchWaitInMs { get; init; }
     }
 
     /// <summary>The full result of one analysis pass.</summary>
