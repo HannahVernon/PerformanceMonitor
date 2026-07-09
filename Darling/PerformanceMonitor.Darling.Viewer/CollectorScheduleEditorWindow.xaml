@@ -90,9 +90,17 @@
         <TextBlock Grid.Row="5" Margin="0,8,0,0" FontSize="11" Foreground="{StaticResource DimTextBrush}" TextWrapping="Wrap"
                    Text="Every (min): 0 collects once on server load. Keep (days) must be at least 1. Changes apply on the service's next reload."/>
 
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button x:Name="SaveButton" Content="Save" Click="SaveButton_Click" Margin="0,0,8,0" MinWidth="80"/>
-            <Button Content="Cancel" Click="CancelButton_Click" MinWidth="80"/>
-        </StackPanel>
+        <DockPanel Grid.Row="6" Margin="0,12,0,0" LastChildFill="False">
+            <!-- Fleet-scale bulk reset: clears every server's per-server override in one write so they all fall
+                 back to the fleet-wide default (the shortcut over reverting servers one at a time). Confirmed +
+                 applied immediately, separate from the per-scope Save. -->
+            <Button x:Name="ApplyDefaultToAllButton" DockPanel.Dock="Left" Content="Apply Default to All Servers"
+                    Click="ApplyDefaultToAll_Click" MinWidth="80"
+                    ToolTip="Remove every server's custom schedule so they all follow the fleet-wide default"/>
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="SaveButton" Content="Save" Click="SaveButton_Click" Margin="0,0,8,0" MinWidth="80"/>
+                <Button Content="Cancel" Click="CancelButton_Click" MinWidth="80"/>
+            </StackPanel>
+        </DockPanel>
     </Grid>
 </Window>

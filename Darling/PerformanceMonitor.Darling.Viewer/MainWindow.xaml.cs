@@ -32,17 +32,26 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// <see cref="ViewerServerTab"/>,
 /// whose inner tabs (Overview charts, Queries, Blocking, Collection Health) hold the per-server surfaces.
 /// All reads go straight to Postgres via <see cref="ViewerDataService"/>. Loads are lazy per visible
-/// tab (Lite's visible-only rule): the 60-second timer refreshes only the visible tab — an aggregate
+/// tab (Lite's visible-only rule): the fleet-refresh timer (the configurable
+/// <see cref="ViewerAppSettings.NocRefreshIntervalSeconds"/>) refreshes only the visible tab — an aggregate
 /// tab for the selected server, or the visible server tab's active inner tab. Every data load is async.
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
     Justification = "WPF windows are never disposed by the framework; the data service is disposed in OnClosed.")]
 public partial class MainWindow : Window
 {
-    private static readonly TimeSpan s_refreshInterval = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// The fleet auto-refresh cadence for the Overview and the aggregate tabs — the single operator knob
+    /// (<see cref="ViewerAppSettings.NocRefreshIntervalSeconds"/>) that replaced the two hardcoded cadences
+    /// (60s aggregate / 30s Overview), mirroring the Dashboard's one NocRefreshIntervalSeconds. Both fleet-scope
+    /// timers run at this interval so an operator can dial the store-query load back at 500-server scale. Seeded
+    /// in the constructor; re-applied to the live timers when the Settings window closes.
+    /// </summary>
+    private TimeSpan _refreshInterval;
 
-    /// <summary>The Overview tab's own faster cadence (Lite's Overview refresh interval).</summary>
-    private static readonly TimeSpan s_overviewRefreshInterval = TimeSpan.FromSeconds(30);
+    /// <summary>The viewer's connect-timeout preference, applied to the store connection string when the data
+    /// service is created (see <see cref="ViewerDataService(string, int?)"/>). Seeded in the constructor.</summary>
+    private readonly int _connectionTimeoutSeconds;
 
     private ViewerDataService? _dataService;
     private DispatcherTimer? _refreshTimer;
@@ -129,6 +138,10 @@ public partial class MainWindow : Window
         _minimizeToTray = appSettings.MinimizeToTray;
         _alertsEnabled = appSettings.AlertsEnabled;
         _alertCooldownMinutes = appSettings.AlertCooldownMinutes;
+        /* Seed the connect-timeout applied to the store connection (at ViewerDataService creation, on connect)
+           and the single fleet-refresh cadence both shell timers run at. */
+        _connectionTimeoutSeconds = appSettings.ConnectionTimeoutSeconds;
+        _refreshInterval = TimeSpan.FromSeconds(appSettings.NocRefreshIntervalSeconds);
         ApplyTimeDisplayMode(appSettings.TimeDisplayMode);
         Loaded += OnLoaded;
         Closed += OnClosed;
@@ -155,7 +168,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _dataService = new ViewerDataService(settings.ConnectionString);
+        _dataService = new ViewerDataService(settings.ConnectionString, _connectionTimeoutSeconds);
 
         try
         {
@@ -269,13 +282,13 @@ public partial class MainWindow : Window
             ViewerLogger.Warn("AlertToasts", $"Priming the alert-toast watermark failed: {ex.Message}");
         }
 
-        _refreshTimer = new DispatcherTimer { Interval = s_refreshInterval };
+        _refreshTimer = new DispatcherTimer { Interval = _refreshInterval };
         _refreshTimer.Tick += OnRefreshTimerTick;
         _refreshTimer.Start();
 
-        /* The Overview tab refreshes on its own faster (30s) cadence, mirroring Lite; the 60s timer
-           skips it so the two don't double-refresh the same grid. */
-        _overviewTimer = new DispatcherTimer { Interval = s_overviewRefreshInterval };
+        /* The Overview keeps its own timer so it refreshes when it is the visible tab and the aggregate timer
+           skips it (they never double-refresh the same grid); both run at the one configurable fleet interval. */
+        _overviewTimer = new DispatcherTimer { Interval = _refreshInterval };
         _overviewTimer.Tick += OnOverviewTimerTick;
         _overviewTimer.Start();
     }
@@ -327,11 +340,11 @@ public partial class MainWindow : Window
            headless stand-in for Lite's in-process alert-engine toast). */
         _ = PollAlertToastsAsync();
 
-        /* Two tabs opt out of the 60s auto-refresh: Recommendations refreshes on tab-activation only
-           (matching Lite — analysis findings change on the service's 30-minute cadence, so a 60-second
-           auto-refresh is pointless churn and would reset the incident expanders' state under the
-           reader), and the Overview has its own faster 30s timer, so the 60s timer skips it too (they'd
-           otherwise double-refresh the same grid). Every other aggregate tab still auto-refreshes. */
+        /* Two tabs opt out of this timer: Recommendations refreshes on tab-activation only (matching Lite —
+           analysis findings change on the service's 30-minute cadence, so an interval auto-refresh is pointless
+           churn and would reset the incident expanders' state under the reader), and the Overview has its OWN
+           timer, so this one skips it (they'd otherwise double-refresh the same grid). Every other aggregate tab
+           still auto-refreshes. */
         if (ReferenceEquals(MainTabs.SelectedItem, RecommendationsTab)
             || ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
         {
@@ -339,7 +352,7 @@ public partial class MainWindow : Window
         }
 
         /* Per-server tabs now self-refresh on their own toolbar auto-refresh timer (at the user's chosen
-           interval / on/off), so the global 60s timer skips them — otherwise both would fire and the
+           interval / on/off), so the global fleet-refresh timer skips them — otherwise both would fire and the
            user's interval choice wouldn't stick. */
         if (MainTabs.SelectedItem is TabItem { Content: ViewerServerTab })
         {
@@ -353,7 +366,7 @@ public partial class MainWindow : Window
     {
         if (ReferenceEquals(MainTabs.SelectedItem, OverviewTab))
         {
-            /* Refresh the sidebar dots on the snappier Overview cadence too, so they track the cards. */
+            /* Refresh the sidebar dots on the Overview cadence too, so they track the cards. */
             _ = RefreshServerStatusAsync();
             await RefreshVisibleAsync();
         }
@@ -576,7 +589,7 @@ public partial class MainWindow : Window
         await RefreshVisibleAsync();
         /* The status bar's collector-health scope flips with the active tab (a per-server tab shows that
            server; an aggregate tab shows the fleet-cumulative total), so refresh it now rather than waiting
-           up to 60s for the status timer. */
+           for the next fleet-refresh tick. */
         await UpdateCollectorHealthTextAsync();
     }
 
@@ -868,7 +881,7 @@ public partial class MainWindow : Window
             Enum.TryParse<TimeDisplayMode>(modeText, ignoreCase: true, out var mode) ? mode : TimeDisplayMode.ServerTime;
     }
 
-    // ── Overview tab (all-servers server cards; refreshes on its own 30s timer) ──────
+    // ── Overview tab (all-servers server cards; refreshes on its own timer at the fleet interval) ──────
 
     /// <summary>
     /// Loads a summary card for every registered server (Lite's RefreshOverviewAsync), reading each
@@ -1265,6 +1278,17 @@ public partial class MainWindow : Window
            "Tray notification cooldown" the window just wrote to the STORE are re-read from there. */
         _minimizeToTray = reloaded.MinimizeToTray;
         _ = RefreshAlertToastSettingsFromStoreAsync();
+        /* Re-apply the fleet refresh interval to the live shell timers so a change takes effect immediately
+           (the connection timeout is a connect-time setting and applies on the next viewer launch). */
+        _refreshInterval = TimeSpan.FromSeconds(reloaded.NocRefreshIntervalSeconds);
+        if (_refreshTimer is not null)
+        {
+            _refreshTimer.Interval = _refreshInterval;
+        }
+        if (_overviewTimer is not null)
+        {
+            _overviewTimer.Interval = _refreshInterval;
+        }
         var previousMode = ViewerTimeHelper.CurrentDisplayMode;
         ApplyTimeDisplayMode(reloaded.TimeDisplayMode);
         if (ViewerTimeHelper.CurrentDisplayMode != previousMode)

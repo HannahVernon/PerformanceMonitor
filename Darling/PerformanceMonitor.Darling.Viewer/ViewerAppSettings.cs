@@ -66,6 +66,15 @@ public sealed class ViewerAppSettings
     /// <summary>Connection timeout in seconds for the viewer's store reads (5-60).</summary>
     public int ConnectionTimeoutSeconds { get; set; } = 5;
 
+    /// <summary>
+    /// How often (seconds) the shell auto-refreshes the fleet Overview and the aggregate tabs — the single
+    /// operator knob over what were two hardcoded cadences (60s aggregate / 30s Overview), mirroring the
+    /// Dashboard's one <c>NocRefreshIntervalSeconds</c>. Both fleet-scope timers run at this interval so an
+    /// operator can dial the store-query load back at 500-server scale. Default 30 (the Dashboard's default and
+    /// the former Overview cadence). Clamped to 10–600.
+    /// </summary>
+    public int NocRefreshIntervalSeconds { get; set; } = 30;
+
     /// <summary>CSV export separator: "," ";" or a tab. Auto-detected from locale on first run.</summary>
     public string CsvSeparator { get; set; } = DefaultCsvSeparator();
 
@@ -179,6 +188,7 @@ public sealed class ViewerAppSettings
     {
         McpPort = Clamp(McpPort, 1024, 65535, 5152);
         ConnectionTimeoutSeconds = Clamp(ConnectionTimeoutSeconds, 5, 60, 5);
+        NocRefreshIntervalSeconds = Clamp(NocRefreshIntervalSeconds, 10, 600, 30);
         CsvSeparator = (CsvSeparator == "," || CsvSeparator == ";" || CsvSeparator == "\t") ? CsvSeparator : DefaultCsvSeparator();
         TimeDisplayMode = (TimeDisplayMode is "ServerTime" or "LocalTime" or "UTC") ? TimeDisplayMode : "ServerTime";
         ColorTheme = (ColorTheme is "Dark" or "Light" or "CoolBreeze") ? ColorTheme : "Dark";
@@ -304,9 +314,10 @@ public sealed class ViewerAppSettingsStore
 /// separator, read by the grid copy/export handlers (they call <c>DataGridExport.ExportToCsv(..., separator)</c>).
 /// Held as a process-wide value that <see cref="MainWindow"/> seeds from the persisted settings on startup and
 /// re-applies whenever the Settings window closes, so a change takes effect on the next export without a
-/// restart — mirroring how Lite's export reads <c>App.CsvSeparator</c>. The other persisted settings
-/// (alerts/SMTP/webhooks/MCP/timestamp-display/connection-timeout) are the service's or a larger wiring
-/// concern and are not consumed here yet (see the PR body).
+/// restart — mirroring how Lite's export reads <c>App.CsvSeparator</c>. The connection timeout is honored at
+/// CONNECT (applied to the store connection string in the <see cref="ViewerDataService"/> constructor) and the
+/// fleet refresh interval drives the shell's aggregate/Overview timers; the remaining persisted settings
+/// (alerts/SMTP/webhooks/MCP/timestamp-display) are the service's or a larger wiring concern.
 /// </summary>
 public static class ViewerExportSettings
 {
