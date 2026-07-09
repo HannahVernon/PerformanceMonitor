@@ -72,4 +72,16 @@ public sealed class SqlServerFindingStoreMappingTests
         Assert.Contains("server_id IS NULL", SqlServerFindingStore.GetMutedHashesSql, StringComparison.Ordinal);
         Assert.Contains("server_id = 0", SqlServerFindingStore.GetMutedHashesSql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void CleanupOldFindingsSql_PurgesByAnalysisTime_FromFindingsTable()
+    {
+        /* Findings retention (scheduled once per 24h by AnalysisScheduler — the store declared this
+           cleanup but nothing called it, so config.analysis_findings grew unbounded). Pin the purge
+           target + predicate: it must DELETE from the findings table, keyed on analysis_time against
+           the @cutoff parameter — never the muted registry. */
+        Assert.Contains("DELETE FROM config.analysis_findings", SqlServerFindingStore.CleanupOldFindingsSql, StringComparison.Ordinal);
+        Assert.Contains("analysis_time < @cutoff", SqlServerFindingStore.CleanupOldFindingsSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("analysis_muted", SqlServerFindingStore.CleanupOldFindingsSql, StringComparison.Ordinal);
+    }
 }

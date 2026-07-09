@@ -382,7 +382,7 @@ VALUES (@muteId, @serverId, @storyPathHash, @storyPath, @mutedDate, @reason);";
             await EnsureTablesExistAsync(connection);
 
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM config.analysis_findings WHERE analysis_time < @cutoff;";
+            cmd.CommandText = CleanupOldFindingsSql;
             cmd.Parameters.Add(new SqlParameter("@cutoff", DateTime.UtcNow.AddDays(-retentionDays)));
             await cmd.ExecuteNonQueryAsync();
         }
@@ -403,6 +403,15 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 SELECT story_path_hash FROM config.analysis_muted
 WHERE server_id = @serverId OR server_id IS NULL OR server_id = 0;";
+
+    /// <summary>
+    /// The findings-retention purge: deletes findings older than the caller's cutoff. Exposed as a
+    /// const so Dashboard.Tests can pin the retention predicate (by analysis_time, correct table)
+    /// without a live SQL Server, mirroring the Darling twin's <c>PgFindingStore.CleanupOldFindingsSql</c>.
+    /// Scheduled once per 24h by <c>AnalysisScheduler</c> — the store declared this cleanup but nothing
+    /// invoked it, so config.analysis_findings previously grew unbounded.
+    /// </summary>
+    public const string CleanupOldFindingsSql = "DELETE FROM config.analysis_findings WHERE analysis_time < @cutoff;";
 
     /// <summary>
     /// Reads muted story hashes for a server on an already-open connection. The caller
