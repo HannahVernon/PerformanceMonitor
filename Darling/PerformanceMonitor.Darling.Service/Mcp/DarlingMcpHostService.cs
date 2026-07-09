@@ -10,10 +10,13 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -24,27 +27,49 @@ using PerformanceMonitor.Darling.Analysis;
 namespace PerformanceMonitor.Darling.Service.Mcp;
 
 /// <summary>
-/// Optional hosted service exposing the six analysis MCP tools over Streamable HTTP — the
-/// SAME transport/hosting model as Lite's <c>McpHostService</c> (ModelContextProtocol.AspNetCore,
-/// Kestrel on localhost:{port}, stateless HTTP, Gemini-compatible tool registration for #1074).
-/// Lite hosts HTTP rather than stdio because the server outlives any one client process and
-/// serves concurrent clients; both reasons apply MORE to a 24/7 headless service, so the
-/// mechanism carries over unchanged. Gated by darling.json's <c>mcp.enabled</c> (default OFF —
-/// a headless service should not open a local port unless the operator asks); when disabled or
-/// when the config cannot load (the worker already logs that as critical), this service stands
-/// down without affecting collection. Registered always in Program.cs and self-gating here,
-/// because config loading/validation is the worker's job and Program.cs stays config-free.
+/// Optional hosted service exposing Darling's full MCP tool surface over Streamable HTTP — the analysis
+/// class (6 tools) plus the plan-analysis tools and the ~60 STORED data-read tools (resource metrics,
+/// query performance, blocking/deadlocks, sessions, config history, index/object, latch/spinlock/
+/// memory-grant/plan-cache/scheduler/jobs, windowed trends, and the system_health parse-on-read family)
+/// — the same names Lite and the Dashboard expose, all reading Darling's Postgres store (no live
+/// monitored-server hit except <c>analyze_server</c>'s plan fetch). Same transport/hosting model as
+/// Lite's <c>McpHostService</c> (ModelContextProtocol.AspNetCore, Kestrel, stateless HTTP,
+/// Gemini-compatible tool registration for #1074); both reasons for HTTP-over-stdio (the server outlives
+/// any one client and serves concurrent clients) apply MORE to a 24/7 headless service.
 ///
-/// <para>
-/// The MCP surface gets its OWN <see cref="NpgsqlDataSource"/> (a second pool over the same
-/// store; the worker's is method-scoped) and its own <see cref="DarlingAnalysisService"/> —
-/// Lite's host constructs a dedicated AnalysisService for MCP the same way. The plan fetcher
-/// resolves a finding's serverId to a connection string built from darling.json (the config
-/// twin of the worker's runtime-list resolver): DPAPI resolution happens lazily per fetch, and
-/// any resolution/connection failure degrades the fetch to null inside
-/// <see cref="PgPlanFetcher"/>. Store migration is the WORKER's job — on a brand-new store,
-/// tool calls before the first migration/connect simply return their error/miss envelopes.
-/// </para>
+/// <para><b>Network exposure — off by default, secure by default (darling-network-endpoints, D3):</b>
+/// with no <c>mcp.network</c> block the server binds loopback only and is TOKENLESS — byte-for-byte
+/// today's local MCP, so existing local clients are unaffected. An opt-in <c>mcp.network</c> block
+/// (MANAGED MODE ONLY) binds the specified LAN interface (plus both loopback families) behind two
+/// middlewares installed FIRST in the pipeline, before any MCP handler/handshake: an in-app CIDR check on
+/// <c>RemoteIpAddress</c> (loopback always allowed, Round-4 #2) and an unconditional constant-time bearer
+/// token (NO loopback exemption — the loopback guard). The effective bind is decided by the pure
+/// <see cref="ResolveMcpBind"/>; the caller maps its reason to a severity — LogCritical on a missing
+/// precondition (token / valid allowFrom CIDR) and LogWarning in BYO mode — and degrades to loopback-only
+/// either way. Fail-closed, enforced HERE (the MCP host), NEVER in the all-fatal
+/// <see cref="DarlingConfig.Validate"/> (the worker's abort would not stop this host). No TLS on MCP (a
+/// self-signed cert breaks real clients; the named MITM control is a TLS reverse proxy in front of the
+/// endpoint) — the token travels cleartext on-segment, so own that residual with the reverse proxy. A
+/// best-effort, scoped, idempotent firewall rule is added when exposed and removed when not
+/// (defense-in-depth; the token + CIDR are the boundary, not the firewall).</para>
+///
+/// <para>Gated by darling.json's <c>mcp.enabled</c> (default OFF — a headless service should not open a
+/// port unless the operator asks); when disabled or when the config cannot load (the worker already logs
+/// that as critical), this service stands down without affecting collection. Registered always in
+/// Program.cs and self-gating here, because config loading/validation is the worker's job and Program.cs
+/// stays config-free.</para>
+///
+/// <para>The MCP surface gets its OWN <see cref="NpgsqlDataSource"/> over the store, connecting as the
+/// dedicated least-privilege <c>mcp</c> role (D3-role) — NOT the superuser owner — so a token-holder (or a
+/// future/buggy tool) reaches only the viewer read surface plus the <c>analysis_findings</c> /
+/// <c>analysis_muted</c> INSERTs the tools persist, never the <c>config_command</c> service-credential
+/// pivot or the carved secret columns. It also gets its own <see cref="DarlingAnalysisService"/>. Store
+/// migration + role provisioning are the WORKER's job; the <c>mcp</c>-role credential is written AFTER
+/// migration (later than the owner's), so the first-boot poll budget tolerates the delay. The plan fetcher
+/// resolves a finding's serverId to a live connection string built from darling.json (DPAPI resolution
+/// lazy per fetch; any resolution/connection failure degrades the fetch to null inside
+/// <see cref="PgPlanFetcher"/>). On a brand-new store, tool calls before the first migration/connect
+/// simply return their error/miss envelopes.</para>
 /// </summary>
 public sealed class DarlingMcpHostService : BackgroundService
 {
@@ -76,17 +101,79 @@ public sealed class DarlingMcpHostService : BackgroundService
             return;
         }
 
+        /* Decide the effective bind PURELY, then map the reason -> severity here (Round-4 #7: the caller,
+           not the pure fn, chooses LogCritical vs LogWarning; tests assert (Mode, Reason) without a logger). */
+        var bind = ResolveMcpBind(config.Mcp, config.Postgres.Managed);
+        LogBindReason(config.Mcp, bind.Reason);
+
         try
         {
-            /* Port-in-use pre-check — Lite's StartMcpServerAsync guard, via the shared utility. */
-            if (await PortUtilityService.IsTcpPortListeningAsync(config.Mcp.Port, IPAddress.Loopback, stoppingToken))
+            var networkMode = bind.Mode == McpBindMode.NetworkAndLoopback;
+
+            /* In network mode ResolveMcpBind has already validated the listen IP, the allowFrom CIDR, AND their
+               address-family agreement, so these two parses cannot throw; only resolving the token can still
+               fail (a corrupt DPAPI blob), which fail-closes to loopback-only rather than exposing tokenless. */
+            IPAddress? networkListenIp = null;
+            IPNetwork allowedCidr = default;
+            string bearerToken = "";
+            if (networkMode)
+            {
+                networkListenIp = IPAddress.Parse(config.Mcp.Network!.Listen!.Trim());
+                allowedCidr = IPNetwork.Parse(config.Mcp.Network.AllowFrom!.Trim());
+
+                try
+                {
+                    var token = config.Mcp.Network.ResolveToken(out var usedPlaintext);
+                    if (string.IsNullOrWhiteSpace(token))
+                    {
+                        _logger.LogCritical(
+                            "MCP network token resolved to empty after decryption — refusing to expose; binding loopback-only.");
+                        networkMode = false;
+                    }
+                    else
+                    {
+                        bearerToken = token;
+                        if (usedPlaintext)
+                        {
+                            _logger.LogWarning(
+                                "mcp.network.token is set in plaintext (dev convenience) — prefer mcp.network.encryptedToken " +
+                                "(produced by --encrypt-password). This token gates ALL MCP network access.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogCritical(
+                        "MCP network token could not be decrypted ({Message}) — refusing to expose; binding loopback-only.",
+                        ex.Message);
+                    networkMode = false;
+                }
+            }
+
+            /* The REAL primary bind address (network IP when exposed, else loopback): both the port precheck
+               and the Kestrel bind use it, so the precheck probes the actual address, not always loopback. */
+            var primaryBind = networkMode ? networkListenIp! : IPAddress.Loopback;
+
+            /* Port-in-use pre-check — Lite's StartMcpServerAsync guard, via the shared utility, against the
+               REAL bind address (D3-e: not always IPAddress.Loopback). Done before the firewall reconcile so a
+               bail here leaves the firewall untouched. */
+            if (await PortUtilityService.IsTcpPortListeningAsync(config.Mcp.Port, primaryBind, stoppingToken))
             {
                 _logger.LogError("Port {Port} is already in use — MCP server not started", config.Mcp.Port);
                 return;
             }
 
-            /* Managed mode: the WORKER owns the bundled server's lifecycle; the MCP host only
-               derives the same connection string from the stored DPAPI credential. */
+            /* Firewall reconcile (managed mode only; best-effort, never fatal). Symmetric like the store's D1
+               reconcile: ensure the scoped rule when exposed, remove it when not (so disabling the config
+               closes the box). The token + in-app CIDR are the boundary; the firewall is defense-in-depth. */
+            if (config.Postgres.Managed && OperatingSystem.IsWindows())
+            {
+                await ReconcileMcpFirewallAsync(
+                    config.Mcp.Port, networkMode, networkMode ? allowedCidr.ToString() : null, stoppingToken);
+            }
+
+            /* Managed mode: the WORKER owns the bundled server's lifecycle; the MCP host only derives the
+               least-privilege mcp-role connection string from the stored DPAPI credential (D3-role). */
             string? storeConnectionString;
             if (config.Postgres.Managed)
             {
@@ -128,7 +215,23 @@ public sealed class DarlingMcpHostService : BackgroundService
 
             builder.WebHost.ConfigureKestrel(options =>
             {
-                options.ListenLocalhost(config.Mcp.Port);
+                if (networkMode)
+                {
+                    /* Bind the specific family (not ListenAnyIP), then ALSO both loopback families so a local
+                       client resolving "localhost" -> ::1 still works — skipping the loopback Listen(s) when the
+                       listen value is itself loopback or a wildcard (0.0.0.0/::), which would collide on the port. */
+                    options.Listen(primaryBind, config.Mcp.Port);
+                    if (ShouldAddLoopbackListeners(primaryBind))
+                    {
+                        options.Listen(IPAddress.Loopback, config.Mcp.Port);
+                        options.Listen(IPAddress.IPv6Loopback, config.Mcp.Port);
+                    }
+                }
+                else
+                {
+                    /* The default/degraded loopback-only server — byte-for-byte today's bind (both families). */
+                    options.ListenLocalhost(config.Mcp.Port);
+                }
             });
 
             /* Suppress ASP.NET Core console logging — the service's own logger reports lifecycle. */
@@ -211,9 +314,55 @@ public sealed class DarlingMcpHostService : BackgroundService
                 .WithGeminiCompatibleTools<DarlingMcpHealthParserTools>();
 
             _app = builder.Build();
+
+            /* Access-control middleware — installed ONLY in network mode (Round-4 #6). The default/degraded
+               loopback-only server stays byte-for-byte today's tokenless local MCP, so existing local clients
+               keep working. Both run BEFORE MapMcp (D3-b: "first ... before any handler/handshake"): the
+               unconditional constant-time bearer token FIRST (NO loopback exemption — in exposed mode even a
+               local client must present the token; that IS the loopback guard against SSRF/sandboxed sockets),
+               then the in-app CIDR check (loopback-exempt so the loopback bind's local clients are not 403'd,
+               Round-4 #2 — it bounds WHO can route to the port, independent of the best-effort firewall). */
+            if (networkMode)
+            {
+                var cidr = allowedCidr;
+                var token = bearerToken;
+
+                _app.Use(async (context, next) =>
+                {
+                    if (!IsBearerTokenAuthorized(context.Request.Headers.Authorization.ToString(), token))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        context.Response.Headers.WWWAuthenticate = "Bearer";
+                        return;
+                    }
+
+                    await next(context);
+                });
+
+                _app.Use(async (context, next) =>
+                {
+                    if (!IsRemoteAddressAllowed(context.Connection.RemoteIpAddress, cidr))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        return;
+                    }
+
+                    await next(context);
+                });
+            }
+
             _app.MapMcp();
 
-            _logger.LogInformation("Starting MCP server on http://localhost:{Port}", config.Mcp.Port);
+            if (networkMode)
+            {
+                _logger.LogInformation(
+                    "Starting MCP server on http://{Listen}:{Port} (LAN-exposed to {Cidr} behind a bearer token + in-app CIDR; loopback also bound)",
+                    primaryBind, config.Mcp.Port, allowedCidr);
+            }
+            else
+            {
+                _logger.LogInformation("Starting MCP server on http://localhost:{Port} (loopback only)", config.Mcp.Port);
+            }
 
             await _app.RunAsync(stoppingToken);
         }
@@ -227,18 +376,324 @@ public sealed class DarlingMcpHostService : BackgroundService
         }
     }
 
+    /* ---------------------------------------------------------------------------------------------------
+       Pure decision functions (darling-network-endpoints, D3). Factored out of the Kestrel/middleware
+       wiring so they are unit-testable without a running server or a logger; the caller maps the reason to
+       a log severity and installs the middleware only in network mode.
+       --------------------------------------------------------------------------------------------------- */
+
+    /// <summary>The effective MCP bind. <see cref="McpBindMode.LoopbackOnly"/> is the secure default;
+    /// <see cref="McpBindMode.NetworkAndLoopback"/> binds the LAN interface behind the token + CIDR.</summary>
+    internal enum McpBindMode
+    {
+        LoopbackOnly,
+        NetworkAndLoopback,
+    }
+
+    /// <summary>WHY the bind resolved as it did — the caller maps this to a severity (Round-4 #7):
+    /// <see cref="LoopbackByDefault"/>/<see cref="NetworkExposed"/> are non-degrade (no critical log),
+    /// <see cref="TokenMissing"/>/<see cref="AllowFromInvalid"/> are fail-closed degrades (LogCritical),
+    /// and <see cref="ManagedModeRequired"/> is the BYO "ignored" notice (LogWarning, D-BYO).</summary>
+    internal enum McpBindReason
+    {
+        /// <summary>No network block, or a loopback/absent listen — the byte-for-byte-today loopback server.</summary>
+        LoopbackByDefault,
+
+        /// <summary>All preconditions met: non-loopback listen + managed + token present + valid allowFrom CIDR.</summary>
+        NetworkExposed,
+
+        /// <summary>network.* is set but postgres.managed = false — network exposure is managed-mode only (D-BYO warning).</summary>
+        ManagedModeRequired,
+
+        /// <summary>Exposed + managed but the listen value is not a parseable IP (localhost/hostname/"*") — fail-closed to loopback (LogCritical).</summary>
+        ListenInvalid,
+
+        /// <summary>Exposed + managed but no bearer token — fail-closed to loopback (LogCritical).</summary>
+        TokenMissing,
+
+        /// <summary>Exposed + managed + token but allowFrom is missing/not a valid CIDR or its family does not match the listen — fail-closed to loopback (LogCritical).</summary>
+        AllowFromInvalid,
+    }
+
+    /// <summary>The (mode, reason) pair returned by <see cref="ResolveMcpBind"/>.</summary>
+    internal readonly record struct McpBindDecision(McpBindMode Mode, McpBindReason Reason);
+
     /// <summary>
-    /// Managed mode's first-boot race, handled: the credential file appears only after the
-    /// worker's initdb finishes, so poll briefly (2 minutes) instead of racing it, then stand
-    /// down with a pointer at the worker log — the worker will already have logged any
-    /// bootstrap failure as critical.
+    /// PURE resolution of the effective MCP bind (D3-a). Returns <see cref="McpBindMode.NetworkAndLoopback"/>
+    /// ONLY when the listen value is a genuine network (non-loopback) address (via the Phase-1 classifier —
+    /// so <c>127.0.0.1</c> resolves to loopback, never a network bind/collision) that ALSO parses as an IP, AND
+    /// <paramref name="managed"/> is true, AND a bearer token is present (encryptedToken or token — presence
+    /// only; the host decrypts later), AND allowFrom is a valid CIDR of the SAME address family as the listen.
+    /// Otherwise loopback-only with the specific reason: BYO (<paramref name="managed"/> = false) with any
+    /// network.* set -&gt; <see cref="McpBindReason.ManagedModeRequired"/> (the network path never runs in BYO,
+    /// D-BYO); exposed + managed but a non-IP listen -&gt; <see cref="McpBindReason.ListenInvalid"/>; exposed +
+    /// managed + IP but no token -&gt; <see cref="McpBindReason.TokenMissing"/>; exposed + managed + token but an
+    /// invalid/family-mismatched allowFrom -&gt; <see cref="McpBindReason.AllowFromInvalid"/>; anything else (not
+    /// exposed) -&gt; <see cref="McpBindReason.LoopbackByDefault"/>. Never throws; never consults a logger.
+    /// </summary>
+    internal static McpBindDecision ResolveMcpBind(McpConfig mcp, bool managed)
+    {
+        var network = mcp.Network;
+        var exposed = network is not null && DarlingNetwork.IsExposedListenAddress(network.Listen);
+
+        if (!exposed)
+        {
+            /* Not exposed = the secure default. The one exception worth a word: a BYO store with a network
+               block set at all (even a loopback/partial one) is ignored -> the D-BYO warning. */
+            if (!managed && network is { IsConfigured: true })
+            {
+                return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ManagedModeRequired);
+            }
+
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.LoopbackByDefault);
+        }
+
+        /* Exposed. Managed-mode only: BYO never binds the network path (D3-a / D-BYO), and this dominates a
+           missing/invalid listen/token/allowFrom so the operator sees the actionable "managed only" notice first. */
+        if (!managed)
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ManagedModeRequired);
+        }
+
+        /* The listen must be a parseable IP. The classifier treats a non-IP value (localhost, a hostname, "*")
+           as "exposed" so it is never silently bound; here it degrades to loopback rather than throwing when the
+           host later does IPAddress.Parse (D-validate — the store degrades on the same input, the host must too). */
+        if (!IPAddress.TryParse(network!.Listen!.Trim(), out var listenIp))
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ListenInvalid);
+        }
+
+        /* Token presence only (no decryption here — that is an effectful, Windows-only step the host does). */
+        if (string.IsNullOrWhiteSpace(network.EncryptedToken) && string.IsNullOrWhiteSpace(network.Token))
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.TokenMissing);
+        }
+
+        /* allowFrom must be a valid CIDR (host bits zeroed, the same IPNetwork rule the store side uses) whose
+           address family matches the listen (the store's D4 check): a mismatched family would bind one family
+           while the in-app CIDR check rejects the other, 403-ing every network client — fail-closed but silently
+           non-functional, so degrade with a clear reason instead. */
+        if (string.IsNullOrWhiteSpace(network.AllowFrom) || !IPNetwork.TryParse(network.AllowFrom.Trim(), out var cidr))
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.AllowFromInvalid);
+        }
+
+        if (cidr.BaseAddress.AddressFamily != listenIp.AddressFamily)
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.AllowFromInvalid);
+        }
+
+        return new McpBindDecision(McpBindMode.NetworkAndLoopback, McpBindReason.NetworkExposed);
+    }
+
+    /// <summary>
+    /// Whether to ALSO bind the two loopback families beside the network listener (D3-e). Skipped when the
+    /// listen value is itself a loopback address (already covered) or a wildcard (<c>0.0.0.0</c> covers IPv4
+    /// loopback, <c>::</c> the IPv6) — binding an explicit loopback on the same port then would collide
+    /// (WSAEADDRINUSE). For a specific LAN IP the loopback binds are added so a local client resolving
+    /// "localhost" still reaches the server (which, in network mode, now also requires the token).
+    /// </summary>
+    internal static bool ShouldAddLoopbackListeners(IPAddress listenIp)
+        => !(IPAddress.IsLoopback(listenIp)
+             || listenIp.Equals(IPAddress.Any)
+             || listenIp.Equals(IPAddress.IPv6Any));
+
+    /// <summary>
+    /// PURE in-app CIDR check (D3-c, Round-4 #2): is <paramref name="remoteIp"/> allowed? Loopback
+    /// (<c>127.0.0.0/8</c> or <c>::1</c>, incl. an IPv4-mapped-IPv6 form) is ALWAYS allowed — it is not in
+    /// <paramref name="allowedCidr"/>, so otherwise the loopback bind's local clients would get 403. Everything
+    /// else must fall inside the CIDR. A null remote (unverifiable origin) fails closed.
+    /// </summary>
+    internal static bool IsRemoteAddressAllowed(IPAddress? remoteIp, IPNetwork allowedCidr)
+    {
+        if (remoteIp is null)
+        {
+            return false;
+        }
+
+        var ip = remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp;
+        return IPAddress.IsLoopback(ip) || allowedCidr.Contains(ip);
+    }
+
+    /// <summary>
+    /// PURE bearer-token check (D3-b): true only when <paramref name="authorizationHeaderValue"/> carries a
+    /// <c>Bearer</c> token that matches <paramref name="expectedToken"/>. The compare is constant-time over
+    /// SHA-256 digests, so it leaks neither the token nor its length; empty/missing/mismatch all return false,
+    /// and an empty <paramref name="expectedToken"/> never authorizes. Has NO notion of the remote address —
+    /// so there is structurally no loopback exemption (the loopback guard).
+    /// </summary>
+    internal static bool IsBearerTokenAuthorized(string? authorizationHeaderValue, string expectedToken)
+    {
+        if (string.IsNullOrEmpty(expectedToken))
+        {
+            return false;
+        }
+
+        var presented = ExtractBearerToken(authorizationHeaderValue);
+        if (string.IsNullOrEmpty(presented))
+        {
+            return false;
+        }
+
+        /* Hash both to a fixed 32 bytes so FixedTimeEquals is constant-time regardless of token length. */
+        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expectedToken));
+        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
+        return CryptographicOperations.FixedTimeEquals(expectedHash, presentedHash);
+    }
+
+    /// <summary>Extracts the token from a <c>Bearer &lt;token&gt;</c> Authorization header (scheme
+    /// case-insensitive); null when absent, malformed, or the token part is blank. PURE.</summary>
+    internal static string? ExtractBearerToken(string? authorizationHeaderValue)
+    {
+        if (string.IsNullOrWhiteSpace(authorizationHeaderValue))
+        {
+            return null;
+        }
+
+        const string prefix = "Bearer ";
+        var value = authorizationHeaderValue.Trim();
+        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var token = value.Substring(prefix.Length).Trim();
+        return string.IsNullOrEmpty(token) ? null : token;
+    }
+
+    /// <summary>
+    /// PURE severity map for a <see cref="ResolveMcpBind"/> reason (Round-4 #7): the fail-closed degrades
+    /// (<see cref="McpBindReason.ListenInvalid"/>/<see cref="McpBindReason.TokenMissing"/>/
+    /// <see cref="McpBindReason.AllowFromInvalid"/>) are <see cref="LogLevel.Critical"/>, the BYO "ignored"
+    /// notice (<see cref="McpBindReason.ManagedModeRequired"/>) is <see cref="LogLevel.Warning"/>, and the
+    /// non-degrade reasons (<see cref="McpBindReason.NetworkExposed"/>/<see cref="McpBindReason.LoopbackByDefault"/>)
+    /// are silent (null). <see cref="LogBindReason"/> drives its emit level off this, so the level and the
+    /// message can never diverge.
+    /// </summary>
+    internal static LogLevel? MapBindReasonSeverity(McpBindReason reason) => reason switch
+    {
+        McpBindReason.ListenInvalid => LogLevel.Critical,
+        McpBindReason.TokenMissing => LogLevel.Critical,
+        McpBindReason.AllowFromInvalid => LogLevel.Critical,
+        McpBindReason.ManagedModeRequired => LogLevel.Warning,
+        _ => null,
+    };
+
+    /// <summary>Emits the <see cref="ResolveMcpBind"/> reason at its mapped severity (Round-4 #7). Silent for
+    /// the non-degrade reasons (the network-exposed line is logged at start with the real bind).</summary>
+    private void LogBindReason(McpConfig mcp, McpBindReason reason)
+    {
+        var level = MapBindReasonSeverity(reason);
+        if (level is null)
+        {
+            /* NetworkExposed is announced at start with the real address; LoopbackByDefault is the silent,
+               byte-for-byte-today path. */
+            return;
+        }
+
+        switch (reason)
+        {
+            case McpBindReason.ListenInvalid:
+                _logger.Log(level.Value,
+                    "MCP network exposure requested but mcp.network.listen '{Listen}' is not a valid IP address — " +
+                    "refusing to expose; binding loopback-only. Use a specific IP (e.g. 192.168.1.205), or 0.0.0.0 for all interfaces.",
+                    mcp.Network?.Listen);
+                break;
+
+            case McpBindReason.TokenMissing:
+                _logger.Log(level.Value,
+                    "MCP network exposure requested (mcp.network.listen is non-loopback) but no bearer token is set — " +
+                    "refusing to expose; binding loopback-only. Set mcp.network.encryptedToken (via --encrypt-password) or mcp.network.token.");
+                break;
+
+            case McpBindReason.AllowFromInvalid:
+                _logger.Log(level.Value,
+                    "MCP network exposure requested but mcp.network.allowFrom '{AllowFrom}' is not a valid CIDR or its " +
+                    "address family does not match mcp.network.listen — refusing to expose; binding loopback-only. " +
+                    "Use e.g. 192.168.1.0/24 (host bits zeroed, same family as listen).",
+                    mcp.Network?.AllowFrom);
+                break;
+
+            case McpBindReason.ManagedModeRequired:
+                _logger.Log(level.Value,
+                    "mcp.network.* is set but postgres.managed = false — MCP network exposure is managed-mode only and is " +
+                    "ignored; your own PostgreSQL/reverse proxy governs BYO exposure. Binding loopback-only.");
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /* ---------------------------------------------------------------------------------------------------
+       Best-effort MCP firewall reconcile (D1, defense-in-depth). Reuses the store's tested, pure command
+       builders (DarlingManagedPostgres.BuildFirewall*Command) for the exact scoped rule shape AND its shared
+       PowerShell runner (RunPowerShellAsync) — no duplication, no timeout divergence. Never fatal.
+       --------------------------------------------------------------------------------------------------- */
+
+    /// <summary>The scoped MCP firewall rule name (idempotent by DisplayName), port-specific and distinct
+    /// from the store's rule so the two endpoints reconcile independently.</summary>
+    private static string McpFirewallRuleName(int port) => $"PerformanceMonitor Darling MCP (port {port})";
+
+    [SupportedOSPlatform("windows")]
+    private async Task ReconcileMcpFirewallAsync(int port, bool enable, string? cidr, CancellationToken cancellationToken)
+    {
+        var ruleName = McpFirewallRuleName(port);
+        var command = enable
+            ? DarlingManagedPostgres.BuildFirewallEnableCommand(ruleName, port, cidr!)
+            : DarlingManagedPostgres.BuildFirewallDisableCommand(ruleName);
+
+        try
+        {
+            var (exitCode, output) = await DarlingManagedPostgres.RunPowerShellAsync(command, cancellationToken);
+            if (exitCode == 0)
+            {
+                _logger.LogInformation("MCP firewall rule '{Rule}' {Verb}.", ruleName, enable ? "ensured" : "removed");
+            }
+            else if (enable)
+            {
+                _logger.LogWarning(
+                    "Could not configure the MCP firewall automatically (exit {ExitCode}: {Output}). Run this in an elevated PowerShell:\n{Command}",
+                    exitCode, output, command);
+            }
+            else
+            {
+                _logger.LogWarning("Could not remove the MCP firewall rule automatically (exit {ExitCode}: {Output}).", exitCode, output);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (enable)
+            {
+                _logger.LogWarning(
+                    "Could not configure the MCP firewall automatically ({Message}). Run this in an elevated PowerShell:\n{Command}",
+                    ex.Message, command);
+            }
+            else
+            {
+                _logger.LogWarning("Could not remove the MCP firewall rule automatically ({Message}).", ex.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Managed mode's first-boot race, handled: the dedicated <c>mcp</c>-role credential appears only after
+    /// the worker's initdb + migration + role provisioning finish (LATER than the owner credential), so poll
+    /// up to ~5 minutes (60 × 5s) instead of racing it, then stand down with a pointer at the worker log —
+    /// fail-closed (MCP just does not start; it self-heals on the next restart once the credential exists).
+    /// The 5-minute budget tolerates a cold first boot (unpack + initdb + start + migrate + provision) that
+    /// can exceed the owner credential's shorter window (Round-4 #8).
     /// </summary>
     [SupportedOSPlatform("windows")]
     private async Task<string?> WaitForManagedConnectionStringAsync(PostgresConfig config, CancellationToken stoppingToken)
     {
-        for (var attempt = 0; attempt < 24; attempt++)
+        for (var attempt = 0; attempt < 60; attempt++)
         {
-            var connectionString = DarlingManagedPostgres.TryBuildConnectionStringFromStoredCredential(config);
+            var connectionString = DarlingManagedPostgres.TryBuildMcpConnectionStringFromStoredCredential(config);
             if (connectionString is not null)
             {
                 return connectionString;
@@ -246,7 +701,7 @@ public sealed class DarlingMcpHostService : BackgroundService
 
             if (attempt == 0)
             {
-                _logger.LogInformation("Waiting for the managed Postgres credential (first-run initialization) before starting the MCP server");
+                _logger.LogInformation("Waiting for the managed Postgres mcp-role credential (first-run initialization) before starting the MCP server");
             }
 
             try
@@ -259,7 +714,7 @@ public sealed class DarlingMcpHostService : BackgroundService
             }
         }
 
-        _logger.LogError("MCP server not started: the managed Postgres credential never appeared — see the worker log for the bootstrap failure");
+        _logger.LogError("MCP server not started: the managed Postgres mcp-role credential never appeared — see the worker log for the bootstrap failure");
         return null;
     }
 

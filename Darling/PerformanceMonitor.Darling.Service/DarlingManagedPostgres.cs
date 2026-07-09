@@ -1436,7 +1436,13 @@ public sealed class DarlingManagedPostgres
         }
     }
 
-    private static async Task<(int ExitCode, string Output)> RunPowerShellAsync(string command, CancellationToken cancellationToken)
+    /// <summary>
+    /// Runs a PowerShell command with captured, interleaved stdout+stderr and the shared status timeout.
+    /// <c>internal</c> so the (separate) MCP host can reuse it for its own best-effort firewall reconcile
+    /// (darling-network-endpoints) instead of duplicating it — the firewall command shape is shared via the
+    /// pure <see cref="BuildFirewallEnableCommand"/>/<see cref="BuildFirewallDisableCommand"/> builders.
+    /// </summary>
+    internal static async Task<(int ExitCode, string Output)> RunPowerShellAsync(string command, CancellationToken cancellationToken)
     {
         /* Full path (not the bare name) — avoid a PATH/CWD hijack of "powershell.exe", matching the house
            style of full-pathing every PG tool. */
