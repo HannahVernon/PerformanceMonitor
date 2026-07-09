@@ -324,8 +324,9 @@ public partial class MainWindow
         try
         {
             await _dataService.DeleteMonitoredServerAsync(server.ServerId);
-            /* Drop the viewer-local favorite pin too. */
+            /* Drop the viewer-local favorite pin + alert-acknowledgement state for the gone server. */
             _serverStore.SetFavorite(server.ServerName, false);
+            _alertStateService.RemoveServerState(server.ServerId);
             await LoadServersAsync(preserveSelection: true);
             StatusText.Text = $"Removed '{server.DisplayName}' from monitoring.";
         }
