@@ -97,6 +97,22 @@ public sealed class DarlingNetworkTests
            space inside a value would make postgres re-split it, and backslashes must not survive. */
         Assert.DoesNotContain("'", opts, StringComparison.Ordinal);
         Assert.DoesNotContain("\\", opts, StringComparison.Ordinal);
+
+        /* A specific IP keeps the loopback prefix (the service connects over 127.0.0.1). */
+        Assert.Contains("listen_addresses=127.0.0.1,192.168.1.205", opts, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("::")]
+    public void BuildServerRuntimeOptions_Wildcard_EmittedAlone_NoLoopbackPrefix(string wildcard)
+    {
+        /* A wildcard binds every interface; on Windows PG cannot ALSO bind 127.0.0.1 on the same port
+           (WSAEADDRINUSE), so it must be emitted ALONE — never "127.0.0.1,<wildcard>". */
+        var opts = DarlingManagedPostgres.BuildServerRuntimeOptions(5641, wildcard, null, null);
+
+        Assert.Equal($"-p 5641 -c listen_addresses={wildcard}", opts);
+        Assert.DoesNotContain($"127.0.0.1,{wildcard}", opts, StringComparison.Ordinal);
     }
 
     /* ---- pg_hba reconcile (DarlingManagedPostgres.ReconcilePgHba / BuildNetworkPgHbaLine) ---- */
@@ -188,6 +204,22 @@ public sealed class DarlingNetworkTests
         Assert.Equal(disabledOnce, disabledTwice);
         Assert.Contains("hostssl otherdb reporting 10.9.0.0/16 scram-sha-256", disabledOnce, StringComparison.Ordinal);
         Assert.DoesNotContain("darling viewer", disabledOnce, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NeedsPgHbaReconcile_SkipsUntouchedStore_ReconcilesDisableEdgeAndExposure()
+    {
+        /* Never-exposed store, not exposing now -> NO reconcile (don't rewrite an untouched operator file). */
+        Assert.False(DarlingManagedPostgres.NeedsPgHbaReconcile(SampleHba, null));
+
+        /* A disable edge: the managed block is still present -> reconcile (to remove it), even with desired=null. */
+        var withBlock = DarlingManagedPostgres.ReconcilePgHba(
+            SampleHba, DarlingManagedPostgres.BuildNetworkPgHbaLine("viewer", "192.168.1.0/24"));
+        Assert.True(DarlingManagedPostgres.NeedsPgHbaReconcile(withBlock, null));
+
+        /* Exposing (a rule to apply) -> always reconcile, even with no prior block. */
+        Assert.True(DarlingManagedPostgres.NeedsPgHbaReconcile(
+            SampleHba, DarlingManagedPostgres.BuildNetworkPgHbaLine("viewer", "192.168.1.0/24")));
     }
 
     /* ---- firewall command builders (idempotent named shape) ---- */

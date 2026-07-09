@@ -887,21 +887,43 @@ public sealed class DarlingManagedPostgres
     }
 
     /// <summary>
-    /// Idempotent self-signed server cert for store TLS verify-full (D6): reuse the existing PEM pair
-    /// (delete both to rotate), else generate a ~10-year cert with BOTH an iPAddress SAN (the listen IP,
-    /// for verify-full by IP) AND a dnsName SAN (the machine hostname, so the operator can connect by name
-    /// if IP-SAN validation ever disappoints, or when listen=0.0.0.0). The private key is written
-    /// unencrypted PKCS#8 PEM (what postgres reads) and hardened NON-interactive (SYSTEM + Administrators +
-    /// service account only) — the postmaster reads it, never an interactive user.
+    /// Idempotent self-signed server cert for store TLS verify-full (D6): reuse the existing PEM pair ONLY if
+    /// it loads AND its SAN still covers the current <paramref name="listenIp"/> (delete both to rotate),
+    /// else generate a ~10-year cert with BOTH an iPAddress SAN (the listen IP, for verify-full by IP) AND a
+    /// dnsName SAN (the machine hostname, so the operator can connect by name if IP-SAN validation ever
+    /// disappoints, or when listen=0.0.0.0). Regenerating on an UNREADABLE cert avoids fail-DEADing an
+    /// <c>ssl=on</c> start (exposure-adjacent, Round 4 #3); regenerating on a SAN/IP change keeps verify-full
+    /// working after a bind-IP change. The private key is written unencrypted PKCS#8 PEM (what postgres reads)
+    /// and hardened NON-interactive (SYSTEM + Administrators + service account only) — the postmaster reads
+    /// it, never an interactive user.
     /// </summary>
-    private void EnsureServerCertificate(IPAddress listenIp, string certPath, string keyPath)
+    internal void EnsureServerCertificate(IPAddress listenIp, string certPath, string keyPath)
     {
         if (File.Exists(certPath) && File.Exists(keyPath))
         {
-            /* Reuse (delete-to-rotate). Re-harden the key every start (self-healing), same discipline as the
-               credential files. */
-            TryHardenCredentialFile(keyPath, allowInteractiveRead: false);
-            return;
+            try
+            {
+                using var existing = X509Certificate2.CreateFromPem(File.ReadAllText(certPath));
+                if (CertificateSanCoversIp(existing, listenIp))
+                {
+                    /* Present + loads + the SAN covers this listen IP -> reuse (delete-to-rotate). Re-harden
+                       the key every start (self-healing), same discipline as the credential files. */
+                    TryHardenCredentialFile(keyPath, allowInteractiveRead: false);
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Regenerating the store TLS cert: the existing cert's SAN does not cover the current listen IP {Ip} (a listen change needs a fresh cert for verify-full).",
+                    listenIp);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    "Regenerating the store TLS cert: the existing {Cert} could not be read ({Message}) — an unreadable cert would fail-dead an ssl=on start.",
+                    certPath, ex.Message);
+            }
+
+            /* Fall through to regenerate — overwrites both files (the service account owns them). */
         }
 
         using var rsa = RSA.Create(2048);
@@ -932,6 +954,44 @@ public sealed class DarlingManagedPostgres
     }
 
     /// <summary>
+    /// Whether <paramref name="certificate"/> carries an iPAddress SAN equal to <paramref name="listenIp"/>
+    /// — the reuse gate for the store TLS cert (verify-full pins the IP SAN). Reads the SAN extension
+    /// (OID 2.5.29.17) via <see cref="X509SubjectAlternativeNameExtension.EnumerateIPAddresses"/>. Pure.
+    /// </summary>
+    internal static bool CertificateSanCoversIp(X509Certificate2 certificate, IPAddress listenIp)
+    {
+        X509SubjectAlternativeNameExtension? san = null;
+        foreach (var extension in certificate.Extensions)
+        {
+            if (!string.Equals(extension.Oid?.Value, "2.5.29.17", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            /* cert.Extensions may hand back a generic X509Extension for the SAN; re-materialize the typed
+               view from its raw DER when so, so EnumerateIPAddresses is always available. */
+            san = extension as X509SubjectAlternativeNameExtension
+                ?? new X509SubjectAlternativeNameExtension(extension.RawData);
+            break;
+        }
+
+        if (san is null)
+        {
+            return false;
+        }
+
+        foreach (var ip in san.EnumerateIPAddresses())
+        {
+            if (ip.Equals(listenIp))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Builds the pg_ctl <c>-o</c> runtime-override payload (the INNER string, no wrapping quotes):
     /// always <c>-p {port} -c listen_addresses=127.0.0.1</c> (loopback FIRST, forced every start — <c>-c</c>
     /// outranks postgresql.auto.conf), the network IP appended when exposed, and the ssl trio
@@ -945,10 +1005,24 @@ public sealed class DarlingManagedPostgres
         var builder = new StringBuilder();
         builder.Append("-p ").Append(port);
 
-        builder.Append(" -c listen_addresses=127.0.0.1");
-        if (!string.IsNullOrWhiteSpace(networkListenIp))
+        var listen = networkListenIp?.Trim();
+        if (string.IsNullOrEmpty(listen))
         {
-            builder.Append(',').Append(networkListenIp.Trim());
+            /* Disabled / none: loopback only. */
+            builder.Append(" -c listen_addresses=127.0.0.1");
+        }
+        else if (string.Equals(listen, "0.0.0.0", StringComparison.Ordinal) || string.Equals(listen, "::", StringComparison.Ordinal))
+        {
+            /* A wildcard binds EVERY interface; on Windows PG cannot ALSO bind 127.0.0.1 on the same port
+               (no SO_REUSEADDR -> WSAEADDRINUSE, then it silently falls back to loopback-only while we log
+               "exposed"). Emit the wildcard ALONE — 0.0.0.0 already covers IPv4 loopback for the service's
+               own connection. */
+            builder.Append(" -c listen_addresses=").Append(listen);
+        }
+        else
+        {
+            /* A specific IP: bind loopback (the service's own connection) FIRST, then the network IP. */
+            builder.Append(" -c listen_addresses=127.0.0.1,").Append(listen);
         }
 
         if (!string.IsNullOrWhiteSpace(sslCertFile) && !string.IsNullOrWhiteSpace(sslKeyFile))
@@ -970,6 +1044,18 @@ public sealed class DarlingManagedPostgres
     /// </summary>
     internal static string BuildNetworkPgHbaLine(string role, string cidr)
         => $"hostssl {DatabaseName} {role} {cidr} scram-sha-256";
+
+    /// <summary>
+    /// Whether the live pg_hba.conf needs reconciling (darling-network-endpoints): true when there is a rule
+    /// to apply (<paramref name="desiredLine"/> non-null = exposing) OR the file still carries a Darling
+    /// managed block to remove (<see cref="PgHbaBeginMarker"/> present = a disable edge). FALSE for a store
+    /// that was never exposed and is not being exposed — so the reconcile skips reading-normalizing-rewriting
+    /// an untouched operator pg_hba (<see cref="ReconcilePgHba"/> normalizes CRLF and trims trailing blanks,
+    /// which would otherwise be a spurious write + reload + firewall spawn on a store never opted in). Pure.
+    /// </summary>
+    public static bool NeedsPgHbaReconcile(string current, string? desiredLine)
+        => desiredLine is not null
+        || (current is not null && current.Contains(PgHbaBeginMarker, StringComparison.Ordinal));
 
     /// <summary>
     /// Pure marked-block reconcile for pg_hba.conf (D5): returns <paramref name="existing"/> with the
@@ -1049,40 +1135,44 @@ public sealed class DarlingManagedPostgres
             var desiredLine = exposed ? BuildNetworkPgHbaLine(plan.Role!, plan.Cidr!) : null;
 
             var hbaPath = Path.Combine(_dataDirectory, "pg_hba.conf");
-            var changed = false;
-            if (File.Exists(hbaPath))
+            if (!File.Exists(hbaPath))
             {
-                var current = await File.ReadAllTextAsync(hbaPath, cancellationToken);
-                var updated = ReconcilePgHba(current, desiredLine);
-                if (!string.Equals(current, updated, StringComparison.Ordinal))
+                if (exposed)
                 {
-                    await File.WriteAllTextAsync(hbaPath, updated, cancellationToken);
-                    changed = true;
-                    var (reloadCode, reloadOutput) = await RunToolAsync(
-                        Path.Combine(binDirectory, "pg_ctl.exe"),
-                        $"reload -D \"{_dataDirectory}\"",
-                        s_statusTimeout,
-                        cancellationToken);
-                    if (reloadCode != 0)
-                    {
-                        _logger.LogCritical(
-                            "pg_ctl reload failed (exit {ExitCode}) after updating pg_hba.conf — the network access change may not be live: {Output}",
-                            reloadCode, reloadOutput);
-                    }
+                    _logger.LogWarning("pg_hba.conf not found at {Path} — cannot apply the network access rule", hbaPath);
                 }
-            }
-            else if (exposed)
-            {
-                _logger.LogWarning("pg_hba.conf not found at {Path} — cannot apply the network access rule", hbaPath);
+
+                return;
             }
 
-            /* Byte-for-byte today's behavior for a store that was never exposed and stays loopback-only: no
-               managed block existed, none was written, so skip the live verify / adopted guard / firewall
-               churn entirely. The disable-reconcile (removing a stale block on an exposed->disabled edge)
-               DID set changed=true, so a previously-exposed cluster still runs the full close below. */
-            if (!exposed && !changed)
+            var current = await File.ReadAllTextAsync(hbaPath, cancellationToken);
+
+            /* Byte-for-byte today's behavior: a never-exposed store (no managed block) that is not being
+               exposed needs NO reconcile — do not even normalize/rewrite pg_hba (ReconcilePgHba would trim
+               CRLF + trailing blanks and trigger a spurious write + reload + verify + firewall spawn on a
+               store the operator never opted into). A disable EDGE (marker still present) or an exposure to
+               apply (desiredLine non-null) both return true and run the full reconcile below. */
+            if (!NeedsPgHbaReconcile(current, desiredLine))
             {
                 return;
+            }
+
+            var updated = ReconcilePgHba(current, desiredLine);
+            var changed = !string.Equals(current, updated, StringComparison.Ordinal);
+            if (changed)
+            {
+                await File.WriteAllTextAsync(hbaPath, updated, cancellationToken);
+                var (reloadCode, reloadOutput) = await RunToolAsync(
+                    Path.Combine(binDirectory, "pg_ctl.exe"),
+                    $"reload -D \"{_dataDirectory}\"",
+                    s_statusTimeout,
+                    cancellationToken);
+                if (reloadCode != 0)
+                {
+                    _logger.LogCritical(
+                        "pg_ctl reload failed (exit {ExitCode}) after updating pg_hba.conf — the network access change may not be live: {Output}",
+                        reloadCode, reloadOutput);
+                }
             }
 
             /* Verify the live rules match intent (reload can report success on a rejected malformed file). */
@@ -1341,10 +1431,15 @@ public sealed class DarlingManagedPostgres
 
     private static async Task<(int ExitCode, string Output)> RunPowerShellAsync(string command, CancellationToken cancellationToken)
     {
+        /* Full path (not the bare name) — avoid a PATH/CWD hijack of "powershell.exe", matching the house
+           style of full-pathing every PG tool. */
+        var powershellPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo
         {
-            FileName = "powershell.exe",
+            FileName = powershellPath,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,

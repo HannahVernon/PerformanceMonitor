@@ -53,8 +53,10 @@ namespace PerformanceMonitor.Darling.Service;
 /// checks drive it exactly as <see cref="DarlingManagedPostgres.EnsureConfAppended"/> uses its conf
 /// marker.</para>
 ///
-/// <para>Windows-only (the DPAPI credential files), like every DPAPI surface here. Bring-your-own
-/// Postgres provisions the same roles out-of-band via <c>Darling/tools/provision-roles.sql</c>.</para>
+/// <para>Windows-only (the DPAPI credential files), like every DPAPI surface here. Managed mode provisions
+/// all three roles (admin/viewer/mcp); bring-your-own Postgres provisions admin + viewer out-of-band via
+/// <c>Darling/tools/provision-roles.sql</c> and correctly has NO <c>mcp</c> role — the network MCP endpoint
+/// is managed-mode-only, so a BYO operator's own PostgreSQL governs any MCP-role exposure it wants.</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 public static class DarlingManagedRoles
@@ -378,6 +380,9 @@ GRANT SELECT ON ALL TABLES IN SCHEMA {config}  TO {mcp};
 {mcpColumnAcl}
 GRANT INSERT ON {collect}.analysis_findings TO {mcp};
 GRANT INSERT ON {config}.analysis_muted TO {mcp};
+-- NOT granted (Round 4 #9): collect.analysis_state. MCP analyze_server calls AnalyzeAsync directly and never
+-- writes the analysis_state marker -- only the worker's RunAnalysisPassAsync wrapper does, as the owner
+-- (the Analysis project cannot reference the Service-project observability writer), so mcp needs no grant on it.
 GRANT CONNECT ON DATABASE {database} TO {mcp};
 ";
     }

@@ -10,6 +10,8 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -205,6 +207,63 @@ public sealed class DarlingManagedPostgresTests
             Assert.Equal(password, parsed.Password);
             Assert.Equal("darling", parsed.Database);
             Assert.Equal("collect,config,public", parsed.SearchPath);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CertificateSanCoversIp_TrueForItsIpSan_FalseForOthers()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddIpAddress(IPAddress.Parse("192.168.1.205"));
+        san.AddDnsName("test-host");
+        request.CertificateExtensions.Add(san.Build());
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+
+        Assert.True(DarlingManagedPostgres.CertificateSanCoversIp(cert, IPAddress.Parse("192.168.1.205")));
+        Assert.False(DarlingManagedPostgres.CertificateSanCoversIp(cert, IPAddress.Parse("192.168.1.206")));
+        Assert.False(DarlingManagedPostgres.CertificateSanCoversIp(cert, IPAddress.Parse("10.0.0.1")));
+    }
+
+    [Fact]
+    public void EnsureServerCertificate_ReusesWhenSanCoversIp_RegeneratesOnIpChange()
+    {
+        /* The key hardening (DarlingFileSecurity.HardenFile) is Windows-only. */
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Cert key hardening is Windows-only.");
+
+        var root = Directory.CreateTempSubdirectory("darling-cert-");
+        try
+        {
+            var dataDirectory = Path.Combine(root.FullName, "pg");
+            Directory.CreateDirectory(dataDirectory);
+            var config = new PostgresConfig { Managed = true, Port = 5993, DataDirectory = dataDirectory };
+            var pg = new DarlingManagedPostgres(config, NullLogger.Instance);
+
+            /* The cert/key live beside the data directory, same convention as the credential files. */
+            var certPath = Path.Combine(root.FullName, DarlingManagedPostgres.ServerCertFileName);
+            var keyPath = Path.Combine(root.FullName, DarlingManagedPostgres.ServerKeyFileName);
+
+            /* First generation for IP A. */
+            pg.EnsureServerCertificate(IPAddress.Parse("192.168.1.205"), certPath, keyPath);
+            Assert.True(File.Exists(certPath) && File.Exists(keyPath));
+            var certA = File.ReadAllBytes(certPath);
+
+            /* Same IP -> reuse (SAN covers it), bytes unchanged. */
+            pg.EnsureServerCertificate(IPAddress.Parse("192.168.1.205"), certPath, keyPath);
+            Assert.Equal(certA, File.ReadAllBytes(certPath));
+
+            /* Different IP -> regenerate (stale SAN would break verify-full); the new cert covers B. */
+            pg.EnsureServerCertificate(IPAddress.Parse("192.168.1.206"), certPath, keyPath);
+            var certB = File.ReadAllBytes(certPath);
+            Assert.NotEqual(certA, certB);
+            using var reloaded = X509Certificate2.CreateFromPem(File.ReadAllText(certPath));
+            Assert.True(DarlingManagedPostgres.CertificateSanCoversIp(reloaded, IPAddress.Parse("192.168.1.206")));
+            Assert.False(DarlingManagedPostgres.CertificateSanCoversIp(reloaded, IPAddress.Parse("192.168.1.205")));
         }
         finally
         {
