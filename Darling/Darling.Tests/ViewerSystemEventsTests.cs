@@ -453,4 +453,113 @@ public sealed class ViewerSystemEventsTests
         Assert.Equal(1500L, io.LongestPendingRequestsDurationMs);
         Assert.Equal(@"D:\data\prod.mdf", io.LongestPendingRequestsFilePath);
     }
+
+    // ── Default Trace (always-on server events; the Default Trace sub-tab) ──
+
+    [Fact]
+    public void DefaultTraceEventsByWindowSql_ReadsBaseTable_DeSkewsLocalEventTimeToUtc_AndWindows()
+    {
+        var sql = ViewerDataService.DefaultTraceEventsByWindowSql;
+
+        /* Base default_trace_events (no v_ view, like server_properties). */
+        Assert.Contains("FROM default_trace_events", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("v_default_trace_events", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE dte.server_id = $1", sql, StringComparison.Ordinal);
+
+        /* The Default Trace StartTime is server-LOCAL, so de-skew to naive-UTC via the collected offset
+           BEFORE windowing + returning — so the row shares the system_health rows' UTC frame (the cross-frame
+           caveat: system_health.event_time is UTC, default_trace.event_time is local). */
+        Assert.Contains("server_properties", sql, StringComparison.Ordinal);
+        Assert.Contains("utc_offset_minutes", sql, StringComparison.Ordinal);
+        Assert.Contains("event_time - make_interval(mins => svr.offset_minutes) AS event_time_utc", sql, StringComparison.Ordinal);
+        Assert.Contains("event_time - make_interval(mins => svr.offset_minutes) >= $2", sql, StringComparison.Ordinal);
+        Assert.Contains("event_time - make_interval(mins => svr.offset_minutes) <= $3", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY event_time_utc DESC", sql, StringComparison.Ordinal);
+
+        /* Postgres dialect, positional params. */
+        Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("getdate", sql.ToLowerInvariant());
+        Assert.Contains("$1", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DefaultTraceEventsRead_ReferencesColumnsThatExistInTheGeneratedTable()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(DefaultTraceEventsCollector.Instance);
+        Assert.Equal("default_trace_events", DefaultTraceEventsCollector.Instance.TargetTable);
+
+        foreach (var col in new[]
+        {
+            "event_time", "event_name", "database_name", "object_name", "login_name", "host_name",
+            "application_name", "spid", "duration_us", "integer_data", "severity", "error_number",
+            "text_data", "server_id",
+        })
+        {
+            Assert.Contains(col, ddl, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void DefaultTraceEventRow_EventTimeLocal_SharesTheSystemHealthUtcFrame()
+    {
+        /* A default-trace row and a system_health row built from the SAME UTC instant must render the SAME
+           machine-local time — the loader de-skews the local StartTime to UTC, so both are in the UTC frame
+           and a merged System Events timeline sorts them correctly (the coordinator's cross-frame caveat). */
+        var utc = new DateTime(2026, 7, 9, 12, 0, 5, DateTimeKind.Utc);
+        var expected = ViewerTimeHelper.ForDisplay(utc).ToString("yyyy-MM-dd HH:mm:ss");
+
+        var dt = new DefaultTraceEventRow(
+            utc, DefaultTraceEventCategory.AutoGrowShrink, "Data File Auto Grow", "SalesDB", null,
+            "app", "APPHOST", "SqlClient", 55, 1_500_000, 256, null, null, null);
+        var sh = new SchedulerIssueRow(new SchedulerIssueRecord { EventTime = utc });
+
+        Assert.Equal(expected, dt.EventTimeLocal);
+        Assert.Equal(sh.EventTimeLocal, dt.EventTimeLocal);
+    }
+
+    [Fact]
+    public void DefaultTraceEventRow_NullEventTime_RendersEmpty() =>
+        Assert.Equal(string.Empty, new DefaultTraceEventRow(
+            null, DefaultTraceEventCategory.ErrorLog, "ErrorLog", null, null, null, null, null, null, null, null, 20, 823, "x").EventTimeLocal);
+
+    [Fact]
+    public void DefaultTraceEventRow_ProjectsCategory_DurationMs_AndGrowthMbForAutogrowOnly()
+    {
+        var grow = new DefaultTraceEventRow(
+            null, DefaultTraceEventCategory.AutoGrowShrink, "Data File Auto Grow", "db", null, null, null, null,
+            null, 1_500_000, 256, null, null, null);
+        Assert.Equal("AutoGrowShrink", grow.Category);
+        Assert.Equal(1500m, grow.DurationMs);   /* 1_500_000 us / 1000 */
+        Assert.Equal(2.0m, grow.GrowthMb);       /* 256 pages * 8 KB / 1024 */
+
+        /* Growth is null for non-autogrow categories even when integer_data is present. */
+        var err = new DefaultTraceEventRow(
+            null, DefaultTraceEventCategory.ErrorLog, "ErrorLog", null, null, null, null, null,
+            null, null, 256, 20, 823, "boom");
+        Assert.Equal("ErrorLog", err.Category);
+        Assert.Null(err.GrowthMb);
+    }
+
+    [Fact]
+    public void DefaultTrace_SignificantSet_GatesErrorLogBySeverity_KeepsEveryOtherCategory()
+    {
+        /* The significant set the loader keeps (the default-trace feed for the tab): every curated category
+           is significant as collected, except ErrorLog which must clear the severity floor. */
+        var events = new (string EventName, int? Severity)[]
+        {
+            ("Data File Auto Grow", null),   // stall           -> significant
+            ("Object:Altered", null),        // schema DDL      -> significant
+            ("Audit DBCC Event", null),      // security audit  -> significant
+            ("Server Memory Change", null),  // memory change   -> significant
+            ("ErrorLog", 20),                // severe ErrorLog -> significant
+            ("ErrorLog", 10),                // routine ErrorLog -> DROPPED
+        };
+
+        var significant = events
+            .Where(e => SystemEventSignificance.IsSignificantDefaultTraceEvent(e.EventName, e.Severity))
+            .ToList();
+
+        Assert.Equal(5, significant.Count);
+        Assert.DoesNotContain(significant, e => e.EventName == "ErrorLog" && e.Severity == 10);
+    }
 }

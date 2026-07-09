@@ -197,6 +197,71 @@ public sealed class IoIssuesRow(IoIssuesRecord record)
     public string? LongestPendingRequestsFilePath => record.LongestPendingRequestsFilePath;
 }
 
+/// <summary>
+/// One significant Default Trace event (the Default Trace sub-tab) — the always-on server events no DMV
+/// captures (file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits, Server
+/// Memory Change), classified via <see cref="SystemEventSignificance.ClassifyDefaultTraceEvent"/>. Unlike the
+/// system_health rows, whose <c>event_time</c> is the UTC XE @timestamp, the Default Trace StartTime is the
+/// monitored server's LOCAL wall clock — <see cref="ViewerDataService.GetDefaultTraceEventsAsync"/> de-skews
+/// it to naive-UTC in SQL (via <c>server_properties.utc_offset_minutes</c>) BEFORE it reaches this row, so
+/// <see cref="EventTimeLocal"/> renders through the same <see cref="SystemEventRowFormat.Local"/> as every
+/// other System Events grid and sorts consistently with them (the inverse of the MCP reader's bounds
+/// conversion; mirrors CorrelatedTimelineLanesControl's CPU-lane de-skew).
+/// </summary>
+public sealed class DefaultTraceEventRow
+{
+    public DefaultTraceEventRow(
+        DateTime? eventTimeUtc,
+        DefaultTraceEventCategory category,
+        string? eventName,
+        string? databaseName,
+        string? objectName,
+        string? loginName,
+        string? hostName,
+        string? applicationName,
+        int? spid,
+        long? durationUs,
+        long? integerData,
+        int? severity,
+        int? errorNumber,
+        string? textData)
+    {
+        EventTimeLocal = SystemEventRowFormat.Local(eventTimeUtc);
+        Category = category.ToString();
+        EventName = eventName;
+        DatabaseName = databaseName;
+        ObjectName = objectName;
+        LoginName = loginName;
+        HostName = hostName;
+        ApplicationName = applicationName;
+        Spid = spid;
+        /* Duration (ms) is meaningful for the auto-grow/shrink stalls; growth (MB) is the 8-KB page count on
+           those (IntegerData) converted, and only meaningful for that category. */
+        DurationMs = durationUs.HasValue ? durationUs.Value / 1000.0m : (decimal?)null;
+        GrowthMb = category == DefaultTraceEventCategory.AutoGrowShrink && integerData.HasValue
+            ? integerData.Value * 8.0m / 1024.0m
+            : (decimal?)null;
+        Severity = severity;
+        ErrorNumber = errorNumber;
+        TextData = textData;
+    }
+
+    public string EventTimeLocal { get; }
+    public string Category { get; }
+    public string? EventName { get; }
+    public string? DatabaseName { get; }
+    public string? ObjectName { get; }
+    public string? LoginName { get; }
+    public string? HostName { get; }
+    public string? ApplicationName { get; }
+    public int? Spid { get; }
+    public decimal? DurationMs { get; }
+    public decimal? GrowthMb { get; }
+    public int? Severity { get; }
+    public int? ErrorNumber { get; }
+    public string? TextData { get; }
+}
+
 public sealed partial class ViewerDataService
 {
     /// <summary>
@@ -518,5 +583,95 @@ public sealed partial class ViewerDataService
             records.Sort((a, b) => Nullable.Compare(a.EventTime, b.EventTime));
             return records;
         }, cancellationToken);
+    }
+
+    // ── Default Trace (always-on server events; the Default Trace sub-tab) ──
+
+    /// <summary>
+    /// Significant Default Trace events for the window, newest first. Reads the BASE <c>default_trace_events</c>
+    /// table (no <c>v_*</c> view, like server_properties). The Default Trace StartTime is the monitored
+    /// server's LOCAL wall clock, so this DE-SKEWS <c>event_time</c> to naive-UTC in SQL — subtracting the
+    /// collected <c>server_properties.utc_offset_minutes</c> (single-row COALESCE CTE, 0 when none yet) — and
+    /// windows on that de-skewed UTC value against the naive-UTC bounds ($2/$3), so the returned timestamps
+    /// share the same UTC frame as the system_health rows and render/sort consistently on the tab. $1
+    /// server_id, $2/$3 window (naive UTC). The ErrorLog severity gate is applied on read
+    /// (<see cref="SystemEventSignificance.IsSignificantDefaultTraceEvent"/>), the same significance surface
+    /// the tab uses everywhere else.
+    /// </summary>
+    public const string DefaultTraceEventsByWindowSql = """
+        WITH svr AS (
+            SELECT COALESCE((
+                SELECT sp.utc_offset_minutes
+                FROM server_properties AS sp
+                WHERE sp.server_id = $1
+                AND   sp.utc_offset_minutes IS NOT NULL
+                ORDER BY sp.collection_time DESC
+                LIMIT 1), 0) AS offset_minutes
+        )
+        SELECT
+            dte.event_time - make_interval(mins => svr.offset_minutes) AS event_time_utc,
+            dte.event_name,
+            dte.database_name,
+            dte.object_name,
+            dte.login_name,
+            dte.host_name,
+            dte.application_name,
+            dte.spid,
+            dte.duration_us,
+            dte.integer_data,
+            dte.severity,
+            dte.error_number,
+            dte.text_data
+        FROM default_trace_events AS dte, svr
+        WHERE dte.server_id = $1
+        AND   dte.event_time - make_interval(mins => svr.offset_minutes) >= $2
+        AND   dte.event_time - make_interval(mins => svr.offset_minutes) <= $3
+        ORDER BY event_time_utc DESC
+        """;
+
+    /// <summary>
+    /// Significant Default Trace events for the window (server-local StartTime de-skewed to UTC in SQL),
+    /// gated by <see cref="SystemEventSignificance.IsSignificantDefaultTraceEvent"/> and tagged with their
+    /// category. The gate is cheap (a category + severity check), so it runs inline on the read rather than
+    /// off-thread like the XML-shredding system_health categories.
+    /// </summary>
+    public async Task<List<DefaultTraceEventRow>> GetDefaultTraceEventsAsync(
+        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<DefaultTraceEventRow>();
+
+        await using var command = _dataSource.CreateCommand(DefaultTraceEventsByWindowSql);
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(startUtc, DateTimeKind.Unspecified) });
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified) });
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var eventTimeUtc = reader.IsDBNull(0) ? (DateTime?)null : reader.GetDateTime(0);
+            var eventName = reader.IsDBNull(1) ? null : reader.GetString(1);
+            var severity = reader.IsDBNull(10) ? (int?)null : reader.GetInt32(10);
+
+            if (!SystemEventSignificance.IsSignificantDefaultTraceEvent(eventName, severity))
+                continue;
+
+            rows.Add(new DefaultTraceEventRow(
+                eventTimeUtc,
+                SystemEventSignificance.ClassifyDefaultTraceEvent(eventName),
+                eventName,
+                reader.IsDBNull(2) ? null : reader.GetString(2),   /* database_name */
+                reader.IsDBNull(3) ? null : reader.GetString(3),   /* object_name */
+                reader.IsDBNull(4) ? null : reader.GetString(4),   /* login_name */
+                reader.IsDBNull(5) ? null : reader.GetString(5),   /* host_name */
+                reader.IsDBNull(6) ? null : reader.GetString(6),   /* application_name */
+                reader.IsDBNull(7) ? (int?)null : reader.GetInt32(7),   /* spid */
+                reader.IsDBNull(8) ? (long?)null : reader.GetInt64(8),  /* duration_us */
+                reader.IsDBNull(9) ? (long?)null : reader.GetInt64(9),  /* integer_data */
+                severity,
+                reader.IsDBNull(11) ? (int?)null : reader.GetInt32(11), /* error_number */
+                reader.IsDBNull(12) ? null : reader.GetString(12)));    /* text_data */
+        }
+
+        return rows;
     }
 }

@@ -65,13 +65,27 @@ public sealed class DefaultTraceEventsCollector : CollectorDefinitionBase<Defaul
     }
 
     /// <summary>
-    /// First-run cutoff sentinel: with no watermark yet, collect everything still on disk in the trace's
+    /// TRUE-first-run cutoff sentinel: on a genuine first run (no watermark AND no prior SUCCESS for this
+    /// collector+server in the host's collection_log) collect everything still on disk in the trace's
     /// rollover files rather than only a recent window (the default trace persists real history; the XE
     /// ring-buffer collectors' 10-minute fallback would silently drop it). Mirrors the Dashboard collector's
     /// <c>CONVERT(datetime2(7), '19000101')</c> first-run branch. Bounded in practice by the trace's total
-    /// on-disk size (default 5 files × 20 MB) and the curated low-volume event set.
+    /// on-disk size (default 5 files × 20 MB) and the curated low-volume event set. NOT used when the hot
+    /// store was merely emptied by retention/archival — see <see cref="ArchivalEmptyFallbackHours"/>.
     /// </summary>
     private static readonly DateTime FirstRunCutoff = new(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The BOUNDED fallback window (hours) used when the watermark is null but the collector HAS succeeded
+    /// before (<see cref="CollectorContext.HasCollectedBefore"/>) — i.e. the hot store was emptied by
+    /// retention/archival, not a true first run. Re-reading all on-disk .trc history here would re-insert
+    /// events already aged into Lite's parquet archive, and <c>v_default_trace_events</c> UNIONs hot + parquet
+    /// with no dedup, so those rows would DOUBLE-COUNT and recur every archival cycle. This window is far
+    /// smaller than any retention horizon, so on an archival-emptied (necessarily quiet) server it re-reads
+    /// only genuinely-recent events — which by definition are not yet archived — and never re-scans parquet.
+    /// Ports the Dashboard's collection_log-SUCCESS guard (install/29_collect_default_trace.sql lines 116-117).
+    /// </summary>
+    private const int ArchivalEmptyFallbackHours = 24;
 
     public sealed class Row
     {
@@ -199,17 +213,25 @@ OPTION(RECOMPILE);";
 
     public override CollectorQuery BuildQuery(CollectorContext context)
     {
-        /* Per-server excluded databases apply to the trace's own DatabaseName (parameterized, version-safe).
-           Spliced onto its own line (empty => nothing added) so the generated T-SQL stays readable. */
-        var (exclusionClause, exclusionParameters) =
-            DatabaseExclusionFilter.Build(context.ExcludedDatabases, "ft.DatabaseName");
+        /* Per-server excluded databases apply to the trace's own NULLABLE DatabaseName — NULL-safe, so
+           server-level curated events (Server Memory Change, server-scoped audits/ErrorLog) that carry a
+           NULL DatabaseName are KEPT rather than silently dropped by a bare `NOT IN`. Spliced onto its own
+           line (empty => nothing added) so the generated T-SQL stays readable. */
+        var (exclusionClause, exclusionParameters) = BuildNullSafeDatabaseExclusion(context.ExcludedDatabases);
         var exclusionSplice = exclusionClause.Length == 0 ? string.Empty : "\r\n" + exclusionClause;
 
         var text = string.Format(CultureInfo.InvariantCulture, QueryTemplate, exclusionSplice);
 
-        /* Watermark = newest already-collected event_time from the host store; first run collects all
-           on-disk history (see FirstRunCutoff). */
-        var cutoffTime = context.Watermark ?? FirstRunCutoff;
+        /* Cutoff selection (the Dashboard's first-run guard, ported):
+             - watermark present            -> steady state, collect newer than it.
+             - watermark null, never succeeded -> TRUE first run, collect ALL on-disk .trc history.
+             - watermark null, HAS succeeded   -> hot store emptied by retention/archival, use a BOUNDED
+                                                  recent window so we never re-scan .trc events already in
+                                                  the parquet archive (which the v_ view would double-count). */
+        var cutoffTime = context.Watermark
+            ?? (context.HasCollectedBefore
+                ? context.CollectionTime.AddHours(-ArchivalEmptyFallbackHours)
+                : FirstRunCutoff);
 
         var parameters = new List<CollectorParameter>(exclusionParameters.Count + 1)
         {
@@ -218,6 +240,34 @@ OPTION(RECOMPILE);";
         parameters.AddRange(exclusionParameters);
 
         return new CollectorQuery(text, parameters);
+    }
+
+    /// <summary>
+    /// The NULL-safe per-server excluded-database predicate for the trace's nullable <c>DatabaseName</c>.
+    /// Server-level curated events carry a NULL DatabaseName; a bare <c>NOT IN (...)</c> evaluates NULL to
+    /// UNKNOWN and would silently drop the WHOLE category whenever any database is excluded, so this keeps
+    /// NULL rows (<c>ft.DatabaseName IS NULL OR ...</c>) — matching the Dashboard's id-based, NULL-safe
+    /// exclusion. The shared <see cref="DatabaseExclusionFilter"/> is deliberately NOT reused here: its
+    /// other callers filter a non-nullable name column and must keep emitting the bare form.
+    /// </summary>
+    private static (string Clause, List<CollectorParameter> Parameters) BuildNullSafeDatabaseExclusion(
+        IReadOnlyList<string> excludedDatabaseNames)
+    {
+        if (excludedDatabaseNames.Count == 0)
+        {
+            return (string.Empty, new List<CollectorParameter>());
+        }
+
+        var paramNames = new List<string>(excludedDatabaseNames.Count);
+        var parameters = new List<CollectorParameter>(excludedDatabaseNames.Count);
+        for (int i = 0; i < excludedDatabaseNames.Count; i++)
+        {
+            var p = $"@excl_db_{i}";
+            paramNames.Add(p);
+            parameters.Add(new CollectorParameter(p, excludedDatabaseNames[i], CollectorParameterType.NVarChar128));
+        }
+
+        return ($"AND (ft.DatabaseName IS NULL OR ft.DatabaseName NOT IN ({string.Join(", ", paramNames)}))", parameters);
     }
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]

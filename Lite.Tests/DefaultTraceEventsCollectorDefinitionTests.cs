@@ -35,7 +35,8 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
         bool isAzureManagedInstance = false,
         DateTime? watermark = null,
         DateTime? collectionTime = null,
-        string[]? excludedDatabases = null)
+        string[]? excludedDatabases = null,
+        bool hasCollectedBefore = false)
         => new()
         {
             ServerId = 42,
@@ -44,6 +45,7 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
             Deltas = s_deltas,
             Target = new CollectorTargetInfo { IsAzureSqlDb = isAzureSqlDb, IsAzureManagedInstance = isAzureManagedInstance },
             Watermark = watermark,
+            HasCollectedBefore = hasCollectedBefore,
             ExcludedDatabases = excludedDatabases ?? Array.Empty<string>(),
         };
 
@@ -113,25 +115,37 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
     }
 
     [Fact]
-    public void BuildQuery_Watermark_FirstRunCollectsAllHistory_NotTheTenMinuteFallback()
+    public void BuildQuery_Watermark_AndFirstRunGuard_TrueFirstRunVsArchivalEmpty()
     {
+        /* Steady state: the watermark is used verbatim. */
         var watermark = new DateTime(2026, 7, 9, 11, 55, 0, DateTimeKind.Utc);
         var withWatermark = DefaultTraceEventsCollector.Instance.BuildQuery(MakeContext(watermark: watermark));
         var cutoff = withWatermark.Parameters.Single(p => p.Name == "@cutoff_time");
         Assert.Equal(watermark, cutoff.Value);
         Assert.Equal(CollectorParameterType.DateTime2, cutoff.Type);
 
-        /* First run (no watermark) collects EVERYTHING still on disk — a far-past sentinel, NOT the XE
-           collectors' collectionTime.AddMinutes(-10). */
         var collectionTime = new DateTime(2026, 7, 9, 12, 0, 0, DateTimeKind.Utc);
-        var firstRun = DefaultTraceEventsCollector.Instance.BuildQuery(MakeContext(collectionTime: collectionTime));
+
+        /* TRUE first run (no watermark, never succeeded): collect EVERYTHING still on disk — a far-past
+           sentinel, NOT the XE collectors' collectionTime.AddMinutes(-10). */
+        var firstRun = DefaultTraceEventsCollector.Instance.BuildQuery(
+            MakeContext(collectionTime: collectionTime, hasCollectedBefore: false));
         var firstCutoff = (DateTime)firstRun.Parameters.Single(p => p.Name == "@cutoff_time").Value!;
         Assert.Equal(new DateTime(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc), firstCutoff);
         Assert.NotEqual(collectionTime.AddMinutes(-10), firstCutoff);
+
+        /* Archival-emptied hot store (no watermark, but HAS succeeded before): a BOUNDED recent window
+           (24 h), NEVER all-history — so we don't re-scan .trc events already in the parquet archive, which
+           v_default_trace_events (hot UNION parquet, no dedup) would double-count. The Dashboard's guard. */
+        var archivalEmpty = DefaultTraceEventsCollector.Instance.BuildQuery(
+            MakeContext(collectionTime: collectionTime, hasCollectedBefore: true));
+        var boundedCutoff = (DateTime)archivalEmpty.Parameters.Single(p => p.Name == "@cutoff_time").Value!;
+        Assert.Equal(collectionTime.AddHours(-24), boundedCutoff);
+        Assert.NotEqual(new DateTime(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc), boundedCutoff);
     }
 
     [Fact]
-    public void BuildQuery_SplicesExcludedDatabases_OnTraceDatabaseName()
+    public void BuildQuery_ExcludedDatabases_IsNullSafe_KeepsServerLevelEvents()
     {
         var noExclusion = DefaultTraceEventsCollector.Instance.BuildQuery(MakeContext());
         Assert.DoesNotContain("@excl_db_0", noExclusion.Text, StringComparison.Ordinal);
@@ -139,7 +153,14 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
 
         var withExclusion = DefaultTraceEventsCollector.Instance.BuildQuery(
             MakeContext(excludedDatabases: new[] { "ReportingDB", "ScratchDB" }));
-        Assert.Contains("ft.DatabaseName NOT IN (@excl_db_0, @excl_db_1)", withExclusion.Text, StringComparison.Ordinal);
+
+        /* NULL-safe: a server-level event with a NULL DatabaseName (Server Memory Change, server-scoped
+           audit/ErrorLog) is KEPT — a bare `NOT IN` would evaluate NULL to UNKNOWN and silently drop the
+           whole category whenever any database is excluded. */
+        Assert.Contains(
+            "AND (ft.DatabaseName IS NULL OR ft.DatabaseName NOT IN (@excl_db_0, @excl_db_1))",
+            withExclusion.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("AND ft.DatabaseName NOT IN", withExclusion.Text, StringComparison.Ordinal); /* never the bare form */
         Assert.Equal(3, withExclusion.Parameters.Count); /* @cutoff_time + two excluded names */
         Assert.Contains(withExclusion.Parameters, p => p.Name == "@excl_db_0" && (string?)p.Value == "ReportingDB");
         Assert.Contains(withExclusion.Parameters, p => p.Name == "@excl_db_1" && (string?)p.Value == "ScratchDB");
