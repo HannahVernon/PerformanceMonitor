@@ -570,6 +570,11 @@ public sealed class ViewerConnectionTimeoutTests
         Assert.Equal("127.0.0.1", builder.Host);
         Assert.Equal(5641, builder.Port);
         Assert.Equal("darling", builder.Database);
+        /* Search Path is the load-bearing one: it resolves the bare table names to the collect/config schemas
+           on every connection, so if the base DbConnectionStringBuilder round-trip ever mangled it, every
+           managed-path query would silently break. Pin that it survives verbatim (the reason we detect + emit
+           via the base builder rather than NpgsqlConnectionStringBuilder). */
+        Assert.Equal("collect,config,public", builder.SearchPath);
     }
 
     [Fact]
