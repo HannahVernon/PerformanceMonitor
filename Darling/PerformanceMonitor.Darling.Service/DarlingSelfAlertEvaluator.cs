@@ -328,6 +328,8 @@ internal sealed class DarlingSelfAlertEvaluator
     /// restore is not a silent resolution). State is tracked even while alerts are disabled so re-enabling
     /// resumes from the correct baseline; only delivery is gated — on the master switch AND the V20
     /// connection-change notify toggle (<see cref="DarlingAlertSettings.NotifyConnectionChanges"/>).
+    /// The delivery portion is failure-isolated (a throwing mute-check can't propagate out of the un-guarded
+    /// sweep loop and stop the fleet); the state machine advances first, so isolation never corrupts the edge.
     /// </summary>
     public async Task ApplyConnectionOutcomeAsync(
         int serverId, string serverName, bool online, string? error, CancellationToken cancellationToken)
@@ -352,25 +354,43 @@ internal sealed class DarlingSelfAlertEvaluator
             return;
         }
 
-        if (online && previous == ConnectionState.Offline)
+        /* Isolate the DELIVERY portion (the state machine already advanced above, so wrapping only the fire can
+           never corrupt the edge). FireAsync's pre-deliver mute-check seam (_isAlertMuted → a mute rule's
+           Matches()) is NOT internally isolated, and this method is called straight from the un-guarded sweep
+           loop (DarlingWorker.TryConnectAsync) — whose OWN catch RE-CALLS this with online:false — so a throwing
+           mute-check here would propagate out of that catch and stop collection for the whole fleet. Same
+           isolation the sibling self-alerts use (EvaluateStoreAlertsAsync / EvaluateDiskPressureAsync).
+           Cancellation still propagates. */
+        try
         {
-            /* Severity null → the shared AlertSeverity map renders "Server Restored" green/RESOLVED. */
-            await FireAsync(
-                key, serverName, "Server Restored", "Online", "Online",
-                detail: $"{serverName}: connection restored",
-                severity: null,
-                shortMessage: "connection restored", cancellationToken);
+            if (online && previous == ConnectionState.Offline)
+            {
+                /* Severity null → the shared AlertSeverity map renders "Server Restored" green/RESOLVED. */
+                await FireAsync(
+                    key, serverName, "Server Restored", "Online", "Online",
+                    detail: $"{serverName}: connection restored",
+                    severity: null,
+                    shortMessage: "connection restored", cancellationToken);
+            }
+            else if (!online && previous == ConnectionState.Online)
+            {
+                var reason = string.IsNullOrWhiteSpace(error) ? "Connection failed" : error!;
+                await FireAsync(
+                    key, serverName, "Server Unreachable", reason, "Online",
+                    detail: reason,
+                    severity: AlertSeverityLevel.Critical,
+                    shortMessage: reason, cancellationToken);
+            }
+            /* previous == Unknown → baseline only (no fire). */
         }
-        else if (!online && previous == ConnectionState.Online)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            var reason = string.IsNullOrWhiteSpace(error) ? "Connection failed" : error!;
-            await FireAsync(
-                key, serverName, "Server Unreachable", reason, "Online",
-                detail: reason,
-                severity: AlertSeverityLevel.Critical,
-                shortMessage: reason, cancellationToken);
+            throw;
         }
-        /* previous == Unknown → baseline only (no fire). */
+        catch (Exception ex)
+        {
+            _logger?.LogError("[{Server}] Connection-change self-alert delivery failed: {Message}", serverName, ex.Message);
+        }
     }
 
     /* ---------------- store disk pressure (fleet-level, polled) ---------------- */

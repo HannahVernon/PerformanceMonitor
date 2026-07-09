@@ -413,6 +413,34 @@ public sealed class DarlingSelfAlertTests
         Assert.Empty(h.Deliverer.Outcomes);
     }
 
+    [Fact]
+    public async Task Connection_ThrowingMuteCheck_IsIsolated_AndStateStillAdvances()
+    {
+        /* The connection edge fires straight from the un-guarded sweep loop (TryConnectAsync), whose OWN catch
+           re-calls this with online:false — so a throwing mute-check here (a broken rule's Matches()) would
+           propagate out and stop collection for the whole fleet. The delivery portion must isolate it, and
+           because the state machine advances BEFORE the fire, the edge must still transition correctly. */
+        var h = new Harness();
+        var e = h.Build();
+
+        /* Online baseline (Unknown->Online is silent; no mute check reached). */
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* Now the mute check throws: Online->Offline WOULD fire "Server Unreachable" -> mute throws.
+           Must NOT propagate (would kill the loop), and nothing is delivered (throw precedes delivery). */
+        h.MuteThrows = true;
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: false, error: "boom", Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* The state STILL advanced to Offline despite the throwing fire: with the mute check healthy again,
+           Offline->Online now fires "Server Restored" — it would NOT if the state were stuck at Online. */
+        h.MuteThrows = false;
+        await e.ApplyConnectionOutcomeAsync(ServerId, Name, online: true, error: null, Ct);
+        var restored = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Server Restored", restored.MetricName);
+    }
+
     /* ---------------- store disk pressure (fleet-level, pure decision) ---------------- */
 
     private const long Gib = 1024L * 1024 * 1024;
