@@ -441,12 +441,21 @@
                                                   ToolTip="Remove this server's whole-server alert silence">
                                             <MenuItem.Icon><TextBlock Text="&#x1F514;"/></MenuItem.Icon>
                                         </MenuItem>
+                                        <Separator/>
+                                        <!-- Acknowledge: quiet the alert badge (viewer-local) until a NEW alert
+                                             arrives — unlike Silence, it does NOT stop the service's delivery. -->
+                                        <MenuItem Header="Acknowledge Alerts" Click="ServerContextMenu_Acknowledge_Click"
+                                                  IsEnabled="{Binding HasAttention}"
+                                                  ToolTip="Quiet this server's alert badge until a new alert arrives (delivery continues)">
+                                            <MenuItem.Icon><TextBlock Text="&#x2713;" FontWeight="Bold"/></MenuItem.Icon>
+                                        </MenuItem>
                                     </ContextMenu>
                                 </Border.ContextMenu>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
@@ -489,8 +498,36 @@
                                                FontSize="11"
                                                Foreground="{DynamicResource ForegroundMutedBrush}"/>
 
+                                    <!-- Alert "needs attention" badge: count of active (unacknowledged, un-muted)
+                                         alerts for this server, hidden when none. Colour follows severity
+                                         (Critical→ErrorBrush, Warning→WarningBrush), matching Lite's
+                                         deadlock→red / else→orange-red tab badge. Acknowledge via the row's
+                                         right-click "Acknowledge Alerts" (or the tab-header badge). -->
+                                    <Border Grid.Column="2" Grid.RowSpan="2"
+                                            CornerRadius="7" Padding="5,0" MinWidth="16" Height="15"
+                                            VerticalAlignment="Center" Margin="4,0,0,0"
+                                            ToolTip="{Binding AttentionTooltip}">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Setter Property="Background" Value="{DynamicResource WarningBrush}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasAttention}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding AttentionSeverity}" Value="Critical">
+                                                        <Setter Property="Background" Value="{DynamicResource ErrorBrush}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <TextBlock Text="{Binding AttentionText}"
+                                                   Foreground="White" FontSize="9" FontWeight="Bold"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+
                                     <!-- Favorite star -->
-                                    <TextBlock Grid.Column="2" Grid.RowSpan="2"
+                                    <TextBlock Grid.Column="3" Grid.RowSpan="2"
                                                Text="★" FontSize="16"
                                                VerticalAlignment="Center"
                                                Foreground="#FFD700"

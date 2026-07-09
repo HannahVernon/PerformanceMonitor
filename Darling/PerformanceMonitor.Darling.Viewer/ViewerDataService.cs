@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data.Common;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
@@ -129,6 +130,61 @@ public sealed class DarlingServer : INotifyPropertyChanged
         var freshness = ServerSummaryItem.ClassifyFreshness(lastCollectionUtc, nowUtc);
         IsOnline = freshness != ServerFreshness.Offline;
         HasCollectorErrors = freshness == ServerFreshness.Stale;
+    }
+
+    // ── Per-server alert "needs attention" badge state (from the polled alert history, ack-aware) ──
+    // Set by MainWindow.UpdateServerAttention from the ServerAttentionDeriver output, gated through the
+    // viewer-local ViewerAlertStateService (ack-until-worse). Drives the sidebar row badge, mirroring
+    // Lite's per-tab alert badge.
+
+    private int _attentionCount;
+    private bool _attentionIsCritical;
+    private string? _attentionTooltip;
+
+    /// <summary>Active (unacknowledged, un-muted) alert count for this server; 0 hides the badge.</summary>
+    public int AttentionCount => _attentionCount;
+
+    /// <summary>True when the badge should show (there is at least one active alert to surface).</summary>
+    public bool HasAttention => _attentionCount > 0;
+
+    /// <summary>The badge count text, capped like Lite's tab badge ("99+" past 99).</summary>
+    public string AttentionText => _attentionCount > 99
+        ? "99+"
+        : _attentionCount.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Badge severity vocabulary — "Critical" / "Warning" / "None" — so the sidebar row's DataTriggers colour
+    /// the badge (ErrorBrush / WarningBrush) the same way Lite maps deadlock→red, else→orange-red.
+    /// </summary>
+    public string AttentionSeverity => _attentionCount <= 0
+        ? "None"
+        : (_attentionIsCritical ? "Critical" : "Warning");
+
+    /// <summary>The badge tooltip: the metric breakdown for this server (empty when no attention).</summary>
+    public string? AttentionTooltip => _attentionTooltip;
+
+    /// <summary>
+    /// Updates the sidebar alert badge in place (no list reset). Pass <paramref name="count"/> 0 to clear it
+    /// (acknowledged / no alerts). Raises change notifications only when something actually changed.
+    /// </summary>
+    public void SetAttention(int count, bool isCritical, string? tooltip)
+    {
+        if (_attentionCount == count
+            && _attentionIsCritical == isCritical
+            && string.Equals(_attentionTooltip, tooltip, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _attentionCount = count;
+        _attentionIsCritical = isCritical;
+        _attentionTooltip = tooltip;
+
+        OnPropertyChanged(nameof(AttentionCount));
+        OnPropertyChanged(nameof(HasAttention));
+        OnPropertyChanged(nameof(AttentionText));
+        OnPropertyChanged(nameof(AttentionSeverity));
+        OnPropertyChanged(nameof(AttentionTooltip));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

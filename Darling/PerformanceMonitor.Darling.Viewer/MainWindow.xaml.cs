@@ -276,6 +276,11 @@ public partial class MainWindow : Window
             var existing = await _dataService.GetAlertHistoryAsync(
                 DateTime.UtcNow - s_alertPollWindow, serverId: null, limit: 500);
             _toastCoordinator.Prime(existing);
+
+            /* Paint the per-server "needs attention" badges straight away from the same read (they are a
+               state indicator, not a nudge, so — unlike the toast prime — startup SHOULD surface them),
+               rather than leaving the sidebar/tabs blank until the first refresh tick ~30s later. */
+            UpdateServerAttention(existing);
         }
         catch (Exception ex)
         {
@@ -336,9 +341,9 @@ public partial class MainWindow : Window
         _ = RefreshServerStatusAsync();
         _ = RefreshStoreSizeAsync();
 
-        /* Poll alert history for new rows to surface as tray toasts, regardless of the visible tab (the
-           headless stand-in for Lite's in-process alert-engine toast). */
-        _ = PollAlertToastsAsync();
+        /* Poll alert history once, regardless of the visible tab: refresh the per-server "needs attention"
+           badges (sidebar + open tabs) and surface genuinely-new rows as tray toasts. */
+        _ = PollAlertsAsync();
 
         /* Two tabs opt out of this timer: Recommendations refreshes on tab-activation only (matching Lite —
            analysis findings change on the service's 30-minute cadence, so an interval auto-refresh is pointless
@@ -404,21 +409,26 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Polls recent, non-dismissed alert history and surfaces genuinely-new rows as tray toasts — the
-    /// headless viewer's substitute for Lite's in-process alert-engine toast (the service already delivered
-    /// them via email/Teams/Slack; this is the supplementary in-app nudge). Duplicate-suppression and the
-    /// per-condition "Tray notification cooldown" gate live in <see cref="AlertToastCoordinator"/>; this only
-    /// does the read + render. Skips when notifications are disabled and never throws (a broken poll must not
-    /// disturb the refresh loop).
+    /// Polls recent, non-dismissed alert history once per fleet-refresh tick and drives BOTH the per-server
+    /// "needs attention" badges and the tray toasts off that single read (no second query):
+    /// <list type="bullet">
+    /// <item>the badges (sidebar rows + open tab headers) are refreshed every poll regardless of the toast
+    /// master switch — they reflect alert HISTORY, the same rows the Alert History tab shows, gated only by the
+    /// viewer-local ack-until-worse state (<see cref="ViewerAlertStateService"/>);</item>
+    /// <item>the tray toasts — the headless substitute for Lite's in-process alert-engine toast — fire only when
+    /// notifications are enabled and the tray is up, with duplicate-suppression + the per-condition "Tray
+    /// notification cooldown" gate in <see cref="AlertToastCoordinator"/>.</item>
+    /// </list>
+    /// Never throws (a broken poll must not disturb the refresh loop).
     /// </summary>
-    private async Task PollAlertToastsAsync()
+    private async Task PollAlertsAsync()
     {
-        if (_dataService is null || _trayService is null || _toastCoordinator is null)
+        if (_dataService is null || _toastCoordinator is null)
         {
             return;
         }
 
-        if (!_alertsEnabled || _alertPollInFlight)
+        if (_alertPollInFlight)
         {
             return;
         }
@@ -429,15 +439,22 @@ public partial class MainWindow : Window
             var rows = await _dataService.GetAlertHistoryAsync(
                 DateTime.UtcNow - s_alertPollWindow, serverId: null, limit: 500);
 
-            var cooldown = TimeSpan.FromMinutes(Math.Max(0, _alertCooldownMinutes));
-            foreach (var row in _toastCoordinator.SelectToasts(rows, DateTime.UtcNow, cooldown))
+            /* Per-server badges: always, independent of the toast master switch. */
+            UpdateServerAttention(rows);
+
+            /* Tray toasts: only when notifications are enabled and the tray exists. */
+            if (_alertsEnabled && _trayService is not null)
             {
-                ShowAlertToast(row);
+                var cooldown = TimeSpan.FromMinutes(Math.Max(0, _alertCooldownMinutes));
+                foreach (var row in _toastCoordinator.SelectToasts(rows, DateTime.UtcNow, cooldown))
+                {
+                    ShowAlertToast(row);
+                }
             }
         }
         catch (Exception ex)
         {
-            ViewerLogger.Warn("AlertToasts", $"Alert-toast poll failed: {ex.Message}");
+            ViewerLogger.Warn("AlertToasts", $"Alert poll failed: {ex.Message}");
         }
         finally
         {
@@ -789,12 +806,15 @@ public partial class MainWindow : Window
 
         MainTabs.Items.Remove(tab);
         _openServerTabs.Remove(serverId);
+        /* NOTE: the acknowledgement state is deliberately NOT dropped here — unlike Lite, the viewer's badge also
+           lives on the always-present sidebar row, so an ack must survive a tab close. It is cleared only when the
+           server is removed from the managed set (see ServerContextMenu_Remove_Click). */
     }
 
     /// <summary>
-    /// The per-server tab header: the server name plus a close button. Mirrors Lite's CreateTabHeader
-    /// shape (minus the alert badge, which the viewer doesn't surface on tabs yet); the close affordance
-    /// uses the shared theme's TabCloseButton style.
+    /// The per-server tab header: the server name, the alert badge (hidden until the server has active alerts —
+    /// left-click or right-click to acknowledge), and a close button. Mirrors Lite's CreateTabHeader shape; the
+    /// close affordance uses the shared theme's TabCloseButton style.
     /// </summary>
     private StackPanel CreateServerTabHeader(DarlingServer server)
     {
@@ -806,6 +826,9 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 4, 0)
         });
+
+        /* The per-server alert badge (collapsed until UpdateServerAttention lights it). */
+        AttachAlertBadge(panel, server.ServerId);
 
         var closeButton = new Button
         {
