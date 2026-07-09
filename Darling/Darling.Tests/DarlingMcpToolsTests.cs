@@ -244,6 +244,7 @@ public sealed class DarlingMcpToolsTests
     private const string EmptyServerName = "darling-mcp-empty";
     private const string TestStoryHash = "an4-mcp-e2e-hash";
     private const string AllServersStoryHash = "an4-mcp-e2e-all-servers-hash";
+    private const string RemediableStoryHash = "an4-mcp-e2e-remediable-hash";
 
     private static readonly int TestServerId = ServerIdHelper.GetDeterministicHashCode(TestServerName);
     private static readonly int EmptyServerId = ServerIdHelper.GetDeterministicHashCode(EmptyServerName);
@@ -320,11 +321,15 @@ public sealed class DarlingMcpToolsTests
                 {
                     "finding_id", "analysis_time", "severity", "confidence", "category",
                     "root_fact", "leaf_fact", "story_path", "story_path_hash", "fact_count",
-                    "incident_id", "co_fired", "time_range", "advice"
+                    "incident_id", "co_fired", "time_range", "advice", "remediation_command"
                 })
                 {
                     Assert.True(finding.TryGetProperty(field, out _), $"envelope field '{field}' missing");
                 }
+
+                /* This planted finding has no persisted RemediationAction, so its copy-paste command
+                   is present-but-null (JsonOptions does not ignore nulls). */
+                Assert.Equal(JsonValueKind.Null, finding.GetProperty("remediation_command").ValueKind);
 
                 Assert.Equal(TestStoryHash, finding.GetProperty("story_path_hash").GetString());
                 Assert.Equal(2.5, finding.GetProperty("severity").GetDouble());
@@ -338,6 +343,59 @@ public sealed class DarlingMcpToolsTests
 
                 /* A lone finding has no co-fired siblings — present and empty, not omitted. */
                 Assert.Empty(finding.GetProperty("co_fired").EnumerateArray());
+            }
+
+            /* ---- remediation_command: a finding whose persisted RemediationAction is a DESTRUCTIVE
+                    RCSI shape renders the full copy-paste command — with the two-sided risk-disclosure
+                    comment header — through the MCP envelope, byte-identical to the shared renderer the
+                    viewer cards use; the action-less finding above stays null. Proves finding.Remediation
+                    is hydrated on the read path (PgFindingStore col 19) and rendered read-only. */
+            var remediable = new AnalysisFinding
+            {
+                FindingId = CollectionIdGenerator.Next(),
+                AnalysisTime = analysisTime,
+                ServerId = TestServerId,
+                ServerName = TestServerName,
+                TimeRangeStart = analysisTime.AddHours(-4),
+                TimeRangeEnd = analysisTime,
+                Severity = 3.0,
+                Confidence = 0.95,
+                Category = "config",
+                StoryPath = "DB_CONFIG",
+                StoryPathHash = RemediableStoryHash,
+                StoryText = "AN4 e2e planted remediable finding",
+                RootFactKey = "DB_CONFIG",
+                RootFactValue = 1.0,
+                FactCount = 1,
+                IncidentId = "an4-incident-2",
+                Remediation = new RemediationAction(
+                    "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+                    RcsiTargets: new[] { new RcsiTarget("StackOverflow", new RcsiInactionFigures(50, 3, 70)) })
+            };
+            await store.InsertFindingsAsync(
+                new List<AnalysisFinding> { remediable },
+                new AnalysisContext { ServerId = TestServerId, ServerName = TestServerName });
+
+            var withCommandJson = await DarlingMcpTools.GetAnalysisFindings(
+                analysisService, postgres, TestServerName, 24);
+
+            using (var doc = JsonDocument.Parse(withCommandJson))
+            {
+                var all = doc.RootElement.GetProperty("findings").EnumerateArray().ToList();
+                Assert.Equal(2, all.Count);
+                Assert.All(all, f => Assert.True(f.TryGetProperty("remediation_command", out _)));
+
+                var withAction = all.Single(f => f.GetProperty("story_path_hash").GetString() == RemediableStoryHash);
+                var command = withAction.GetProperty("remediation_command").GetString();
+                Assert.False(string.IsNullOrEmpty(command));
+                Assert.StartsWith("/*", command, StringComparison.Ordinal);
+                Assert.Contains("Risks of MAKING this change:", command!, StringComparison.Ordinal);
+                Assert.Contains("Risks of NOT making this change:", command!, StringComparison.Ordinal);
+                Assert.Contains("ALTER DATABASE [StackOverflow] SET READ_COMMITTED_SNAPSHOT ON;", command!, StringComparison.Ordinal);
+                Assert.Equal(FactRemediation.RenderCopyPasteCommand(remediable.Remediation), command);
+
+                var actionLess = all.Single(f => f.GetProperty("story_path_hash").GetString() == TestStoryHash);
+                Assert.Equal(JsonValueKind.Null, actionLess.GetProperty("remediation_command").ValueKind);
             }
 
             /* ---- the #1224 miss vocabulary: a registered server with no findings returns
