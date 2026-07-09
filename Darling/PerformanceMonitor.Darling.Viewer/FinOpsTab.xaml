@@ -982,6 +982,17 @@
                                     <DataGridTextColumn Header="Compress Max GB" Binding="{Binding CompressionMaxSavingsGb, StringFormat=N2}" Width="120" ElementStyle="{StaticResource NumericCell}"/>
                                     <DataGridTextColumn Header="Total Min GB" Binding="{Binding TotalMinSavingsGb, StringFormat=N2}" Width="100" ElementStyle="{StaticResource NumericCell}"/>
                                     <DataGridTextColumn Header="Total Max GB" Binding="{Binding TotalMaxSavingsGb, StringFormat=N2}" Width="100" ElementStyle="{StaticResource NumericCell}"/>
+                                    <!-- Workload-impact columns (sp_IndexCleanup #index_reporting_stats parity): pre-formatted strings,
+                                         'N/A' on the overall row; numeric SortMemberPath keys keep sorting correct. Reads shows the
+                                         seeks/scans/lookups breakdown (left-aligned text, like Lite). -->
+                                    <DataGridTextColumn Header="Reads" Binding="{Binding ReadsBreakdown}" Width="220">
+                                        <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding ReadsBreakdown}"/></Style></DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="Writes" Binding="{Binding Writes}" SortMemberPath="WritesSort" Width="90" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Lock Waits" Binding="{Binding LockWaitCount}" SortMemberPath="LockWaitCountSort" Width="95" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Avg Lock Wait ms" Binding="{Binding AvgLockWaitMs}" SortMemberPath="AvgLockWaitMsSort" Width="120" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Latch Waits" Binding="{Binding LatchWaitCount}" SortMemberPath="LatchWaitCountSort" Width="95" ElementStyle="{StaticResource NumericCell}"/>
+                                    <DataGridTextColumn Header="Avg Latch Wait ms" Binding="{Binding AvgLatchWaitMs}" SortMemberPath="AvgLatchWaitMsSort" Width="130" ElementStyle="{StaticResource NumericCell}"/>
                                 </DataGrid.Columns>
                             </DataGrid>
 

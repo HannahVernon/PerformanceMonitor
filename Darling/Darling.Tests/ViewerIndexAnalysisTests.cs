@@ -87,6 +87,8 @@ public sealed class ViewerIndexAnalysisTests
             "is_indexed_view", "data_compression_desc", "optimize_for_sequential_key", "fill_factor", "is_padded",
             "allow_page_locks", "allow_row_locks", "user_seeks", "user_scans", "user_lookups", "user_updates",
             "reserved_mb", "total_rows", "partition_count", "sqlserver_start_time", "collection_time", "server_id",
+            "row_lock_wait_count", "row_lock_wait_in_ms", "page_lock_wait_count", "page_lock_wait_in_ms",
+            "page_latch_wait_count", "page_latch_wait_in_ms", "page_io_latch_wait_count", "page_io_latch_wait_in_ms",
         })
         {
             Assert.Contains(col, ddl, StringComparison.Ordinal);
@@ -141,6 +143,14 @@ public sealed class ViewerIndexAnalysisTests
         TotalRows = 1_000_000,
         PartitionCount = 4,
         SqlServerStartTime = new DateTime(2026, 7, 1, 8, 0, 0),
+        RowLockWaitCount = 100,
+        RowLockWaitInMs = 500,
+        PageLockWaitCount = 50,
+        PageLockWaitInMs = 250,
+        PageLatchWaitCount = 8,
+        PageLatchWaitInMs = 40,
+        PageIoLatchWaitCount = 2,
+        PageIoLatchWaitInMs = 10,
     };
 
     [Fact]
@@ -180,6 +190,14 @@ public sealed class ViewerIndexAnalysisTests
         Assert.Equal(1_000_000, input.TotalRows);
         Assert.Equal(4, input.PartitionCount);
         Assert.Equal(new DateTime(2026, 7, 1, 8, 0, 0), input.SqlServerStartTime);
+        Assert.Equal(100, input.RowLockWaitCount);
+        Assert.Equal(500, input.RowLockWaitInMs);
+        Assert.Equal(50, input.PageLockWaitCount);
+        Assert.Equal(250, input.PageLockWaitInMs);
+        Assert.Equal(8, input.PageLatchWaitCount);
+        Assert.Equal(40, input.PageLatchWaitInMs);
+        Assert.Equal(2, input.PageIoLatchWaitCount);
+        Assert.Equal(10, input.PageIoLatchWaitInMs);
     }
 
     [Fact]
@@ -209,6 +227,15 @@ public sealed class ViewerIndexAnalysisTests
         Assert.Equal(0, input.UserScans);
         Assert.Equal(0, input.UserLookups);
         Assert.Equal(0, input.UserUpdates);
+        // Lock/latch counters collapse NULL → 0 (an absent counter is a zero contribution to the rollup sum).
+        Assert.Equal(0, input.RowLockWaitCount);
+        Assert.Equal(0, input.RowLockWaitInMs);
+        Assert.Equal(0, input.PageLockWaitCount);
+        Assert.Equal(0, input.PageLockWaitInMs);
+        Assert.Equal(0, input.PageLatchWaitCount);
+        Assert.Equal(0, input.PageLatchWaitInMs);
+        Assert.Equal(0, input.PageIoLatchWaitCount);
+        Assert.Equal(0, input.PageIoLatchWaitInMs);
         // The genuinely-nullable sizing fields stay null (distinct from "collected as 0").
         Assert.Null(input.ReservedMb);
         Assert.Null(input.TotalRows);
@@ -428,5 +455,110 @@ public sealed class ViewerIndexAnalysisTests
         // The rollup carries the overall row and reflects the disable.
         Assert.Equal("ALL DATABASES", rollupRows[0].Scope);
         Assert.True(rollupRows[0].IndexesToDisable >= 1);
+    }
+
+    // ── Workload-impact rollup columns (sp_IndexCleanup #index_reporting_stats parity) ──
+
+    [Fact]
+    public void IndexObjectStatsLatestSql_SelectsTheOperationalLockLatchCounters()
+    {
+        // The reclaimable-space rollup's workload columns are backed by the operational counters the collector
+        // already captures — the read must pull them (the same columns the FinOps Locking sub-tab reads).
+        var sql = ViewerDataService.IndexObjectStatsLatestSql;
+
+        foreach (var col in new[]
+        {
+            "row_lock_wait_count", "row_lock_wait_in_ms", "page_lock_wait_count", "page_lock_wait_in_ms",
+            "page_latch_wait_count", "page_latch_wait_in_ms", "page_io_latch_wait_count", "page_io_latch_wait_in_ms",
+        })
+        {
+            Assert.Contains(col, sql, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void WorkloadRollup_DatabaseRowAggregatesCountersAcrossIndexes_OverallRowIsNA()
+    {
+        // One database, three analyzed indexes on one table. The DATABASE rollup SUMs the workload counters over
+        // every analyzed index (reads/writes + lock/latch); the overall ("ALL DATABASES") row mirrors
+        // sp_IndexCleanup's SUMMARY level, which emits these columns as 'N/A'.
+        var clustered = new ViewerDataService.IndexObjectStatsRow
+        {
+            DatabaseName = "AdventureWorks", DatabaseId = 7, SchemaName = "Sales", ObjectId = 100,
+            TableName = "Orders", IndexId = 1, IndexName = "PK_Orders", IndexTypeDesc = "CLUSTERED",
+            KeyColumns = "[OrderId]", IsUnique = true, IsPrimaryKey = true, ReservedMb = 400m, TotalRows = 500_000,
+            // Clustered index carries no workload here so the expected sums stay clean (it is still counted).
+        };
+        var idxA = new ViewerDataService.IndexObjectStatsRow
+        {
+            DatabaseName = "AdventureWorks", DatabaseId = 7, SchemaName = "Sales", ObjectId = 100,
+            TableName = "Orders", IndexId = 2, IndexName = "IX_A", IndexTypeDesc = "NONCLUSTERED",
+            KeyColumns = "[CustomerId]", ReservedMb = 100m, TotalRows = 500_000,
+            UserSeeks = 10, UserScans = 20, UserLookups = 30, UserUpdates = 40,
+            RowLockWaitCount = 100, RowLockWaitInMs = 500, PageLockWaitCount = 50, PageLockWaitInMs = 250,
+            PageLatchWaitCount = 8, PageLatchWaitInMs = 40, PageIoLatchWaitCount = 2, PageIoLatchWaitInMs = 10,
+        };
+        var idxB = new ViewerDataService.IndexObjectStatsRow
+        {
+            DatabaseName = "AdventureWorks", DatabaseId = 7, SchemaName = "Sales", ObjectId = 100,
+            TableName = "Orders", IndexId = 3, IndexName = "IX_B", IndexTypeDesc = "NONCLUSTERED",
+            KeyColumns = "[OrderDate]", ReservedMb = 100m, TotalRows = 500_000,
+            UserSeeks = 5, UserScans = 5, UserLookups = 5, UserUpdates = 10,
+            // No lock/latch waits — proves the SUM includes zero-wait indexes without skewing the average.
+        };
+
+        var inputs = new[] { clustered, idxA, idxB }.Select(ViewerDataService.MapToIndexInput).ToList();
+        var options = ViewerDataService.DeriveIndexCleanupOptions(3, "16.0.1000.6", Ref.AddDays(-60), Ref);
+        var result = IndexCleanupAnalyzer.Analyze(inputs, options);
+        var rows = ViewerDataService.ProjectRollups(result);
+
+        var overall = rows[0];
+        var db = rows.Single(r => r.Scope == "AdventureWorks");
+
+        // Database row: SUMs — reads 15/25/35 (=75), writes 50, lock waits 150 (avg 750/150 = 5), latch waits 10 (avg 50/10 = 5).
+        Assert.Equal(50m, db.WritesSort);
+        Assert.Equal(150m, db.LockWaitCountSort);
+        Assert.Equal(5m, db.AvgLockWaitMsSort);
+        Assert.Equal(10m, db.LatchWaitCountSort);
+        Assert.Equal(5m, db.AvgLatchWaitMsSort);
+        Assert.NotEqual("N/A", db.Writes);
+        Assert.Contains("seeks", db.ReadsBreakdown, StringComparison.Ordinal);
+        Assert.Contains("scans", db.ReadsBreakdown, StringComparison.Ordinal);
+        Assert.Contains("lookups", db.ReadsBreakdown, StringComparison.Ordinal);
+
+        // Overall ("ALL DATABASES") row: workload columns are 'N/A' (matches sp_IndexCleanup's SUMMARY level),
+        // and their numeric sort keys sink below every real value.
+        Assert.Equal("ALL DATABASES", overall.Scope);
+        Assert.Equal("N/A", overall.ReadsBreakdown);
+        Assert.Equal("N/A", overall.Writes);
+        Assert.Equal("N/A", overall.LockWaitCount);
+        Assert.Equal("N/A", overall.AvgLockWaitMs);
+        Assert.Equal("N/A", overall.LatchWaitCount);
+        Assert.Equal("N/A", overall.AvgLatchWaitMs);
+        Assert.Equal(-1m, overall.WritesSort);
+        Assert.Equal(-1m, overall.LockWaitCountSort);
+        Assert.Equal(-1m, overall.AvgLatchWaitMsSort);
+    }
+
+    [Fact]
+    public void WorkloadRollup_DatabaseRowWithNoWaits_ShowsZeroNotNA()
+    {
+        // A database whose indexes have zero lock/latch waits shows "0" (not 'N/A') on the database row —
+        // 'N/A' is reserved for the overall row, exactly like sp_IndexCleanup's DATABASE-vs-SUMMARY split.
+        var idx = new ViewerDataService.IndexObjectStatsRow
+        {
+            DatabaseName = "Db", DatabaseId = 9, SchemaName = "dbo", ObjectId = 1, TableName = "t",
+            IndexId = 2, IndexName = "IX_quiet", IndexTypeDesc = "NONCLUSTERED", KeyColumns = "[c]",
+            ReservedMb = 1m, TotalRows = 10, UserSeeks = 1,
+        };
+
+        var result = IndexCleanupAnalyzer.Analyze(
+            new[] { idx }.Select(ViewerDataService.MapToIndexInput),
+            ViewerDataService.DeriveIndexCleanupOptions(3, "16.0.1000.6", Ref.AddDays(-60), Ref));
+        var db = ViewerDataService.ProjectRollups(result).Single(r => r.Scope == "Db");
+
+        Assert.Equal("0", db.AvgLockWaitMs);   // no waits → "0", not a divide-by-zero or 'N/A'
+        Assert.Equal("0", db.AvgLatchWaitMs);
+        Assert.Equal(0m, db.LockWaitCountSort);
     }
 }

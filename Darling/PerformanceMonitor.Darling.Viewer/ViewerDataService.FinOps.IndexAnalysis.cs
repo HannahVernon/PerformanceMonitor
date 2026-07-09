@@ -71,7 +71,18 @@ SELECT DISTINCT ON (database_id, object_id, index_id)
     reserved_mb,
     total_rows,
     partition_count,
-    sqlserver_start_time
+    sqlserver_start_time,
+    /* Operational lock/latch counters (dm_db_index_operational_stats), appended after the pre-existing
+       columns so ordinals 0-31 are unchanged. Feed the reclaimable-space rollup's workload-impact columns
+       (Lock Waits / Latch Waits), the same collected data the FinOps Locking sub-tab already reads. */
+    row_lock_wait_count,
+    row_lock_wait_in_ms,
+    page_lock_wait_count,
+    page_lock_wait_in_ms,
+    page_latch_wait_count,
+    page_latch_wait_in_ms,
+    page_io_latch_wait_count,
+    page_io_latch_wait_in_ms
 FROM v_index_object_stats
 WHERE server_id = $1
 ORDER BY database_id, object_id, index_id, collection_time DESC";
@@ -132,6 +143,14 @@ LIMIT 1";
         public long? TotalRows { get; init; }
         public int? PartitionCount { get; init; }
         public DateTime? SqlServerStartTime { get; init; }
+        public long? RowLockWaitCount { get; init; }
+        public long? RowLockWaitInMs { get; init; }
+        public long? PageLockWaitCount { get; init; }
+        public long? PageLockWaitInMs { get; init; }
+        public long? PageLatchWaitCount { get; init; }
+        public long? PageLatchWaitInMs { get; init; }
+        public long? PageIoLatchWaitCount { get; init; }
+        public long? PageIoLatchWaitInMs { get; init; }
     }
 
     /// <summary>Maps a collected snapshot row into the analyzer's per-index input contract (nullable flag -&gt; false).</summary>
@@ -165,6 +184,14 @@ LIMIT 1";
         UserScans = row.UserScans ?? 0,
         UserLookups = row.UserLookups ?? 0,
         UserUpdates = row.UserUpdates ?? 0,
+        RowLockWaitCount = row.RowLockWaitCount ?? 0,
+        RowLockWaitInMs = row.RowLockWaitInMs ?? 0,
+        PageLockWaitCount = row.PageLockWaitCount ?? 0,
+        PageLockWaitInMs = row.PageLockWaitInMs ?? 0,
+        PageLatchWaitCount = row.PageLatchWaitCount ?? 0,
+        PageLatchWaitInMs = row.PageLatchWaitInMs ?? 0,
+        PageIoLatchWaitCount = row.PageIoLatchWaitCount ?? 0,
+        PageIoLatchWaitInMs = row.PageIoLatchWaitInMs ?? 0,
         ReservedMb = row.ReservedMb,
         TotalRows = row.TotalRows,
         PartitionCount = row.PartitionCount,
@@ -289,6 +316,14 @@ LIMIT 1";
             TotalRows = L(29),
             PartitionCount = I(30),
             SqlServerStartTime = reader.IsDBNull(31) ? null : reader.GetDateTime(31),
+            RowLockWaitCount = L(32),
+            RowLockWaitInMs = L(33),
+            PageLockWaitCount = L(34),
+            PageLockWaitInMs = L(35),
+            PageLatchWaitCount = L(36),
+            PageLatchWaitInMs = L(37),
+            PageIoLatchWaitCount = L(38),
+            PageIoLatchWaitInMs = L(39),
         };
     }
 
@@ -452,4 +487,55 @@ public sealed class IndexCleanupRollupRow
     public decimal CompressionMaxSavingsGb => _rollup.CompressionMaxSavingsGb;
     public decimal TotalMinSavingsGb => _rollup.TotalMinSavingsGb;
     public decimal TotalMaxSavingsGb => _rollup.TotalMaxSavingsGb;
+
+    /*
+     * Workload-impact columns (Reads / Writes / Lock Waits / Latch Waits), ported from sp_IndexCleanup's
+     * #index_reporting_stats. The proc surfaces these at its DATABASE level but emits 'N/A' at the SUMMARY
+     * level (it does not populate the workload counters there), so the overall ("ALL DATABASES") row renders
+     * 'N/A' to match Lite exactly; the per-database rows render the real aggregates. The formulas mirror the
+     * proc's DATABASE-level display (reads_breakdown / writes / lock_wait_count / avg_lock_wait_ms /
+     * latch_wait_count / avg_latch_wait_ms).
+     */
+    private bool IsOverall => _rollup.DatabaseName is null;
+
+    private long TotalReads => _rollup.UserSeeks + _rollup.UserScans + _rollup.UserLookups;
+
+    /// <summary>Total reads with the seeks/scans/lookups breakdown (e.g. "1,234 (1,000 seeks, 200 scans, 34 lookups)"); 'N/A' on the overall row.</summary>
+    public string ReadsBreakdown =>
+        IsOverall
+            ? "N/A"
+            : $"{TotalReads:N0} ({_rollup.UserSeeks:N0} seeks, {_rollup.UserScans:N0} scans, {_rollup.UserLookups:N0} lookups)";
+
+    /// <summary>Total <c>user_updates</c> across analyzed indexes; 'N/A' on the overall row.</summary>
+    public string Writes => IsOverall ? "N/A" : _rollup.TotalWrites.ToString("N0");
+
+    /// <summary>Row + page lock waits across analyzed indexes; 'N/A' on the overall row.</summary>
+    public string LockWaitCount => IsOverall ? "N/A" : _rollup.LockWaitCount.ToString("N0");
+
+    /// <summary>Average lock wait (ms/wait) = lock_wait_in_ms / lock_wait_count; "0" when there were no waits; 'N/A' on the overall row.</summary>
+    public string AvgLockWaitMs =>
+        IsOverall
+            ? "N/A"
+            : _rollup.LockWaitCount > 0
+                ? ((decimal)_rollup.LockWaitInMs / _rollup.LockWaitCount).ToString("N2")
+                : "0";
+
+    /// <summary>Page + page-IO latch waits across analyzed indexes; 'N/A' on the overall row.</summary>
+    public string LatchWaitCount => IsOverall ? "N/A" : _rollup.LatchWaitCount.ToString("N0");
+
+    /// <summary>Average latch wait (ms/wait) = latch_wait_in_ms / latch_wait_count; "0" when there were no waits; 'N/A' on the overall row.</summary>
+    public string AvgLatchWaitMs =>
+        IsOverall
+            ? "N/A"
+            : _rollup.LatchWaitCount > 0
+                ? ((decimal)_rollup.LatchWaitInMs / _rollup.LatchWaitCount).ToString("N2")
+                : "0";
+
+    /* Numeric sort keys for the workload columns — the overall ('N/A') row sorts below every real value, like
+       Lite's NumericSortHelper parse of "N/A" (→ -1). ReadsBreakdown sorts as text (no key), matching Lite. */
+    public decimal WritesSort => IsOverall ? -1m : _rollup.TotalWrites;
+    public decimal LockWaitCountSort => IsOverall ? -1m : _rollup.LockWaitCount;
+    public decimal AvgLockWaitMsSort => IsOverall ? -1m : (_rollup.LockWaitCount > 0 ? (decimal)_rollup.LockWaitInMs / _rollup.LockWaitCount : 0m);
+    public decimal LatchWaitCountSort => IsOverall ? -1m : _rollup.LatchWaitCount;
+    public decimal AvgLatchWaitMsSort => IsOverall ? -1m : (_rollup.LatchWaitCount > 0 ? (decimal)_rollup.LatchWaitInMs / _rollup.LatchWaitCount : 0m);
 }

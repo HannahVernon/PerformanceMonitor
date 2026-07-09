@@ -1021,9 +1021,24 @@ namespace PerformanceMonitor.Common
             int disable = 0, merge = 0, compressable = 0, unused = 0;
             decimal totalSize = 0;
 
+            // Workload-impact aggregates: straight SUMs over EVERY analyzed index (mirrors sp_IndexCleanup's
+            // #index_reporting_stats DATABASE roll-up of analyzed_indexes — reads/writes from usage stats,
+            // lock/latch from dm_db_index_operational_stats).
+            long userSeeks = 0, userScans = 0, userLookups = 0, totalWrites = 0;
+            long lockWaitCount = 0, lockWaitInMs = 0, latchWaitCount = 0, latchWaitInMs = 0;
+
             foreach (var w in analyzed)
             {
                 totalSize += w.SizeGb;
+
+                userSeeks += w.Src.UserSeeks;
+                userScans += w.Src.UserScans;
+                userLookups += w.Src.UserLookups;
+                totalWrites += w.Src.UserUpdates;
+                lockWaitCount += w.Src.RowLockWaitCount + w.Src.PageLockWaitCount;
+                lockWaitInMs += w.Src.RowLockWaitInMs + w.Src.PageLockWaitInMs;
+                latchWaitCount += w.Src.PageLatchWaitCount + w.Src.PageIoLatchWaitCount;
+                latchWaitInMs += w.Src.PageLatchWaitInMs + w.Src.PageIoLatchWaitInMs;
 
                 if (w.Action == IndexCleanupAction.Disable)
                 {
@@ -1073,6 +1088,14 @@ namespace PerformanceMonitor.Common
                 CompressionMaxSavingsGb = compMax,
                 TotalMinSavingsGb = unusedSize + compMin,
                 TotalMaxSavingsGb = unusedSize + compMax,
+                UserSeeks = userSeeks,
+                UserScans = userScans,
+                UserLookups = userLookups,
+                TotalWrites = totalWrites,
+                LockWaitCount = lockWaitCount,
+                LockWaitInMs = lockWaitInMs,
+                LatchWaitCount = latchWaitCount,
+                LatchWaitInMs = latchWaitInMs,
             };
         }
 
@@ -1092,6 +1115,16 @@ namespace PerformanceMonitor.Common
             CompressionMaxSavingsGb = perDb.Sum(r => r.CompressionMaxSavingsGb),
             TotalMinSavingsGb = perDb.Sum(r => r.TotalMinSavingsGb),
             TotalMaxSavingsGb = perDb.Sum(r => r.TotalMaxSavingsGb),
+            // Workload aggregates roll up too (DATABASE = SUM(TABLE), SUMMARY = SUM(DATABASE)); the rollup-row
+            // projection renders them 'N/A' for the overall row, matching sp_IndexCleanup's SUMMARY output.
+            UserSeeks = perDb.Sum(r => r.UserSeeks),
+            UserScans = perDb.Sum(r => r.UserScans),
+            UserLookups = perDb.Sum(r => r.UserLookups),
+            TotalWrites = perDb.Sum(r => r.TotalWrites),
+            LockWaitCount = perDb.Sum(r => r.LockWaitCount),
+            LockWaitInMs = perDb.Sum(r => r.LockWaitInMs),
+            LatchWaitCount = perDb.Sum(r => r.LatchWaitCount),
+            LatchWaitInMs = perDb.Sum(r => r.LatchWaitInMs),
         };
 
         private static List<string> BuildNotes(List<IndexCleanupRecommendation> recommendations)
