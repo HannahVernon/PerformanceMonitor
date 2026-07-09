@@ -29,7 +29,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// allowed, property names are case-insensitive.
 /// Managed mode (<c>postgres.managed = true</c>, the shipped default): the SERVICE bootstraps
 /// and owns the bundled Postgres; the viewer only derives the same connection string —
-/// localhost + port + the darling user with the password the service generated on first run,
+/// 127.0.0.1 + port + the darling user with the password the service generated on first run,
 /// unprotected from the DPAPI-LocalMachine credential file beside the data directory. The
 /// derivation constants (user/database name, credential path convention, DPAPI entropy) are
 /// the service's <c>DarlingManagedPostgres</c>/<c>DarlingSecrets</c> values, duplicated under
@@ -142,7 +142,7 @@ public sealed class ViewerSettings
 
     /// <summary>
     /// The managed-mode derivation, mirroring the service: data directory = configured or
-    /// %ProgramData%\PerformanceMonitorDarling\pg, and connection = localhost + port + the
+    /// %ProgramData%\PerformanceMonitorDarling\pg, and connection = 127.0.0.1 + port + the
     /// least-privilege role <c>postgres.connectAs</c> selects (admin by default, or viewer),
     /// authenticated with that role's DPAPI credential file beside the data directory and carrying
     /// the collect/config search path. The Viewer never connects as the superuser <c>darling</c> —
@@ -181,7 +181,10 @@ public sealed class ViewerSettings
 
         var builder = new NpgsqlConnectionStringBuilder
         {
-            Host = "localhost",
+            /* 127.0.0.1, not "localhost", mirroring the service's DarlingManagedPostgres.BuildConnectionString
+               (the parity half of the same pair): a literal IPv4 loopback avoids a localhost->::1 resolution
+               that would miss the IPv4-only pg_hba loopback rule the managed cluster ships. */
+            Host = "127.0.0.1",
             Port = postgres.Port,
             Username = role,
             Password = password,

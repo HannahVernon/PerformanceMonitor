@@ -134,41 +134,41 @@ public partial class SettingsWindow : Window
     {
         if (_dataService is not null)
         {
-            try
+            /* Read the three store-backed sections INDEPENDENTLY (D7): a read-only viewer role is column-denied
+               the config_notification secrets, so selecting them 42501s — and in a single shared try-block one
+               such throw blanks every LATER section. GetNotificationAsync already falls back to a secret-free
+               projection for a read-only seat, and this per-section isolation is the belt-and-suspenders that
+               keeps any other single-section failure from blanking the rest. */
+            var sections = await ReadStoreSectionsAsync(
+                () => _dataService.GetAlertSettingsAsync(),
+                () => _dataService.GetNotificationAsync(),
+                () => _dataService.GetServiceConfigAsync());
+
+            if (sections.Alert is not null)
             {
-                var alert = await _dataService.GetAlertSettingsAsync();
-                if (alert is not null)
-                {
-                    SeedAlertControlsFrom(alert);
-                }
-
-                var notify = await _dataService.GetNotificationAsync();
-                if (notify is not null)
-                {
-                    SeedNotificationControlsFrom(notify);
-                }
-
-                var service = await _dataService.GetServiceConfigAsync();
-                if (service is not null)
-                {
-                    CapturePlansCheckBox.IsChecked = service.CapturePlans;
-                    McpEnabledCheckBox.IsChecked = service.McpEnabled;
-                    McpPortTextBox.Text = service.McpPort.ToString(CultureInfo.InvariantCulture);
-                    _paused = service.Paused;
-                }
-
-                /* Save may write the store sections only when it is SEEDED — config_service is written LAST by
-                   the service (its presence marks the seed complete), so a non-null row here guarantees the
-                   alert/notification sections read real rows too. On a reachable-but-UNSEEDED store every read
-                   returns null and the controls hold on-screen defaults; upserting those would INSERT id=1
-                   defaults and make the service SKIP seeding those sections from darling.json (COUNT != 0),
-                   silently shadowing operator-tuned config. Leaving this false makes Save decline + say so. */
-                _storeLoaded = service is not null;
+                SeedAlertControlsFrom(sections.Alert);
             }
-            catch (Exception ex)
+
+            if (sections.Notification is not null)
             {
-                Debug.WriteLine($"SettingsWindow: could not read the control-plane store, showing defaults: {ex.Message}");
+                SeedNotificationControlsFrom(sections.Notification);
             }
+
+            if (sections.Service is not null)
+            {
+                CapturePlansCheckBox.IsChecked = sections.Service.CapturePlans;
+                McpEnabledCheckBox.IsChecked = sections.Service.McpEnabled;
+                McpPortTextBox.Text = sections.Service.McpPort.ToString(CultureInfo.InvariantCulture);
+                _paused = sections.Service.Paused;
+            }
+
+            /* Save may write the store sections only when ALL THREE loaded. config_service is written LAST by
+               the service (its presence marks the seed complete), and on a seeded store the alert/notification
+               rows are present too — so requiring all three preserves the original anti-clobber guard while
+               tolerating a per-section read failure: any missing section leaves this false so Save declines
+               rather than overwriting a section it could not read with the on-screen defaults. (On a
+               reachable-but-UNSEEDED store every read returns null → false, exactly as before.) */
+            _storeLoaded = sections.Alert is not null && sections.Notification is not null && sections.Service is not null;
         }
 
         ApplyReadOnlyGating();
@@ -179,6 +179,55 @@ public partial class SettingsWindow : Window
         UpdateTeamsControlStates();
         UpdateSlackControlStates();
     }
+
+    /// <summary>
+    /// Reads the three control-plane Settings sections (alert engine, notification, service flags)
+    /// INDEPENDENTLY, so one section's failure — most importantly a read-only <c>viewer</c> seat's SQLSTATE
+    /// 42501 on the secret-bearing <c>config_notification</c> columns — degrades only THAT section to its
+    /// on-screen defaults instead of aborting a shared read and blanking the rest (D7). Each getter runs in its
+    /// own try/catch; a thrown or null result leaves that section null and its synchronous defaults stand.
+    /// Pure of WPF (the caller applies the results to controls), so it is unit-testable without a live store or
+    /// an STA window.
+    /// </summary>
+    internal static async Task<StoreSections> ReadStoreSectionsAsync(
+        Func<Task<AlertSettingsRow?>> getAlert,
+        Func<Task<NotificationRow?>> getNotification,
+        Func<Task<ServiceConfigRow?>> getService)
+    {
+        ArgumentNullException.ThrowIfNull(getAlert);
+        ArgumentNullException.ThrowIfNull(getNotification);
+        ArgumentNullException.ThrowIfNull(getService);
+
+        return new StoreSections(
+            await TryReadSectionAsync(getAlert),
+            await TryReadSectionAsync(getNotification),
+            await TryReadSectionAsync(getService));
+    }
+
+    /// <summary>Runs one section read, degrading any non-cancellation failure (a read-only 42501, a transient
+    /// blip) to <c>null</c> so that section keeps its on-screen defaults; cancellation propagates.</summary>
+    private static async Task<T?> TryReadSectionAsync<T>(Func<Task<T?>> read) where T : class
+    {
+        try
+        {
+            return await read();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"SettingsWindow: a control-plane section could not be read, keeping its defaults: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The three independently-loaded Settings store sections; a null member means that section could
+    /// not be read (an unseeded store, or a per-section failure such as a read-only 42501) and its on-screen
+    /// defaults stand.</summary>
+    internal readonly record struct StoreSections(
+        AlertSettingsRow? Alert, NotificationRow? Notification, ServiceConfigRow? Service);
 
     /// <summary>Reflects a read-only seat: a banner + the operator-action buttons disabled. The threshold
     /// inputs stay visible for reference; a Save attempt surfaces the friendly read-only message.</summary>

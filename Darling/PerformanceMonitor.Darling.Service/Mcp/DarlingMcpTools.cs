@@ -649,9 +649,9 @@ public sealed class DarlingMcpTools
 /// Maps fact keys to recommended MCP tools for further investigation.
 /// Used by analyze_server to tell the AI client what to call next.
 /// Verbatim per-app copy of Lite's table (the Dashboard carries one too): the named tools are
-/// the PRODUCT's data-tool surface — Darling's own MCP server exposes only the six analysis
-/// tools, so these recommendations point the client at the companion Lite/Dashboard server
-/// (or serve as investigation hints), exactly as documented in DarlingMcpInstructions.
+/// the PRODUCT's data-tool surface — and Darling's own MCP server now hosts them itself (the
+/// analysis, plan-analysis, and ~60 stored data-read tools), so these recommendations point the
+/// client at tools on THIS server, exactly as documented in DarlingMcpInstructions.
 /// </summary>
 internal static class ToolRecommendations
 {

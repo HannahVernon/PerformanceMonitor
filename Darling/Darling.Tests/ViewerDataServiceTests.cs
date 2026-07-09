@@ -10,6 +10,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows.Media;
 using Npgsql;
 using PerformanceMonitor.Darling.Storage;
@@ -103,7 +104,9 @@ public sealed class ViewerSettingsTests
 
             var settings = ViewerSettings.Parse(json);
             var parsed = new NpgsqlConnectionStringBuilder(settings.ConnectionString);
-            Assert.Equal("localhost", parsed.Host);
+            /* 127.0.0.1, not "localhost" — the viewer half of the managed-Host parity pair with the
+               service's DarlingManagedPostgres.BuildConnectionString (darling-network-endpoints). */
+            Assert.Equal("127.0.0.1", parsed.Host);
             Assert.Equal(5991, parsed.Port);
             Assert.Equal("admin", parsed.Username);
             Assert.Equal("admin-pw", parsed.Password);
@@ -444,5 +447,102 @@ public sealed class ViewerStoreUnreachableTests
 
         /* An unrelated exception is not a connection failure either. */
         Assert.False(ViewerDataService.IsConnectionFailure(new InvalidOperationException()));
+    }
+}
+
+/// <summary>
+/// The read-only viewer's per-section Settings degradation (darling-network-endpoints D7): a read-only
+/// <c>viewer</c> role is column-denied the secret columns of <c>config_notification</c> and
+/// <c>config_monitored_servers</c>, so those reads fall back to secret-free projections, and the Settings load
+/// reads each section independently so one 42501 never blanks the rest.
+/// </summary>
+public sealed class ViewerReadOnlyDegradationTests
+{
+    [Fact]
+    public void NotificationSelectNoSecretSql_OmitsTheCarvedSecrets_KeepsTheNonSecretColumns()
+    {
+        var noSecret = ViewerDataService.NotificationSelectNoSecretSql;
+
+        /* The four carved secret columns the viewer role loses SELECT on (#1262). */
+        Assert.DoesNotContain("smtp_encrypted_password", noSecret, StringComparison.Ordinal);
+        Assert.DoesNotContain("smtp_username", noSecret, StringComparison.Ordinal);
+        Assert.DoesNotContain("teams_url", noSecret, StringComparison.Ordinal);
+        Assert.DoesNotContain("slack_url", noSecret, StringComparison.Ordinal);
+
+        /* The non-secret fields the read-only Settings window still prefills. */
+        Assert.Contains("smtp_host", noSecret, StringComparison.Ordinal);
+        Assert.Contains("smtp_from_address", noSecret, StringComparison.Ordinal);
+        Assert.Contains("teams_proxy", noSecret, StringComparison.Ordinal);
+        Assert.Contains("slack_proxy", noSecret, StringComparison.Ordinal);
+        Assert.Contains("FROM config_notification WHERE id = 1", noSecret, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NotificationSelectSql_FullProjection_StillCarriesTheSecrets_ForAWritableSeat()
+    {
+        /* The admin/owner seat still reads the secrets to prefill the SMTP password + webhook URLs. */
+        var full = ViewerDataService.NotificationSelectSql;
+        Assert.Contains("smtp_encrypted_password", full, StringComparison.Ordinal);
+        Assert.Contains("smtp_username", full, StringComparison.Ordinal);
+        Assert.Contains("teams_url", full, StringComparison.Ordinal);
+        Assert.Contains("slack_url", full, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MonitoredServerByIdNoSecretSql_OmitsEncryptedPassword_ButKeepsTheByIdFilter()
+    {
+        var noSecret = ViewerDataService.MonitoredServerByIdNoSecretSql;
+        Assert.DoesNotContain("encrypted_password", noSecret, StringComparison.Ordinal);
+        Assert.Contains("WHERE server_id = $1", noSecret, StringComparison.Ordinal);
+
+        /* The full by-id read (an admin action) still selects the DPAPI blob for the password box. */
+        Assert.Contains("encrypted_password", ViewerDataService.MonitoredServerByIdSql, StringComparison.Ordinal);
+        Assert.Contains("WHERE server_id = $1", ViewerDataService.MonitoredServerByIdSql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadStoreSectionsAsync_NotificationThrows42501_DoesNotBlankTheOtherSections()
+    {
+        var alert = AlertSettingsRow.Defaults();
+        var service = new ServiceConfigRow();
+
+        var sections = await SettingsWindow.ReadStoreSectionsAsync(
+            () => Task.FromResult<AlertSettingsRow?>(alert),
+            () => Task.FromException<NotificationRow?>(
+                new PostgresException("permission denied for table config_notification", "ERROR", "ERROR", "42501")),
+            () => Task.FromResult<ServiceConfigRow?>(service));
+
+        /* The notification section degrades to null (its defaults stand); the OTHER two survive intact. */
+        Assert.Same(alert, sections.Alert);
+        Assert.Null(sections.Notification);
+        Assert.Same(service, sections.Service);
+    }
+
+    [Fact]
+    public async Task ReadStoreSectionsAsync_AllSucceed_ReturnsAllThreeSections()
+    {
+        var alert = AlertSettingsRow.Defaults();
+        var notify = NotificationRow.Defaults();
+        var service = new ServiceConfigRow();
+
+        var sections = await SettingsWindow.ReadStoreSectionsAsync(
+            () => Task.FromResult<AlertSettingsRow?>(alert),
+            () => Task.FromResult<NotificationRow?>(notify),
+            () => Task.FromResult<ServiceConfigRow?>(service));
+
+        Assert.Same(alert, sections.Alert);
+        Assert.Same(notify, sections.Notification);
+        Assert.Same(service, sections.Service);
+    }
+
+    [Fact]
+    public async Task ReadStoreSectionsAsync_Cancellation_Propagates()
+    {
+        /* A genuine cancellation is NOT swallowed as a degraded section — it propagates. */
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            SettingsWindow.ReadStoreSectionsAsync(
+                () => Task.FromResult<AlertSettingsRow?>(AlertSettingsRow.Defaults()),
+                () => Task.FromException<NotificationRow?>(new OperationCanceledException()),
+                () => Task.FromResult<ServiceConfigRow?>(new ServiceConfigRow())));
     }
 }
