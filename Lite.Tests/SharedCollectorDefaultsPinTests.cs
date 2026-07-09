@@ -108,7 +108,8 @@ public sealed class SharedCollectorDefaultsPinTests
             "query_stats", "procedure_stats", "query_store", "query_snapshots", "cpu_utilization",
             "file_io_stats", "memory_stats", "memory_clerks", "memory_pressure_events", "tempdb_stats",
             "perfmon_stats", "deadlocks", "memory_grant_stats", "waiting_tasks", "dmv_blocking_snapshot",
-            "blocked_process_report", "running_jobs", "session_summary_stats", "system_health_events"
+            "blocked_process_report", "running_jobs", "session_summary_stats", "system_health_events",
+            "default_trace_events"
         };
 
         Assert.Equal(3, ScheduleManager.s_presets.Count);

@@ -64,6 +64,7 @@ public static class PgMigrations
         new Migration(18, "alert-delivery-mode", V18Sql),
         new Migration(19, "analysis-state-marker", V19Sql),
         new Migration(20, "alert-tuning-knobs", V20Sql),
+        new Migration(21, "default-trace-events-collector", V21Sql),
     };
 
     /// <summary>
@@ -628,6 +629,57 @@ ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_q
 ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_misc_waits boolean NOT NULL DEFAULT TRUE;
 ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS long_running_query_exclude_cdc boolean NOT NULL DEFAULT TRUE;
 ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS notify_connection_changes boolean NOT NULL DEFAULT TRUE;";
+
+    /// <summary>
+    /// V21 — the <c>default_trace_events</c> collector table (built-in Default Trace read via
+    /// <c>sys.fn_trace_gettable</c>: file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL,
+    /// security audits, Server Memory Change). A NEW collector table added additively for a store built
+    /// before this collector existed; a FRESH store already has it (V1's
+    /// <see cref="PgSchemaGenerator.GenerateFullSchema"/> now walks the collector — which includes
+    /// default_trace_events — and V8 moved it to <c>collect</c>), so <c>CREATE TABLE IF NOT EXISTS</c> is a
+    /// harmless no-op on fresh and the real create on upgrade, with an identical <c>collect.default_trace_events</c>
+    /// shape either way. EXPLICITLY <c>collect.</c>-qualified (mirroring V19's <c>analysis_state</c>): this
+    /// runs after V8, whose <c>search_path = collect, config, public</c> already resolves a bare name to
+    /// <c>collect</c>, but the qualification makes the collect-schema intent explicit. Column order + types
+    /// mirror the generated V1 shape exactly (the NOT NULL prefix, no PRIMARY KEY — the hypertable / binary
+    /// COPY reasoning), so the positional COPY aligns on both paths.
+    ///
+    /// <para>It has NO <c>v_*</c> passthrough view (no Lite analysis SQL ports through it — the
+    /// <c>get_default_trace_events</c> MCP tool reads the base table directly, exactly like
+    /// <c>server_properties</c>), so the <see cref="PgSchemaGenerator.AllPassthroughViews"/> cross-check is
+    /// unaffected. TimescaleDB hypertable conversion + compression + retention all flow from the catalog
+    /// automatically (TimescaleSupport / DarlingRetention walk <see cref="CollectorCatalog.All"/>).</para>
+    /// </summary>
+    private const string V21Sql = @"
+CREATE TABLE IF NOT EXISTS collect.default_trace_events (
+    default_trace_event_id bigint NOT NULL,
+    collection_time timestamp NOT NULL,
+    server_id integer NOT NULL,
+    server_name text NOT NULL,
+    event_time timestamp,
+    event_name text,
+    event_class integer,
+    spid integer,
+    database_name text,
+    database_id integer,
+    login_name text,
+    host_name text,
+    application_name text,
+    object_name text,
+    filename text,
+    integer_data bigint,
+    integer_data_2 bigint,
+    text_data text,
+    session_login_name text,
+    error_number integer,
+    severity integer,
+    state integer,
+    event_sequence bigint,
+    duration_us bigint,
+    end_time timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON collect.default_trace_events(server_id, collection_time);";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 42;
+    internal const int CurrentSchemaVersion = 43;
 
     private readonly string _archivePath;
 
@@ -119,7 +119,8 @@ public class DuckDbInitializer
         "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
         "dmv_blocking_snapshots",
         "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
-        "session_stats", "session_summary_stats", "system_health_events", "server_config", "database_config",
+        "session_stats", "session_summary_stats", "system_health_events", "default_trace_events",
+        "server_config", "database_config",
         "database_scoped_config", "trace_flags", "config_alert_log",
         "collection_log"
     ];
@@ -1002,6 +1003,16 @@ public class DuckDbInitializer
             {
                 _logger?.LogWarning("Migration to v42 encountered an error (non-fatal): {Error}", ex.Message);
             }
+        }
+
+        if (fromVersion < 43)
+        {
+            /* v43: added default_trace_events (built-in Default Trace read via sys.fn_trace_gettable —
+                    file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits,
+                    Server Memory Change) for Dashboard->shared parity. New table only — created by
+                    GetAllTableStatements() below; the v_ view comes from CreateArchiveViewsAsync via
+                    ArchivableTables. */
+            _logger?.LogInformation("Running migration to v43: adding default_trace_events table");
         }
     }
 

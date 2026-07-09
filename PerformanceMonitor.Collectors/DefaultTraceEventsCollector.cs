@@ -1,0 +1,308 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Data.Common;
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace PerformanceMonitor.Collectors;
+
+/// <summary>
+/// Always-on server events read from the built-in Default Trace via <c>sys.traces</c> +
+/// <c>sys.fn_trace_gettable</c> — the events no DMV captures: data/log file auto-grow/shrink stalls,
+/// severe ErrorLog writes, schema DDL (Object:Created/Altered/Deleted), security audits (audit-change /
+/// DBCC / alter-trace), and Server Memory Change. Ported from the full Dashboard's
+/// <c>install/29_collect_default_trace.sql</c> curated event set into the shared collector library, so
+/// both SKUs (portable Lite → DuckDB, Darling → Postgres) collect it from one definition.
+///
+/// <para><b>Agentless-safe (must-handle):</b> <c>fn_trace_gettable</c> runs entirely server-side against
+/// the trace's own rollover files — no agent, no file share, no monitor-side artifact. The rollover-file
+/// path is normalized back to the trace's BASE path (strip the <c>_NN</c> rollover suffix, re-append the
+/// extension) and passed with <c>max_files</c> so the function reads across ALL rollover files, not just
+/// the current one (the proven Dashboard idiom).</para>
+///
+/// <para><b>Read-only (never writes the target):</b> unlike the Dashboard collector this definition does
+/// NOT sp_configure/RECONFIGURE the trace on or attempt the disable/re-enable restart cycle — the shared
+/// collectors are pure reads, and the default trace is enabled by default on every non-Azure-SQL-DB
+/// engine. When it is off (or the configured-but-not-running SQL Server bug), the <c>status = 1</c> guard
+/// simply yields zero rows for that cycle rather than mutating the monitored server.</para>
+///
+/// <para><b>STATEFUL dedup (must-handle):</b> mirrors the deadlock / blocked-process-report /
+/// system_health collectors — an <c>event_time</c> watermark (the newest already-collected StartTime from
+/// the host store) filters <c>ft.StartTime &gt; @cutoff_time</c>, so a rollover file re-read across cycles
+/// never re-ingests an event. Unlike those XE ring-buffer collectors (whose 10-minute first-run fallback
+/// fits their tiny recent-only buffers), the FIRST run here collects EVERYTHING still in the trace files
+/// (a far-past cutoff), because the default trace persists hours-to-days of history on disk that would
+/// otherwise be lost — the same first-run-collects-all choice the Dashboard collector makes.</para>
+///
+/// <para><b>Config-change de-duplication (must-handle):</b> the Dashboard collector's config-event slice
+/// (Server / Database Configuration Change, Alter Database) is deliberately DROPPED here — Darling already
+/// tracks that exact slice by diffing its <c>server_config</c> / <c>database_config</c> / <c>trace_flags</c>
+/// snapshots (get_server_config_changes / get_database_config_changes / get_trace_flag_changes), which
+/// carry the real old→new values, so re-collecting the trace's config events would double-count it. The
+/// remaining categories have no such snapshot twin. (DBCC commands stay — <c>Audit DBCC Event</c> is a
+/// distinct "someone ran DBCC" audit, not the resulting trace-flag STATE the snapshot diff tracks.)</para>
+///
+/// <para><b>Azure SQL Database (edition 5): does NOT apply</b> — there is no default trace on Azure SQL DB
+/// (<c>sys.traces</c> exposes none), so the collector is gated off via <see cref="AppliesTo"/> =
+/// <c>!IsAzureSqlDb</c> rather than logging a per-cycle empty/error. Azure SQL Managed Instance (edition 8)
+/// and on-prem / AWS RDS all have the default trace and collect normally.</para>
+/// </summary>
+public sealed class DefaultTraceEventsCollector : CollectorDefinitionBase<DefaultTraceEventsCollector.Row>
+{
+    public static DefaultTraceEventsCollector Instance { get; } = new();
+
+    private DefaultTraceEventsCollector()
+    {
+    }
+
+    /// <summary>
+    /// First-run cutoff sentinel: with no watermark yet, collect everything still on disk in the trace's
+    /// rollover files rather than only a recent window (the default trace persists real history; the XE
+    /// ring-buffer collectors' 10-minute fallback would silently drop it). Mirrors the Dashboard collector's
+    /// <c>CONVERT(datetime2(7), '19000101')</c> first-run branch. Bounded in practice by the trace's total
+    /// on-disk size (default 5 files × 20 MB) and the curated low-volume event set.
+    /// </summary>
+    private static readonly DateTime FirstRunCutoff = new(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    public sealed class Row
+    {
+        public DateTime? EventTime { get; set; }
+        public string? EventName { get; set; }
+        public int? EventClass { get; set; }
+        public int? Spid { get; set; }
+        public string? DatabaseName { get; set; }
+        public int? DatabaseId { get; set; }
+        public string? LoginName { get; set; }
+        public string? HostName { get; set; }
+        public string? ApplicationName { get; set; }
+        public string? ObjectName { get; set; }
+        public string? Filename { get; set; }
+        public long? IntegerData { get; set; }
+        public long? IntegerData2 { get; set; }
+        public string? TextData { get; set; }
+        public string? SessionLoginName { get; set; }
+        public int? ErrorNumber { get; set; }
+        public int? Severity { get; set; }
+        public int? State { get; set; }
+        public long? EventSequence { get; set; }
+        public long? DurationUs { get; set; }
+        public DateTime? EndTime { get; set; }
+    }
+
+    /* The curated, config-slice-free event set (see the class remarks). A {0} placeholder is spliced with
+       the per-server excluded-database clause on ft.DatabaseName; the rollover-file base-path normalization
+       (strip _NN + re-append the extension) reads every retained file. READ UNCOMMITTED like every collector;
+       OPTION(RECOMPILE) because the cutoff selectivity varies wildly between the all-history first run and the
+       tiny steady-state windows. */
+    private const string QueryTemplate = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    event_time = ft.StartTime,
+    event_name = te.name,
+    event_class = ft.EventClass,
+    spid = ft.SPID,
+    database_name = ft.DatabaseName,
+    database_id = ft.DatabaseID,
+    login_name = ft.LoginName,
+    host_name = ft.HostName,
+    application_name = ft.ApplicationName,
+    object_name = ft.ObjectName,
+    filename = ft.FileName,
+    integer_data = ft.IntegerData,
+    integer_data_2 = ft.IntegerData2,
+    text_data = ft.TextData,
+    session_login_name = ft.SessionLoginName,
+    error_number = ft.Error,
+    severity = ft.Severity,
+    state = ft.State,
+    event_sequence = ft.EventSequence,
+    duration_us = ft.Duration,
+    end_time = ft.EndTime
+FROM sys.traces AS t
+CROSS APPLY sys.fn_trace_gettable
+(
+    LEFT(t.path, LEN(t.path) - CHARINDEX(N'_', REVERSE(t.path))) +
+    RIGHT(t.path, 4),
+    t.max_files
+) AS ft
+JOIN sys.trace_events AS te
+  ON ft.EventClass = te.trace_event_id
+WHERE t.is_default = 1
+AND   t.status = 1
+AND   ft.StartTime > @cutoff_time
+AND   ISNULL(ft.DatabaseID, 0) NOT IN (1, 3, 4) /*master, model, msdb*/
+AND   ISNULL(ft.DatabaseID, 0) < 32761 /*exclude contained AG system databases*/{0}
+AND
+(
+    /*Server Memory Change events*/
+    (te.name LIKE N'%Server Memory Change%')
+    OR
+    /*Data/Log file auto grow/shrink STALLS (duration over one second only)*/
+    (
+        ISNULL(ft.Duration, 0) > 1000000
+        AND
+        (
+            te.name LIKE N'%Data File Auto Grow%'
+            OR te.name LIKE N'%Log File Auto Grow%'
+            OR te.name LIKE N'%Data File Auto Shrink%'
+            OR te.name LIKE N'%Log File Auto Shrink%'
+        )
+    )
+    OR
+    /*ErrorLog writes (severity gating happens in the significant-set layer, not here)*/
+    (te.name = N'ErrorLog')
+    OR
+    /*Schema DDL (exclude tempdb and auto-created _WA_ statistics)*/
+    (
+        ISNULL(ft.DatabaseID, 0) <> 2
+        AND ISNULL(ft.ObjectName, N'') NOT LIKE N'[_]WA[_]%'
+        AND te.name IN (N'Object:Created', N'Object:Altered', N'Object:Deleted')
+    )
+    OR
+    /*Security audit events (audit-change, DBCC, alter-trace)*/
+    (te.name IN (N'Audit Change Audit Event', N'Audit DBCC Event', N'Audit Server Alter Trace Event'))
+)
+ORDER BY
+    ft.StartTime DESC
+OPTION(RECOMPILE);";
+
+    public override string Name => "default_trace_events";
+
+    public override string TargetTable => "default_trace_events";
+
+    /// <summary>Lite schema names this table's prefix id "default_trace_event_id"; Darling mirrors it.</summary>
+    public override string PrefixIdColumnName => "default_trace_event_id";
+
+    /// <summary>
+    /// Only events newer than the newest already-collected StartTime are fetched, so re-reading the
+    /// rolling trace files across cycles never re-ingests an event (mirrors the deadlock / system_health
+    /// collectors' event_time watermark). First run has no watermark → collect all on-disk history.
+    /// </summary>
+    public override string? WatermarkColumn => "event_time";
+
+    /// <summary>
+    /// Collects on SQL Server, Azure SQL Managed Instance, and AWS RDS — everywhere the built-in default
+    /// trace exists. NOT Azure SQL Database (edition 5): there is no default trace there. A verified
+    /// platform gap gated here, not a scope-down (see the class remarks).
+    /// </summary>
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+
+    public override CollectorQuery BuildQuery(CollectorContext context)
+    {
+        /* Per-server excluded databases apply to the trace's own DatabaseName (parameterized, version-safe).
+           Spliced onto its own line (empty => nothing added) so the generated T-SQL stays readable. */
+        var (exclusionClause, exclusionParameters) =
+            DatabaseExclusionFilter.Build(context.ExcludedDatabases, "ft.DatabaseName");
+        var exclusionSplice = exclusionClause.Length == 0 ? string.Empty : "\r\n" + exclusionClause;
+
+        var text = string.Format(CultureInfo.InvariantCulture, QueryTemplate, exclusionSplice);
+
+        /* Watermark = newest already-collected event_time from the host store; first run collects all
+           on-disk history (see FirstRunCutoff). */
+        var cutoffTime = context.Watermark ?? FirstRunCutoff;
+
+        var parameters = new List<CollectorParameter>(exclusionParameters.Count + 1)
+        {
+            new("@cutoff_time", cutoffTime, CollectorParameterType.DateTime2),
+        };
+        parameters.AddRange(exclusionParameters);
+
+        return new CollectorQuery(text, parameters);
+    }
+
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    {
+        new CollectorColumn("event_time", CollectorColumnType.Timestamp),
+        new CollectorColumn("event_name", CollectorColumnType.Varchar),
+        new CollectorColumn("event_class", CollectorColumnType.Integer),
+        new CollectorColumn("spid", CollectorColumnType.Integer),
+        new CollectorColumn("database_name", CollectorColumnType.Varchar),
+        new CollectorColumn("database_id", CollectorColumnType.Integer),
+        new CollectorColumn("login_name", CollectorColumnType.Varchar),
+        new CollectorColumn("host_name", CollectorColumnType.Varchar),
+        new CollectorColumn("application_name", CollectorColumnType.Varchar),
+        new CollectorColumn("object_name", CollectorColumnType.Varchar),
+        new CollectorColumn("filename", CollectorColumnType.Varchar),
+        new CollectorColumn("integer_data", CollectorColumnType.BigInt),
+        new CollectorColumn("integer_data_2", CollectorColumnType.BigInt),
+        new CollectorColumn("text_data", CollectorColumnType.Varchar),
+        new CollectorColumn("session_login_name", CollectorColumnType.Varchar),
+        new CollectorColumn("error_number", CollectorColumnType.Integer),
+        new CollectorColumn("severity", CollectorColumnType.Integer),
+        new CollectorColumn("state", CollectorColumnType.Integer),
+        new CollectorColumn("event_sequence", CollectorColumnType.BigInt),
+        new CollectorColumn("duration_us", CollectorColumnType.BigInt),
+        new CollectorColumn("end_time", CollectorColumnType.Timestamp),
+    };
+
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    {
+        var rows = new List<Row>();
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new Row
+            {
+                EventTime = reader.IsDBNull(0) ? null : reader.GetDateTime(0),
+                EventName = reader.IsDBNull(1) ? null : reader.GetString(1),
+                EventClass = reader.IsDBNull(2) ? null : Convert.ToInt32(reader.GetValue(2), CultureInfo.InvariantCulture),
+                Spid = reader.IsDBNull(3) ? null : Convert.ToInt32(reader.GetValue(3), CultureInfo.InvariantCulture),
+                DatabaseName = reader.IsDBNull(4) ? null : reader.GetString(4),
+                DatabaseId = reader.IsDBNull(5) ? null : Convert.ToInt32(reader.GetValue(5), CultureInfo.InvariantCulture),
+                LoginName = reader.IsDBNull(6) ? null : reader.GetString(6),
+                HostName = reader.IsDBNull(7) ? null : reader.GetString(7),
+                ApplicationName = reader.IsDBNull(8) ? null : reader.GetString(8),
+                ObjectName = reader.IsDBNull(9) ? null : reader.GetString(9),
+                Filename = reader.IsDBNull(10) ? null : reader.GetString(10),
+                IntegerData = reader.IsDBNull(11) ? null : Convert.ToInt64(reader.GetValue(11), CultureInfo.InvariantCulture),
+                IntegerData2 = reader.IsDBNull(12) ? null : Convert.ToInt64(reader.GetValue(12), CultureInfo.InvariantCulture),
+                TextData = reader.IsDBNull(13) ? null : reader.GetString(13),
+                SessionLoginName = reader.IsDBNull(14) ? null : reader.GetString(14),
+                ErrorNumber = reader.IsDBNull(15) ? null : Convert.ToInt32(reader.GetValue(15), CultureInfo.InvariantCulture),
+                Severity = reader.IsDBNull(16) ? null : Convert.ToInt32(reader.GetValue(16), CultureInfo.InvariantCulture),
+                State = reader.IsDBNull(17) ? null : Convert.ToInt32(reader.GetValue(17), CultureInfo.InvariantCulture),
+                EventSequence = reader.IsDBNull(18) ? null : Convert.ToInt64(reader.GetValue(18), CultureInfo.InvariantCulture),
+                DurationUs = reader.IsDBNull(19) ? null : Convert.ToInt64(reader.GetValue(19), CultureInfo.InvariantCulture),
+                EndTime = reader.IsDBNull(20) ? null : reader.GetDateTime(20),
+            });
+        }
+
+        return rows;
+    }
+
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    {
+        writer
+            .Value(row.EventTime)          /* event_time TIMESTAMP (watermark) */
+            .Value(row.EventName)          /* event_name VARCHAR */
+            .Value(row.EventClass)         /* event_class INTEGER */
+            .Value(row.Spid)               /* spid INTEGER */
+            .Value(row.DatabaseName)       /* database_name VARCHAR */
+            .Value(row.DatabaseId)         /* database_id INTEGER */
+            .Value(row.LoginName)          /* login_name VARCHAR */
+            .Value(row.HostName)           /* host_name VARCHAR */
+            .Value(row.ApplicationName)    /* application_name VARCHAR */
+            .Value(row.ObjectName)         /* object_name VARCHAR */
+            .Value(row.Filename)           /* filename VARCHAR */
+            .Value(row.IntegerData)        /* integer_data BIGINT */
+            .Value(row.IntegerData2)       /* integer_data_2 BIGINT */
+            .Value(row.TextData)           /* text_data VARCHAR */
+            .Value(row.SessionLoginName)   /* session_login_name VARCHAR */
+            .Value(row.ErrorNumber)        /* error_number INTEGER */
+            .Value(row.Severity)           /* severity INTEGER */
+            .Value(row.State)              /* state INTEGER */
+            .Value(row.EventSequence)      /* event_sequence BIGINT */
+            .Value(row.DurationUs)         /* duration_us BIGINT */
+            .Value(row.EndTime);           /* end_time TIMESTAMP */
+    }
+}

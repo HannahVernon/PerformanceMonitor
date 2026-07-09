@@ -311,7 +311,13 @@ public sealed class DarlingMcpHostService : BackgroundService
                    system_health_events on read via the shared SystemHealthParser (Common) and gate with the
                    service-side twin of the viewer's SystemEventSignificance, exactly as the viewer's System
                    Events tab does — the same SIGNIFICANT warning set, no live hit. */
-                .WithGeminiCompatibleTools<DarlingMcpHealthParserTools>();
+                .WithGeminiCompatibleTools<DarlingMcpHealthParserTools>()
+                /* The Default Trace tool — get_default_trace_events — the same name the Dashboard exposes.
+                   Reads Darling's collected default_trace_events (the base table, no v_* view — like
+                   server_properties) and returns the SIGNIFICANT set via the shared
+                   DefaultTraceEventSignificance, the same significant-set gate the viewer's System Events
+                   surface uses; config-change events are excluded (the config-snapshot diff tools own them). */
+                .WithGeminiCompatibleTools<DarlingMcpDefaultTraceTools>();
 
             _app = builder.Build();
 

@@ -489,6 +489,7 @@ public partial class RemoteCollectorService
                 "session_stats" => await CollectSessionStatsAsync(server, cancellationToken),
                 "session_summary_stats" => await CollectSessionSummaryStatsAsync(server, cancellationToken),
                 "system_health_events" => await CollectSystemHealthEventsAsync(server, cancellationToken),
+                "default_trace_events" => await CollectDefaultTraceEventsAsync(server, cancellationToken),
                 _ => throw new ArgumentException($"Unknown collector: {collectorName}")
             };
 
