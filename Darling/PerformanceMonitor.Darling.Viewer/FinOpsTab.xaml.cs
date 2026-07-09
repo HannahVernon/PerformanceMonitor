@@ -133,7 +133,7 @@ public partial class FinOpsTab : UserControl
 
     /// <summary>
     /// Loads the ACTIVE FinOps sub-tab, with the overlap guard mirroring the per-server tab's
-    /// <c>RefreshActiveInnerTabAsync</c>. The shell calls this on tab activation and on its 60-second timer;
+    /// <c>RefreshActiveInnerTabAsync</c>. The shell calls this on tab activation and on its fleet-refresh timer;
     /// the sub-tab switch handler and the server selector call it too. If the sub-tab (or server) switches
     /// mid-load, the triggering event bounces off the guard and the running loop reloads once more, leaving no
     /// sub-tab stranded.

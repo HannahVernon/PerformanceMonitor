@@ -171,7 +171,7 @@
     "slackUrl": ""
   },
 
-  // Embedded MCP server (optional): the SAME ~60-tool surface Lite and the Dashboard expose — the
+  // Embedded MCP server (optional): the SAME ~72-tool surface Lite and the Dashboard expose — the
   // six analysis tools (analyze_server, get_analysis_facts, compare_analysis, audit_config,
   // get_analysis_findings, mute_analysis_finding) PLUS the plan-analysis tools and the ~60 STORED
   // data-read tools (every read is served from the collected store, never a live query against a

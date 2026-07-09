@@ -26,8 +26,9 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins the blocking / deadlock diagnostic-depth MCP slice — get_blocking, get_deadlocks,
-/// get_deadlock_detail, get_blocked_process_xml over the Postgres store. Ungated: the tool surface is
-/// EXACTLY the four names (all static, on a [McpServerToolType] class, returning Task&lt;string&gt;); each
+/// get_deadlock_detail, get_blocked_process_xml, and the per-minute get_blocking_trend / get_deadlock_trend
+/// over the Postgres store. Ungated: the tool surface is
+/// EXACTLY the six names (all static, on a [McpServerToolType] class, returning Task&lt;string&gt;); each
 /// param contract matches Lite's; every read SQL is Postgres-dialect, positional-param, reads the collector
 /// columns the schema generator emits, and windows on the naive-UTC collection_time; and the advertised
 /// tools/list schema is Gemini-clean.
@@ -38,7 +39,9 @@ public sealed class DarlingMcpBlockingToolsSurfaceAndSqlTests
     {
         "get_blocked_process_xml",
         "get_blocking",
+        "get_blocking_trend",
         "get_deadlock_detail",
+        "get_deadlock_trend",
         "get_deadlocks",
     };
 
@@ -48,7 +51,7 @@ public sealed class DarlingMcpBlockingToolsSurfaceAndSqlTests
         .ToArray();
 
     [Fact]
-    public void ToolSurface_ExactlyTheFourBlockingTools()
+    public void ToolSurface_ExactlyTheSixBlockingTools()
     {
         var toolMethods = ToolMethods();
         var names = toolMethods
@@ -76,6 +79,8 @@ public sealed class DarlingMcpBlockingToolsSurfaceAndSqlTests
     [InlineData("get_deadlocks", "server_name,hours_back,limit")]
     [InlineData("get_deadlock_detail", "server_name,hours_back,limit")]
     [InlineData("get_blocked_process_xml", "server_name,hours_back,limit")]
+    [InlineData("get_blocking_trend", "server_name,hours_back")]
+    [InlineData("get_deadlock_trend", "server_name,hours_back")]
     public void ParamContract_MatchesLite(string toolName, string expectedCsv)
     {
         Assert.Equal(expectedCsv.Split(','), McpParams(toolName).Select(p => p.Name).ToArray());
@@ -121,6 +126,29 @@ public sealed class DarlingMcpBlockingToolsSurfaceAndSqlTests
         Assert.Contains("deadlock_graph_xml", sql, StringComparison.Ordinal);
         Assert.Contains("victim_process_id", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY deadlock_time DESC", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BlockingTrendSql_And_DeadlockTrendSql_PerMinuteBuckets_PostgresDialect()
+    {
+        var blocking = DarlingBlockingTrendReader.BlockingTrendSql;
+        Assert.Contains("v_blocked_process_reports", blocking, StringComparison.Ordinal);
+        Assert.Contains("v_dmv_blocking_snapshots", blocking, StringComparison.Ordinal);   /* XE-preferred, DMV fallback */
+        Assert.Contains("WHERE NOT EXISTS", blocking, StringComparison.Ordinal);
+        Assert.Contains("DATE_TRUNC('minute', event_time)", blocking, StringComparison.Ordinal);
+
+        var deadlock = DarlingBlockingTrendReader.DeadlockTrendSql;
+        Assert.Contains("FROM v_deadlocks", deadlock, StringComparison.Ordinal);
+        Assert.Contains("DATE_TRUNC('minute', deadlock_time)", deadlock, StringComparison.Ordinal);
+
+        foreach (var sql in new[] { blocking, deadlock })
+        {
+            var lower = sql.ToLowerInvariant();
+            Assert.DoesNotContain("getdate", lower);
+            Assert.DoesNotContain("top (", lower);
+            Assert.DoesNotContain("isnull(", lower);
+            Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
+        }
     }
 
     [Theory]
@@ -175,10 +203,10 @@ public sealed class DarlingMcpBlockingToolsSurfaceAndSqlTests
     }
 
     [Fact]
-    public void AdvertisedSchema_IsGeminiClean_ForAllFourTools()
+    public void AdvertisedSchema_IsGeminiClean_ForAllSixTools()
     {
         var tools = BuildToolSchemas();
-        Assert.Equal(4, tools.Count);
+        Assert.Equal(6, tools.Count);
         var violations = tools.SelectMany(t => DarlingMcpSchemaAssert.Violations(t.Name, t.InputSchema)).ToList();
         Assert.True(violations.Count == 0, "Gemini-incompatible schema keywords leaked:\n" + string.Join("\n", violations));
     }
@@ -247,6 +275,10 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
             DarlingMcpTestData.AssertEnvelope(detail, ServerName, "deadlock_graph_xml");
             var xml = await DarlingMcpBlockingTools.GetBlockedProcessXml(postgres, ServerName);
             DarlingMcpTestData.AssertEnvelope(xml, ServerName, "blocked_process_report_xml");
+
+            /* The per-minute trend series (the planted BPR + deadlock fall inside the default 24h window). */
+            DarlingMcpTestData.AssertEnvelope(await DarlingMcpBlockingTools.GetBlockingTrend(postgres, ServerName), ServerName, "trend");
+            DarlingMcpTestData.AssertEnvelope(await DarlingMcpBlockingTools.GetDeadlockTrend(postgres, ServerName), ServerName, "trend");
 
             /* Unknown server resolves to the listing error. */
             Assert.StartsWith("Could not resolve server.", await DarlingMcpBlockingTools.GetDeadlocks(postgres, "darling-no-such-server"), StringComparison.Ordinal);

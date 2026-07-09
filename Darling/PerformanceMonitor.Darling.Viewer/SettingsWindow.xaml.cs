@@ -106,6 +106,7 @@ public partial class SettingsWindow : Window
         LoadMcpSettings();
         UpdateMcpStatus();
         LoadConnectionTimeout();
+        LoadNocRefreshInterval();
         LoadCsvSeparator();
         LoadTimeDisplayMode();
         LoadColorTheme();
@@ -447,6 +448,36 @@ public partial class SettingsWindow : Window
         if (int.TryParse(ConnectionTimeoutBox.Text, out var timeout) && timeout is >= 5 and <= 60)
         {
             _appSettings.ConnectionTimeoutSeconds = timeout;
+        }
+    }
+
+    /// <summary>Selects the combo row whose Tag matches the persisted fleet-refresh interval; falls back to the
+    /// 30-second default when the stored value isn't one of the presets.</summary>
+    private void LoadNocRefreshInterval()
+    {
+        foreach (ComboBoxItem item in NocRefreshIntervalCombo.Items)
+        {
+            if (item.Tag is string tag
+                && int.TryParse(tag, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds)
+                && seconds == _appSettings.NocRefreshIntervalSeconds)
+            {
+                NocRefreshIntervalCombo.SelectedItem = item;
+                break;
+            }
+        }
+
+        if (NocRefreshIntervalCombo.SelectedItem == null)
+        {
+            NocRefreshIntervalCombo.SelectedIndex = 1; // 30 seconds (the default)
+        }
+    }
+
+    private void SaveNocRefreshInterval()
+    {
+        if (NocRefreshIntervalCombo.SelectedItem is ComboBoxItem { Tag: string tag }
+            && int.TryParse(tag, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
+        {
+            _appSettings.NocRefreshIntervalSeconds = seconds;
         }
     }
 
@@ -1077,6 +1108,7 @@ public partial class SettingsWindow : Window
         /* Persist the viewer-LOCAL preferences immediately (valid values applied above), and capture the
            edited viewer preferences for MainWindow to save + re-seed tabs from. */
         SaveConnectionTimeout();
+        SaveNocRefreshInterval();
         SaveCsvSeparator();
         SaveTimeDisplayMode();
         SaveColorTheme();

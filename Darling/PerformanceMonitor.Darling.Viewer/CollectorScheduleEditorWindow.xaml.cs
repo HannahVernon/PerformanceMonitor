@@ -57,6 +57,7 @@ public partial class CollectorScheduleEditorWindow : Window
         {
             ReadOnlyBanner.Visibility = Visibility.Visible;
             SaveButton.IsEnabled = false;
+            ApplyDefaultToAllButton.IsEnabled = false;
         }
 
         PopulateScopeCombos();
@@ -352,6 +353,64 @@ public partial class CollectorScheduleEditorWindow : Window
 
         error = "";
         return true;
+    }
+
+    /// <summary>
+    /// "Apply Default to All Servers" — the fleet-scale bulk reset: removes EVERY server's per-server schedule
+    /// override in one write (<see cref="ViewerDataService.ResetAllServerSchedulesAsync"/>) so they all fall back
+    /// to the fleet-wide default, the shortcut over reverting each server one at a time. The fleet-wide default
+    /// itself is untouched. Confirmed first (it clears every server's customization), then the editor re-reads so
+    /// the current scope reflects the reset.
+    /// </summary>
+    private async void ApplyDefaultToAll_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService.IsReadOnly)
+        {
+            return;
+        }
+
+        var result = MessageBox.Show(
+            "Reset EVERY server to the fleet-wide default schedule?\n\n" +
+            "This removes all per-server schedule overrides; the fleet-wide default schedule is not changed. " +
+            "This can't be undone.",
+            "Apply Default to All Servers", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        ApplyDefaultToAllButton.IsEnabled = false;
+        try
+        {
+            var removed = await _dataService.ResetAllServerSchedulesAsync();
+            Saved = true;
+
+            /* Re-read the overrides so the editor reflects the reset (every per-server row is now gone) and
+               reload the current scope's grid + preset detection. */
+            _allOverrides = await _dataService.GetCollectorSchedulesAsync();
+            LoadScopeSchedule();
+
+            StatusText.Text = removed > 0
+                ? $"Reset {removed} per-server schedule override(s) — every server now follows the fleet default."
+                : "No per-server overrides to reset — every server already follows the fleet default.";
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            MessageBox.Show(ex.Message, "Read-only connection", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (ViewerSchemaSkewException ex)
+        {
+            MessageBox.Show(ex.Message, "Store out of date", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not reset the schedules:\n\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            ApplyDefaultToAllButton.IsEnabled = !_dataService.IsReadOnly;
+        }
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => Close();

@@ -28,9 +28,9 @@
         servers (Overview is the server-cards grid; Alert History is the all-servers history, filterable
         by server); FinOps and Recommendations are server-scoped, their own pickers synced to the sidebar
         selection. Single-click a server drives the server-scoped aggregate tabs to it; double-click a
-        server row (or an Overview card) opens (or focuses) that server's ViewerServerTab. The 60-second
-        timer refreshes the visible tab (an aggregate tab or the visible server tab's active inner tab);
-        the Overview has its own faster 30-second timer (Lite's Overview cadence).
+        server row (or an Overview card) opens (or focuses) that server's ViewerServerTab. The fleet-refresh
+        timer (the configurable NocRefreshIntervalSeconds) refreshes the visible tab (an aggregate tab or the
+        visible server tab's active inner tab); the Overview has its own timer at the same interval.
     -->
     <Window.Resources>
         <local:StatusToBrushConverter x:Key="StatusToBrush"/>
@@ -429,6 +429,18 @@
                                         <MenuItem Header="Remove" Click="ServerContextMenu_Remove_Click">
                                             <MenuItem.Icon><TextBlock Text="&#x1F5D1;"/></MenuItem.Icon>
                                         </MenuItem>
+                                        <Separator/>
+                                        <!-- One-click whole-server alert silence: writes/removes a server-scoped
+                                             mute rule the running service honors (email/Teams/Slack + in-app toasts),
+                                             the shortcut over the multi-step Manage Mute Rules dialog. -->
+                                        <MenuItem Header="Silence This Server" Click="ServerContextMenu_Silence_Click"
+                                                  ToolTip="Mute every alert for this server until you Unsilence it">
+                                            <MenuItem.Icon><TextBlock Text="&#x1F507;"/></MenuItem.Icon>
+                                        </MenuItem>
+                                        <MenuItem Header="Unsilence" Click="ServerContextMenu_Unsilence_Click"
+                                                  ToolTip="Remove this server's whole-server alert silence">
+                                            <MenuItem.Icon><TextBlock Text="&#x1F514;"/></MenuItem.Icon>
+                                        </MenuItem>
                                     </ContextMenu>
                                 </Border.ContextMenu>
                                 <Grid>
@@ -503,8 +515,8 @@
 
             <!-- Right: the top tab strip. Fixed aggregate tabs (Overview, Recommendations, Alerts) plus
                  the dynamically-added closable per-server tabs (appended in code). Only the visible tab
-                 loads (Lite's visible-only rule); the 60-second timer re-reads the visible aggregate tab
-                 (Overview on its own 30-second timer), while per-server tabs self-refresh on their own
+                 loads (Lite's visible-only rule); the fleet-refresh timer re-reads the visible aggregate tab
+                 (Overview on its own timer at the same interval), while per-server tabs self-refresh on their own
                  toolbar auto-refresh timer. -->
             <TabControl x:Name="MainTabs"
                         Grid.Column="1"
@@ -779,7 +791,7 @@
                      mirroring the Recommendations tab, and independently changeable while the tab is open)
                      drives the eleven per-server sub-tabs; Server Inventory stays cross-server and now lives
                      ONCE here. The control owns its own load (server selector + sub-tab activation + the
-                     shell's 60-second timer). "View Plan" on its query grids raises PlanRequested, which the
+                     shell's fleet-refresh timer). "View Plan" on its query grids raises PlanRequested, which the
                      shell routes into the standalone Plan Viewer surface. -->
                 <TabItem x:Name="FinOpsTab" Header="FinOps">
                     <local:FinOpsTab x:Name="FinOpsContent" Margin="0,8,0,0"/>
@@ -795,7 +807,7 @@
                      app-merged Dark theme. "Generate now" asks the Darling service to run an immediate
                      analysis pass for the selected server (analyze_now) and then refreshes; the status line
                      also surfaces the last analysis time. A read-only seat can't command the service, so the
-                     button is disabled. NOT on the 60-second timer (tab-activation refresh only,
+                     button is disabled. NOT on the fleet-refresh timer (tab-activation refresh only,
                      matching Lite). -->
                 <TabItem x:Name="RecommendationsTab" Header="Recommendations">
                     <TabItem.Resources>

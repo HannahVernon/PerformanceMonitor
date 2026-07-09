@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Data.Common;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
@@ -167,9 +168,42 @@ public sealed partial class ViewerDataService : IAsyncDisposable
 
     private readonly NpgsqlDataSource _dataSource;
 
-    public ViewerDataService(string connectionString)
+    /// <param name="connectionString">The Postgres connection string (managed-derived or BYO from darling.json).</param>
+    /// <param name="connectionTimeoutSeconds">
+    /// The viewer's "Connection timeout" preference (<see cref="ViewerAppSettings.ConnectionTimeoutSeconds"/>,
+    /// Lite's "increase for VPN/remote" knob). When supplied it is applied to the pooled store connections as
+    /// Npgsql's connect <c>Timeout</c> — set on the managed-derived string (which carries none) and appended to a
+    /// BYO string only when the operator did not already specify one (their explicit Timeout wins). Null leaves
+    /// the string untouched (Npgsql's 15s default). This restores the setting the Settings window has always
+    /// saved but nothing consumed.
+    /// </param>
+    public ViewerDataService(string connectionString, int? connectionTimeoutSeconds = null)
     {
-        _dataSource = NpgsqlDataSource.Create(connectionString);
+        var effectiveConnectionString = connectionTimeoutSeconds is int seconds
+            ? ApplyConnectionTimeout(connectionString, seconds)
+            : connectionString;
+        _dataSource = NpgsqlDataSource.Create(effectiveConnectionString);
+    }
+
+    /// <summary>
+    /// Applies the viewer's connect-timeout preference to a connection string, but ONLY when the string does not
+    /// already specify a <c>Timeout</c> — so an operator's explicit Timeout in a BYO <c>postgres.connectionString</c>
+    /// always wins, while the managed-derived string (which never sets one) and a BYO string that omits it both
+    /// pick up the preference. <paramref name="timeoutSeconds"/> is Npgsql's connect timeout in seconds (the
+    /// caller clamps it to 5–60). Pure + string-only, so it is unit-tested without a live Postgres. Detection
+    /// uses the base <see cref="DbConnectionStringBuilder"/>, whose <c>ContainsKey</c> reflects exactly the keys
+    /// present in the string (NpgsqlConnectionStringBuilder overrides ContainsKey to answer for every KNOWN
+    /// keyword, which can't tell "set" from "settable").
+    /// </summary>
+    internal static string ApplyConnectionTimeout(string connectionString, int timeoutSeconds)
+    {
+        var builder = new DbConnectionStringBuilder { ConnectionString = connectionString };
+        if (!builder.ContainsKey("Timeout"))
+        {
+            builder["Timeout"] = timeoutSeconds;
+        }
+
+        return builder.ConnectionString;
     }
 
     /// <summary>

@@ -140,6 +140,9 @@ public sealed class ViewerServerChromeTests
         Assert.Contains("MAX(collection_time)", ViewerDataService.ServerFreshnessSql, StringComparison.Ordinal);
         Assert.Contains("FROM v_collection_log", ViewerDataService.ServerFreshnessSql, StringComparison.Ordinal);
         Assert.Contains("GROUP BY server_id", ViewerDataService.ServerFreshnessSql, StringComparison.Ordinal);
+        /* Excludes the fleet retention run-record sentinel (server_id 0) so it never appears as a phantom
+           server in the freshness dictionary. */
+        Assert.Contains("server_id <> 0", ViewerDataService.ServerFreshnessSql, StringComparison.Ordinal);
     }
 
     [Fact]

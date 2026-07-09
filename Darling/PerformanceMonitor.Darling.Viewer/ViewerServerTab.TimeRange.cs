@@ -26,7 +26,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// (<see cref="ViewerTimeHelper.DisplayToNaiveUtc(System.DateTime)"/>). This replaces the old hardcoded
 /// 24-hour <c>s_dataWindow</c>: every inner-tab load reads <see cref="GetWindowUtc"/> (preset
 /// 1h/4h/12h/24h/7d or a custom From/To), the auto-refresh cadence comes from the toolbar instead of
-/// MainWindow's fixed 60-second timer, and the display-mode picker re-renders the visible tab so every
+/// MainWindow's fleet-refresh timer, and the display-mode picker re-renders the visible tab so every
 /// timestamp honors the chosen mode.
 /// </summary>
 public partial class ViewerServerTab
