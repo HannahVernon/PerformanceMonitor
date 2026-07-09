@@ -12,7 +12,7 @@
         cross-server and lives ONCE here (no longer duplicated inside every server tab). The sub-tab content is
         the copy-parity FinOps surface relocated verbatim out of the per-server ViewerServerTab; only the
         server-selector header is new. The grids keep the hardcoded Dark styling (pure relocation); Only the
-        ACTIVE sub-tab loads (Lite's visible-only rule) and the shell's 60-second timer refreshes it.
+        ACTIVE sub-tab loads (Lite's visible-only rule) and the shell's fleet-refresh timer refreshes it.
     -->
     <UserControl.Resources>
         <Style x:Key="EmptyHint" TargetType="TextBlock">

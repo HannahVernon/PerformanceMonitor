@@ -344,6 +344,99 @@ public partial class MainWindow
         }
     }
 
+    // ── Server-row silence (one-click whole-server alert mute via a server-scoped MuteRule) ─────
+
+    /// <summary>
+    /// "Silence This Server" — writes a whole-server mute rule (see
+    /// <see cref="ViewerDataService.BuildServerSilenceRule"/>) the running Darling service honors on its next
+    /// config reload: every future alert for this server is flagged muted (channels skipped for email/Teams/Slack)
+    /// and so never toasts. The Darling shortcut over the multi-step Manage Mute Rules dialog, mirroring Lite's
+    /// one-click "Silence This Server". Idempotent: an existing active silence is reported, not duplicated. Keyed
+    /// on the server's DISPLAY name (what the alert engine's mute context + the alert rows carry). A read-only
+    /// seat / schema-skew / failure degrades to the friendly status message like the other server-row writes.
+    /// </summary>
+    private async void ServerContextMenu_Silence_Click(object sender, RoutedEventArgs e)
+    {
+        var server = GetServerFromContextMenu(sender);
+        if (server is null || _dataService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var rules = await _dataService.GetMuteRulesAsync();
+            if (rules.Any(r => ViewerDataService.IsWholeServerSilence(r, server.DisplayName) && r.Enabled && !r.IsExpired))
+            {
+                StatusText.Text = $"'{server.DisplayName}' is already silenced.";
+                return;
+            }
+
+            await _dataService.InsertMuteRuleAsync(ViewerDataService.BuildServerSilenceRule(server.DisplayName));
+            StatusText.Text = $"Silenced all alerts for '{server.DisplayName}'. Right-click → Unsilence to restore.";
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (ViewerSchemaSkewException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ServerManagement", "Failed to silence the server", ex);
+            StatusText.Text = $"Could not silence the server: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// "Unsilence" — removes every whole-server silence rule for this server (the counter-action to
+    /// <see cref="ServerContextMenu_Silence_Click"/>), so the service resumes delivering its alerts on the next
+    /// reload. Only blanket silences match (see <see cref="ViewerDataService.IsWholeServerSilence"/>), so a
+    /// specific metric/query mute the operator authored for the server is left alone. Reports when the server was
+    /// not silenced.
+    /// </summary>
+    private async void ServerContextMenu_Unsilence_Click(object sender, RoutedEventArgs e)
+    {
+        var server = GetServerFromContextMenu(sender);
+        if (server is null || _dataService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var rules = await _dataService.GetMuteRulesAsync();
+            var silences = rules.Where(r => ViewerDataService.IsWholeServerSilence(r, server.DisplayName)).ToList();
+            if (silences.Count == 0)
+            {
+                StatusText.Text = $"'{server.DisplayName}' is not silenced.";
+                return;
+            }
+
+            foreach (var rule in silences)
+            {
+                await _dataService.DeleteMuteRuleAsync(rule.Id);
+            }
+
+            StatusText.Text = $"Unsilenced '{server.DisplayName}'.";
+        }
+        catch (ViewerReadOnlyException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (ViewerSchemaSkewException ex)
+        {
+            StatusText.Text = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            ViewerLogger.Error("ServerManagement", "Failed to unsilence the server", ex);
+            StatusText.Text = $"Could not unsilence the server: {ex.Message}";
+        }
+    }
+
     // ── Footer buttons (Add / Manage / Import Settings / View Log / Open Log Folder) ─────
 
     private async void AddServerButton_Click(object sender, RoutedEventArgs e)

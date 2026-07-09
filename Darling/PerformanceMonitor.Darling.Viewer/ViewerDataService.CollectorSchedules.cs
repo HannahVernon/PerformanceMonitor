@@ -74,6 +74,11 @@ ON CONFLICT (server_id, collector_name) WHERE server_id IS NOT NULL DO UPDATE SE
     public const string CollectorScheduleDeleteServerScopeSql =
         "DELETE FROM config_collector_schedules WHERE server_id = $1";
 
+    /// <summary>Deletes EVERY per-server override row in one statement (the fleet-wide "Apply Default to All"
+    /// reset), leaving the fleet-wide defaults (<c>server_id IS NULL</c>) untouched.</summary>
+    public const string CollectorScheduleDeleteAllServerScopesSql =
+        "DELETE FROM config_collector_schedules WHERE server_id IS NOT NULL";
+
     /// <summary>All override rows in the store (both fleet + per-server), for the editor overlay.</summary>
     public async Task<List<CollectorScheduleRow>> GetCollectorSchedulesAsync(CancellationToken cancellationToken = default)
     {
@@ -108,6 +113,20 @@ ON CONFLICT (server_id, collector_name) WHERE server_id IS NOT NULL DO UPDATE SE
     /// </summary>
     public Task ReplaceServerSchedulesAsync(int serverId, IEnumerable<CollectorScheduleRow> rows, CancellationToken cancellationToken = default) =>
         ReplaceScheduleScopeAsync(serverId, rows, cancellationToken);
+
+    /// <summary>
+    /// Reverts EVERY server's per-server schedule override back to the fleet/default schedule in one statement
+    /// (the "Apply Default to All" bulk reset) — the fleet-scale shortcut over reverting one server at a time.
+    /// Deletes all per-server rows and leaves the fleet-wide (<c>server_id IS NULL</c>) overrides in place;
+    /// returns the number of override rows removed. The V17 <c>trg_bump_collector_schedules</c> trigger bumps
+    /// <c>config_version</c> on the DELETE, so the service re-resolves schedules on its next sweep (same reload
+    /// path as <see cref="ReplaceServerSchedulesAsync"/>). A read-only seat throws <see cref="ViewerReadOnlyException"/>.
+    /// </summary>
+    public async Task<int> ResetAllServerSchedulesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var command = _dataSource.CreateCommand(CollectorScheduleDeleteAllServerScopesSql);
+        return await ExecuteWriteAsync(command, cancellationToken);
+    }
 
     private async Task ReplaceScheduleScopeAsync(int? serverId, IEnumerable<CollectorScheduleRow> rows, CancellationToken cancellationToken)
     {

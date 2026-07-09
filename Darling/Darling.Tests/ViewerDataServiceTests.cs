@@ -546,3 +546,62 @@ public sealed class ViewerReadOnlyDegradationTests
                 () => Task.FromResult<ServiceConfigRow?>(new ServiceConfigRow())));
     }
 }
+
+/// <summary>
+/// Pins the connection-timeout application (the formerly-dead <c>ConnectionTimeoutSeconds</c> knob): the viewer's
+/// preference is applied to the store connection string as Npgsql's connect <c>Timeout</c> — set on the
+/// managed-derived string (which carries none) and appended to a BYO string only when the operator did not
+/// already specify one. Pure string logic (no live Postgres), the same discipline as the SQL-const pins.
+/// </summary>
+public sealed class ViewerConnectionTimeoutTests
+{
+    [Fact]
+    public void ApplyConnectionTimeout_ManagedStyleStringWithoutTimeout_SetsThePreference()
+    {
+        /* The managed-derived shape (DarlingManagedPostgres): no Timeout key, so the preference is applied. */
+        const string managed =
+            "Host=127.0.0.1;Port=5641;Username=admin;Password=secret;Database=darling;Search Path=collect,config,public";
+
+        var result = ViewerDataService.ApplyConnectionTimeout(managed, 42);
+
+        var builder = new NpgsqlConnectionStringBuilder(result);
+        Assert.Equal(42, builder.Timeout);
+        /* Every other setting is preserved. */
+        Assert.Equal("127.0.0.1", builder.Host);
+        Assert.Equal(5641, builder.Port);
+        Assert.Equal("darling", builder.Database);
+        /* Search Path is the load-bearing one: it resolves the bare table names to the collect/config schemas
+           on every connection, so if the base DbConnectionStringBuilder round-trip ever mangled it, every
+           managed-path query would silently break. Pin that it survives verbatim (the reason we detect + emit
+           via the base builder rather than NpgsqlConnectionStringBuilder). */
+        Assert.Equal("collect,config,public", builder.SearchPath);
+    }
+
+    [Fact]
+    public void ApplyConnectionTimeout_ByoStringWithoutTimeout_AppendsThePreference()
+    {
+        var result = ViewerDataService.ApplyConnectionTimeout("Host=db.corp;Port=5432;Database=darling", 30);
+
+        var builder = new NpgsqlConnectionStringBuilder(result);
+        Assert.Equal(30, builder.Timeout);
+        Assert.Equal("db.corp", builder.Host);
+    }
+
+    [Fact]
+    public void ApplyConnectionTimeout_ByoStringWithExplicitTimeout_LeavesTheOperatorsValue()
+    {
+        /* The operator's explicit Timeout in a BYO connection string wins — the preference must not override it. */
+        var result = ViewerDataService.ApplyConnectionTimeout("Host=db.corp;Database=darling;Timeout=25", 5);
+
+        Assert.Equal(25, new NpgsqlConnectionStringBuilder(result).Timeout);
+    }
+
+    [Fact]
+    public void ApplyConnectionTimeout_DetectsAnExistingTimeoutCaseInsensitively()
+    {
+        /* A lowercase keyword still counts as "already specified" (connection-string keys are case-insensitive). */
+        var result = ViewerDataService.ApplyConnectionTimeout("Host=db.corp;Database=darling;timeout=25", 5);
+
+        Assert.Equal(25, new NpgsqlConnectionStringBuilder(result).Timeout);
+    }
+}

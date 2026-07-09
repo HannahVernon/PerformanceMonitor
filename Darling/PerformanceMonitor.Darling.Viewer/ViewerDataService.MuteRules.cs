@@ -72,6 +72,48 @@ WHERE id = $1";
 
     public const string MuteRuleDeleteSql = "DELETE FROM config_mute_rules WHERE id = $1";
 
+    /// <summary>The <see cref="MuteRule.Reason"/> stamped on a whole-server silence created from the sidebar's
+    /// "Silence This Server" one-click, so it reads clearly in the Manage Mute Rules list.</summary>
+    public const string ServerSilenceReason = "Silenced from server list";
+
+    /// <summary>
+    /// Builds the whole-server silence rule the sidebar's "Silence This Server" writes: a <see cref="MuteRule"/>
+    /// scoped to <paramref name="serverName"/> with every pattern field left null, so it matches EVERY alert for
+    /// that server (<see cref="MuteRule.Matches"/> only filters on the fields that are set). No expiry — a silence
+    /// stays until "Unsilence" removes it, mirroring Lite's indefinite per-server silence.
+    ///
+    /// <para><paramref name="serverName"/> must be the server's DISPLAY name, not its host name: the service's
+    /// alert engine builds its mute context with <c>ServerName = snapshot.ServerName</c> (the monitored server's
+    /// display name), and the alert rows the viewer reads carry that same display name — so a rule keyed on the
+    /// display name is what actually suppresses the alerts (matching the existing "Mute This Server" action,
+    /// which mutes on the alert row's <c>ServerName</c>).</para>
+    /// </summary>
+    public static MuteRule BuildServerSilenceRule(string serverName) => new()
+    {
+        ServerName = serverName,
+        Reason = ServerSilenceReason,
+        Enabled = true,
+        ExpiresAtUtc = null,
+        /* MetricName/DatabasePattern/QueryTextPattern/WaitTypePattern/JobNamePattern stay null → matches all. */
+    };
+
+    /// <summary>
+    /// True when <paramref name="rule"/> is a WHOLE-SERVER silence for <paramref name="serverName"/> — scoped to
+    /// that server (case-insensitive) with no narrowing pattern on any other field. This is the shape
+    /// <see cref="BuildServerSilenceRule"/> writes, and the predicate "Unsilence" uses to find the rule(s) to
+    /// remove (so it targets only blanket silences, never a specific metric/query/db mute the operator authored
+    /// for that server). Enabled/expiry are intentionally not part of the match — Unsilence clears any lingering
+    /// blanket silence regardless.
+    /// </summary>
+    public static bool IsWholeServerSilence(MuteRule rule, string serverName) =>
+        rule is not null
+        && string.Equals(rule.ServerName, serverName, StringComparison.OrdinalIgnoreCase)
+        && rule.MetricName is null
+        && rule.DatabasePattern is null
+        && rule.QueryTextPattern is null
+        && rule.WaitTypePattern is null
+        && rule.JobNamePattern is null;
+
     /// <summary>All mute rules, newest first — the "Manage Mute Rules" list. Timestamps come back
     /// tagged Utc (stored naive), so <see cref="MuteRule.ExpiresDisplay"/> converts correctly.</summary>
     public async Task<List<MuteRule>> GetMuteRulesAsync(CancellationToken cancellationToken = default)

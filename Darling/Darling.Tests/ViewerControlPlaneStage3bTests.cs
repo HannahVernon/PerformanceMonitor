@@ -250,6 +250,16 @@ public sealed class ViewerCollectorSchedulesSqlTests
         Assert.Contains("DELETE FROM config_collector_schedules WHERE server_id = $1",
             ViewerDataService.CollectorScheduleDeleteServerScopeSql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void DeleteAllServerScopesSql_ClearsEveryPerServerOverride_ButNotTheFleetDefault()
+    {
+        /* The "Apply Default to All" bulk reset deletes every per-server row (server_id IS NOT NULL) in one
+           statement and must leave the fleet-wide default (server_id IS NULL) untouched. */
+        var sql = ViewerDataService.CollectorScheduleDeleteAllServerScopesSql;
+        Assert.Contains("DELETE FROM config_collector_schedules WHERE server_id IS NOT NULL", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("server_id IS NULL", sql, StringComparison.Ordinal);
+    }
 }
 
 /// <summary>The pure store↔editor overlay + the preset table (ported from Lite, frequency-only).</summary>

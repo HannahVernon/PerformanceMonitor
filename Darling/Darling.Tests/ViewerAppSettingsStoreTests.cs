@@ -47,6 +47,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
         Assert.False(settings.McpEnabled);
         Assert.Equal(5152, settings.McpPort);
         Assert.Equal(5, settings.ConnectionTimeoutSeconds);
+        Assert.Equal(30, settings.NocRefreshIntervalSeconds);
         Assert.Equal("ServerTime", settings.TimeDisplayMode);
         Assert.True(settings.AlertsEnabled);
         Assert.Equal(80, settings.AlertCpuThreshold);
@@ -70,6 +71,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
             McpEnabled = true,
             McpPort = 5200,
             ConnectionTimeoutSeconds = 30,
+            NocRefreshIntervalSeconds = 120,
             CsvSeparator = ";",
             TimeDisplayMode = "UTC",
             AlertsEnabled = false,
@@ -106,6 +108,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
         Assert.True(reloaded.McpEnabled);
         Assert.Equal(5200, reloaded.McpPort);
         Assert.Equal(30, reloaded.ConnectionTimeoutSeconds);
+        Assert.Equal(120, reloaded.NocRefreshIntervalSeconds);
         Assert.Equal(";", reloaded.CsvSeparator);
         Assert.Equal("UTC", reloaded.TimeDisplayMode);
         Assert.False(reloaded.AlertsEnabled);
@@ -147,6 +150,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
             {
               "McpPort": 0,
               "ConnectionTimeoutSeconds": 1,
+              "NocRefreshIntervalSeconds": 9999,
               "AlertCpuThreshold": 999,
               "AlertCpuMode": "Bogus",
               "AlertLongRunningQueryMaxResults": 99999,
@@ -164,6 +168,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
 
         Assert.Equal(5152, settings.McpPort);                 // 0 (unset) -> Darling default
         Assert.Equal(5, settings.ConnectionTimeoutSeconds);   // below min 5 -> 5
+        Assert.Equal(600, settings.NocRefreshIntervalSeconds); // above max 600 -> 600
         Assert.Equal(100, settings.AlertCpuThreshold);        // above max 100 -> 100
         Assert.Equal("Total", settings.AlertCpuMode);         // unknown -> Total
         Assert.Equal(1000, settings.AlertLongRunningQueryMaxResults); // above max 1000 -> 1000
