@@ -36,7 +36,7 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 [McpServerToolType]
 public sealed class DarlingMcpTools
 {
-    [McpServerTool(Name = "analyze_server"), Description("Runs the diagnostic inference engine against a server's collected data. Scores wait stats, blocking, memory, config, and other facts, then traverses a relationship graph to build evidence-backed stories about what's wrong and why. Anomaly detection compares the analysis window against 30-day time-bucketed baselines (hour-of-day x day-of-week) to identify deviations that are unusual for this specific time slot, not just unusual overall. Returns structured findings with severity scores, evidence chains, baseline context for anomalies, and recommended next tools to call.")]
+    [McpServerTool(Name = "analyze_server"), Description("Runs the diagnostic inference engine against a server's collected data. Scores wait stats, blocking, memory, config, and other facts, then traverses a relationship graph to build evidence-backed stories about what's wrong and why. Anomaly detection compares the analysis window against 30-day time-bucketed baselines (hour-of-day x day-of-week) to identify deviations that are unusual for this specific time slot, not just unusual overall. Returns structured findings with severity scores, evidence chains, baseline context for anomalies, and recommended next tools to call. A remediable finding also carries remediation_command: the full copy-paste T-SQL remediation (identical to the viewer card), including a two-sided risk-disclosure comment header on destructive changes; it is advisory only and never executed.")]
     public static async Task<string> AnalyzeServer(
         DarlingAnalysisService analysisService,
         NpgsqlDataSource postgres,
@@ -116,6 +116,15 @@ public sealed class DarlingMcpTools
                             remediation = advice.Remediation
                         },
                         suggested_remediation_sql = advice?.RemediationTsql,
+                        // The FULL copy-paste remediation command — the SAME text the viewer cards
+                        // render — from the PERSISTED RemediationAction via the shared renderer (all
+                        // seven shapes + the two-sided risk-disclosure comment header on the destructive
+                        // ones). ADDITIVE alongside suggested_remediation_sql (the older 3-shape,
+                        // drill-down-sourced advice-block SQL): this covers all seven shapes and also
+                        // renders on get_analysis_findings, where the drill-down is gone. Null when the
+                        // finding has no remediable action. PRODUCE ONLY — advisory text; the read-only
+                        // MCP never executes it.
+                        remediation_command = FactRemediation.RenderCopyPasteCommand(f.Remediation),
                         // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
                         // remediation, read-only (like Lite, Darling has no Apply path; its
                         // RCSI fields are null/0 so the inaction side shows the weak-case baseline).
@@ -516,7 +525,7 @@ public sealed class DarlingMcpTools
         }
     }
 
-    [McpServerTool(Name = "get_analysis_findings"), Description("Gets persisted findings from previous analysis runs without running a new analysis. Use this to review historical findings or check if anything has changed since the last analysis.")]
+    [McpServerTool(Name = "get_analysis_findings"), Description("Gets persisted findings from previous analysis runs without running a new analysis. Use this to review historical findings or check if anything has changed since the last analysis. A remediable finding carries remediation_command: the full copy-paste T-SQL remediation (identical to the viewer card), rendered from the finding's persisted action and including a two-sided risk-disclosure comment header on destructive changes; it is advisory only and never executed.")]
     public static async Task<string> GetAnalysisFindings(
         DarlingAnalysisService analysisService,
         NpgsqlDataSource postgres,
@@ -562,9 +571,12 @@ public sealed class DarlingMcpTools
                     // The prose IS value-stated: GetComposedForFinding reads the
                     // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
                     // StoryText at analysis time, falling back to the static block.
-                    // suggested_remediation_sql is intentionally omitted: it
-                    // would always be null here. The operator re-runs
-                    // analyze_server when they need the copy-paste T-SQL.
+                    // suggested_remediation_sql STAYS omitted here: it is built from
+                    // the drill-down (gone on read-back), so it would always be null.
+                    // The FULL copy-paste command below is rendered from the PERSISTED
+                    // RemediationAction instead — which DOES survive read-back — so a
+                    // triaging agent gets the same runnable command a human sees on the
+                    // card without re-running analyze_server.
                     var advice = FactAdvice.GetComposedForFinding(f);
                     return new
                     {
@@ -592,7 +604,12 @@ public sealed class DarlingMcpTools
                             headline = advice.Headline,
                             investigation = advice.Investigation,
                             remediation = advice.Remediation
-                        }
+                        },
+                        // The SAME copy-paste remediation command the viewer cards render, from the
+                        // persisted action via the shared renderer (all seven shapes + the two-sided
+                        // risk-disclosure comment header on the destructive ones). Null when the finding
+                        // has no remediable action. PRODUCE ONLY — the read-only MCP never executes it.
+                        remediation_command = FactRemediation.RenderCopyPasteCommand(f.Remediation)
                     };
                 })
             }, McpHelpers.JsonOptions);
