@@ -18,7 +18,10 @@ namespace PerformanceMonitor.Collectors;
 /// Point-in-time waiting tasks from sys.dm_os_waiting_tasks. Extracted verbatim from Lite's
 /// RemoteCollectorService.WaitingTasks.cs — session ids read as smallint and widened to int on
 /// write, resource_description stays a NULL placeholder (no longer collected), and the
-/// database-exclusion filter splices at /*EXCLUSION_FILTER*/.
+/// database-exclusion filter splices at /*EXCLUSION_FILTER*/. Benign "ignored" wait types are
+/// skipped in <see cref="ReadAsync"/> via <c>context.IgnoredWaitTypes</c> — the same filter
+/// <see cref="WaitStatsCollector"/> applies — so the "Current Waits" surface honors the user's ignore
+/// list in both SKUs (Lite: ignored_wait_types.json, Darling: IgnoredWaitDefaults.All).
 /// </summary>
 public sealed class WaitingTasksCollector : CollectorDefinitionBase<WaitingTasksCollector.Row>
 {
@@ -79,10 +82,20 @@ OPTION(RECOMPILE);";
 
         while (await reader.ReadAsync(cancellationToken))
         {
+            var waitType = reader.IsDBNull(1) ? null : reader.GetString(1);
+
+            /* Skip ignored (benign) wait types so "Current Waits" honors the same filter as wait_stats
+               — mirrors WaitStatsCollector.ReadAsync. The query already drops NULL wait_type; the null
+               guard keeps the Contains call safe regardless. */
+            if (waitType is not null && context.IgnoredWaitTypes.Contains(waitType))
+            {
+                continue;
+            }
+
             /* session_id and blocking_session_id are smallint in sys.dm_os_waiting_tasks */
             rows.Add(new Row(
                 reader.IsDBNull(0) ? (short)0 : reader.GetInt16(0),
-                reader.IsDBNull(1) ? null : reader.GetString(1),
+                waitType,
                 reader.IsDBNull(2) ? 0L : reader.GetInt64(2),
                 reader.IsDBNull(3) ? null : reader.GetInt16(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4)));

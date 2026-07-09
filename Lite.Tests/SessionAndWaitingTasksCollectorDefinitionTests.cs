@@ -104,4 +104,25 @@ public sealed class WaitingTasksCollectorDefinitionTests
         Assert.Null(writer.Values[3]);               /* null blocking session survives */
         Assert.Null(writer.Values[4]);               /* resource_description placeholder */
     }
+
+    [Fact]
+    public async Task ReadAsync_FiltersIgnoredWaitTypes()
+    {
+        /* WAITFOR is a benign wait that (unlike most of the ignore list) surfaces on user sessions
+           (session_id >= 50), so it is the poster child for the "Current Waits" leak this filter closes:
+           the collector now skips ignored types just like WaitStatsCollector, so both wait surfaces honor
+           the same list (Lite: ignored_wait_types.json, Darling: IgnoredWaitDefaults.All). */
+        using var reader = new FakeCollectorDataReader(
+            new object[] { (short)57, "LCK_M_X", 200L, (short)58, "SalesDb" },
+            new object[] { (short)60, "WAITFOR", 5000L, DBNull.Value, "SalesDb" },
+            new object[] { (short)62, "SOS_SCHEDULER_YIELD", 15L, DBNull.Value, "SalesDb" });
+
+        var context = CollectorTestContext.Make(s_deltas, ignored: new[] { "WAITFOR" });
+
+        var rows = await WaitingTasksCollector.Instance.ReadAsync(reader, context, CancellationToken.None);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(new WaitingTasksCollector.Row(57, "LCK_M_X", 200L, 58, "SalesDb"), rows[0]);
+        Assert.Equal(new WaitingTasksCollector.Row(62, "SOS_SCHEDULER_YIELD", 15L, null, "SalesDb"), rows[1]);
+    }
 }
