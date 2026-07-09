@@ -112,13 +112,19 @@ public sealed class DarlingSelfAlertTests
         public FakeHistoryStore History { get; } = new();
         public bool Muted { get; set; }
 
+        /// <summary>When set, the mute check throws — simulates a broken mute rule's Matches() to prove the
+        /// evaluation isolates it (a throw here must never propagate out and stop collection).</summary>
+        public bool MuteThrows { get; set; }
+
         /// <summary>The V20 connection-change notify gate, read live by the evaluator's connect edge (default on).</summary>
         public bool NotifyConnectionChanges { get; set; } = true;
 
         public DateTime Now { get; set; } = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
 
         public DarlingSelfAlertEvaluator Build() => new(
-            Settings, Deliverer, History, _ => Muted, logger: null, utcNow: () => Now,
+            Settings, Deliverer, History,
+            _ => MuteThrows ? throw new InvalidOperationException("mute check boom") : Muted,
+            logger: null, utcNow: () => Now,
             notifyConnectionChanges: () => NotifyConnectionChanges);
     }
 
@@ -515,6 +521,28 @@ public sealed class DarlingSelfAlertTests
 
         await e.ApplyDiskPressureAsync(1 * Gib, 100 * Gib, null, Ct);
         Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task DiskPressure_ThrowingMuteCheck_IsIsolated_DoesNotPropagate()
+    {
+        /* MAJOR: the disk-pressure sweep-loop body has no catch-all of its own, and the pre-deliver mute check
+           (_isAlertMuted -> a mute rule's Matches()) is NOT internally isolated. EvaluateDiskPressureAsync must
+           swallow a throw there — otherwise a single broken mute rule stops collection for the whole fleet. */
+        var h = new Harness { MuteThrows = true };
+        var e = h.Build();
+
+        /* Must NOT throw (would propagate out of the un-guarded worker loop). */
+        await e.EvaluateDiskPressureAsync(5 * Gib, 100 * Gib, storeSizeBytes: 20 * Gib, Ct);
+
+        /* The throw happened in the mute check, before delivery — nothing was delivered, and we're still alive. */
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* The isolation lives in the Evaluate wrapper (the worker's entry point), not the sibling-style
+           un-isolated Apply: a fresh evaluator's Apply lets the same throw propagate. */
+        var e2 = new Harness { MuteThrows = true }.Build();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => e2.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct));
     }
 
     /* ---------------- master switch ---------------- */

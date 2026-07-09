@@ -176,10 +176,7 @@ public static class DarlingRetention
                their statement writes WARNING (the per-table failures were already logged + isolated above).
                Fleet-wide, so it lands under the sentinel server_id (DarlingObservability.LogRetentionRunAsync),
                which is failure-isolated and never breaks the loop. */
-            var status = tablesFailed == 0 ? "SUCCESS" : "WARNING";
-            var message = tablesFailed == 0
-                ? $"Purged {tablesPurged.ToString(CultureInfo.InvariantCulture)} table(s): {totalRowsDeleted.ToString(CultureInfo.InvariantCulture)} row(s) deleted, {totalChunksDropped.ToString(CultureInfo.InvariantCulture)} chunk(s) dropped"
-                : $"Purged {tablesPurged.ToString(CultureInfo.InvariantCulture)} table(s), {tablesFailed.ToString(CultureInfo.InvariantCulture)} failed (see prior warnings): {totalRowsDeleted.ToString(CultureInfo.InvariantCulture)} row(s) deleted, {totalChunksDropped.ToString(CultureInfo.InvariantCulture)} chunk(s) dropped";
+            var (status, message) = BuildRunRecordSummary(tablesPurged, totalRowsDeleted, totalChunksDropped, tablesFailed);
             await DarlingObservability.LogRetentionRunAsync(
                 postgres, status, summary.TotalPurged, sw.ElapsedMilliseconds, message, logger, cancellationToken);
 
@@ -202,6 +199,22 @@ public static class DarlingRetention
                 postgres, "ERROR", totalRowsDeleted + totalChunksDropped, sw.ElapsedMilliseconds, ex.Message, logger, cancellationToken);
             return new PurgeSummary(tablesPurged, totalRowsDeleted, totalChunksDropped);
         }
+    }
+
+    /// <summary>
+    /// The status + human message for the auditable run-record of a completed sweep (not the exception path,
+    /// which writes a literal ERROR): SUCCESS when every table purged cleanly, WARNING when
+    /// <paramref name="tablesFailed"/> &gt; 0 (some table's statement failed — already logged + isolated).
+    /// Pure so the SUCCESS/WARNING branch and the message text are unit-testable without a live store.
+    /// </summary>
+    internal static (string Status, string Message) BuildRunRecordSummary(
+        int tablesPurged, int totalRowsDeleted, int totalChunksDropped, int tablesFailed)
+    {
+        var status = tablesFailed == 0 ? "SUCCESS" : "WARNING";
+        var message = tablesFailed == 0
+            ? $"Purged {tablesPurged.ToString(CultureInfo.InvariantCulture)} table(s): {totalRowsDeleted.ToString(CultureInfo.InvariantCulture)} row(s) deleted, {totalChunksDropped.ToString(CultureInfo.InvariantCulture)} chunk(s) dropped"
+            : $"Purged {tablesPurged.ToString(CultureInfo.InvariantCulture)} table(s), {tablesFailed.ToString(CultureInfo.InvariantCulture)} failed (see prior warnings): {totalRowsDeleted.ToString(CultureInfo.InvariantCulture)} row(s) deleted, {totalChunksDropped.ToString(CultureInfo.InvariantCulture)} chunk(s) dropped";
+        return (status, message);
     }
 
     /// <summary>
@@ -302,21 +315,7 @@ public static class DarlingRetention
             using var command = new NpgsqlCommand(deleteSql, connection) { CommandTimeout = DeleteTimeoutSeconds };
             command.Parameters.AddWithValue(cutoff);
 
-            var totalDeleted = 0;
-            while (true)
-            {
-                var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
-                totalDeleted += deleted;
-
-                /* A batch that clears fewer than the cap means no expired rows remain — the table is drained.
-                   A full-cap batch means there may be more, so go again. */
-                if (deleted < DeleteBatchSize)
-                {
-                    break;
-                }
-            }
-
-            return totalDeleted;
+            return await DrainBatchesAsync(ct => command.ExecuteNonQueryAsync(ct), DeleteBatchSize, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -324,6 +323,31 @@ public static class DarlingRetention
             logger?.LogWarning("Retention purge failed for {Table}: {Message}", tableName, ex.Message);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Repeatedly runs <paramref name="executeBatch"/> (one capped batched-DELETE execution, returning its
+    /// rows-affected) and sums the total, stopping when a batch clears fewer than <paramref name="batchSize"/>
+    /// rows — i.e. no expired rows remain and the table is drained. A full-cap batch means there may be more,
+    /// so it goes again; an exact multiple of the cap terminates on the following empty batch. Pure over the
+    /// injected executor so the loop-again + termination is unit-testable without a live store.
+    /// </summary>
+    internal static async Task<int> DrainBatchesAsync(
+        Func<CancellationToken, Task<int>> executeBatch, int batchSize, CancellationToken cancellationToken)
+    {
+        var totalDeleted = 0;
+        while (true)
+        {
+            var deleted = await executeBatch(cancellationToken);
+            totalDeleted += deleted;
+
+            if (deleted < batchSize)
+            {
+                break;
+            }
+        }
+
+        return totalDeleted;
     }
 }
 

@@ -27,10 +27,14 @@ public sealed partial class ViewerDataService
     /// Newest collection time per server across all collectors, in one pass — the sidebar dots and the
     /// status bar's collection field derive freshness from this (the same <c>MAX(collection_time)</c> the
     /// Overview cards use per server, so a dot and its card agree). Timestamps are the store's naive UTC.
+    /// Excludes <c>server_id = 0</c>, the fleet-level retention run-record sentinel
+    /// (<c>DarlingObservability.FleetServerId</c>) — it is not a real server, so it must not appear as a
+    /// phantom key a future key-iterating consumer could render as "server 0".
     /// </summary>
     public const string ServerFreshnessSql = @"
 SELECT server_id, MAX(collection_time)
 FROM v_collection_log
+WHERE server_id <> 0
 GROUP BY server_id";
 
     /// <summary>The store's on-disk size in bytes (status-bar Database field). No parameters.</summary>

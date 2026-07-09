@@ -401,15 +401,42 @@ internal sealed class DarlingSelfAlertEvaluator
     }
 
     /// <summary>
+    /// The isolating entry point the worker's disk-pressure sweep calls — the fleet-level twin of
+    /// <see cref="EvaluateStoreAlertsAsync"/> for the store-polled conditions. Wraps
+    /// <see cref="ApplyDiskPressureAsync"/> in the SAME failure isolation the sibling store-alerts use, so a
+    /// throwing seam — most notably the pre-deliver mute check (<c>_isAlertMuted</c> → a mute rule's
+    /// <c>Matches</c>), which unlike Deliver/RecordResolution is NOT internally isolated — can never propagate
+    /// out of the (otherwise un-guarded) collection sweep loop and stop collection for the whole fleet.
+    /// Cancellation still propagates.
+    /// </summary>
+    public async Task EvaluateDiskPressureAsync(
+        long? freeBytes, long? totalBytes, long? storeSizeBytes, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ApplyDiskPressureAsync(freeBytes, totalBytes, storeSizeBytes, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Store disk-pressure self-alert failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
     /// Edge-applies the fleet-level Store Disk Pressure condition from a store-volume sample: fire once on
     /// entry, re-fire only after the alert cooldown while it persists, and write ONE "Store Disk Pressure
     /// Resolved" history row on recovery (mirrors the per-server conditions' edge shape). Gated on the master
     /// alerts switch. NO-OPS when free/total are null — a remote BYO store whose volume the service can't see —
     /// so it never false-alarms; the managed store's own volume is what it exists to protect.
     /// <paramref name="storeSizeBytes"/> (pg_database_size) is context for the alert text only, never the
-    /// trigger. Testable directly with a recording deliverer + a controllable clock.
+    /// trigger. Internal (tested directly, like the sibling Apply methods); the worker calls the isolating
+    /// <see cref="EvaluateDiskPressureAsync"/>. Testable directly with a recording deliverer + a controllable clock.
     /// </summary>
-    public async Task ApplyDiskPressureAsync(
+    internal async Task ApplyDiskPressureAsync(
         long? freeBytes, long? totalBytes, long? storeSizeBytes, CancellationToken cancellationToken)
     {
         if (!_settings.AlertsEnabled)

@@ -7,7 +7,9 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Collectors;
@@ -91,6 +93,86 @@ public sealed class DarlingRetentionTests
 
         /* The base mirrors the dominant collector horizon it is derived from. */
         Assert.Equal(DarlingRetention.DataRetentionBaseDays, CollectorScheduleDefaults.All["wait_stats"].RetentionDays);
+    }
+
+    /* ---------------- batched-drain loop (pure, injected executor) ---------------- */
+
+    [Fact]
+    public async Task DrainBatches_LoopsUntilBatchBelowCap_ThenStops()
+    {
+        /* [cap, cap, partial] -> 3 executions, summed; the partial batch (< cap) terminates the drain. */
+        var batches = new Queue<int>(new[] { 10000, 10000, 3 });
+        var calls = 0;
+        var total = await DarlingRetention.DrainBatchesAsync(
+            _ => { calls++; return Task.FromResult(batches.Dequeue()); }, batchSize: 10000, CancellationToken.None);
+
+        Assert.Equal(20003, total);
+        Assert.Equal(3, calls);
+    }
+
+    [Fact]
+    public async Task DrainBatches_SingleUnderCapBatch_StopsAfterOne()
+    {
+        var calls = 0;
+        var total = await DarlingRetention.DrainBatchesAsync(
+            _ => { calls++; return Task.FromResult(5); }, batchSize: 10000, CancellationToken.None);
+
+        Assert.Equal(5, total);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task DrainBatches_ExactMultipleOfCap_TerminatesOnTheEmptyBatch()
+    {
+        /* Exactly cap, then 0: the full-cap batch forces another round; the empty batch terminates it. */
+        var batches = new Queue<int>(new[] { 10000, 0 });
+        var calls = 0;
+        var total = await DarlingRetention.DrainBatchesAsync(
+            _ => { calls++; return Task.FromResult(batches.Dequeue()); }, batchSize: 10000, CancellationToken.None);
+
+        Assert.Equal(10000, total);
+        Assert.Equal(2, calls);
+    }
+
+    /* ---------------- run-record status/message (pure) ---------------- */
+
+    [Fact]
+    public void BuildRunRecordSummary_AllTablesClean_IsSuccess()
+    {
+        var (status, message) = DarlingRetention.BuildRunRecordSummary(
+            tablesPurged: 33, totalRowsDeleted: 1200, totalChunksDropped: 42, tablesFailed: 0);
+
+        Assert.Equal("SUCCESS", status);
+        Assert.Contains("33 table(s)", message);
+        Assert.Contains("1200 row(s) deleted", message);
+        Assert.Contains("42 chunk(s) dropped", message);
+        Assert.DoesNotContain("failed", message);
+    }
+
+    [Fact]
+    public void BuildRunRecordSummary_SomeTablesFailed_IsWarning()
+    {
+        var (status, message) = DarlingRetention.BuildRunRecordSummary(
+            tablesPurged: 30, totalRowsDeleted: 500, totalChunksDropped: 0, tablesFailed: 3);
+
+        Assert.Equal("WARNING", status);
+        Assert.Contains("3 failed", message);
+    }
+
+    [Fact]
+    public async Task Purge_UnexpectedThrowInSweep_DoesNotPropagate_ReturnsPartialSummary()
+    {
+        /* The daily caller does NOT wrap PurgeAsync, so an unexpected throw inside the sweep would kill the
+           collection loop. Here a caller resolver throws on the first collector, driving the outer catch (the
+           ERROR path): PurgeAsync must swallow it and return a partial summary. The null data source is never
+           dereferenced before the throw, and the ERROR run-record write is itself failure-isolated, so this
+           stays a DB-free test. */
+        var summary = await DarlingRetention.PurgeAsync(
+            postgres: null!, timescaleAvailable: false, logger: null, TestContext.Current.CancellationToken,
+            retentionDaysFor: _ => throw new InvalidOperationException("resolver boom"));
+
+        Assert.Equal(0, summary.TablesPurged);
+        Assert.Equal(0, summary.TotalPurged);
     }
 
     /// <summary>
@@ -224,6 +306,41 @@ public sealed class DarlingRetentionTests
                 read.Parameters.AddWithValue(DarlingObservability.FleetServerId);
                 Assert.Equal("SUCCESS", await read.ExecuteScalarAsync(ct));
             }
+        }
+        finally
+        {
+            await DeleteTestRowsAsync(connection);
+        }
+    }
+
+    [Fact]
+    public async Task EndToEnd_PurgeResolverThrows_WritesErrorRunRecord_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live ERROR run-record test.");
+
+        var ct = TestContext.Current.CancellationToken;
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+        await DeleteTestRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        try
+        {
+            /* A resolver that throws drives PurgeAsync into its outer catch, which writes an ERROR run-record
+               to the store under the fleet sentinel — the failure is auditable, not a crashed loop. */
+            var summary = await DarlingRetention.PurgeAsync(
+                postgres, timescaleAvailable: false, null, ct,
+                retentionDaysFor: _ => throw new InvalidOperationException("resolver boom"));
+            Assert.Equal(0, summary.TablesPurged);
+
+            using var read = new NpgsqlCommand(
+                "SELECT status FROM collection_log WHERE server_id = $1 AND collector_name = 'data_retention' ORDER BY collection_time DESC LIMIT 1", connection);
+            read.Parameters.AddWithValue(DarlingObservability.FleetServerId);
+            Assert.Equal("ERROR", await read.ExecuteScalarAsync(ct));
         }
         finally
         {

@@ -1077,7 +1077,11 @@ LIMIT 1", connection);
             }
         }
 
-        await _selfAlerts!.ApplyDiskPressureAsync(freeBytes, totalBytes, storeSizeBytes, cancellationToken);
+        /* EvaluateDiskPressureAsync (not ApplyDiskPressureAsync) so a throwing seam — e.g. a mute rule's
+           Matches() in the pre-deliver mute check — is isolated inside the evaluator, exactly like the
+           per-server EvaluateStoreAlertsAsync. This sweep-loop body has no catch-all of its own, so an
+           un-isolated throw here would stop collection for the whole fleet. */
+        await _selfAlerts!.EvaluateDiskPressureAsync(freeBytes, totalBytes, storeSizeBytes, cancellationToken);
     }
 
     /// <summary>
