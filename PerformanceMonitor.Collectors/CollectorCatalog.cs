@@ -51,5 +51,6 @@ public static class CollectorCatalog
         DeadlocksCollector.Instance,
         BlockedProcessReportCollector.Instance,
         SystemHealthEventsCollector.Instance,
+        DefaultTraceEventsCollector.Instance,
     };
 }

@@ -170,4 +170,30 @@ public static class SystemEventSignificance
     /// </summary>
     public static bool IsSignificant(IoIssuesRecord record) =>
         string.Equals(record.State, WarningStatus, StringComparison.Ordinal);
+
+    /* ── Default Trace events (Dashboard→shared Default Trace parity) ──
+       Unlike the system_health categories above — whose predicates are re-implemented from sp_HealthParser
+       and hand-mirrored into a service-side twin (DarlingSystemHealthSignificance) because this WPF class is
+       viewer-only — the Default Trace significant-set gate is a NEW addition authored ONCE in
+       PerformanceMonitor.Common (DefaultTraceEventSignificance), which BOTH the viewer and the headless MCP
+       host reference, so the two can never drift. These members delegate to it, keeping the System Events
+       surface's significant-set entry point uniform (the viewer calls SystemEventSignificance for every
+       category, system_health or default-trace). */
+
+    /// <summary>Minimum ErrorLog severity for the significant set — the shared
+    /// <see cref="DefaultTraceEventSignificance.SevereErrorLogMinSeverity"/> (16).</summary>
+    public const int DefaultTraceSevereErrorLogMinSeverity = DefaultTraceEventSignificance.SevereErrorLogMinSeverity;
+
+    /// <summary>
+    /// Whether a collected Default Trace event belongs on the System Events surface: ErrorLog is gated by
+    /// severity, every other curated category (auto-grow/shrink, schema DDL, security audit, memory change)
+    /// is significant as collected. Delegates to the ONE shared classifier so the viewer and the headless
+    /// <c>get_default_trace_events</c> MCP tool gate identically.
+    /// </summary>
+    public static bool IsSignificantDefaultTraceEvent(string? eventName, int? severity) =>
+        DefaultTraceEventSignificance.IsSignificant(eventName, severity);
+
+    /// <summary>The System-Events category a Default Trace event name maps to (the shared classifier).</summary>
+    public static DefaultTraceEventCategory ClassifyDefaultTraceEvent(string? eventName) =>
+        DefaultTraceEventSignificance.Classify(eventName);
 }

@@ -284,19 +284,23 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     /// gates on at connect (finding B1). The authoritative <c>darling_schema_version</c> table is owner-only
     /// (a viewer/admin role can't read it, and even <c>MAX(version)</c> can itself throw 42501), so rather
     /// than read the version number this checks whether the store carries the schema OBJECTS the recent
-    /// migrations added — objects any role can see in <c>information_schema</c>. Four sentinels, newest
-    /// first: V20's <c>notify_connection_changes</c> column (config_alert_settings), V19's <c>analysis_state</c>
+    /// migrations added — objects any role can see in <c>information_schema</c>. Five sentinels, newest
+    /// first: V21's <c>default_trace_events</c> table (the shared Default Trace collector), V20's
+    /// <c>notify_connection_changes</c> column (config_alert_settings), V19's <c>analysis_state</c>
     /// table, V18's <c>alert_delivery_mode_override</c> column (the very column whose absence throws the raw
     /// 42703 the finding reproduces on Add/Edit Server), and V17's <c>config_monitored_servers</c> table (the
-    /// config control plane). <see cref="MapProbedSchemaVersion"/> reduces the four flags to the highest
-    /// satisfied version.
+    /// config control plane). <see cref="MapProbedSchemaVersion"/> reduces the five flags to the highest
+    /// satisfied version. <c>default_trace_events</c> is a valid V21 sentinel: it appears only in a store at
+    /// V21+ — a fresh store gets it at V1 (it is in the collector catalog) but a fresh store runs straight
+    /// through to the latest version, and an upgraded store gets it exactly at V21.
     /// </summary>
     public const string StoreSchemaProbeSql = @"
 SELECT
     EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'config_monitored_servers'),
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_monitored_servers' AND column_name = 'alert_delivery_mode_override'),
     EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'analysis_state'),
-    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_alert_settings' AND column_name = 'notify_connection_changes')";
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_alert_settings' AND column_name = 'notify_connection_changes'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'default_trace_events')";
 
     /// <summary>The store schema version this viewer build requires — the highest migration it knows
     /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
@@ -317,7 +321,7 @@ SELECT
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
             {
-                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3));
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4));
             }
 
             return null;
@@ -329,17 +333,23 @@ SELECT
     }
 
     /// <summary>
-    /// Maps the four <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest
-    /// present wins: <paramref name="hasAlertTuningKnobs"/> (V20) → 20, else
+    /// Maps the five <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest
+    /// present wins: <paramref name="hasDefaultTraceEvents"/> (V21) → 21, else
+    /// <paramref name="hasAlertTuningKnobs"/> (V20) → 20, else
     /// <paramref name="hasAnalysisState"/> (V19) → 19, else
     /// <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else <paramref name="hasConfigControlPlane"/>
     /// (V17) → 17, else 16 — the "older than the V17 config control plane" floor (the exact pre-17 version
     /// isn't probed, but it is below what the viewer needs). Pure, so it is unit-tested without a live store;
-    /// a schema bump past 20 trips the pinning test that keeps this in step with
+    /// a schema bump past 21 trips the pinning test that keeps this in step with
     /// <see cref="StorageVersion.SchemaVersion"/>.
     /// </summary>
-    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs)
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents)
     {
+        if (hasDefaultTraceEvents)
+        {
+            return 21;
+        }
+
         if (hasAlertTuningKnobs)
         {
             return 20;

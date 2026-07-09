@@ -57,5 +57,6 @@ public static class CollectorScheduleDefaults
         ["session_stats"] = new(5, 30),
         ["session_summary_stats"] = new(5, 30),
         ["system_health_events"] = new(5, 30),
+        ["default_trace_events"] = new(5, 30),
     };
 }

@@ -74,7 +74,8 @@ public class DuckDbSchemaTests : IDisposable
             "trace_flags",
             "running_jobs",
             "config_alert_log",
-            "config_mute_rules"
+            "config_mute_rules",
+            "default_trace_events"
         };
 
         using var connection = new DuckDBConnection($"Data Source={_dbPath}");
@@ -142,11 +143,12 @@ public class DuckDbSchemaTests : IDisposable
         foreach (var _ in Schema.GetAllTableStatements())
             tableCount++;
 
-        /* 39 tables from Schema (schema_version is created separately by DuckDbInitializer).
+        /* 40 tables from Schema (schema_version is created separately by DuckDbInitializer).
            Includes config_edge_trigger_watermarks (#1145), dmv_blocking_snapshots (always-on
            blocking fallback), latch_stats/spinlock_stats, cpu_scheduler_stats/plan_cache_stats,
-           session_summary_stats, and system_health_events (#1262 shared DMV/XE collectors). */
-        Assert.Equal(39, tableCount);
+           session_summary_stats, system_health_events, and default_trace_events (#1262 shared
+           DMV/XE/Default-Trace collectors). */
+        Assert.Equal(40, tableCount);
     }
 
     [Fact]

@@ -960,6 +960,44 @@ CREATE TABLE IF NOT EXISTS system_health_events (
     public const string CreateSystemHealthEventsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_system_health_events_time ON system_health_events(server_id, collection_time)";
 
+    /* Default Trace events (built-in sys.traces default trace, read via sys.fn_trace_gettable): the
+       always-on server events no DMV captures — file auto-grow/shrink stalls, severe ErrorLog writes,
+       schema DDL, security audits, and Server Memory Change. Column order mirrors the shared
+       DefaultTraceEventsCollector payload exactly (the DuckDB appender writes by position). event_time is
+       the trace StartTime and the collector's dedup watermark. Config-change events are deliberately NOT
+       collected (the config-snapshot collectors own that slice). */
+    public const string CreateDefaultTraceEventsTable = @"
+CREATE TABLE IF NOT EXISTS default_trace_events (
+    default_trace_event_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    event_time TIMESTAMP,
+    event_name VARCHAR,
+    event_class INTEGER,
+    spid INTEGER,
+    database_name VARCHAR,
+    database_id INTEGER,
+    login_name VARCHAR,
+    host_name VARCHAR,
+    application_name VARCHAR,
+    object_name VARCHAR,
+    filename VARCHAR,
+    integer_data BIGINT,
+    integer_data_2 BIGINT,
+    text_data VARCHAR,
+    session_login_name VARCHAR,
+    error_number INTEGER,
+    severity INTEGER,
+    state INTEGER,
+    event_sequence BIGINT,
+    duration_us BIGINT,
+    end_time TIMESTAMP
+)";
+
+    public const string CreateDefaultTraceEventsIndex = @"
+CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON default_trace_events(server_id, collection_time)";
+
     public const string CreateAlertLogTable = @"
 CREATE TABLE IF NOT EXISTS config_alert_log (
     alert_time TIMESTAMP NOT NULL,
@@ -1062,6 +1100,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateSessionStatsTable;
         yield return CreateSessionSummaryStatsTable;
         yield return CreateSystemHealthEventsTable;
+        yield return CreateDefaultTraceEventsTable;
         yield return CreateAlertLogTable;
         yield return CreateEdgeTriggerWatermarksTable;
         yield return CreateMuteRulesTable;
@@ -1104,6 +1143,7 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateSessionStatsIndex;
         yield return CreateSessionSummaryStatsIndex;
         yield return CreateSystemHealthEventsIndex;
+        yield return CreateDefaultTraceEventsIndex;
         yield return CreateDismissedArchiveAlertsIndex;
     }
 }

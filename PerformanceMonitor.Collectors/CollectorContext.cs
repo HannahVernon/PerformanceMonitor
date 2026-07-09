@@ -38,6 +38,18 @@ public sealed class CollectorContext
     /// </summary>
     public DateTime? Watermark { get; init; }
 
+    /// <summary>
+    /// Set by the host ONLY when the definition's <c>WatermarkColumn</c> came back null (the hot store is
+    /// empty): true when a prior SUCCESS row for this collector+server exists in the host's collection_log.
+    /// Lets a definition whose all-history first-run fallback would re-scan source data already aged out of
+    /// the hot store (default_trace_events re-reading .trc files whose events are in Lite's parquet archive,
+    /// which <c>v_default_trace_events</c> UNIONs without dedup) tell a TRUE first run (no prior success →
+    /// collect all history) from a hot store merely emptied by retention/archival (prior success → a
+    /// BOUNDED recent window, never all-history). False in the common case — the host computes it only when
+    /// the watermark is null, and only default_trace_events consults it.
+    /// </summary>
+    public bool HasCollectedBefore { get; init; }
+
     /// <summary>Wait types excluded from collection (Lite: ignored_wait_types.json — #1240).</summary>
     public IReadOnlySet<string> IgnoredWaitTypes { get; init; } = s_emptySet;
 

@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyVersions_V18AlertDeliveryMode_V19AnalysisStateMarker_V20AlertTuningKnobs()
+    public void MigrationScripts_TwentyOneVersions_V19AnalysisStateMarker_V20AlertTuningKnobs_V21DefaultTraceEvents()
     {
-        Assert.Equal(20, PgMigrations.Scripts.Count);
+        Assert.Equal(21, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -55,7 +55,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(18, PgMigrations.Scripts[17].Version);
         Assert.Equal(19, PgMigrations.Scripts[18].Version);
         Assert.Equal(20, PgMigrations.Scripts[19].Version);
-        Assert.Equal(20, StorageVersion.SchemaVersion);
+        Assert.Equal(21, PgMigrations.Scripts[20].Version);
+        Assert.Equal(21, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -314,6 +315,23 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("ALTER TABLE config.config_alert_settings ADD COLUMN IF NOT EXISTS notify_connection_changes boolean NOT NULL DEFAULT TRUE;", v20, StringComparison.Ordinal);
         /* Every V20 object is config.-qualified (a bare ALTER TABLE config_* would hit the wrong schema). */
         Assert.DoesNotContain("ALTER TABLE config_", v20, StringComparison.Ordinal);
+
+        /* V21 creates the default_trace_events collector table (built-in Default Trace via fn_trace_gettable).
+           A NEW collector table for stores built before it existed; a fresh store already has it (V1 walks the
+           catalog and V8 moved it to collect), so CREATE TABLE IF NOT EXISTS no-ops on fresh / creates on
+           upgrade. EXPLICITLY collect.-qualified (like V19's analysis_state, the observed-output tier). It has
+           NO v_* passthrough view (the MCP tool reads the base table, like server_properties), so the
+           AllPassthroughViews cross-check above is unaffected. */
+        var v21 = PgMigrations.Scripts[20].Sql;
+        Assert.Equal("default-trace-events-collector", PgMigrations.Scripts[20].Name);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS collect.default_trace_events (", v21, StringComparison.Ordinal);
+        Assert.Contains("default_trace_event_id bigint NOT NULL", v21, StringComparison.Ordinal);
+        Assert.Contains("event_time timestamp", v21, StringComparison.Ordinal);
+        Assert.Contains("event_name text", v21, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON collect.default_trace_events(server_id, collection_time);", v21, StringComparison.Ordinal);
+        /* Observed-output tier -> collect, never the config control plane; and no passthrough view. */
+        Assert.DoesNotContain("config.default_trace_events", v21, StringComparison.Ordinal);
+        Assert.DoesNotContain("CREATE OR REPLACE VIEW", v21, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);

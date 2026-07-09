@@ -60,6 +60,14 @@ public partial class RemoteCollectorService
             ? null
             : await GetLastCollectedTimeAsync(serverId, definition.TargetTable, definition.WatermarkColumn, cancellationToken);
 
+        /* Only when the watermark came back null (hot store empty): tell a TRUE first run from a store merely
+           emptied by archival, so a definition like default_trace_events doesn't re-scan source data already
+           in the parquet archive (CollectorContext.HasCollectedBefore). Skipped in the common (non-null
+           watermark) path — no extra query. */
+        bool hasCollectedBefore = definition.WatermarkColumn is not null
+            && watermark is null
+            && await HasPriorCollectorSuccessAsync(serverId, definition.Name, cancellationToken);
+
         var context = new CollectorContext
         {
             ServerId = serverId,
@@ -68,6 +76,7 @@ public partial class RemoteCollectorService
             Deltas = _deltaCalculator,
             Target = target,
             Watermark = watermark,
+            HasCollectedBefore = hasCollectedBefore,
             IgnoredWaitTypes = _ignoredWaitTypes.Value,
             ExcludedDatabases = server.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
             PerfmonCounterOverride = GetPerfmonCounterOverride(),

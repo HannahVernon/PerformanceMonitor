@@ -86,6 +86,13 @@ public sealed class DarlingCollectorRunner
             ? null
             : await GetLastCollectedTimeAsync(server.ServerId, definition.TargetTable, definition.WatermarkColumn, cancellationToken);
 
+        /* Only when the watermark came back null: tell a TRUE first run from a store merely emptied by
+           retention, so default_trace_events uses a bounded window instead of re-scanning all .trc history
+           (CollectorContext.HasCollectedBefore). Skipped in the common (non-null watermark) path. */
+        bool hasCollectedBefore = definition.WatermarkColumn is not null
+            && watermark is null
+            && await HasPriorCollectorSuccessAsync(server.ServerId, definition.Name, cancellationToken);
+
         var context = new CollectorContext
         {
             ServerId = server.ServerId,
@@ -94,6 +101,7 @@ public sealed class DarlingCollectorRunner
             Deltas = _deltas,
             Target = server.Target,
             Watermark = watermark,
+            HasCollectedBefore = hasCollectedBefore,
             IgnoredWaitTypes = IgnoredWaitDefaults.All,
             ExcludedDatabases = server.Config.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
             PerfmonCounterOverride = null,
@@ -287,6 +295,31 @@ public sealed class DarlingCollectorRunner
             /* If the Postgres query fails, caller uses fallback window */
         }
         return null;
+    }
+
+    /// <summary>
+    /// Whether a prior SUCCESS row exists in collection_log for this collector+server — the "has collected
+    /// before" signal (<see cref="CollectorContext.HasCollectedBefore"/>), consulted only when the watermark
+    /// is null. Returns false on any failure, which errs toward the all-history first run (correct for a
+    /// genuinely fresh store).
+    /// </summary>
+    public async Task<bool> HasPriorCollectorSuccessAsync(int serverId, string collectorName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(
+                "SELECT EXISTS(SELECT 1 FROM collection_log WHERE server_id = $1 AND collector_name = $2 AND status = 'SUCCESS')", connection);
+            command.Parameters.AddWithValue(serverId);
+            command.Parameters.AddWithValue(collectorName);
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result is bool b && b;
+        }
+        catch
+        {
+            /* Fail toward first-run (all-history) — matches a fresh store with no log yet. */
+            return false;
+        }
     }
 
     /// <summary>

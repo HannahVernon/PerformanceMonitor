@@ -26,9 +26,9 @@ public sealed class PgSchemaGeneratorTests
     [Fact]
     public void Catalog_CoversAll32Collectors_WithUniqueTablesAndNames()
     {
-        Assert.Equal(32, CollectorCatalog.All.Count);
-        Assert.Equal(32, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
-        Assert.Equal(32, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+        Assert.Equal(33, CollectorCatalog.All.Count);
+        Assert.Equal(33, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(33, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
     }
 
     [Fact]
@@ -293,6 +293,46 @@ public sealed class PgSchemaGeneratorTests
     }
 
     [Fact]
+    public void CreateTable_DefaultTraceEvents_UsesDefaultTraceEventIdPrefix_AndMirrorsPayloadOrder()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(DefaultTraceEventsCollector.Instance);
+
+        /* The default_trace_event_id bigint prefix (mirroring Lite's DuckDB PRIMARY KEY column), then the
+           curated Default Trace payload in emission order. This generated V1 shape MUST equal the hardcoded
+           V21 upgrade migration body (minus the collect. qualification) so a fresh store (V1) and an upgraded
+           store (V21) land an identical table for the positional binary COPY. */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS default_trace_events (\n" +
+            "    default_trace_event_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    event_time timestamp,\n" +
+            "    event_name text,\n" +
+            "    event_class integer,\n" +
+            "    spid integer,\n" +
+            "    database_name text,\n" +
+            "    database_id integer,\n" +
+            "    login_name text,\n" +
+            "    host_name text,\n" +
+            "    application_name text,\n" +
+            "    object_name text,\n" +
+            "    filename text,\n" +
+            "    integer_data bigint,\n" +
+            "    integer_data_2 bigint,\n" +
+            "    text_data text,\n" +
+            "    session_login_name text,\n" +
+            "    error_number integer,\n" +
+            "    severity integer,\n" +
+            "    state integer,\n" +
+            "    event_sequence bigint,\n" +
+            "    duration_us bigint,\n" +
+            "    end_time timestamp\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
     public void CreateIndex_MirrorsLiteIndexColumns()
     {
         Assert.Equal(
@@ -317,11 +357,11 @@ public sealed class PgSchemaGeneratorTests
         var script = PgSchemaGenerator.GenerateFullSchema();
 
         var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
-        Assert.Equal(32, tableCount);
+        Assert.Equal(33, tableCount);
 
-        /* 32 tables minus the two index-less config tables = 30 indexes. */
+        /* 33 tables minus the two index-less config tables = 31 indexes. */
         var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
-        Assert.Equal(30, indexCount);
+        Assert.Equal(31, indexCount);
 
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);

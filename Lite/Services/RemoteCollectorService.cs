@@ -489,6 +489,7 @@ public partial class RemoteCollectorService
                 "session_stats" => await CollectSessionStatsAsync(server, cancellationToken),
                 "session_summary_stats" => await CollectSessionSummaryStatsAsync(server, cancellationToken),
                 "system_health_events" => await CollectSystemHealthEventsAsync(server, cancellationToken),
+                "default_trace_events" => await CollectDefaultTraceEventsAsync(server, cancellationToken),
                 _ => throw new ArgumentException($"Unknown collector: {collectorName}")
             };
 
@@ -942,6 +943,32 @@ WHERE server_id = $3";
             /* If DuckDB query fails, caller uses fallback window */
         }
         return null;
+    }
+
+    /// <summary>
+    /// Whether a prior SUCCESS row exists in collection_log for this collector+server — the "has collected
+    /// before" signal (see <see cref="PerformanceMonitor.Collectors.CollectorContext.HasCollectedBefore"/>),
+    /// consulted only when the watermark is null. Returns false on any failure, which errs toward the
+    /// all-history first run (correct for a genuinely fresh store).
+    /// </summary>
+    protected async Task<bool> HasPriorCollectorSuccessAsync(int serverId, string collectorName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var conn = _duckDb.CreateConnection();
+            await conn.OpenAsync(cancellationToken);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM collection_log WHERE server_id = $1 AND collector_name = $2 AND status = 'SUCCESS'";
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = collectorName });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            return result is not null && result != DBNull.Value && Convert.ToInt64(result) > 0;
+        }
+        catch
+        {
+            /* Fail toward first-run (all-history) — matches a fresh store with no log yet. */
+            return false;
+        }
     }
 
     /// <summary>

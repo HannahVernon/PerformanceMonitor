@@ -45,6 +45,7 @@ public partial class ViewerServerTab
     private const int SystemEventsSignificantWaitsSubTabIndex = 7;
     private const int SystemEventsCpuTasksSubTabIndex = 8;
     private const int SystemEventsIoIssuesSubTabIndex = 9;
+    private const int SystemEventsDefaultTraceSubTabIndex = 10;
 
     private DataGridFilterManager<SchedulerIssueRow>? _seSchedulerFilterMgr;
     private DataGridFilterManager<SevereErrorRow>? _seSevereErrorFilterMgr;
@@ -54,6 +55,7 @@ public partial class ViewerServerTab
     private DataGridFilterManager<SignificantWaitRow>? _seSignificantWaitsFilterMgr;
     private DataGridFilterManager<CpuTasksRow>? _seCpuTasksFilterMgr;
     private DataGridFilterManager<IoIssuesRow>? _seIoIssuesFilterMgr;
+    private DataGridFilterManager<DefaultTraceEventRow>? _seDefaultTraceFilterMgr;
 
     /// <summary>
     /// Registers the eight System Events grids' column-filter managers into the shared
@@ -71,6 +73,7 @@ public partial class ViewerServerTab
         _seSignificantWaitsFilterMgr = new DataGridFilterManager<SignificantWaitRow>(SignificantWaitsGrid);
         _seCpuTasksFilterMgr = new DataGridFilterManager<CpuTasksRow>(CpuTasksGrid);
         _seIoIssuesFilterMgr = new DataGridFilterManager<IoIssuesRow>(IoIssuesGrid);
+        _seDefaultTraceFilterMgr = new DataGridFilterManager<DefaultTraceEventRow>(DefaultTraceGrid);
 
         _filterManagers[SchedulerIssuesGrid] = _seSchedulerFilterMgr;
         _filterManagers[SevereErrorsGrid] = _seSevereErrorFilterMgr;
@@ -80,6 +83,7 @@ public partial class ViewerServerTab
         _filterManagers[SignificantWaitsGrid] = _seSignificantWaitsFilterMgr;
         _filterManagers[CpuTasksGrid] = _seCpuTasksFilterMgr;
         _filterManagers[IoIssuesGrid] = _seIoIssuesFilterMgr;
+        _filterManagers[DefaultTraceGrid] = _seDefaultTraceFilterMgr;
     }
 
     /// <summary>
@@ -129,6 +133,9 @@ public partial class ViewerServerTab
                 break;
             case SystemEventsIoIssuesSubTabIndex:
                 await LoadIoIssuesAsync();
+                break;
+            case SystemEventsDefaultTraceSubTabIndex:
+                await LoadDefaultTraceEventsAsync();
                 break;
             // Corruption Events (0) and Contention Events (1) share the one SYSTEM-component feed, so both
             // render from a single load — mirroring the Dashboard's case 0/case 1 → RefreshSystemHealthAsync.
@@ -211,6 +218,15 @@ public partial class ViewerServerTab
         _seIoIssuesFilterMgr!.UpdateData(data);
         IoIssuesNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         IoIssuesCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
+    }
+
+    private async Task LoadDefaultTraceEventsAsync()
+    {
+        var (startUtc, endUtc) = GetWindowUtc();
+        var data = await _dataService.GetDefaultTraceEventsAsync(_server.ServerId, startUtc, endUtc);
+        _seDefaultTraceFilterMgr!.UpdateData(data);
+        DefaultTraceNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        DefaultTraceCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
     }
 
     /// <summary>

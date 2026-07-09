@@ -10,7 +10,7 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 
 /// <summary>
 /// Server instructions sent to MCP clients during initialization — Lite's McpInstructions
-/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~72
+/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~73
 /// analysis + plan-analysis + data-read tools this headless service exposes (the <see cref="Text"/>
 /// body enumerates them).
 /// </summary>
@@ -41,7 +41,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes seventy-two tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, and five alert + health-overview tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes seventy-three tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -168,6 +168,14 @@ internal static class DarlingMcpInstructions
         | `get_mute_rules` | The alert mute rules in force, so a suppressed server is distinguishable from a healthy-quiet one | `enabled_only` (default true) |
         | `get_server_summary` | One-shot per-server health: current CPU %, memory, recent blocking count, recent deadlock count | `server_name` |
         | `get_daily_summary` | A day's composite health band (Healthy / Warning / Critical) plus the signals behind it (waits, deadlocks, blocking, high CPU, memory pressure, alerts) | `server_name`, `summary_date` (yyyy-MM-dd, default today) |
+
+        ### Default Trace events
+
+        `get_default_trace_events` returns the SIGNIFICANT server events the built-in Default Trace captures (stored, read-only, windowed on `event_time`) — data/log file auto-grow/shrink STALLS (over 1 second), severe ErrorLog writes (severity >= 16), schema DDL (object create/alter/delete), security audits (audit-change / DBCC / alter-trace), and Server Memory Change — each tagged with a `category`. It is the same significant set the viewer's System Events surface shows (the collector curates the event set server-side; the tool adds only the ErrorLog severity floor). Configuration-change events are intentionally excluded to avoid double-counting the config-snapshot diff — use `get_server_config_changes` / `get_database_config_changes` / `get_trace_flag_changes` for those. Not available on Azure SQL Database (no default trace there).
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_default_trace_events` | Significant Default Trace events — auto-grow/shrink stalls, severe ErrorLog, schema DDL, security audits, memory change — each categorized (config-change events excluded) | `server_name`, `hours_back` (default 24), `limit` (default 100) |
 
         The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
 
