@@ -46,12 +46,26 @@ namespace PerformanceMonitor.Darling.Storage;
 public static class TimescaleSupport
 {
     /// <summary>
-    /// Compress chunks older than this many days — hardcoded (defaults over speculative
-    /// config). Compressed chunks remain fully queryable, just columnar and ~10-20x smaller:
-    /// this IS Darling's archival tier, the centralized-store answer to Lite's parquet archive,
-    /// keeping the full retention horizon cheap instead of splitting hot/cold stores.
+    /// Compress chunks older than this many days — hardcoded (defaults over speculative config).
+    /// Compressed chunks remain fully queryable, just columnar and ~10-20x smaller: this IS
+    /// Darling's archival tier, the centralized-store answer to Lite's parquet archive, keeping the
+    /// full retention horizon cheap instead of splitting hot/cold stores. Kept short (1 day) to
+    /// match <see cref="ChunkIntervalDays"/>: at the collectors' 1-minute cadence a longer lag left
+    /// the whole store uncompressed (a chunk cannot compress until it closes AND then ages past
+    /// this), so even a near-idle fleet grew ~1 GB in a couple of days of hot data. Collectors only
+    /// ever append current-time rows, so a day-old chunk never takes another write — safe to
+    /// compress. Measured on this data: perfmon ~16.7x, plan-XML-heavy query_stats ~6.4x.
     /// </summary>
-    public const int CompressAfterDays = 7;
+    public const int CompressAfterDays = 1;
+
+    /// <summary>
+    /// Hypertable chunk width in days. TimescaleDB's 7-day default is far too coarse for
+    /// 1-minute-cadence monitoring data: a chunk stays open (and uncompressible) for its whole
+    /// span, so 7-day chunks meant nothing compressed for ~2 weeks. 1-day chunks close daily and
+    /// become compressible within <see cref="CompressAfterDays"/>, keeping the store compact.
+    /// Applies at hypertable creation (fresh stores); existing chunks keep their original width.
+    /// </summary>
+    public const int ChunkIntervalDays = 1;
 
     /* The first conversion of a long-collected plain-PG store rewrites every row into chunks
        (migrate_data); Npgsql's default 30-second command timeout would abandon it halfway.
@@ -139,7 +153,7 @@ public static class TimescaleSupport
             throw new ArgumentNullException(nameof(schema));
         }
 
-        return $"SELECT create_hypertable('{schema.TargetTable}', by_range('{schema.PrefixTimeColumnName}'), if_not_exists => true, migrate_data => true)";
+        return $"SELECT create_hypertable('{schema.TargetTable}', by_range('{schema.PrefixTimeColumnName}', INTERVAL '{ChunkIntervalDays} days'), if_not_exists => true, migrate_data => true)";
     }
 
     /// <summary>

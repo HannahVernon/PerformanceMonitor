@@ -207,7 +207,7 @@ Two mutually exclusive modes — setting both `managed: true` and `connectionStr
 
 | Key | Default | Notes |
 |---|---|---|
-| `capturePlans` | `true` | Capture execution plans into `query_stats.query_plan_xml` and `query_store_stats.query_plan_text`. PostgreSQL TOAST compresses the plan text transparently (pglz) and TimescaleDB chunk compression squeezes it further, so plans are cheap to keep — unlike Lite, which stores to DuckDB/Parquet and deliberately never captures them. Set `false` to skip plan capture (e.g. to shave storage across a very large fleet). |
+| `capturePlans` | `true` | Capture execution plans into `query_stats.query_plan_xml` and `query_store_stats.query_plan_text`. PostgreSQL TOAST compresses the plan text transparently (LZ4 on the managed store) and TimescaleDB chunk compression squeezes it further, so plans are cheap to keep — unlike Lite, which stores to DuckDB/Parquet and deliberately never captures them. Set `false` to skip plan capture (e.g. to shave storage across a very large fleet). |
 
 ### alerts
 
@@ -354,7 +354,7 @@ All timestamps in the store are **naive-UTC** `timestamp` columns — the produc
 
 At startup, right after migration, the service attempts `CREATE EXTENSION IF NOT EXISTS timescaledb` and checks `pg_extension`:
 
-- **Present** — every collector table is converted to a hypertable (partitioned on its own time column, existing rows migrated) and gets a compression policy: chunks older than **7 days** compress automatically (segmented by `server_id`). Compressed chunks stay fully queryable — this is Darling's archival tier, the centralized-store answer to Lite's Parquet archive. Everything is idempotent and re-converges on every service start; a table that fails conversion stays a plain table and keeps working.
+- **Present** — every collector table is converted to a hypertable (partitioned on its own time column into **1-day chunks**, existing rows migrated) and gets a compression policy: chunks older than **1 day** compress automatically (segmented by `server_id`). The short intervals matter at the 1-minute collection cadence — a chunk cannot compress until it closes and then ages, so TimescaleDB's 7-day default left the store fully uncompressed for ~2 weeks (a near-idle 5-server fleet still reached ~1 GB in a couple of days); 1-day chunks + 1-day compress keep it compact (measured ~16.7x on perfmon, ~6.4x on the plan-XML-heavy query_stats). Compressed chunks stay fully queryable — this is Darling's archival tier, the centralized-store answer to Lite's Parquet archive. Everything is idempotent and re-converges on every service start; a table that fails conversion stays a plain table and keeps working.
 - **Absent** — the service logs one Information line and runs in plain-PostgreSQL mode, which is a fully supported configuration, not a degraded one.
 
 `IF NOT EXISTS` short-circuits before privilege checks, so a store whose administrator pre-created the extension works for a service login that could never create it.
@@ -370,7 +370,7 @@ A purge runs on the first sweep after startup and then daily, driven by the same
 | 90 days | `database_size_stats`, `index_object_stats` |
 | 365 days | `server_properties` |
 
-On plain PostgreSQL the purge is DELETE-based. With TimescaleDB it switches to `drop_chunks` — a metadata-only detach of whole expired chunks (rows inside a partially-expired chunk survive until the whole chunk ages out; up to ~7 days of grace at the default chunk width), with a per-table DELETE fallback for any table that is not a hypertable. Failure-isolated per table: one stuck purge is logged and retried the next day without stopping the sweep.
+On plain PostgreSQL the purge is DELETE-based. With TimescaleDB it switches to `drop_chunks` — a metadata-only detach of whole expired chunks (rows inside a partially-expired chunk survive until the whole chunk ages out; up to ~1 day of grace at the 1-day chunk width), with a per-table DELETE fallback for any table that is not a hypertable. Failure-isolated per table: one stuck purge is logged and retried the next day without stopping the sweep.
 
 ### Logs
 

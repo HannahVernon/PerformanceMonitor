@@ -187,6 +187,13 @@ public sealed class DarlingManagedPostgres
         builder.Append("shared_preload_libraries = 'timescaledb'\n");
         builder.Append("port = ").Append(port).Append('\n');
         builder.Append("listen_addresses = '127.0.0.1'\n");
+        /* LZ4 TOAST (PG14+; the bundled runtime is PG18): large text/XML values — query text, plan
+           XML, deadlock/blocked-process XML — auto-compress on write faster than the pglz default
+           and about as small, shrinking the ~1-day hot window before TimescaleDB's columnar
+           compression takes over. This is PostgreSQL's automatic equivalent of the SQL-Server
+           Dashboard's manual COMPRESS()/DECOMPRESS() on those columns — applied to every large
+           value, not hand-picked ones. Managed mode only; a BYO store uses its own server default. */
+        builder.Append("default_toast_compression = lz4\n");
         return builder.ToString();
     }
 
