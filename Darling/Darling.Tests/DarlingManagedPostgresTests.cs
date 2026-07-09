@@ -16,6 +16,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Service;
 using Xunit;
 
@@ -90,19 +91,21 @@ public sealed class DarlingManagedPostgresTests
     }
 
     /// <summary>
-    /// PostgreSQL's default max_worker_processes = 8 cannot launch the 26 per-hypertable
-    /// compression policy jobs (live smoke: "failed to start a background worker" storms,
-    /// 21 failed vs 7 successful policy runs). Pins the TimescaleDB-guidance sizing:
-    /// background workers = jobs + 2 = 28; max_worker_processes = 3 + 28 + 8 parallel = 39 -> 40.
+    /// PostgreSQL's default max_worker_processes = 8 cannot launch the per-hypertable compression
+    /// policy jobs (live smoke: "failed to start a background worker" storms). Pins the
+    /// TimescaleDB-guidance sizing, DERIVED from the hypertable count so it never goes stale as
+    /// collectors are added: background workers = hypertables + 2; max_worker_processes = 3 + that + 8.
     /// </summary>
     [Fact]
     public void WorkerSizingConfAppend_PinsV2MarkerAndSizing()
     {
         var block = DarlingManagedPostgres.BuildWorkerSizingConfAppend();
+        var expectedBackgroundWorkers = TimescaleSupport.HypertableTables.Count + 2;
+        var expectedWorkerProcesses = 3 + expectedBackgroundWorkers + 8;
 
         Assert.Contains(DarlingManagedPostgres.ConfMarkerV2, block, StringComparison.Ordinal);
-        Assert.Contains("timescaledb.max_background_workers = 28", block, StringComparison.Ordinal);
-        Assert.Contains("max_worker_processes = 40", block, StringComparison.Ordinal);
+        Assert.Contains($"timescaledb.max_background_workers = {expectedBackgroundWorkers}", block, StringComparison.Ordinal);
+        Assert.Contains($"max_worker_processes = {expectedWorkerProcesses}", block, StringComparison.Ordinal);
 
         /* v2 must not restate v1 settings — the blocks compose, they don't compete. */
         Assert.DoesNotContain("shared_preload_libraries", block, StringComparison.Ordinal);
@@ -309,7 +312,7 @@ public sealed class DarlingManagedPostgresTests
             var conf = File.ReadAllText(Path.Combine(dataDirectory, "postgresql.conf"));
             Assert.Contains("shared_preload_libraries = 'timescaledb'", conf, StringComparison.Ordinal);
             Assert.Contains("listen_addresses = '127.0.0.1'", conf, StringComparison.Ordinal);
-            Assert.Contains("max_worker_processes = 40", conf, StringComparison.Ordinal);
+            Assert.Contains($"max_worker_processes = {3 + (TimescaleSupport.HypertableTables.Count + 2) + 8}", conf, StringComparison.Ordinal);
 
             /* The derived credential really authenticates (scram, not trust) into the darling
                database — and the server started with our appended conf, so the timescaledb

@@ -21,6 +21,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using PerformanceMonitor.Darling.Storage;
 
 namespace PerformanceMonitor.Darling.Service;
 
@@ -253,19 +254,25 @@ public sealed class DarlingManagedPostgres
     /// fail (caught live: 21 failures vs 7 successes in timescaledb_information.job_stats on a
     /// fresh managed instance). Sizing follows the TimescaleDB guidance
     /// (max_worker_processes = 3 + timescaledb.max_background_workers + max_parallel_workers,
-    /// background workers sized to total jobs + 2): 26 policy jobs + scheduler + slack = 28, and
-    /// 3 + 28 + 8 (default max_parallel_workers) = 39, rounded to 40. Idle background workers
+    /// background workers sized to hypertables + 2): DERIVED from the live hypertable count so it
+    /// never goes stale as collectors are added (26 hypertables -> 28/40, 32 -> 34/45). Idle background workers
     /// cost a few MB each and no CPU. Both settings need a PostgreSQL restart, so an existing
     /// cluster picks this up on its next service-owned start — an adopted (not-started-by-us)
     /// server heals the conf now and applies it whenever its operator next restarts it.
     /// </summary>
     public static string BuildWorkerSizingConfAppend()
     {
+        /* Derived from the live hypertable count (never stale when a collector is added): one
+           background worker per per-hypertable compression policy that can run concurrently + the
+           scheduler + slack; max_worker_processes = 3 (other bg workers) + bg workers + 8 (default
+           max_parallel_workers). Historical fixed pair was 28/40 at 26 hypertables. */
+        var maxBackgroundWorkers = TimescaleSupport.HypertableTables.Count + 2;
+        var maxWorkerProcesses = 3 + maxBackgroundWorkers + 8;
         var builder = new StringBuilder();
         builder.Append('\n');
         builder.Append(ConfMarkerV2).Append('\n');
-        builder.Append("timescaledb.max_background_workers = 28\n");
-        builder.Append("max_worker_processes = 40\n");
+        builder.Append("timescaledb.max_background_workers = ").Append(maxBackgroundWorkers).Append('\n');
+        builder.Append("max_worker_processes = ").Append(maxWorkerProcesses).Append('\n');
         return builder.ToString();
     }
 
@@ -562,7 +569,7 @@ public sealed class DarlingManagedPostgres
         if (!conf.Contains(ConfMarkerV2, StringComparison.Ordinal))
         {
             File.AppendAllText(confPath, BuildWorkerSizingConfAppend());
-            _logger.LogInformation("Appended v2 worker sizing to postgresql.conf (timescaledb.max_background_workers 28, max_worker_processes 40; effective from the next PostgreSQL restart)");
+            _logger.LogInformation("Appended v2 worker sizing to postgresql.conf (derived from {Hypertables} hypertables; effective from the next PostgreSQL restart)", TimescaleSupport.HypertableTables.Count);
         }
     }
 
