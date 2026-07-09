@@ -183,7 +183,8 @@ public sealed class ViewerSettings
         {
             /* 127.0.0.1, not "localhost", mirroring the service's DarlingManagedPostgres.BuildConnectionString
                (the parity half of the same pair): a literal IPv4 loopback avoids a localhost->::1 resolution
-               that would miss the IPv4-only pg_hba loopback rule the managed cluster ships. */
+               that would miss the managed cluster's IPv4-only listen_addresses (it binds 127.0.0.1, not ::1;
+               initdb's pg_hba ships a ::1 rule but there is no ::1 listener). */
             Host = "127.0.0.1",
             Port = postgres.Port,
             Username = role,
