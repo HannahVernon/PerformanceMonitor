@@ -529,82 +529,21 @@ public sealed class RecommendationsViewModel
 
     /// <summary>
     /// Rebuilds the copy-paste T-SQL for a card from the finding's PERSISTED
-    /// <see cref="RemediationAction"/> — the viewer reads persisted findings, whose ephemeral
-    /// drill-down is NOT stored (so <see cref="FactRemediation.GenerateForFinding"/> returns null on
-    /// read), and the built action IS persisted. This mirrors the Dashboard RecommendationsReader's
-    /// read-back derivation (BuildCopyPasteFromAction) over the three target shapes that round-trip a
-    /// copy-paste statement: percent-autogrowth MODIFY FILE (via the shared
-    /// <see cref="FactRemediation.BuildModifyFileStatement"/>), the SQL Server-suggested missing-index
-    /// CREATE, and the safe DB-config ALTER DATABASE ... SET. Returns null for any other action
-    /// (force-plan / clear-plan / server-config / none), matching the Dashboard's 1:1 read path.
+    /// <see cref="RemediationAction"/> by delegating to the shared
+    /// <see cref="FactRemediation.RenderCopyPasteCommand"/> — the viewer reads persisted findings, whose
+    /// ephemeral drill-down is NOT stored (so <see cref="FactRemediation.GenerateForFinding"/> returns
+    /// null on read), and the built action IS persisted. Because the viewer has NO in-app remediation
+    /// executor (advise-only, Postgres read-through), a runnable copy-paste command is the ONLY
+    /// remediation surface, so the shared renderer covers ALL seven remediation shapes — the three
+    /// always-safe ones (percent-autogrowth MODIFY FILE, missing-index CREATE, safe DB-config
+    /// ALTER DATABASE … SET) render bare, and force-plan, server-config, RCSI, and clear-plan (the four
+    /// that were previously copy-paste dead ends) now render too, the two destructive ones (RCSI,
+    /// clear-plan) carrying their two-sided risk disclosure as a comment header. Kept as a thin
+    /// <c>internal</c> seam (exercised directly by the viewer tests) over the shared renderer so the
+    /// viewer and the Dashboard reader cannot drift. Null when the action carries no renderable target.
     /// </summary>
-    internal static string? BuildCopyPasteSql(RemediationAction? action)
-    {
-        if (action is null)
-            return null;
-
-        // Percent-autogrowth: one MODIFY FILE per file, via the shared renderer so the copy-paste is
-        // byte-identical to the drill-down's alter_statement. (Target lists are mutually exclusive.)
-        if (action.FileGrowthTargets is { Count: > 0 } fileTargets)
-        {
-            var sb = new StringBuilder();
-            foreach (var target in fileTargets)
-            {
-                if (sb.Length > 0)
-                    sb.AppendLine();
-                sb.Append(FactRemediation.BuildModifyFileStatement(
-                    target.Database, target.LogicalFileName, target.RecommendedGrowthMb));
-            }
-            return sb.Length == 0 ? null : sb.ToString();
-        }
-
-        // Missing index: the SQL Server-suggested CREATE statements, verbatim, one per line.
-        if (action.MissingIndexTargets is { Count: > 0 } indexTargets)
-        {
-            var sb = new StringBuilder();
-            foreach (var target in indexTargets)
-            {
-                if (string.IsNullOrWhiteSpace(target.CreateStatement))
-                    continue;
-                if (sb.Length > 0)
-                    sb.AppendLine();
-                sb.Append(target.CreateStatement);
-            }
-            return sb.Length == 0 ? null : sb.ToString();
-        }
-
-        // Safe DB-config: one ALTER DATABASE ... SET per (database, setting) target.
-        if (action.DbConfigTargets is { Count: > 0 } dbTargets)
-        {
-            var sb = new StringBuilder();
-            foreach (var target in dbTargets)
-            {
-                var setClause = SetClauseFor(target.Setting);
-                if (setClause is null)
-                    continue;
-                if (sb.Length > 0)
-                    sb.AppendLine();
-                sb.Append($"ALTER DATABASE {QuoteName(target.Database)} {setClause};");
-            }
-            return sb.Length == 0 ? null : sb.ToString();
-        }
-
-        return null;
-    }
-
-    /// <summary>The SET-clause literal for a safe DB-config setting; null for the unmapped/destructive ones.</summary>
-    private static string? SetClauseFor(DbConfigSetting setting) => setting switch
-    {
-        DbConfigSetting.AutoShrinkOff => "SET AUTO_SHRINK OFF",
-        DbConfigSetting.AutoCloseOff => "SET AUTO_CLOSE OFF",
-        DbConfigSetting.PageVerifyChecksum => "SET PAGE_VERIFY CHECKSUM",
-        DbConfigSetting.ReadCommittedSnapshotOn => "SET READ_COMMITTED_SNAPSHOT ON",
-        _ => null
-    };
-
-    /// <summary>QUOTENAME-equivalent: bracket an identifier, doubling any embedded close-bracket.</summary>
-    private static string QuoteName(string identifier) =>
-        "[" + (identifier ?? string.Empty).Replace("]", "]]") + "]";
+    internal static string? BuildCopyPasteSql(RemediationAction? action) =>
+        FactRemediation.RenderCopyPasteCommand(action);
 
     /// <summary>
     /// Appends a "what else fired in this analysis window" cross-reference to each card's advice text

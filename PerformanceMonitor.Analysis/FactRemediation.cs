@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -1015,6 +1016,257 @@ public static class FactRemediation
     public static string BuildModifyFileStatement(string database, string logicalFileName, int growthMb)
     {
         return $"ALTER DATABASE {QuoteName(database)} MODIFY FILE (NAME = {QuoteName(logicalFileName)}, FILEGROWTH = {growthMb}MB);";
+    }
+
+    // ── Copy-paste command rendering (shared: Darling viewer today; available to Dashboard/Lite) ──
+    //
+    // The Darling viewer is advise-only (Postgres read-through, no in-app remediation executor), so a
+    // runnable copy-paste command IS its remediation surface: for EVERY remediable finding it must
+    // hand the operator T-SQL they can run themselves. RenderCopyPasteCommand turns a PERSISTED
+    // RemediationAction back into that runnable T-SQL for all seven shapes — the single source of
+    // truth so no surface (Darling / Dashboard reader / email / MCP) can drift from another. The three
+    // always-safe shapes render bare (percent-autogrowth MODIFY FILE, missing-index CREATE, safe
+    // DB-config ALTER); the four that were previously copy-paste dead ends now render too — force-plan
+    // (USE + sp_query_store_force_plan, which is database-scoped so each target carries its own USE),
+    // server-config (sp_configure + RECONFIGURE), RCSI, and clear-plan. The two DESTRUCTIVE shapes
+    // (RCSI, clear-plan — both IsDestructive) prepend their two-sided FactRiskDisclosure text as a
+    // /* ... */ header so the copy-paste itself states the risk of changing AND of not changing.
+    // Reuses BuildModifyFileStatement / BuildSpConfigureStatement / StatementFor / FactRiskDisclosure.
+
+    /// <summary>
+    /// Renders runnable, copy-paste T-SQL for a persisted <see cref="RemediationAction"/> — one command
+    /// (or block) per target across all seven remediation shapes — or null when the action carries no
+    /// renderable target. This is the shared source the Darling viewer's copy-paste affordance delegates
+    /// to; it operates purely on the persisted typed targets (the ephemeral drill-down is gone on
+    /// read-back), so it never parses preview prose. The always-safe shapes render bare; the two
+    /// destructive shapes (RCSI, clear-plan) prepend the two-sided <see cref="FactRiskDisclosure"/> text
+    /// as a <c>/* ... */</c> comment header. Nothing here executes — it is advisory text the operator runs.
+    /// </summary>
+    public static string? RenderCopyPasteCommand(RemediationAction? action)
+    {
+        if (action is null)
+            return null;
+
+        var nl = Environment.NewLine;
+
+        // FILE_AUTOGROWTH_PERCENT — one MODIFY FILE per file (shared builder), one per line. Safe.
+        if (action.FileGrowthTargets is { Count: > 0 } fileTargets)
+        {
+            var sb = new StringBuilder();
+            foreach (var t in fileTargets)
+            {
+                if (sb.Length > 0) sb.Append(nl);
+                sb.Append(BuildModifyFileStatement(t.Database, t.LogicalFileName, t.RecommendedGrowthMb));
+            }
+            return sb.Length == 0 ? null : sb.ToString();
+        }
+
+        // MISSING_INDEX — the SQL Server-suggested CREATE, verbatim, one per line. Copy-paste only.
+        if (action.MissingIndexTargets is { Count: > 0 } indexTargets)
+        {
+            var sb = new StringBuilder();
+            foreach (var t in indexTargets)
+            {
+                if (string.IsNullOrWhiteSpace(t.CreateStatement)) continue;
+                if (sb.Length > 0) sb.Append(nl);
+                sb.Append(t.CreateStatement);
+            }
+            return sb.Length == 0 ? null : sb.ToString();
+        }
+
+        // SERVER_CONFIG — one sp_configure + RECONFIGURE per setting (shared builder), incl. the
+        // advise-only memory settings (the operator wants the sp_configure scaffold regardless). Safe.
+        if (action.ServerConfigTargets is { Count: > 0 } serverTargets)
+        {
+            var blocks = new List<string>(serverTargets.Count);
+            foreach (var t in serverTargets)
+                blocks.Add(BuildSpConfigureStatement(t.Setting, t.RecommendedValue));
+            return blocks.Count == 0 ? null : string.Join(nl + nl, blocks);
+        }
+
+        // PLAN_REGRESSION (force-plan) — sp_query_store_force_plan is DATABASE-scoped, so each target
+        // is a standalone USE + EXEC block (the copy-paste runs without an ambient database). Safe.
+        if (action.Targets is { Count: > 0 } forceTargets)
+        {
+            var blocks = new List<string>(forceTargets.Count);
+            foreach (var t in forceTargets)
+                blocks.Add(
+                    $"USE {QuoteName(t.Database)};" + nl +
+                    $"EXEC sys.sp_query_store_force_plan @query_id = {t.QueryId}, @plan_id = {t.PlanId};");
+            return blocks.Count == 0 ? null : string.Join(nl + nl, blocks);
+        }
+
+        // CLEAR_PLAN — DESTRUCTIVE. Two-sided disclosure header + a self-contained resolve-and-free
+        // script (live-resolve the currently-cached plan handles for the abnormal query hashes, then
+        // DBCC FREEPROCCACHE each).
+        if (action.ClearPlanTargets is { Count: > 0 } clearTargets)
+            return RenderClearPlanScript(action, clearTargets, nl);
+
+        // RCSI reconstructed action (FactKey "RCSI") — DESTRUCTIVE. Carries a ReadCommittedSnapshotOn
+        // DbConfigTarget (the alert-path / Dashboard-reader shape); render header + ALTER per target.
+        if (string.Equals(action.FactKey, "RCSI", StringComparison.Ordinal) &&
+            action.DbConfigTargets is { Count: > 0 } reconstructedRcsi)
+        {
+            var blocks = new List<string>(reconstructedRcsi.Count);
+            foreach (var t in reconstructedRcsi)
+            {
+                if (t.Setting != DbConfigSetting.ReadCommittedSnapshotOn) continue;
+                blocks.Add(RenderRcsiBlock(t.Database, action.RcsiFigures, nl));
+            }
+            return blocks.Count == 0 ? null : string.Join(nl + nl, blocks);
+        }
+
+        // DB_CONFIG — the always-safe settings (bare, no header) and/or the per-database RCSI targets
+        // carried on the same action (DESTRUCTIVE, each with its own two-sided disclosure header). Both
+        // can be present; render the safe block first, then one RCSI block per target.
+        var configBlocks = new List<string>();
+        if (action.DbConfigTargets is { Count: > 0 } dbTargets)
+        {
+            var safe = new StringBuilder();
+            foreach (var t in dbTargets)
+            {
+                // RCSI is destructive — it never renders bare here; it rides the header path below.
+                if (t.Setting == DbConfigSetting.ReadCommittedSnapshotOn) continue;
+                if (safe.Length > 0) safe.Append(nl);
+                safe.Append(StatementFor(t.Setting, t.Database));
+            }
+            if (safe.Length > 0) configBlocks.Add(safe.ToString());
+        }
+        if (action.RcsiTargets is { Count: > 0 } rcsiTargets)
+        {
+            foreach (var t in rcsiTargets)
+                configBlocks.Add(RenderRcsiBlock(t.Database, t.Figures, nl));
+        }
+        return configBlocks.Count == 0 ? null : string.Join(nl + nl, configBlocks);
+    }
+
+    /// <summary>
+    /// Renders one destructive RCSI enable block: the two-sided <see cref="FactRiskDisclosure"/> comment
+    /// header (reconstructed as a distinct FactKey "RCSI" action so the shared disclosure renders the REAL
+    /// carried figures) above the enabling <c>ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON;</c>.
+    /// </summary>
+    private static string RenderRcsiBlock(string database, RcsiInactionFigures? figures, string nl)
+    {
+        var rcsiAction = new RemediationAction(
+            "RCSI", "set", Array.Empty<ForcePlanTarget>(),
+            new[] { new DbConfigTarget(database, DbConfigSetting.ReadCommittedSnapshotOn, "OFF") },
+            RcsiFigures: figures);
+
+        var sb = new StringBuilder();
+        var disclosure = FactRiskDisclosure.GetForAction(rcsiAction, null);
+        if (disclosure is not null)
+            sb.Append(RenderRiskDisclosureComment(disclosure, nl)).Append(nl);
+        sb.Append($"ALTER DATABASE {QuoteName(database)} SET READ_COMMITTED_SNAPSHOT ON;");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Renders the destructive clear-cached-plan script: the two-sided disclosure header, a per-hash
+    /// comment (database + anomaly figures), a review SELECT (the currently-cached plans the free will
+    /// affect — a query_hash is not unique to one query, so the operator confirms the blast radius
+    /// first), then a cursor that frees each live-resolved <c>plan_handle</c> via DBCC FREEPROCCACHE.
+    /// Only query hashes that look like a hex literal (<c>0x…</c>) are inlined (they were validated at
+    /// build time; re-checked here because this text is runnable SQL); null when none qualify.
+    /// </summary>
+    private static string? RenderClearPlanScript(RemediationAction action, IReadOnlyList<ClearPlanTarget> targets, string nl)
+    {
+        var hashes = new List<string>(targets.Count);
+        var lines = new List<string>(targets.Count);
+        foreach (var t in targets)
+        {
+            if (!IsHexLiteral(t.QueryHash)) continue;
+            hashes.Add(t.QueryHash);
+            var dbLabel = string.IsNullOrEmpty(t.Database) ? "(resolved live)" : QuoteName(t.Database);
+            lines.Add(t.AnomalyRatio > 0
+                ? $"--   {dbLabel} {t.QueryHash} (~{t.AnomalyRatio.ToString("0.0", CultureInfo.InvariantCulture)}x normal per-exec CPU: " +
+                  $"{t.CurrentCpuPerExecMs.ToString("0.0", CultureInfo.InvariantCulture)} ms vs baseline " +
+                  $"{t.BaselineCpuPerExecMs.ToString("0.0", CultureInfo.InvariantCulture)} ms)"
+                : $"--   {dbLabel} {t.QueryHash}");
+        }
+
+        if (hashes.Count == 0)
+            return null;
+
+        var inList = string.Join(", ", hashes);
+        var sb = new StringBuilder();
+
+        var disclosure = FactRiskDisclosure.GetForAction(action, null);
+        if (disclosure is not null)
+            sb.Append(RenderRiskDisclosureComment(disclosure, nl)).Append(nl);
+
+        sb.Append("-- Clear the currently-cached plan(s) for these abnormal-CPU query hashes:").Append(nl);
+        foreach (var line in lines)
+            sb.Append(line).Append(nl);
+        sb.Append("-- STEP 1 (review): run this SELECT first — a query_hash can map to more than one query,").Append(nl);
+        sb.Append("-- so confirm the databases/queries below are the ones you intend to clear.").Append(nl);
+        sb.Append("SELECT DISTINCT").Append(nl);
+        sb.Append("    DB_NAME(st.dbid) AS database_name,").Append(nl);
+        sb.Append("    qs.plan_handle,").Append(nl);
+        sb.Append("    qs.execution_count,").Append(nl);
+        sb.Append("    st.text AS batch_text").Append(nl);
+        sb.Append("FROM sys.dm_exec_query_stats AS qs").Append(nl);
+        sb.Append("CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st").Append(nl);
+        sb.Append($"WHERE qs.query_hash IN ({inList});").Append(nl);
+        sb.Append(nl);
+        sb.Append("-- STEP 2 (apply): free every currently-cached plan for those hashes. There is NO un-clear —").Append(nl);
+        sb.Append("-- the prior plans are gone and the recompile is not guaranteed to be better.").Append(nl);
+        sb.Append("DECLARE @plan_handle VARBINARY(64);").Append(nl);
+        sb.Append("DECLARE plan_cursor CURSOR LOCAL FAST_FORWARD FOR").Append(nl);
+        sb.Append("    SELECT DISTINCT qs.plan_handle").Append(nl);
+        sb.Append("    FROM sys.dm_exec_query_stats AS qs").Append(nl);
+        sb.Append($"    WHERE qs.query_hash IN ({inList});").Append(nl);
+        sb.Append("OPEN plan_cursor;").Append(nl);
+        sb.Append("FETCH NEXT FROM plan_cursor INTO @plan_handle;").Append(nl);
+        sb.Append("WHILE @@FETCH_STATUS = 0").Append(nl);
+        sb.Append("BEGIN").Append(nl);
+        sb.Append("    DBCC FREEPROCCACHE(@plan_handle);").Append(nl);
+        sb.Append("    FETCH NEXT FROM plan_cursor INTO @plan_handle;").Append(nl);
+        sb.Append("END;").Append(nl);
+        sb.Append("CLOSE plan_cursor;").Append(nl);
+        sb.Append("DEALLOCATE plan_cursor;");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Renders a two-sided <see cref="RiskDisclosure"/> as a <c>/* … */</c> T-SQL comment header, so a
+    /// destructive copy-paste command states the risk of changing AND of not changing inline. The prose
+    /// is fixed/reviewed (only validated identifiers + numeric figures are substituted); any embedded
+    /// <c>*/</c> is defused so a pathological identifier cannot close the comment early.
+    /// </summary>
+    private static string RenderRiskDisclosureComment(RiskDisclosure disclosure, string nl)
+    {
+        var sb = new StringBuilder();
+        sb.Append("/*").Append(nl);
+        sb.Append(" * REVIEW BEFORE RUNNING - this is a destructive change with trade-offs BOTH ways.").Append(nl);
+        sb.Append(" *").Append(nl);
+        sb.Append(" * Risks of MAKING this change:").Append(nl);
+        foreach (var r in disclosure.RisksOfChanging)
+            sb.Append(" *   - ").Append(SanitizeForComment(r.Text)).Append(nl);
+        sb.Append(" *").Append(nl);
+        sb.Append(" * Risks of NOT making this change:").Append(nl);
+        foreach (var r in disclosure.RisksOfNotChanging)
+            sb.Append(" *   - ").Append(SanitizeForComment(r.Text)).Append(nl);
+        sb.Append(" */");
+        return sb.ToString();
+    }
+
+    /// <summary>Defuses an embedded C-style comment terminator so disclosure prose cannot close the header early.</summary>
+    private static string SanitizeForComment(string text) =>
+        string.IsNullOrEmpty(text) ? string.Empty : text.Replace("*/", "* /");
+
+    /// <summary>True when the value is a non-empty hex literal (<c>0x</c> + at least one hex digit) safe to inline into SQL.</summary>
+    private static bool IsHexLiteral(string? value)
+    {
+        if (value is null || value.Length <= 2 ||
+            !(value[0] == '0' && (value[1] == 'x' || value[1] == 'X')))
+            return false;
+        for (var i = 2; i < value.Length; i++)
+        {
+            var c = value[i];
+            var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!isHex) return false;
+        }
+        return true;
     }
 
     /// <summary>

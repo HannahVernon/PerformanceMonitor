@@ -110,14 +110,142 @@ public sealed class ViewerRecommendationCardTests
     }
 
     [Fact]
-    public void BuildCopyPasteSql_NullOrNonCopyPasteAction_ReturnsNull()
+    public void BuildCopyPasteSql_NullOrEmptyAction_ReturnsNull()
     {
         Assert.Null(RecommendationsViewModel.BuildCopyPasteSql(null));
 
-        // A force-plan action carries only ForcePlanTargets — no copy-paste on the read-back path.
-        var force = new RemediationAction(
-            "PLAN_REGRESSION", "force", new[] { new ForcePlanTarget("StackOverflow", QueryId: 42, PlanId: 7) });
-        Assert.Null(RecommendationsViewModel.BuildCopyPasteSql(force));
+        // An action that carries no renderable target (an empty force-plan list) yields null — there is
+        // nothing to run. (A force-plan action WITH targets now renders; see the force-plan test below.)
+        var empty = new RemediationAction("PLAN_REGRESSION", "force", Array.Empty<ForcePlanTarget>());
+        Assert.Null(RecommendationsViewModel.BuildCopyPasteSql(empty));
+    }
+
+    // ── The four shapes that were previously copy-paste dead ends (viewer has no executor) ──────────
+
+    [Fact]
+    public void BuildCopyPasteSql_ForcePlanTargets_RenderUseThenForcePlanPerDatabase()
+    {
+        // sp_query_store_force_plan is DATABASE-scoped, so each target is a standalone USE + EXEC block
+        // (the copy-paste must run without an ambient database). Blocks are separated by a blank line.
+        var action = new RemediationAction(
+            "PLAN_REGRESSION", "force",
+            new[]
+            {
+                new ForcePlanTarget("StackOverflow", QueryId: 42, PlanId: 7),
+                new ForcePlanTarget("Crazy]Name", QueryId: 100, PlanId: 200),
+            });
+
+        var sql = RecommendationsViewModel.BuildCopyPasteSql(action);
+
+        Assert.Equal(
+            "USE [StackOverflow];" + Environment.NewLine +
+            "EXEC sys.sp_query_store_force_plan @query_id = 42, @plan_id = 7;" + Environment.NewLine +
+            Environment.NewLine +
+            "USE [Crazy]]Name];" + Environment.NewLine +
+            "EXEC sys.sp_query_store_force_plan @query_id = 100, @plan_id = 200;",
+            sql);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_ServerConfigTargets_RenderSpConfigureViaTheSharedBuilder()
+    {
+        // Every server-config setting renders sp_configure + RECONFIGURE via the shared builder,
+        // INCLUDING the advise-only memory settings (the operator wants the scaffold regardless).
+        var action = new RemediationAction(
+            "SERVER_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            ServerConfigTargets: new[]
+            {
+                new ServerConfigTarget(ServerConfigSetting.Maxdop, 0, 8),
+                new ServerConfigTarget(ServerConfigSetting.MaxServerMemory, 2147483647, 2147483647),
+            });
+
+        var sql = RecommendationsViewModel.BuildCopyPasteSql(action);
+
+        Assert.Equal(
+            FactRemediation.BuildSpConfigureStatement(ServerConfigSetting.Maxdop, 8) +
+            Environment.NewLine + Environment.NewLine +
+            FactRemediation.BuildSpConfigureStatement(ServerConfigSetting.MaxServerMemory, 2147483647),
+            sql);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_RcsiTargets_RenderAlterWithTwoSidedDisclosureHeader()
+    {
+        // RCSI rides a DB_CONFIG action as a per-database RcsiTarget (with real inaction figures). It is
+        // DESTRUCTIVE, so the copy-paste prepends the two-sided risk disclosure as a comment header.
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            RcsiTargets: new[] { new RcsiTarget("StackOverflow", new RcsiInactionFigures(50, 3, 70)) });
+
+        var sql = RecommendationsViewModel.BuildCopyPasteSql(action);
+
+        Assert.NotNull(sql);
+        // Two-sided disclosure header, rendered as a T-SQL block comment ABOVE the runnable statement.
+        Assert.StartsWith("/*", sql, StringComparison.Ordinal);
+        Assert.Contains("Risks of MAKING this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("Risks of NOT making this change:", sql!, StringComparison.Ordinal);
+        // The real carried figures reach the inaction side (50 blocked-process events, reader/writer).
+        Assert.Contains("50 blocked-process events", sql!, StringComparison.Ordinal);
+        Assert.Contains("readers blocked by writers", sql!, StringComparison.Ordinal);
+        // The runnable statement, after the closing comment.
+        Assert.Contains("ALTER DATABASE [StackOverflow] SET READ_COMMITTED_SNAPSHOT ON;", sql!, StringComparison.Ordinal);
+        Assert.True(
+            sql!.IndexOf("*/", StringComparison.Ordinal) <
+            sql.IndexOf("ALTER DATABASE", StringComparison.Ordinal),
+            "the disclosure comment header must precede the ALTER statement");
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_ClearPlanTargets_RenderResolveAndFreeScriptWithDisclosureHeader()
+    {
+        // Clear-plan is DESTRUCTIVE. The honest runnable form live-resolves the currently-cached plan
+        // handle(s) for the abnormal query hash and frees each — with the two-sided disclosure header.
+        var action = new RemediationAction(
+            "CLEAR_PLAN", "clear", Array.Empty<ForcePlanTarget>(),
+            ClearPlanTargets: new[]
+            {
+                new ClearPlanTarget(
+                    "StackOverflow", "0xABCDEF0123456789",
+                    CurrentCpuPerExecMs: 45.0, BaselineCpuPerExecMs: 9.0, AnomalyRatio: 5.0),
+            },
+            ClearPlanFigures: new ClearPlanFigures(45.0, 9.0, 5.0, 62, false, false));
+
+        var sql = RecommendationsViewModel.BuildCopyPasteSql(action);
+
+        Assert.NotNull(sql);
+        Assert.StartsWith("/*", sql, StringComparison.Ordinal);
+        Assert.Contains("Risks of MAKING this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("Risks of NOT making this change:", sql!, StringComparison.Ordinal);
+        // The real carried anomaly figure (62% of CPU over the window) reaches the inaction side.
+        Assert.Contains("62% of CPU over the window", sql!, StringComparison.Ordinal);
+        // The honest runnable form: resolve cached handles for the hash, then free each one.
+        Assert.Contains("sys.dm_exec_query_stats", sql!, StringComparison.Ordinal);
+        Assert.Contains("0xABCDEF0123456789", sql!, StringComparison.Ordinal);
+        Assert.Contains("DBCC FREEPROCCACHE(@plan_handle);", sql!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildCopyPasteSql_DbConfigWithRcsi_RendersSafeBareThenRcsiWithHeader()
+    {
+        // A DB_CONFIG action can carry BOTH always-safe settings AND per-db RCSI. The safe ALTER renders
+        // bare (non-destructive, no header); the RCSI ALTER follows with its two-sided disclosure header.
+        var action = new RemediationAction(
+            "DB_CONFIG", "set", Array.Empty<ForcePlanTarget>(),
+            DbConfigTargets: new[] { new DbConfigTarget("StackOverflow", DbConfigSetting.AutoShrinkOff) },
+            RcsiTargets: new[] { new RcsiTarget("StackOverflow", new RcsiInactionFigures(50, 3, 70)) });
+
+        var sql = RecommendationsViewModel.BuildCopyPasteSql(action);
+
+        Assert.NotNull(sql);
+        // Safe fix comes first, bare (no disclosure header above it).
+        Assert.StartsWith("ALTER DATABASE [StackOverflow] SET AUTO_SHRINK OFF;", sql, StringComparison.Ordinal);
+        // Then the destructive RCSI block, with its header.
+        Assert.Contains("Risks of MAKING this change:", sql!, StringComparison.Ordinal);
+        Assert.Contains("ALTER DATABASE [StackOverflow] SET READ_COMMITTED_SNAPSHOT ON;", sql!, StringComparison.Ordinal);
+        Assert.True(
+            sql!.IndexOf("AUTO_SHRINK OFF", StringComparison.Ordinal) <
+            sql.IndexOf("/*", StringComparison.Ordinal),
+            "the bare safe fix must precede the RCSI disclosure header");
     }
 
     [Fact]
