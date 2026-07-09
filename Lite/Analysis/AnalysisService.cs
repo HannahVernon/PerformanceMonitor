@@ -154,15 +154,38 @@ public class AnalysisService
             var incidents = _engine.ClusterIntoIncidents(stories, facts);
             IncidentId.StampClusters(context.ServerName, incidents);
 
-            // 4. Persist findings (filtering out muted)
-            var findings = await _findingStore.SaveFindingsAsync(stories, context);
+            // 4. Mute-filter the stories into the surviving findings WITHOUT inserting yet (the
+            //    Darling twin's D2/P2 reorder) — enrichment + action-build happen on the survivors
+            //    first so the BUILT RemediationAction is persisted on each row.
+            var findings = await _findingStore.FilterMutedFindingsAsync(stories, context);
 
-            // 5. Enrich findings with drill-down data (ephemeral, not persisted)
+            // 5. Enrich the survivors with drill-down data (ephemeral except through the built action).
             await _drillDown.EnrichFindingsAsync(findings, context);
+
+            // 6. Build + attach each finding's RemediationAction from the now drill-down-populated
+            //    finding, then persist it as remediation_action_json. The builders REQUIRE
+            //    finding.DrillDown, which the store read-back does NOT return — so the BUILT action is
+            //    persisted, exactly the artifact the read path deserializes and the Recommendations
+            //    reader renders into the copy-paste command. Same shared builders + null-coalescing
+            //    order Darling's DarlingAnalysisService uses, so Lite and Darling produce identical
+            //    commands. Lite has no in-app executor: the action drives a COPYABLE command only.
+            foreach (var finding in findings)
+            {
+                finding.Remediation =
+                    FactRemediation.BuildAction(finding)
+                    ?? FactRemediation.BuildRcsiAction(finding)
+                    ?? FactRemediation.BuildClearPlanAction(finding)
+                    ?? FactRemediation.BuildFileAutogrowthAction(finding) // advisory copy-paste (no handler)
+                    ?? FactRemediation.BuildServerConfigAction(finding)   // server-level config — MAXDOP/CTFP/memory
+                    ?? FactRemediation.BuildMissingIndexAction(finding);  // missing-index CREATE — copy-paste only
+            }
+
+            // 7. Insert the survivors in one batched pass, persisting remediation_action_json.
+            await _findingStore.InsertFindingsAsync(findings, context);
 
             LastAnalysisTime = DateTime.UtcNow;
 
-            // 6. Notify listeners
+            // 8. Notify listeners
             AnalysisCompleted?.Invoke(this, new AnalysisCompletedEventArgs
             {
                 ServerId = context.ServerId,

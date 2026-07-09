@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Analysis;
@@ -11,6 +12,16 @@ namespace PerformanceMonitorLite.Analysis;
 /// Persists analysis findings to DuckDB and checks for muted story hashes.
 /// Handles the write side of the analysis pipeline — after the engine produces
 /// stories, FindingStore saves them and filters out muted patterns.
+///
+/// <para>
+/// The write is two-phase (mirrors Darling's <c>PgFindingStore</c>): <see cref="FilterMutedFindingsAsync"/>
+/// materializes the surviving findings WITHOUT inserting, the orchestrator enriches them with drill-down
+/// and builds each finding's <see cref="AnalysisFinding.Remediation"/>, then <see cref="InsertFindingsAsync"/>
+/// persists the rows — including the BUILT action serialized as <c>remediation_action_json</c> via the
+/// shared <see cref="AlertContextSerializer"/>. The read paths deserialize it back onto each finding so the
+/// Recommendations reader can render the copy-paste command byte-identically to the Darling viewer.
+/// <see cref="SaveFindingsAsync"/> remains as a single-pass convenience wrapper (no action attached).
+/// </para>
 /// </summary>
 public class FindingStore
 {
@@ -24,19 +35,23 @@ public class FindingStore
     }
 
     /// <summary>
-    /// Saves analysis stories as findings, filtering out any that match muted hashes.
-    /// Returns the list of findings that were actually saved (non-muted).
+    /// Mute-filters the stories and materializes the SURVIVING findings WITHOUT inserting them
+    /// (mirrors Darling's <c>PgFindingStore.FilterMutedFindingsAsync</c> — the recommendations
+    /// rebuild D2/P2 reorder). The orchestrator then enriches these survivors with drill-down and
+    /// builds + attaches each finding's <see cref="AnalysisFinding.Remediation"/> before calling
+    /// <see cref="InsertFindingsAsync"/>, so the BUILT action is persisted on the row (the builders
+    /// require a drill-down the store read-back does not return). Absolution stories (severity 0)
+    /// and muted hashes are dropped here and never enriched.
     /// </summary>
-    public async Task<List<AnalysisFinding>> SaveFindingsAsync(
+    public async Task<List<AnalysisFinding>> FilterMutedFindingsAsync(
         List<AnalysisStory> stories, AnalysisContext context)
     {
         var analysisTime = DateTime.UtcNow;
-        var saved = new List<AnalysisFinding>();
+        var survivors = new List<AnalysisFinding>();
 
-        /* One read lock + one connection per save call, reused for the mute-filter read
-           and every insert. The previous per-finding pattern acquired the lock and opened
-           a fresh connection for each row. The lock is NoRecursion, so the helpers below
-           operate on the passed connection and must NOT re-acquire it. */
+        /* One read lock + one connection for the mute-filter read only. Released before the caller
+           enriches + builds actions; InsertFindingsAsync then re-acquires for the batched insert.
+           The lock is NoRecursion, so the helper below operates on the passed connection. */
         using var readLock = _duckDb.AcquireReadLock();
         using var connection = _duckDb.CreateConnection();
         await connection.OpenAsync();
@@ -52,7 +67,7 @@ public class FindingStore
             if (mutedHashes.Contains(story.StoryPathHash))
                 continue;
 
-            var finding = new AnalysisFinding
+            survivors.Add(new AnalysisFinding
             {
                 FindingId = _nextId++,
                 AnalysisTime = analysisTime,
@@ -74,13 +89,49 @@ public class FindingStore
                 LeafFactValue = story.LeafFactValue,
                 FactCount = story.FactCount,
                 RootFactMetadata = story.RootFactMetadata
-            };
-
-            await InsertFindingAsync(connection, finding);
-            saved.Add(finding);
+            });
         }
 
-        return saved;
+        return survivors;
+    }
+
+    /// <summary>
+    /// Inserts the (already mute-filtered, enriched, and action-attached) findings in one batched
+    /// pass on a single connection. Each row persists its BUILT <see cref="AnalysisFinding.Remediation"/>
+    /// as <c>remediation_action_json</c> via the shared <see cref="AlertContextSerializer"/>, so a Lite
+    /// finding's persisted action round-trips byte-identically to a Darling / Dashboard one. Returns the
+    /// same list for caller convenience; the in-memory findings are unchanged.
+    /// </summary>
+    public async Task<List<AnalysisFinding>> InsertFindingsAsync(
+        List<AnalysisFinding> findings, AnalysisContext context)
+    {
+        if (findings.Count == 0)
+            return findings;
+
+        /* One read lock + one connection for the whole batch, reused for every insert. */
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        foreach (var finding in findings)
+            await InsertFindingAsync(connection, finding);
+
+        return findings;
+    }
+
+    /// <summary>
+    /// Saves analysis stories as findings in one pass, filtering out any that match muted hashes —
+    /// the single-pass convenience surface. Implemented as <see cref="FilterMutedFindingsAsync"/> +
+    /// <see cref="InsertFindingsAsync"/>. NOTE: a caller that wants <c>remediation_action_json</c>
+    /// persisted must use the two-phase shape and attach actions between the phases (as
+    /// <c>AnalysisService</c> does); this single pass inserts the findings exactly as filtered, with
+    /// a null action.
+    /// </summary>
+    public async Task<List<AnalysisFinding>> SaveFindingsAsync(
+        List<AnalysisStory> stories, AnalysisContext context)
+    {
+        var survivors = await FilterMutedFindingsAsync(stories, context);
+        return await InsertFindingsAsync(survivors, context);
     }
 
     /// <summary>
@@ -100,7 +151,8 @@ public class FindingStore
 SELECT finding_id, analysis_time, server_id, server_name, database_name,
        time_range_start, time_range_end, severity, confidence, category,
        story_path, story_path_hash, story_text,
-       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id
+       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id,
+       remediation_action_json
 FROM analysis_findings
 WHERE server_id = $1
 AND   analysis_time >= $2
@@ -134,7 +186,10 @@ LIMIT $3";
                 LeafFactKey = reader.IsDBNull(15) ? null : reader.GetString(15),
                 LeafFactValue = reader.IsDBNull(16) ? null : reader.GetDouble(16),
                 FactCount = reader.GetInt32(17),
-                IncidentId = reader.IsDBNull(18) ? string.Empty : reader.GetString(18)
+                IncidentId = reader.IsDBNull(18) ? string.Empty : reader.GetString(18),
+                // Persisted BUILT action (the recommendations copy-paste command) deserialized via the
+                // SAME shared serializer the alert path uses; null/garbage degrades to "no command".
+                Remediation = reader.IsDBNull(19) ? null : AlertContextSerializer.DeserializeAction(reader.GetString(19))
             });
         }
 
@@ -157,7 +212,8 @@ LIMIT $3";
 SELECT finding_id, analysis_time, server_id, server_name, database_name,
        time_range_start, time_range_end, severity, confidence, category,
        story_path, story_path_hash, story_text,
-       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id
+       root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id,
+       remediation_action_json
 FROM analysis_findings
 WHERE server_id = $1
 AND   analysis_time = (
@@ -190,7 +246,10 @@ ORDER BY severity DESC";
                 LeafFactKey = reader.IsDBNull(15) ? null : reader.GetString(15),
                 LeafFactValue = reader.IsDBNull(16) ? null : reader.GetDouble(16),
                 FactCount = reader.GetInt32(17),
-                IncidentId = reader.IsDBNull(18) ? string.Empty : reader.GetString(18)
+                IncidentId = reader.IsDBNull(18) ? string.Empty : reader.GetString(18),
+                // Persisted BUILT action (the recommendations copy-paste command) deserialized via the
+                // SAME shared serializer the alert path uses; null/garbage degrades to "no command".
+                Remediation = reader.IsDBNull(19) ? null : AlertContextSerializer.DeserializeAction(reader.GetString(19))
             });
         }
 
@@ -241,7 +300,7 @@ VALUES ($1, $2, $3, $4, $5, $6)";
     /// <summary>
     /// Reads muted story hashes on an already-open connection. The caller owns the read
     /// lock and connection (NoRecursion lock — do not re-acquire here). Used by
-    /// SaveFindingsAsync so the mute-filter read reuses the save connection.
+    /// FilterMutedFindingsAsync so the mute-filter read reuses that phase's connection.
     /// </summary>
     private static async Task<HashSet<string>> GetMutedHashesAsync(DuckDBConnection connection, int serverId)
     {
@@ -265,7 +324,7 @@ WHERE server_id = $1 OR server_id IS NULL OR server_id = 0";
 
     /// <summary>
     /// Inserts one finding on an already-open connection. The caller owns the read lock
-    /// and connection, so a batch of inserts in one SaveFindingsAsync call shares a
+    /// and connection, so a batch of inserts in one InsertFindingsAsync call shares a
     /// single lock acquisition and connection.
     /// </summary>
     private static async Task InsertFindingAsync(DuckDBConnection connection, AnalysisFinding finding)
@@ -276,8 +335,9 @@ INSERT INTO analysis_findings
     (finding_id, analysis_time, server_id, server_name, database_name,
      time_range_start, time_range_end, severity, confidence, category,
      story_path, story_path_hash, story_text,
-     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)";
+     root_fact_key, root_fact_value, leaf_fact_key, leaf_fact_value, fact_count, incident_id,
+     remediation_action_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)";
 
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.FindingId });
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.AnalysisTime });
@@ -298,6 +358,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.LeafFactValue ?? (object)DBNull.Value });
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.FactCount });
         cmd.Parameters.Add(new DuckDBParameter { Value = finding.IncidentId ?? string.Empty });
+        // Persist the BUILT action (mirrors the alert path's ContextJson) so the Recommendations
+        // reader can render the copy-paste command from a stored finding. Null when no shape applies.
+        cmd.Parameters.Add(new DuckDBParameter { Value = (object?)AlertContextSerializer.SerializeAction(finding.Remediation) ?? DBNull.Value });
 
         await cmd.ExecuteNonQueryAsync();
     }
