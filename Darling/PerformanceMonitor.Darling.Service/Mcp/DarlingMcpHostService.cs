@@ -8,8 +8,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Net;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
@@ -112,9 +110,9 @@ public sealed class DarlingMcpHostService : BackgroundService
         {
             var networkMode = bind.Mode == McpBindMode.NetworkAndLoopback;
 
-            /* In network mode the listen IP + allowFrom CIDR are already validated by ResolveMcpBind, so the
-               parses cannot throw; resolving the token can still fail (a corrupt DPAPI blob), which fail-closes
-               to loopback-only rather than exposing tokenless. */
+            /* In network mode ResolveMcpBind has already validated the listen IP, the allowFrom CIDR, AND their
+               address-family agreement, so these two parses cannot throw; only resolving the token can still
+               fail (a corrupt DPAPI blob), which fail-closes to loopback-only rather than exposing tokenless. */
             IPAddress? networkListenIp = null;
             IPNetwork allowedCidr = default;
             string bearerToken = "";
@@ -407,10 +405,13 @@ public sealed class DarlingMcpHostService : BackgroundService
         /// <summary>network.* is set but postgres.managed = false — network exposure is managed-mode only (D-BYO warning).</summary>
         ManagedModeRequired,
 
+        /// <summary>Exposed + managed but the listen value is not a parseable IP (localhost/hostname/"*") — fail-closed to loopback (LogCritical).</summary>
+        ListenInvalid,
+
         /// <summary>Exposed + managed but no bearer token — fail-closed to loopback (LogCritical).</summary>
         TokenMissing,
 
-        /// <summary>Exposed + managed + token but allowFrom is missing/not a valid CIDR — fail-closed to loopback (LogCritical).</summary>
+        /// <summary>Exposed + managed + token but allowFrom is missing/not a valid CIDR or its family does not match the listen — fail-closed to loopback (LogCritical).</summary>
         AllowFromInvalid,
     }
 
@@ -420,14 +421,15 @@ public sealed class DarlingMcpHostService : BackgroundService
     /// <summary>
     /// PURE resolution of the effective MCP bind (D3-a). Returns <see cref="McpBindMode.NetworkAndLoopback"/>
     /// ONLY when the listen value is a genuine network (non-loopback) address (via the Phase-1 classifier —
-    /// so <c>127.0.0.1</c> resolves to loopback, never a network bind/collision), AND
+    /// so <c>127.0.0.1</c> resolves to loopback, never a network bind/collision) that ALSO parses as an IP, AND
     /// <paramref name="managed"/> is true, AND a bearer token is present (encryptedToken or token — presence
-    /// only; the host decrypts later), AND allowFrom is a valid CIDR. Otherwise loopback-only with the
-    /// specific reason: BYO (<paramref name="managed"/> = false) with any network.* set -&gt;
-    /// <see cref="McpBindReason.ManagedModeRequired"/> (the network path never runs in BYO, D-BYO); exposed +
-    /// managed but no token -&gt; <see cref="McpBindReason.TokenMissing"/>; exposed + managed + token but an
-    /// invalid allowFrom -&gt; <see cref="McpBindReason.AllowFromInvalid"/>; anything else (not exposed) -&gt;
-    /// <see cref="McpBindReason.LoopbackByDefault"/>. Never throws; never consults a logger.
+    /// only; the host decrypts later), AND allowFrom is a valid CIDR of the SAME address family as the listen.
+    /// Otherwise loopback-only with the specific reason: BYO (<paramref name="managed"/> = false) with any
+    /// network.* set -&gt; <see cref="McpBindReason.ManagedModeRequired"/> (the network path never runs in BYO,
+    /// D-BYO); exposed + managed but a non-IP listen -&gt; <see cref="McpBindReason.ListenInvalid"/>; exposed +
+    /// managed + IP but no token -&gt; <see cref="McpBindReason.TokenMissing"/>; exposed + managed + token but an
+    /// invalid/family-mismatched allowFrom -&gt; <see cref="McpBindReason.AllowFromInvalid"/>; anything else (not
+    /// exposed) -&gt; <see cref="McpBindReason.LoopbackByDefault"/>. Never throws; never consults a logger.
     /// </summary>
     internal static McpBindDecision ResolveMcpBind(McpConfig mcp, bool managed)
     {
@@ -447,20 +449,36 @@ public sealed class DarlingMcpHostService : BackgroundService
         }
 
         /* Exposed. Managed-mode only: BYO never binds the network path (D3-a / D-BYO), and this dominates a
-           missing token/allowFrom so the operator sees the actionable "managed only" notice first. */
+           missing/invalid listen/token/allowFrom so the operator sees the actionable "managed only" notice first. */
         if (!managed)
         {
             return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ManagedModeRequired);
         }
 
+        /* The listen must be a parseable IP. The classifier treats a non-IP value (localhost, a hostname, "*")
+           as "exposed" so it is never silently bound; here it degrades to loopback rather than throwing when the
+           host later does IPAddress.Parse (D-validate — the store degrades on the same input, the host must too). */
+        if (!IPAddress.TryParse(network!.Listen!.Trim(), out var listenIp))
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ListenInvalid);
+        }
+
         /* Token presence only (no decryption here — that is an effectful, Windows-only step the host does). */
-        if (string.IsNullOrWhiteSpace(network!.EncryptedToken) && string.IsNullOrWhiteSpace(network.Token))
+        if (string.IsNullOrWhiteSpace(network.EncryptedToken) && string.IsNullOrWhiteSpace(network.Token))
         {
             return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.TokenMissing);
         }
 
-        /* allowFrom must be a valid CIDR (host bits zeroed, the same IPNetwork rule the store side uses). */
-        if (string.IsNullOrWhiteSpace(network.AllowFrom) || !IPNetwork.TryParse(network.AllowFrom.Trim(), out _))
+        /* allowFrom must be a valid CIDR (host bits zeroed, the same IPNetwork rule the store side uses) whose
+           address family matches the listen (the store's D4 check): a mismatched family would bind one family
+           while the in-app CIDR check rejects the other, 403-ing every network client — fail-closed but silently
+           non-functional, so degrade with a clear reason instead. */
+        if (string.IsNullOrWhiteSpace(network.AllowFrom) || !IPNetwork.TryParse(network.AllowFrom.Trim(), out var cidr))
+        {
+            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.AllowFromInvalid);
+        }
+
+        if (cidr.BaseAddress.AddressFamily != listenIp.AddressFamily)
         {
             return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.AllowFromInvalid);
         }
@@ -543,44 +561,74 @@ public sealed class DarlingMcpHostService : BackgroundService
         return string.IsNullOrEmpty(token) ? null : token;
     }
 
-    /// <summary>Maps the <see cref="ResolveMcpBind"/> reason to a log line (Round-4 #7). Silent for the
-    /// non-degrade reasons (the network-exposed line is logged at start with the real bind).</summary>
+    /// <summary>
+    /// PURE severity map for a <see cref="ResolveMcpBind"/> reason (Round-4 #7): the fail-closed degrades
+    /// (<see cref="McpBindReason.ListenInvalid"/>/<see cref="McpBindReason.TokenMissing"/>/
+    /// <see cref="McpBindReason.AllowFromInvalid"/>) are <see cref="LogLevel.Critical"/>, the BYO "ignored"
+    /// notice (<see cref="McpBindReason.ManagedModeRequired"/>) is <see cref="LogLevel.Warning"/>, and the
+    /// non-degrade reasons (<see cref="McpBindReason.NetworkExposed"/>/<see cref="McpBindReason.LoopbackByDefault"/>)
+    /// are silent (null). <see cref="LogBindReason"/> drives its emit level off this, so the level and the
+    /// message can never diverge.
+    /// </summary>
+    internal static LogLevel? MapBindReasonSeverity(McpBindReason reason) => reason switch
+    {
+        McpBindReason.ListenInvalid => LogLevel.Critical,
+        McpBindReason.TokenMissing => LogLevel.Critical,
+        McpBindReason.AllowFromInvalid => LogLevel.Critical,
+        McpBindReason.ManagedModeRequired => LogLevel.Warning,
+        _ => null,
+    };
+
+    /// <summary>Emits the <see cref="ResolveMcpBind"/> reason at its mapped severity (Round-4 #7). Silent for
+    /// the non-degrade reasons (the network-exposed line is logged at start with the real bind).</summary>
     private void LogBindReason(McpConfig mcp, McpBindReason reason)
     {
+        var level = MapBindReasonSeverity(reason);
+        if (level is null)
+        {
+            /* NetworkExposed is announced at start with the real address; LoopbackByDefault is the silent,
+               byte-for-byte-today path. */
+            return;
+        }
+
         switch (reason)
         {
+            case McpBindReason.ListenInvalid:
+                _logger.Log(level.Value,
+                    "MCP network exposure requested but mcp.network.listen '{Listen}' is not a valid IP address — " +
+                    "refusing to expose; binding loopback-only. Use a specific IP (e.g. 192.168.1.205), or 0.0.0.0 for all interfaces.",
+                    mcp.Network?.Listen);
+                break;
+
             case McpBindReason.TokenMissing:
-                _logger.LogCritical(
+                _logger.Log(level.Value,
                     "MCP network exposure requested (mcp.network.listen is non-loopback) but no bearer token is set — " +
                     "refusing to expose; binding loopback-only. Set mcp.network.encryptedToken (via --encrypt-password) or mcp.network.token.");
                 break;
 
             case McpBindReason.AllowFromInvalid:
-                _logger.LogCritical(
-                    "MCP network exposure requested but mcp.network.allowFrom '{AllowFrom}' is not a valid CIDR — " +
-                    "refusing to expose; binding loopback-only. Use e.g. 192.168.1.0/24 (host bits zeroed).",
+                _logger.Log(level.Value,
+                    "MCP network exposure requested but mcp.network.allowFrom '{AllowFrom}' is not a valid CIDR or its " +
+                    "address family does not match mcp.network.listen — refusing to expose; binding loopback-only. " +
+                    "Use e.g. 192.168.1.0/24 (host bits zeroed, same family as listen).",
                     mcp.Network?.AllowFrom);
                 break;
 
             case McpBindReason.ManagedModeRequired:
-                _logger.LogWarning(
+                _logger.Log(level.Value,
                     "mcp.network.* is set but postgres.managed = false — MCP network exposure is managed-mode only and is " +
                     "ignored; your own PostgreSQL/reverse proxy governs BYO exposure. Binding loopback-only.");
                 break;
 
-            case McpBindReason.NetworkExposed:
-            case McpBindReason.LoopbackByDefault:
             default:
-                /* No log: the network-exposed bind is announced at start with the real address; the default
-                   loopback server is the silent, byte-for-byte-today path. */
                 break;
         }
     }
 
     /* ---------------------------------------------------------------------------------------------------
        Best-effort MCP firewall reconcile (D1, defense-in-depth). Reuses the store's tested, pure command
-       builders (DarlingManagedPostgres.BuildFirewall*Command) for the exact scoped rule shape; only the
-       PowerShell invocation is local (the store's runner is private to that windows-gated class). Never fatal.
+       builders (DarlingManagedPostgres.BuildFirewall*Command) for the exact scoped rule shape AND its shared
+       PowerShell runner (RunPowerShellAsync) — no duplication, no timeout divergence. Never fatal.
        --------------------------------------------------------------------------------------------------- */
 
     /// <summary>The scoped MCP firewall rule name (idempotent by DisplayName), port-specific and distinct
@@ -597,7 +645,7 @@ public sealed class DarlingMcpHostService : BackgroundService
 
         try
         {
-            var (exitCode, output) = await RunPowerShellAsync(command, cancellationToken);
+            var (exitCode, output) = await DarlingManagedPostgres.RunPowerShellAsync(command, cancellationToken);
             if (exitCode == 0)
             {
                 _logger.LogInformation("MCP firewall rule '{Rule}' {Verb}.", ruleName, enable ? "ensured" : "removed");
@@ -629,73 +677,6 @@ public sealed class DarlingMcpHostService : BackgroundService
             {
                 _logger.LogWarning("Could not remove the MCP firewall rule automatically ({Message}).", ex.Message);
             }
-        }
-    }
-
-    /// <summary>
-    /// Runs a PowerShell command with captured, interleaved stdout+stderr and a hard 30s timeout — mirrors
-    /// <c>DarlingManagedPostgres.RunPowerShellAsync</c> (which is private to that windows-gated class, so it
-    /// cannot be shared without widening it; the security-sensitive rule shape IS shared via the pure command
-    /// builders). Full-paths powershell.exe to avoid a PATH/CWD hijack.
-    /// </summary>
-    private static async Task<(int ExitCode, string Output)> RunPowerShellAsync(string command, CancellationToken cancellationToken)
-    {
-        var powershellPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
-
-        using var process = new Process();
-        process.StartInfo = new ProcessStartInfo
-        {
-            FileName = powershellPath,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        process.StartInfo.ArgumentList.Add("-NoProfile");
-        process.StartInfo.ArgumentList.Add("-NonInteractive");
-        process.StartInfo.ArgumentList.Add("-Command");
-        process.StartInfo.ArgumentList.Add(command);
-
-        var output = new StringBuilder();
-        var outputLock = new object();
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) { lock (outputLock) { output.AppendLine(e.Data); } } };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (outputLock) { output.AppendLine(e.Data); } } };
-
-        if (!process.Start())
-        {
-            return (-1, "could not start powershell.exe");
-        }
-
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(TimeSpan.FromSeconds(30));
-        try
-        {
-            await process.WaitForExitAsync(timeoutSource.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                /* Exited between the timeout and the kill. */
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            string soFar;
-            lock (outputLock) { soFar = output.ToString().Trim(); }
-            return (-1, $"timed out: {soFar}");
-        }
-
-        lock (outputLock)
-        {
-            return (process.ExitCode, output.ToString().Trim());
         }
     }
 

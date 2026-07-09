@@ -7,6 +7,7 @@
  */
 
 using System.Net;
+using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Darling.Service;
 using Xunit;
 using Host = PerformanceMonitor.Darling.Service.Mcp.DarlingMcpHostService;
@@ -83,6 +84,34 @@ public sealed class DarlingMcpHostTests
     public void ResolveMcpBind_Exposed_Managed_Token_BadAllowFrom_IsLoopbackOnly_AllowFromInvalid(string? allowFrom)
     {
         var decision = Host.ResolveMcpBind(Mcp("192.168.1.205", allowFrom, token: "s3cr3t"), managed: true);
+
+        Assert.Equal(Host.McpBindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(Host.McpBindReason.AllowFromInvalid, decision.Reason);
+    }
+
+    [Theory]
+    [InlineData("localhost")]  // a name, not an IP (a plausible "I meant loopback" typo)
+    [InlineData("myhost")]     // a hostname
+    [InlineData("db.lan")]
+    [InlineData("*")]          // the postgres listen wildcard, not a Kestrel-bindable IP
+    public void ResolveMcpBind_Exposed_Managed_NonIpListen_IsLoopbackOnly_ListenInvalid(string listen)
+    {
+        /* A non-IP "exposed" listen must DEGRADE, not throw and take the whole host down (D-validate) — the
+           host's IPAddress.Parse would otherwise FormatException into the generic catch and exit MCP entirely. */
+        var decision = Host.ResolveMcpBind(Mcp(listen, "192.168.1.0/24", token: "s3cr3t"), managed: true);
+
+        Assert.Equal(Host.McpBindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(Host.McpBindReason.ListenInvalid, decision.Reason);
+    }
+
+    [Theory]
+    [InlineData("192.168.1.205", "2001:db8::/32")]  // IPv4 listen, IPv6 CIDR
+    [InlineData("2001:db8::5", "192.168.1.0/24")]   // IPv6 listen, IPv4 CIDR
+    public void ResolveMcpBind_Exposed_Managed_AllowFromFamilyMismatch_IsLoopbackOnly_AllowFromInvalid(string listen, string allowFrom)
+    {
+        /* A family mismatch binds one family while the CIDR check rejects the other -> every client 403s
+           (fail-closed but silently non-functional); degrade with a reason instead (mirrors the store's D4). */
+        var decision = Host.ResolveMcpBind(Mcp(listen, allowFrom, token: "s3cr3t"), managed: true);
 
         Assert.Equal(Host.McpBindMode.LoopbackOnly, decision.Mode);
         Assert.Equal(Host.McpBindReason.AllowFromInvalid, decision.Reason);
@@ -223,4 +252,25 @@ public sealed class DarlingMcpHostTests
     [InlineData(null, null)]
     public void ExtractBearerToken_ParsesTheSchemeStrictly(string? header, string? expected)
         => Assert.Equal(expected, Host.ExtractBearerToken(header));
+
+    /* ---- reason -> severity mapping (MapBindReasonSeverity, which LogBindReason drives its emit off) ---- */
+
+    /* [Fact], not [Theory] with InlineData: the internal McpBindReason enum cannot appear in a public test
+       method's SIGNATURE (CS0051), so the cases live in the body (InternalsVisibleTo makes them reachable). */
+
+    [Fact]
+    public void MapBindReasonSeverity_DegradesAreCritical_ByoIsWarning()
+    {
+        Assert.Equal(LogLevel.Critical, Host.MapBindReasonSeverity(Host.McpBindReason.ListenInvalid));
+        Assert.Equal(LogLevel.Critical, Host.MapBindReasonSeverity(Host.McpBindReason.TokenMissing));
+        Assert.Equal(LogLevel.Critical, Host.MapBindReasonSeverity(Host.McpBindReason.AllowFromInvalid));
+        Assert.Equal(LogLevel.Warning, Host.MapBindReasonSeverity(Host.McpBindReason.ManagedModeRequired));
+    }
+
+    [Fact]
+    public void MapBindReasonSeverity_NonDegradeReasons_AreSilent()
+    {
+        Assert.Null(Host.MapBindReasonSeverity(Host.McpBindReason.NetworkExposed));     // announced at start with the real bind
+        Assert.Null(Host.MapBindReasonSeverity(Host.McpBindReason.LoopbackByDefault));  // the silent, byte-for-byte-today path
+    }
 }
