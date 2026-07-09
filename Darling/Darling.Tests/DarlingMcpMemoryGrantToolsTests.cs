@@ -34,6 +34,7 @@ public sealed class DarlingMcpMemoryGrantToolsSurfaceAndSqlTests
     private static readonly string[] MemoryGrantToolSurface =
     {
         "get_memory_grants",
+        "get_memory_pressure_events",
         "get_resource_semaphore",
     };
 
@@ -43,7 +44,7 @@ public sealed class DarlingMcpMemoryGrantToolsSurfaceAndSqlTests
         .ToArray();
 
     [Fact]
-    public void ToolSurface_ExactlyTheTwoMemoryGrantTools()
+    public void ToolSurface_ExactlyTheThreeMemoryGrantTools()
     {
         var names = ToolMethods()
             .Select(m => m.GetCustomAttribute<McpServerToolAttribute>()!.Name)
@@ -68,6 +69,7 @@ public sealed class DarlingMcpMemoryGrantToolsSurfaceAndSqlTests
     [Theory]
     [InlineData("get_resource_semaphore")]
     [InlineData("get_memory_grants")]
+    [InlineData("get_memory_pressure_events")]
     public void ParamContract_ServerHours_AllOptional(string toolName)
     {
         var p = McpParams(toolName);
@@ -96,6 +98,21 @@ public sealed class DarlingMcpMemoryGrantToolsSurfaceAndSqlTests
         Assert.Contains("MAX(collection_time)", sql, StringComparison.Ordinal);
         Assert.Contains("SUM(granted_memory_mb)", sql, StringComparison.Ordinal);
         Assert.Contains("GROUP BY collection_time, pool_id", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MemoryPressureEventsSql_WindowsOnSampleTime_PostgresDialect()
+    {
+        var sql = DarlingMemoryGrantReader.MemoryPressureEventsSql;
+        Assert.Contains("FROM v_memory_pressure_events", sql, StringComparison.Ordinal);
+        Assert.Contains("memory_notification", sql, StringComparison.Ordinal);
+        Assert.Contains("memory_indicators_process", sql, StringComparison.Ordinal);
+        Assert.Contains("sample_time >= $2", sql, StringComparison.Ordinal);   /* windowed on the payload clock */
+        Assert.Contains("ORDER BY sample_time", sql, StringComparison.Ordinal);
+        var lower = sql.ToLowerInvariant();
+        Assert.DoesNotContain("getdate", lower);
+        Assert.DoesNotContain("isnull(", lower);
+        Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -147,7 +164,7 @@ public sealed class DarlingMcpMemoryGrantToolsSurfaceAndSqlTests
     public void AdvertisedSchema_IsGeminiClean_NoRequiredParams()
     {
         var tools = BuildToolSchemas();
-        Assert.Equal(2, tools.Count);
+        Assert.Equal(3, tools.Count);
         var violations = tools.SelectMany(t => DarlingMcpSchemaAssert.Violations(t.Name, t.InputSchema)).ToList();
         Assert.True(violations.Count == 0, "Gemini-incompatible schema keywords leaked:\n" + string.Join("\n", violations));
         foreach (var t in tools)
@@ -201,6 +218,16 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
             DarlingMcpTestData.AssertEnvelope(grantsJson, ServerName, "grants");
             Assert.Contains("granted_memory_mb", grantsJson, StringComparison.Ordinal);
 
+            /* Memory pressure events — a severe RESOURCE_MEMPHYSICAL_LOW sample surfaces. */
+            await DarlingMcpTestData.ExecAsync(connection, ct,
+                @"INSERT INTO memory_pressure_events (collection_id, collection_time, server_id, server_name, sample_time, memory_notification, memory_indicators_process, memory_indicators_system)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                CollectionIdGenerator.Next(), t, ServerId, ServerName, t, "RESOURCE_MEMPHYSICAL_LOW", 3, 1);
+
+            var pressureJson = await DarlingMcpMemoryGrantTools.GetMemoryPressureEvents(postgres, ServerName);
+            DarlingMcpTestData.AssertEnvelope(pressureJson, ServerName, "events");
+            Assert.Contains("RESOURCE_MEMPHYSICAL_LOW", pressureJson, StringComparison.Ordinal);
+
             await DeleteRowsAsync(connection, ct, keepServer: true);
             Assert.Equal("unavailable", DarlingMcpTestData.StatusOf(await DarlingMcpMemoryGrantTools.GetResourceSemaphore(postgres, ServerName)));
         }
@@ -212,7 +239,8 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
 
     private static async Task DeleteRowsAsync(NpgsqlConnection connection, System.Threading.CancellationToken ct, bool keepServer = false)
     {
-        var sql = $"DELETE FROM memory_grant_stats WHERE server_id = {ServerId};";
+        var sql = $"DELETE FROM memory_grant_stats WHERE server_id = {ServerId};"
+            + $" DELETE FROM memory_pressure_events WHERE server_id = {ServerId};";
         if (!keepServer) sql += $" DELETE FROM servers WHERE server_id = {ServerId};";
         using var cleanup = new NpgsqlCommand(sql, connection);
         await cleanup.ExecuteNonQueryAsync(ct);

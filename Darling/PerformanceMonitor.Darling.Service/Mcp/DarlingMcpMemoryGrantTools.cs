@@ -125,4 +125,53 @@ public sealed class DarlingMcpMemoryGrantTools
             return McpHelpers.FormatError("get_memory_grants", ex);
         }
     }
+
+    [McpServerTool(Name = "get_memory_pressure_events"), Description(@"Gets memory pressure notifications from the RING_BUFFER_RESOURCE_MONITOR ring buffer (same source as sp_pressuredetector). Returns RESOURCE_MEMPHYSICAL_LOW, RESOURCE_MEMVIRTUAL_LOW, RESOURCE_MEMPHYSICAL_HIGH, and RESOURCE_MEM_STEADY notifications with indicator values.
+
+Indicator scale (applies to both memory_indicators_process and memory_indicators_system):
+  0-1 = normal, no pressure
+  2   = medium pressure (SQL Server's Resource Monitor starts trimming caches and reducing grants)
+  3+  = severe pressure (aggressive buffer pool / plan cache eviction)
+
+memory_indicators_process = SQL Server process itself is under memory pressure (workload-induced).
+memory_indicators_system  = Windows is signaling low memory system-wide (could be other tenants on the box).
+
+Not available on Azure SQL DB (ring buffer not exposed).")]
+    public static async Task<string> GetMemoryPressureEvents(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history. Default 24.")] int hours_back = 24)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var rows = await DarlingMemoryGrantReader.GetMemoryPressureEventsAsync(
+                postgres, resolved.Value.ServerId, now.AddHours(-hours_back), now);
+            if (rows.Count == 0)
+                return McpHelpers.Status("empty", "No memory pressure events found in the requested time range.");
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                events = rows.Select(r => new
+                {
+                    sample_time = r.SampleTime.ToString("o"),
+                    memory_notification = r.MemoryNotification,
+                    memory_indicators_process = r.MemoryIndicatorsProcess,
+                    memory_indicators_system = r.MemoryIndicatorsSystem
+                })
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_memory_pressure_events", ex);
+        }
+    }
 }

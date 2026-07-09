@@ -29,8 +29,9 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 /// <summary>
 /// Optional hosted service exposing Darling's full MCP tool surface over Streamable HTTP — the analysis
 /// class (6 tools) plus the plan-analysis tools and the ~60 STORED data-read tools (resource metrics,
-/// query performance, blocking/deadlocks, sessions, config history, index/object, latch/spinlock/
-/// memory-grant/plan-cache/scheduler/jobs, windowed trends, and the system_health parse-on-read family)
+/// query performance, blocking/deadlocks, sessions, config history + current-config snapshots, index/object,
+/// latch/spinlock/memory-grant/plan-cache/scheduler/jobs, windowed trends, the system_health parse-on-read
+/// family, and the fleet-triage alerts + health-overview reads)
 /// — the same names Lite and the Dashboard expose, all reading Darling's Postgres store (no live
 /// monitored-server hit except <c>analyze_server</c>'s plan fetch). Same transport/hosting model as
 /// Lite's <c>McpHostService</c> (ModelContextProtocol.AspNetCore, Kestrel, stateless HTTP,
@@ -304,6 +305,18 @@ public sealed class DarlingMcpHostService : BackgroundService
                    the collected memory / perfmon / file-io / query-stats series, no live hit). Each mirrors
                    the viewer's proven chart read; the shape follows Lite where the SKUs diverge. */
                 .WithGeminiCompatibleTools<DarlingMcpTrendTools>()
+                /* The fleet-triage quick-win reads the fleet edition previously lacked — the alerts family
+                   (get_alert_history over config_alert_log, get_alert_settings over config_alert_settings,
+                   get_mute_rules via the service-side PgMuteRuleStore), the CURRENT-config snapshot trio
+                   (get_server_config / get_database_config / get_trace_flags — latest capture, the companion to
+                   the *_changes diff tools), and the health overview (get_server_summary + the daily rollup
+                   get_daily_summary, folded through the shared DailyHealthBandCalculator). Same names Lite and
+                   the Dashboard expose, all STORED reads over Darling's Postgres store (no live hit). The
+                   blocking-trend / deadlock-trend, memory-pressure-event, and wait-type siblings ride along on
+                   the existing blocking / memory-grant / core data-read classes above. */
+                .WithGeminiCompatibleTools<DarlingMcpAlertTools>()
+                .WithGeminiCompatibleTools<DarlingMcpConfigTools>()
+                .WithGeminiCompatibleTools<DarlingMcpHealthTools>()
                 /* The system_health parse-on-read family — get_health_parser_cpu_tasks / _io_issues /
                    _memory_broker / _memory_conditions / _memory_node_oom / _scheduler_issues /
                    _severe_errors / _system_health — the same names the Dashboard exposes. Where the Dashboard

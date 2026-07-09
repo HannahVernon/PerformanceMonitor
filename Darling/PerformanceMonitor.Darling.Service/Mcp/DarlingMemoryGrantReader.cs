@@ -173,4 +173,50 @@ internal static class DarlingMemoryGrantReader
 
         return rows;
     }
+
+    /* ─────────────────────────── memory pressure events (RING_BUFFER_RESOURCE_MONITOR) ─────────────────────────── */
+
+    /// <summary>One RING_BUFFER_RESOURCE_MONITOR sample — the sample time plus the SQL Server (process) and OS
+    /// (system) memory-pressure indicators. Mirror of the viewer's <c>MemoryPressureEventRow</c>.</summary>
+    public sealed record MemoryPressureEventRow(
+        DateTime SampleTime, string MemoryNotification, int MemoryIndicatorsProcess, int MemoryIndicatorsSystem);
+
+    /// <summary>
+    /// The RING_BUFFER_RESOURCE_MONITOR memory-pressure samples over the window — the viewer's
+    /// <c>MemoryPressureEventsSql</c> (Lite's <c>GetMemoryPressureEventsAsync</c> ported to Postgres). Windowed
+    /// on <c>sample_time</c> (the payload's own clock, which the <c>memory_pressure_events</c> index keys on),
+    /// not collection_time, on the <c>v_memory_pressure_events</c> passthrough view. $1 server_id, $2 window
+    /// start, $3 window end (naive UTC).
+    /// </summary>
+    public const string MemoryPressureEventsSql = """
+        SELECT
+            sample_time,
+            memory_notification,
+            memory_indicators_process,
+            memory_indicators_system
+        FROM v_memory_pressure_events
+        WHERE server_id = $1
+        AND   sample_time >= $2
+        AND   sample_time <= $3
+        ORDER BY sample_time
+        """;
+
+    public static async Task<List<MemoryPressureEventRow>> GetMemoryPressureEventsAsync(
+        NpgsqlDataSource postgres, int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+    {
+        var rows = new List<MemoryPressureEventRow>();
+        await using var command = postgres.CreateCommand(MemoryPressureEventsSql);
+        DarlingMcpReadParameters.AddWindow(command, serverId, startUtc, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new MemoryPressureEventRow(
+                reader.GetDateTime(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? 0 : reader.GetInt32(2),
+                reader.IsDBNull(3) ? 0 : reader.GetInt32(3)));
+        }
+
+        return rows;
+    }
 }

@@ -25,9 +25,9 @@ using Xunit;
 namespace Darling.Tests;
 
 /// <summary>
-/// Pins the core data-read MCP slice — the fourteen resource-metric / query-performance /
+/// Pins the core data-read MCP slice — the fifteen resource-metric / query-performance /
 /// discovery-health tools over the Postgres store, the same names the Dashboard and Lite expose.
-/// Ungated: the tool surface is EXACTLY the fourteen names (all static, on a [McpServerToolType]
+/// Ungated: the tool surface is EXACTLY the fifteen names (all static, on a [McpServerToolType]
 /// class, returning the string envelope); each tool's MCP parameter contract matches Lite's (server_name
 /// optional / sole-server auto-select, hours_back / top / limit windows, wait_type required on
 /// get_wait_trend); every read SQL is Postgres-dialect, positional-param, reads the collector columns the
@@ -57,6 +57,7 @@ public sealed class DarlingMcpDataToolsSurfaceAndSqlTests
         "get_top_queries_by_cpu",
         "get_wait_stats",
         "get_wait_trend",
+        "get_wait_types",
         "list_servers",
     };
 
@@ -66,7 +67,7 @@ public sealed class DarlingMcpDataToolsSurfaceAndSqlTests
         .ToArray();
 
     [Fact]
-    public void ToolSurface_ExactlyTheFourteenDataTools()
+    public void ToolSurface_ExactlyTheFifteenDataTools()
     {
         var toolMethods = ToolMethods();
 
@@ -102,6 +103,7 @@ public sealed class DarlingMcpDataToolsSurfaceAndSqlTests
     [InlineData("get_cpu_utilization", "server_name,hours_back")]
     [InlineData("get_wait_stats", "server_name,hours_back,limit")]
     [InlineData("get_wait_trend", "wait_type,server_name,hours_back")]
+    [InlineData("get_wait_types", "server_name,hours_back")]
     [InlineData("get_memory_stats", "server_name")]
     [InlineData("get_memory_clerks", "server_name")]
     [InlineData("get_file_io_stats", "server_name")]
@@ -441,10 +443,10 @@ public sealed class DarlingMcpDataToolsSurfaceAndSqlTests
     }
 
     [Fact]
-    public void AdvertisedSchema_IsGeminiClean_ForAllFourteenDataTools()
+    public void AdvertisedSchema_IsGeminiClean_ForAllFifteenDataTools()
     {
         var tools = BuildDataToolSchemas();
-        Assert.Equal(14, tools.Count);
+        Assert.Equal(15, tools.Count);
 
         var violations = tools.SelectMany(t => SchemaViolations(t.Name, t.InputSchema)).ToList();
         Assert.True(violations.Count == 0,
@@ -525,6 +527,7 @@ public sealed class DarlingMcpDataToolsLivePostgresTests
             AssertServerEnvelope(await DarlingMcpDataTools.GetCpuUtilization(postgres, ServerName), "samples");
             AssertServerEnvelope(await DarlingMcpDataTools.GetWaitStats(postgres, ServerName), "waits");
             AssertServerEnvelope(await DarlingMcpDataTools.GetWaitTrend(postgres, "CXPACKET", ServerName), "trend");
+            AssertServerEnvelope(await DarlingMcpDataTools.GetWaitTypes(postgres, ServerName), "wait_types");
             AssertServerEnvelope(await DarlingMcpDataTools.GetMemoryStats(postgres, ServerName), "buffer_pool_mb");
             AssertServerEnvelope(await DarlingMcpDataTools.GetMemoryClerks(postgres, ServerName), "clerks");
             AssertServerEnvelope(await DarlingMcpDataTools.GetFileIoStats(postgres, ServerName), "files");

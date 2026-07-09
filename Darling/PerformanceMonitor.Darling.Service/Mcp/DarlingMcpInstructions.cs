@@ -10,7 +10,7 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 
 /// <summary>
 /// Server instructions sent to MCP clients during initialization — Lite's McpInstructions
-/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~60
+/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~72
 /// analysis + plan-analysis + data-read tools this headless service exposes (the <see cref="Text"/>
 /// body enumerates them).
 /// </summary>
@@ -41,7 +41,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes sixty tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fourteen core data-read tools, fifteen diagnostic-depth data-read tools, seven resource-contention + jobs data-read tools, five trend data-read tools, and eight system-health parse-on-read tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes seventy-two tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, and five alert + health-overview tools. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -75,6 +75,7 @@ internal static class DarlingMcpInstructions
         | `get_cpu_utilization` | CPU % over time (SQL / other-process / total / idle), 1-minute averages | `server_name`, `hours_back` (default 4) |
         | `get_wait_stats` | Top wait types aggregated over the window (wait/signal/resource ms, signal %) | `server_name`, `hours_back` (default 24), `limit` (default 20) |
         | `get_wait_trend` | A single wait type's per-second trend over time | `wait_type` (required), `server_name`, `hours_back` (default 24) |
+        | `get_wait_types` | The distinct wait types observed on the server (heaviest first) — pick a `wait_type` for get_wait_trend | `server_name`, `hours_back` (default 24) |
         | `get_memory_stats` | Latest memory snapshot: physical / buffer pool / plan cache / utilization %, memory model | `server_name` |
         | `get_memory_clerks` | Latest top memory consumers by clerk type | `server_name` |
         | `get_file_io_stats` | Latest per-file I/O: reads/writes/bytes/stall and computed read/write latency | `server_name` |
@@ -97,6 +98,8 @@ internal static class DarlingMcpInstructions
         | `get_deadlocks` | Recent deadlocks: victim process/SQL + a process summary | `server_name`, `hours_back` (default 24), `limit` (default 20) |
         | `get_deadlock_detail` | The raw deadlock graph XML for the recent deadlocks | `server_name`, `hours_back` (default 24), `limit` (default 5) |
         | `get_blocked_process_xml` | The raw blocked-process-report XML | `server_name`, `hours_back` (default 24), `limit` (default 5) |
+        | `get_blocking_trend` | Per-minute blocking-incident counts over time (XE, DMV-snapshot fallback) | `server_name`, `hours_back` (default 24) |
+        | `get_deadlock_trend` | Per-minute deadlock counts over time | `server_name`, `hours_back` (default 24) |
         | `get_session_stats` | Latest per-application connection/session counts (running/sleeping/dormant) + resource totals | `server_name` |
         | `get_active_queries` | Captured running-query snapshots over the window (waits, CPU, blocking, grants) | `server_name`, `hours_back` (default 1), `database_name`, `blocking_only`, `limit` (default 50) |
         | `get_waiting_tasks` | Individual waiting tasks captured at collection time | `server_name`, `hours_back` (default 1), `limit` (default 30) |
@@ -104,6 +107,9 @@ internal static class DarlingMcpInstructions
         | `get_database_config_changes` | sys.databases setting changes, diffed from config snapshots | `server_name`, `hours_back` (default 168) |
         | `get_trace_flag_changes` | Trace flags enabled/disabled/modified, diffed from config snapshots | `server_name`, `hours_back` (default 168) |
         | `get_database_scoped_config` | Latest database-scoped configuration (MAXDOP, legacy CE, ...) | `server_name`, `database_name` |
+        | `get_server_config` | CURRENT sys.configurations (latest snapshot) — what CTFP / MAXDOP / max memory are set to now | `server_name` |
+        | `get_database_config` | CURRENT per-database settings (latest snapshot) — recovery model, RCSI, Query Store, ... | `server_name`, `database_name` |
+        | `get_trace_flags` | CURRENT active trace flags (latest snapshot) — flag number, enabled, global/session | `server_name` |
         | `get_table_index_sizes` | Largest tables with size + growth (7d/30d/daily) from the latest daily snapshot | `server_name` |
         | `get_index_usage` | Per-index usage classified Unused / Write-only / Active | `server_name` |
         | `get_object_locking` | Per-index lock/latch contention, most contended first | `server_name` |
@@ -119,6 +125,7 @@ internal static class DarlingMcpInstructions
         | `get_spinlock_stats` | Top spinlocks by collisions, with per-second rates + description | `server_name`, `hours_back` (default 24), `top` (default 10) |
         | `get_resource_semaphore` | Latest workspace-memory semaphores: target / max-target ceiling vs granted / used, waiter / timeout / forced | `server_name`, `hours_back` (default 24) |
         | `get_memory_grants` | Latest per-pool grant detail: available / granted / used + waiter / timeout / forced deltas | `server_name`, `hours_back` (default 1) |
+        | `get_memory_pressure_events` | RING_BUFFER_RESOURCE_MONITOR memory-pressure notifications (process/system indicator scale 0-3+); not on Azure SQL DB | `server_name`, `hours_back` (default 24) |
         | `get_plan_cache_bloat` | Plan cache single-use vs multi-use composition + bloat_level classification | `server_name`, `hours_back` (default 24) |
         | `get_cpu_scheduler_pressure` | Latest scheduler snapshot: runnable queue, worker utilization, pressure_level + warnings | `server_name` |
         | `get_running_jobs` | Currently running SQL Agent jobs with duration vs historical average / p95 | `server_name` |
@@ -150,9 +157,21 @@ internal static class DarlingMcpInstructions
         | `get_health_parser_cpu_tasks` | QUERY_PROCESSING WARNING rows with pendingTasks >= 10 (worker-thread exhaustion) | `server_name`, `hours_back` (default 24), `limit` (default 50) |
         | `get_health_parser_io_issues` | IO_SUBSYSTEM WARNING rows (15-second I/O warnings), one per pending-request file | `server_name`, `hours_back` (default 24), `limit` (default 50) |
 
+        ### Alert + health-overview tools
+
+        The fleet-triage reads the fleet edition previously lacked: what alerts fired and the current alert config, the mute rules in force, and a fast per-server / per-day health verdict. All STORED reads over the monitoring store (no live hit).
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_alert_history` | Alerts that fired (metric, value vs threshold, delivery success/failure, muted); omit server_name for the whole fleet, each row names its server | `server_name` (optional — all servers if omitted), `hours_back` (default 24), `limit` (default 50) |
+        | `get_alert_settings` | The current alert config the service uses: per-alert enable + thresholds, cooldown, excluded databases, delivery mode, and the scheduled-analysis cadence | none |
+        | `get_mute_rules` | The alert mute rules in force, so a suppressed server is distinguishable from a healthy-quiet one | `enabled_only` (default true) |
+        | `get_server_summary` | One-shot per-server health: current CPU %, memory, recent blocking count, recent deadlock count | `server_name` |
+        | `get_daily_summary` | A day's composite health band (Healthy / Warning / Critical) plus the signals behind it (waits, deadlocks, blocking, high CPU, memory pressure, alerts) | `server_name`, `summary_date` (yyyy-MM-dd, default today) |
+
         The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
 
-        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. The resource-contention + jobs tools (`get_latch_stats`, `get_spinlock_stats`, `get_resource_semaphore`, `get_memory_grants`, `get_plan_cache_bloat`, `get_cpu_scheduler_pressure`, `get_running_jobs`), the trend siblings (`get_memory_trend`, `get_perfmon_trend`, `get_file_io_trend`, `get_query_trend`, `get_query_duration_trend`), and the `get_health_parser_*` system-health family are all hosted here too — follow those `next_tools` on this server. The one exception is `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock rollup), which this edition does not host; use `get_blocking` / `get_deadlocks` instead.
+        Note on `next_tools`: analyze_server findings include `next_tools` recommendations. Most are hosted on this server — the plan-analysis tools (`analyze_query_plan`, `analyze_query_store_plan`) and the data-read tools listed above (`get_wait_stats`, `get_top_queries_by_cpu`, `get_cpu_utilization`, `get_memory_stats`, `get_file_io_stats`, `get_tempdb_trend`, `get_blocking`, `get_deadlocks`, `get_waiting_tasks`, `get_active_queries`, ...) — so follow those here. `get_top_queries_by_cpu` / `get_top_procedures_by_cpu` / `get_query_store_top` are where the `query_hash` / `sql_handle` / `query_id` + `plan_id` keys for the plan-analysis tools come from. The resource-contention + jobs tools (`get_latch_stats`, `get_spinlock_stats`, `get_resource_semaphore`, `get_memory_grants`, `get_plan_cache_bloat`, `get_cpu_scheduler_pressure`, `get_running_jobs`), the trend siblings (`get_memory_trend`, `get_perfmon_trend`, `get_file_io_trend`, `get_query_trend`, `get_query_duration_trend`), the `get_health_parser_*` system-health family, and the blocking/deadlock trend + memory-pressure reads (`get_blocking_trend`, `get_deadlock_trend`, `get_memory_pressure_events`) are all hosted here too — follow those `next_tools` on this server. Two `next_tools` names differ from what this edition hosts: `get_blocked_process_reports` (a Lite name) is served here as `get_blocked_process_xml` (with `get_blocking` for a quick overview), and `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock rollup) is not hosted at all — use `get_blocking` / `get_deadlocks` instead.
 
         ## Recommended Workflow
 
