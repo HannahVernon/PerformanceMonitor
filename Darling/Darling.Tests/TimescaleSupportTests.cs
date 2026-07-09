@@ -66,30 +66,30 @@ public sealed class TimescaleSupportTests
         var byName = CollectorCatalog.All.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
 
         Assert.Equal(
-            "SELECT create_hypertable('wait_stats', by_range('collection_time'), if_not_exists => true, migrate_data => true)",
+            "SELECT create_hypertable('wait_stats', by_range('collection_time', INTERVAL '1 days'), if_not_exists => true, migrate_data => true)",
             TimescaleSupport.CreateHypertableSql(byName["wait_stats"]));
 
         /* The config snapshots partition on their capture_time, not collection_time. */
         Assert.Equal(
-            "SELECT create_hypertable('server_config', by_range('capture_time'), if_not_exists => true, migrate_data => true)",
+            "SELECT create_hypertable('server_config', by_range('capture_time', INTERVAL '1 days'), if_not_exists => true, migrate_data => true)",
             TimescaleSupport.CreateHypertableSql(byName["server_config"]));
         Assert.Equal(
-            "SELECT create_hypertable('trace_flags', by_range('capture_time'), if_not_exists => true, migrate_data => true)",
+            "SELECT create_hypertable('trace_flags', by_range('capture_time', INTERVAL '1 days'), if_not_exists => true, migrate_data => true)",
             TimescaleSupport.CreateHypertableSql(byName["trace_flags"]));
 
-        /* Every table: its own prefix time column, idempotent, and existing plain-PG data
-           migrates into chunks. */
+        /* Every table: its own prefix time column, 1-day chunk interval, idempotent, and existing
+           plain-PG data migrates into chunks. */
         foreach (var schema in CollectorCatalog.All)
         {
             var sql = TimescaleSupport.CreateHypertableSql(schema);
-            Assert.Contains($"create_hypertable('{schema.TargetTable}', by_range('{schema.PrefixTimeColumnName}')", sql, StringComparison.Ordinal);
+            Assert.Contains($"create_hypertable('{schema.TargetTable}', by_range('{schema.PrefixTimeColumnName}', INTERVAL '1 days')", sql, StringComparison.Ordinal);
             Assert.Contains("if_not_exists => true", sql, StringComparison.Ordinal);
             Assert.Contains("migrate_data => true", sql, StringComparison.Ordinal);
         }
     }
 
     [Fact]
-    public void CompressionSql_SegmentsByServerId_SevenDayPolicy_IfNotExists()
+    public void CompressionSql_SegmentsByServerId_OneDayPolicy_IfNotExists()
     {
         var byName = CollectorCatalog.All.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
 
@@ -97,11 +97,12 @@ public sealed class TimescaleSupportTests
             "ALTER TABLE wait_stats SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id')",
             TimescaleSupport.EnableCompressionSql(byName["wait_stats"]));
         Assert.Equal(
-            "SELECT add_compression_policy('wait_stats', compress_after => INTERVAL '7 days', if_not_exists => true)",
+            "SELECT add_compression_policy('wait_stats', compress_after => INTERVAL '1 days', if_not_exists => true)",
             TimescaleSupport.AddCompressionPolicySql(byName["wait_stats"]));
 
-        /* 7 days is the hardcoded archival-tier horizon (defaults over speculative config). */
-        Assert.Equal(7, TimescaleSupport.CompressAfterDays);
+        /* 1 day matches the 1-day chunk interval so chunks become compressible quickly, keeping the
+           managed store compact (#1458). */
+        Assert.Equal(1, TimescaleSupport.CompressAfterDays);
 
         foreach (var schema in CollectorCatalog.All)
         {
