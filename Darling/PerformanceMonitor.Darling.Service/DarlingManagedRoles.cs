@@ -23,14 +23,23 @@ namespace PerformanceMonitor.Darling.Service;
 /// Least-privilege role provisioning for the managed store (V8 security hardening, #1262) — the
 /// conf-append discipline of <see cref="DarlingManagedPostgres"/> applied to roles and credentials.
 /// The service connects as the bootstrap superuser <c>darling</c> (it does DDL: migrations,
-/// hypertable conversion, retention), and it provisions two least-privilege LOGIN roles the
-/// interactive Viewer connects as instead of the superuser:
+/// hypertable conversion, retention), and it provisions three least-privilege LOGIN roles that
+/// connect instead of the superuser:
 /// <list type="bullet">
 /// <item><b><c>admin</c></b> — SELECT on both schemas + INSERT/UPDATE/DELETE on <c>config</c> only.
 /// The Viewer's default identity: it owns the alert-dismiss, mute-rule, and analysis-mute writes but
 /// can never DROP, alter schema, touch <c>collect</c> data, or create objects.</item>
 /// <item><b><c>viewer</c></b> — SELECT on both schemas, no writes anywhere. A locked-down
 /// deployment points the Viewer at this ("look but don't touch").</item>
+/// <item><b><c>mcp</c></b> — the (optionally network-exposed) MCP host's store identity
+/// (darling-network-endpoints, D3-role): the SAME read surface as <c>viewer</c> (SELECT on
+/// <c>collect</c> + <c>config</c>-minus-the-secret-columns) PLUS exactly two narrow writes — INSERT
+/// on <c>collect.analysis_findings</c> and <c>config.analysis_muted</c> (what <c>analyze_server</c>
+/// persists + the <c>mute</c> tool need, and nothing else). Deliberately NOT <c>admin</c>: a
+/// token-holder reachable over the network must never get the <c>config_command</c> service-credential
+/// pivot or the secret columns. Its INSERT grants are EXPLICIT single-table statements with NO
+/// <c>ALTER DEFAULT PRIVILEGES</c> (ADP has no per-table form -> it would broaden <c>mcp</c> to all of
+/// <c>collect</c>); a dropped/recreated table re-grants because provisioning re-runs every start.</item>
 /// </list>
 ///
 /// <para>On every managed startup (after migration, before TimescaleDB conversion), for each role:
@@ -129,11 +138,14 @@ public static class DarlingManagedRoles
             $"GRANT SELECT ({string.Join(", ", acl.NonSecretColumns)}) ON {configSchema}.{acl.Table} TO {viewerRole};"));
 
     /// <summary>
-    /// Ensures the <c>admin</c>/<c>viewer</c> roles, their DPAPI credentials, and the collect/config
-    /// grants exist and match — idempotent and self-healing. Opens one connection from the
+    /// Ensures the <c>admin</c>/<c>viewer</c>/<c>mcp</c> roles, their DPAPI credentials, and the
+    /// collect/config grants exist and match — idempotent and self-healing. Opens one connection from the
     /// owner-<c>darling</c> data source (ALTER DEFAULT PRIVILEGES FOR ROLE darling only governs objects
-    /// darling creates, which is all of them). Throws on a hard failure; the caller degrades (the
-    /// Viewer cannot connect as admin/viewer until a later start succeeds) but keeps collecting.
+    /// darling creates, which is all of them). MUST run AFTER migration: the <c>mcp</c> role's per-table
+    /// INSERT grants name <c>collect.analysis_findings</c> / <c>config.analysis_muted</c> by qualified
+    /// name, which the one-shot batch requires to already exist (they do — the worker migrates before it
+    /// calls this). Throws on a hard failure; the caller degrades (the Viewer/MCP cannot connect as their
+    /// roles until a later start succeeds) but keeps collecting.
     /// </summary>
     public static async Task EnsureProvisionedAsync(
         NpgsqlDataSource dataSource, string dataDirectory, ILogger logger, CancellationToken cancellationToken = default)
@@ -148,17 +160,25 @@ public static class DarlingManagedRoles
             throw new ArgumentException("Data directory is required.", nameof(dataDirectory));
         }
 
+        /* admin/viewer credentials are read by the interactive Viewer -> INTERACTIVE-readable ACL. */
         var adminPassword = EnsureRoleCredential(
-            DarlingManagedPostgres.AdminCredentialPathFor(dataDirectory), DarlingManagedPostgres.AdminRoleName, logger);
+            DarlingManagedPostgres.AdminCredentialPathFor(dataDirectory), DarlingManagedPostgres.AdminRoleName,
+            allowInteractiveRead: true, logger);
         var viewerPassword = EnsureRoleCredential(
-            DarlingManagedPostgres.ViewerCredentialPathFor(dataDirectory), DarlingManagedPostgres.ViewerRoleName, logger);
+            DarlingManagedPostgres.ViewerCredentialPathFor(dataDirectory), DarlingManagedPostgres.ViewerRoleName,
+            allowInteractiveRead: true, logger);
+        /* The mcp credential is consumed only by the in-service MCP host, never an interactive Viewer, so it
+           is hardened NON-interactive (mirrors the superuser posture, not admin/viewer's) — Round 4 #4. */
+        var mcpPassword = EnsureRoleCredential(
+            DarlingManagedPostgres.McpCredentialPathFor(dataDirectory), DarlingManagedPostgres.McpRoleName,
+            allowInteractiveRead: false, logger);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        await using var command = new NpgsqlCommand(BuildProvisioningSql(adminPassword, viewerPassword), connection);
+        await using var command = new NpgsqlCommand(BuildProvisioningSql(adminPassword, viewerPassword, mcpPassword), connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         logger.LogInformation(
-            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only) — the Viewer no longer connects as the superuser");
+            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted) — the Viewer and MCP host no longer connect as the superuser");
     }
 
     /// <summary>
@@ -168,7 +188,7 @@ public static class DarlingManagedRoles
     /// always be re-asserted (<c>ALTER ROLE … PASSWORD</c>), so an untrusted-owned (possibly pre-planted)
     /// file is discarded and regenerated rather than trusted.
     /// </summary>
-    private static string EnsureRoleCredential(string credentialPath, string roleName, ILogger logger)
+    private static string EnsureRoleCredential(string credentialPath, string roleName, bool allowInteractiveRead, ILogger logger)
     {
         string password;
         if (File.Exists(credentialPath) && DarlingFileSecurity.IsTrustedOwner(credentialPath))
@@ -193,18 +213,19 @@ public static class DarlingManagedRoles
                 "Generated the managed '{Role}' role credential ({File})", roleName, Path.GetFileName(credentialPath));
         }
 
-        /* Re-harden every start (self-healing): the admin/viewer credentials are readable by SYSTEM +
-           Administrators + the service account + the interactive operator (whose Viewer reads them). */
-        TryHardenRoleCredential(credentialPath, logger);
+        /* Re-harden every start (self-healing): admin/viewer are additionally readable by the interactive
+           operator (whose Viewer reads them); mcp is NOT (SYSTEM + Administrators + service account only —
+           the in-service MCP host reads it, never an interactive user). */
+        TryHardenRoleCredential(credentialPath, allowInteractiveRead, logger);
         return password;
     }
 
     /// <summary>Best-effort restrictive ACL on a role credential; a failure is logged loud, not fatal.</summary>
-    private static void TryHardenRoleCredential(string path, ILogger logger)
+    private static void TryHardenRoleCredential(string path, bool allowInteractiveRead, ILogger logger)
     {
         try
         {
-            DarlingFileSecurity.HardenFile(path, allowInteractiveRead: true);
+            DarlingFileSecurity.HardenFile(path, allowInteractiveRead);
         }
         catch (Exception ex)
         {
@@ -232,18 +253,23 @@ public static class DarlingManagedRoles
     /// The idempotent, self-healing provisioning DDL with the role passwords injected. Passwords are
     /// alnum-only (<see cref="DarlingManagedPostgres.GeneratePassword"/>), verified here before the
     /// interpolation, so string-building the <c>PASSWORD '…'</c> literals is escaping-safe — the same
-    /// reasoning <see cref="DarlingManagedPostgres"/> relies on for <c>--pwfile</c>. Public + parameter-free
-    /// so a test can pin the shape without a live Postgres; shared with nothing else.
+    /// reasoning <see cref="DarlingManagedPostgres"/> relies on for <c>--pwfile</c>. Public + shape-pinnable
+    /// so a test can assert it without a live Postgres. The <c>mcp</c>-role INSERT grants reference
+    /// <c>collect.analysis_findings</c> / <c>config.analysis_muted</c> by qualified name, so the one-shot
+    /// batch requires those tables to already exist — safe because provisioning runs AFTER migration (see
+    /// <see cref="EnsureProvisionedAsync"/>); a dropped/recreated table re-grants on the next start.
     /// </summary>
-    public static string BuildProvisioningSql(string adminPassword, string viewerPassword)
+    public static string BuildProvisioningSql(string adminPassword, string viewerPassword, string mcpPassword)
     {
         RequireAlphanumeric(adminPassword, nameof(adminPassword));
         RequireAlphanumeric(viewerPassword, nameof(viewerPassword));
+        RequireAlphanumeric(mcpPassword, nameof(mcpPassword));
 
         const string owner = DarlingManagedPostgres.UserName;      // darling (owner/superuser)
         const string database = DarlingManagedPostgres.DatabaseName; // darling
         const string admin = DarlingManagedPostgres.AdminRoleName;
         const string viewer = DarlingManagedPostgres.ViewerRoleName;
+        const string mcp = DarlingManagedPostgres.McpRoleName;
         const string collect = PgSchemaGenerator.CollectSchema;
         const string config = PgSchemaGenerator.ConfigSchema;
         const string marker = RoleMarker;
@@ -252,6 +278,11 @@ public static class DarlingManagedRoles
            ViewerRestrictedConfigTables). Runs AFTER the blanket config GRANT below, so it strips
            viewer's table-wide SELECT on those tables and re-grants only the non-secret columns. */
         var viewerColumnAcl = BuildViewerColumnAclSql(config, viewer);
+
+        /* The SAME fail-closed carve for the mcp role — it gets viewer's read surface, so it must be
+           denied the identical secret columns. Reusing BuildViewerColumnAclSql(config, mcp) means the
+           mcp carve can never drift from viewer's (Round 4 #5 guards this with a live denial test). */
+        var mcpColumnAcl = BuildViewerColumnAclSql(config, mcp);
 
         return $@"
 /* Least-privilege roles for the Darling security split (#1262). Idempotent + self-healing:
@@ -275,12 +306,20 @@ BEGIN
    ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = '{viewer}'), 'pg_authid') IS DISTINCT FROM '{marker}' THEN
       RAISE EXCEPTION 'Role ""{viewer}"" already exists and was not created by Darling (missing the ''{marker}'' marker comment). Rename or drop it before provisioning so Darling does not repurpose an unrelated login.';
    END IF;
+
+   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{mcp}') THEN
+      CREATE ROLE {mcp} LOGIN NOSUPERUSER PASSWORD '{mcpPassword}';
+      COMMENT ON ROLE {mcp} IS '{marker}';
+   ELSIF shobj_description((SELECT oid FROM pg_roles WHERE rolname = '{mcp}'), 'pg_authid') IS DISTINCT FROM '{marker}' THEN
+      RAISE EXCEPTION 'Role ""{mcp}"" already exists and was not created by Darling (missing the ''{marker}'' marker comment). Rename or drop it before provisioning so Darling does not repurpose an unrelated login.';
+   END IF;
 END $do$;
 
 -- 1b. Re-assert password + attributes every start (the credential file is the source of truth).
 --     Only reached when the guard above passed (fresh + marked, or already Darling-marked).
 ALTER ROLE {admin}  LOGIN NOSUPERUSER PASSWORD '{adminPassword}';
 ALTER ROLE {viewer} LOGIN NOSUPERUSER PASSWORD '{viewerPassword}';
+ALTER ROLE {mcp}    LOGIN NOSUPERUSER PASSWORD '{mcpPassword}';
 
 -- 2. Schema usage + SELECT everywhere (ALL TABLES covers tables AND views). collect holds no secrets,
 --    so admin+viewer read all of it. config: admin (the writer, and the Settings window's identity) reads
@@ -300,7 +339,8 @@ GRANT SELECT ON ALL TABLES IN SCHEMA {config}  TO {admin}, {viewer};
 --     PRIVILEGES already landed on these tables when they were created.
 {viewerColumnAcl}
 
--- 3. config writes -- admin only.
+-- 3. config writes -- admin gets the whole schema. (mcp gets ONLY a narrow config.analysis_muted INSERT
+--    in section 6, never the config_command/monitored_servers/notification pivot tables; viewer: none.)
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {config} TO {admin};
 
 -- 4. Default privileges so NEW tables/views auto-inherit (no per-table-grant foot-gun).
@@ -321,6 +361,24 @@ ALTER DEFAULT PRIVILEGES FOR ROLE {owner} IN SCHEMA {config}
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON DATABASE {database} FROM PUBLIC;
 GRANT CONNECT ON DATABASE {database} TO {admin}, {viewer};
+
+-- 6. The mcp role (darling-network-endpoints, D3-role): the ONLY credential reachable (via the bearer
+--    token) from the optional network MCP surface, so it is deliberately NOT admin. It gets viewer's exact
+--    READ surface (SELECT on collect + config-minus-secret-columns) as SEPARATE 'TO mcp' statements -- the
+--    'TO admin, viewer' grant lines above are pinned verbatim by tests, so mcp is never appended to them --
+--    PLUS exactly two narrow INSERTs: what analyze_server persists (collect.analysis_findings) and what the
+--    mute tool writes (config.analysis_muted). No UPDATE/DELETE (no MCP unmute tool exists; DELETE/unmute is
+--    viewer/admin only). EXPLICIT single-table grants with NO ALTER DEFAULT PRIVILEGES: ADP has no per-table
+--    form, so an ADP INSERT would broaden mcp to ALL of collect -- provisioning re-runs every start, so a
+--    recreated table re-grants (self-heal) without ADP. The two INSERT targets must already exist here, so
+--    provisioning runs AFTER migration (EnsureProvisionedAsync).
+GRANT USAGE ON SCHEMA {collect}, {config} TO {mcp};
+GRANT SELECT ON ALL TABLES IN SCHEMA {collect} TO {mcp};
+GRANT SELECT ON ALL TABLES IN SCHEMA {config}  TO {mcp};
+{mcpColumnAcl}
+GRANT INSERT ON {collect}.analysis_findings TO {mcp};
+GRANT INSERT ON {config}.analysis_muted TO {mcp};
+GRANT CONNECT ON DATABASE {database} TO {mcp};
 ";
     }
 

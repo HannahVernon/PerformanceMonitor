@@ -7,11 +7,15 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,8 +30,9 @@ namespace PerformanceMonitor.Darling.Service;
 /// calls <see cref="EnsureRunningAsync"/> BEFORE touching the store, and this class unpacks the
 /// runtime shipped beside the service (<c>pg-runtime\pgsql\</c>, self-healing from
 /// <c>pg-runtime.zip</c>), initializes a cluster on first run (initdb), starts the server when
-/// it is not already running (pg_ctl, loopback only), creates the <c>darling</c> database, and
-/// returns the derived connection string. On service shutdown the worker calls
+/// it is not already running (pg_ctl, loopback by default; an opt-in <c>postgres.network</c> block
+/// exposes it on the LAN behind TLS + pg_hba — see the posture note below), creates the
+/// <c>darling</c> database, and returns the derived connection string. On service shutdown the worker calls
 /// <see cref="StopIfStartedByThisProcessAsync"/> — the flag matters: a server this process did
 /// NOT start (an operator's own pg_ctl, a previous service crash's surviving postmaster) is
 /// adopted for connections but never stopped, because stopping someone else's server is not
@@ -43,9 +48,19 @@ namespace PerformanceMonitor.Darling.Service;
 /// wire, failed attempts are auditable, and access is confined to what can read the
 /// DPAPI-LocalMachine-protected credential file (<c>pg-credential.dpapi</c> beside the data
 /// directory — the same machine-bound posture as darling.json's <c>encryptedPassword</c>, so
-/// the interactive Viewer on the same machine can derive the connection string too). Defense in
-/// depth on top: <c>listen_addresses = '127.0.0.1'</c>, so the server is never reachable off
-/// the machine.</para>
+/// the interactive Viewer on the same machine can derive the connection string too).</para>
+///
+/// <para><b>Network exposure — off by default, secure by default (darling-network-endpoints):</b>
+/// with no <c>postgres.network</c> block the store binds <c>listen_addresses = '127.0.0.1'</c>
+/// (forced every start via the <c>-o</c> runtime override, so it holds even against a hand-edited
+/// <c>ALTER SYSTEM</c>), has no pg_hba network rule, no firewall rule, and <c>ssl=off</c> — byte-for-byte
+/// today's loopback-only behavior. An opt-in <c>network</c> block (managed mode only) adds the bind IP to
+/// listen_addresses, generates a self-signed cert for TLS <c>verify-full</c>, writes a marked
+/// <c>hostssl darling &lt;role&gt; &lt;allowFrom&gt; scram-sha-256</c> pg_hba block (loopback rules stay
+/// plain <c>host</c>), reloads, and best-effort adds a scoped firewall rule. Every layer is reconciled
+/// each start, symmetric (removing the block closes the box), and fail-closed: any invalid/incomplete
+/// exposure config degrades the store to loopback (the full disable-reconcile) + LogCritical — never
+/// <c>ssl=off</c> while exposed, never a stale pg_hba rule left open.</para>
 ///
 /// <para>Every step throws with an actionable message; the worker turns a bootstrap failure
 /// into LogCritical + clean service exit (the existing no-store behavior). All idempotent:
@@ -75,9 +90,21 @@ public sealed class DarlingManagedPostgres
     public const string AdminCredentialFileName = "pg-admin-credential.dpapi";
     public const string ViewerCredentialFileName = "pg-viewer-credential.dpapi";
 
-    /// <summary>The least-privilege login role names provisioned into the managed cluster (V8 hardening).</summary>
+    /// <summary>
+    /// DPAPI-LocalMachine blob holding the generated password for the dedicated least-privilege
+    /// <c>mcp</c> login role (darling-network-endpoints, D3-role) — the store pool identity the
+    /// (optionally network-exposed) MCP host connects as. Same location/posture as the admin/viewer
+    /// credentials, but hardened NON-interactive (<see cref="DarlingFileSecurity.HardenFile"/> with
+    /// <c>allowInteractiveRead: false</c>): it is consumed only by the in-service MCP host, never an
+    /// interactive Viewer, so it mirrors the superuser credential's ACL, not the admin/viewer one.
+    /// </summary>
+    public const string McpCredentialFileName = "pg-mcp-credential.dpapi";
+
+    /// <summary>The least-privilege login role names provisioned into the managed cluster (V8 hardening;
+    /// <c>mcp</c> added for the network endpoints, D3-role).</summary>
     public const string AdminRoleName = "admin";
     public const string ViewerRoleName = "viewer";
+    public const string McpRoleName = "mcp";
 
     /// <summary>
     /// The search path (schemas in resolution order) the managed connection strings carry, so pooled
@@ -101,6 +128,24 @@ public sealed class DarlingManagedPostgres
     /// marker-present-but-different-block conf is never rewritten in place.
     /// </summary>
     public const string ConfMarkerV2 = "# Managed by PerformanceMonitor Darling (v2 worker sizing) -- do not remove this block";
+
+    /// <summary>
+    /// Markers delimiting the Darling-managed network access block in pg_hba.conf
+    /// (darling-network-endpoints, D5). <see cref="ReconcilePgHba"/> replaces exactly the lines
+    /// between them and preserves every non-marked line, so the opt-in <c>hostssl</c> rule is
+    /// symmetric — appended when exposed, removed when disabled — without disturbing the operator's
+    /// own entries or initdb's loopback defaults.
+    /// </summary>
+    public const string PgHbaBeginMarker = "# BEGIN PerformanceMonitor Darling network access -- managed block, do not edit";
+    public const string PgHbaEndMarker = "# END PerformanceMonitor Darling network access";
+
+    /// <summary>The self-signed store TLS cert + key (PEM), generated beside the data directory for
+    /// verify-full when exposed (darling-network-endpoints, D6). Delete both to rotate.</summary>
+    public const string ServerCertFileName = "server.crt";
+    public const string ServerKeyFileName = "server.key";
+
+    /// <summary>~10-year self-signed validity (D6): a home-lab cert the operator pins; delete-to-rotate.</summary>
+    private const int ServerCertValidityYears = 10;
 
     private const string PasswordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private const int PasswordLength = 32;
@@ -164,6 +209,10 @@ public sealed class DarlingManagedPostgres
     public static string ViewerCredentialPathFor(string dataDirectory)
         => Path.Combine(ParentOf(dataDirectory), ViewerCredentialFileName);
 
+    /// <summary>Path to the <c>mcp</c> role's DPAPI credential, beside the data directory (darling-network-endpoints).</summary>
+    public static string McpCredentialPathFor(string dataDirectory)
+        => Path.Combine(ParentOf(dataDirectory), McpCredentialFileName);
+
     /// <summary>
     /// 32 characters from [A-Za-z0-9] via the crypto RNG (~190 bits) — deliberately alphanumeric
     /// only, so the password survives initdb's --pwfile line, the connection string, and any
@@ -221,17 +270,29 @@ public sealed class DarlingManagedPostgres
     }
 
     /// <summary>
-    /// The derived managed-mode connection string: localhost + port + darling/darling + the generated
-    /// password, carrying the collect/config <see cref="SearchPath"/> so every pooled connection
-    /// resolves the bare table names to the V8 schemas regardless of the database default.
+    /// The derived managed-mode connection string: <c>127.0.0.1</c> + port + darling/darling + the
+    /// generated password, carrying the collect/config <see cref="SearchPath"/> so every pooled connection
+    /// resolves the bare table names to the V8 schemas regardless of the database default. Uses the explicit
+    /// IPv4 loopback rather than the name "localhost": listen_addresses binds IPv4 <c>127.0.0.1</c> (plus the
+    /// optional network IP when exposed), NOT <c>::1</c>, so a host that resolves "localhost" to IPv6 first
+    /// could otherwise miss the listener. (darling-network-endpoints)
     /// </summary>
     public static string BuildConnectionString(int port, string password)
+        => BuildRoleConnectionString(port, UserName, password);
+
+    /// <summary>
+    /// Builds a managed loopback connection string for a specific login role — shared by
+    /// <see cref="BuildConnectionString"/> (the owner) and
+    /// <see cref="TryBuildMcpConnectionStringFromStoredCredential"/> (the <c>mcp</c> role). Same
+    /// <c>127.0.0.1</c> + port + <see cref="SearchPath"/> shape; only the username/password differ.
+    /// </summary>
+    private static string BuildRoleConnectionString(int port, string username, string password)
     {
         var builder = new NpgsqlConnectionStringBuilder
         {
-            Host = "localhost",
+            Host = "127.0.0.1",
             Port = port,
-            Username = UserName,
+            Username = username,
             Password = password,
             Database = DatabaseName,
             SearchPath = SearchPath,
@@ -253,6 +314,25 @@ public sealed class DarlingManagedPostgres
         }
 
         return BuildConnectionString(config.Port, DarlingSecrets.Unprotect(File.ReadAllText(credentialPath).Trim()));
+    }
+
+    /// <summary>
+    /// Derives the MCP store connection string from the stored <c>mcp</c>-role credential WITHOUT touching
+    /// the server (darling-network-endpoints, D3-role) — the least-privilege pool the MCP host connects as
+    /// instead of the owner. Same <c>127.0.0.1</c> + port + <see cref="SearchPath"/> shape as the owner
+    /// string, but <c>Username = mcp</c>. Null until <see cref="DarlingManagedRoles.EnsureProvisionedAsync"/>
+    /// has written the credential — which happens AFTER migration, later than the owner credential, so the
+    /// MCP host's first-boot poll budget must tolerate the delay.
+    /// </summary>
+    public static string? TryBuildMcpConnectionStringFromStoredCredential(PostgresConfig config)
+    {
+        var credentialPath = McpCredentialPathFor(ResolveDataDirectory(config));
+        if (!File.Exists(credentialPath))
+        {
+            return null;
+        }
+
+        return BuildRoleConnectionString(config.Port, McpRoleName, DarlingSecrets.Unprotect(File.ReadAllText(credentialPath).Trim()));
     }
 
     /// <summary>
@@ -284,6 +364,22 @@ public sealed class DarlingManagedPostgres
 
         var password = ReadStoredPassword();
 
+        /* Resolve the opt-in network exposure (darling-network-endpoints) BEFORE start so listen_addresses
+           and the ssl trio can ride the -o runtime override. Fail-closed: an invalid/incomplete exposure
+           config (or a cert-gen failure) returns a LOOPBACK plan carrying the degrade reason, logged
+           critical here; the reconcile below then runs the FULL disable-reconcile (loopback listen + pg_hba
+           block removed + reload + verify), so a previously-exposed cluster actually closes. The whole
+           network path is caught internally (BuildNetworkPlan swallows cert-gen failure into a degrade;
+           ReconcileNetworkAsync never throws) because EnsureRunningAsync's contract is throw => service-exit,
+           and a typo in an optional, default-off endpoint must NEVER take collection down (Round 4 #3). */
+        var networkPlan = BuildNetworkPlan();
+        if (networkPlan.DegradeReason is not null)
+        {
+            _logger.LogCritical(
+                "Store network exposure DISABLED (degraded to loopback-only): {Reason}. Fix postgres.network and restart to expose the store.",
+                networkPlan.DegradeReason);
+        }
+
         if (await IsRunningAsync(binDirectory, cancellationToken))
         {
             /* Already running — a previous service crash's surviving postmaster, or an operator
@@ -294,12 +390,18 @@ public sealed class DarlingManagedPostgres
         }
         else
         {
-            await StartServerAsync(binDirectory, cancellationToken);
+            await StartServerAsync(binDirectory, networkPlan, cancellationToken);
             _startedByThisProcess = true;
         }
 
         var connectionString = BuildConnectionString(_config.Port, password);
         await EnsureDatabaseAsync(connectionString, cancellationToken);
+
+        /* Reconcile pg_hba + reload + verify, the adopted-listener guard, and the firewall against the LIVE
+           server — symmetric (present when exposed, absent when loopback/degraded). Never throws (Round 4 #3):
+           a network reconcile failure logs + degrades, it does not abort the bootstrap. */
+        await ReconcileNetworkAsync(binDirectory, networkPlan, connectionString, cancellationToken);
+
         return connectionString;
     }
 
@@ -483,19 +585,32 @@ public sealed class DarlingManagedPostgres
     }
 
     /// <summary>
-    /// pg_ctl start, windowed (-w): returns only when the server accepts connections. -o "-p"
-    /// makes darling.json's port authoritative over the conf line. pg_ctl itself handles a
-    /// stale postmaster.pid from a crash (the new postmaster validates and replaces it); when
-    /// start still fails, the server log tail is surfaced in the error because that is where
-    /// Postgres explains itself.
+    /// pg_ctl start, windowed (-w): returns only when the server accepts connections. The <c>-o</c>
+    /// runtime override carries the port (authoritative over the conf line), listen_addresses (always
+    /// <c>127.0.0.1</c>, plus the network IP when exposed — <c>-c</c> outranks postgresql.auto.conf, so
+    /// this forces loopback even against a hand-edited <c>ALTER SYSTEM</c>), and the ssl trio when exposed
+    /// (darling-network-endpoints, D2/D6). pg_ctl itself handles a stale postmaster.pid from a crash (the
+    /// new postmaster validates and replaces it); when start still fails, the server log tail is surfaced
+    /// in the error because that is where Postgres explains itself.
     /// </summary>
-    private async Task StartServerAsync(string binDirectory, CancellationToken cancellationToken)
+    private async Task StartServerAsync(string binDirectory, NetworkPlan networkPlan, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Starting managed Postgres on 127.0.0.1:{Port} (log: {Log})", _config.Port, _serverLogPath);
+        var exposed = networkPlan.Mode == NetworkMode.Exposed;
+        var runtimeOptions = BuildServerRuntimeOptions(
+            _config.Port,
+            exposed ? networkPlan.ListenIp : null,
+            exposed ? networkPlan.CertPath : null,
+            exposed ? networkPlan.KeyPath : null);
+
+        _logger.LogInformation(
+            "Starting managed Postgres (listen_addresses={Listen}, ssl={Ssl}, port {Port}, log: {Log})",
+            exposed ? $"127.0.0.1,{networkPlan.ListenIp}" : "127.0.0.1",
+            exposed ? "on" : "off",
+            _config.Port, _serverLogPath);
 
         var exitCode = await RunDetachingToolAsync(
             Path.Combine(binDirectory, "pg_ctl.exe"),
-            $"-D \"{_dataDirectory}\" -o \"-p {_config.Port}\" -l \"{_serverLogPath}\" -w -t {PgCtlWaitSeconds} start",
+            $"-D \"{_dataDirectory}\" -o \"{runtimeOptions}\" -l \"{_serverLogPath}\" -w -t {PgCtlWaitSeconds} start",
             s_pgCtlTimeout,
             cancellationToken);
 
@@ -628,6 +743,658 @@ public sealed class DarlingManagedPostgres
         }
 
         return parent;
+    }
+
+    /* ================= Opt-in network exposure (darling-network-endpoints) ================= */
+
+    /// <summary>The store's effective bind: loopback-only (the default / a fail-closed degrade) or network-exposed.</summary>
+    private enum NetworkMode
+    {
+        Loopback,
+        Exposed,
+    }
+
+    /// <summary>
+    /// The resolved network state for one start. <see cref="Mode"/> = Exposed carries the validated bind
+    /// IP, canonical CIDR, pg_hba role, and generated cert/key paths; Loopback carries a non-null
+    /// <see cref="DegradeReason"/> only when it is a FAIL-CLOSED degrade from an INTENDED exposure (null
+    /// when the store is simply loopback-by-default). Resolved before start so listen/ssl ride the -o
+    /// override and the reconcile can run the disable path for a degrade.
+    /// </summary>
+    private sealed record NetworkPlan(
+        NetworkMode Mode,
+        string? ListenIp,
+        string? Cidr,
+        string? Role,
+        string? CertPath,
+        string? KeyPath,
+        string? DegradeReason)
+    {
+        public static NetworkPlan Loopback(string? degradeReason = null)
+            => new(NetworkMode.Loopback, null, null, null, null, null, degradeReason);
+
+        public static NetworkPlan Exposed(string listenIp, string cidr, string role, string certPath, string keyPath)
+            => new(NetworkMode.Exposed, listenIp, cidr, role, certPath, keyPath, null);
+    }
+
+    /// <summary>
+    /// The store's exposure decision after PURE validation (no I/O, no cert gen). <see cref="Exposed"/>=false
+    /// with a non-null <see cref="DegradeReason"/> is a FAIL-CLOSED degrade from an intended exposure;
+    /// Exposed=false with a null reason is loopback-by-default; Exposed=true carries the validated
+    /// ListenIp/Cidr/Role.
+    /// </summary>
+    internal sealed record NetworkExposureDecision(
+        bool Exposed, string? ListenIp, string? Cidr, string? Role, string? DegradeReason);
+
+    /// <summary>
+    /// PURE validation of postgres.network into a <see cref="NetworkExposureDecision"/> — NO I/O and NO cert
+    /// generation (the caller does that on a valid decision), so it is unit-testable without a live server.
+    /// Degrades to loopback WITH a reason on: a listen value that is not a parseable IP; a missing/invalid
+    /// allowFrom CIDR or an address-family mismatch; a role outside {viewer, admin}; or a cert path
+    /// (<paramref name="certPath"/>/<paramref name="keyPath"/>) that contains whitespace (the -o string
+    /// cannot nest-quote a space -> PG fail-DEAD). Never a fatal Validate() (D-validate).
+    /// </summary>
+    internal static NetworkExposureDecision ResolveNetworkExposure(PostgresNetworkConfig? network, string certPath, string keyPath)
+    {
+        if (network is null || !DarlingNetwork.IsExposedListenAddress(network.Listen))
+        {
+            /* Loopback by default (no reason) — the byte-for-byte-today path. */
+            return new NetworkExposureDecision(false, null, null, null, null);
+        }
+
+        var listenRaw = network.Listen!.Trim();
+        if (!IPAddress.TryParse(listenRaw, out var listenIp))
+        {
+            return Degrade(
+                $"postgres.network.listen '{network.Listen}' is not a valid IP address (use a specific IP, e.g. 192.168.1.205, or 0.0.0.0 for all interfaces)");
+        }
+
+        if (string.IsNullOrWhiteSpace(network.AllowFrom) || !IPNetwork.TryParse(network.AllowFrom.Trim(), out var cidr))
+        {
+            return Degrade(
+                $"postgres.network.allowFrom '{network.AllowFrom}' is not a valid CIDR (e.g. 192.168.1.0/24, with host bits zeroed)");
+        }
+
+        if (cidr.BaseAddress.AddressFamily != listenIp.AddressFamily)
+        {
+            return Degrade(
+                $"postgres.network.allowFrom '{network.AllowFrom}' address family does not match listen '{listenRaw}'");
+        }
+
+        var role = DarlingNetwork.NormalizeNetworkRole(network.Role);
+        if (role is null)
+        {
+            return Degrade(
+                $"postgres.network.role '{network.Role}' must be 'viewer' or 'admin' (never the superuser)");
+        }
+
+        /* The cert path rides the -o string, which cannot nest-quote a space -> a spaced path fail-DEADS
+           the postmaster. Gate on it (D6) and degrade rather than ever start ssl=on with a broken path. */
+        if (ContainsWhitespace(certPath) || ContainsWhitespace(keyPath))
+        {
+            return Degrade(
+                $"the TLS cert path '{certPath}' contains whitespace, which the pg_ctl -o override cannot pass to postgres; " +
+                "move postgres.dataDirectory to a space-free path to expose the store over TLS");
+        }
+
+        /* Canonical base/prefix form (IPNetwork requires zeroed host bits) for the pg_hba line + firewall. */
+        return new NetworkExposureDecision(true, listenIp.ToString(), $"{cidr.BaseAddress}/{cidr.PrefixLength}", role, null);
+
+        static NetworkExposureDecision Degrade(string reason) => new(false, null, null, null, reason);
+    }
+
+    /// <summary>
+    /// Validates postgres.network (via <see cref="ResolveNetworkExposure"/>) and, on a valid exposure,
+    /// generates the TLS cert — returning the effective <see cref="NetworkPlan"/>. NEVER throws: a cert-gen
+    /// failure degrades to loopback with a reason (D6/D-validate).
+    /// </summary>
+    private NetworkPlan BuildNetworkPlan()
+    {
+        var certPath = Path.Combine(ParentOf(_dataDirectory), ServerCertFileName);
+        var keyPath = Path.Combine(ParentOf(_dataDirectory), ServerKeyFileName);
+
+        var decision = ResolveNetworkExposure(_config.Network, certPath, keyPath);
+        if (!decision.Exposed)
+        {
+            return NetworkPlan.Loopback(decision.DegradeReason);
+        }
+
+        try
+        {
+            EnsureServerCertificate(IPAddress.Parse(decision.ListenIp!), certPath, keyPath);
+        }
+        catch (Exception ex)
+        {
+            /* Any cert-gen/write failure degrades to loopback — the network path must never throw out of
+               EnsureRunningAsync (its contract is throw => service-exit), Round 4 #3. */
+            return NetworkPlan.Loopback($"could not generate/read the store TLS cert ({ex.Message})");
+        }
+
+        return NetworkPlan.Exposed(decision.ListenIp!, decision.Cidr!, decision.Role!, certPath, keyPath);
+    }
+
+    private static bool ContainsWhitespace(string value)
+    {
+        foreach (var c in value)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Idempotent self-signed server cert for store TLS verify-full (D6): reuse the existing PEM pair
+    /// (delete both to rotate), else generate a ~10-year cert with BOTH an iPAddress SAN (the listen IP,
+    /// for verify-full by IP) AND a dnsName SAN (the machine hostname, so the operator can connect by name
+    /// if IP-SAN validation ever disappoints, or when listen=0.0.0.0). The private key is written
+    /// unencrypted PKCS#8 PEM (what postgres reads) and hardened NON-interactive (SYSTEM + Administrators +
+    /// service account only) — the postmaster reads it, never an interactive user.
+    /// </summary>
+    private void EnsureServerCertificate(IPAddress listenIp, string certPath, string keyPath)
+    {
+        if (File.Exists(certPath) && File.Exists(keyPath))
+        {
+            /* Reuse (delete-to-rotate). Re-harden the key every start (self-healing), same discipline as the
+               credential files. */
+            TryHardenCredentialFile(keyPath, allowInteractiveRead: false);
+            return;
+        }
+
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            $"CN={Environment.MachineName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+
+        var sanBuilder = new SubjectAlternativeNameBuilder();
+        sanBuilder.AddIpAddress(listenIp);
+        sanBuilder.AddDnsName(Environment.MachineName);
+        request.CertificateExtensions.Add(sanBuilder.Build());
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
+        request.CertificateExtensions.Add(
+            new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") /* serverAuth */ }, false));
+
+        var notBefore = DateTimeOffset.UtcNow.AddDays(-1);
+        var notAfter = notBefore.AddYears(ServerCertValidityYears);
+        using var certificate = request.CreateSelfSigned(notBefore, notAfter);
+
+        File.WriteAllText(certPath, certificate.ExportCertificatePem());
+        File.WriteAllText(keyPath, rsa.ExportPkcs8PrivateKeyPem());
+        TryHardenCredentialFile(keyPath, allowInteractiveRead: false);
+
+        _logger.LogInformation(
+            "Generated a self-signed store TLS cert (CN/DNS SAN {Host}, IP SAN {Ip}, ~{Years}yr) at {Cert}",
+            Environment.MachineName, listenIp, ServerCertValidityYears, certPath);
+    }
+
+    /// <summary>
+    /// Builds the pg_ctl <c>-o</c> runtime-override payload (the INNER string, no wrapping quotes):
+    /// always <c>-p {port} -c listen_addresses=127.0.0.1</c> (loopback FIRST, forced every start — <c>-c</c>
+    /// outranks postgresql.auto.conf), the network IP appended when exposed, and the ssl trio
+    /// (<c>ssl=on</c> + cert/key) when a cert is present. NO single quotes and NO spaces inside any value
+    /// (Windows CRT arg parsing treats only double quotes as metacharacters, and postgres re-splits the
+    /// -o payload on interior spaces); cert paths are forward-slashed here and space-free-gated by the
+    /// caller. Pure + testable (D2/D6).
+    /// </summary>
+    internal static string BuildServerRuntimeOptions(int port, string? networkListenIp, string? sslCertFile, string? sslKeyFile)
+    {
+        var builder = new StringBuilder();
+        builder.Append("-p ").Append(port);
+
+        builder.Append(" -c listen_addresses=127.0.0.1");
+        if (!string.IsNullOrWhiteSpace(networkListenIp))
+        {
+            builder.Append(',').Append(networkListenIp.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(sslCertFile) && !string.IsNullOrWhiteSpace(sslKeyFile))
+        {
+            builder.Append(" -c ssl=on");
+            builder.Append(" -c ssl_cert_file=").Append(ToForwardSlashes(sslCertFile));
+            builder.Append(" -c ssl_key_file=").Append(ToForwardSlashes(sslKeyFile));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ToForwardSlashes(string path) => path.Replace('\\', '/');
+
+    /// <summary>
+    /// The Darling-managed pg_hba network rule: <c>hostssl darling &lt;role&gt; &lt;cidr&gt; scram-sha-256</c>
+    /// — TLS-required (hostssl rejects a non-TLS network client), scoped to the darling database and exactly
+    /// the given login role and CIDR; never <c>all</c>, never the superuser (D5/D6). Pure + testable.
+    /// </summary>
+    internal static string BuildNetworkPgHbaLine(string role, string cidr)
+        => $"hostssl {DatabaseName} {role} {cidr} scram-sha-256";
+
+    /// <summary>
+    /// Pure marked-block reconcile for pg_hba.conf (D5): returns <paramref name="existing"/> with the
+    /// Darling-managed block (between <see cref="PgHbaBeginMarker"/> and <see cref="PgHbaEndMarker"/>) set
+    /// to a single <paramref name="desiredRuleLine"/> when non-empty, or REMOVED when null/empty (disable).
+    /// Every non-marked line is preserved verbatim; a narrowing CIDR REPLACES the block (old removed, new
+    /// appended); idempotent (re-running with the same desired yields identical text).
+    /// </summary>
+    public static string ReconcilePgHba(string existing, string? desiredRuleLine)
+    {
+        existing ??= string.Empty;
+        var normalized = existing.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        var lines = normalized.Split('\n');
+
+        var kept = new List<string>(lines.Length);
+        var insideBlock = false;
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (string.Equals(trimmed, PgHbaBeginMarker, StringComparison.Ordinal))
+            {
+                insideBlock = true;
+                continue;
+            }
+
+            if (string.Equals(trimmed, PgHbaEndMarker, StringComparison.Ordinal))
+            {
+                insideBlock = false;
+                continue;
+            }
+
+            if (!insideBlock)
+            {
+                kept.Add(line);
+            }
+        }
+
+        /* Drop trailing blank lines so re-runs don't accumulate whitespace (idempotency). */
+        while (kept.Count > 0 && string.IsNullOrWhiteSpace(kept[^1]))
+        {
+            kept.RemoveAt(kept.Count - 1);
+        }
+
+        var result = new StringBuilder();
+        foreach (var line in kept)
+        {
+            result.Append(line).Append('\n');
+        }
+
+        if (!string.IsNullOrWhiteSpace(desiredRuleLine))
+        {
+            result.Append('\n');
+            result.Append(PgHbaBeginMarker).Append('\n');
+            result.Append(desiredRuleLine!.Trim()).Append('\n');
+            result.Append(PgHbaEndMarker).Append('\n');
+        }
+
+        return result.ToString();
+    }
+
+    /// <summary>
+    /// Reconciles the LIVE server's network access to <paramref name="plan"/> (D5), symmetric and
+    /// fail-closed. Rewrites the pg_hba marked block (add the hostssl rule when exposed, remove it when
+    /// loopback/degraded), reloads (exit-checked), verifies the intended rule really took via
+    /// <c>pg_hba_file_rules</c> (a reload returns 0 for mere SIGHUP delivery even if a malformed file is
+    /// rejected), guards an ADOPTED server whose live listen_addresses cannot be changed without a restart
+    /// the service will not perform, and best-effort (dis)installs the firewall rule. NEVER throws
+    /// (Round 4 #3): its whole body is caught so a reconcile failure logs + degrades, it does not abort the
+    /// bootstrap (whose contract is throw => service-exit).
+    /// </summary>
+    private async Task ReconcileNetworkAsync(
+        string binDirectory, NetworkPlan plan, string ownerConnectionString, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var exposed = plan.Mode == NetworkMode.Exposed;
+            var desiredLine = exposed ? BuildNetworkPgHbaLine(plan.Role!, plan.Cidr!) : null;
+
+            var hbaPath = Path.Combine(_dataDirectory, "pg_hba.conf");
+            var changed = false;
+            if (File.Exists(hbaPath))
+            {
+                var current = await File.ReadAllTextAsync(hbaPath, cancellationToken);
+                var updated = ReconcilePgHba(current, desiredLine);
+                if (!string.Equals(current, updated, StringComparison.Ordinal))
+                {
+                    await File.WriteAllTextAsync(hbaPath, updated, cancellationToken);
+                    changed = true;
+                    var (reloadCode, reloadOutput) = await RunToolAsync(
+                        Path.Combine(binDirectory, "pg_ctl.exe"),
+                        $"reload -D \"{_dataDirectory}\"",
+                        s_statusTimeout,
+                        cancellationToken);
+                    if (reloadCode != 0)
+                    {
+                        _logger.LogCritical(
+                            "pg_ctl reload failed (exit {ExitCode}) after updating pg_hba.conf — the network access change may not be live: {Output}",
+                            reloadCode, reloadOutput);
+                    }
+                }
+            }
+            else if (exposed)
+            {
+                _logger.LogWarning("pg_hba.conf not found at {Path} — cannot apply the network access rule", hbaPath);
+            }
+
+            /* Byte-for-byte today's behavior for a store that was never exposed and stays loopback-only: no
+               managed block existed, none was written, so skip the live verify / adopted guard / firewall
+               churn entirely. The disable-reconcile (removing a stale block on an exposed->disabled edge)
+               DID set changed=true, so a previously-exposed cluster still runs the full close below. */
+            if (!exposed && !changed)
+            {
+                return;
+            }
+
+            /* Verify the live rules match intent (reload can report success on a rejected malformed file). */
+            await VerifyPgHbaAsync(ownerConnectionString, plan, changed, cancellationToken);
+
+            /* Adopted server: we did not start it, so the -o listen_addresses/ssl override never applied.
+               If its live listener cannot satisfy the desired exposure, say so loud and do not claim exposed. */
+            if (!_startedByThisProcess)
+            {
+                await GuardAdoptedListenAsync(ownerConnectionString, plan, cancellationToken);
+            }
+
+            /* Defense-in-depth firewall rule (the boundary is pg_hba + TLS). Best-effort, never fatal. Enable
+               when exposed; on a disable EDGE (we just removed the block) also remove the rule. A store that
+               was never exposed touches the firewall not at all (the early return above). */
+            if (exposed)
+            {
+                await TryConfigureStoreFirewallAsync(enable: true, plan.Cidr!, cancellationToken);
+            }
+            else
+            {
+                await TryConfigureStoreFirewallAsync(enable: false, cidr: null, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            /* Shutdown mid-reconcile — the store still runs loopback-safe; nothing to clean up. */
+        }
+        catch (Exception ex)
+        {
+            /* Round 4 #3: never let a network reconcile failure abort the bootstrap. */
+            _logger.LogCritical(
+                "Store network reconcile failed ({Message}) — the store keeps running; verify pg_hba.conf / listen_addresses by hand.",
+                ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Confirms the live pg_hba rules match intent via <c>pg_hba_file_rules</c>: no rule has a parse error,
+    /// and the Darling hostssl rule for the network role is PRESENT when exposed / ABSENT when
+    /// loopback. A mismatch is logged critical (a reload delivers a SIGHUP that Postgres may then reject).
+    /// Best-effort — a query failure degrades to a warning, not a throw.
+    /// </summary>
+    private async Task VerifyPgHbaAsync(string ownerConnectionString, NetworkPlan plan, bool reloaded, CancellationToken cancellationToken)
+    {
+        var exposed = plan.Mode == NetworkMode.Exposed;
+        try
+        {
+            await using var connection = new NpgsqlConnection(ownerConnectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using (var errors = new NpgsqlCommand(
+                "SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL", connection))
+            {
+                var errorCount = Convert.ToInt64(await errors.ExecuteScalarAsync(cancellationToken) ?? 0L);
+                if (errorCount > 0)
+                {
+                    _logger.LogCritical(
+                        "pg_hba.conf has {Count} rule(s) Postgres could not parse (pg_hba_file_rules.error) — the live network access may not match intent; check {Path}",
+                        errorCount, Path.Combine(_dataDirectory, "pg_hba.conf"));
+                    return;
+                }
+            }
+
+            long present;
+            if (exposed)
+            {
+                await using var command = new NpgsqlCommand(
+                    "SELECT count(*) FROM pg_hba_file_rules WHERE type = 'hostssl' AND $1 = ANY(database) AND $2 = ANY(user_name)",
+                    connection);
+                command.Parameters.AddWithValue(DatabaseName);
+                command.Parameters.AddWithValue(plan.Role!);
+                present = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+
+                if (present == 0)
+                {
+                    _logger.LogCritical(
+                        "pg_hba verification: the expected 'hostssl {Db} {Role} {Cidr} scram-sha-256' rule is NOT live after reload — the store is not accepting network clients as intended",
+                        DatabaseName, plan.Role, plan.Cidr);
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Store network access reconciled: exposed to {Cidr} as '{Role}' over TLS (pg_hba {Verb}).",
+                    plan.Cidr, plan.Role, reloaded ? "reloaded + verified" : "already current");
+            }
+            else
+            {
+                /* Disable: no Darling-managed hostssl rule (darling database, viewer/admin) should remain. */
+                await using var command = new NpgsqlCommand(
+                    "SELECT count(*) FROM pg_hba_file_rules WHERE type = 'hostssl' AND $1 = ANY(database) AND (user_name && ARRAY['viewer','admin'])",
+                    connection);
+                command.Parameters.AddWithValue(DatabaseName);
+                present = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+
+                if (present > 0)
+                {
+                    _logger.LogCritical(
+                        "pg_hba verification: a Darling hostssl rule is STILL live after the disable reconcile — network auth may not be closed; check {Path}",
+                        Path.Combine(_dataDirectory, "pg_hba.conf"));
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Store network access reconciled: loopback-only (pg_hba {Verb}).",
+                    reloaded ? "reloaded + verified" : "already current");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not verify pg_hba via pg_hba_file_rules ({Message}) — assuming the file write took", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// For an ADOPTED (not-started-by-us) server the -o listen_addresses override never applied, so its live
+    /// binding is whatever its operator started it with. Compares <c>SHOW listen_addresses</c> to intent: an
+    /// exposed plan needs the network IP live (else LogCritical — the pg_hba rule is in place but the port is
+    /// not bound; the operator must restart their postmaster); a disable on a still-wide adopted listener is
+    /// a warning (auth closed, but the port stays bound until the operator restarts — the documented residual).
+    /// </summary>
+    private async Task GuardAdoptedListenAsync(string ownerConnectionString, NetworkPlan plan, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(ownerConnectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new NpgsqlCommand("SHOW listen_addresses", connection);
+            var liveListen = await command.ExecuteScalarAsync(cancellationToken) as string ?? string.Empty;
+
+            if (plan.Mode == NetworkMode.Exposed)
+            {
+                if (!LiveListenIncludes(liveListen, plan.ListenIp!))
+                {
+                    _logger.LogCritical(
+                        "Adopted Postgres listen_addresses is '{Live}', which does not include the requested {Ip}. This service will not restart a server it did not start, so the network listener is NOT active — the pg_hba rule is in place but the port is not bound. Restart your postmaster to apply, or let the service own the cluster.",
+                        liveListen, plan.ListenIp);
+                }
+            }
+            else if (LiveListenHasNonLoopback(liveListen))
+            {
+                _logger.LogWarning(
+                    "Adopted Postgres listen_addresses is '{Live}' (wider than loopback). The network AUTH path is closed (pg_hba rule removed), but the TCP port stays bound until you restart your postmaster.",
+                    liveListen);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not read the adopted server's listen_addresses ({Message})", ex.Message);
+        }
+    }
+
+    private static bool LiveListenIncludes(string liveListenAddresses, string ip)
+    {
+        foreach (var token in liveListenAddresses.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (string.Equals(token, ip, StringComparison.Ordinal)
+                || string.Equals(token, "*", StringComparison.Ordinal)
+                || string.Equals(token, "0.0.0.0", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool LiveListenHasNonLoopback(string liveListenAddresses)
+    {
+        foreach (var token in liveListenAddresses.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var isLoopback =
+                string.Equals(token, "localhost", StringComparison.OrdinalIgnoreCase)
+                || (IPAddress.TryParse(token, out var ip)
+                    && ip.AddressFamily == AddressFamily.InterNetwork
+                    && ip.GetAddressBytes()[0] == 127);
+            if (!isLoopback)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The scoped store firewall rule name (idempotent by DisplayName), port-specific.</summary>
+    private string StoreFirewallRuleName => $"PerformanceMonitor Darling store (port {_config.Port})";
+
+    /// <summary>Idempotent-named enable command (remove-by-name then add) — the exact scoped command the docs
+    /// lead with (D1). Pure + testable.</summary>
+    internal static string BuildFirewallEnableCommand(string ruleName, int port, string remoteCidr)
+        => $"Remove-NetFirewallRule -DisplayName '{ruleName}' -ErrorAction SilentlyContinue; " +
+           $"New-NetFirewallRule -DisplayName '{ruleName}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {port} -RemoteAddress {remoteCidr} | Out-Null";
+
+    /// <summary>Idempotent-named disable command (remove-by-name). Pure + testable.</summary>
+    internal static string BuildFirewallDisableCommand(string ruleName)
+        => $"Remove-NetFirewallRule -DisplayName '{ruleName}' -ErrorAction SilentlyContinue";
+
+    /// <summary>
+    /// Best-effort firewall reconcile (D1): add/remove the scoped, idempotent-named inbound rule via
+    /// PowerShell. The firewall is defense-in-depth, NOT the boundary (pg_hba + TLS are), so a failure (no
+    /// elevation, PowerShell missing) logs the exact scoped command for the operator to run by hand and
+    /// NEVER fails startup.
+    /// </summary>
+    private async Task TryConfigureStoreFirewallAsync(bool enable, string? cidr, CancellationToken cancellationToken)
+    {
+        var ruleName = StoreFirewallRuleName;
+        var command = enable
+            ? BuildFirewallEnableCommand(ruleName, _config.Port, cidr!)
+            : BuildFirewallDisableCommand(ruleName);
+
+        try
+        {
+            var (exitCode, output) = await RunPowerShellAsync(command, cancellationToken);
+            if (exitCode == 0)
+            {
+                _logger.LogInformation("Firewall rule '{Rule}' {Verb}.", ruleName, enable ? "ensured" : "removed");
+            }
+            else if (enable)
+            {
+                _logger.LogWarning(
+                    "Could not configure the firewall automatically (exit {ExitCode}: {Output}). Run this in an elevated PowerShell:\n{Command}",
+                    exitCode, output, command);
+            }
+            else
+            {
+                _logger.LogWarning("Could not remove the firewall rule automatically (exit {ExitCode}: {Output}).", exitCode, output);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (enable)
+            {
+                _logger.LogWarning(
+                    "Could not configure the firewall automatically ({Message}). Run this in an elevated PowerShell:\n{Command}",
+                    ex.Message, command);
+            }
+            else
+            {
+                _logger.LogWarning("Could not remove the firewall rule automatically ({Message}).", ex.Message);
+            }
+        }
+    }
+
+    private static async Task<(int ExitCode, string Output)> RunPowerShellAsync(string command, CancellationToken cancellationToken)
+    {
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        process.StartInfo.ArgumentList.Add("-NoProfile");
+        process.StartInfo.ArgumentList.Add("-NonInteractive");
+        process.StartInfo.ArgumentList.Add("-Command");
+        process.StartInfo.ArgumentList.Add(command);
+
+        var output = new StringBuilder();
+        var outputLock = new object();
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) { lock (outputLock) { output.AppendLine(e.Data); } } };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (outputLock) { output.AppendLine(e.Data); } } };
+
+        if (!process.Start())
+        {
+            return (-1, "could not start powershell.exe");
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(s_statusTimeout);
+        try
+        {
+            await process.WaitForExitAsync(timeoutSource.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+                /* Exited between the timeout and the kill. */
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            string soFar;
+            lock (outputLock) { soFar = output.ToString().Trim(); }
+            return (-1, $"timed out: {soFar}");
+        }
+
+        lock (outputLock)
+        {
+            return (process.ExitCode, output.ToString().Trim());
+        }
     }
 
     /// <summary>

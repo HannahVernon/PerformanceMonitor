@@ -88,6 +88,54 @@ public sealed class DarlingWorker : BackgroundService
     /// </summary>
     internal static bool ShouldRunCollection(bool paused) => !paused;
 
+    /// <summary>
+    /// The network-endpoint startup warnings the worker emits AFTER <see cref="DarlingConfig.Validate"/>
+    /// passes (darling-network-endpoints) — NEVER inside Validate(), which is all-fatal, so an optional,
+    /// default-off endpoint note can never abort collection (D-BYO / D-validate):
+    /// <list type="bullet">
+    /// <item>BYO mode (<c>managed=false</c>) with any <c>postgres.network.*</c> or <c>mcp.network.*</c>
+    /// set — the fields are IGNORED; the operator's own PostgreSQL governs exposure.</item>
+    /// <item>Managed mode with an EXPOSED store whose <c>network.role</c> is <c>admin</c> — names the
+    /// <c>config_command</c> / <c>config_monitored_servers</c> / <c>config_notification</c>
+    /// service-credential pivot a remote admin connection can reach (D7 — the operator's informed opt-in).</item>
+    /// </list>
+    /// Pure so a unit test asserts the returned strings without driving the loop or a live logger.
+    /// </summary>
+    internal static IReadOnlyList<string> GetNetworkStartupWarnings(DarlingConfig config)
+    {
+        var warnings = new List<string>();
+
+        if (!config.Postgres.Managed)
+        {
+            /* BYO: network.* is managed-mode only. Warn per section that is set (D-BYO). */
+            if (config.Postgres.Network?.IsConfigured == true)
+            {
+                warnings.Add(
+                    "postgres.network.* is set but postgres.managed is false — it is IGNORED in bring-your-own mode; your own PostgreSQL governs its network exposure (pg_hba / listen_addresses / TLS).");
+            }
+
+            if (config.Mcp.Network?.IsConfigured == true)
+            {
+                warnings.Add(
+                    "mcp.network.* is set but postgres.managed is false — the MCP network endpoint is managed-mode only, so it is IGNORED; the MCP server stays loopback-only.");
+            }
+
+            return warnings;
+        }
+
+        /* Managed + the store is genuinely exposed + the network role resolves to admin (D7 pivot warning). */
+        var network = config.Postgres.Network;
+        if (network is not null
+            && DarlingNetwork.IsExposedListenAddress(network.Listen)
+            && string.Equals(DarlingNetwork.NormalizeNetworkRole(network.Role), "admin", StringComparison.Ordinal))
+        {
+            warnings.Add(
+                "postgres.network.role is 'admin' — a REMOTE admin connection can write config_command (the test_connect service-credential pivot), config_monitored_servers, and config_notification (webhook exfil). This is an explicit opt-in; the secure default is 'viewer' (read-only). Only expose admin on a trusted network.");
+        }
+
+        return warnings;
+    }
+
     private readonly ILogger<DarlingWorker> _logger;
     private readonly ILoggerFactory _loggerFactory;
 
@@ -193,6 +241,14 @@ public sealed class DarlingWorker : BackgroundService
                 _logger.LogCritical("Configuration problem: {Problem}", problem);
             }
             return;
+        }
+
+        /* Network-endpoint caller warnings (darling-network-endpoints, D-BYO / D7) — emitted AFTER
+           Validate() passes and NEVER inside it (Validate is all-fatal; an optional-endpoint note must not
+           abort startup). Covers BYO-mode network.* being ignored and the network.role=admin pivot risk. */
+        foreach (var warning in GetNetworkStartupWarnings(config))
+        {
+            _logger.LogWarning("{Warning}", warning);
         }
 
         /* Bundled-Postgres bootstrap (the shipped zero-admin default): in managed mode the

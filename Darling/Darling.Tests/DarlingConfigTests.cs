@@ -233,6 +233,83 @@ public sealed class DarlingConfigTests
     }
 
     [Fact]
+    public void Network_Sections_AbsentByDefault()
+    {
+        /* Omitting the network objects = the secure default (loopback-only); both parse to null. */
+        var config = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ] }");
+        Assert.Null(config.Postgres.Network);
+        Assert.Null(config.Mcp.Network);
+    }
+
+    [Fact]
+    public void Network_ParsesPostgresRoleAndMcpToken()
+    {
+        var config = DarlingConfig.Parse(@"{
+            ""postgres"": {
+                ""managed"": true,
+                ""network"": { ""listen"": ""192.168.1.205"", ""allowFrom"": ""192.168.1.0/24"", ""role"": ""admin"" }
+            },
+            ""mcp"": {
+                ""enabled"": true,
+                ""network"": { ""listen"": ""192.168.1.205"", ""allowFrom"": ""192.168.1.0/24"", ""token"": ""dev-token"" }
+            },
+            ""servers"": [ { ""host"": ""SQL2022"" } ]
+        }");
+
+        Assert.NotNull(config.Postgres.Network);
+        Assert.Equal("192.168.1.205", config.Postgres.Network!.Listen);
+        Assert.Equal("192.168.1.0/24", config.Postgres.Network.AllowFrom);
+        Assert.Equal("admin", config.Postgres.Network.Role);
+        Assert.True(config.Postgres.Network.IsConfigured);
+
+        Assert.NotNull(config.Mcp.Network);
+        Assert.Equal("192.168.1.205", config.Mcp.Network!.Listen);
+        Assert.Equal("dev-token", config.Mcp.Network.Token);
+        Assert.True(config.Mcp.Network.IsConfigured);
+    }
+
+    [Fact]
+    public void McpNetworkConfig_ResolveToken_PrefersEncrypted_FlagsPlaintext()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
+
+        /* Plaintext fallback flags usedPlaintext (so the MCP host caller warns). */
+        var plain = new McpNetworkConfig { Token = "dev-token" };
+        Assert.Equal("dev-token", plain.ResolveToken(out var usedPlaintext));
+        Assert.True(usedPlaintext);
+
+        /* encryptedToken preferred (DPAPI round-trip) over an also-present plaintext, and NOT flagged. */
+        var blob = DarlingSecrets.Protect("secret-token");
+        var encrypted = new McpNetworkConfig { EncryptedToken = blob, Token = "wrong-plaintext" };
+        Assert.Equal("secret-token", encrypted.ResolveToken(out usedPlaintext));
+        Assert.False(usedPlaintext);
+
+        /* Neither set -> null. */
+        Assert.Null(new McpNetworkConfig().ResolveToken(out usedPlaintext));
+        Assert.False(usedPlaintext);
+    }
+
+    [Fact]
+    public void Validate_IgnoresNetworkExposureConfig_NeverFatal()
+    {
+        /* D-validate: network-exposure rules are enforced at the point of use (degrade to loopback),
+           NEVER in the all-fatal Validate(). An EXPOSED-but-INVALID network (bad CIDR, bad role, MCP with
+           no token) must add NO problem — a typo in an optional, default-off endpoint can't kill collection. */
+        var config = new DarlingConfig
+        {
+            Postgres = new PostgresConfig
+            {
+                Managed = true,
+                Network = new PostgresNetworkConfig { Listen = "192.168.1.205", AllowFrom = "not-a-cidr", Role = "root" },
+            },
+            Mcp = new McpConfig { Enabled = true, Network = new McpNetworkConfig { Listen = "0.0.0.0" /* no token */ } },
+            Servers = { Server() },
+        };
+
+        Assert.Empty(config.Validate());
+    }
+
+    [Fact]
     public void Secrets_DpapiRoundTrip_BlobPreferredOverPlaintext()
     {
         Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
