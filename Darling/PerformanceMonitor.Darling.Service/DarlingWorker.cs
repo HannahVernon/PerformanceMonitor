@@ -11,6 +11,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -66,6 +67,11 @@ public sealed class DarlingWorker : BackgroundService
        (a test_connect against an unreachable host can block for the connect timeout) never starves
        collection — the two loops share a cancellation token and the guarded server set only. */
     private static readonly TimeSpan s_commandPollInterval = TimeSpan.FromSeconds(5);
+
+    /* The store disk-pressure self-alert's poll cadence (fleet-level, Stage 4). Disk fills slowly, and the
+       check is one pg_database_size + one DriveInfo syscall, so 5 minutes is ample and cheap — no need to
+       run it on the 30-second alert sweep. */
+    private static readonly TimeSpan s_diskCheckInterval = TimeSpan.FromMinutes(5);
 
     /* The analysis pipeline's per-run budget — Lite's App default hardcoded (AnalysisTimeoutSeconds
        120; not a control-plane knob). The CADENCE (interval), the enabled gate, and the notify gate
@@ -168,6 +174,10 @@ public sealed class DarlingWorker : BackgroundService
 
     /* MinValue = the first sweep after startup runs the retention purge, then daily. */
     private DateTime _nextPurgeUtc = DateTime.MinValue;
+
+    /* MinValue = the first sweep after startup evaluates the store disk-pressure self-alert, then every
+       s_diskCheckInterval. Fleet-level (one shared store), so it is a single field, not per-server. */
+    private DateTime _nextDiskCheckUtc = DateTime.MinValue;
 
     /* Set once at startup by the TimescaleSupport detection (cached per data source — the
        extension can't appear or vanish under a running service without a restart anyway);
@@ -625,6 +635,16 @@ public sealed class DarlingWorker : BackgroundService
                 await new PgFindingStore(postgres, _logger).CleanupOldFindingsAsync(retentionDays: 30);
             }
 
+            /* Stage 4 fleet-level self-alert: the store disk-pressure backstop. The daily purge is the ONLY
+               other maintenance cadence and it is purely time-based (no disk-free check), so on its own the
+               store can still fill between purges — this edge-fired condition is the flagship-appropriate
+               backstop. Own slow cadence; the master alerts gate + edge-trigger live inside the evaluator. */
+            if (DateTime.UtcNow >= _nextDiskCheckUtc)
+            {
+                _nextDiskCheckUtc = DateTime.UtcNow.Add(s_diskCheckInterval);
+                await EvaluateStoreDiskPressureAsync(config, stoppingToken);
+            }
+
             try
             {
                 await Task.Delay(s_sweepInterval, stoppingToken);
@@ -1017,6 +1037,68 @@ LIMIT 1", connection);
 
         double? totalCpu = sqlCpu.HasValue ? sqlCpu.Value + (otherCpu ?? 0) : null;
         return (sqlCpu, totalCpu);
+    }
+
+    /// <summary>
+    /// Gathers the store disk-pressure sample and hands it to the Stage 4 evaluator (fleet-level). The store
+    /// size (<c>pg_database_size</c>, context only) is always readable; the store volume's free/total space is
+    /// resolved from the MANAGED data directory's drive — the bundled store this service owns and must protect.
+    /// In bring-your-own mode the store can be a remote Postgres whose disk the service cannot see, so
+    /// free/total stay null and the evaluator no-ops (never a false alarm — the operator owns their own
+    /// PostgreSQL's disk monitoring, consistent with the BYO posture elsewhere). Failure-isolated: a bad
+    /// sample logs at Debug and skips this tick, never breaking the loop.
+    /// </summary>
+    private async Task EvaluateStoreDiskPressureAsync(DarlingConfig config, CancellationToken cancellationToken)
+    {
+        long? storeSizeBytes = await ReadStoreSizeBytesAsync(cancellationToken);
+
+        long? freeBytes = null;
+        long? totalBytes = null;
+        if (config.Postgres.Managed && OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var dataDirectory = DarlingManagedPostgres.ResolveDataDirectory(config.Postgres);
+                var root = Path.GetPathRoot(Path.GetFullPath(dataDirectory));
+                if (!string.IsNullOrEmpty(root))
+                {
+                    var drive = new DriveInfo(root);
+                    if (drive.IsReady)
+                    {
+                        freeBytes = drive.TotalFreeSpace;
+                        totalBytes = drive.TotalSize;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                /* Best-effort: an unreadable drive just means no disk signal this tick. */
+                _logger.LogDebug("Store disk-pressure check: could not read the store volume free space: {Message}", ex.Message);
+            }
+        }
+
+        await _selfAlerts!.ApplyDiskPressureAsync(freeBytes, totalBytes, storeSizeBytes, cancellationToken);
+    }
+
+    /// <summary>
+    /// The store database's on-disk size in bytes (<c>pg_database_size</c>) — context for the disk-pressure
+    /// alert text, the same read the Viewer's status bar uses. Failure-isolated to null (Debug) so a transient
+    /// store hiccup never breaks the disk-pressure check.
+    /// </summary>
+    private async Task<long?> ReadStoreSizeBytesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await _postgres!.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand("SELECT pg_database_size(current_database())", connection);
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug("Store disk-pressure check: could not read pg_database_size: {Message}", ex.Message);
+            return null;
+        }
     }
 
     /// <summary>

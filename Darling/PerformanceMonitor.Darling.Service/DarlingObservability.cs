@@ -63,6 +63,21 @@ WHERE s.server_id = c.server_id
 INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, duration_ms, status, error_message, rows_collected, sql_duration_ms, duckdb_duration_ms)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);";
 
+    /* The fleet-sentinel server_id the daily retention purge writes its run-record under. collection_log's
+       server_id is NOT NULL and Collection Health reads per real server_id, but the purge is fleet-wide (per
+       shared table, not per server), so it has no real server to attribute to. This reserved id is never a
+       monitored server (server_ids are FNV-1a hashes of a storage name; it is also never registered in
+       config_monitored_servers / collect.servers), so the sentinel row is: (a) EXCLUDED from the fleet
+       Collection-Health aggregate — that read is scoped to server_id IN config_monitored_servers WHERE
+       is_enabled; (b) never matched by any per-server read (all WHERE server_id = $realId) or the self-alert
+       collection-signal reads; yet (c) fully auditable via v_collection_log (WHERE collector_name =
+       'data_retention'). Deliberately NOT a new fleet UI surface — just an auditable log row. */
+    internal const int FleetServerId = 0;
+    private const string FleetServerName = "(fleet)";
+
+    /* Matches the Dashboard's config.data_retention collector_name so the audit vocabulary twins across SKUs. */
+    private const string RetentionCollectorName = "data_retention";
+
     /* The per-server analysis-state marker (V19): the analysis pass's insufficient-data determination,
        persisted so the Viewer's Recommendations tab can tell "still collecting" (a young deployment under
        the 24h data-span gate) apart from a genuine all-clear. One row per server, upserted after each
@@ -184,6 +199,59 @@ ON CONFLICT (server_id) DO UPDATE SET
             /* Failure-isolated by design — an observability write must never break the collection loop. */
             logger?.LogDebug("Observability: collection_log write for '{Server}' / {Collector} failed: {Message}",
                 server.Config.DisplayName, collectorName, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Records one daily retention-purge sweep in collection_log as an auditable <c>data_retention</c>
+    /// run-record (the Darling twin of the Dashboard's config.data_retention log rows). Fleet-wide, so it is
+    /// written under the reserved <see cref="FleetServerId"/> sentinel — never a real monitored server, and
+    /// excluded from every per-server and fleet Collection-Health read (see the constant's remarks). <paramref
+    /// name="status"/> is SUCCESS / WARNING (some tables failed) / ERROR; <paramref name="rowsPurged"/> is the
+    /// coarse rows-deleted-plus-chunks-dropped activity count; <paramref name="durationMs"/> is the whole-sweep
+    /// elapsed (recorded as both the total and the storage phase — a purge is all store-side work, no SQL-target
+    /// phase). Failure-isolated (Debug + no-op) like the other observability writes — an audit write must never
+    /// break the collection loop.
+    /// </summary>
+    public static async Task LogRetentionRunAsync(
+        NpgsqlDataSource postgres,
+        string status,
+        int rowsPurged,
+        long durationMs,
+        string? message,
+        ILogger? logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var text = message;
+            if (text is not null && text.Length > 4000)
+            {
+                text = text.Substring(0, 4000);
+            }
+
+            var elapsed = durationMs > int.MaxValue ? int.MaxValue : (int)durationMs;
+
+            await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(InsertCollectionLogSql, connection);
+            command.Parameters.AddWithValue(CollectionIdGenerator.Next());                                    // log_id
+            command.Parameters.AddWithValue(FleetServerId);                                                   // server_id (sentinel)
+            command.Parameters.AddWithValue(FleetServerName);                                                 // server_name
+            command.Parameters.AddWithValue(RetentionCollectorName);                                          // collector_name
+            /* Naive-UTC storage: Npgsql 6+ rejects Kind=Utc against `timestamp` — see PgCollectorRowWriter. */
+            command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)); // collection_time
+            command.Parameters.AddWithValue(elapsed);                                                         // duration_ms
+            command.Parameters.AddWithValue(status);                                                          // status
+            command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)text ?? DBNull.Value }); // error_message
+            command.Parameters.AddWithValue(rowsPurged);                                                      // rows_collected
+            command.Parameters.AddWithValue(0);                                                               // sql_duration_ms (no SQL-target phase)
+            command.Parameters.AddWithValue(elapsed);                                                         // duckdb_duration_ms (storage phase = whole sweep)
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            /* Failure-isolated by design — an observability write must never break the collection loop. */
+            logger?.LogDebug("Observability: data_retention run-record write failed: {Message}", ex.Message);
         }
     }
 

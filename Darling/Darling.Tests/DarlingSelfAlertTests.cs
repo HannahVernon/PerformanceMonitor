@@ -407,6 +407,116 @@ public sealed class DarlingSelfAlertTests
         Assert.Empty(h.Deliverer.Outcomes);
     }
 
+    /* ---------------- store disk pressure (fleet-level, pure decision) ---------------- */
+
+    private const long Gib = 1024L * 1024 * 1024;
+
+    [Fact]
+    public void IsDiskPressure_BelowThreshold_Pressure()
+    {
+        /* 5% free (< the 10% warn threshold) reads as pressure; the reason names the percentage. */
+        Assert.True(DarlingSelfAlertEvaluator.IsDiskPressure(5 * Gib, 100 * Gib, out var reason));
+        Assert.Contains("5", reason);
+        Assert.Contains("%", reason);
+    }
+
+    [Fact]
+    public void IsDiskPressure_ExactlyAtThreshold_NotPressure()
+    {
+        /* Boundary: exactly 10% free is NOT pressure (strictly-less-than the threshold). */
+        Assert.False(DarlingSelfAlertEvaluator.IsDiskPressure(10 * Gib, 100 * Gib, out _));
+    }
+
+    [Fact]
+    public void IsDiskPressure_JustBelowThreshold_Pressure()
+    {
+        /* 9.9% free trips it — the threshold is a real edge, not a wide band. */
+        Assert.True(DarlingSelfAlertEvaluator.IsDiskPressure(99 * Gib, 1000 * Gib, out _));
+    }
+
+    [Fact]
+    public void IsDiskPressure_PlentyFree_NotPressure()
+    {
+        Assert.False(DarlingSelfAlertEvaluator.IsDiskPressure(50 * Gib, 100 * Gib, out _));
+    }
+
+    [Fact]
+    public void IsDiskPressure_NonPositiveTotal_NotPressure()
+    {
+        /* An undeterminable total ("can't tell") never reads as pressure. */
+        Assert.False(DarlingSelfAlertEvaluator.IsDiskPressure(0, 0, out _));
+    }
+
+    /* ---------------- store disk pressure edge ---------------- */
+
+    [Fact]
+    public async Task DiskPressure_FiresOnce_ThenCooldownSuppresses_ThenReFires()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, storeSizeBytes: 20 * Gib, Ct);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Store Disk Pressure", fired.MetricName);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+        Assert.Equal("store", fired.ServerKey);   /* the fleet sentinel key, not a real server_id */
+
+        /* Still low one minute later — inside the 5-minute cooldown, no re-fire (the EDGE: once, not every sweep). */
+        h.Now = h.Now.AddMinutes(1);
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* After the cooldown the standing condition re-fires. */
+        h.Now = h.Now.AddMinutes(5);
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task DiskPressure_Recovery_WritesOneResolvedHistoryRow()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct);   /* pressure */
+        Assert.Empty(h.History.Records);
+
+        /* Free space recovered: exactly one "Store Disk Pressure Resolved" audit row, no email/webhook. */
+        await e.ApplyDiskPressureAsync(50 * Gib, 100 * Gib, null, Ct);
+        var resolved = Assert.Single(h.History.Records);
+        Assert.Equal("Store Disk Pressure Resolved", resolved.MetricName);
+        Assert.True(resolved.AlertSent);
+        Assert.Equal("tray", resolved.NotificationType);
+        Assert.Single(h.Deliverer.Outcomes);   /* only the original fire went to the deliverer */
+
+        /* Still healthy on the next sweep — no duplicate resolved row (resolution is edge-triggered too). */
+        await e.ApplyDiskPressureAsync(50 * Gib, 100 * Gib, null, Ct);
+        Assert.Single(h.History.Records);
+    }
+
+    [Fact]
+    public async Task DiskPressure_UndeterminableFreeSpace_DoesNotFire()
+    {
+        /* A remote BYO store whose volume the service cannot see (null free/total) never alarms — even though
+           a store size is known, it is context only and never the trigger. */
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(null, null, storeSizeBytes: 999 * Gib, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task DiskPressure_AlertsDisabled_DoesNotFire()
+    {
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        var e = h.Build();
+
+        await e.ApplyDiskPressureAsync(1 * Gib, 100 * Gib, null, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
     /* ---------------- master switch ---------------- */
 
     [Fact]
