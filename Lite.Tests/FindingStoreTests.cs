@@ -152,6 +152,25 @@ public class FindingStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task AnalysisServiceCleanup_RemovesExpiredData()
+    {
+        // The collection background service schedules findings retention through
+        // AnalysisService.CleanupAsync (previously declared but never called — analysis_findings
+        // grew unbounded until a size-triggered DB reset wiped it). Prove the wrapper the
+        // scheduler now invokes purges through to the store.
+        await InitializeWithAnalysisAsync();
+
+        var store = new FindingStore(_duckDb);
+        var context = TestDataSeeder.CreateTestContext();
+        await store.SaveFindingsAsync(CreateTestStories(), context);
+
+        await new AnalysisService(_duckDb).CleanupAsync(retentionDays: 0);
+
+        var findings = await store.GetLatestFindingsAsync(context.ServerId);
+        Assert.Empty(findings);
+    }
+
+    [Fact]
     public async Task FullPipeline_FindingStoreIntegration()
     {
         await InitializeWithAnalysisAsync();
