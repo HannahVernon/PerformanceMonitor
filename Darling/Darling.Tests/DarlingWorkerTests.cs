@@ -154,6 +154,83 @@ public sealed class DarlingWorkerTests
         Assert.True(DarlingWorker.ServerDefinitionEquals(original, SampleServer()));
     }
 
+    /// <summary>
+    /// D-BYO: managed=false with any network.* set warns per section that the fields are ignored (the
+    /// operator's own PostgreSQL governs exposure). Asserted against the pure function's returned strings,
+    /// NOT a live logger and NOT Validate().
+    /// </summary>
+    [Fact]
+    public void GetNetworkStartupWarnings_ByoWithNetwork_WarnsBothSectionsIgnored()
+    {
+        var config = new DarlingConfig
+        {
+            Postgres = new PostgresConfig
+            {
+                Managed = false,
+                ConnectionString = "Host=pg;Database=darling",
+                Network = new PostgresNetworkConfig { Listen = "192.168.1.205" },
+            },
+            Mcp = new McpConfig { Network = new McpNetworkConfig { Listen = "192.168.1.205" } },
+        };
+
+        var warnings = DarlingWorker.GetNetworkStartupWarnings(config);
+        Assert.Contains(warnings, w => w.Contains("postgres.network", StringComparison.Ordinal) && w.Contains("bring-your-own", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("mcp.network", StringComparison.Ordinal) && w.Contains("managed-mode only", StringComparison.Ordinal));
+        /* BYO never emits the admin-pivot warning — the network config is ignored anyway. */
+        Assert.DoesNotContain(warnings, w => w.Contains("pivot", StringComparison.OrdinalIgnoreCase) || w.Contains("config_command", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// D7: managed mode + an EXPOSED store whose network role is admin warns about the config-write /
+    /// service-credential pivot a remote admin connection can reach.
+    /// </summary>
+    [Fact]
+    public void GetNetworkStartupWarnings_ManagedExposedAdminRole_WarnsPivot()
+    {
+        var config = new DarlingConfig
+        {
+            Postgres = new PostgresConfig
+            {
+                Managed = true,
+                Network = new PostgresNetworkConfig { Listen = "192.168.1.205", AllowFrom = "192.168.1.0/24", Role = "admin" },
+            },
+        };
+
+        var warnings = DarlingWorker.GetNetworkStartupWarnings(config);
+        Assert.Contains(warnings, w => w.Contains("network.role is 'admin'", StringComparison.Ordinal) && w.Contains("config_command", StringComparison.Ordinal));
+        /* Managed mode does not emit the BYO "ignored" notices. */
+        Assert.DoesNotContain(warnings, w => w.Contains("IGNORED", StringComparison.Ordinal));
+    }
+
+    /// <summary>The secure defaults are silent: managed + viewer role, managed + no network, and managed +
+    /// admin role that is NOT exposed (loopback listen) all produce zero warnings.</summary>
+    [Fact]
+    public void GetNetworkStartupWarnings_ManagedViewerOrLoopback_IsSilent()
+    {
+        var viewerExposed = new DarlingConfig
+        {
+            Postgres = new PostgresConfig
+            {
+                Managed = true,
+                Network = new PostgresNetworkConfig { Listen = "192.168.1.205", AllowFrom = "192.168.1.0/24", Role = "viewer" },
+            },
+        };
+        Assert.Empty(DarlingWorker.GetNetworkStartupWarnings(viewerExposed));
+
+        Assert.Empty(DarlingWorker.GetNetworkStartupWarnings(new DarlingConfig { Postgres = new PostgresConfig { Managed = true } }));
+
+        /* admin role but bound to loopback = not exposed => no pivot warning (nothing is reachable). */
+        var adminButLoopback = new DarlingConfig
+        {
+            Postgres = new PostgresConfig
+            {
+                Managed = true,
+                Network = new PostgresNetworkConfig { Listen = "127.0.0.1", AllowFrom = "192.168.1.0/24", Role = "admin" },
+            },
+        };
+        Assert.Empty(DarlingWorker.GetNetworkStartupWarnings(adminButLoopback));
+    }
+
     /// <summary>A fully-populated server definition the equality tests perturb a single field of.</summary>
     private static MonitoredServer SampleServer() => new()
     {

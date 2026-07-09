@@ -37,6 +37,7 @@ public sealed class DarlingSecuritySplitLiveTests
 {
     private const string AdminRole = "sec_admin_test";
     private const string ViewerRole = "sec_viewer_test";
+    private const string McpRole = "sec_mcp_test";
     private const string RolePassword = "SecSplitTestPw0123456789abcdef01"; // alnum, like the real generator
 
     private static string RequireLivePostgres()
@@ -209,6 +210,52 @@ public sealed class DarlingSecuritySplitLiveTests
     }
 
     [Fact]
+    public async Task McpRole_DeniedSecretColumns_ButGrantedExactlyTheTwoNarrowInserts()
+    {
+        var connectionString = RequireLivePostgres();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var owner = new NpgsqlConnection(connectionString);
+        await owner.OpenAsync(ct);
+        /* Applies V17 (creates the credential-bearing config tables + analysis_muted); the carve targets them. */
+        await PgMigrations.MigrateAsync(owner, ct);
+
+        await CreateTestRolesAndGrantsAsync(owner, ct);
+        try
+        {
+            await using var mcp = new NpgsqlConnection(RoleConnectionString(connectionString, McpRole));
+            await mcp.OpenAsync(ct);
+
+            /* Same read surface as viewer: every non-secret column readable, every secret column DENIED
+               (42501). Guards against a future refactor dropping BuildViewerColumnAclSql(config, "mcp") and
+               silently exposing the credential columns over the network MCP surface (Round 4 #5). */
+            foreach (var acl in DarlingManagedRoles.ViewerRestrictedConfigTables)
+            {
+                await ExecAsync(mcp, $"SELECT {string.Join(", ", acl.NonSecretColumns)} FROM config.{acl.Table} LIMIT 1", ct);
+                foreach (var secret in acl.SecretColumns)
+                {
+                    var denied = await Assert.ThrowsAsync<PostgresException>(async () =>
+                        await ExecAsync(mcp, $"SELECT {secret} FROM config.{acl.Table} LIMIT 1", ct));
+                    Assert.Equal("42501", denied.SqlState);
+                }
+            }
+
+            /* Exactly the two narrow analysis INSERTs are granted (has_table_privilege avoids needing the
+               tables' column shapes) — and NOTHING wider: no config_command write (the service-credential
+               pivot), no analysis_muted DELETE (no MCP unmute tool), no analysis_findings UPDATE. */
+            Assert.True(await HasPrivAsync(mcp, "collect.analysis_findings", "INSERT", ct));
+            Assert.True(await HasPrivAsync(mcp, "config.analysis_muted", "INSERT", ct));
+            Assert.False(await HasPrivAsync(mcp, "config.config_command", "INSERT", ct));
+            Assert.False(await HasPrivAsync(mcp, "config.analysis_muted", "DELETE", ct));
+            Assert.False(await HasPrivAsync(mcp, "collect.analysis_findings", "UPDATE", ct));
+        }
+        finally
+        {
+            await DropTestRolesAsync(owner, ct);
+        }
+    }
+
+    [Fact]
     public async Task CompressedHypertable_SetSchema_StaysReadableByLeastPrivilegeRole()
     {
         var connectionString = RequireLivePostgres();
@@ -319,13 +366,26 @@ BEGIN
    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ViewerRole}') THEN
       CREATE ROLE {ViewerRole} LOGIN NOSUPERUSER PASSWORD '{RolePassword}';
    END IF;
+   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{McpRole}') THEN
+      CREATE ROLE {McpRole} LOGIN NOSUPERUSER PASSWORD '{RolePassword}';
+   END IF;
 END $do$;
 GRANT USAGE ON SCHEMA collect, config TO {AdminRole}, {ViewerRole};
 GRANT SELECT ON ALL TABLES IN SCHEMA collect TO {AdminRole}, {ViewerRole};
 GRANT SELECT ON ALL TABLES IN SCHEMA config  TO {AdminRole}, {ViewerRole};
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO {AdminRole};
 {DarlingManagedRoles.BuildViewerColumnAclSql("config", ViewerRole)}
-ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect GRANT SELECT ON TABLES TO {AdminRole}, {ViewerRole};";
+ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect GRANT SELECT ON TABLES TO {AdminRole}, {ViewerRole};
+
+-- The mcp-role analog (darling-network-endpoints, D3-role): viewer's read surface + the same secret-column
+-- carve + exactly the two narrow analysis INSERTs, mirroring DarlingManagedRoles.BuildProvisioningSql's
+-- section 6. Distinct disposable role so the shared store is never touched.
+GRANT USAGE ON SCHEMA collect, config TO {McpRole};
+GRANT SELECT ON ALL TABLES IN SCHEMA collect TO {McpRole};
+GRANT SELECT ON ALL TABLES IN SCHEMA config  TO {McpRole};
+{DarlingManagedRoles.BuildViewerColumnAclSql("config", McpRole)}
+GRANT INSERT ON collect.analysis_findings TO {McpRole};
+GRANT INSERT ON config.analysis_muted TO {McpRole};";
         await ExecAsync(owner, ddl, ct);
     }
 
@@ -342,9 +402,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect GRANT S
         try
         {
             await ExecAsync(owner, $@"
-DROP OWNED BY {AdminRole}, {ViewerRole};
+DROP OWNED BY {AdminRole}, {ViewerRole}, {McpRole};
 DROP ROLE IF EXISTS {AdminRole};
-DROP ROLE IF EXISTS {ViewerRole};", ct);
+DROP ROLE IF EXISTS {ViewerRole};
+DROP ROLE IF EXISTS {McpRole};", ct);
         }
         catch (PostgresException)
         {
@@ -395,5 +456,17 @@ DROP ROLE IF EXISTS {ViewerRole};", ct);
     {
         using var command = new NpgsqlCommand(sql, connection);
         return await command.ExecuteScalarAsync(ct);
+    }
+
+    /// <summary>Whether the CONNECTED role has <paramref name="privilege"/> on <paramref name="table"/>
+    /// (the 2-arg <c>has_table_privilege</c> checks current_user) — proves grant shape without needing the
+    /// table's columns.</summary>
+    private static async Task<bool> HasPrivAsync(
+        NpgsqlConnection connection, string table, string privilege, System.Threading.CancellationToken ct)
+    {
+        using var command = new NpgsqlCommand("SELECT has_table_privilege($1, $2)", connection);
+        command.Parameters.AddWithValue(table);
+        command.Parameters.AddWithValue(privilege);
+        return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 }

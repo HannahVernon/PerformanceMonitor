@@ -9,6 +9,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PerformanceMonitor.Notifications;
@@ -86,10 +88,12 @@ public sealed class DarlingConfig
     public AnalysisConfig Analysis { get; set; } = new();
 
     /// <summary>
-    /// The embedded MCP server (analysis slice AN4): the six analysis tools — the same tool
-    /// surface Lite and the Dashboard expose — over Streamable HTTP on localhost. Default OFF:
-    /// a headless service should not open a local port unless the operator asks for it (both
-    /// apps default their MCP servers off too). Optional — omit the section entirely.
+    /// The embedded MCP server (analysis slice AN4): the same analysis + data-read tool surface Lite
+    /// and the Dashboard expose (the analysis class plus the plan-analysis and ~60 STORED data-read
+    /// tools), over Streamable HTTP. Default OFF: a headless service should not open a port unless the
+    /// operator asks for it (both apps default their MCP servers off too). Loopback-only and tokenless
+    /// by default; an opt-in <see cref="McpConfig.Network"/> block exposes it on the LAN behind a
+    /// required bearer token + an in-app CIDR check (managed-mode only). Optional — omit the section entirely.
     /// </summary>
     [JsonPropertyName("mcp")]
     public McpConfig Mcp { get; set; } = new();
@@ -245,6 +249,17 @@ public sealed class PostgresConfig
     /// </summary>
     [JsonPropertyName("connectAs")]
     public string ConnectAs { get; set; } = "admin";
+
+    /// <summary>
+    /// Opt-in network exposure for the managed store (darling-network-endpoints). Omit for the secure
+    /// default = loopback-only (byte-for-byte today's behavior). Managed-mode only; ignored in BYO with
+    /// a caller warning (the operator's own PostgreSQL governs BYO exposure). Any invalid/incomplete
+    /// field degrades the store to loopback + LogCritical rather than failing validation — the exposure
+    /// rules live at the point of use, NEVER in the all-fatal <see cref="DarlingConfig.Validate"/>
+    /// (D-validate). See <see cref="PostgresNetworkConfig"/>.
+    /// </summary>
+    [JsonPropertyName("network")]
+    public PostgresNetworkConfig? Network { get; set; }
 }
 
 /// <summary>
@@ -449,7 +464,9 @@ public sealed class SmtpConfig
 
 /// <summary>
 /// The embedded MCP server's config. Port 5152 keeps the product's local MCP family
-/// non-colliding on one machine (Dashboard 5150, Lite 5151, Darling 5152).
+/// non-colliding on one machine (Dashboard 5150, Lite 5151, Darling 5152). Loopback-only and
+/// tokenless by default; the optional <see cref="Network"/> block opts into LAN exposure behind a
+/// required bearer token + an in-app CIDR check (darling-network-endpoints, managed-mode only).
 /// </summary>
 public sealed class McpConfig
 {
@@ -459,6 +476,213 @@ public sealed class McpConfig
 
     [JsonPropertyName("port")]
     public int Port { get; set; } = 5152;
+
+    /// <summary>
+    /// Opt-in network exposure for the MCP server (darling-network-endpoints). Omit for the secure
+    /// default = loopback-only, tokenless HTTP (today's behavior). Managed-mode only; ignored in BYO
+    /// with a caller warning. Any missing precondition (token / valid allowFrom / managed) keeps MCP
+    /// loopback-only + LogCritical — enforced in the MCP host, NEVER in the all-fatal
+    /// <see cref="DarlingConfig.Validate"/> (D-validate). See <see cref="McpNetworkConfig"/>.
+    /// </summary>
+    [JsonPropertyName("network")]
+    public McpNetworkConfig? Network { get; set; }
+}
+
+/// <summary>
+/// Opt-in NETWORK exposure for the managed store (darling-network-endpoints). Omit the whole
+/// <c>network</c> object for the secure default = today's loopback-only behavior (no pg_hba network
+/// rule, no firewall rule, ssl=off). When present with a non-loopback <see cref="Listen"/>, the
+/// service reconciles it on every start (managed mode only): listen_addresses gains the bind IP, a
+/// self-signed TLS cert is generated for verify-full, a marked
+/// <c>hostssl darling &lt;role&gt; &lt;allowFrom&gt; scram-sha-256</c> pg_hba block is written +
+/// reloaded, and a best-effort firewall rule is added. Reconciliation is symmetric (removing the
+/// block closes the box) and fail-closed: any invalid/incomplete field degrades the store to
+/// loopback + LogCritical, never exposed. These rules are enforced at the point of use, NOT in the
+/// all-fatal <see cref="DarlingConfig.Validate"/> (D-validate).
+/// </summary>
+public sealed class PostgresNetworkConfig
+{
+    /// <summary>
+    /// Bind IP for the store's network listener and the generated cert's iPAddress SAN. A specific IP
+    /// (e.g. <c>192.168.1.205</c>) is preferred; <c>0.0.0.0</c> = all interfaces (connect by a cert SAN
+    /// name under verify-full). Absent or an IPv4 loopback (<c>127.0.0.0/8</c>) = the default
+    /// loopback-only store.
+    /// </summary>
+    [JsonPropertyName("listen")]
+    public string? Listen { get; set; }
+
+    /// <summary>
+    /// The CIDR the pg_hba rule and firewall rule allow (e.g. <c>192.168.1.0/24</c>); its address family
+    /// must match <see cref="Listen"/>. Required when exposed — a missing/invalid CIDR degrades the store
+    /// to loopback.
+    /// </summary>
+    [JsonPropertyName("allowFrom")]
+    public string? AllowFrom { get; set; }
+
+    /// <summary>
+    /// The least-privilege login role the network pg_hba rule names: <c>viewer</c> (default, read-only
+    /// remote — the secure default) or <c>admin</c> (full remote writes; the caller warns because admin
+    /// holds the <c>config_command</c>/<c>config_monitored_servers</c>/<c>config_notification</c>
+    /// service-credential pivot). Never the superuser <c>darling</c>. Distinct from the local-loopback
+    /// <see cref="PostgresConfig.ConnectAs"/> (default admin) — the sample/README document the difference.
+    /// An unknown value degrades the store to loopback.
+    /// </summary>
+    [JsonPropertyName("role")]
+    public string? Role { get; set; }
+
+    /// <summary>
+    /// True when any field is set — used only for the BYO "network.* is ignored" caller warning (D-BYO).
+    /// It does NOT mean "exposed"; use <see cref="DarlingNetwork.IsExposedListenAddress"/> for that.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(Listen)
+        || !string.IsNullOrWhiteSpace(AllowFrom)
+        || !string.IsNullOrWhiteSpace(Role);
+}
+
+/// <summary>
+/// Opt-in NETWORK exposure for the embedded MCP server (darling-network-endpoints). Omit the whole
+/// <c>network</c> object for the secure default = today's loopback-only, tokenless HTTP. When present
+/// with a non-loopback <see cref="Listen"/> AND managed mode AND a token AND a valid
+/// <see cref="AllowFrom"/>, the MCP host binds the network interface behind a required bearer token +
+/// an in-app CIDR check (D3); any missing precondition keeps MCP loopback-only + LogCritical
+/// (fail-closed, enforced in the MCP host). No TLS on MCP (a self-signed cert breaks real clients; the
+/// named MITM control is a TLS reverse proxy in front of the endpoint).
+/// </summary>
+public sealed class McpNetworkConfig
+{
+    /// <summary>
+    /// Bind IP for the MCP network listener (a specific IP preferred; <c>0.0.0.0</c> = all interfaces).
+    /// Absent or an IPv4 loopback = the default loopback-only MCP server.
+    /// </summary>
+    [JsonPropertyName("listen")]
+    public string? Listen { get; set; }
+
+    /// <summary>
+    /// The CIDR the in-app <c>RemoteIpAddress</c> check and the firewall rule allow (e.g.
+    /// <c>192.168.1.0/24</c>); loopback is always allowed regardless. Required when exposed.
+    /// </summary>
+    [JsonPropertyName("allowFrom")]
+    public string? AllowFrom { get; set; }
+
+    /// <summary>
+    /// DPAPI-LocalMachine-protected bearer token, base64 — produced by <c>--encrypt-password</c>
+    /// (preferred over the plaintext <see cref="Token"/>). Read via <see cref="ResolveToken"/>.
+    /// </summary>
+    [JsonPropertyName("encryptedToken")]
+    public string? EncryptedToken { get; set; }
+
+    /// <summary>
+    /// Plaintext bearer token — dev convenience only; the caller warns when it is used. Prefer
+    /// <see cref="EncryptedToken"/>.
+    /// </summary>
+    [JsonPropertyName("token")]
+    public string? Token { get; set; }
+
+    /// <summary>
+    /// True when any field is set — used only for the BYO "network.* is ignored" caller warning (D-BYO);
+    /// NOT the same as "exposed".
+    /// </summary>
+    [JsonIgnore]
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(Listen)
+        || !string.IsNullOrWhiteSpace(AllowFrom)
+        || !string.IsNullOrWhiteSpace(EncryptedToken)
+        || !string.IsNullOrWhiteSpace(Token);
+
+    /// <summary>
+    /// The bearer token, preferring <see cref="EncryptedToken"/> (DPAPI-decrypted; Windows-only) over
+    /// the plaintext <see cref="Token"/>. <paramref name="usedPlaintext"/> is true when the plaintext
+    /// fallback is used, so the caller can warn — the same shape as
+    /// <see cref="DarlingSecrets.ResolvePassword"/>. Returns null when neither is set.
+    /// </summary>
+    public string? ResolveToken(out bool usedPlaintext)
+    {
+        usedPlaintext = false;
+
+        if (!string.IsNullOrWhiteSpace(EncryptedToken))
+        {
+            /* DarlingSecrets.Unprotect is DPAPI (Windows-only). The network path is managed-mode-only,
+               which is itself Windows-gated, so this only runs on Windows; the guard keeps the analyzer
+               (CA1416) honest and gives a clear failure if someone points a non-Windows BYO client here. */
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException(
+                    "mcp.network.encryptedToken requires Windows (DPAPI); use the plaintext \"token\" on other platforms.");
+            }
+
+            return DarlingSecrets.Unprotect(EncryptedToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Token))
+        {
+            usedPlaintext = true;
+            return Token;
+        }
+
+        return null;
+    }
+}
+
+/// <summary>
+/// Shared network-exposure helpers for the opt-in store/MCP endpoints (darling-network-endpoints).
+/// These pure functions are the single source of truth for "is this listen value a network bind?"
+/// and "what pg_hba role?" — used by the store bootstrap (<see cref="DarlingManagedPostgres"/>), the
+/// worker's startup warnings (<see cref="DarlingWorker"/>), and the MCP host's bind resolution. Kept
+/// deliberately OUT of the all-fatal <see cref="DarlingConfig.Validate"/> (one entry there kills
+/// collection): a typo in an optional, default-off endpoint must degrade to loopback + LogCritical
+/// and keep collecting (D-validate).
+/// </summary>
+public static class DarlingNetwork
+{
+    /// <summary>
+    /// Is <paramref name="listen"/> a NETWORK (non-loopback) bind — i.e. anything other than the safe
+    /// IPv4 loopback range <c>127.0.0.0/8</c>? Absent/blank is NOT exposed (the default = today's
+    /// loopback-only behavior). Everything else is treated as exposed, and therefore subject to the full
+    /// exposure validation: a real IP; <c>0.0.0.0</c>/<c>::</c> (all interfaces); the IPv6 loopback
+    /// <c>::1</c> (the store's loopback handling is IPv4-<c>127</c> only); and any value that is not even
+    /// an IP — <c>localhost</c>, <c>*</c>, a hostname — which the store bind (it needs
+    /// <see cref="IPAddress.Parse"/>) then rejects by degrading to loopback. Fail-safe: unknown ⇒
+    /// exposed ⇒ validated, never silently bound.
+    /// </summary>
+    public static bool IsExposedListenAddress(string? listen)
+    {
+        if (string.IsNullOrWhiteSpace(listen))
+        {
+            return false;
+        }
+
+        if (IPAddress.TryParse(listen.Trim(), out var ip))
+        {
+            /* The ONLY non-exposed value is an IPv4 address in 127.0.0.0/8 (canonical loopback). */
+            return !(ip.AddressFamily == AddressFamily.InterNetwork && ip.GetAddressBytes()[0] == 127);
+        }
+
+        /* Not an IP at all (localhost / hostname / "*") — treat as exposed; the store bind degrades to
+           loopback because it cannot IPAddress.Parse it. */
+        return true;
+    }
+
+    /// <summary>
+    /// Normalizes <c>postgres.network.role</c> to the pg_hba login role: absent/blank ⇒ the secure
+    /// default <c>viewer</c> (read-only remote, D7); <c>viewer</c>/<c>admin</c> pass through
+    /// (case-insensitively); anything else ⇒ null (invalid — the store degrades to loopback). NEVER
+    /// returns <c>darling</c> (the superuser/owner is service-only).
+    /// </summary>
+    public static string? NormalizeNetworkRole(string? role)
+    {
+        /* Literals rather than DarlingManagedPostgres.ViewerRoleName/AdminRoleName: that type is
+           [SupportedOSPlatform("windows")] and this classifier is platform-neutral, so referencing its
+           consts would raise CA1416 here. The names mirror those consts (pinned equal by test). */
+        if (string.IsNullOrWhiteSpace(role))
+        {
+            return "viewer";
+        }
+
+        var normalized = role.Trim().ToLowerInvariant();
+        return normalized is "viewer" or "admin" ? normalized : null;
+    }
 }
 
 /// <summary>Teams/Slack incoming-webhook alert delivery; a channel is enabled by a non-empty URL.</summary>
