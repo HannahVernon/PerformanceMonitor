@@ -356,9 +356,10 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     /// hypertable, and its only schema effect is engine-dependent. So this checks <c>collection_log</c> IS a
     /// hypertable OR the store has no <c>timescaledb</c> extension — because on plain PostgreSQL V23 is a no-op
     /// (the guarded migration skips the conversion), so a plain-PG store at V23 is object-identical to V22 and
-    /// must not be gated. <b>Crucially it is written PLAIN-POSTGRESQL-SAFE:</b> it reads the core <c>pg_trigger</c>
-    /// catalog for the hypertable's <c>ts_insert_blocker</c> trigger (present on every hypertable root, even an
-    /// empty one) rather than <c>timescaledb_information.hypertables</c> — that view does not exist without the
+    /// must not be gated. <b>Crucially it is written PLAIN-POSTGRESQL-SAFE:</b> it reads the core <c>pg_inherits</c>
+    /// catalog for collection_log's chunk children (TimescaleDB 2.x links chunks to the hypertable root via
+    /// inheritance — note a freshly-converted, still-empty hypertable has no chunks yet, a negligible window since
+    /// collection_log gets a row every collection cycle) rather than <c>timescaledb_information.hypertables</c> — that view does not exist without the
     /// extension, and referencing it here would make the WHOLE probe throw on plain PG (returning null → the
     /// gate fails open → EVERY plain-PG store, even genuinely-behind ones, loses connect-time gating). This
     /// composite is only meaningful once V22's index is present (its <c>NOT EXISTS timescaledb</c> arm is true
@@ -374,8 +375,10 @@ SELECT
     EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'default_trace_events'),
     EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_index_object_stats_latest'),
     (
-        EXISTS (SELECT 1 FROM pg_trigger tg JOIN pg_class c ON c.oid = tg.tgrelid
-                WHERE c.relname = 'collection_log' AND tg.tgname = 'ts_insert_blocker')
+        EXISTS (SELECT 1 FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhparent
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = 'collection_log' AND n.nspname = 'collect')
         OR NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
     )";
 
