@@ -43,6 +43,7 @@ public partial class WaitDrillDownWindow : Window
     private readonly DataGridFilterManager<ViewerQuerySnapshotRow> _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
+    private System.Threading.CancellationTokenSource? _actualPlanCts;
 
     public WaitDrillDownWindow(
         ViewerDataService dataService, int serverId, string waitType, DateTime fromUtc, DateTime toUtc)
@@ -65,7 +66,7 @@ public partial class WaitDrillDownWindow : Window
 
         Loaded += async (_, _) => await LoadDataAsync();
         ThemeManager.ThemeChanged += OnThemeChanged;
-        Closed += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
+        Closed += (_, _) => { ThemeManager.ThemeChanged -= OnThemeChanged; _actualPlanCts?.Cancel(); };
     }
 
     private async Task LoadDataAsync()
@@ -383,6 +384,40 @@ public partial class WaitDrillDownWindow : Window
            unsubscribe it from ThemeManager on close explicitly. */
         var window = GraphViewerWindow.ShowGraph(this, viewer, label);
         window.Closed += (_, _) => viewer.Cleanup();
+    }
+
+    /// <summary>"Get Actual Plan" — asks the SERVICE to RE-EXECUTE the RIGHT-CLICKED snapshot's captured query
+    /// (SET STATISTICS XML) and floats the captured actual plan. Identifier-only: the service resolves the text
+    /// from query_snapshots by (collection_time, session_id). The snapshot carries its plan in-row, used for the
+    /// data-modification detection. Shared consent + flag + read-only guard via <see cref="ViewerActualPlanFlow"/>.
+    /// Re-executing a snapshot's mid-flight statement carries the usual side-effect risk — the consent gate owns it.</summary>
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if ((ResultsDataGrid.CurrentItem ?? ResultsDataGrid.SelectedItem) is not ViewerQuerySnapshotRow row) return;
+        if (string.IsNullOrWhiteSpace(row.QueryText))
+        {
+            MessageBox.Show(this, "No query text was captured for this snapshot, so its actual plan cannot be re-executed.",
+                "No Query Text", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        /* The snapshot carries its plan in-row — use it for modification detection (the service re-resolves the
+           query text by the (collection_time, session_id) key when it executes). */
+        var estimatedPlanXml = row.LiveQueryPlan ?? row.QueryPlan;
+        var argsJson = ViewerDataService.BuildActualPlanArgsForSnapshot(row.CollectionTime, row.SessionId, row.DatabaseName);
+        var label = $"Actual Plan - SPID {row.SessionId}";
+
+        _actualPlanCts?.Dispose();
+        _actualPlanCts = new System.Threading.CancellationTokenSource();
+
+        var planXml = await ViewerActualPlanFlow.RequestActualPlanAsync(
+            this, _dataService, _serverId, "the monitored server", row.DatabaseName, row.QueryText, estimatedPlanXml, argsJson,
+            onStarted: () => System.Windows.Input.Mouse.OverrideCursor = System.Windows.Input.Cursors.Wait,
+            onFinished: () => System.Windows.Input.Mouse.OverrideCursor = null,
+            _actualPlanCts.Token);
+
+        if (planXml != null)
+            await ViewerActualPlanFlow.OpenFloatingPlanAsync(this, planXml, label, row.QueryText);
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();

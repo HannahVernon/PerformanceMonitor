@@ -6,15 +6,35 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
 using System.Text.Json;
 
 namespace PerformanceMonitor.Darling.Service;
 
+/// <summary>Which store table the actual-plan request's IDENTIFIER resolves the re-executable query text from.</summary>
+public enum ActualPlanSource
+{
+    /// <summary>No usable identifier — the dispatch fails the request.</summary>
+    None,
+
+    /// <summary>Top Queries / Query-Stats history / FinOps High Impact — resolves <c>query_stats</c> by query_hash + database.</summary>
+    QueryStats,
+
+    /// <summary>Query Store history — resolves <c>query_store_stats</c> by query_id + database.</summary>
+    QueryStore,
+
+    /// <summary>Wait drill-down — resolves <c>query_snapshots</c> by collection_time + session_id.</summary>
+    QuerySnapshot,
+}
+
 /// <summary>
 /// The parsed <c>execute_actual_plan</c> command payload (the viewer builds it, the service parses it). It
-/// carries an IDENTIFIER ONLY — the stored row key (<see cref="QueryHash"/> + <see cref="DatabaseName"/>) — and
-/// deliberately NO SQL text. The service resolves the query text and estimated plan XML from its OWN store
-/// (<c>query_stats</c>, by server_id + query_hash + database_name) before re-executing.
+/// carries an IDENTIFIER ONLY — a stored-row key — and deliberately NO SQL text. Exactly one identifier kind is
+/// populated (see <see cref="Source"/>), because "Get Actual Plan" lives on several viewer surfaces whose rows
+/// are keyed differently: Top Queries / Query-Stats history / FinOps High Impact by <see cref="QueryHash"/>;
+/// Query Store history by <see cref="QueryId"/>; Wait drill-down by <see cref="SnapshotCollectionTime"/> +
+/// <see cref="SnapshotSessionId"/>. The service resolves the query text and estimated plan from its OWN store by
+/// the identifier before re-executing.
 ///
 /// <para><b>Why identifier-only is a hard security requirement:</b> the target server id rides on the command
 /// row and the query is RE-EXECUTED as the service's stored monitoring credential. If this payload could carry
@@ -26,10 +46,20 @@ namespace PerformanceMonitor.Darling.Service;
 /// </summary>
 public sealed record ActualPlanRequest(
     string? QueryHash,
+    long? QueryId,
+    DateTime? SnapshotCollectionTime,
+    int? SnapshotSessionId,
     string? DatabaseName)
 {
-    /// <summary>True when the stored-row key is present — the dispatch fails a request without a query_hash.</summary>
-    public bool HasIdentifier => !string.IsNullOrWhiteSpace(QueryHash);
+    /// <summary>Which store table the identifier resolves from (the first populated kind wins — deterministic).</summary>
+    public ActualPlanSource Source =>
+        !string.IsNullOrWhiteSpace(QueryHash) ? ActualPlanSource.QueryStats
+        : QueryId is not null ? ActualPlanSource.QueryStore
+        : SnapshotCollectionTime is not null && SnapshotSessionId is not null ? ActualPlanSource.QuerySnapshot
+        : ActualPlanSource.None;
+
+    /// <summary>True when a usable stored-row key is present — the dispatch fails a request without one.</summary>
+    public bool HasIdentifier => Source != ActualPlanSource.None;
 
     private static readonly JsonSerializerOptions s_options = new()
     {
@@ -40,11 +70,11 @@ public sealed record ActualPlanRequest(
 
     /// <summary>
     /// Parses <c>args_json</c> into a request, returning false for null/blank/malformed JSON or a request that
-    /// carries no query_hash. Never throws.
+    /// carries no usable identifier. Never throws.
     /// </summary>
     public static bool TryParse(string? argsJson, out ActualPlanRequest request)
     {
-        request = new ActualPlanRequest(null, null);
+        request = new ActualPlanRequest(null, null, null, null, null);
         if (string.IsNullOrWhiteSpace(argsJson))
         {
             return false;
@@ -67,6 +97,9 @@ public sealed record ActualPlanRequest(
 
         var parsed = new ActualPlanRequest(
             NullIfBlank(dto.QueryHash),
+            dto.QueryId,
+            dto.SnapshotCollectionTime,
+            dto.SnapshotSessionId,
             NullIfBlank(dto.DatabaseName));
 
         if (!parsed.HasIdentifier)
@@ -80,10 +113,13 @@ public sealed record ActualPlanRequest(
 
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
-    /// <summary>The wire shape of <c>args_json</c> — an identifier only; NO query text field exists by design.</summary>
+    /// <summary>The wire shape of <c>args_json</c> — identifiers only; NO query-text field exists by design.</summary>
     private sealed class Dto
     {
         public string? QueryHash { get; set; }
+        public long? QueryId { get; set; }
+        public DateTime? SnapshotCollectionTime { get; set; }
+        public int? SnapshotSessionId { get; set; }
         public string? DatabaseName { get; set; }
     }
 }

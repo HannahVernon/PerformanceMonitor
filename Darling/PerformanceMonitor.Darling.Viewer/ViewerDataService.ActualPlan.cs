@@ -33,13 +33,38 @@ public sealed partial class ViewerDataService
     public const string CommandExecuteActualPlan = "execute_actual_plan";
 
     /// <summary>
-    /// Builds the <c>args_json</c> for an actual-plan capture — the stored-row key ONLY (query_hash +
-    /// database_name), NO query text. Pure — pinned by Darling.Tests against the service's
-    /// <c>ActualPlanRequest.TryParse</c> and asserted to carry no SQL text.
+    /// Builds the <c>args_json</c> for a <c>query_stats</c> actual-plan capture — the stored-row key ONLY
+    /// (query_hash + database_name), NO query text. Serves Top Queries, Query-Stats history, and FinOps High
+    /// Impact. Pure — pinned by Darling.Tests against the service's <c>ActualPlanRequest.TryParse</c> and asserted
+    /// to carry no SQL text.
     /// </summary>
     public static string BuildActualPlanArgs(string queryHash, string? databaseName)
         => JsonSerializer.Serialize(
             new ActualPlanArgs { QueryHash = queryHash, DatabaseName = NullIfBlank(databaseName) },
+            s_planFetchArgsOptions);
+
+    /// <summary>
+    /// Builds the <c>args_json</c> for a Query Store actual-plan capture — the stored-row key ONLY (query_id +
+    /// database_name), NO query text. The service resolves the text from <c>query_store_stats</c>. Pure.
+    /// </summary>
+    public static string BuildActualPlanArgsForQueryStore(long queryId, string? databaseName)
+        => JsonSerializer.Serialize(
+            new ActualPlanArgs { QueryId = queryId, DatabaseName = NullIfBlank(databaseName) },
+            s_planFetchArgsOptions);
+
+    /// <summary>
+    /// Builds the <c>args_json</c> for a Wait drill-down (query snapshot) actual-plan capture — the stored-row key
+    /// ONLY (collection_time + session_id, plus database for the USE context), NO query text. The service resolves
+    /// the text from <c>query_snapshots</c> by the exact capture time + session. Pure.
+    /// </summary>
+    public static string BuildActualPlanArgsForSnapshot(DateTime collectionTime, int sessionId, string? databaseName)
+        => JsonSerializer.Serialize(
+            new ActualPlanArgs
+            {
+                SnapshotCollectionTime = DateTime.SpecifyKind(collectionTime, DateTimeKind.Unspecified),
+                SnapshotSessionId = sessionId,
+                DatabaseName = NullIfBlank(databaseName),
+            },
             s_planFetchArgsOptions);
 
     /// <summary>
@@ -100,11 +125,15 @@ public sealed partial class ViewerDataService
             : "The service could not capture the actual plan.");
     }
 
-    /// <summary>The wire shape of an <c>execute_actual_plan</c> <c>args_json</c> — the stored-row key only.
-    /// There is deliberately NO query-text field: the service resolves the text from its own store.</summary>
+    /// <summary>The wire shape of an <c>execute_actual_plan</c> <c>args_json</c> — the stored-row key only (one
+    /// identifier kind per request; null fields are omitted). There is deliberately NO query-text field: the
+    /// service resolves the text from its own store.</summary>
     private sealed class ActualPlanArgs
     {
         public string? QueryHash { get; set; }
+        public long? QueryId { get; set; }
+        public DateTime? SnapshotCollectionTime { get; set; }
+        public int? SnapshotSessionId { get; set; }
         public string? DatabaseName { get; set; }
     }
 }

@@ -558,6 +558,38 @@ public partial class FinOpsTab
         }
     }
 
+    /// <summary>
+    /// "Get Actual Plan" for the FinOps High Impact grid (Dashboard parity) — RE-EXECUTES the row's query on the
+    /// target (via the service's <c>execute_actual_plan</c> command) and routes the captured actual plan into the
+    /// shell's Plan Viewer. Identifier-only: the service resolves the text from <c>query_stats</c> by (query_hash,
+    /// database). ONLY High Impact rows carry a query_hash — the Expensive Queries grid groups by text, so its
+    /// rows have no store key and the menu item stays disabled there (gated on <c>CanGetActualPlan</c>). The
+    /// shared consent + data-modification flag + read-only guard + permission handling live in
+    /// <see cref="ViewerActualPlanFlow"/>; the row's stored plan drives the modification detection.
+    /// </summary>
+    private async void FinOpsGetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (FinOpsRowFromMenu(sender) is not HighImpactQueryRow hi || string.IsNullOrEmpty(hi.QueryHash))
+        {
+            return;
+        }
+
+        var argsJson = ViewerDataService.BuildActualPlanArgs(hi.QueryHash, hi.DatabaseName);
+        var label = $"Actual Plan - {hi.QueryHash}";
+
+        var planXml = await ViewerActualPlanFlow.RequestActualPlanAsync(
+            Window.GetWindow(this)!, _dataService, _server.ServerId, _server.DisplayName, hi.DatabaseName,
+            hi.FullQueryText, hi.QueryPlanXml, argsJson,
+            onStarted: () => System.Windows.Input.Mouse.OverrideCursor = System.Windows.Input.Cursors.Wait,
+            onFinished: () => System.Windows.Input.Mouse.OverrideCursor = null,
+            System.Threading.CancellationToken.None);
+
+        if (planXml != null)
+        {
+            PlanRequested?.Invoke(planXml, label, hi.FullQueryText);
+        }
+    }
+
     /// <summary>Runs a FinOps loader with the same status-bar error surfacing the shell's <see cref="LoadInnerTabAsync"/> uses.</summary>
     private async Task RunFinOpsLoad(Func<Task> loader)
     {

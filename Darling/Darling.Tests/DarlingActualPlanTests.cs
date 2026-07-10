@@ -108,6 +108,61 @@ public sealed class ActualPlanRequestTests
             .ToArray();
         Assert.Empty(suspicious);
     }
+
+    // ── Query Store surface (identifier = query_id + database) ──
+
+    [Fact]
+    public void QueryStoreBuilder_RoundTrips_AndIsQueryStoreSource()
+    {
+        var args = ViewerDataService.BuildActualPlanArgsForQueryStore(4242L, "AdventureWorks");
+        Assert.True(ActualPlanRequest.TryParse(args, out var req));
+        Assert.Equal(ActualPlanSource.QueryStore, req.Source);
+        Assert.Equal(4242L, req.QueryId);
+        Assert.Equal("AdventureWorks", req.DatabaseName);
+        Assert.Null(req.QueryHash);
+    }
+
+    [Fact]
+    public void QueryStorePayload_CarriesIdentifierOnly_NeverSqlText()
+    {
+        var args = ViewerDataService.BuildActualPlanArgsForQueryStore(7L, "master");
+        using var document = JsonDocument.Parse(args);
+        var names = document.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
+        Assert.Equal(new[] { "databaseName", "queryId" }, names);
+    }
+
+    // ── Wait drill-down surface (identifier = collection_time + session_id) ──
+
+    [Fact]
+    public void SnapshotBuilder_RoundTrips_AndIsSnapshotSource()
+    {
+        var collectionTime = new DateTime(2026, 7, 10, 12, 34, 56, 123, DateTimeKind.Unspecified).AddTicks(4560);
+        var args = ViewerDataService.BuildActualPlanArgsForSnapshot(collectionTime, 77, "tempdb");
+        Assert.True(ActualPlanRequest.TryParse(args, out var req));
+        Assert.Equal(ActualPlanSource.QuerySnapshot, req.Source);
+        Assert.Equal(collectionTime, req.SnapshotCollectionTime);   /* exact round-trip through JSON */
+        Assert.Equal(77, req.SnapshotSessionId);
+        Assert.Equal("tempdb", req.DatabaseName);
+        Assert.Null(req.QueryHash);
+        Assert.Null(req.QueryId);
+    }
+
+    [Fact]
+    public void SnapshotPayload_CarriesIdentifierOnly_NeverSqlText()
+    {
+        var args = ViewerDataService.BuildActualPlanArgsForSnapshot(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Unspecified), 5, "master");
+        using var document = JsonDocument.Parse(args);
+        var names = document.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
+        Assert.Equal(new[] { "databaseName", "snapshotCollectionTime", "snapshotSessionId" }, names);
+    }
+
+    [Fact]
+    public void Snapshot_RequiresBothCollectionTimeAndSession()
+    {
+        /* A collection_time with no session (or vice versa) is not a resolvable snapshot key. */
+        Assert.False(ActualPlanRequest.TryParse("{\"snapshotCollectionTime\":\"2026-07-10T12:00:00\"}", out _));
+        Assert.False(ActualPlanRequest.TryParse("{\"snapshotSessionId\":55}", out _));
+    }
 }
 
 /// <summary>The command-plane dispatch + read-only stance for <c>execute_actual_plan</c>.</summary>
@@ -177,6 +232,52 @@ public sealed class ActualPlanDispatchTests
         Assert.Contains("server_id = $1", sql, StringComparison.Ordinal);
         Assert.Contains("query_hash = $2", sql, StringComparison.Ordinal);
         Assert.Contains("database_name = $3", sql, StringComparison.Ordinal);
+        AssertReadOnlyResolver(sql);
+    }
+
+    [Fact]
+    public void ResolveQueryStoreSql_IsAReadOnlyLookupByQueryId()
+    {
+        var sql = DarlingWorker.ResolveStoredQueryStoreForActualPlanSql;
+        Assert.Contains("FROM query_store_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("query_text", sql, StringComparison.Ordinal);
+        Assert.Contains("server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("database_name = $2", sql, StringComparison.Ordinal);
+        Assert.Contains("query_id = $3", sql, StringComparison.Ordinal);
+        AssertReadOnlyResolver(sql);
+    }
+
+    [Fact]
+    public void ResolveSnapshotSql_IsAReadOnlyLookupByCollectionTimeAndSession()
+    {
+        var sql = DarlingWorker.ResolveStoredSnapshotForActualPlanSql;
+        Assert.Contains("FROM query_snapshots", sql, StringComparison.Ordinal);
+        Assert.Contains("query_text", sql, StringComparison.Ordinal);
+        Assert.Contains("server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time = $2", sql, StringComparison.Ordinal);
+        Assert.Contains("session_id = $3", sql, StringComparison.Ordinal);
+        AssertReadOnlyResolver(sql);
+    }
+
+    [Fact]
+    public void ResolvePlan_RecognizesEveryIdentifierKind_WithATarget()
+    {
+        /* Every surface's args resolve to the one host-delegated command. */
+        var byQueryStore = ViewerDataService.BuildActualPlanArgsForQueryStore(9L, "master");
+        Assert.Equal(CommandKind.ExecuteActualPlan,
+            DarlingCommandExecutor.ResolvePlan(Command(ViewerDataService.CommandExecuteActualPlan, target: 5, args: byQueryStore)).Kind);
+
+        var bySnapshot = ViewerDataService.BuildActualPlanArgsForSnapshot(
+            new DateTime(2026, 7, 10, 9, 0, 0, DateTimeKind.Unspecified), 42, "master");
+        Assert.Equal(CommandKind.ExecuteActualPlan,
+            DarlingCommandExecutor.ResolvePlan(Command(ViewerDataService.CommandExecuteActualPlan, target: 5, args: bySnapshot)).Kind);
+    }
+
+    /// <summary>A store resolver is a read-only SELECT (a leading SET NOCOUNT is a session setting) with no
+    /// data-modifying statement anywhere — the identifier-only contract's other half never writes.</summary>
+    private static void AssertReadOnlyResolver(string sql)
+    {
+        Assert.Contains("SELECT", sql, StringComparison.OrdinalIgnoreCase);
         foreach (var forbidden in new[] { "INSERT", "UPDATE ", "DELETE", "DROP", "ALTER", "MERGE", "TRUNCATE" })
         {
             Assert.DoesNotContain(forbidden, sql, StringComparison.OrdinalIgnoreCase);
@@ -454,5 +555,66 @@ public sealed class ActualPlanCaptureLoopTests
     {
         var reader = new ScriptedReader(new() { (0, Array.Empty<string?>()) });
         Assert.Null(await ActualPlanExecutor.CapturePlanXmlAsync(reader, CancellationToken.None));
+    }
+}
+
+/// <summary>The per-row "Get Actual Plan" enable/disable gates — a row is eligible only when it carries a
+/// store-resolvable identifier (a query_hash). Shared context menus bind these, and a row type without the
+/// property falls back to disabled (FallbackValue=False).</summary>
+public sealed class ActualPlanGatingTests
+{
+    [Fact]
+    public void TopQueriesRow_IsEligible_OnlyWithQueryTextAndHash()
+    {
+        Assert.True(new ViewerQueryStatsRow { QueryHash = "0x01", QueryText = "SELECT 1" }.CanGetActualPlan);
+        Assert.False(new ViewerQueryStatsRow { QueryHash = "", QueryText = "SELECT 1" }.CanGetActualPlan);
+        Assert.False(new ViewerQueryStatsRow { QueryHash = "0x01", QueryText = "" }.CanGetActualPlan);
+    }
+
+    [Fact]
+    public void FinOpsHighImpactRow_IsEligible_OnlyWithAQueryHash()
+    {
+        /* The FinOps plan menu is shared with the Expensive Queries grid (whose rows have no query_hash and no
+           CanGetActualPlan property → disabled); a High Impact row is eligible when it carries the hash. */
+        Assert.True(new HighImpactQueryRow { QueryHash = "0xABCD" }.CanGetActualPlan);
+        Assert.False(new HighImpactQueryRow { QueryHash = "" }.CanGetActualPlan);
+    }
+}
+
+/// <summary>
+/// Shared <see cref="ReproScriptBuilder"/> hardening reached by the actual-plan snapshot surface (the first path
+/// that passes a captured isolation level + a payload-supplied database name into the repro): an invalid
+/// isolation string (the snapshot collector's <c>Unspecified</c> / <c>???</c>) must NOT emit broken T-SQL, and
+/// the database name must be bracket-escaped so it can never break out of the <c>USE [...]</c>.
+/// </summary>
+public sealed class ReproScriptBuilderHardeningTests
+{
+    [Theory]
+    [InlineData("Unspecified")]
+    [InlineData("???")]
+    [InlineData("garbage level")]
+    public void InvalidIsolationLevel_IsSkipped_NotEmittedAsBrokenTsql(string isolation)
+    {
+        var script = ReproScriptBuilder.BuildReproScript("SELECT 1", "master", planXml: null, isolationLevel: isolation);
+        Assert.DoesNotContain("SET TRANSACTION ISOLATION LEVEL", script, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Read Committed", "READ COMMITTED")]
+    [InlineData("Repeatable Read", "REPEATABLE READ")]
+    [InlineData("Snapshot", "SNAPSHOT")]
+    [InlineData("Serializable", "SERIALIZABLE")]
+    public void ValidIsolationLevel_IsEmitted(string isolation, string expected)
+    {
+        var script = ReproScriptBuilder.BuildReproScript("SELECT 1", "master", planXml: null, isolationLevel: isolation);
+        Assert.Contains($"SET TRANSACTION ISOLATION LEVEL {expected};", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DatabaseName_IsBracketEscaped_InTheUseStatement()
+    {
+        /* A database name containing a closing bracket must be doubled so it cannot break out of USE [...]. */
+        var script = ReproScriptBuilder.BuildReproScript("SELECT 1", "ev]il", planXml: null, isolationLevel: null);
+        Assert.Contains("USE [ev]]il];", script, StringComparison.Ordinal);
     }
 }

@@ -1691,16 +1691,44 @@ LIMIT 1", connection);
             JsonSerializer.Serialize(new { success = true, planXml }));
     }
 
-    /// <summary>The store lookup that resolves the actual-plan command's IDENTIFIER (server_id + query_hash +
-    /// database_name) to the latest captured query text + estimated plan XML — the SERVICE's own copy, so no SQL
-    /// text ever rides on the command payload. Mirrors the LATERAL text join in the Top-Queries read. Public
-    /// const so a test can pin its shape ($1 server_id, $2 query_hash, $3 database_name).</summary>
+    /// <summary>The store lookup that resolves the actual-plan command's <c>query_stats</c> IDENTIFIER (server_id +
+    /// query_hash + database_name) to the latest captured query text + estimated plan XML — the SERVICE's own
+    /// copy, so no SQL text ever rides on the command payload. Serves Top Queries, Query-Stats history, and the
+    /// FinOps High Impact grid. The third column (isolation level) is NULL here (query_stats does not capture it).
+    /// Public const so a test can pin its shape ($1 server_id, $2 query_hash, $3 database_name).</summary>
     public const string ResolveStoredQueryForActualPlanSql = @"
-SELECT query_text, query_plan_xml
+SELECT query_text, query_plan_xml, NULL::text AS transaction_isolation_level
 FROM query_stats
 WHERE server_id = $1
 AND   query_hash = $2
 AND   database_name = $3
+AND   query_text IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    /// <summary>The <c>query_store_stats</c> resolver — the Query Store history surface's identifier (server_id +
+    /// database_name + query_id) to its captured query text + stored plan. $1 server_id, $2 database_name, $3
+    /// query_id. Isolation is NULL (Query Store does not capture it).</summary>
+    public const string ResolveStoredQueryStoreForActualPlanSql = @"
+SELECT query_text, query_plan_text, NULL::text AS transaction_isolation_level
+FROM query_store_stats
+WHERE server_id = $1
+AND   database_name = $2
+AND   query_id = $3
+AND   query_text IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    /// <summary>The <c>query_snapshots</c> resolver — the Wait drill-down surface's identifier (server_id +
+    /// collection_time + session_id) to that captured request's query text, plan (live preferred), and isolation
+    /// level. $1 server_id, $2 collection_time, $3 session_id. The exact-timestamp match keys the one snapshot
+    /// the row represents.</summary>
+    public const string ResolveStoredSnapshotForActualPlanSql = @"
+SELECT query_text, COALESCE(live_query_plan, query_plan), transaction_isolation_level
+FROM query_snapshots
+WHERE server_id = $1
+AND   collection_time = $2
+AND   session_id = $3
 AND   query_text IS NOT NULL
 ORDER BY collection_time DESC
 LIMIT 1";
@@ -1755,23 +1783,24 @@ LIMIT 1";
             return new CommandOutcome(false, "store unavailable", JsonError("the Postgres store is not available to resolve the query text"));
         }
 
-        /* Resolve the query text + estimated plan XML from the store BY THE IDENTIFIER (the collector's own
-           capture) — this is the identifier-only contract: the payload named a stored row; the service supplies
-           the text. */
+        /* Resolve the query text + estimated plan + isolation level from the store BY THE IDENTIFIER (the
+           collector's own capture) — the identifier-only contract: the payload named a stored row; the service
+           supplies the text. The SQL + bound parameters are chosen by the identifier kind (query_stats /
+           query_store_stats / query_snapshots). */
         string? queryText = null;
         string? estimatedPlanXml = null;
+        string? isolationLevel = null;
         try
         {
             await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
-            await using var command = new NpgsqlCommand(ResolveStoredQueryForActualPlanSql, connection);
-            command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
-            command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.QueryHash! });
-            command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.DatabaseName ?? "" });
+            await using var command = new NpgsqlCommand(ResolveActualPlanSql(request.Source), connection);
+            BindActualPlanResolveParameters(command, serverId, request);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
             {
                 queryText = reader.IsDBNull(0) ? null : reader.GetString(0);
                 estimatedPlanXml = reader.IsDBNull(1) ? null : reader.GetString(1);
+                isolationLevel = reader.IsDBNull(2) ? null : reader.GetString(2);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1783,7 +1812,7 @@ LIMIT 1";
         if (string.IsNullOrWhiteSpace(queryText))
         {
             return new CommandOutcome(false, "no stored query",
-                JsonError($"no stored query text was found for this row on '{displayName}' (query_hash {request.QueryHash}) — the actual plan is captured by re-executing the stored query text, which is not available"));
+                JsonError($"no stored query text was found for this {DescribeActualPlanIdentifier(request)} on '{displayName}' — the actual plan is captured by re-executing the stored query text, which is not available"));
         }
 
         /* RE-EXECUTE via the SHARED executor (SET STATISTICS XML ON), as the server's stored credential. */
@@ -1794,7 +1823,7 @@ LIMIT 1";
                 request.DatabaseName ?? "",
                 queryText,
                 estimatedPlanXml,
-                isolationLevel: null,
+                isolationLevel: isolationLevel,
                 isAzureSqlDb: isAzureSqlDb,
                 timeoutSeconds: ActualPlanCaptureTimeoutSeconds,
                 cancellationToken,
@@ -1837,6 +1866,52 @@ LIMIT 1";
                 JsonError($"executing the query on '{displayName}' to capture the actual plan failed: {ex.Message}"));
         }
     }
+
+    /// <summary>Picks the store-resolution SQL for the actual-plan request's identifier kind.</summary>
+    private static string ResolveActualPlanSql(ActualPlanSource source) => source switch
+    {
+        ActualPlanSource.QueryStats => ResolveStoredQueryForActualPlanSql,
+        ActualPlanSource.QueryStore => ResolveStoredQueryStoreForActualPlanSql,
+        ActualPlanSource.QuerySnapshot => ResolveStoredSnapshotForActualPlanSql,
+        _ => throw new InvalidOperationException($"no store resolver for actual-plan source {source}"),
+    };
+
+    /// <summary>Binds the store-resolution parameters ($1 server_id, then the identifier's $2/$3) for the request's
+    /// identifier kind. The snapshot's collection_time binds as a naive-UTC timestamp (Unspecified), matching how
+    /// the collector stores it.</summary>
+    private static void BindActualPlanResolveParameters(NpgsqlCommand command, int serverId, ActualPlanRequest request)
+    {
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        switch (request.Source)
+        {
+            case ActualPlanSource.QueryStats:
+                command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.QueryHash! });
+                command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.DatabaseName ?? "" });
+                break;
+            case ActualPlanSource.QueryStore:
+                command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.DatabaseName ?? "" });
+                command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = request.QueryId!.Value });
+                break;
+            case ActualPlanSource.QuerySnapshot:
+                command.Parameters.Add(new NpgsqlParameter<DateTime>
+                {
+                    TypedValue = DateTime.SpecifyKind(request.SnapshotCollectionTime!.Value, DateTimeKind.Unspecified),
+                });
+                command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = request.SnapshotSessionId!.Value });
+                break;
+            default:
+                throw new InvalidOperationException($"no store resolver for actual-plan source {request.Source}");
+        }
+    }
+
+    /// <summary>A human description of the request's identifier for the "no stored query" message.</summary>
+    private static string DescribeActualPlanIdentifier(ActualPlanRequest request) => request.Source switch
+    {
+        ActualPlanSource.QueryStats => $"query (query_hash {request.QueryHash})",
+        ActualPlanSource.QueryStore => $"Query Store query (query_id {request.QueryId})",
+        ActualPlanSource.QuerySnapshot => $"query snapshot (session {request.SnapshotSessionId})",
+        _ => "row",
+    };
 
     /// <summary>
     /// True when a SqlException is a permission denial — the expected failure when the least-privilege monitoring

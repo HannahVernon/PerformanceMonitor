@@ -384,6 +384,11 @@ public sealed class HighImpactQueryRow
     public string? QueryPlanXml { get; set; }
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlanXml);
 
+    /// <summary>True when this row can have its ACTUAL plan captured — it carries the query_hash the service
+    /// re-executes by (identifier-only, resolved from query_stats). Gates the shared FinOps plan menu's "Get
+    /// Actual Plan"; the Expensive Queries rows (grouped by text, no query_hash) lack it and fall back to disabled.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryHash);
+
     public string ImpactScoreColor => ImpactScore switch
     {
         >= 80 => "#E74C3C",
