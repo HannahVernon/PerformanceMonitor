@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyOneVersions_V19AnalysisStateMarker_V20AlertTuningKnobs_V21DefaultTraceEvents()
+    public void MigrationScripts_TwentyTwoVersions_V20AlertTuningKnobs_V21DefaultTraceEvents_V22IndexObjectStatsLatestIndex()
     {
-        Assert.Equal(21, PgMigrations.Scripts.Count);
+        Assert.Equal(22, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -56,7 +56,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(19, PgMigrations.Scripts[18].Version);
         Assert.Equal(20, PgMigrations.Scripts[19].Version);
         Assert.Equal(21, PgMigrations.Scripts[20].Version);
-        Assert.Equal(21, StorageVersion.SchemaVersion);
+        Assert.Equal(22, PgMigrations.Scripts[21].Version);
+        Assert.Equal(22, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -332,6 +333,27 @@ public sealed class DarlingObservabilityTests
         /* Observed-output tier -> collect, never the config control plane; and no passthrough view. */
         Assert.DoesNotContain("config.default_trace_events", v21, StringComparison.Ordinal);
         Assert.DoesNotContain("CREATE OR REPLACE VIEW", v21, StringComparison.Ordinal);
+
+        /* V22 adds a supporting index whose key matches the FinOps Index Analysis read's
+           DISTINCT ON (database_id, object_id, index_id) ... ORDER BY ..., collection_time DESC. The V1
+           idx_index_object_stats_object leads database_NAME, which cannot serve the database_ID DISTINCT ON,
+           forcing a whole-server sort; this second, additively-created index serves it in index order.
+           collect.-qualified like V21; CREATE INDEX IF NOT EXISTS so a V21 store upgrades idempotently and a
+           fresh store (which already built the differently-keyed V1 index) gets this one too. index_object_stats
+           is a hypertable, so Timescale applies the CREATE INDEX across its chunks. */
+        var v22 = PgMigrations.Scripts[21].Sql;
+        Assert.Equal("index-object-stats-latest-index", PgMigrations.Scripts[21].Name);
+        Assert.Contains(
+            "CREATE INDEX IF NOT EXISTS idx_index_object_stats_latest ON collect.index_object_stats (server_id, database_id, object_id, index_id, collection_time DESC);",
+            v22, StringComparison.Ordinal);
+        /* Idempotent (IF NOT EXISTS) so a V21 store upgrades cleanly and a re-run no-ops. */
+        Assert.Contains("CREATE INDEX IF NOT EXISTS", v22, StringComparison.Ordinal);
+        /* Keys database_ID + collection_time DESC — the read's exact order, NOT the V1 index's database_NAME. */
+        Assert.Contains("database_id, object_id, index_id, collection_time DESC", v22, StringComparison.Ordinal);
+        Assert.DoesNotContain("database_name", v22, StringComparison.Ordinal);
+        /* Collector table -> collect schema; a plain index (no config plane, no passthrough view to refresh). */
+        Assert.DoesNotContain("config.index_object_stats", v22, StringComparison.Ordinal);
+        Assert.DoesNotContain("CREATE OR REPLACE VIEW", v22, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);
