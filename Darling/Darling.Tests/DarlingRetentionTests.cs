@@ -95,6 +95,20 @@ public sealed class DarlingRetentionTests
         Assert.Equal(DarlingRetention.DataRetentionBaseDays, CollectorScheduleDefaults.All["wait_stats"].RetentionDays);
     }
 
+    [Fact]
+    public void AlertHistoryRetention_IsNinetyDays_AndBatchesOnAlertTime()
+    {
+        /* config_alert_log (the fired-alert history) is a plain config-schema registry table — not a collector
+           (no CollectorScheduleDefaults horizon) and not a hypertable — so it purges through the SAME batched
+           DELETE builder as collection_log, on its own alert_time column. Kept 90 days: a bounded but generous
+           audit-trail horizon (there is no operator setting governing it today, so the constant is the source
+           of truth). */
+        Assert.Equal(90, DarlingRetention.AlertHistoryRetentionDays);
+        Assert.Equal(
+            "DELETE FROM config_alert_log WHERE alert_time < $1 AND ctid IN (SELECT ctid FROM config_alert_log WHERE alert_time < $1 LIMIT 10000)",
+            DarlingRetention.BatchedDeleteSql("config_alert_log", "alert_time"));
+    }
+
     /* ---------------- batched-drain loop (pure, injected executor) ---------------- */
 
     [Fact]
@@ -268,12 +282,39 @@ public sealed class DarlingRetentionTests
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* At least our two 40-day rows go; a shared dev store may shed more. The
-               extension-free DELETE path on purpose (timescaleAvailable: false) — it must keep
-               working even on a store whose tables ARE hypertables (DELETE is
-               hypertable-agnostic); the drop_chunks branch is TimescaleSupportTests' job. */
+            /* config_alert_log (fired-alert history) purges on its own 90-day horizon: a 100-day row is past
+               it and goes, a 1-hour row survives. Only alert_time / server_id / server_name / metric_name +
+               the two NOT NULL value columns are required (the rest of the V3 columns default). */
+            using (var insert = new NpgsqlCommand(
+                "INSERT INTO config_alert_log (alert_time, server_id, server_name, metric_name, current_value, threshold_value) VALUES ($1, $2, $3, $4, $5, $6)", connection))
+            {
+                insert.Parameters.AddWithValue(utcNow.AddDays(-100));
+                insert.Parameters.AddWithValue(TestServerId);
+                insert.Parameters.AddWithValue("retention-e2e");
+                insert.Parameters.AddWithValue("cpu");
+                insert.Parameters.AddWithValue(99.0);
+                insert.Parameters.AddWithValue(80.0);
+                await insert.ExecuteNonQueryAsync(ct);
+            }
+
+            using (var insert = new NpgsqlCommand(
+                "INSERT INTO config_alert_log (alert_time, server_id, server_name, metric_name, current_value, threshold_value) VALUES ($1, $2, $3, $4, $5, $6)", connection))
+            {
+                insert.Parameters.AddWithValue(utcNow.AddHours(-1));
+                insert.Parameters.AddWithValue(TestServerId);
+                insert.Parameters.AddWithValue("retention-e2e");
+                insert.Parameters.AddWithValue("cpu");
+                insert.Parameters.AddWithValue(99.0);
+                insert.Parameters.AddWithValue(80.0);
+                await insert.ExecuteNonQueryAsync(ct);
+            }
+
+            /* At least our three expired rows go (40-day wait_stats, 70-day collection_log, 100-day
+               config_alert_log); a shared dev store may shed more. The extension-free DELETE path on purpose
+               (timescaleAvailable: false) — it must keep working even on a store whose tables ARE hypertables
+               (DELETE is hypertable-agnostic); the drop_chunks branch is TimescaleSupportTests' job. */
             var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
-            Assert.True(summary.TotalPurged >= 2, $"expected the purge to delete at least the two expired test rows, got {summary.TotalPurged}");
+            Assert.True(summary.TotalPurged >= 3, $"expected the purge to delete at least the three expired test rows, got {summary.TotalPurged}");
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))
@@ -296,6 +337,17 @@ public sealed class DarlingRetentionTests
                 Assert.True(survivor < utcNow.AddDays(-44) && survivor > utcNow.AddDays(-46),
                     $"the surviving log row should be the 45-day one, got {survivor:O}");
                 Assert.False(await reader.ReadAsync(ct), "the 70-day collection_log row survived past the 60-day horizon");
+            }
+
+            using (var read = new NpgsqlCommand(
+                "SELECT alert_time FROM config_alert_log WHERE server_id = $1", connection))
+            {
+                read.Parameters.AddWithValue(TestServerId);
+                using var reader = await read.ExecuteReaderAsync(ct);
+                Assert.True(await reader.ReadAsync(ct), "the fresh config_alert_log row did not survive the purge");
+                var survivor = reader.GetDateTime(0);
+                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving alert-history row should be the 1-hour one, got {survivor:O}");
+                Assert.False(await reader.ReadAsync(ct), "the 100-day config_alert_log row survived past the 90-day horizon");
             }
 
             /* The purge writes ONE auditable run-record under the fleet sentinel server_id — SUCCESS here
@@ -355,6 +407,7 @@ public sealed class DarlingRetentionTests
         using var cleanup = new NpgsqlCommand(
             $"DELETE FROM wait_stats WHERE server_id = {TestServerId}; " +
             $"DELETE FROM collection_log WHERE server_id = {TestServerId}; " +
+            $"DELETE FROM config_alert_log WHERE server_id = {TestServerId}; " +
             $"DELETE FROM collection_log WHERE server_id = {DarlingObservability.FleetServerId} AND collector_name = 'data_retention';",
             connection);
         await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);

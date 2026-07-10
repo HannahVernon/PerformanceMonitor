@@ -65,6 +65,7 @@ public static class PgMigrations
         new Migration(19, "analysis-state-marker", V19Sql),
         new Migration(20, "alert-tuning-knobs", V20Sql),
         new Migration(21, "default-trace-events-collector", V21Sql),
+        new Migration(22, "index-object-stats-latest-index", V22Sql),
     };
 
     /// <summary>
@@ -680,6 +681,36 @@ CREATE TABLE IF NOT EXISTS collect.default_trace_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON collect.default_trace_events(server_id, collection_time);";
+
+    /// <summary>
+    /// V22 — the supporting index for the hot FinOps Index Analysis read. The viewer's
+    /// <c>ViewerDataService.IndexObjectStatsLatestSql</c> picks the newest row per index identity with
+    /// <c>SELECT DISTINCT ON (database_id, object_id, index_id) … WHERE server_id = $1
+    /// ORDER BY database_id, object_id, index_id, collection_time DESC</c> — no time bound, so it walks the
+    /// whole per-server history (daily cadence, 90-day retention) to find each index's latest snapshot. The V1
+    /// index <c>idx_index_object_stats_object</c> leads <c>(server_id, database_name, …)</c> — a database_NAME
+    /// vs the query's database_ID mismatch, so its ordering cannot satisfy the <c>DISTINCT ON (database_id, …)</c>
+    /// and Postgres sorts the entire server row set. This index matches the read's exact
+    /// <c>DISTINCT ON</c>/<c>ORDER BY</c> key (<c>server_id, database_id, object_id, index_id,
+    /// collection_time DESC</c>), so the <c>DISTINCT ON</c> reads in index order with no sort. It is additive:
+    /// it does NOT replace the V1 index (the anomaly-detector self-joins in <c>PgAnomalyDetector</c> key
+    /// <c>database_name</c>, which that index still serves) — the two readers diverged on the database key, so
+    /// each gets its own index.
+    ///
+    /// <para><c>index_object_stats</c> is a TimescaleDB hypertable (every collector table is —
+    /// <c>TimescaleSupport.HypertableTables</c>), so a plain <c>CREATE INDEX</c> is applied across every chunk
+    /// by Timescale (the standard post-hypertable index path, the same shape as the V1/V21 collector indexes);
+    /// on a plain-PostgreSQL store it is an ordinary btree. It is a NON-unique index that includes the partition
+    /// column (<c>collection_time</c>), so it is legal on the hypertable either way. <c>CREATE INDEX IF NOT
+    /// EXISTS</c> makes it idempotent: an existing V21 store gets the real create, a fresh store (whose V1 built
+    /// only the differently-keyed <c>idx_index_object_stats_object</c>) gets this second index when its
+    /// migrations run through V22, and a re-run is a harmless no-op. EXPLICITLY <c>collect.</c>-qualified like
+    /// V21 (the migrate session's <c>search_path = collect, config, public</c> already resolves the bare name
+    /// to <c>collect</c>, but the qualification makes the collect-schema intent explicit). No table shape
+    /// changes, so nothing to refresh for the binary COPY.</para>
+    /// </summary>
+    private const string V22Sql = @"
+CREATE INDEX IF NOT EXISTS idx_index_object_stats_latest ON collect.index_object_stats (server_id, database_id, object_id, index_id, collection_time DESC);";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

@@ -22,9 +22,9 @@ namespace PerformanceMonitor.Darling.Service;
 /// DELETE-based and works on any Postgres; when the worker detected TimescaleDB
 /// (<c>timescaleAvailable</c> — see TimescaleSupport in Darling.Storage) the collector tables
 /// purge via hypertable <c>drop_chunks</c> instead, which detaches whole expired chunks in O(1)
-/// instead of scanning rows. collection_log stays DELETE-based either way (never converted — a
-/// registry-side table, see the TimescaleSupport scope remarks), as do the analysis tables
-/// (PgFindingStore.CleanupOldFindingsAsync owns those). Retention horizons are the shared
+/// instead of scanning rows. collection_log and config_alert_log stay DELETE-based either way (never
+/// converted — plain registry-side tables, see the TimescaleSupport scope remarks), as do the analysis
+/// tables (PgFindingStore.CleanupOldFindingsAsync owns those). Retention horizons are the shared
 /// per-collector <see cref="CollectorScheduleDefaults"/> (identity-pinned to Lite's
 /// ScheduleManager table), so both SKUs keep the same data horizons out of the box. NOTE: Lite
 /// archives expired rows to parquet before deleting (ArchiveService); Darling deliberately
@@ -56,6 +56,18 @@ public static class DarlingRetention
     /// </summary>
     internal const int CollectionLogRetentionDays = DataRetentionBaseDays * 2;
 
+    /// <summary>
+    /// config_alert_log (the fired-alert history: what alerted + delivery status, read by the viewer Alert
+    /// History tab and the get_alert_history MCP tool) is a plain <c>config</c>-schema registry table — NOT a
+    /// collector (so it has no <see cref="CollectorScheduleDefaults"/> horizon) and NOT a hypertable (so it
+    /// purges via batched DELETE, never drop_chunks). It is INSERT-only (PgAlertHistoryStore) with no other
+    /// purge path, so without a horizon it grows unbounded — the same class as the #1471 findings-cleanup gap.
+    /// Kept 90 days (a quarter): alert history is low-volume and a valuable audit trail, so the horizon is
+    /// generous, but it is BOUNDED. No operator setting governs this today (config_alert_settings carries the
+    /// cooldown / lookback knobs, not an alert-history horizon), so this constant is the single source of truth.
+    /// </summary>
+    internal const int AlertHistoryRetentionDays = 90;
+
     /* The per-DELETE batch cap — the Postgres twin of the Dashboard's DELETE TOP(10000) idiom
        (config.data_retention). A large first purge is drained in 10k-row batches instead of one giant
        DELETE, bounding lock duration, WAL generation, and dead-tuple bloat. Steady-state daily purges are
@@ -70,7 +82,8 @@ public static class DarlingRetention
 
     /// <summary>
     /// Purges every collector table past its shared <see cref="CollectorScheduleDefaults"/>
-    /// RetentionDays, plus collection_log past <see cref="CollectionLogRetentionDays"/>.
+    /// RetentionDays, plus collection_log past <see cref="CollectionLogRetentionDays"/> and
+    /// config_alert_log past <see cref="AlertHistoryRetentionDays"/>.
     /// When <paramref name="timescaleAvailable"/> (the worker's startup detection), the
     /// collector tables purge via <c>drop_chunks</c> (<see cref="DropChunksSqlFor"/>) with a
     /// per-table DELETE fallback so a table that failed hypertable conversion still honors its
@@ -161,6 +174,24 @@ public static class DarlingRetention
             {
                 tablesPurged++;
                 totalRowsDeleted += logDeleted.Value;
+            }
+            else
+            {
+                tablesFailed++;
+            }
+
+            /* config_alert_log (the fired-alert history) is a plain config-schema registry table, never a
+               hypertable, so it purges via the same batched DELETE as collection_log — on its alert_time
+               column, at the AlertHistoryRetentionDays horizon. INSERT-only (PgAlertHistoryStore) with no
+               other purge path, so without this it grows unbounded (the #1471 findings-cleanup class of bug).
+               Failure-isolated like every sibling: a failed statement is warned + counted, the sweep goes on. */
+            var alertLogDeleted = await PurgeOneAsync(
+                postgres, "config_alert_log", BatchedDeleteSql("config_alert_log", "alert_time"),
+                utcNow.AddDays(-AlertHistoryRetentionDays), logger, cancellationToken);
+            if (alertLogDeleted is not null)
+            {
+                tablesPurged++;
+                totalRowsDeleted += alertLogDeleted.Value;
             }
             else
             {
