@@ -20,6 +20,7 @@ using PerformanceMonitorLite.Services;
 using ScottPlot;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -54,7 +55,8 @@ public partial class QueryStatsHistoryWindow : Window
             this,
             (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
             (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
-                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct,
+                productName: "SQL Server Performance Monitor Lite"),
             "the monitored server");
 
         _filterManager = new DataGridFilterManager<QueryStatsHistoryRow>(HistoryDataGrid);

@@ -294,6 +294,20 @@ WHERE status = 'in_progress'
                 return await _host.FetchPlanAsync(command.TargetServerId!.Value, fetchRequest, cancellationToken);
             }
 
+            case CommandKind.ExecuteActualPlan:
+            {
+                /* Re-parse args_json here (the pure dispatch already validated it parses) so the host receives
+                   the structured request — mirrors the FetchPlan branch. The payload is an IDENTIFIER ONLY
+                   (query_hash + database_name); the host resolves the text/plan from the store and re-executes. */
+                if (!ActualPlanRequest.TryParse(command.ArgsJson, out var actualPlanRequest))
+                {
+                    return new CommandOutcome(false, "invalid args_json",
+                        ErrorJson("execute_actual_plan args_json did not carry a query_hash"));
+                }
+
+                return await _host.ExecuteActualPlanAsync(command.TargetServerId!.Value, actualPlanRequest, cancellationToken);
+            }
+
             default:
                 return new CommandOutcome(false, "unknown command_type", ErrorJson("unknown command_type"));
         }
@@ -373,6 +387,21 @@ WHERE status = 'in_progress'
                 return PlanFetchRequest.TryParse(command.ArgsJson, out _)
                     ? new CommandPlan(CommandKind.FetchPlan, null, null, "plan fetched", null)
                     : Fail("fetch_plan requires args_json with a plan_handle or sql_handle");
+
+            case "execute_actual_plan":
+                /* Worker-delegated (needs the target's LIVE runtime connection to RE-EXECUTE the query) and the
+                   store (to resolve the query text/plan from the identifier). Requires a target server AND
+                   args_json carrying the stored-row key. This is the one command that WRITES to a target (it
+                   re-applies a modifying query's changes), so it rides the same read-write-seat-only enqueue as
+                   every other command — a read-only viewer cannot reach it. */
+                if (command.TargetServerId is null)
+                {
+                    return Fail("execute_actual_plan requires target_server_id");
+                }
+
+                return ActualPlanRequest.TryParse(command.ArgsJson, out _)
+                    ? new CommandPlan(CommandKind.ExecuteActualPlan, null, null, "actual plan captured", null)
+                    : Fail("execute_actual_plan requires args_json with a query_hash");
 
             default:
                 return Fail("unknown command_type");
@@ -568,6 +597,10 @@ public enum CommandKind
     /// <summary><c>fetch_plan</c>: read a plan from a server's LIVE plan cache by plan_handle or sql_handle (via the host).</summary>
     FetchPlan,
 
+    /// <summary><c>execute_actual_plan</c>: RE-EXECUTE a stored query (resolved from the store by the identifier) to
+    /// capture its ACTUAL plan with runtime stats (via the host). The one command that writes to a target.</summary>
+    ExecuteActualPlan,
+
     /// <summary>Bad arguments or an unknown command_type — report failed without touching the store.</summary>
     Fail,
 }
@@ -602,4 +635,16 @@ public interface IDarlingCommandHost
     /// commands but reaching the target SQL Server rather than the store.
     /// </summary>
     Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <c>execute_actual_plan</c>: RE-EXECUTE a stored query against the target server (SET STATISTICS XML) to
+    /// capture its ACTUAL plan with runtime stats, and return the plan XML. The request is an IDENTIFIER ONLY
+    /// (<see cref="ActualPlanRequest"/>, the stored-row key) — the host resolves the query text + database +
+    /// estimated plan XML from the SERVICE'S OWN store (never from the payload, so no SQL text can ride the
+    /// command plane) and re-executes as the server's stored monitoring credential. Unlike every other
+    /// worker-delegated command this WRITES to the target (it re-applies any INSERT/UPDATE/DELETE/MERGE), so
+    /// the viewer gates it behind informed consent; the permission-denied / timeout cases return a legible
+    /// outcome rather than a raw SQL error.
+    /// </summary>
+    Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken);
 }

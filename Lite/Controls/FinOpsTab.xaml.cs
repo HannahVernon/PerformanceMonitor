@@ -21,6 +21,7 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -123,7 +124,8 @@ public partial class FinOpsTab : UserControl
         Window.GetWindow(this)!,
         (xml, label, qt) => Windows.PlanViewerWindow.ShowPlanAsync(Window.GetWindow(this)!, xml, label, qt),
         (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
-            GetSelectedConnectionString() ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            GetSelectedConnectionString() ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct,
+            productName: "SQL Server Performance Monitor Lite"),
         "the monitored server");
 
     private string? GetSelectedConnectionString()

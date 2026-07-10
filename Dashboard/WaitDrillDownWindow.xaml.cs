@@ -20,6 +20,7 @@ using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using static PerformanceMonitor.Ui.WaitDrillDownHelper;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard;

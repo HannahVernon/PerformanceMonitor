@@ -44,6 +44,9 @@ public sealed class DarlingCommandExecutorTests
 
         public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
             => throw new InvalidOperationException("host should not be called for this command");
+
+        public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("host should not be called for this command");
     }
 
     /// <summary>Records the custom-retention argument a <c>purge_now</c> dispatch passed the host — for the
@@ -69,6 +72,9 @@ public sealed class DarlingCommandExecutorTests
 
         public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
             => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
     }
 
     /// <summary>A host that records the fetch_plan request it received and returns a canned plan — for the
@@ -93,6 +99,9 @@ public sealed class DarlingCommandExecutorTests
             ReceivedServerId = serverId;
             return Task.FromResult(new CommandOutcome(true, "plan fetched", "{\"success\":true,\"planXml\":\"<ShowPlanXML/>\"}"));
         }
+
+        public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
     }
 
     private static ClaimedCommand Command(string type, int? target = null, string? args = null) =>
