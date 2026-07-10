@@ -93,7 +93,7 @@
                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                   ContextMenu="{StaticResource DataGridContextMenu}">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" SortMemberPath="CollectionTime" SortDirection="Descending" Width="130"/>
                 <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
                 <DataGridTextColumn Header="Cached Time" Binding="{Binding CachedTimeLocal}" Width="130"/>
                 <DataGridTextColumn Header="Object Type" Binding="{Binding ObjectType}" Width="95"/>

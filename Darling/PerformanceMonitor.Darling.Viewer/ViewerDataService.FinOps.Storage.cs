@@ -26,7 +26,12 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public sealed partial class ViewerDataService
 {
-    /// <summary>Latest database size snapshot per file for one server. $1 server_id.</summary>
+    /// <summary>Latest database size snapshot per file for one server, biggest files first (a capacity view —
+    /// you hunt the largest files, not browse alphabetically; files can interleave across databases by design).
+    /// The <c>total_size_mb DESC</c> lead is display-only and safe to change: the grid is the sole order-sensitive
+    /// consumer — the other two callers (<c>GetUtilizationEfficiencyAsync</c>'s free-space math and the dormant-DB
+    /// recommendation's cost share) only <c>Sum</c> the rows, and the "Allocated vs Used" chart is a separate read
+    /// (<c>GetDatabaseSizeSummaryAsync</c>). $1 server_id.</summary>
     public const string DatabaseSizeLatestSql = @"
 SELECT
     database_name,
@@ -49,7 +54,7 @@ AND   collection_time = (
     FROM v_database_size_stats
     WHERE server_id = $1
 )
-ORDER BY database_name, file_type_desc, file_name";
+ORDER BY total_size_mb DESC, database_name, file_type_desc, file_name";
 
     public async Task<List<DatabaseSizeRow>> GetDatabaseSizeLatestAsync(int serverId, CancellationToken cancellationToken = default)
     {

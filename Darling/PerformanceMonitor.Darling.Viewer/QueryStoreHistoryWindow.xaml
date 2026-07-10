@@ -86,7 +86,7 @@
                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                   ContextMenu="{StaticResource DataGridContextMenu}">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" SortMemberPath="CollectionTime" SortDirection="Descending" Width="130"/>
                 <DataGridTextColumn Header="Plan ID" Binding="{Binding PlanId}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
                 <DataGridTextColumn Header="Exec Type" Binding="{Binding ExecutionTypeDesc}" Width="90"/>
                 <DataGridTextColumn Header="First Execution" Binding="{Binding FirstExecutionTimeLocal}" Width="130"/>
