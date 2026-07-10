@@ -13,6 +13,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -129,6 +130,15 @@ public sealed class DarlingManagedPostgres
     /// marker-present-but-different-block conf is never rewritten in place.
     /// </summary>
     public const string ConfMarkerV2 = "# Managed by PerformanceMonitor Darling (v2 worker sizing) -- do not remove this block";
+
+    /// <summary>
+    /// Marker for the v3 memory-sizing conf block (derived from host RAM). A THIRD independently
+    /// versioned block, separate for the same reason v2 is separate from v1: an already-provisioned
+    /// cluster (v1 + v2 present, v3 absent) heals by GAINING this block on its next service-owned
+    /// start rather than by an in-place rewrite, which <see cref="EnsureConfAppended"/> never does.
+    /// Each marker is checked independently.
+    /// </summary>
+    public const string ConfMarkerV3 = "# Managed by PerformanceMonitor Darling (v3 memory sizing) -- do not remove this block";
 
     /// <summary>
     /// Markers delimiting the Darling-managed network access block in pg_hba.conf
@@ -273,6 +283,84 @@ public sealed class DarlingManagedPostgres
         builder.Append(ConfMarkerV2).Append('\n');
         builder.Append("timescaledb.max_background_workers = ").Append(maxBackgroundWorkers).Append('\n');
         builder.Append("max_worker_processes = ").Append(maxWorkerProcesses).Append('\n');
+        return builder.ToString();
+    }
+
+    /* ===================== v3 memory sizing (derived from host RAM) ===================== */
+
+    /// <summary>4 GB — the conservative fallback used only when the runtime RAM query fails, so sizing
+    /// never divides a zero/garbage reading (yields shared_buffers 1 GB, work_mem 16 MB).</summary>
+    private const long MemoryFallbackRamBytes = 4L * 1024 * 1024 * 1024;
+
+    /// <summary>The four PostgreSQL memory settings derived from total physical RAM, all in whole MB.</summary>
+    internal readonly record struct MemorySettings(
+        int SharedBuffersMb,
+        int EffectiveCacheSizeMb,
+        int MaintenanceWorkMemMb,
+        int WorkMemMb);
+
+    /// <summary>
+    /// Derives the four memory settings from total physical RAM — PURE and testable via an injected byte
+    /// count, exactly the way <see cref="BuildWorkerSizingConfAppend"/> derives from the hypertable count.
+    /// This is SCALE-READINESS, not a fix for observed pressure: the stock PostgreSQL defaults
+    /// (shared_buffers 128 MB, work_mem 4 MB, maintenance_work_mem 64 MB, effective_cache_size 4 GB) are
+    /// fine for a handful of monitored servers on an 8 GB box, but would bottleneck the "up to 500 servers"
+    /// store. Formulas:
+    /// <list type="bullet">
+    /// <item><b>shared_buffers</b> = min(25% RAM, 8 GB) — the standard PostgreSQL starting point, capped
+    ///   because past ~8 GB the OS page cache serves better than more double-buffered PG cache.
+    ///   RESTART-ONLY, like max_worker_processes; it applies on the next server start.</item>
+    /// <item><b>effective_cache_size</b> = 75% RAM — a PLANNER HINT (no allocation) telling the planner how
+    ///   much data is likely cached (PG + OS cache), biasing it toward index scans.</item>
+    /// <item><b>maintenance_work_mem</b> = min(5% RAM, 1 GB) — headroom for VACUUM / CREATE INDEX; capped at
+    ///   1 GB because several autovacuum workers can each take up to this.</item>
+    /// <item><b>work_mem</b> = clamp(RAM/512, 16 MB, 64 MB) — the ONE with real downside (per-sort,
+    ///   per-connection: worst-case ≈ max_connections × sorts × work_mem), so it is deliberately modest.
+    ///   At the PG default max_connections = 100 with ~3 concurrent sort/hash nodes, the pathological
+    ///   all-connections-busy case is 100 × 3 × (RAM/512) ≈ 58% of RAM until the 64 MB cap tightens it —
+    ///   and each sort/hash SPILLS to a temp file rather than OOMing when it exceeds work_mem (PG13+ spills
+    ///   hash aggregates too), while the real Darling store runs a handful of pooled connections, not 100
+    ///   concurrent analytical queries.</item>
+    /// </list>
+    /// </summary>
+    internal static MemorySettings DeriveMemorySettings(long totalPhysicalMemoryBytes)
+    {
+        var ram = totalPhysicalMemoryBytes > 0 ? totalPhysicalMemoryBytes : MemoryFallbackRamBytes;
+
+        const long oneMb = 1024L * 1024L;
+        const long oneGb = 1024L * oneMb;
+
+        var sharedBuffers = Math.Min(ram / 4, 8 * oneGb);         /* 25% RAM, capped at 8 GB — restart-only */
+        var effectiveCache = ram / 4 * 3;                          /* 75% RAM — planner hint, not an allocation */
+        var maintenanceWorkMem = Math.Min(ram / 20, oneGb);        /* 5% RAM, capped at 1 GB */
+        var workMem = Math.Clamp(ram / 512, 16 * oneMb, 64 * oneMb);
+
+        return new MemorySettings(
+            (int)(sharedBuffers / oneMb),
+            (int)(effectiveCache / oneMb),
+            (int)(maintenanceWorkMem / oneMb),
+            (int)(workMem / oneMb));
+    }
+
+    /// <summary>
+    /// The v3 memory-sizing block, built the SAME marker-guarded way as
+    /// <see cref="BuildWorkerSizingConfAppend"/> and appended by <see cref="EnsureConfAppended"/> on every
+    /// start (so an already-provisioned cluster gains it on restart, not just a fresh initdb). Takes the
+    /// RAM byte count so it is unit-testable; <see cref="GetTotalPhysicalMemoryBytes"/> supplies the live
+    /// value at runtime. Values are emitted in whole MB. shared_buffers needs a PostgreSQL restart — the
+    /// service applies the whole block on its next server-owned start, exactly as it does the restart-only
+    /// worker sizing.
+    /// </summary>
+    public static string BuildMemorySizingConfAppend(long totalPhysicalMemoryBytes)
+    {
+        var settings = DeriveMemorySettings(totalPhysicalMemoryBytes);
+        var builder = new StringBuilder();
+        builder.Append('\n');
+        builder.Append(ConfMarkerV3).Append('\n');
+        builder.Append("shared_buffers = ").Append(settings.SharedBuffersMb).Append("MB\n");
+        builder.Append("effective_cache_size = ").Append(settings.EffectiveCacheSizeMb).Append("MB\n");
+        builder.Append("maintenance_work_mem = ").Append(settings.MaintenanceWorkMemMb).Append("MB\n");
+        builder.Append("work_mem = ").Append(settings.WorkMemMb).Append("MB\n");
         return builder.ToString();
     }
 
@@ -571,7 +659,71 @@ public sealed class DarlingManagedPostgres
             File.AppendAllText(confPath, BuildWorkerSizingConfAppend());
             _logger.LogInformation("Appended v2 worker sizing to postgresql.conf (derived from {Hypertables} hypertables; effective from the next PostgreSQL restart)", TimescaleSupport.HypertableTables.Count);
         }
+
+        /* Checked independently of v1/v2: an already-provisioned cluster has v1 + v2 but not v3, and heals
+           by GAINING the memory block here on its next start. shared_buffers is restart-only, so it applies
+           whenever the service next owns the start — exactly the worker-sizing story. Derived from the host's
+           physical RAM at runtime (SCALE-READINESS for the up-to-500-servers store, not a fix for pressure). */
+        if (!conf.Contains(ConfMarkerV3, StringComparison.Ordinal))
+        {
+            var ramBytes = GetTotalPhysicalMemoryBytes();
+            File.AppendAllText(confPath, BuildMemorySizingConfAppend(ramBytes));
+            var derived = DeriveMemorySettings(ramBytes);
+            _logger.LogInformation(
+                "Appended v3 memory sizing to postgresql.conf (host RAM {RamMb} MB -> shared_buffers {SharedBuffers}MB, effective_cache_size {EffectiveCache}MB, maintenance_work_mem {Maintenance}MB, work_mem {WorkMem}MB; effective from the next PostgreSQL restart)",
+                ramBytes / (1024L * 1024L), derived.SharedBuffersMb, derived.EffectiveCacheSizeMb, derived.MaintenanceWorkMemMb, derived.WorkMemMb);
+        }
     }
+
+    /// <summary>
+    /// Total physical RAM in bytes, read once per bootstrap to size the v3 memory block — the runtime
+    /// analogue of the worker sizing's hypertable count. Uses the Win32 <c>GlobalMemoryStatusEx</c>
+    /// (<c>ullTotalPhys</c> = the machine's installed physical memory); on the rare failure it falls back to
+    /// the GC's view of total available memory, then to a conservative 4 GB, so sizing never runs on a
+    /// zero/garbage reading. Windows-only, like the rest of this managed-mode class.
+    /// </summary>
+    private long GetTotalPhysicalMemoryBytes()
+    {
+        try
+        {
+            var status = new MemoryStatusEx();
+            if (GlobalMemoryStatusEx(status) && status.ullTotalPhys > 0)
+            {
+                return (long)status.ullTotalPhys;
+            }
+
+            _logger.LogWarning(
+                "GlobalMemoryStatusEx did not return total physical memory (Win32 error {Error}); sizing Postgres memory from a fallback.",
+                Marshal.GetLastWin32Error());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not query total physical memory ({Message}); sizing Postgres memory from a fallback.", ex.Message);
+        }
+
+        var gcTotal = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        return gcTotal > 0 ? gcTotal : MemoryFallbackRamBytes;
+    }
+
+#pragma warning disable CS0649 // fields are populated by the native GlobalMemoryStatusEx call, not in managed code
+    [StructLayout(LayoutKind.Sequential)]
+    private sealed class MemoryStatusEx
+    {
+        public uint dwLength = (uint)Marshal.SizeOf<MemoryStatusEx>();
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+#pragma warning restore CS0649
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx lpBuffer);
 
     /// <summary>pg_ctl status: 0 = a postmaster is running on this data directory, 3 = not running, 4 = bad/inaccessible data directory.</summary>
     private async Task<bool> IsRunningAsync(string binDirectory, CancellationToken cancellationToken)
